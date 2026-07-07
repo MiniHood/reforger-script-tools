@@ -23,6 +23,7 @@ export function activate(context: vscode.ExtensionContext) {
 	output.appendLine('Reforger Script Tools activated.');
 	output.appendLine(`Log file: ${logger.path}`);
 	logger.info('Extension activated.');
+	registerTemporaryThemeForce(context);
 	const { symbolIndex } = registerLanguageFeatures(context, logger, output);
 	registerGameDataExportCommands(context, output, logger, symbolIndex);
 
@@ -82,6 +83,32 @@ export function activate(context: vscode.ExtensionContext) {
 }
 
 export function deactivate() {}
+
+function registerTemporaryThemeForce(context: vscode.ExtensionContext): void {
+	const forcedTheme = 'Reforger Script Dark';
+
+	async function applyThemeForEditor(editor?: vscode.TextEditor): Promise<void> {
+		if (!editor || editor.document.languageId !== 'enforce') {
+			return;
+		}
+
+		const config = vscode.workspace.getConfiguration('workbench');
+		const currentTheme = config.get<string>('colorTheme');
+		if (currentTheme === forcedTheme) {
+			return;
+		}
+
+		await config.update('colorTheme', forcedTheme, vscode.ConfigurationTarget.Workspace);
+	}
+
+	context.subscriptions.push(
+		vscode.window.onDidChangeActiveTextEditor(editor => {
+			void applyThemeForEditor(editor);
+		})
+	);
+
+	void applyThemeForEditor(vscode.window.activeTextEditor);
+}
 
 async function startWorkbenchMonitor(output: vscode.OutputChannel, logger: ExtensionLogger): Promise<void> {
 	if (workbenchMonitorStarted) {
