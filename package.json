@@ -2,6 +2,7 @@
   "name": "reforger-script-tools",
   "displayName": "Reforger Script Tools",
   "description": "Arma Reforger scripting tools for Workbench validation, diagnostics, log parsing, and addon workflows.",
+  "publisher": "burn0ut7",
   "version": "0.0.1",
   "engines": {
     "vscode": "^1.125.0"
