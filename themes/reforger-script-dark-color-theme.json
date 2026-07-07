@@ -1,0 +1,132 @@
+{
+  "$schema": "vscode://schemas/color-theme",
+  "name": "Reforger Script Dark",
+  "type": "dark",
+  "semanticHighlighting": true,
+  "colors": {
+    "reforgerScriptTools.bracket.active": "#dd5846",
+    "reforgerScriptTools.bracket.scopeGuide": "#dd5846",
+    "reforgerScriptTools.bracket.class": "#40b5ac",
+    "reforgerScriptTools.bracket.function": "#f3ad58",
+    "reforgerScriptTools.bracket.variable": "#b6bdcc"
+  },
+  "semanticTokenColors": {
+    "class": "#40b5ac",
+    "enum": "#40b5ac",
+    "function": "#f3ad58",
+    "variable": "#b6bdcc",
+    "type": "#40b5ac",
+    "keyword": "#59A6E9",
+    "comment": "#59aa59",
+    "string": "#c178dd",
+    "punctuation": "#b6bdcc",
+    "preprocessor": "#d4fd95"
+  },
+  "tokenColors": [
+    {
+      "scope": [
+        "entity.name.type.class.enforce.hover"
+      ],
+      "settings": {
+        "foreground": "#40b5ac"
+      }
+    },
+    {
+      "scope": [
+        "entity.name.type.class.enforce.hover.header"
+      ],
+      "settings": {
+        "foreground": "#40b5ac",
+        "fontStyle": "bold"
+      }
+    },
+    {
+      "scope": [
+        "entity.name.function.enforce.hover"
+      ],
+      "settings": {
+        "foreground": "#f3ad58"
+      }
+    },
+    {
+      "scope": [
+        "entity.name.function.enforce.hover.header"
+      ],
+      "settings": {
+        "foreground": "#f3ad58",
+        "fontStyle": "bold"
+      }
+    },
+    {
+      "scope": [
+        "storage.type.primitive.enforce.hover",
+        "keyword.control.enforce.hover"
+      ],
+      "settings": {
+        "foreground": "#59A6E9"
+      }
+    },
+    {
+      "scope": [
+        "storage.type.primitive.enforce.hover.header"
+      ],
+      "settings": {
+        "foreground": "#59A6E9",
+        "fontStyle": "bold"
+      }
+    },
+    {
+      "scope": [
+        "keyword.control.enforce.hover.header"
+      ],
+      "settings": {
+        "foreground": "#59A6E9",
+        "fontStyle": "bold"
+      }
+    },
+    {
+      "scope": [
+        "variable.other.enforce.hover",
+        "constant.numeric.enforce.hover",
+        "punctuation.definition.enforce.hover"
+      ],
+      "settings": {
+        "foreground": "#b6bdcc"
+      }
+    },
+    {
+      "scope": [
+        "variable.other.enforce.hover.header"
+      ],
+      "settings": {
+        "foreground": "#b6bdcc",
+        "fontStyle": "bold"
+      }
+    },
+    {
+      "scope": [
+        "comment.line.double-slash.enforce.hover",
+        "comment.block.enforce.hover"
+      ],
+      "settings": {
+        "foreground": "#59aa59"
+      }
+    },
+    {
+      "scope": [
+        "string.quoted.double.enforce.hover"
+      ],
+      "settings": {
+        "foreground": "#c178dd"
+      }
+    },
+    {
+      "scope": [
+        "keyword.control.directive.enforce.hover"
+      ],
+      "settings": {
+        "foreground": "#d4fd95"
+      }
+    }
+  ]
+}

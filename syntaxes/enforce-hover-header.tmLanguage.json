@@ -1,0 +1,76 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Enforce Hover Header",
+  "scopeName": "source.enforce.hover.header",
+  "patterns": [
+    {
+      "include": "#type-identifiers"
+    },
+    {
+      "include": "#identity-kinds"
+    },
+    {
+      "include": "#primitive-keywords"
+    },
+    {
+      "include": "#identifiers"
+    }
+  ],
+  "repository": {
+    "identity-kinds": {
+      "patterns": [
+        {
+          "name": "keyword.control.enforce.hover.header",
+          "match": "\\b(?:class|enum|keyword|operator)\\b"
+        },
+        {
+          "name": "entity.name.function.enforce.hover.header",
+          "match": "\\bfunction\\b"
+        },
+        {
+          "name": "variable.other.enforce.hover.header",
+          "match": "\\b(?:property|variable|parameter|macro|enumValue|unknown|in|completion)\\b"
+        }
+      ]
+    },
+    "primitive-keywords": {
+      "patterns": [
+        {
+          "name": "storage.type.primitive.enforce.hover.header",
+          "match": "\\b(?:void|bool|int|float)\\b"
+        }
+      ]
+    },
+    "type-identifiers": {
+      "patterns": [
+        {
+          "match": "\\b(in)\\s+([A-Za-z_]\\w*)\\b",
+          "captures": {
+            "1": {
+              "name": "variable.other.enforce.hover.header"
+            },
+            "2": {
+              "name": "entity.name.type.class.enforce.hover.header"
+            }
+          }
+        },
+        {
+          "name": "entity.name.type.class.enforce.hover.header",
+          "match": "\\b(?:attribute|string|vector|typename|array|set|map|pointer|global_pointer|handle64|func)\\b"
+        },
+        {
+          "name": "entity.name.type.class.enforce.hover.header",
+          "match": "\\b(?=[A-Za-z0-9_]*[a-z])[A-Z][A-Za-z0-9_]*\\b"
+        }
+      ]
+    },
+    "identifiers": {
+      "patterns": [
+        {
+          "name": "variable.other.enforce.hover.header",
+          "match": "\\b[A-Za-z_]\\w*\\b"
+        }
+      ]
+    }
+  }
+}

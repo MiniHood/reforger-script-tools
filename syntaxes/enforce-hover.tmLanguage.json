@@ -1,0 +1,180 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Enforce Hover",
+  "scopeName": "source.enforce.hover",
+  "patterns": [
+    {
+      "include": "#comments"
+    },
+    {
+      "include": "#strings"
+    },
+    {
+      "include": "#preprocessor"
+    },
+    {
+      "include": "#function-kind"
+    },
+    {
+      "include": "#function-identifiers"
+    },
+    {
+      "include": "#primitive-keywords"
+    },
+    {
+      "include": "#generic-type-parameters"
+    },
+    {
+      "include": "#member-identifiers"
+    },
+    {
+      "include": "#type-identifiers"
+    },
+    {
+      "include": "#grammar-keywords"
+    },
+    {
+      "include": "#numbers"
+    },
+    {
+      "include": "#punctuation"
+    },
+    {
+      "include": "#identifiers"
+    }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.enforce.hover",
+          "match": "//.*$"
+        },
+        {
+          "name": "comment.block.enforce.hover",
+          "begin": "/\\*",
+          "end": "\\*/"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.enforce.hover",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            {
+              "name": "constant.character.escape.enforce.hover",
+              "match": "\\\\."
+            }
+          ]
+        }
+      ]
+    },
+    "preprocessor": {
+      "patterns": [
+        {
+          "name": "meta.preprocessor.enforce.hover",
+          "match": "^\\s*(#\\s*(?:define|ifdef|ifndef|else|endif|include))\\b",
+          "captures": {
+            "1": {
+              "name": "keyword.control.directive.enforce.hover"
+            }
+          }
+        }
+      ]
+    },
+    "function-kind": {
+      "patterns": [
+        {
+          "name": "entity.name.function.enforce.hover",
+          "match": "\\bfunction\\b"
+        }
+      ]
+    },
+    "function-identifiers": {
+      "patterns": [
+        {
+          "name": "entity.name.function.enforce.hover",
+          "match": "\\b[A-Za-z_]\\w*(?=\\s*\\()"
+        }
+      ]
+    },
+    "primitive-keywords": {
+      "patterns": [
+        {
+          "name": "storage.type.primitive.enforce.hover",
+          "match": "\\b(?:void|bool|int|float)\\b"
+        }
+      ]
+    },
+    "type-identifiers": {
+      "patterns": [
+        {
+          "name": "entity.name.type.class.enforce.hover",
+          "match": "\\b(?:string|vector|typename|array|set|map|pointer|global_pointer|handle64|func)\\b"
+        },
+        {
+          "name": "entity.name.type.class.enforce.hover",
+          "match": "\\b(?=[A-Za-z0-9_]*[a-z])[A-Z][A-Za-z0-9_]*\\b"
+        }
+      ]
+    },
+    "generic-type-parameters": {
+      "patterns": [
+        {
+          "name": "keyword.control.enforce.hover",
+          "match": "\\bT(?:\\d+|[A-Z][A-Za-z0-9_]*)?\\b"
+        }
+      ]
+    },
+    "member-identifiers": {
+      "patterns": [
+        {
+          "match": "(\\.\\s*)([A-Za-z_]\\w*)",
+          "captures": {
+            "1": {
+              "name": "punctuation.definition.enforce.hover"
+            },
+            "2": {
+              "name": "variable.other.enforce.hover"
+            }
+          }
+        }
+      ]
+    },
+    "grammar-keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.enforce.hover",
+          "match": "\\b(?:autoptr|break|case|class|const|continue|default|delete|else|enum|event|extends|external|false|for|foreach|if|inout|modded|native|new|notnull|null|out|override|private|protected|proto|public|ref|return|sealed|static|super|switch|this|true|typedef|volatile|while)\\b"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.enforce.hover",
+          "match": "\\b(?:0x[0-9A-Fa-f]+|\\d+(?:\\.\\d+)?)\\b"
+        }
+      ]
+    },
+    "punctuation": {
+      "patterns": [
+        {
+          "name": "punctuation.definition.enforce.hover",
+          "match": "[{}()\\[\\]<>.,:;=+\\-*/%!&|?]"
+        }
+      ]
+    },
+    "identifiers": {
+      "patterns": [
+        {
+          "name": "variable.other.enforce.hover",
+          "match": "\\b[A-Za-z_]\\w*\\b"
+        }
+      ]
+    }
+  }
+}
