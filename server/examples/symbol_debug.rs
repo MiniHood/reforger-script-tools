@@ -298,6 +298,7 @@ fn kind_name(kind: SymbolKind) -> &'static str {
         SymbolKind::Constructor => "Constructor",
         SymbolKind::Destructor => "Destructor",
         SymbolKind::Parameter => "Parameter",
+        SymbolKind::LocalVariable => "LocalVariable",
     }
 }
 

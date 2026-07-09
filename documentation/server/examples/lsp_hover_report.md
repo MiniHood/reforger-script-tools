@@ -10,7 +10,7 @@ This example sits above the Rust LSP helper API. It exercises the same file-loca
 
 ## Current Behavior
 
-The report reads targeted committed parser fixtures plus a small inline hover coverage source for enum/global-field cases. It writes `tools/reports/lsp-hover-fixtures.report.md` with target positions, hit/miss state, selected symbol kind/name, parse diagnostics, elapsed time, and a compact Markdown hover preview.
+The report reads targeted committed parser fixtures plus a small inline hover coverage source for enum/global-field cases. It writes `tools/reports/lsp-hover-fixtures.report.md` with target positions, hit/miss state, selected symbol kind/name, parse diagnostics, elapsed time, and a compact Markdown hover preview. Current checks include class, field, method, parameter, typedef, enum member, global field, local variable, `foreach` variable, `for` initializer, and whitespace miss behavior.
 
 ## Dependencies and Boundaries
 
@@ -20,6 +20,7 @@ The report uses only Rust standard library code and the existing LSP helper func
 
 - Added the first hover fixture report alongside the LSP hover feature.
 - Inline enum/global source is used because the current committed parser fixture set does not contain those hover shapes.
+- Added local/block symbol hover checks from `tools/fixtures/parser/local_block_symbols.c`.
 
 ## Future Improvements
 

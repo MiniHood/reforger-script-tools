@@ -144,6 +144,7 @@ pub enum SymbolKind {
     Constructor,
     Destructor,
     Parameter,
+    LocalVariable,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -547,6 +548,24 @@ impl<'source> SymbolCatalogBuilder<'source> {
                 },
                 attributes: Vec::new(),
                 modifiers: text_spans(parameter.modifiers()),
+                doc_comments: Vec::new(),
+                callable_form: None,
+            });
+        }
+
+        for local in method.local_variables() {
+            self.push_record(NewSymbol {
+                parent: Some(callable_id),
+                kind: SymbolKind::LocalVariable,
+                name: Some(local.name()),
+                span: local.span(),
+                detail: SymbolDetail {
+                    type_text: local.type_text().map(|value| value.span),
+                    default_text: local.default_text().map(|value| value.span),
+                    ..SymbolDetail::empty()
+                },
+                attributes: Vec::new(),
+                modifiers: text_spans(local.modifiers()),
                 doc_comments: Vec::new(),
                 callable_form: None,
             });
@@ -1040,6 +1059,48 @@ class Example : Base
     }
 
     #[test]
+    fn catalogs_local_variables_under_containing_callable() {
+        let source = r#"class Example
+{
+	void Run()
+	{
+		array<int> values = {};
+		const int count = values.Count();
+		for (int i = 0, max = values.Count(); i < max; i++)
+		{
+			foreach (int index, auto value : values)
+			{
+				string label = value.ToString();
+			}
+		}
+	}
+}
+"#;
+        let catalog = catalog(source);
+        let method = find(&catalog, SymbolKind::Method, "Run");
+
+        assert_eq!(child_count(&catalog, method.id, SymbolKind::Parameter), 0);
+        assert_eq!(
+            child_count(&catalog, method.id, SymbolKind::LocalVariable),
+            7
+        );
+
+        let values = find(&catalog, SymbolKind::LocalVariable, "values");
+        assert_eq!(values.parent, Some(method.id));
+        assert_eq!(catalog.text(values.detail.type_text.unwrap()), "array<int>");
+        assert_eq!(catalog.text(values.detail.default_text.unwrap()), "{}");
+
+        let count = find(&catalog, SymbolKind::LocalVariable, "count");
+        assert_eq!(count.parent, Some(method.id));
+        assert_eq!(catalog.text(count.detail.type_text.unwrap()), "int");
+        assert_eq!(catalog.text(count.modifiers[0]), "const");
+
+        let value = find(&catalog, SymbolKind::LocalVariable, "value");
+        assert_eq!(value.parent, Some(method.id));
+        assert_eq!(catalog.text(value.detail.type_text.unwrap()), "auto");
+    }
+
+    #[test]
     fn excludes_non_declaration_callable_fragments() {
         let source = r#"class Example
 {
@@ -1377,6 +1438,7 @@ class Other {}
             include_str!("../../tools/fixtures/parser/workbench_basic_code_formatter_excerpt.c"),
             include_str!("../../tools/fixtures/parser/game_optional_semicolon_shapes.c"),
             include_str!("../../tools/fixtures/parser/game_field_initializer_call_shapes.c"),
+            include_str!("../../tools/fixtures/parser/local_block_symbols.c"),
         ];
 
         for fixture in fixtures {

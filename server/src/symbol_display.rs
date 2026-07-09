@@ -79,7 +79,8 @@ fn symbol_display_detail(index: &SymbolIndex, id: GlobalSymbolId) -> Option<Stri
         SymbolKind::Typedef
         | SymbolKind::GlobalField
         | SymbolKind::Field
-        | SymbolKind::Parameter => {
+        | SymbolKind::Parameter
+        | SymbolKind::LocalVariable => {
             let mut parts = Vec::new();
             push_prefixed(&mut parts, "type", symbol.detail.type_text.as_deref());
             push_prefixed(&mut parts, "default", symbol.detail.default_text.as_deref());
@@ -295,6 +296,10 @@ class Holder
 {
 	int m_Value;
 	void Run(int value = 4);
+	void Local()
+	{
+		int localValue = 5;
+	}
 }
 "#,
         );
@@ -322,6 +327,13 @@ class Holder
             SymbolDisplay::for_symbol(&index, find(&index, SymbolKind::Parameter, "value"))
                 .unwrap();
         assert_eq!(parameter.detail.as_deref(), Some("type int default 4"));
+
+        let local = SymbolDisplay::for_symbol(
+            &index,
+            find(&index, SymbolKind::LocalVariable, "localValue"),
+        )
+        .unwrap();
+        assert_eq!(local.detail.as_deref(), Some("type int default 5"));
     }
 
     #[test]

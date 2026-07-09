@@ -12,7 +12,7 @@ This file sits above the model layer and below future semantic resolution, diagn
 
 The index exposes `SymbolIndex::from_catalogs()` and `add_catalog()` for building an in-memory index from model catalogs. It assigns each catalog a `SourceFileId` and represents global symbols as `{ file_id, symbol_id }`, keeping `SymbolId` file-local. It stores compact copied lookup and presentation facts, including names, detail text, modifier text, raw attribute text and names, raw doc comments, conditional context summaries, and callable form metadata, so lookup and display results remain usable without re-slicing source text.
 
-The index can answer all-symbol name lookup, top-level name lookup, all-symbol preferred-name lookup sorted by source priority, top-level-only preferred-name lookup for declaration conflict review, preferred ordering for an explicit symbol ID slice, symbol-kind lookup, class lookup by name, typedef lookup by name, function lookup by name, kind-specific preferred class/typedef/function lookup, method lookup by owner/name, field lookup by owner/name, direct class-member lookup by owner, best-effort inherited member lookup by exact base class name, raw owner-name aggregate completion lookup, preferred-class overlay completion lookup, callable signature display, method owner/name group iteration for report tooling, child lookup, duplicate top-level-name review, source-kind counts, and map-size counts.
+The index can answer all-symbol name lookup, top-level name lookup, all-symbol preferred-name lookup sorted by source priority, top-level-only preferred-name lookup for declaration conflict review, preferred ordering for an explicit symbol ID slice, symbol-kind lookup, class lookup by name, typedef lookup by name, function lookup by name, kind-specific preferred class/typedef/function lookup, method lookup by owner/name, field lookup by owner/name, direct class-member lookup by owner, best-effort inherited member lookup by exact base class name, raw owner-name aggregate completion lookup, preferred-class overlay completion lookup, callable signature display, method owner/name group iteration for report tooling, child lookup, duplicate top-level-name review, source-kind counts, and map-size counts. Local variables are indexed for all-symbol lookup and hover/debug display, but they are not top-level declarations, class members, inherited members, or completion members.
 
 Source-root scanning, file reading, metadata creation, parser/AST/model catalog construction, and index population are owned by `server/src/index_build.rs`. Future tools and runtime code should use that builder instead of duplicating the pipeline around `SymbolIndex::add_catalog`.
 
@@ -43,10 +43,12 @@ This file depends on lexer spans and the model layer. It must not parse source, 
 - Added `IndexQuery` in `server/src/index_query.rs` as the future editor-facing facade over these raw lookup maps.
 - Copied source category, conditional context, and callable form facts from model catalogs into indexed symbols for debug/report/query policy. `SymbolIndex` remains raw and policy-free; filtering belongs in `IndexQuery`.
 - Copied modifiers, attributes, and doc comments into indexed symbols so future editor display does not need source text to show hover/completion/document-symbol facts.
+- Indexed local variables by name and kind while keeping them out of top-level and class-member lookup maps.
 
 ## Future Improvements
 
 - Add incremental update behavior for changed workspace files.
+- Add local-scope-aware lookup only after a real scope model exists.
 - Add explicit workspace-over-game-data override reporting after real workspace indexing exists.
 - Replace best-effort inherited member lookup with semantic class/inheritance resolution when that layer exists.
 - Add optional persisted cache only if startup measurements justify it.

@@ -309,6 +309,41 @@ fn hover_checks(fixture_root: &Path) -> Vec<HoverCheck<'static>> {
             "typedef array<string> TStringArray",
             "TStringArray",
         ),
+        HoverCheck::fixture(
+            fixture_root,
+            "local_block_symbols.c",
+            "local variable",
+            "outfitDataArray = {}",
+            "outfitDataArray",
+        ),
+        HoverCheck::fixture(
+            fixture_root,
+            "local_block_symbols.c",
+            "foreach variable",
+            "SCR_OutfitFactionData data :",
+            "data",
+        ),
+        HoverCheck::fixture(
+            fixture_root,
+            "local_block_symbols.c",
+            "foreach auto variable",
+            "auto quickslot :",
+            "quickslot",
+        ),
+        HoverCheck::fixture(
+            fixture_root,
+            "local_block_symbols.c",
+            "for initializer",
+            "int i = 0",
+            "i =",
+        ),
+        HoverCheck::fixture(
+            fixture_root,
+            "local_block_symbols.c",
+            "for initializer comma declarator",
+            "count = outfitDataArray.Count()",
+            "count",
+        ),
     ]
 }
 

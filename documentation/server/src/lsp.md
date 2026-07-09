@@ -12,7 +12,7 @@ This file sits above parser, AST, model, index, query, and display layers. It co
 
 The server handles `initialize`, `initialized`, `shutdown`, `exit`, full text-document sync notifications, `textDocument/documentSymbol`, and `textDocument/hover`. Open documents are stored in memory by URI. Document symbols and hover results are built from the current document text through parser, AST, model, file-local index, `IndexQuery`, and `SymbolDisplay`.
 
-Hover is file-local only. It converts LSP UTF-16 positions to byte offsets, selects the smallest indexed symbol whose selection or declaration span contains the position, and returns compact Markdown from `SymbolDisplayInfo`. Parameters are included in hover matching even though document symbols omit them. Hover does not do semantic resolution, game-data lookup, inherited member lookup, Workbench validation, or workspace-wide indexing.
+Hover is file-local only. It converts LSP UTF-16 positions to byte offsets, selects the smallest indexed symbol whose selection or declaration span contains the position, and returns compact Markdown from `SymbolDisplayInfo`. Parameters and local variables are included in hover matching even though document symbols omit them. Hover does not do semantic resolution, game-data lookup, inherited member lookup, Workbench validation, or workspace-wide indexing.
 
 The server writes concise human-review logs to the optional `--log` path. Startup logs record server version and game-data path provenance. `didOpen`, `didChange`, and `documentSymbol` logs include URI, byte length, document-symbol count, parse-diagnostic count, and elapsed milliseconds. Hover logs include URI, byte length, hit/miss state, selected label/kind when available, parse-diagnostic count, and elapsed milliseconds. Runtime logs must stay summary-only; they must not include full source text, full symbol trees, AST dumps, index dumps, or full hover Markdown.
 
@@ -21,6 +21,7 @@ The server writes concise human-review logs to the optional `--log` path. Startu
 `server/examples/lsp_corpus_report.rs` provides the corpus-scale version for downloaded or explicit game-data scripts. It writes `tools/reports/lsp-corpus.report.md` with aggregate document-symbol counts, kind frequency, zero-symbol files, failure tables, top symbol-heavy files, deepest files, slowest files, and timing.
 
 `server/examples/lsp_hover_report.rs` provides a dev-only fixture report for hover. It writes `tools/reports/lsp-hover-fixtures.report.md` with targeted hover checks for class, field, method, parameter, typedef, enum member, global field, and whitespace miss behavior.
+It also covers local variable, `foreach` variable, and `for` initializer hover checks from a committed local/block-symbol fixture.
 
 ## Dependencies and Boundaries
 
@@ -40,6 +41,7 @@ This is a minimal protocol scaffold. Do not expand it into a broad framework unl
 - Added the dev-only LSP fixture report for document-symbol review.
 - Added the dev-only LSP corpus report for corpus-scale document-symbol projection review.
 - Added the dev-only LSP hover fixture report for targeted hover review.
+- Added file-local hover support for local/block symbols while keeping local variables out of document symbols.
 
 ## Future Improvements
 

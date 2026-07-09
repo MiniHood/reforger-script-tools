@@ -90,6 +90,13 @@ pub enum ParameterKind {
     NonDeclarationFragment,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalVariableKind {
+    LocalVariable,
+    ForeachVariable,
+    ForInitializer,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct ClassDecl<'source, 'tree> {
     source: &'source str,
@@ -309,6 +316,12 @@ impl<'source, 'tree> MethodDecl<'source, 'tree> {
     pub fn body_span(&self) -> Option<TextSpan> {
         first_child_node(self.node, SyntaxKind::Block).map(|node| node.span)
     }
+
+    pub fn local_variables(&self) -> Vec<LocalVariable<'source>> {
+        first_child_node(self.node, SyntaxKind::Block)
+            .map(|block| local_variables_in_block(self.source, block))
+            .unwrap_or_default()
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -355,6 +368,46 @@ impl<'source, 'tree> Parameter<'source, 'tree> {
     pub fn modifiers(&self) -> Vec<TextValue<'source>> {
         parameter_modifier_tokens(self.node)
             .into_iter()
+            .map(|token| text_value(self.source, token.span))
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct LocalVariable<'source> {
+    source: &'source str,
+    kind: LocalVariableKind,
+    name: Token,
+    type_span: Option<TextSpan>,
+    default_span: Option<TextSpan>,
+    span: TextSpan,
+    modifiers: Vec<Token>,
+}
+
+impl<'source> LocalVariable<'source> {
+    pub const fn span(&self) -> TextSpan {
+        self.span
+    }
+
+    pub const fn kind(&self) -> LocalVariableKind {
+        self.kind
+    }
+
+    pub fn name(&self) -> TextValue<'source> {
+        text_value(self.source, self.name.span)
+    }
+
+    pub fn type_text(&self) -> Option<TextValue<'source>> {
+        self.type_span.map(|span| text_value(self.source, span))
+    }
+
+    pub fn default_text(&self) -> Option<TextValue<'source>> {
+        self.default_span.map(|span| text_value(self.source, span))
+    }
+
+    pub fn modifiers(&self) -> Vec<TextValue<'source>> {
+        self.modifiers
+            .iter()
             .map(|token| text_value(self.source, token.span))
             .collect()
     }
@@ -944,6 +997,612 @@ fn parameter_modifier_tokens(node: &SyntaxNode) -> Vec<Token> {
     }
 
     modifiers
+}
+
+fn local_variables_in_block<'source>(
+    source: &'source str,
+    block: &SyntaxNode,
+) -> Vec<LocalVariable<'source>> {
+    let tokens = recursive_tokens(block)
+        .filter(|token| !token.kind.is_trivia())
+        .collect::<Vec<_>>();
+    let mut locals = Vec::new();
+    let mut statement = Vec::new();
+    let mut index = 0usize;
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut angle_depth = 0usize;
+
+    while index < tokens.len() {
+        let token = tokens[index];
+
+        if token.kind == TokenKind::Keyword(Keyword::Foreach) {
+            push_statement_local_variables(
+                source,
+                &mut locals,
+                &statement,
+                LocalVariableKind::LocalVariable,
+            );
+            statement.clear();
+            if let Some((header_start, header_end)) = parenthesized_range_after(&tokens, index) {
+                push_foreach_variables(source, &mut locals, &tokens[header_start..header_end]);
+                index = header_end + 1;
+                continue;
+            }
+        }
+
+        if token.kind == TokenKind::Keyword(Keyword::For) {
+            push_statement_local_variables(
+                source,
+                &mut locals,
+                &statement,
+                LocalVariableKind::LocalVariable,
+            );
+            statement.clear();
+            if let Some((header_start, header_end)) = parenthesized_range_after(&tokens, index) {
+                push_for_initializer_variables(
+                    source,
+                    &mut locals,
+                    &tokens[header_start..header_end],
+                );
+                index = header_end + 1;
+                continue;
+            }
+        }
+
+        match token.kind {
+            TokenKind::LeftBrace | TokenKind::RightBrace
+                if paren_depth == 0
+                    && bracket_depth == 0
+                    && angle_depth == 0
+                    && !statement_has_top_level_equal(&statement)
+                    && !statement_ends_with_equal(&statement) =>
+            {
+                push_statement_local_variables(
+                    source,
+                    &mut locals,
+                    &statement,
+                    LocalVariableKind::LocalVariable,
+                );
+                statement.clear();
+            }
+            TokenKind::Semicolon if paren_depth == 0 && bracket_depth == 0 && angle_depth == 0 => {
+                push_statement_local_variables(
+                    source,
+                    &mut locals,
+                    &statement,
+                    LocalVariableKind::LocalVariable,
+                );
+                statement.clear();
+            }
+            _ => {
+                statement.push(token);
+                match token.kind {
+                    TokenKind::LeftParen => paren_depth += 1,
+                    TokenKind::RightParen => paren_depth = paren_depth.saturating_sub(1),
+                    TokenKind::LeftBracket => bracket_depth += 1,
+                    TokenKind::RightBracket => bracket_depth = bracket_depth.saturating_sub(1),
+                    TokenKind::Operator(Operator::Less) => angle_depth += 1,
+                    TokenKind::Operator(Operator::Greater) => {
+                        angle_depth = angle_depth.saturating_sub(1)
+                    }
+                    TokenKind::Operator(Operator::GreaterGreater) => {
+                        angle_depth = angle_depth.saturating_sub(2)
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        index += 1;
+    }
+
+    push_statement_local_variables(
+        source,
+        &mut locals,
+        &statement,
+        LocalVariableKind::LocalVariable,
+    );
+    locals
+}
+
+fn parenthesized_range_after(tokens: &[Token], start: usize) -> Option<(usize, usize)> {
+    let left = tokens
+        .iter()
+        .enumerate()
+        .skip(start + 1)
+        .find(|(_, token)| token.kind == TokenKind::LeftParen)?
+        .0;
+    let mut depth = 0usize;
+    for (index, token) in tokens.iter().enumerate().skip(left) {
+        match token.kind {
+            TokenKind::LeftParen => depth += 1,
+            TokenKind::RightParen => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some((left + 1, index));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn push_for_initializer_variables<'source>(
+    source: &'source str,
+    locals: &mut Vec<LocalVariable<'source>>,
+    header_tokens: &[Token],
+) {
+    let initializer = split_top_level_once(header_tokens, TokenKind::Semicolon)
+        .map(|(initializer, _)| initializer)
+        .unwrap_or(header_tokens);
+    push_statement_local_variables(
+        source,
+        locals,
+        initializer,
+        LocalVariableKind::ForInitializer,
+    );
+}
+
+fn push_foreach_variables<'source>(
+    source: &'source str,
+    locals: &mut Vec<LocalVariable<'source>>,
+    header_tokens: &[Token],
+) {
+    let Some((variables, _iterable)) = split_top_level_once(header_tokens, TokenKind::Colon) else {
+        return;
+    };
+
+    for segment in split_top_level(variables, TokenKind::Comma) {
+        push_statement_local_variables(source, locals, segment, LocalVariableKind::ForeachVariable);
+    }
+}
+
+fn push_statement_local_variables<'source>(
+    source: &'source str,
+    locals: &mut Vec<LocalVariable<'source>>,
+    tokens: &[Token],
+    kind: LocalVariableKind,
+) {
+    let tokens = trim_token_slice(tokens);
+    if tokens.is_empty() || !is_local_declaration_candidate(tokens) {
+        return;
+    }
+
+    let Some(first_name) = first_local_declarator_name(tokens) else {
+        return;
+    };
+    let type_span = leading_local_type_text_before(source, tokens, first_name.span.start)
+        .map(|value| value.span);
+    if type_span.is_none() {
+        return;
+    }
+    let modifiers = local_modifier_tokens(tokens, first_name.span.start);
+
+    for segment in split_top_level_preserving_braces(
+        &tokens[tokens
+            .iter()
+            .position(|token| token.span.start >= first_name.span.start)
+            .unwrap_or(0)..],
+        TokenKind::Comma,
+    ) {
+        push_local_declarator(source, locals, segment, kind, type_span, &modifiers);
+    }
+}
+
+fn push_local_declarator<'source>(
+    source: &'source str,
+    locals: &mut Vec<LocalVariable<'source>>,
+    segment: &[Token],
+    kind: LocalVariableKind,
+    type_span: Option<TextSpan>,
+    modifiers: &[Token],
+) {
+    let segment = trim_semicolon_token_slice(segment);
+    let Some(name) = field_declarator_name_in_segment(segment) else {
+        return;
+    };
+    let segment_end = segment
+        .last()
+        .map(|token| token.span.end)
+        .unwrap_or(name.span.end);
+    let default_span = local_default_span_after_equal(source, segment);
+    let effective_end = local_equal_token(segment)
+        .map(|token| token.span.start)
+        .unwrap_or(segment_end);
+    let span = trim_text_span(source, TextSpan::new(name.span.start, effective_end));
+    if span.is_empty() {
+        return;
+    }
+
+    locals.push(LocalVariable {
+        source,
+        kind,
+        name,
+        type_span,
+        default_span,
+        span,
+        modifiers: modifiers.to_vec(),
+    });
+}
+
+fn local_default_span_after_equal<'source>(
+    source: &'source str,
+    segment: &[Token],
+) -> Option<TextSpan> {
+    let equal_index = local_equal_index(segment)?;
+    let value = trim_semicolon_token_slice(&segment[equal_index + 1..]);
+    if let (Some(first), Some(last)) = (value.first(), value.last()) {
+        if first.kind == TokenKind::LeftBrace && last.kind != TokenKind::RightBrace {
+            return brace_initializer_span_after(source, segment[equal_index].span.end);
+        }
+        return Some(text_value(source, TextSpan::new(first.span.start, last.span.end)).span);
+    }
+
+    brace_initializer_span_after(source, segment[equal_index].span.end)
+}
+
+fn brace_initializer_span_after(source: &str, offset: usize) -> Option<TextSpan> {
+    let mut position = offset;
+    while position < source.len() {
+        let value = source[position..].chars().next()?;
+        if !value.is_whitespace() {
+            break;
+        }
+        position += value.len_utf8();
+    }
+    if source[position..].chars().next()? != '{' {
+        return None;
+    }
+
+    let start = position;
+    let mut depth = 0usize;
+    while position < source.len() {
+        let value = source[position..].chars().next()?;
+        position += value.len_utf8();
+        match value {
+            '{' => depth += 1,
+            '}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(TextSpan::new(start, position));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
+}
+
+fn local_equal_token(segment: &[Token]) -> Option<Token> {
+    local_equal_index(segment).map(|index| segment[index])
+}
+
+fn local_equal_index(segment: &[Token]) -> Option<usize> {
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut angle_depth = 0usize;
+    let mut brace_depth = 0usize;
+
+    for (index, token) in segment.iter().enumerate() {
+        let at_top_level =
+            paren_depth == 0 && bracket_depth == 0 && angle_depth == 0 && brace_depth == 0;
+        if at_top_level && token.kind == TokenKind::Operator(Operator::Equal) {
+            return Some(index);
+        }
+        update_local_depths(
+            token.kind,
+            &mut paren_depth,
+            &mut bracket_depth,
+            &mut angle_depth,
+            &mut brace_depth,
+        );
+    }
+
+    None
+}
+
+fn first_local_declarator_name(tokens: &[Token]) -> Option<Token> {
+    let mut candidate = None;
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut angle_depth = 0usize;
+    let mut brace_depth = 0usize;
+
+    for token in tokens {
+        let kind = token.kind;
+        let at_top_level =
+            paren_depth == 0 && bracket_depth == 0 && angle_depth == 0 && brace_depth == 0;
+
+        if at_top_level
+            && matches!(
+                kind,
+                TokenKind::Comma
+                    | TokenKind::Semicolon
+                    | TokenKind::Colon
+                    | TokenKind::Operator(Operator::Equal)
+            )
+        {
+            break;
+        }
+
+        if at_top_level && is_name_token(kind) && !is_local_modifier_token(kind) {
+            candidate = Some(*token);
+        }
+
+        update_local_depths(
+            kind,
+            &mut paren_depth,
+            &mut bracket_depth,
+            &mut angle_depth,
+            &mut brace_depth,
+        );
+    }
+
+    candidate
+}
+
+fn leading_local_type_text_before<'source>(
+    source: &'source str,
+    tokens: &[Token],
+    before: usize,
+) -> Option<TextValue<'source>> {
+    let type_tokens = tokens
+        .iter()
+        .copied()
+        .filter(|token| token.span.end <= before)
+        .filter(|token| !is_local_modifier_token(token.kind))
+        .collect::<Vec<_>>();
+    let first = type_tokens.first()?;
+    let last = type_tokens.last()?;
+    if first.span.start >= last.span.end {
+        return None;
+    }
+    Some(text_value(
+        source,
+        trim_text_span(source, TextSpan::new(first.span.start, last.span.end)),
+    ))
+}
+
+fn local_modifier_tokens(tokens: &[Token], before: usize) -> Vec<Token> {
+    tokens
+        .iter()
+        .copied()
+        .take_while(|token| token.span.end <= before)
+        .filter(|token| is_local_modifier_token(token.kind))
+        .collect()
+}
+
+fn split_top_level_once(tokens: &[Token], delimiter: TokenKind) -> Option<(&[Token], &[Token])> {
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut angle_depth = 0usize;
+    let mut brace_depth = 0usize;
+
+    for (index, token) in tokens.iter().enumerate() {
+        if paren_depth == 0
+            && bracket_depth == 0
+            && angle_depth == 0
+            && brace_depth == 0
+            && token.kind == delimiter
+        {
+            return Some((&tokens[..index], &tokens[index + 1..]));
+        }
+        update_local_depths(
+            token.kind,
+            &mut paren_depth,
+            &mut bracket_depth,
+            &mut angle_depth,
+            &mut brace_depth,
+        );
+    }
+
+    None
+}
+
+fn split_top_level(tokens: &[Token], delimiter: TokenKind) -> Vec<&[Token]> {
+    let mut segments = Vec::new();
+    let mut segment_start = 0usize;
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut angle_depth = 0usize;
+    let mut brace_depth = 0usize;
+
+    for (index, token) in tokens.iter().enumerate() {
+        if paren_depth == 0
+            && bracket_depth == 0
+            && angle_depth == 0
+            && brace_depth == 0
+            && token.kind == delimiter
+        {
+            segments.push(trim_token_slice(&tokens[segment_start..index]));
+            segment_start = index + 1;
+            continue;
+        }
+        update_local_depths(
+            token.kind,
+            &mut paren_depth,
+            &mut bracket_depth,
+            &mut angle_depth,
+            &mut brace_depth,
+        );
+    }
+
+    segments.push(trim_token_slice(&tokens[segment_start..]));
+    segments
+}
+
+fn split_top_level_preserving_braces(tokens: &[Token], delimiter: TokenKind) -> Vec<&[Token]> {
+    let mut segments = Vec::new();
+    let mut segment_start = 0usize;
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut angle_depth = 0usize;
+    let mut brace_depth = 0usize;
+
+    for (index, token) in tokens.iter().enumerate() {
+        if paren_depth == 0
+            && bracket_depth == 0
+            && angle_depth == 0
+            && brace_depth == 0
+            && token.kind == delimiter
+        {
+            segments.push(trim_semicolon_token_slice(&tokens[segment_start..index]));
+            segment_start = index + 1;
+            continue;
+        }
+        update_local_depths(
+            token.kind,
+            &mut paren_depth,
+            &mut bracket_depth,
+            &mut angle_depth,
+            &mut brace_depth,
+        );
+    }
+
+    segments.push(trim_semicolon_token_slice(&tokens[segment_start..]));
+    segments
+}
+
+fn trim_token_slice(tokens: &[Token]) -> &[Token] {
+    let start = tokens
+        .iter()
+        .position(|token| {
+            !matches!(
+                token.kind,
+                TokenKind::Semicolon | TokenKind::LeftBrace | TokenKind::RightBrace
+            )
+        })
+        .unwrap_or(tokens.len());
+    let end = tokens
+        .iter()
+        .rposition(|token| {
+            !matches!(
+                token.kind,
+                TokenKind::Semicolon | TokenKind::LeftBrace | TokenKind::RightBrace
+            )
+        })
+        .map(|index| index + 1)
+        .unwrap_or(start);
+    &tokens[start..end]
+}
+
+fn trim_semicolon_token_slice(tokens: &[Token]) -> &[Token] {
+    let start = tokens
+        .iter()
+        .position(|token| token.kind != TokenKind::Semicolon)
+        .unwrap_or(tokens.len());
+    let end = tokens
+        .iter()
+        .rposition(|token| token.kind != TokenKind::Semicolon)
+        .map(|index| index + 1)
+        .unwrap_or(start);
+    &tokens[start..end]
+}
+
+fn update_local_depths(
+    kind: TokenKind,
+    paren_depth: &mut usize,
+    bracket_depth: &mut usize,
+    angle_depth: &mut usize,
+    brace_depth: &mut usize,
+) {
+    match kind {
+        TokenKind::LeftParen => *paren_depth += 1,
+        TokenKind::RightParen => *paren_depth = paren_depth.saturating_sub(1),
+        TokenKind::LeftBracket => *bracket_depth += 1,
+        TokenKind::RightBracket => *bracket_depth = bracket_depth.saturating_sub(1),
+        TokenKind::LeftBrace => *brace_depth += 1,
+        TokenKind::RightBrace => *brace_depth = brace_depth.saturating_sub(1),
+        TokenKind::Operator(Operator::Less) => *angle_depth += 1,
+        TokenKind::Operator(Operator::Greater) => *angle_depth = angle_depth.saturating_sub(1),
+        TokenKind::Operator(Operator::GreaterGreater) => {
+            *angle_depth = angle_depth.saturating_sub(2)
+        }
+        _ => {}
+    }
+}
+
+fn is_local_declaration_candidate(tokens: &[Token]) -> bool {
+    let Some(first) = tokens.first() else {
+        return false;
+    };
+    if is_statement_leading_keyword(first.kind) {
+        return false;
+    }
+    if tokens
+        .iter()
+        .take_while(|token| {
+            !matches!(
+                token.kind,
+                TokenKind::Operator(Operator::Equal) | TokenKind::Semicolon | TokenKind::Comma
+            )
+        })
+        .any(|token| {
+            matches!(
+                token.kind,
+                TokenKind::Dot | TokenKind::Operator(Operator::Arrow)
+            )
+        })
+    {
+        return false;
+    }
+
+    let name_count_before_boundary = tokens
+        .iter()
+        .take_while(|token| {
+            !matches!(
+                token.kind,
+                TokenKind::Operator(Operator::Equal) | TokenKind::Semicolon | TokenKind::Comma
+            )
+        })
+        .filter(|token| is_name_token(token.kind) && !is_local_modifier_token(token.kind))
+        .count();
+    name_count_before_boundary >= 2
+}
+
+fn statement_has_top_level_equal(tokens: &[Token]) -> bool {
+    tokens
+        .iter()
+        .any(|token| token.kind == TokenKind::Operator(Operator::Equal))
+}
+
+fn statement_ends_with_equal(tokens: &[Token]) -> bool {
+    tokens
+        .last()
+        .is_some_and(|token| token.kind == TokenKind::Operator(Operator::Equal))
+}
+
+fn is_statement_leading_keyword(kind: TokenKind) -> bool {
+    matches!(
+        kind,
+        TokenKind::Keyword(Keyword::If)
+            | TokenKind::Keyword(Keyword::Else)
+            | TokenKind::Keyword(Keyword::For)
+            | TokenKind::Keyword(Keyword::Foreach)
+            | TokenKind::Keyword(Keyword::While)
+            | TokenKind::Keyword(Keyword::Do)
+            | TokenKind::Keyword(Keyword::Switch)
+            | TokenKind::Keyword(Keyword::Case)
+            | TokenKind::Keyword(Keyword::Default)
+            | TokenKind::Keyword(Keyword::Break)
+            | TokenKind::Keyword(Keyword::Continue)
+            | TokenKind::Keyword(Keyword::Return)
+            | TokenKind::Keyword(Keyword::Delete)
+            | TokenKind::Keyword(Keyword::Thread)
+    )
+}
+
+fn is_local_modifier_token(kind: TokenKind) -> bool {
+    matches!(
+        kind,
+        TokenKind::Keyword(Keyword::Const)
+            | TokenKind::Keyword(Keyword::Out)
+            | TokenKind::Keyword(Keyword::Inout)
+            | TokenKind::Keyword(Keyword::Notnull)
+    )
 }
 
 fn enum_member_value_text<'source>(
@@ -1868,6 +2527,206 @@ class Blocked
     }
 
     #[test]
+    fn extracts_local_variables_from_method_bodies() {
+        let source = include_str!("../../tools/fixtures/parser/local_block_symbols.c");
+        let parse = parse_source(source);
+        let ast = AstSourceFile::new(source, &parse);
+        let declarations = ast.declarations();
+        let Declaration::Class(class) = declarations[0] else {
+            panic!("expected class");
+        };
+        let ClassMember::Method(method) = class.members()[0] else {
+            panic!("expected method");
+        };
+
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
+
+        let locals = method.local_variables();
+        let local_facts = locals
+            .iter()
+            .map(|local| {
+                (
+                    local.name().text(),
+                    local.type_text().map(TextValue::text),
+                    local.default_text().map(TextValue::text),
+                    local.kind(),
+                    local
+                        .modifiers()
+                        .into_iter()
+                        .map(TextValue::text)
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        assert!(
+            local_facts.contains(&(
+                "outfitDataArray",
+                Some("array<SCR_OutfitFactionData>"),
+                Some("{}"),
+                LocalVariableKind::LocalVariable,
+                Vec::new()
+            )),
+            "{local_facts:?}"
+        );
+        assert!(local_facts.contains(&(
+            "currentBudgetValue",
+            Some("int"),
+            Some("GetBudgetValue()"),
+            LocalVariableKind::LocalVariable,
+            vec!["const"]
+        )));
+        assert!(local_facts.contains(&(
+            "dataEvent",
+            Some("ref SCR_PlayerDataEvent"),
+            Some("new SCR_PlayerDataEvent"),
+            LocalVariableKind::LocalVariable,
+            Vec::new()
+        )));
+        assert!(local_facts.contains(&(
+            "playerID",
+            Some("int"),
+            None,
+            LocalVariableKind::LocalVariable,
+            Vec::new()
+        )));
+        assert!(local_facts.contains(&(
+            "param2",
+            Some("int"),
+            None,
+            LocalVariableKind::LocalVariable,
+            Vec::new()
+        )));
+        assert!(local_facts.contains(&(
+            "debugPoints",
+            Some("vector"),
+            None,
+            LocalVariableKind::LocalVariable,
+            Vec::new()
+        )));
+        assert!(local_facts.contains(&(
+            "data",
+            Some("SCR_OutfitFactionData"),
+            None,
+            LocalVariableKind::ForeachVariable,
+            Vec::new()
+        )));
+        assert!(local_facts.contains(&(
+            "idx",
+            Some("int"),
+            None,
+            LocalVariableKind::ForeachVariable,
+            Vec::new()
+        )));
+        assert!(local_facts.contains(&(
+            "quickslot",
+            Some("auto"),
+            None,
+            LocalVariableKind::ForeachVariable,
+            Vec::new()
+        )));
+        assert!(local_facts.contains(&(
+            "i",
+            Some("int"),
+            Some("0"),
+            LocalVariableKind::ForInitializer,
+            Vec::new()
+        )));
+        assert!(local_facts.contains(&(
+            "count",
+            Some("int"),
+            Some("outfitDataArray.Count()"),
+            LocalVariableKind::ForInitializer,
+            Vec::new()
+        )));
+        assert!(local_facts.contains(&(
+            "currentData",
+            Some("SCR_OutfitFactionData"),
+            Some("outfitDataArray[i]"),
+            LocalVariableKind::LocalVariable,
+            Vec::new()
+        )));
+    }
+
+    #[test]
+    fn extracts_static_array_local_defaults_with_brace_initializers() {
+        let source = r#"class Example
+{
+	void Run()
+	{
+		vector coefMatrix[4] = {m_vTransform[0], m_vTransform[1], m_vTransform[2], vector.Zero};
+		vector offsetMatrix[4] = { vector.Zero, vector.Zero, vector.Zero, m_Offset};
+		int values[2] = {1, 2};
+		int nested[2] = {{1, 2}, {3, 4}};
+	}
+}
+"#;
+        let parse = parse_source(source);
+        let ast = AstSourceFile::new(source, &parse);
+        let declarations = ast.declarations();
+        let Declaration::Class(class) = declarations[0] else {
+            panic!("expected class");
+        };
+        let ClassMember::Method(method) = class.members()[0] else {
+            panic!("expected method");
+        };
+
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
+
+        let local_facts = method
+            .local_variables()
+            .iter()
+            .map(|local| {
+                (
+                    local.name().text().to_string(),
+                    local.type_text().map(|value| value.text().to_string()),
+                    local.default_text().map(|value| value.text().to_string()),
+                    source[local.span().start..local.span().end].to_string(),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        assert!(
+            local_facts.contains(&(
+                "coefMatrix".to_string(),
+                Some("vector".to_string()),
+                Some(
+                    "{m_vTransform[0], m_vTransform[1], m_vTransform[2], vector.Zero}".to_string()
+                ),
+                "coefMatrix[4]".to_string()
+            )),
+            "{local_facts:?}"
+        );
+        assert!(
+            local_facts.contains(&(
+                "offsetMatrix".to_string(),
+                Some("vector".to_string()),
+                Some("{ vector.Zero, vector.Zero, vector.Zero, m_Offset}".to_string()),
+                "offsetMatrix[4]".to_string()
+            )),
+            "{local_facts:?}"
+        );
+        assert!(
+            local_facts.contains(&(
+                "values".to_string(),
+                Some("int".to_string()),
+                Some("{1, 2}".to_string()),
+                "values[2]".to_string()
+            )),
+            "{local_facts:?}"
+        );
+        assert!(
+            local_facts.contains(&(
+                "nested".to_string(),
+                Some("int".to_string()),
+                Some("{{1, 2}, {3, 4}}".to_string()),
+                "nested[2]".to_string()
+            )),
+            "{local_facts:?}"
+        );
+    }
+
+    #[test]
     fn extracts_destructors_without_tilde_in_return_type() {
         let source = r#"class Example
 {
@@ -2012,6 +2871,7 @@ class Blocked
             include_str!("../../tools/fixtures/parser/workbench_basic_code_formatter_excerpt.c"),
             include_str!("../../tools/fixtures/parser/game_optional_semicolon_shapes.c"),
             include_str!("../../tools/fixtures/parser/game_field_initializer_call_shapes.c"),
+            include_str!("../../tools/fixtures/parser/local_block_symbols.c"),
         ];
 
         for fixture in fixtures {

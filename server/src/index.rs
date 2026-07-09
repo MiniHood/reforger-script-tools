@@ -846,6 +846,7 @@ fn symbol_kind_key(kind: SymbolKind) -> &'static str {
         SymbolKind::Constructor => "Constructor",
         SymbolKind::Destructor => "Destructor",
         SymbolKind::Parameter => "Parameter",
+        SymbolKind::LocalVariable => "LocalVariable",
     }
 }
 
@@ -1970,6 +1971,47 @@ class Child : Base
 
         let preferred = index.preferred_top_level_symbols_for_name("SharedName");
         assert_eq!(preferred, top_level);
+    }
+
+    #[test]
+    fn local_variables_are_indexed_for_name_lookup_but_not_member_completion() {
+        let catalog = catalog(
+            r#"class Example
+{
+	int value;
+	void Run(int value)
+	{
+		int value = 4;
+	}
+}
+"#,
+            workspace_metadata("Example.c"),
+        );
+        let index = SymbolIndex::from_catalogs([&catalog]);
+
+        let all = index.symbols_for_name("value");
+        assert_eq!(all.len(), 3);
+        assert!(all
+            .iter()
+            .any(|id| index.symbol(*id).unwrap().kind == SymbolKind::Field));
+        assert!(all
+            .iter()
+            .any(|id| index.symbol(*id).unwrap().kind == SymbolKind::Parameter));
+        assert!(all
+            .iter()
+            .any(|id| index.symbol(*id).unwrap().kind == SymbolKind::LocalVariable));
+
+        assert!(index.top_level_symbols_for_name("value").is_empty());
+        assert_eq!(index.fields_by_owner_name("Example", "value").len(), 1);
+        assert!(index
+            .members_by_owner("Example")
+            .iter()
+            .all(|id| index.symbol(*id).unwrap().kind != SymbolKind::LocalVariable));
+        assert!(index
+            .completion_members_for_class("Example")
+            .members
+            .iter()
+            .all(|id| index.symbol(*id).unwrap().kind != SymbolKind::LocalVariable));
     }
 
     #[test]

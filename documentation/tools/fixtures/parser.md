@@ -10,7 +10,7 @@ Parser fixtures are repo-only language-tooling inputs under `tools/`. They groun
 
 ## Current Behavior
 
-The fixtures cover Core type declarations, contextual keyword names, generic classes, typedefs, tuple-style `extends`, attributes, RPC/Rpl declarations, Workbench plugin attributes, modded game-mode member shapes, preprocessor directives, optional semicolons after method bodies, optional semicolons after attribute lists, field call initializers with nested brace lists, and larger game-code class excerpts. The larger excerpts include editor preview transform data and Workbench formatter declarations to keep parser behavior grounded in real static arrays, named attribute arguments, preprocessor guards, and declaration-level initializer lists.
+The fixtures cover Core type declarations, contextual keyword names, generic classes, typedefs, tuple-style `extends`, attributes, RPC/Rpl declarations, Workbench plugin attributes, modded game-mode member shapes, preprocessor directives, optional semicolons after method bodies, optional semicolons after attribute lists, field call initializers with nested brace lists, local/block symbol shapes, and larger game-code class excerpts. The larger excerpts include editor preview transform data and Workbench formatter declarations to keep parser behavior grounded in real static arrays, named attribute arguments, preprocessor guards, declaration-level initializer lists, local declarations, `foreach` variables, and `for` initializer declarations.
 
 ## Dependencies and Boundaries
 
@@ -23,6 +23,7 @@ Each fixture must include a truth-status comment. Use `Workbench-confirmed` only
 - Added larger game-data-derived class excerpts for editor preview transform data and the Workbench basic code formatter plugin.
 - Added a game-data-derived fixture for optional semicolon forms from generated API declarations and handwritten attributed fields.
 - Added a game-data-derived fixture for field initializers that call helper methods with nested brace-list arguments.
+- Added a game-data-derived fixture for local/block symbol extraction without full statement or expression parsing.
 
 ## Future Improvements
 

@@ -533,7 +533,7 @@ fn document_symbols_from_index(
         .symbols()
         .iter()
         .filter(|symbol| symbol.parent.is_none())
-        .filter(|symbol| symbol.kind != SymbolKind::Parameter)
+        .filter(|symbol| !is_document_symbol_excluded_kind(symbol.kind))
         .filter_map(|symbol| document_symbol_for_id(source, index, query, symbol.id))
         .collect()
 }
@@ -545,7 +545,7 @@ fn document_symbol_for_id(
     id: GlobalSymbolId,
 ) -> Option<LspDocumentSymbol> {
     let symbol = index.symbol(id)?;
-    if symbol.kind == SymbolKind::Parameter {
+    if is_document_symbol_excluded_kind(symbol.kind) {
         return None;
     }
     let display = query.symbol_display(id)?;
@@ -697,6 +697,7 @@ fn document_symbol_kind(kind: SymbolKind) -> u32 {
         SymbolKind::Constructor => 9,
         SymbolKind::Destructor => 6,
         SymbolKind::Parameter => 13,
+        SymbolKind::LocalVariable => 13,
     }
 }
 
@@ -713,7 +714,12 @@ pub fn symbol_kind_label(kind: SymbolKind) -> &'static str {
         SymbolKind::Constructor => "Constructor",
         SymbolKind::Destructor => "Destructor",
         SymbolKind::Parameter => "Parameter",
+        SymbolKind::LocalVariable => "LocalVariable",
     }
+}
+
+fn is_document_symbol_excluded_kind(kind: SymbolKind) -> bool {
+    matches!(kind, SymbolKind::Parameter | SymbolKind::LocalVariable)
 }
 
 fn parse_params<T: for<'de> Deserialize<'de>>(
@@ -779,6 +785,10 @@ mod tests {
 {
 	int m_Value;
 	void Run(int value);
+	void Local()
+	{
+		int localValue = 5;
+	}
 }
 "#;
 
@@ -795,6 +805,10 @@ mod tests {
             .children
             .iter()
             .any(|child| child.name == "Run" && child.kind == 6));
+        assert!(!symbols[0]
+            .children
+            .iter()
+            .any(|child| child.name == "localValue"));
         let run = symbols[0]
             .children
             .iter()
@@ -914,7 +928,17 @@ class Example : Base
 {
 	[Attribute("0")]
 	protected int m_Value;
-	void Run(string name);
+	void Run(string name)
+	{
+		int localValue = 5;
+		foreach (int index, auto item : m_aItems)
+		{
+			string itemName = item.ToString();
+		}
+		for (int i = 0, count = 4; i < count; i++)
+		{
+		}
+	}
 }
 "#;
 
@@ -928,6 +952,35 @@ class Example : Base
         assert_hover(source, "m_Value", "m_Value", SymbolKind::Field, "m_Value");
         assert_hover(source, "Run(string", "Run", SymbolKind::Method, "Run");
         assert_hover(source, "string name", "name", SymbolKind::Parameter, "name");
+        assert_hover(
+            source,
+            "localValue = 5",
+            "localValue",
+            SymbolKind::LocalVariable,
+            "localValue",
+        );
+        assert_hover(
+            source,
+            "int index, auto item",
+            "index",
+            SymbolKind::LocalVariable,
+            "index",
+        );
+        assert_hover(
+            source,
+            "auto item :",
+            "item",
+            SymbolKind::LocalVariable,
+            "item",
+        );
+        assert_hover(source, "int i = 0", "i =", SymbolKind::LocalVariable, "i");
+        assert_hover(
+            source,
+            "count = 4",
+            "count",
+            SymbolKind::LocalVariable,
+            "count",
+        );
         assert_hover(
             source,
             "FactionKey;",
@@ -1207,8 +1260,16 @@ class Example
         let report = hover_at(source, needle, cursor);
 
         assert_eq!(report.parse_diagnostics, 0);
-        assert_eq!(report.selected_kind, Some(expected_kind));
-        assert_eq!(report.selected_label.as_deref(), Some(expected_label));
+        assert_eq!(
+            report.selected_kind,
+            Some(expected_kind),
+            "hover kind mismatch for needle `{needle}` cursor `{cursor}`"
+        );
+        assert_eq!(
+            report.selected_label.as_deref(),
+            Some(expected_label),
+            "hover label mismatch for needle `{needle}` cursor `{cursor}`"
+        );
         assert!(report.hover.is_some());
     }
 

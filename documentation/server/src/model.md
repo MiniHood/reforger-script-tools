@@ -24,7 +24,7 @@ Conditional context is descriptive only. It stores the visible `#if`, `#ifdef`, 
 
 Callable form is attached to functions, methods, constructors, and destructors. A callable with a body is an implementation, a semicolon form with `proto`, `native`, or `external` is a prototype, and a semicolon form without those markers is a declaration.
 
-Classes own fields and callable members. Enums own enum members. Functions, methods, constructors, and destructors own declaration parameters. Global fields are top-level symbols. Non-declaration callable fragments are counted for review but are not emitted as parameter symbols.
+Classes own fields and callable members. Enums own enum members. Functions, methods, constructors, and destructors own declaration parameters and local variables discovered by the AST block scanner. Local variables are source facts for hover/debug and future local completion; the model does not build lexical scopes, evaluate visibility, or resolve shadowing. Global fields are top-level symbols. Non-declaration callable fragments are counted for review but are not emitted as parameter symbols.
 
 ## Dependencies and Boundaries
 
@@ -43,9 +43,11 @@ This file depends on the AST layer, lexer spans, and standard path types for opt
 - Documented that static-array suffixes remain type-shape facts while field records keep the actual field identifier and leading type text.
 - Added source categories, source-backed preprocessor conditional context, and callable declaration form metadata for index/query policy without filtering raw source facts.
 - Added comma-separated field-list expansion so each declarator becomes a separate field symbol with shared type text and local span.
+- Added `LocalVariable` records under containing callables for local declarations, `foreach` variables, and `for` initializer declarations.
 
 ## Future Improvements
 
 - Add a workspace index over many file-local catalogs.
+- Add lexical scope modeling separately before using local variables for semantic completion or diagnostics.
 - Expand type-shape helpers only when future hover, completion, or indexing work needs more detail.
 - Add semantic resolution separately after catalog and index behavior are validated.
