@@ -1,13 +1,8 @@
 {
-  "name": "reforger-script-tools",
-  "displayName": "Reforger Script Tools",
-  "description": "Arma Reforger scripting tools for Workbench validation, diagnostics, log parsing, and addon workflows.",
-  "publisher": "burn0ut7",
-  "version": "0.0.2",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/burn0ut7/reforger-script-tools"
-  },
+  "name": "reforger-sript-tools",
+  "displayName": "Reforger Sript Tools",
+  "description": "",
+  "version": "0.0.1",
   "engines": {
     "vscode": "^1.125.0"
   },
@@ -15,370 +10,62 @@
     "Other"
   ],
   "activationEvents": [
-    "onLanguage:enforce",
-    "onCommand:reforger-script-tools.checkWorkbenchStatus",
-    "onCommand:reforger-script-tools.validateScripts",
-    "onCommand:reforger-script-tools.refreshGameData",
-    "onCommand:reforger-script-tools.captureCompletions"
+    "onStartupFinished"
   ],
-  "main": "./out/extension.js",
+  "main": "./dist/extension.js",
   "contributes": {
     "commands": [
       {
-        "command": "reforger-script-tools.checkWorkbenchStatus",
-        "title": "Reforger: Check Workbench Status"
+        "command": "reforger-sript-tools.gameData.checkForUpdates",
+        "title": "Reforger Script Tools: Check Game Data Updates"
       },
       {
-        "command": "reforger-script-tools.validateScripts",
-        "title": "Reforger: Validate Scripts"
-      },
-      {
-        "command": "reforger-script-tools.refreshGameData",
-        "title": "Reforger: Refresh Game Data"
-      },
-      {
-        "command": "reforger-script-tools.captureCompletions",
-        "title": "Reforger: Capture AC Debug Log"
-      }
-    ],
-    "colors": [
-      {
-        "id": "reforgerScriptTools.bracket.active",
-        "description": "Color for the active Enforce bracket pair.",
-        "defaults": {
-          "dark": "#dd5846",
-          "light": "#dd5846",
-          "highContrast": "#dd5846"
-        }
-      },
-      {
-        "id": "reforgerScriptTools.bracket.scopeGuide",
-        "description": "Color for the active Enforce bracket scope guide.",
-        "defaults": {
-          "dark": "#dd5846",
-          "light": "#dd5846",
-          "highContrast": "#dd5846"
-        }
-      },
-      {
-        "id": "reforgerScriptTools.bracket.class",
-        "description": "Color for Enforce class, enum, and generic type brackets.",
-        "defaults": {
-          "dark": "#40b5ac",
-          "light": "#40b5ac",
-          "highContrast": "#40b5ac"
-        }
-      },
-      {
-        "id": "reforgerScriptTools.bracket.function",
-        "description": "Color for Enforce function, constructor, destructor, and call brackets.",
-        "defaults": {
-          "dark": "#f3ad58",
-          "light": "#f3ad58",
-          "highContrast": "#f3ad58"
-        }
-      },
-      {
-        "id": "reforgerScriptTools.bracket.variable",
-        "description": "Color for Enforce variable, initializer, control-flow, and grouping brackets.",
-        "defaults": {
-          "dark": "#b6bdcc",
-          "light": "#b6bdcc",
-          "highContrast": "#b6bdcc"
-        }
-      }
-    ],
-    "configurationDefaults": {
-      "[enforce]": {
-        "editor.quickSuggestions": {
-          "other": true,
-          "comments": false,
-          "strings": false
-        },
-        "editor.quickSuggestionsDelay": 0,
-        "editor.colorDecorators": false,
-        "editor.defaultColorDecorators": false,
-        "editor.bracketPairColorization.enabled": false,
-        "editor.guides.bracketPairs": false,
-        "editor.acceptSuggestionOnEnter": "off",
-        "editor.suggestOnTriggerCharacters": true,
-        "editor.suggest.showStatusBar": true,
-        "editor.wordBasedSuggestions": "off",
-        "editor.suggest.showWords": false,
-        "editor.suggest.showClasses": true,
-        "editor.suggest.showVariables": true,
-        "editor.suggest.showFunctions": true,
-        "editor.suggest.showFields": true,
-        "editor.suggest.showProperties": true,
-        "editor.suggest.showValues": true,
-        "editor.suggest.showConstants": true,
-        "editor.suggest.showKeywords": true,
-        "editor.suggest.showSnippets": false,
-        "editor.suggest.showUsers": false,
-        "editor.suggest.showIssues": false,
-        "editor.suggest.showConstructors": true,
-        "editor.suggest.showEnums": true,
-        "editor.suggest.showEnumMembers": true,
-        "editor.suggest.showEvents": false,
-        "editor.suggest.showFiles": false,
-        "editor.suggest.showFolders": false,
-        "editor.suggest.showInterfaces": true,
-        "editor.suggest.showModules": true,
-        "editor.suggest.showOperators": true,
-        "editor.suggest.showReferences": true,
-        "editor.suggest.showStructs": true,
-        "editor.suggest.showTypeParameters": true,
-        "editor.suggest.showUnits": true
-      }
-    },
-    "languages": [
-      {
-        "id": "enforce",
-        "aliases": [
-          "Enforce",
-          "Enforce Script",
-          "Reforger Script"
-        ],
-        "extensions": [
-          ".c"
-        ],
-        "configuration": "./language-configuration.json"
-      },
-      {
-        "id": "enforce-hover",
-        "aliases": [
-          "Enforce Hover"
-        ]
-      },
-      {
-        "id": "enforce-hover-header",
-        "aliases": [
-          "Enforce Hover Header"
-        ]
-      },
-      {
-        "id": "enforce-hover-constructor",
-        "aliases": [
-          "Enforce Hover Constructor"
-        ]
-      }
-    ],
-    "grammars": [
-      {
-        "language": "enforce-hover",
-        "scopeName": "source.enforce.hover",
-        "path": "./syntaxes/enforce-hover.tmLanguage.json"
-      },
-      {
-        "language": "enforce-hover-header",
-        "scopeName": "source.enforce.hover.header",
-        "path": "./syntaxes/enforce-hover-header.tmLanguage.json"
-      },
-      {
-        "language": "enforce-hover-constructor",
-        "scopeName": "source.enforce.hover.constructor",
-        "path": "./syntaxes/enforce-hover-constructor.tmLanguage.json"
-      }
-    ],
-    "semanticTokenTypes": [
-      {
-        "id": "class",
-        "description": "Enforce class"
-      },
-      {
-        "id": "enum",
-        "description": "Enforce enum"
-      },
-      {
-        "id": "function",
-        "description": "Enforce function"
-      },
-      {
-        "id": "variable",
-        "description": "Enforce local or member variable"
-      },
-      {
-        "id": "type",
-        "description": "Enforce value type"
-      },
-      {
-        "id": "keyword",
-        "description": "Enforce keyword or language literal"
-      },
-      {
-        "id": "comment",
-        "description": "Enforce line or block comment"
-      },
-      {
-        "id": "string",
-        "description": "Enforce string literal"
-      },
-      {
-        "id": "punctuation",
-        "description": "Enforce punctuation"
-      },
-      {
-        "id": "preprocessor",
-        "description": "Enforce compiler directive"
-      }
-    ],
-    "semanticTokenModifiers": [
-      {
-        "id": "declaration",
-        "description": "Symbol declaration"
-      },
-      {
-        "id": "static",
-        "description": "Static symbol"
-      },
-      {
-        "id": "readonly",
-        "description": "Const value"
-      },
-      {
-        "id": "defaultLibrary",
-        "description": "Built-in or base game symbol"
-      },
-      {
-        "id": "modded",
-        "description": "Modded class declaration"
-      },
-      {
-        "id": "override",
-        "description": "Override function declaration"
-      },
-      {
-        "id": "proto",
-        "description": "Engine proto declaration"
-      },
-      {
-        "id": "native",
-        "description": "Native function declaration"
-      },
-      {
-        "id": "external",
-        "description": "External proto declaration"
-      }
-    ],
-    "themes": [
-      {
-        "label": "Reforger Script Dark",
-        "uiTheme": "vs-dark",
-        "path": "./themes/reforger-script-dark-color-theme.json"
-      }
-    ],
-    "keybindings": [
-      {
-        "command": "type",
-        "key": "shift+enter",
-        "when": "editorTextFocus && suggestWidgetVisible && editorLangId == enforce",
-        "args": {
-          "text": "\n"
-        }
-      },
-      {
-        "command": "reforger-script-tools.validateScripts",
-        "key": "shift+F7",
-        "when": "editorTextFocus && resourceExtname == .c"
+        "command": "reforger-sript-tools.gameData.openStorageFolder",
+        "title": "Reforger Script Tools: Open Game Data Storage Folder"
       }
     ],
     "configuration": {
       "title": "Reforger Script Tools",
       "properties": {
-        "reforgerScriptTools.validateOnSave": {
-          "type": "boolean",
-          "default": true,
-          "description": "Validate Reforger scripts when an Enforce script file is saved."
-        },
-        "reforgerScriptTools.netApiHost": {
-          "type": "string",
-          "default": "127.0.0.1",
-          "description": "Workbench Net API host."
-        },
-        "reforgerScriptTools.netApiPort": {
-          "type": "number",
-          "default": 5775,
-          "description": "Workbench Net API port."
-        },
-        "reforgerScriptTools.netApiTimeoutMs": {
-          "type": "number",
-          "default": 3000,
-          "minimum": 250,
-          "description": "Timeout in milliseconds for Workbench Net API requests."
-        },
-        "reforgerScriptTools.showBaseGameWarnings": {
-          "type": "boolean",
-          "default": false,
-          "description": "Show warnings from base game scripts when displaying validation results."
-        },
-        "reforgerScriptTools.showSuccessMessage": {
-          "type": "boolean",
-          "default": true,
-          "description": "Show a notification when script validation succeeds without errors."
-        },
-        "reforgerScriptTools.formatting.semicolons.enabled": {
-          "type": "boolean",
-          "default": true,
-          "description": "Enable the parser-first semicolon typed assist."
-        },
-        "reforgerScriptTools.formatting.autoBrackets.enabled": {
-          "type": "boolean",
-          "default": true,
-          "description": "Enable the parser-first typed bracket assist that inserts matching closing brackets for {}, (), and [] and expands safe block-header Enter presses into brace bodies."
-        },
-        "reforgerScriptTools.formatting.classInheritanceColon.enabled": {
-          "type": "boolean",
-          "default": true,
-          "description": "Enable the parser-first typed class inheritance colon assist that expands 'class Name ' to 'class Name : ' and starts base-class completion."
-        },
-        "reforgerScriptTools.formatting.comments.enabled": {
-          "type": "boolean",
-          "default": true,
-          "description": "Enable the parser-first typed block-comment assist that expands standalone /* comment openers into a comment body."
-        },
-        "reforgerScriptTools.formatting.equalSigns.enabled": {
-          "type": "boolean",
-          "default": true,
-          "description": "Enable the parser-first declaration initializer typed assist."
-        },
-        "reforgerScriptTools.gameScriptDataPath": {
+        "reforgerScriptTools.gameData.manualFolder": {
           "type": "string",
           "default": "",
-          "description": "Optional folder containing Reforger script data. Select either a scripts folder or a folder containing scripts; leave empty to use downloaded BI script data."
-        },
-        "reforgerScriptTools.checkGameScriptUpdates": {
-          "type": "boolean",
-          "default": true,
-          "description": "Check GitHub for newer official BI Reforger script data during startup when downloaded script data already exists."
+          "description": "Optional manual Reforger game data folder. Set this to either the folder containing scripts/ or the scripts/ folder itself. When set, GitHub game-data checks and downloads are skipped."
         }
       }
     }
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile",
-    "clean": "node -e \"require('fs').rmSync('out', { recursive: true, force: true })\"",
-    "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./",
-    "check": "npm test",
-    "pretest": "npm run clean && npm run compile && npm run lint",
+    "vscode:prepublish": "npm run package",
+    "compile": "npm run check-types && npm run lint && node esbuild.js",
+    "watch": "npm-run-all -p watch:*",
+    "watch:esbuild": "node esbuild.js --watch",
+    "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
+    "package": "npm run check-types && npm run lint && node esbuild.js --production",
+    "compile-tests": "tsc -p . --outDir out",
+    "watch-tests": "tsc -p . -w --outDir out",
+    "pretest": "npm run compile-tests && npm run compile && npm run lint",
+    "check-types": "tsc --noEmit",
     "lint": "eslint src",
     "test": "vscode-test"
   },
   "devDependencies": {
-    "@types/vscode": "^1.125.0",
     "@types/mocha": "^10.0.10",
     "@types/node": "24.x",
-    "typescript-eslint": "^8.61.1",
-    "eslint": "^10.5.0",
-    "typescript": "^6.0.3",
+    "@types/vscode": "^1.125.0",
     "@vscode/test-cli": "^0.0.15",
-    "@vscode/test-electron": "^3.0.0"
-  },
-  "dependencies": {
-    "jszip": "^3.10.1"
+    "@vscode/test-electron": "^3.0.0",
+    "esbuild": "^0.28.1",
+    "eslint": "^10.5.0",
+    "npm-run-all": "^4.1.5",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.61.1"
   },
   "overrides": {
     "diff": "^8.0.4",
     "serialize-javascript": "^7.0.6"
+  },
+  "dependencies": {
+    "fflate": "^0.8.3"
   }
 }

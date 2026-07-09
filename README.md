@@ -1,59 +1,71 @@
-# Reforger Script Tools
+# reforger-sript-tools README
 
-Reforger Script Tools adds parser-first Enforce Script support for Arma Reforger modding in VS Code. It focuses on fast code intelligence, Workbench validation, base-game API indexing, and editor assists that match Reforger script patterns.
+This is the README for your extension "reforger-sript-tools". After writing up a brief description, we recommend including the following sections.
 
 ## Features
 
-- Enforce Script language support for `.c` files.
-- Parser-backed completions for keywords, locals, parameters, current class members, inherited members, receiver members, indexed classes, enums, and Reforger API symbols.
-- Callable-aware completions for callback APIs such as invokers, RPC methods, and script call queues.
-- Hover, Go to Definition, references, rename, document highlights, document symbols, workspace symbols, and semantic highlighting from a shared language model.
-- Workbench validation through the Reforger Workbench Net API, with current-file issues grouped first.
-- Downloaded or user-provided base-game script data indexing for API lookup.
-- Reforger-themed semantic colors and parser-backed bracket coloring.
-- Optional typed assists for safe brackets, comments, class inheritance colons, declaration initializers, and semicolons.
+Describe specific features of your extension including screenshots of your extension in action. Image paths are relative to this README file.
+
+For example if there is an image subfolder under your extension project workspace:
+
+\!\[feature X\]\(images/feature-x.png\)
+
+> Tip: Many popular extensions utilize animations. This is an excellent way to show off your extension! We recommend short, focused animations that are easy to follow.
 
 ## Requirements
 
-- Visual Studio Code `1.125.0` or newer.
-- Arma Reforger Tools / Workbench for validation features.
-- Workbench Net API must be reachable for `Reforger: Validate Scripts`. The default endpoint is `127.0.0.1:5775`.
-
-The extension can use downloaded BI script data by default. You can also point it at local exported script data with `reforgerScriptTools.gameScriptDataPath`.
-
-## Commands
-
-- `Reforger: Validate Scripts`
-- `Reforger: Check Workbench Status`
-- `Reforger: Refresh Game Data`
-- `Reforger: Capture AC Debug Log`
+If you have any requirements or dependencies, add a section describing those and how to install and configure them.
 
 ## Extension Settings
 
-This extension contributes these settings:
+Include if your extension adds any VS Code settings through the `contributes.configuration` extension point.
 
-- `reforgerScriptTools.validateOnSave`: Validate Enforce scripts on save.
-- `reforgerScriptTools.netApiHost`: Workbench Net API host.
-- `reforgerScriptTools.netApiPort`: Workbench Net API port.
-- `reforgerScriptTools.netApiTimeoutMs`: Workbench Net API timeout.
-- `reforgerScriptTools.showBaseGameWarnings`: Include base-game warnings in validation output.
-- `reforgerScriptTools.showSuccessMessage`: Show a notification when validation succeeds.
-- `reforgerScriptTools.gameScriptDataPath`: Optional local folder containing Reforger script data.
-- `reforgerScriptTools.checkGameScriptUpdates`: Check for updated BI script data during startup.
-- `reforgerScriptTools.formatting.semicolons.enabled`: Enable semicolon typed assists. Default: `true`.
-- `reforgerScriptTools.formatting.autoBrackets.enabled`: Enable safe bracket/body typed assists. Default: `true`.
-- `reforgerScriptTools.formatting.classInheritanceColon.enabled`: Enable expanding `class Name ` to `class Name : `. Default: `true`.
-- `reforgerScriptTools.formatting.comments.enabled`: Enable standalone block comment opener expansion. Default: `true`.
-- `reforgerScriptTools.formatting.equalSigns.enabled`: Enable simple declaration initializer expansion. Default: `true`.
+For example:
+
+This extension contributes the following settings:
+
+* `myExtension.enable`: Enable/disable this extension.
+* `myExtension.thing`: Set to `blah` to do something.
 
 ## Known Issues
 
-- This extension is in a parser-first rework. Some language features may be conservative while the shared parser/model/index pipeline is expanded.
-- Workbench validation depends on the Workbench Net API being enabled and reachable.
-- Indexed base-game API completions depend on downloaded or configured script data.
+Calling out known issues can help limit users opening duplicate issues against your extension.
 
 ## Release Notes
 
-### 0.0.1
+Users appreciate release notes as you update your extension.
 
-Initial parser-first preview release.
+### 1.0.0
+
+Initial release of ...
+
+### 1.0.1
+
+Fixed issue #.
+
+### 1.1.0
+
+Added features X, Y, and Z.
+
+---
+
+## Following extension guidelines
+
+Ensure that you've read through the extensions guidelines and follow the best practices for creating your extension.
+
+* [Extension Guidelines](https://code.visualstudio.com/api/references/extension-guidelines)
+
+## Working with Markdown
+
+You can author your README using Visual Studio Code. Here are some useful editor keyboard shortcuts:
+
+* Split the editor (`Cmd+\` on macOS or `Ctrl+\` on Windows and Linux).
+* Toggle preview (`Shift+Cmd+V` on macOS or `Shift+Ctrl+V` on Windows and Linux).
+* Press `Ctrl+Space` (Windows, Linux, macOS) to see a list of Markdown snippets.
+
+## For more information
+
+* [Visual Studio Code's Markdown Support](http://code.visualstudio.com/docs/languages/markdown)
+* [Markdown Syntax Reference](https://help.github.com/articles/markdown-basics/)
+
+**Enjoy!**
