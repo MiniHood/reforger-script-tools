@@ -1,5 +1,9 @@
+use crate::ast::DocCommentKind;
 use crate::lexer::TextSpan;
-use crate::model::{SourceFileMetadata, SourceKind, SymbolCatalog, SymbolId, SymbolKind};
+use crate::model::{
+    CallableForm, ConditionalBranch, PreprocessorBranchKind, SourceFileMetadata, SourceKind,
+    SymbolCatalog, SymbolId, SymbolKind,
+};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -38,6 +42,29 @@ pub struct IndexedSymbol {
     pub span: TextSpan,
     pub selection_span: TextSpan,
     pub detail: IndexedSymbolDetail,
+    pub attributes: Vec<IndexedAttribute>,
+    pub modifiers: Vec<String>,
+    pub doc_comments: Vec<IndexedDocComment>,
+    pub conditional_context: Vec<IndexedConditionalBranch>,
+    pub callable_form: Option<CallableForm>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexedAttribute {
+    pub name: Option<String>,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexedDocComment {
+    pub kind: DocCommentKind,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexedConditionalBranch {
+    pub kind: PreprocessorBranchKind,
+    pub condition: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -131,6 +158,25 @@ impl SymbolIndex {
                         .enum_value_text
                         .map(|span| catalog.text(span).to_string()),
                 },
+                attributes: indexed_attributes(catalog, &record.attributes),
+                modifiers: record
+                    .modifiers
+                    .iter()
+                    .map(|span| catalog.text(*span).to_string())
+                    .collect(),
+                doc_comments: record
+                    .doc_comments
+                    .iter()
+                    .map(|comment| IndexedDocComment {
+                        kind: comment.kind,
+                        text: catalog.text(comment.span).to_string(),
+                    })
+                    .collect(),
+                conditional_context: indexed_conditional_context(
+                    catalog,
+                    &record.conditional_context,
+                ),
+                callable_form: record.callable_form,
             };
 
             self.index_symbol(catalog, &symbol);
@@ -649,7 +695,7 @@ impl SymbolIndex {
             .collect()
     }
 
-    fn completion_member_key(&self, id: GlobalSymbolId) -> String {
+    pub fn completion_member_key(&self, id: GlobalSymbolId) -> String {
         let Some(symbol) = self.symbol(id) else {
             return format!("Missing:{}:{}", id.file_id.0, id.symbol_id.0);
         };
@@ -711,6 +757,48 @@ fn owner_class_name<'source>(
     catalog.record_name(parent_record)
 }
 
+fn indexed_attributes<'source>(
+    catalog: &SymbolCatalog<'source>,
+    attributes: &[TextSpan],
+) -> Vec<IndexedAttribute> {
+    attributes
+        .iter()
+        .map(|span| IndexedAttribute {
+            name: catalog.attribute_name(*span).map(str::to_string),
+            text: indexed_attribute_text(catalog, *span),
+        })
+        .collect()
+}
+
+fn indexed_attribute_text<'source>(catalog: &SymbolCatalog<'source>, span: TextSpan) -> String {
+    let source = catalog.source();
+    let bytes = source.as_bytes();
+    let start = if span.start > 0 && bytes[span.start - 1] == b'[' {
+        span.start - 1
+    } else {
+        span.start
+    };
+    let end = if span.end < bytes.len() && bytes[span.end] == b']' {
+        span.end + 1
+    } else {
+        span.end
+    };
+    source[start..end].to_string()
+}
+
+fn indexed_conditional_context<'source>(
+    catalog: &SymbolCatalog<'source>,
+    context: &[ConditionalBranch],
+) -> Vec<IndexedConditionalBranch> {
+    context
+        .iter()
+        .map(|branch| IndexedConditionalBranch {
+            kind: branch.kind,
+            condition: branch.condition.map(|span| catalog.text(span).to_string()),
+        })
+        .collect()
+}
+
 fn is_class_member_kind(kind: SymbolKind) -> bool {
     matches!(
         kind,
@@ -770,7 +858,10 @@ pub struct IndexMapCounts {
 mod tests {
     use super::*;
     use crate::ast::AstSourceFile;
-    use crate::model::{SourceFileMetadata, SOURCE_PRIORITY_GAME_DATA, SOURCE_PRIORITY_WORKSPACE};
+    use crate::model::{
+        source_category_for_path, SourceCategory, SourceFileMetadata, SOURCE_PRIORITY_GAME_DATA,
+        SOURCE_PRIORITY_WORKSPACE,
+    };
     use crate::parser::parse_source;
     use std::path::PathBuf;
 
@@ -788,6 +879,7 @@ class Example : Base
             source,
             SourceFileMetadata {
                 kind: SourceKind::GameData,
+                category: SourceCategory::Unknown,
                 absolute_path: Some(PathBuf::from("C:/game/Example.c")),
                 root_path: Some(PathBuf::from("C:/game")),
                 relative_path: Some(PathBuf::from("Example.c")),
@@ -822,6 +914,7 @@ class Example : Base
             "class Example {}",
             SourceFileMetadata {
                 kind: SourceKind::GameData,
+                category: SourceCategory::Unknown,
                 absolute_path: Some(PathBuf::from("C:/game/Example.c")),
                 root_path: Some(PathBuf::from("C:/game")),
                 relative_path: Some(PathBuf::from("Example.c")),
@@ -832,6 +925,7 @@ class Example : Base
             "class Example {}",
             SourceFileMetadata {
                 kind: SourceKind::Workspace,
+                category: SourceCategory::Workspace,
                 absolute_path: Some(PathBuf::from("C:/workspace/Example.c")),
                 root_path: Some(PathBuf::from("C:/workspace")),
                 relative_path: Some(PathBuf::from("Example.c")),
@@ -862,6 +956,7 @@ class Example : Base
             "class Example {}",
             SourceFileMetadata {
                 kind: SourceKind::GameData,
+                category: SourceCategory::Unknown,
                 absolute_path: Some(PathBuf::from("C:/game/Example.c")),
                 root_path: Some(PathBuf::from("C:/game")),
                 relative_path: Some(PathBuf::from("Example.c")),
@@ -876,6 +971,7 @@ class Example : Base
 "#,
             SourceFileMetadata {
                 kind: SourceKind::Workspace,
+                category: SourceCategory::Workspace,
                 absolute_path: Some(PathBuf::from("C:/workspace/Example.c")),
                 root_path: Some(PathBuf::from("C:/workspace")),
                 relative_path: Some(PathBuf::from("Example.c")),
@@ -949,6 +1045,57 @@ class Example : Base
         let enum_member = index.symbols_for_name("One")[0];
         let enum_member = index.symbol(enum_member).unwrap();
         assert_eq!(enum_member.detail.enum_value_text.as_deref(), Some("1"));
+    }
+
+    #[test]
+    fn stores_copied_presentation_metadata_without_requiring_source_text() {
+        let catalog = catalog(
+            r#"//! Class docs
+[BaseContainerProps()]
+modded class Example
+{
+	/*! Field docs */
+	protected int m_Value;
+
+#ifdef ENABLE_RUN
+	override void Run() {}
+#endif
+}
+"#,
+            SourceFileMetadata::unknown(),
+        );
+        let index = SymbolIndex::from_catalogs([&catalog]);
+
+        let class = index.symbol(index.classes_by_name("Example")[0]).unwrap();
+        assert_eq!(class.modifiers, vec!["modded"]);
+        assert_eq!(class.attributes.len(), 1);
+        assert_eq!(
+            class.attributes[0].name.as_deref(),
+            Some("BaseContainerProps")
+        );
+        assert_eq!(class.attributes[0].text, "[BaseContainerProps()]");
+        assert_eq!(class.doc_comments.len(), 1);
+        assert_eq!(class.doc_comments[0].kind, DocCommentKind::Line);
+        assert_eq!(class.doc_comments[0].text, "//! Class docs");
+
+        let field = index
+            .symbol(index.fields_by_owner_name("Example", "m_Value")[0])
+            .unwrap();
+        assert_eq!(field.modifiers, vec!["protected"]);
+        assert_eq!(field.doc_comments.len(), 1);
+        assert_eq!(field.doc_comments[0].kind, DocCommentKind::Block);
+        assert_eq!(field.doc_comments[0].text, "/*! Field docs */");
+
+        let method = index
+            .symbol(index.methods_by_owner_name("Example", "Run")[0])
+            .unwrap();
+        assert_eq!(method.modifiers, vec!["override"]);
+        assert_eq!(method.callable_form, Some(CallableForm::Implementation));
+        assert_eq!(method.conditional_context.len(), 1);
+        assert_eq!(
+            method.conditional_context[0].condition.as_deref(),
+            Some("ENABLE_RUN")
+        );
     }
 
     #[test]
@@ -1251,6 +1398,88 @@ class Child : Base
             .shadowed_groups
             .iter()
             .any(|group| group.key == "Method Run(int) -> void" && group.shadowed.len() == 1));
+    }
+
+    #[test]
+    fn completion_members_do_not_shadow_static_array_fields_by_bound_name() {
+        let catalog = catalog(
+            r#"class Example
+{
+	static const int COUNT = 4;
+	static const string TAGS[COUNT] = {};
+	LocalizedString NAMES[COUNT];
+}
+"#,
+            SourceFileMetadata::unknown(),
+        );
+        let index = SymbolIndex::from_catalogs([&catalog]);
+
+        assert_eq!(index.fields_by_owner_name("Example", "COUNT").len(), 1);
+        assert_eq!(index.fields_by_owner_name("Example", "TAGS").len(), 1);
+        assert_eq!(index.fields_by_owner_name("Example", "NAMES").len(), 1);
+        assert!(index
+            .fields_by_owner_name("Example", "COUNT")
+            .iter()
+            .all(|id| index.symbol(*id).unwrap().detail.type_text.as_deref() == Some("int")));
+
+        let completion = index.completion_members_for_class("Example");
+
+        assert_eq!(
+            member_names(&index, &completion.members),
+            vec!["COUNT", "TAGS", "NAMES"]
+        );
+        assert!(completion.shadowed_groups.is_empty());
+    }
+
+    #[test]
+    fn indexes_comma_separated_field_declarators_for_lookup_and_completion() {
+        let catalog = catalog(
+            r#"class Example
+{
+	protected Widget m_ContentWidget, m_ButtonPrevWidget, m_ButtonNextWidget;
+	protected int count, values[COUNT], other = 4;
+}
+"#,
+            SourceFileMetadata::unknown(),
+        );
+        let index = SymbolIndex::from_catalogs([&catalog]);
+
+        for name in [
+            "m_ContentWidget",
+            "m_ButtonPrevWidget",
+            "m_ButtonNextWidget",
+            "count",
+            "values",
+            "other",
+        ] {
+            let fields = index.fields_by_owner_name("Example", name);
+            assert_eq!(fields.len(), 1, "missing field {name}");
+        }
+
+        let content = index.symbol(index.fields_by_owner_name("Example", "m_ContentWidget")[0]);
+        assert_eq!(content.unwrap().detail.type_text.as_deref(), Some("Widget"));
+        let button_next =
+            index.symbol(index.fields_by_owner_name("Example", "m_ButtonNextWidget")[0]);
+        assert_eq!(
+            button_next.unwrap().detail.type_text.as_deref(),
+            Some("Widget")
+        );
+        let values = index.symbol(index.fields_by_owner_name("Example", "values")[0]);
+        assert_eq!(values.unwrap().detail.type_text.as_deref(), Some("int"));
+
+        let completion = index.completion_members_for_class("Example");
+        assert_eq!(
+            member_names(&index, &completion.members),
+            vec![
+                "m_ContentWidget",
+                "m_ButtonPrevWidget",
+                "m_ButtonNextWidget",
+                "count",
+                "values",
+                "other"
+            ]
+        );
+        assert!(completion.shadowed_groups.is_empty());
     }
 
     #[test]
@@ -1620,6 +1849,7 @@ class Child : Base
             "class Example {}",
             SourceFileMetadata {
                 kind: SourceKind::GameData,
+                category: SourceCategory::Unknown,
                 absolute_path: Some(PathBuf::from("C:/game/First.c")),
                 root_path: Some(PathBuf::from("C:/game")),
                 relative_path: Some(PathBuf::from("First.c")),
@@ -1630,6 +1860,7 @@ class Child : Base
             "class Example {}",
             SourceFileMetadata {
                 kind: SourceKind::Workspace,
+                category: SourceCategory::Workspace,
                 absolute_path: Some(PathBuf::from("C:/workspace/Example.c")),
                 root_path: Some(PathBuf::from("C:/workspace")),
                 relative_path: Some(PathBuf::from("Example.c")),
@@ -1640,6 +1871,7 @@ class Child : Base
             "class Example {}",
             SourceFileMetadata {
                 kind: SourceKind::GameData,
+                category: SourceCategory::Unknown,
                 absolute_path: Some(PathBuf::from("C:/game/Second.c")),
                 root_path: Some(PathBuf::from("C:/game")),
                 relative_path: Some(PathBuf::from("Second.c")),
@@ -1987,21 +2219,29 @@ class FactionKey : string
     }
 
     fn game_metadata(path: &str) -> SourceFileMetadata {
+        let relative_path = PathBuf::from(path);
+        let mut category = source_category_for_path(SourceKind::GameData, Some(&relative_path));
+        if category == SourceCategory::Unknown {
+            category = SourceCategory::Game;
+        }
         SourceFileMetadata {
             kind: SourceKind::GameData,
+            category,
             absolute_path: Some(PathBuf::from("C:/game").join(path)),
             root_path: Some(PathBuf::from("C:/game")),
-            relative_path: Some(PathBuf::from(path)),
+            relative_path: Some(relative_path),
             priority: SOURCE_PRIORITY_GAME_DATA,
         }
     }
 
     fn workspace_metadata(path: &str) -> SourceFileMetadata {
+        let relative_path = PathBuf::from(path);
         SourceFileMetadata {
             kind: SourceKind::Workspace,
+            category: SourceCategory::Workspace,
             absolute_path: Some(PathBuf::from("C:/workspace").join(path)),
             root_path: Some(PathBuf::from("C:/workspace")),
-            relative_path: Some(PathBuf::from(path)),
+            relative_path: Some(relative_path),
             priority: SOURCE_PRIORITY_WORKSPACE,
         }
     }

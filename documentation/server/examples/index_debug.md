@@ -10,7 +10,9 @@ This is developer/Codex inspection tooling for the in-memory symbol index. It is
 
 ## Current Behavior
 
-The example uses `server/src/index_build.rs` to build the same parser, AST, model, and index pipeline used by index corpus reporting. It accepts `--scripts <path>`, optional `--workspace <path>`, and exactly one exact lookup mode: `--name`, `--top-level`, `--class`, `--typedef`, `--function`, or `--method <owner> <name>`. Output includes corpus totals, parse diagnostics, all matches, the preferred match, source kind, priority, path, symbol kind, spans, details, callable signatures, owner-name aggregate class-member summaries, raw best-effort inherited/base-chain member summaries, raw aggregate completion summaries, preferred-class overlay completion summaries, shadowed member groups, and immediate children when useful.
+The example uses `server/src/index_build.rs` to build the same parser, AST, model, and index pipeline used by index corpus reporting. It accepts `--scripts <path>`, optional `--workspace <path>`, and exactly one exact lookup mode: `--name`, `--top-level`, `--class`, `--typedef`, `--function`, or `--method <owner> <name>`. Output includes corpus totals, parse diagnostics, all matches, the preferred match, source kind, source category, editor-completion inclusion/exclusion, priority, path, symbol kind, spans, display details, callable signatures, modifiers, attributes, doc previews, callable form, conditional context, owner-name aggregate class-member summaries, raw best-effort inherited/base-chain member summaries, raw aggregate completion summaries, raw preferred-class overlay completion summaries, true `IndexQuery` editor completion summaries, shadowed member groups with report-style likely-cause labels, and immediate children when useful.
+
+Focused review flags keep large class output readable: `--limit <n>` caps repeated rows, `--member <name>` filters class member-heavy sections to an exact member name, `--symbol <name>` filters printed symbols/candidates by exact label, and `--show-docs` prints raw doc-comment text. By default, docs are shown as bounded previews only.
 
 For `--top-level`, the tool shows generic cross-kind preferred ordering for conflict/debug review and a separate kind-specific preferred section for class, typedef, and function lookups. Use the kind-specific rows when the expected declaration kind is known.
 
@@ -32,8 +34,13 @@ Uses only Rust standard library APIs plus the crate parser, AST, model, and inde
 - Class lookup headings now clarify that direct, inherited, and completion member sections are owner-name aggregate views. In overlay mode they can include members from multiple source files/source kinds and are not limited to the preferred class declaration.
 - Completion member debug output now reflects priority-aware same-owner/depth de-duplication: workspace overlay members should be kept over matching game-data members with the same completion key, while inherited/base members still remain lower priority than direct members.
 - Added exact `--function` lookup and kind-specific preferred top-level output so class/typedef/function conflicts are not reduced to one ambiguous generic preferred declaration.
-- Class lookup now also prints preferred-class overlay completion. This is the future editor-facing view; raw owner-name aggregate completion remains visible for debugging.
+- Class lookup now prints raw preferred-class overlay completion separately from the true `IndexQuery` editor completion view. The raw view keeps all indexed source facts, while the `IndexQuery` view applies source-category policy and included-source preferred class anchoring.
 - Switched debug indexing to the shared `index_build` module.
+- Added source-category output and likely-cause labels for shadowed member groups so targeted `--class` debugging can explain preprocessor/prototype/docs/generated/GameCode/Workbench conflict shapes without changing index behavior.
+- Added editor-completion included/excluded labels, callable form output, and preserved preprocessor conditional context output for symbols and member summaries.
+- Class summary rows now separate raw aggregate completion counts from `IndexQuery` editor completion counts so excluded docs/tests/Workbench source does not look editor-visible.
+- Switched symbol detail output to `SymbolDisplay` and added modifier, attribute, and doc-preview output for matched symbols and completion candidates.
+- Added focused output filters for large debug queries: `--limit`, `--member`, `--symbol`, and `--show-docs`.
 
 ## Future Improvements
 

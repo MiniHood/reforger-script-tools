@@ -5,4 +5,5 @@ pub mod index_query;
 pub mod lexer;
 pub mod model;
 pub mod parser;
+pub mod symbol_display;
 pub mod syntax;

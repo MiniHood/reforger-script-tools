@@ -183,12 +183,19 @@ impl<'source, 'tree> FieldDecl<'source, 'tree> {
     }
 
     pub fn name(&self) -> Option<TextValue<'source>> {
-        field_name_token(self.node).map(|token| text_value(self.source, token.span))
+        self.declarators()
+            .first()
+            .map(|declarator| declarator.name())
     }
 
     pub fn type_text(&self) -> Option<TextValue<'source>> {
-        let name = field_name_token(self.node)?;
-        leading_decl_text_before(self.source, self.node, name.span.start)
+        self.declarators()
+            .first()
+            .and_then(|declarator| declarator.type_text())
+    }
+
+    pub fn declarators(&self) -> Vec<FieldDeclarator<'source>> {
+        field_declarators(self.source, self.node)
     }
 
     pub fn attributes(&self) -> Vec<Attribute<'source, 'tree>> {
@@ -201,6 +208,28 @@ impl<'source, 'tree> FieldDecl<'source, 'tree> {
 
     pub fn modifiers(&self) -> Vec<TextValue<'source>> {
         modifiers(self.source, self.node)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct FieldDeclarator<'source> {
+    source: &'source str,
+    name: Token,
+    type_span: Option<TextSpan>,
+    span: TextSpan,
+}
+
+impl<'source> FieldDeclarator<'source> {
+    pub const fn span(&self) -> TextSpan {
+        self.span
+    }
+
+    pub fn name(&self) -> TextValue<'source> {
+        text_value(self.source, self.name.span)
+    }
+
+    pub fn type_text(&self) -> Option<TextValue<'source>> {
+        self.type_span.map(|span| text_value(self.source, span))
     }
 }
 
@@ -613,20 +642,188 @@ fn modifiers<'source>(source: &'source str, node: &SyntaxNode) -> Vec<TextValue<
         .collect()
 }
 
-fn field_name_token(node: &SyntaxNode) -> Option<Token> {
-    let mut candidate = None;
+fn field_declarators<'source>(
+    source: &'source str,
+    node: &SyntaxNode,
+) -> Vec<FieldDeclarator<'source>> {
+    let tokens = field_direct_tokens(node);
+    let Some(first_name) = first_field_declarator_name(&tokens) else {
+        return Vec::new();
+    };
+    let type_span =
+        leading_decl_text_before(source, node, first_name.span.start).map(|value| value.span);
+    let mut declarators = Vec::new();
+    let mut segment = Vec::new();
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut angle_depth = 0usize;
+    let mut brace_depth = 0usize;
+
+    for token in tokens
+        .into_iter()
+        .filter(|token| token.span.start >= first_name.span.start)
+    {
+        let kind = token.kind;
+        let at_top_level =
+            paren_depth == 0 && bracket_depth == 0 && angle_depth == 0 && brace_depth == 0;
+
+        if at_top_level && matches!(kind, TokenKind::Comma | TokenKind::Semicolon) {
+            push_field_declarator(
+                source,
+                &mut declarators,
+                &segment,
+                type_span,
+                token.span.start,
+            );
+            segment.clear();
+            continue;
+        }
+
+        segment.push(token);
+        match kind {
+            TokenKind::LeftParen => paren_depth += 1,
+            TokenKind::RightParen => paren_depth = paren_depth.saturating_sub(1),
+            TokenKind::LeftBracket => bracket_depth += 1,
+            TokenKind::RightBracket => bracket_depth = bracket_depth.saturating_sub(1),
+            TokenKind::LeftBrace => brace_depth += 1,
+            TokenKind::RightBrace => brace_depth = brace_depth.saturating_sub(1),
+            TokenKind::Operator(Operator::Less) => angle_depth += 1,
+            TokenKind::Operator(Operator::Greater) => angle_depth = angle_depth.saturating_sub(1),
+            TokenKind::Operator(Operator::GreaterGreater) => {
+                angle_depth = angle_depth.saturating_sub(2)
+            }
+            _ => {}
+        }
+    }
+
+    if let Some(last) = segment.last() {
+        push_field_declarator(source, &mut declarators, &segment, type_span, last.span.end);
+    }
+
+    declarators
+}
+
+fn field_direct_tokens(node: &SyntaxNode) -> Vec<Token> {
+    let mut tokens = Vec::new();
     let mut saw_declaration_token = false;
 
     for token in direct_tokens(node).filter(|token| !token.kind.is_trivia()) {
         match token.kind {
-            TokenKind::Operator(Operator::Equal) => break,
-            TokenKind::Semicolon if saw_declaration_token => break,
-            TokenKind::Semicolon => continue,
+            TokenKind::Semicolon if !saw_declaration_token => continue,
             _ => saw_declaration_token = true,
         }
+        tokens.push(token);
+    }
 
-        if is_name_token(token.kind) {
-            candidate = Some(token);
+    tokens
+}
+
+fn first_field_declarator_name(tokens: &[Token]) -> Option<Token> {
+    let mut candidate = None;
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut angle_depth = 0usize;
+    let mut brace_depth = 0usize;
+
+    for token in tokens {
+        let kind = token.kind;
+        let at_top_level =
+            paren_depth == 0 && bracket_depth == 0 && angle_depth == 0 && brace_depth == 0;
+
+        if at_top_level
+            && matches!(
+                kind,
+                TokenKind::Comma | TokenKind::Semicolon | TokenKind::Operator(Operator::Equal)
+            )
+        {
+            break;
+        }
+
+        if at_top_level && is_name_token(kind) {
+            candidate = Some(*token);
+        }
+
+        match kind {
+            TokenKind::LeftParen => paren_depth += 1,
+            TokenKind::RightParen => paren_depth = paren_depth.saturating_sub(1),
+            TokenKind::LeftBracket => bracket_depth += 1,
+            TokenKind::RightBracket => bracket_depth = bracket_depth.saturating_sub(1),
+            TokenKind::LeftBrace => brace_depth += 1,
+            TokenKind::RightBrace => brace_depth = brace_depth.saturating_sub(1),
+            TokenKind::Operator(Operator::Less) => angle_depth += 1,
+            TokenKind::Operator(Operator::Greater) => angle_depth = angle_depth.saturating_sub(1),
+            TokenKind::Operator(Operator::GreaterGreater) => {
+                angle_depth = angle_depth.saturating_sub(2)
+            }
+            _ => {}
+        }
+    }
+
+    candidate
+}
+
+fn push_field_declarator<'source>(
+    source: &'source str,
+    declarators: &mut Vec<FieldDeclarator<'source>>,
+    segment: &[Token],
+    type_span: Option<TextSpan>,
+    segment_end: usize,
+) {
+    let Some(name) = field_declarator_name_in_segment(segment) else {
+        return;
+    };
+    let effective_end = segment
+        .iter()
+        .rev()
+        .find(|token| !token.kind.is_trivia())
+        .filter(|token| token.kind == TokenKind::Operator(Operator::Equal))
+        .map(|token| token.span.start)
+        .unwrap_or(segment_end);
+    let span = trim_text_span(source, TextSpan::new(name.span.start, effective_end));
+    if span.is_empty() {
+        return;
+    }
+    declarators.push(FieldDeclarator {
+        source,
+        name,
+        type_span,
+        span,
+    });
+}
+
+fn field_declarator_name_in_segment(segment: &[Token]) -> Option<Token> {
+    let mut candidate = None;
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut angle_depth = 0usize;
+    let mut brace_depth = 0usize;
+
+    for token in segment {
+        let kind = token.kind;
+        let at_top_level =
+            paren_depth == 0 && bracket_depth == 0 && angle_depth == 0 && brace_depth == 0;
+
+        if at_top_level && kind == TokenKind::Operator(Operator::Equal) {
+            break;
+        }
+
+        if at_top_level && is_name_token(kind) {
+            candidate = Some(*token);
+        }
+
+        match kind {
+            TokenKind::LeftParen => paren_depth += 1,
+            TokenKind::RightParen => paren_depth = paren_depth.saturating_sub(1),
+            TokenKind::LeftBracket => bracket_depth += 1,
+            TokenKind::RightBracket => bracket_depth = bracket_depth.saturating_sub(1),
+            TokenKind::LeftBrace => brace_depth += 1,
+            TokenKind::RightBrace => brace_depth = brace_depth.saturating_sub(1),
+            TokenKind::Operator(Operator::Less) => angle_depth += 1,
+            TokenKind::Operator(Operator::Greater) => angle_depth = angle_depth.saturating_sub(1),
+            TokenKind::Operator(Operator::GreaterGreater) => {
+                angle_depth = angle_depth.saturating_sub(2)
+            }
+            _ => {}
         }
     }
 
@@ -942,6 +1139,33 @@ fn recursive_tokens(node: &SyntaxNode) -> Box<dyn Iterator<Item = Token> + '_> {
 
 const fn text_value(source: &str, span: TextSpan) -> TextValue<'_> {
     TextValue { span, source }
+}
+
+fn trim_text_span(source: &str, span: TextSpan) -> TextSpan {
+    let mut start = span.start;
+    let mut end = span.end;
+
+    while start < end {
+        let Some(value) = source[start..end].chars().next() else {
+            break;
+        };
+        if !value.is_whitespace() {
+            break;
+        }
+        start += value.len_utf8();
+    }
+
+    while start < end {
+        let Some(value) = source[start..end].chars().next_back() else {
+            break;
+        };
+        if !value.is_whitespace() {
+            break;
+        }
+        end -= value.len_utf8();
+    }
+
+    TextSpan::new(start, end)
 }
 
 fn is_name_token(kind: TokenKind) -> bool {
@@ -1504,6 +1728,143 @@ class Blocked
             "m_fFlashMinDurationMillis"
         );
         assert_eq!(second_field.type_text().unwrap().text(), "float");
+    }
+
+    #[test]
+    fn extracts_static_array_field_names_before_array_bounds() {
+        let source = r#"class Example
+{
+	static const int TYPE_NAMES_COUNT = 2;
+	static const string TYPE_TAGS[TYPE_NAMES_COUNT] =
+	{
+		"feedback",
+		"bug",
+	};
+	private SCR_BuildingRegion m_RegionConnect_Out[MAX_REGION_CONNECT];
+	protected vector m_aDebugLine[POINTS];
+}
+"#;
+        let parse = parse_source(source);
+        let ast = AstSourceFile::new(source, &parse);
+        let declarations = ast.declarations();
+        let Declaration::Class(class) = declarations[0] else {
+            panic!("expected class");
+        };
+        let members = class.members();
+
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
+
+        let expected = [
+            ("TYPE_NAMES_COUNT", "int"),
+            ("TYPE_TAGS", "string"),
+            ("m_RegionConnect_Out", "SCR_BuildingRegion"),
+            ("m_aDebugLine", "vector"),
+        ];
+
+        for (member, (expected_name, expected_type)) in members.into_iter().zip(expected) {
+            let ClassMember::Field(field) = member else {
+                panic!("expected field");
+            };
+            assert_eq!(field.name().unwrap().text(), expected_name);
+            assert_eq!(field.type_text().unwrap().text(), expected_type);
+        }
+    }
+
+    #[test]
+    fn extracts_comma_separated_field_declarators_with_shared_type() {
+        let source = r#"class Example
+{
+	protected Widget m_ContentWidget, m_ButtonPrevWidget, m_ButtonNextWidget;
+	protected ref array<int> m_aValues, m_aOtherValues;
+	protected int count, values[COUNT], other = 4;
+	protected map<Widget, SCR_Item> m_mItems, m_mOtherItems;
+}
+"#;
+        let parse = parse_source(source);
+        let ast = AstSourceFile::new(source, &parse);
+        let declarations = ast.declarations();
+        let Declaration::Class(class) = declarations[0] else {
+            panic!("expected class");
+        };
+        let members = class.members();
+
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
+
+        let ClassMember::Field(widgets) = members[0] else {
+            panic!("expected widget field list");
+        };
+        let widget_declarators = widgets.declarators();
+        assert_eq!(widgets.name().unwrap().text(), "m_ContentWidget");
+        assert_eq!(widgets.type_text().unwrap().text(), "Widget");
+        assert_eq!(
+            widget_declarators
+                .iter()
+                .map(|declarator| declarator.name().text())
+                .collect::<Vec<_>>(),
+            vec![
+                "m_ContentWidget",
+                "m_ButtonPrevWidget",
+                "m_ButtonNextWidget"
+            ]
+        );
+        assert!(widget_declarators
+            .iter()
+            .all(|declarator| declarator.type_text().unwrap().text() == "Widget"));
+
+        let ClassMember::Field(arrays) = members[1] else {
+            panic!("expected array field list");
+        };
+        assert_eq!(
+            arrays
+                .declarators()
+                .iter()
+                .map(|declarator| (
+                    declarator.name().text(),
+                    declarator.type_text().unwrap().text()
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                ("m_aValues", "ref array<int>"),
+                ("m_aOtherValues", "ref array<int>")
+            ]
+        );
+
+        let ClassMember::Field(mixed) = members[2] else {
+            panic!("expected mixed field list");
+        };
+        let mixed_declarators = mixed.declarators();
+        assert_eq!(
+            mixed_declarators
+                .iter()
+                .map(|declarator| declarator.name().text())
+                .collect::<Vec<_>>(),
+            vec!["count", "values", "other"]
+        );
+        assert!(mixed_declarators
+            .iter()
+            .all(|declarator| declarator.type_text().unwrap().text() == "int"));
+        let values_span = mixed_declarators[1].span();
+        let other_span = mixed_declarators[2].span();
+        assert_eq!(&source[values_span.start..values_span.end], "values[COUNT]");
+        assert_eq!(&source[other_span.start..other_span.end], "other = 4");
+
+        let ClassMember::Field(generic) = members[3] else {
+            panic!("expected generic field list");
+        };
+        assert_eq!(
+            generic
+                .declarators()
+                .iter()
+                .map(|declarator| (
+                    declarator.name().text(),
+                    declarator.type_text().unwrap().text()
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                ("m_mItems", "map<Widget, SCR_Item>"),
+                ("m_mOtherItems", "map<Widget, SCR_Item>")
+            ]
+        );
     }
 
     #[test]

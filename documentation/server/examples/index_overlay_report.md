@@ -12,7 +12,7 @@ This is developer review tooling for the future workspace/game-data overlay path
 
 The example accepts `--workspace <path>` as a required workspace script root, optional `--scripts <path>` for game data, and optional `--out <path>`. It uses `server/src/index_build.rs` to recursively scan `.c` files from both roots, build parser/AST/model catalogs, assign game-data metadata with priority `100`, assign workspace metadata with priority `200`, aggregate everything into `SymbolIndex`, and write `tools/reports/index-overlay.report.md` by default.
 
-The report shows source counts, parse diagnostics by source kind, indexed symbols by source kind, bounded parse diagnostic snippets, workspace-involved duplicate classification buckets, workspace-involved duplicate top-level declarations, kind-specific preferred top-level declarations for classes/typedefs/functions, workspace preferred-failure audits, generic preferred top-level conflict/debug samples, workspace-only top-level samples, method owner/name overlays where workspace and game-data methods share the same owner/name key, and workspace method groups including workspace-only overload groups. Callable declarations use the general callable signature display when available. Duplicate classification distinguishes true workspace/game-data overlays from workspace-local duplicate patterns such as typedef/function delegate-style pairs.
+The report shows source counts, parse diagnostics by source kind, indexed symbols by source kind, bounded parse diagnostic snippets, workspace-involved duplicate classification buckets, workspace-involved duplicate top-level declarations, kind-specific preferred top-level declarations for classes/typedefs/functions, workspace preferred-failure audits, generic preferred top-level conflict/debug samples, workspace-only top-level samples, method owner/name overlays where workspace and game-data methods share the same owner/name key, and workspace method groups including workspace-only overload groups. Declaration rows use shared symbol display detail text, including callable signatures when available. Duplicate classification distinguishes true workspace/game-data overlays from workspace-local duplicate patterns such as typedef/function delegate-style pairs.
 
 ## Dependencies and Boundaries
 
@@ -30,6 +30,7 @@ Uses only Rust standard library APIs plus the crate parser, AST, model, and inde
 - Refined duplicate classification so workspace-local typedef/function duplicates can still be labeled by pattern, while true workspace/game-data collisions remain workspace overlays.
 - Added workspace-only top-level and workspace method-group sections so stronger overlay fixtures are visible in the report, not only through targeted debug output.
 - Added parse diagnostic snippet rendering from builder-owned details so malformed workspace files are actionable in overlay reports.
+- Switched declaration detail rows to shared `SymbolDisplay` output so overlay presentation matches query/debug display.
 
 ## Future Improvements
 

@@ -1,7 +1,7 @@
 use crate::ast::AstSourceFile;
 use crate::index::SymbolIndex;
 use crate::lexer::TextSpan;
-use crate::model::{SourceFileMetadata, SourceKind, SymbolCatalog};
+use crate::model::{source_category_for_path, SourceFileMetadata, SourceKind, SymbolCatalog};
 use crate::parser::parse_source;
 use crate::syntax::ParseDiagnostic;
 use std::borrow::Cow;
@@ -347,11 +347,13 @@ fn source_metadata(
     kind: SourceKind,
     priority: u16,
 ) -> SourceFileMetadata {
+    let relative_path = file.strip_prefix(root).unwrap_or(file).to_path_buf();
     SourceFileMetadata {
         kind,
+        category: source_category_for_path(kind, Some(&relative_path)),
         absolute_path: Some(file.to_path_buf()),
         root_path: Some(root.to_path_buf()),
-        relative_path: Some(file.strip_prefix(root).unwrap_or(file).to_path_buf()),
+        relative_path: Some(relative_path),
         priority,
     }
 }
@@ -376,7 +378,9 @@ fn collect_script_files(folder: &Path, files: &mut Vec<PathBuf>) -> Result<(), S
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{SymbolKind, SOURCE_PRIORITY_GAME_DATA, SOURCE_PRIORITY_WORKSPACE};
+    use crate::model::{
+        SourceCategory, SymbolKind, SOURCE_PRIORITY_GAME_DATA, SOURCE_PRIORITY_WORKSPACE,
+    };
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -399,6 +403,7 @@ mod tests {
         let class = result.index.classes_by_name("GameOnly")[0];
         let file = result.index.file(class.file_id).unwrap();
         assert_eq!(file.metadata.kind, SourceKind::GameData);
+        assert_eq!(file.metadata.category.as_str(), "unknown");
         assert_eq!(file.metadata.priority, SOURCE_PRIORITY_GAME_DATA);
         assert_eq!(
             file.metadata.relative_path.as_deref(),
@@ -453,6 +458,54 @@ mod tests {
 
         cleanup(&game_root);
         cleanup(&workspace_root);
+    }
+
+    #[test]
+    fn assigns_source_categories_from_relative_paths() {
+        let root = test_root("source_categories");
+        for path in [
+            "Game/Runtime.c",
+            "GameCode/Faction/FactionKey.c",
+            "GameLib/Runtime.c",
+            "Core/proto/Types.c",
+            "Game/generated/Generated.c",
+            "WorkbenchGame/Plugin.c",
+            "GameLib/WorldSystemsDocs.c",
+            "Autotest/Game/Test.c",
+        ] {
+            let class_name = path
+                .chars()
+                .filter(|value| value.is_ascii_alphanumeric())
+                .collect::<String>();
+            write_file(&root.join(path), &format!("class {class_name} {{}}"));
+        }
+
+        let result = build_index(&IndexBuildConfig {
+            roots: vec![IndexSourceRoot::new(
+                &root,
+                SourceKind::GameData,
+                SOURCE_PRIORITY_GAME_DATA,
+            )],
+        })
+        .unwrap();
+
+        let categories = result
+            .index
+            .files()
+            .iter()
+            .map(|file| file.metadata.category)
+            .collect::<Vec<_>>();
+
+        assert!(categories.contains(&SourceCategory::Game));
+        assert!(categories.contains(&SourceCategory::GameCode));
+        assert!(categories.contains(&SourceCategory::GameLib));
+        assert!(categories.contains(&SourceCategory::Core));
+        assert!(categories.contains(&SourceCategory::Generated));
+        assert!(categories.contains(&SourceCategory::Workbench));
+        assert!(categories.contains(&SourceCategory::DocsDoxygen));
+        assert!(categories.contains(&SourceCategory::TestAutotest));
+
+        cleanup(&root);
     }
 
     #[test]

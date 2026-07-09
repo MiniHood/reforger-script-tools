@@ -2,10 +2,15 @@ use reforger_language_server::index::{GlobalSymbolId, IndexedSymbol, SymbolIndex
 use reforger_language_server::index_build::{
     build_index, IndexBuildConfig, IndexBuildCounts, IndexSourceRoot,
 };
-use reforger_language_server::model::{
-    SourceKind, SymbolKind, SOURCE_PRIORITY_GAME_DATA, SOURCE_PRIORITY_WORKSPACE,
+use reforger_language_server::index_query::{
+    EditorCompletionCandidate, EditorCompletionMembers, IndexQuery,
 };
+use reforger_language_server::model::{
+    SourceCategory, SourceKind, SymbolKind, SOURCE_PRIORITY_GAME_DATA, SOURCE_PRIORITY_WORKSPACE,
+};
+use reforger_language_server::symbol_display::{SymbolDisplay, SymbolDisplayInfo};
 use std::env;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 const DEFAULT_STORAGE_RELATIVE_PATH: &str =
@@ -13,10 +18,25 @@ const DEFAULT_STORAGE_RELATIVE_PATH: &str =
 const MAX_MATCHES: usize = 100;
 const MAX_CHILDREN: usize = 20;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShadowProvenance {
+    PreprocessorBranchDuplicate,
+    PreprocessorPrototypeDuplicate,
+    PrototypeDeclarationBlock,
+    DocsDoxygenOnlySource,
+    GeneratedSourceOverlap,
+    ExpectedInheritedBaseShadow,
+    Unknown,
+}
+
 struct Args {
     scripts_path: PathBuf,
     workspace_path: Option<PathBuf>,
     query: Query,
+    limit: usize,
+    member_filter: Option<String>,
+    symbol_filter: Option<String>,
+    show_docs: bool,
 }
 
 enum Query {
@@ -47,9 +67,10 @@ fn main() -> Result<(), String> {
     println!("Indexed symbols: {}", index.symbols().len());
     println!();
 
-    match args.query {
+    match &args.query {
         Query::Name(name) => print_query_results(
             &index,
+            &args,
             "All Symbols By Name",
             &name,
             index.symbols_for_name(&name),
@@ -58,6 +79,7 @@ fn main() -> Result<(), String> {
         Query::TopLevel(name) => {
             print_query_results(
                 &index,
+                &args,
                 "Top-Level Symbols By Name",
                 &name,
                 index.top_level_symbols_for_name(&name),
@@ -72,17 +94,19 @@ fn main() -> Result<(), String> {
             let symbols = index.classes_by_name(&name);
             print_query_results(
                 &index,
+                &args,
                 "Classes By Name",
                 &name,
                 symbols,
                 index.preferred_classes_by_name(&name).first().copied(),
             );
-            print_class_member_summary(&index, &name, symbols);
+            print_class_member_summary(&index, &args, &name, symbols);
         }
         Query::Typedef(name) => {
             let symbols = index.typedefs_by_name(&name);
             print_query_results(
                 &index,
+                &args,
                 "Typedefs By Name",
                 &name,
                 symbols,
@@ -93,6 +117,7 @@ fn main() -> Result<(), String> {
             let symbols = index.functions_by_name(&name);
             print_query_results(
                 &index,
+                &args,
                 "Functions By Name",
                 &name,
                 symbols,
@@ -112,6 +137,7 @@ fn main() -> Result<(), String> {
             print_method_signatures(&index, symbols);
             print_query_results(
                 &index,
+                &args,
                 "Method Matches",
                 &format!("{owner}.{name}"),
                 symbols,
@@ -128,6 +154,10 @@ fn parse_args() -> Result<Args, String> {
     let mut scripts: Option<PathBuf> = None;
     let mut workspace: Option<PathBuf> = None;
     let mut query: Option<Query> = None;
+    let mut limit = MAX_CHILDREN;
+    let mut member_filter: Option<String> = None;
+    let mut symbol_filter: Option<String> = None;
+    let mut show_docs = false;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -172,6 +202,24 @@ fn parse_args() -> Result<Args, String> {
                 let name = take_value(&mut args, "--method name")?;
                 set_query(&mut query, Query::Method { owner, name })?;
             }
+            "--limit" => {
+                let value = take_value(&mut args, "--limit")?;
+                limit = value.parse::<usize>().map_err(|error| {
+                    format!("--limit requires a positive integer, got `{value}`: {error}")
+                })?;
+                if limit == 0 {
+                    return Err("--limit requires a positive integer".to_string());
+                }
+            }
+            "--member" => {
+                member_filter = Some(take_value(&mut args, "--member")?);
+            }
+            "--symbol" => {
+                symbol_filter = Some(take_value(&mut args, "--symbol")?);
+            }
+            "--show-docs" => {
+                show_docs = true;
+            }
             "--help" | "-h" => {
                 print_usage();
                 std::process::exit(0);
@@ -188,6 +236,10 @@ fn parse_args() -> Result<Args, String> {
         scripts_path: scripts.unwrap_or_else(default_scripts_path),
         workspace_path: workspace,
         query,
+        limit,
+        member_filter,
+        symbol_filter,
+        show_docs,
     })
 }
 
@@ -213,6 +265,11 @@ fn print_usage() {
     println!("  --typedef <typedef>");
     println!("  --function <function>");
     println!("  --method <owner> <method>");
+    println!("Filters:");
+    println!("  --limit <n>");
+    println!("  --member <name>    only with --class; filters member-heavy sections");
+    println!("  --symbol <name>    filters printed symbols/candidates by exact label");
+    println!("  --show-docs        prints raw doc-comment text for matched symbols");
 }
 
 fn default_scripts_path() -> PathBuf {
@@ -246,6 +303,7 @@ fn build_debug_index(
 
 fn print_query_results(
     index: &SymbolIndex,
+    args: &Args,
     heading: &str,
     query: &str,
     symbols: &[GlobalSymbolId],
@@ -264,16 +322,27 @@ fn print_query_results(
     if let Some(id) = preferred {
         println!("### Preferred Match");
         println!();
-        print_symbol(index, id);
+        if symbol_matches_filters(index, args, id) {
+            print_symbol(index, args, id);
+        } else {
+            println!("Preferred match hidden by `--symbol` filter.");
+            println!();
+        }
     }
 
     println!("### All Matches");
     println!();
-    for id in symbols.iter().take(MAX_MATCHES) {
-        print_symbol(index, *id);
+    let filtered = symbols
+        .iter()
+        .copied()
+        .filter(|id| symbol_matches_filters(index, args, *id))
+        .collect::<Vec<_>>();
+    let limit = args.limit.min(MAX_MATCHES);
+    for id in filtered.iter().take(limit) {
+        print_symbol(index, args, *id);
     }
-    if symbols.len() > MAX_MATCHES {
-        println!("... {} more matches omitted", symbols.len() - MAX_MATCHES);
+    if filtered.len() > limit {
+        println!("... {} more matches omitted", filtered.len() - limit);
         println!();
     }
 }
@@ -316,11 +385,16 @@ fn print_kind_specific_row(
     println!("- {kind}: {} matches", symbols.len());
     if let Some(preferred) = preferred {
         println!("  Preferred:");
-        print_indented_member_summary(index, preferred, "  ");
+        print_indented_member_summary(index, preferred, "  ", false);
     }
 }
 
-fn print_class_member_summary(index: &SymbolIndex, owner: &str, symbols: &[GlobalSymbolId]) {
+fn print_class_member_summary(
+    index: &SymbolIndex,
+    args: &Args,
+    owner: &str,
+    symbols: &[GlobalSymbolId],
+) {
     if symbols.is_empty() {
         return;
     }
@@ -332,15 +406,15 @@ fn print_class_member_summary(index: &SymbolIndex, owner: &str, symbols: &[Globa
     println!();
     println!("This is `direct_members_by_owner()` output for the owner name across all indexed source files. In overlay mode it is not limited to the preferred class declaration.");
     println!();
-    let direct_members = index.direct_members_by_owner(owner);
+    let direct_members = filter_member_ids(index, args, index.direct_members_by_owner(owner));
     println!("Members: {}", direct_members.len());
-    for id in direct_members.iter().take(MAX_CHILDREN) {
-        print_member_summary(index, *id);
+    for id in direct_members.iter().take(args.limit) {
+        print_member_summary(index, *id, args.show_docs);
     }
-    if direct_members.len() > MAX_CHILDREN {
+    if direct_members.len() > args.limit {
         println!(
             "... {} more members omitted",
-            direct_members.len() - MAX_CHILDREN
+            direct_members.len() - args.limit
         );
     }
     println!();
@@ -348,9 +422,10 @@ fn print_class_member_summary(index: &SymbolIndex, owner: &str, symbols: &[Globa
     let all_members = index.members_for_class_including_bases(owner);
     let inherited_members = all_members
         .iter()
-        .skip(direct_members.len())
+        .skip(index.direct_members_by_owner(owner).len())
         .copied()
         .collect::<Vec<_>>();
+    let inherited_members = filter_member_ids(index, args, &inherited_members);
     println!(
         "## Owner-Name Aggregate Members Including Bases `{}`",
         escape_inline(owner)
@@ -364,13 +439,13 @@ fn print_class_member_summary(index: &SymbolIndex, owner: &str, symbols: &[Globa
         inherited_members.len(),
         all_members.len()
     );
-    for id in inherited_members.iter().take(MAX_CHILDREN) {
-        print_member_summary(index, *id);
+    for id in inherited_members.iter().take(args.limit) {
+        print_member_summary(index, *id, args.show_docs);
     }
-    if inherited_members.len() > MAX_CHILDREN {
+    if inherited_members.len() > args.limit {
         println!(
             "... {} more inherited/base-chain members omitted",
-            inherited_members.len() - MAX_CHILDREN
+            inherited_members.len() - args.limit
         );
     }
     println!();
@@ -378,6 +453,7 @@ fn print_class_member_summary(index: &SymbolIndex, owner: &str, symbols: &[Globa
     let completion = index.completion_members_for_class(owner);
     print_completion_lookup(
         index,
+        args,
         owner,
         "Completion Owner-Name Aggregate Members",
         "Completion-ready view over the same owner-name aggregate candidates; it de-duplicates by member key but does not semantically merge modded classes. This remains a raw debug view, not the future editor completion truth.",
@@ -387,13 +463,17 @@ fn print_class_member_summary(index: &SymbolIndex, owner: &str, symbols: &[Globa
     let preferred_completion = index.completion_members_for_preferred_class(owner);
     print_completion_lookup(
         index,
+        args,
         owner,
-        "Preferred-Class Overlay Completion Members",
-        "Future editor-facing completion path. It starts from preferred class declarations, intentionally includes lower-priority same-owner overlay members, then appends exact-name base-chain members.",
+        "Raw Preferred-Class Overlay Completion Members",
+        "Raw index view over preferred-class overlay candidates. It does not apply the editor-facing source-category policy; use the IndexQuery section below for future editor behavior.",
         &preferred_completion,
     );
 
-    for class_id in symbols.iter().take(MAX_MATCHES) {
+    let editor_completion = IndexQuery::new(index).completion_members_for_class(owner);
+    print_editor_completion_lookup(index, args, owner, &editor_completion);
+
+    for class_id in symbols.iter().take(args.limit.min(MAX_MATCHES)) {
         let Some(class_symbol) = index.symbol(*class_id) else {
             continue;
         };
@@ -406,28 +486,181 @@ fn print_class_member_summary(index: &SymbolIndex, owner: &str, symbols: &[Globa
             .filter_map(|id| index.symbol(*id))
             .filter(|symbol| symbol.kind == SymbolKind::Field)
             .count();
+        let direct_member_count = index.direct_members_by_owner(class_name).len();
+        let raw_members = index.members_for_class_including_bases(class_name);
+        let inherited_member_count = raw_members.len().saturating_sub(direct_member_count);
+        let raw_completion = index.completion_members_for_class(class_name);
+        let editor_completion = IndexQuery::new(index).completion_members_for_class(class_name);
         println!(
-            "- Class `{}` direct fields {} direct members {} inherited/base-chain members {} raw total {} completion visible {} shadow groups {}",
+            "- Class `{}` direct fields {} direct members {} inherited/base-chain members {} raw total {} raw aggregate completion {} raw aggregate shadow groups {} editor completion {} editor shadow groups {}",
             escape_inline(class_name),
             fields,
-            index.direct_members_by_owner(class_name).len(),
-            index
-                .members_for_class_including_bases(class_name)
-                .len()
-                .saturating_sub(index.direct_members_by_owner(class_name).len()),
-            index.members_for_class_including_bases(class_name).len(),
-            index.completion_members_for_class(class_name).members.len(),
-            index
-                .completion_members_for_class(class_name)
-                .shadowed_groups
-                .len()
+            direct_member_count,
+            inherited_member_count,
+            raw_members.len(),
+            raw_completion.members.len(),
+            raw_completion.shadowed_groups.len(),
+            editor_completion.candidates.len(),
+            editor_completion.shadowed_groups.len()
         );
     }
     println!();
 }
 
+fn print_editor_completion_lookup(
+    index: &SymbolIndex,
+    args: &Args,
+    owner: &str,
+    completion: &EditorCompletionMembers,
+) {
+    println!(
+        "## IndexQuery Editor Completion Members `{}`",
+        escape_inline(owner)
+    );
+    println!();
+    println!("Future editor-facing completion facade. It applies source-category policy, preferred class selection, duplicate member de-duplication, source priority, and callable-form preference.");
+    println!();
+    println!(
+        "Members: {} visible, {} raw candidates, {} shadow groups",
+        completion.candidates.len(),
+        completion.raw_candidates.len(),
+        completion.shadowed_groups.len()
+    );
+    let candidates = completion
+        .candidates
+        .iter()
+        .filter(|candidate| candidate_matches_filters(args, candidate))
+        .collect::<Vec<_>>();
+    for candidate in candidates.iter().take(args.limit) {
+        print_editor_candidate(candidate);
+    }
+    if candidates.len() > args.limit {
+        println!(
+            "... {} more editor completion members omitted",
+            candidates.len() - args.limit
+        );
+    }
+    println!();
+
+    if !completion.shadowed_groups.is_empty() {
+        println!("### Editor Shadowed Member Groups");
+        println!();
+        let groups = completion
+            .shadowed_groups
+            .iter()
+            .filter(|group| shadow_group_matches_filters(index, args, group.kept, &group.shadowed))
+            .collect::<Vec<_>>();
+        for group in groups.iter().take(args.limit) {
+            println!("- `{}`", escape_inline(&group.key));
+            println!("  Kept:");
+            print_indented_member_summary(index, group.kept, "  ", args.show_docs);
+            println!("  Hidden:");
+            for hidden in &group.shadowed {
+                print_indented_member_summary(index, *hidden, "  ", args.show_docs);
+            }
+        }
+        if groups.len() > args.limit {
+            println!(
+                "... {} more editor shadow groups omitted",
+                groups.len() - args.limit
+            );
+        }
+        println!();
+    }
+}
+
+fn print_editor_candidate(candidate: &EditorCompletionCandidate) {
+    let path = candidate
+        .relative_path
+        .as_ref()
+        .or(candidate.absolute_path.as_ref())
+        .map(|path| escape_inline(&path.display().to_string()))
+        .unwrap_or_else(|| "<unknown-path>".to_string());
+    println!(
+        "- {} `{}` origin `{:?}` category `{}` source `{}` priority {} path `{}`{}{}{}{}",
+        kind_name(candidate.kind),
+        candidate
+            .name
+            .as_deref()
+            .map(escape_inline)
+            .unwrap_or_else(|| "<unknown>".to_string()),
+        candidate.origin,
+        candidate.source_category.as_str(),
+        candidate.source_kind.as_str(),
+        candidate.source_priority,
+        path,
+        editor_callable_form_suffix(candidate),
+        editor_conditional_context_suffix(candidate),
+        editor_detail_suffix(candidate),
+        editor_presentation_suffix(&candidate.display)
+    );
+}
+
+fn editor_callable_form_suffix(candidate: &EditorCompletionCandidate) -> String {
+    candidate
+        .callable_form
+        .map(|form| format!(" form `{}`", form.as_str()))
+        .unwrap_or_default()
+}
+
+fn editor_conditional_context_suffix(candidate: &EditorCompletionCandidate) -> String {
+    if candidate.conditional_context.is_empty() {
+        return " condition `unconditional`".to_string();
+    }
+
+    let context = candidate
+        .conditional_context
+        .iter()
+        .map(|branch| {
+            branch
+                .condition
+                .as_deref()
+                .map(|condition| format!("{} {}", branch.kind.as_str(), condition))
+                .unwrap_or_else(|| branch.kind.as_str().to_string())
+        })
+        .collect::<Vec<_>>()
+        .join(" > ");
+    format!(" condition `{}`", escape_inline(&context))
+}
+
+fn editor_detail_suffix(candidate: &EditorCompletionCandidate) -> String {
+    if let Some(signature) = &candidate.signature {
+        return format!(" detail signature: `{}`", escape_inline(signature));
+    }
+    if let Some(detail) = &candidate.detail {
+        return format!(" detail `{}`", escape_inline(detail));
+    }
+    String::new()
+}
+
+fn editor_presentation_suffix(display: &SymbolDisplayInfo) -> String {
+    let mut parts = Vec::new();
+    if !display.modifiers.is_empty() {
+        parts.push(format!(
+            " modifiers `{}`",
+            escape_inline(&display.modifiers.join(" "))
+        ));
+    }
+    let attribute_names = display
+        .attributes
+        .iter()
+        .filter_map(|attribute| attribute.name.as_deref())
+        .collect::<Vec<_>>();
+    if !attribute_names.is_empty() {
+        parts.push(format!(
+            " attributes `{}`",
+            escape_inline(&attribute_names.join(", "))
+        ));
+    }
+    if let Some(preview) = &display.documentation_preview {
+        parts.push(format!(" docs `{}`", escape_inline(preview)));
+    }
+    parts.join("")
+}
+
 fn print_completion_lookup(
     index: &SymbolIndex,
+    args: &Args,
     owner: &str,
     heading: &str,
     description: &str,
@@ -443,13 +676,14 @@ fn print_completion_lookup(
         completion.raw_candidates.len(),
         completion.shadowed_groups.len()
     );
-    for id in completion.members.iter().take(MAX_CHILDREN) {
-        print_member_summary(index, *id);
+    let members = filter_member_ids(index, args, &completion.members);
+    for id in members.iter().take(args.limit) {
+        print_member_summary(index, *id, args.show_docs);
     }
-    if completion.members.len() > MAX_CHILDREN {
+    if members.len() > args.limit {
         println!(
             "... {} more completion members omitted",
-            completion.members.len() - MAX_CHILDREN
+            members.len() - args.limit
         );
     }
     println!();
@@ -457,19 +691,28 @@ fn print_completion_lookup(
     if !completion.shadowed_groups.is_empty() {
         println!("### Shadowed Member Groups");
         println!();
-        for group in completion.shadowed_groups.iter().take(MAX_CHILDREN) {
-            println!("- `{}`", escape_inline(&group.key));
+        let groups = completion
+            .shadowed_groups
+            .iter()
+            .filter(|group| shadow_group_matches_filters(index, args, group.kept, &group.shadowed))
+            .collect::<Vec<_>>();
+        for group in groups.iter().take(args.limit) {
+            println!(
+                "- `{}` cause `{}`",
+                escape_inline(&group.key),
+                shadow_provenance_label(classify_shadow_group(index, group))
+            );
             println!("  Kept:");
-            print_indented_member_summary(index, group.kept, "  ");
+            print_indented_member_summary(index, group.kept, "  ", args.show_docs);
             println!("  Hidden:");
             for hidden in &group.shadowed {
-                print_indented_member_summary(index, *hidden, "  ");
+                print_indented_member_summary(index, *hidden, "  ", args.show_docs);
             }
         }
-        if completion.shadowed_groups.len() > MAX_CHILDREN {
+        if groups.len() > args.limit {
             println!(
                 "... {} more shadow groups omitted",
-                completion.shadowed_groups.len() - MAX_CHILDREN
+                groups.len() - args.limit
             );
         }
         println!();
@@ -497,7 +740,7 @@ fn print_method_signatures(index: &SymbolIndex, symbols: &[GlobalSymbolId]) {
     println!();
 }
 
-fn print_symbol(index: &SymbolIndex, id: GlobalSymbolId) {
+fn print_symbol(index: &SymbolIndex, args: &Args, id: GlobalSymbolId) {
     let Some(symbol) = index.symbol(id) else {
         println!("- Missing symbol {:?}", id);
         return;
@@ -522,11 +765,26 @@ fn print_symbol(index: &SymbolIndex, id: GlobalSymbolId) {
         symbol.selection_span.end,
         detail_text(index, symbol),
     );
+    println!(
+        "  Source category: `{}` editor completion `{}`{}{}",
+        file.metadata.category.as_str(),
+        if file.metadata.category.is_editor_completion_default() {
+            "included"
+        } else {
+            "excluded"
+        },
+        callable_form_suffix(symbol),
+        conditional_context_suffix(symbol)
+    );
+    if let Some(display) = SymbolDisplay::for_symbol(index, id) {
+        print_display_metadata(&display, "  ", args.show_docs);
+    }
 
     let children = index.children(id);
     if !children.is_empty() {
+        let children = filter_member_ids(index, args, children);
         println!("  Children: {}", children.len());
-        for child_id in children.iter().take(MAX_CHILDREN) {
+        for child_id in children.iter().take(args.limit) {
             if let Some(child) = index.symbol(*child_id) {
                 println!(
                     "  - {} `{}` file {} symbol {}{}",
@@ -538,41 +796,189 @@ fn print_symbol(index: &SymbolIndex, id: GlobalSymbolId) {
                 );
             }
         }
-        if children.len() > MAX_CHILDREN {
+        if children.len() > args.limit {
             println!(
                 "  - ... {} more children omitted",
-                children.len() - MAX_CHILDREN
+                children.len() - args.limit
             );
         }
     }
     println!();
 }
 
-fn print_member_summary(index: &SymbolIndex, id: GlobalSymbolId) {
+fn print_member_summary(index: &SymbolIndex, id: GlobalSymbolId, show_docs: bool) {
     let Some(symbol) = index.symbol(id) else {
         return;
     };
     println!(
-        "- {} `{}`{}",
+        "- {} `{}`{}{}",
         kind_name(symbol.kind),
         display_symbol_name(symbol),
-        detail_text(index, symbol)
+        detail_text(index, symbol),
+        SymbolDisplay::for_symbol(index, id)
+            .map(|display| editor_presentation_suffix(&display))
+            .unwrap_or_default()
     );
+    print_raw_doc_comments(index, id, "  ", show_docs);
 }
 
-fn print_indented_member_summary(index: &SymbolIndex, id: GlobalSymbolId, indent: &str) {
+fn print_indented_member_summary(
+    index: &SymbolIndex,
+    id: GlobalSymbolId,
+    indent: &str,
+    show_docs: bool,
+) {
     let Some(symbol) = index.symbol(id) else {
         return;
     };
     let path = id.file_id.0.to_string() + ":" + &id.symbol_id.0.to_string();
     println!(
-        "{}- {} `{}` {}{}",
+        "{}- {} `{}` {} category `{}` editor `{}`{}{}{}",
         indent,
         kind_name(symbol.kind),
         display_symbol_name(symbol),
         path,
+        source_category_for_symbol(index, id).as_str(),
+        if source_category_for_symbol(index, id).is_editor_completion_default() {
+            "included"
+        } else {
+            "excluded"
+        },
+        callable_form_suffix(symbol),
+        conditional_context_suffix(symbol),
         detail_text(index, symbol)
     );
+    print_raw_doc_comments(index, id, indent, show_docs);
+}
+
+fn print_raw_doc_comments(index: &SymbolIndex, id: GlobalSymbolId, indent: &str, show_docs: bool) {
+    if !show_docs {
+        return;
+    }
+    let Some(display) = SymbolDisplay::for_symbol(index, id) else {
+        return;
+    };
+    for (index, comment) in display.doc_comments.iter().enumerate() {
+        println!(
+            "{}Doc comment {}: `{}`",
+            indent,
+            index + 1,
+            escape_inline(&comment.text)
+        );
+    }
+}
+
+fn print_display_metadata(display: &SymbolDisplayInfo, indent: &str, show_docs: bool) {
+    if !display.modifiers.is_empty() {
+        println!(
+            "{}Modifiers: `{}`",
+            indent,
+            escape_inline(&display.modifiers.join(" "))
+        );
+    }
+    if !display.attributes.is_empty() {
+        let attributes = display
+            .attributes
+            .iter()
+            .map(|attribute| {
+                attribute
+                    .name
+                    .as_deref()
+                    .unwrap_or(attribute.text.as_str())
+                    .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        println!("{}Attributes: `{}`", indent, escape_inline(&attributes));
+    }
+    if let Some(preview) = &display.documentation_preview {
+        println!("{}Docs preview: `{}`", indent, escape_inline(preview));
+    }
+    if !display.doc_comments.is_empty() {
+        println!("{}Doc comments: {}", indent, display.doc_comments.len());
+        if show_docs {
+            for (index, comment) in display.doc_comments.iter().enumerate() {
+                println!(
+                    "{}Doc comment {}: `{}`",
+                    indent,
+                    index + 1,
+                    escape_inline(&comment.text)
+                );
+            }
+        }
+    }
+}
+
+fn filter_member_ids(
+    index: &SymbolIndex,
+    args: &Args,
+    ids: &[GlobalSymbolId],
+) -> Vec<GlobalSymbolId> {
+    ids.iter()
+        .copied()
+        .filter(|id| member_matches_filters(index, args, *id))
+        .collect()
+}
+
+fn member_matches_filters(index: &SymbolIndex, args: &Args, id: GlobalSymbolId) -> bool {
+    if !symbol_matches_filters(index, args, id) {
+        return false;
+    }
+    let name = index.symbol(id).and_then(|symbol| symbol.name.as_deref());
+    if args
+        .member_filter
+        .as_deref()
+        .is_some_and(|filter| name != Some(filter))
+    {
+        return false;
+    }
+    true
+}
+
+fn symbol_matches_filters(index: &SymbolIndex, args: &Args, id: GlobalSymbolId) -> bool {
+    let Some(symbol) = index.symbol(id) else {
+        return false;
+    };
+    let name = symbol.name.as_deref();
+    if args
+        .symbol_filter
+        .as_deref()
+        .is_some_and(|filter| name != Some(filter))
+    {
+        return false;
+    }
+    true
+}
+
+fn candidate_matches_filters(args: &Args, candidate: &EditorCompletionCandidate) -> bool {
+    let name = candidate.name.as_deref();
+    if args
+        .symbol_filter
+        .as_deref()
+        .is_some_and(|filter| name != Some(filter))
+    {
+        return false;
+    }
+    if args
+        .member_filter
+        .as_deref()
+        .is_some_and(|filter| name != Some(filter))
+    {
+        return false;
+    }
+    true
+}
+
+fn shadow_group_matches_filters(
+    index: &SymbolIndex,
+    args: &Args,
+    kept: GlobalSymbolId,
+    shadowed: &[GlobalSymbolId],
+) -> bool {
+    member_matches_filters(index, args, kept)
+        || shadowed
+            .iter()
+            .any(|id| member_matches_filters(index, args, *id))
 }
 
 fn query_label(query: &Query) -> String {
@@ -604,38 +1010,145 @@ fn display_path(file: &reforger_language_server::index::IndexedFile) -> String {
 }
 
 fn detail_text(index: &SymbolIndex, symbol: &IndexedSymbol) -> String {
-    let mut values = Vec::new();
-    if let Some(signature) = index.callable_signature(symbol.id) {
-        push_detail(&mut values, "signature", Some(&signature));
-    }
-    push_detail(&mut values, "type", symbol.detail.type_text.as_deref());
-    push_detail(
-        &mut values,
-        "return",
-        symbol.detail.return_type_text.as_deref(),
-    );
-    push_detail(&mut values, "base", symbol.detail.base_type.as_deref());
-    push_detail(
-        &mut values,
-        "default",
-        symbol.detail.default_text.as_deref(),
-    );
-    push_detail(
-        &mut values,
-        "enum_value",
-        symbol.detail.enum_value_text.as_deref(),
-    );
-
-    if values.is_empty() {
-        String::new()
-    } else {
-        format!(" detail {}", values.join(" "))
-    }
+    SymbolDisplay::for_symbol(index, symbol.id)
+        .and_then(|display| display.detail)
+        .map(|detail| format!(" detail `{}`", escape_inline(&detail)))
+        .unwrap_or_default()
 }
 
-fn push_detail(values: &mut Vec<String>, label: &str, value: Option<&str>) {
-    if let Some(value) = value {
-        values.push(format!("{label}: `{}`", escape_inline(value)));
+fn callable_form_suffix(symbol: &IndexedSymbol) -> String {
+    symbol
+        .callable_form
+        .map(|form| format!(" form `{}`", form.as_str()))
+        .unwrap_or_default()
+}
+
+fn conditional_context_suffix(symbol: &IndexedSymbol) -> String {
+    if symbol.conditional_context.is_empty() {
+        return " condition `unconditional`".to_string();
+    }
+
+    let context = symbol
+        .conditional_context
+        .iter()
+        .map(|branch| {
+            branch
+                .condition
+                .as_deref()
+                .map(|condition| format!("{} {}", branch.kind.as_str(), condition))
+                .unwrap_or_else(|| branch.kind.as_str().to_string())
+        })
+        .collect::<Vec<_>>()
+        .join(" > ");
+    format!(" condition `{}`", escape_inline(&context))
+}
+
+fn classify_shadow_group(
+    index: &SymbolIndex,
+    group: &reforger_language_server::index::MemberShadowGroup,
+) -> ShadowProvenance {
+    let ids = std::iter::once(group.kept)
+        .chain(group.shadowed.iter().copied())
+        .collect::<Vec<_>>();
+
+    if ids
+        .iter()
+        .any(|id| source_category_for_symbol(index, *id) == SourceCategory::DocsDoxygen)
+        || ids
+            .iter()
+            .any(|id| file_contains(index, *id, "#ifdef DOXYGEN"))
+    {
+        return ShadowProvenance::DocsDoxygenOnlySource;
+    }
+
+    let kept_owner = owner_name(index, group.kept);
+    if group
+        .shadowed
+        .iter()
+        .all(|hidden| owner_name(index, *hidden) != kept_owner)
+    {
+        return ShadowProvenance::ExpectedInheritedBaseShadow;
+    }
+
+    let has_preprocessor = ids
+        .iter()
+        .any(|id| symbol_has_preprocessor_context(index, *id));
+    let has_prototype = ids.iter().any(|id| symbol_looks_like_prototype(index, *id));
+    if has_preprocessor && has_prototype {
+        return ShadowProvenance::PreprocessorPrototypeDuplicate;
+    }
+    if has_preprocessor {
+        return ShadowProvenance::PreprocessorBranchDuplicate;
+    }
+    if has_prototype {
+        return ShadowProvenance::PrototypeDeclarationBlock;
+    }
+
+    let has_generated = ids
+        .iter()
+        .any(|id| source_category_for_symbol(index, *id) == SourceCategory::Generated);
+    let has_non_generated = ids
+        .iter()
+        .any(|id| source_category_for_symbol(index, *id) != SourceCategory::Generated);
+    if has_generated && has_non_generated {
+        return ShadowProvenance::GeneratedSourceOverlap;
+    }
+
+    ShadowProvenance::Unknown
+}
+
+fn owner_name(index: &SymbolIndex, id: GlobalSymbolId) -> Option<&str> {
+    index
+        .symbol(id)
+        .and_then(|symbol| symbol.parent)
+        .and_then(|parent| index.symbol(parent))
+        .and_then(|parent| parent.name.as_deref())
+}
+
+fn source_category_for_symbol(index: &SymbolIndex, id: GlobalSymbolId) -> SourceCategory {
+    index
+        .file(id.file_id)
+        .map(|file| file.metadata.category)
+        .unwrap_or(SourceCategory::Unknown)
+}
+
+fn file_contains(index: &SymbolIndex, id: GlobalSymbolId, needle: &str) -> bool {
+    source_text(index, id).is_some_and(|source| source.contains(needle))
+}
+
+fn symbol_has_preprocessor_context(index: &SymbolIndex, id: GlobalSymbolId) -> bool {
+    index
+        .symbol(id)
+        .is_some_and(|symbol| !symbol.conditional_context.is_empty())
+}
+
+fn symbol_looks_like_prototype(index: &SymbolIndex, id: GlobalSymbolId) -> bool {
+    let Some(symbol) = index.symbol(id) else {
+        return false;
+    };
+    symbol
+        .callable_form
+        .is_some_and(|form| form.as_str() != "implementation")
+}
+
+fn source_text(index: &SymbolIndex, id: GlobalSymbolId) -> Option<String> {
+    let path = index
+        .file(id.file_id)
+        .and_then(|file| file.metadata.absolute_path.as_ref())?;
+    fs::read_to_string(path).ok()
+}
+
+fn shadow_provenance_label(provenance: ShadowProvenance) -> &'static str {
+    match provenance {
+        ShadowProvenance::PreprocessorBranchDuplicate => "preprocessor branch duplicate",
+        ShadowProvenance::PreprocessorPrototypeDuplicate => {
+            "preprocessor branch/prototype duplicate"
+        }
+        ShadowProvenance::PrototypeDeclarationBlock => "prototype/declaration block",
+        ShadowProvenance::DocsDoxygenOnlySource => "docs/Doxygen-only source",
+        ShadowProvenance::GeneratedSourceOverlap => "generated/source overlap",
+        ShadowProvenance::ExpectedInheritedBaseShadow => "expected inherited/base shadow",
+        ShadowProvenance::Unknown => "unknown",
     }
 }
 

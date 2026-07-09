@@ -1,8 +1,8 @@
 use reforger_language_server::ast::{AstSourceFile, ClassMember, Declaration};
 use reforger_language_server::lexer::TextSpan;
 use reforger_language_server::model::{
-    SourceFileMetadata, SourceKind, SymbolCatalog, SymbolKind, SymbolRecord,
-    SOURCE_PRIORITY_GAME_DATA,
+    source_category_for_path, SourceFileMetadata, SourceKind, SymbolCatalog, SymbolKind,
+    SymbolRecord, SOURCE_PRIORITY_GAME_DATA,
 };
 use reforger_language_server::parser::parse_source;
 use std::borrow::Cow;
@@ -342,15 +342,16 @@ fn render_report(scripts_path: &Path) -> Result<String, String> {
 }
 
 fn game_data_metadata(scripts_path: &Path, file: &Path) -> SourceFileMetadata {
+    let relative_path = file
+        .strip_prefix(scripts_path)
+        .unwrap_or(file)
+        .to_path_buf();
     SourceFileMetadata {
         kind: SourceKind::GameData,
+        category: source_category_for_path(SourceKind::GameData, Some(&relative_path)),
         absolute_path: Some(file.to_path_buf()),
         root_path: Some(scripts_path.to_path_buf()),
-        relative_path: Some(
-            file.strip_prefix(scripts_path)
-                .unwrap_or(file)
-                .to_path_buf(),
-        ),
+        relative_path: Some(relative_path),
         priority: SOURCE_PRIORITY_GAME_DATA,
     }
 }

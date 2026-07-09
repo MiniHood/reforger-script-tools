@@ -10,7 +10,7 @@ This folder is the future language-engine side of the project. It should contain
 
 ## Current Behavior
 
-The Rust crate exposes a full-fidelity lexer that returns token kinds and byte spans without copying source text into tokens. It also exposes a declaration-level parser that consumes lexer tokens and returns a full-fidelity syntax tree preserving trivia, tokens, and balanced method-body blocks. The AST layer provides file-local declaration views over that syntax tree without semantic resolution. The model layer converts those AST views into source-backed file-local symbol records with stable IDs and parent-child relationships. The index layer aggregates many file-local catalogs into global symbol handles and lookup maps without semantic resolution or persistence. The index build layer owns reusable source-root scanning and parser/AST/model/index construction. The index query layer wraps the raw index with editor-facing lookup APIs so future LSP features use preferred, overlay-aware paths instead of debug aggregate maps by accident.
+The Rust crate exposes a full-fidelity lexer that returns token kinds and byte spans without copying source text into tokens. It also exposes a declaration-level parser that consumes lexer tokens and returns a full-fidelity syntax tree preserving trivia, tokens, and balanced method-body blocks. The AST layer provides file-local declaration views over that syntax tree without semantic resolution. The model layer converts those AST views into source-backed file-local symbol records with stable IDs and parent-child relationships. The index layer aggregates many file-local catalogs into global symbol handles and lookup maps without semantic resolution or persistence. The index build layer owns reusable source-root scanning and parser/AST/model/index construction. The index query layer wraps the raw index with editor-facing lookup APIs so future LSP features use preferred, overlay-aware paths instead of debug aggregate maps by accident. The symbol display layer converts copied indexed facts into editor-ready labels, details, signatures, documentation previews, and provenance output.
 
 ## Dependencies and Boundaries
 
@@ -26,6 +26,7 @@ The crate currently has no external Rust dependencies. It must not import VS Cod
 - Added the first in-memory symbol index over file-local catalogs.
 - Added the reusable index build pipeline for explicit game-data/workspace source roots.
 - Added the first editor-facing index query facade over the raw symbol index.
+- Added the first indexed symbol display layer for shared hover/completion/debug presentation facts.
 
 ## Future Improvements
 

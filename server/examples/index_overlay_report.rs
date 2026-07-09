@@ -5,6 +5,7 @@ use reforger_language_server::index_build::{
 use reforger_language_server::model::{
     SourceKind, SymbolKind, SOURCE_PRIORITY_GAME_DATA, SOURCE_PRIORITY_WORKSPACE,
 };
+use reforger_language_server::symbol_display::SymbolDisplay;
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
@@ -758,33 +759,10 @@ fn duplicate_classification_label(classification: DuplicateClassification) -> &'
 }
 
 fn detail_text(index: &SymbolIndex, id: GlobalSymbolId) -> String {
-    if let Some(signature) = index.callable_signature(id) {
-        return format!(" signature `{}`", escape_table(&signature));
-    }
-
-    let Some(symbol) = index.symbol(id) else {
-        return String::new();
-    };
-
-    let mut values = Vec::new();
-    push_detail(&mut values, "type", symbol.detail.type_text.as_deref());
-    push_detail(
-        &mut values,
-        "return",
-        symbol.detail.return_type_text.as_deref(),
-    );
-    push_detail(&mut values, "base", symbol.detail.base_type.as_deref());
-    if values.is_empty() {
-        String::new()
-    } else {
-        format!(" {}", values.join(" "))
-    }
-}
-
-fn push_detail(values: &mut Vec<String>, label: &str, value: Option<&str>) {
-    if let Some(value) = value {
-        values.push(format!("{label} `{}`", escape_table(value)));
-    }
+    SymbolDisplay::for_symbol(index, id)
+        .and_then(|display| display.detail)
+        .map(|detail| format!(" detail `{}`", escape_table(&detail)))
+        .unwrap_or_default()
 }
 
 fn display_overlay_relative_path(

@@ -1,8 +1,8 @@
 use reforger_language_server::ast::AstSourceFile;
 use reforger_language_server::lexer::TextSpan;
 use reforger_language_server::model::{
-    SourceFileMetadata, SourceKind, SymbolCatalog, SymbolId, SymbolKind, SymbolRecord,
-    SOURCE_PRIORITY_FIXTURE, SOURCE_PRIORITY_WORKSPACE,
+    source_category_for_path, SourceCategory, SourceFileMetadata, SourceKind, SymbolCatalog,
+    SymbolId, SymbolKind, SymbolRecord, SOURCE_PRIORITY_FIXTURE, SOURCE_PRIORITY_WORKSPACE,
 };
 use reforger_language_server::parser::parse_source;
 use std::collections::BTreeSet;
@@ -143,6 +143,7 @@ fn file_metadata(file: &Path) -> SourceFileMetadata {
     if file.starts_with(&fixture_root) {
         return SourceFileMetadata {
             kind: SourceKind::Fixture,
+            category: source_category_for_path(SourceKind::Fixture, file.strip_prefix(&root).ok()),
             absolute_path: Some(file.to_path_buf()),
             root_path: Some(root.clone()),
             relative_path: file.strip_prefix(&root).ok().map(Path::to_path_buf),
@@ -152,6 +153,7 @@ fn file_metadata(file: &Path) -> SourceFileMetadata {
 
     SourceFileMetadata {
         kind: SourceKind::Workspace,
+        category: SourceCategory::Workspace,
         absolute_path: Some(file.to_path_buf()),
         root_path: file.starts_with(&root).then_some(root.clone()),
         relative_path: file.strip_prefix(&root).ok().map(Path::to_path_buf),

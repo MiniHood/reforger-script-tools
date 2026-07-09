@@ -1,9 +1,9 @@
 use crate::ast::{
-    AstSourceFile, ClassMember, Declaration, DocComment, DocCommentKind, MethodDecl, MethodKind,
-    TextValue,
+    AstSourceFile, ClassMember, Declaration, DocComment, DocCommentKind, FieldDecl, MethodDecl,
+    MethodKind, TextValue,
 };
 use crate::lexer::TextSpan;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub const SOURCE_PRIORITY_UNKNOWN: u16 = 0;
 pub const SOURCE_PRIORITY_FIXTURE: u16 = 50;
@@ -29,9 +29,53 @@ impl SourceKind {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SourceCategory {
+    Workspace,
+    Game,
+    GameCode,
+    GameLib,
+    Core,
+    Generated,
+    Workbench,
+    DocsDoxygen,
+    TestAutotest,
+    Unknown,
+}
+
+impl SourceCategory {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Workspace => "workspace",
+            Self::Game => "game",
+            Self::GameCode => "gamecode",
+            Self::GameLib => "gamelib",
+            Self::Core => "core",
+            Self::Generated => "generated",
+            Self::Workbench => "workbench",
+            Self::DocsDoxygen => "docs/doxygen",
+            Self::TestAutotest => "test/autotest",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    pub const fn is_editor_completion_default(self) -> bool {
+        matches!(
+            self,
+            Self::Workspace
+                | Self::Game
+                | Self::GameCode
+                | Self::GameLib
+                | Self::Core
+                | Self::Generated
+        )
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceFileMetadata {
     pub kind: SourceKind,
+    pub category: SourceCategory,
     pub absolute_path: Option<PathBuf>,
     pub root_path: Option<PathBuf>,
     pub relative_path: Option<PathBuf>,
@@ -42,11 +86,45 @@ impl SourceFileMetadata {
     pub const fn unknown() -> Self {
         Self {
             kind: SourceKind::Unknown,
+            category: SourceCategory::Unknown,
             absolute_path: None,
             root_path: None,
             relative_path: None,
             priority: SOURCE_PRIORITY_UNKNOWN,
         }
+    }
+}
+
+pub fn source_category_for_path(kind: SourceKind, path: Option<&Path>) -> SourceCategory {
+    if kind == SourceKind::Workspace {
+        return SourceCategory::Workspace;
+    }
+
+    let path = path
+        .map(|path| path.to_string_lossy().replace('\\', "/").to_lowercase())
+        .unwrap_or_default();
+
+    if path.contains("/generated/") || path.starts_with("generated/") {
+        SourceCategory::Generated
+    } else if path.contains("docs") || path.contains("doxygen") {
+        SourceCategory::DocsDoxygen
+    } else if path.starts_with("autotest/")
+        || path.contains("/autotest/")
+        || path.contains("/tests/")
+    {
+        SourceCategory::TestAutotest
+    } else if path.starts_with("workbench") {
+        SourceCategory::Workbench
+    } else if path.starts_with("gamecode/") {
+        SourceCategory::GameCode
+    } else if path.starts_with("gamelib/") {
+        SourceCategory::GameLib
+    } else if path.starts_with("game/") {
+        SourceCategory::Game
+    } else if path.starts_with("core/") {
+        SourceCategory::Core
+    } else {
+        SourceCategory::Unknown
     }
 }
 
@@ -95,6 +173,51 @@ pub struct DocCommentRecord {
     pub kind: DocCommentKind,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreprocessorBranchKind {
+    If,
+    Ifdef,
+    Ifndef,
+    Elif,
+    Else,
+}
+
+impl PreprocessorBranchKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::If => "#if",
+            Self::Ifdef => "#ifdef",
+            Self::Ifndef => "#ifndef",
+            Self::Elif => "#elif",
+            Self::Else => "#else",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConditionalBranch {
+    pub kind: PreprocessorBranchKind,
+    pub directive_span: TextSpan,
+    pub condition: Option<TextSpan>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum CallableForm {
+    Implementation,
+    Declaration,
+    Prototype,
+}
+
+impl CallableForm {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Implementation => "implementation",
+            Self::Declaration => "declaration",
+            Self::Prototype => "prototype",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SymbolRecord {
     pub id: SymbolId,
@@ -107,6 +230,8 @@ pub struct SymbolRecord {
     pub attributes: Vec<TextSpan>,
     pub modifiers: Vec<TextSpan>,
     pub doc_comments: Vec<DocCommentRecord>,
+    pub conditional_context: Vec<ConditionalBranch>,
+    pub callable_form: Option<CallableForm>,
 }
 
 pub struct SymbolCatalog<'source> {
@@ -285,24 +410,13 @@ impl<'source> SymbolCatalogBuilder<'source> {
                     attributes: spans(class.attributes()),
                     modifiers: text_spans(class.modifiers()),
                     doc_comments: doc_comment_records(class.doc_comments()),
+                    callable_form: None,
                 });
 
                 for member in class.members() {
                     match member {
                         ClassMember::Field(field) => {
-                            self.push_record(NewSymbol {
-                                parent: Some(class_id),
-                                kind: SymbolKind::Field,
-                                name: field.name(),
-                                span: field.span(),
-                                detail: SymbolDetail {
-                                    type_text: field.type_text().map(|value| value.span),
-                                    ..SymbolDetail::empty()
-                                },
-                                attributes: spans(field.attributes()),
-                                modifiers: text_spans(field.modifiers()),
-                                doc_comments: doc_comment_records(field.doc_comments()),
-                            });
+                            self.add_field(Some(class_id), SymbolKind::Field, field);
                         }
                         ClassMember::Method(method) => {
                             let method_kind = match class.classify_method(method) {
@@ -326,6 +440,7 @@ impl<'source> SymbolCatalogBuilder<'source> {
                     attributes: spans(enum_decl.attributes()),
                     modifiers: Vec::new(),
                     doc_comments: doc_comment_records(enum_decl.doc_comments()),
+                    callable_form: None,
                 });
 
                 for member in enum_decl.members() {
@@ -341,6 +456,7 @@ impl<'source> SymbolCatalogBuilder<'source> {
                         attributes: Vec::new(),
                         modifiers: Vec::new(),
                         doc_comments: Vec::new(),
+                        callable_form: None,
                     });
                 }
             }
@@ -357,26 +473,43 @@ impl<'source> SymbolCatalogBuilder<'source> {
                     attributes: Vec::new(),
                     modifiers: Vec::new(),
                     doc_comments: doc_comment_records(typedef_decl.doc_comments()),
+                    callable_form: None,
                 });
             }
             Declaration::Function(function) => {
                 self.add_callable(None, SymbolKind::Function, function);
             }
             Declaration::Field(field) => {
-                self.push_record(NewSymbol {
-                    parent: None,
-                    kind: SymbolKind::GlobalField,
-                    name: field.name(),
-                    span: field.span(),
-                    detail: SymbolDetail {
-                        type_text: field.type_text().map(|value| value.span),
-                        ..SymbolDetail::empty()
-                    },
-                    attributes: spans(field.attributes()),
-                    modifiers: text_spans(field.modifiers()),
-                    doc_comments: doc_comment_records(field.doc_comments()),
-                });
+                self.add_field(None, SymbolKind::GlobalField, field);
             }
+        }
+    }
+
+    fn add_field(
+        &mut self,
+        parent: Option<SymbolId>,
+        kind: SymbolKind,
+        field: FieldDecl<'source, '_>,
+    ) {
+        let attributes = spans(field.attributes());
+        let modifiers = text_spans(field.modifiers());
+        let doc_comments = doc_comment_records(field.doc_comments());
+
+        for declarator in field.declarators() {
+            self.push_record(NewSymbol {
+                parent,
+                kind,
+                name: Some(declarator.name()),
+                span: declarator.span(),
+                detail: SymbolDetail {
+                    type_text: declarator.type_text().map(|value| value.span),
+                    ..SymbolDetail::empty()
+                },
+                attributes: attributes.clone(),
+                modifiers: modifiers.clone(),
+                doc_comments: doc_comments.clone(),
+                callable_form: None,
+            });
         }
     }
 
@@ -398,6 +531,7 @@ impl<'source> SymbolCatalogBuilder<'source> {
             attributes: spans(method.attributes()),
             modifiers: text_spans(method.modifiers()),
             doc_comments: doc_comment_records(method.doc_comments()),
+            callable_form: Some(callable_form(method)),
         });
 
         for parameter in method.parameters() {
@@ -414,6 +548,7 @@ impl<'source> SymbolCatalogBuilder<'source> {
                 attributes: Vec::new(),
                 modifiers: text_spans(parameter.modifiers()),
                 doc_comments: Vec::new(),
+                callable_form: None,
             });
         }
 
@@ -435,6 +570,8 @@ impl<'source> SymbolCatalogBuilder<'source> {
             attributes: symbol.attributes,
             modifiers: symbol.modifiers,
             doc_comments: symbol.doc_comments,
+            conditional_context: conditional_context_at(self.source, symbol.span.start),
+            callable_form: symbol.callable_form,
         });
         id
     }
@@ -449,6 +586,7 @@ struct NewSymbol<'source> {
     attributes: Vec<TextSpan>,
     modifiers: Vec<TextSpan>,
     doc_comments: Vec<DocCommentRecord>,
+    callable_form: Option<CallableForm>,
 }
 
 fn spans(attributes: Vec<crate::ast::Attribute<'_, '_>>) -> Vec<TextSpan> {
@@ -470,6 +608,105 @@ fn doc_comment_records(comments: Vec<DocComment<'_>>) -> Vec<DocCommentRecord> {
             kind: comment.kind(),
         })
         .collect()
+}
+
+fn callable_form(method: MethodDecl<'_, '_>) -> CallableForm {
+    if method.body_span().is_some() {
+        return CallableForm::Implementation;
+    }
+
+    if method
+        .modifiers()
+        .into_iter()
+        .any(|modifier| matches!(modifier.text(), "proto" | "native" | "external"))
+    {
+        CallableForm::Prototype
+    } else {
+        CallableForm::Declaration
+    }
+}
+
+fn conditional_context_at(source: &str, offset: usize) -> Vec<ConditionalBranch> {
+    let mut context = Vec::new();
+    let mut line_start = 0usize;
+
+    while line_start < offset && line_start < source.len() {
+        let line_end = source[line_start..]
+            .find('\n')
+            .map(|index| line_start + index)
+            .unwrap_or(source.len());
+        if line_start >= offset {
+            break;
+        }
+        apply_preprocessor_line(source, line_start, line_end, &mut context);
+        if line_end == source.len() {
+            break;
+        }
+        line_start = line_end + 1;
+    }
+
+    context
+}
+
+fn apply_preprocessor_line(
+    source: &str,
+    line_start: usize,
+    line_end: usize,
+    context: &mut Vec<ConditionalBranch>,
+) {
+    let line = &source[line_start..line_end];
+    let leading_whitespace = line.len() - line.trim_start().len();
+    let directive_start = line_start + leading_whitespace;
+    let trimmed = &source[directive_start..line_end];
+
+    for (text, kind) in [
+        ("#ifdef", PreprocessorBranchKind::Ifdef),
+        ("#ifndef", PreprocessorBranchKind::Ifndef),
+        ("#elif", PreprocessorBranchKind::Elif),
+        ("#else", PreprocessorBranchKind::Else),
+        ("#endif", PreprocessorBranchKind::If),
+        ("#if", PreprocessorBranchKind::If),
+    ] {
+        if !trimmed.starts_with(text) {
+            continue;
+        }
+
+        if text == "#endif" {
+            context.pop();
+            return;
+        }
+
+        let directive_span = TextSpan::new(directive_start, directive_start + text.len());
+        let condition = if text == "#else" {
+            context.last().and_then(|branch| branch.condition)
+        } else {
+            preprocessor_condition_span(source, directive_span.end, line_end)
+        };
+        let branch = ConditionalBranch {
+            kind,
+            directive_span,
+            condition,
+        };
+
+        if matches!(
+            kind,
+            PreprocessorBranchKind::Elif | PreprocessorBranchKind::Else
+        ) {
+            if let Some(current) = context.last_mut() {
+                *current = branch;
+            } else {
+                context.push(branch);
+            }
+        } else {
+            context.push(branch);
+        }
+        return;
+    }
+}
+
+fn preprocessor_condition_span(source: &str, start: usize, end: usize) -> Option<TextSpan> {
+    let span = trim_span(source, TextSpan::new(start, end));
+    (!span.is_empty()).then_some(span)
 }
 
 fn attribute_name(text: &str) -> Option<&str> {
@@ -926,10 +1163,128 @@ class Example
     }
 
     #[test]
+    fn catalogs_static_array_fields_with_correct_name_type_and_suffix() {
+        let source = r#"class Example
+{
+	static const int COUNT = 4;
+	static const string TAGS[COUNT] = {};
+	LocalizedString NAMES[COUNT];
+}
+"#;
+        let catalog = catalog(source);
+
+        let count = find(&catalog, SymbolKind::Field, "COUNT");
+        assert_eq!(catalog.text(count.detail.type_text.unwrap()), "int");
+        assert!(catalog
+            .record_type_shape(count)
+            .unwrap()
+            .array_suffix_texts()
+            .is_empty());
+
+        let tags = find(&catalog, SymbolKind::Field, "TAGS");
+        assert_eq!(catalog.text(tags.detail.type_text.unwrap()), "string");
+        assert_eq!(
+            catalog
+                .record_type_shape(tags)
+                .unwrap()
+                .array_suffix_texts(),
+            vec!["[COUNT]"]
+        );
+
+        let names = find(&catalog, SymbolKind::Field, "NAMES");
+        assert_eq!(
+            catalog.text(names.detail.type_text.unwrap()),
+            "LocalizedString"
+        );
+        assert_eq!(
+            catalog
+                .record_type_shape(names)
+                .unwrap()
+                .array_suffix_texts(),
+            vec!["[COUNT]"]
+        );
+    }
+
+    #[test]
+    fn catalogs_comma_separated_field_declarators_individually() {
+        let source = r#"Widget g_First, g_Second;
+
+class Example
+{
+	protected Widget m_ContentWidget, m_ButtonPrevWidget, m_ButtonNextWidget;
+	protected ref array<int> m_aValues, m_aOtherValues;
+	protected int count, values[COUNT], other = 4;
+	protected map<Widget, SCR_Item> m_mItems, m_mOtherItems;
+}
+"#;
+        let catalog = catalog(source);
+
+        assert_eq!(count_kind(&catalog, SymbolKind::GlobalField), 2);
+        assert_eq!(count_kind(&catalog, SymbolKind::Field), 10);
+
+        for name in ["g_First", "g_Second"] {
+            let field = find(&catalog, SymbolKind::GlobalField, name);
+            assert_eq!(catalog.text(field.detail.type_text.unwrap()), "Widget");
+        }
+
+        for name in [
+            "m_ContentWidget",
+            "m_ButtonPrevWidget",
+            "m_ButtonNextWidget",
+        ] {
+            let field = find(&catalog, SymbolKind::Field, name);
+            assert_eq!(catalog.text(field.detail.type_text.unwrap()), "Widget");
+            assert_eq!(field.modifiers.len(), 1);
+            assert_eq!(catalog.text(field.modifiers[0]), "protected");
+        }
+
+        for name in ["m_aValues", "m_aOtherValues"] {
+            let field = find(&catalog, SymbolKind::Field, name);
+            assert_eq!(
+                catalog.text(field.detail.type_text.unwrap()),
+                "ref array<int>"
+            );
+        }
+
+        let count = find(&catalog, SymbolKind::Field, "count");
+        let values = find(&catalog, SymbolKind::Field, "values");
+        let other = find(&catalog, SymbolKind::Field, "other");
+        assert_eq!(catalog.text(count.detail.type_text.unwrap()), "int");
+        assert_eq!(catalog.text(values.detail.type_text.unwrap()), "int");
+        assert_eq!(catalog.text(other.detail.type_text.unwrap()), "int");
+        assert!(catalog
+            .record_type_shape(count)
+            .unwrap()
+            .array_suffix_texts()
+            .is_empty());
+        assert_eq!(
+            catalog
+                .record_type_shape(values)
+                .unwrap()
+                .array_suffix_texts(),
+            vec!["[COUNT]"]
+        );
+        assert!(catalog
+            .record_type_shape(other)
+            .unwrap()
+            .array_suffix_texts()
+            .is_empty());
+
+        for name in ["m_mItems", "m_mOtherItems"] {
+            let field = find(&catalog, SymbolKind::Field, name);
+            assert_eq!(
+                catalog.text(field.detail.type_text.unwrap()),
+                "map<Widget, SCR_Item>"
+            );
+        }
+    }
+
+    #[test]
     fn from_ast_uses_unknown_metadata() {
         let catalog = catalog("class Example {}");
 
         assert_eq!(catalog.metadata().kind, SourceKind::Unknown);
+        assert_eq!(catalog.metadata().category, SourceCategory::Unknown);
         assert_eq!(catalog.metadata().absolute_path, None);
         assert_eq!(catalog.metadata().root_path, None);
         assert_eq!(catalog.metadata().relative_path, None);
@@ -944,6 +1299,7 @@ class Example
         let ast = AstSourceFile::new(source, &parse);
         let metadata = SourceFileMetadata {
             kind: SourceKind::GameData,
+            category: SourceCategory::Game,
             absolute_path: Some(PathBuf::from("C:/scripts/Game/Example.c")),
             root_path: Some(PathBuf::from("C:/scripts")),
             relative_path: Some(PathBuf::from("Game/Example.c")),
@@ -958,6 +1314,53 @@ class Example
         assert_eq!(record.kind, SymbolKind::Class);
         assert_eq!(catalog.record_name(record), Some("Example"));
         assert_eq!(record.parent, None);
+    }
+
+    #[test]
+    fn records_conditional_context_and_callable_form() {
+        let source = r#"#ifdef DISABLE_INVENTORY
+class Example
+{
+	void Declared();
+	proto void Prototype();
+	void Implemented() {}
+}
+#else
+class Other {}
+#endif
+"#;
+        let catalog = catalog(source);
+
+        let class = find(&catalog, SymbolKind::Class, "Example");
+        assert_eq!(class.conditional_context.len(), 1);
+        assert_eq!(
+            class.conditional_context[0].kind,
+            PreprocessorBranchKind::Ifdef
+        );
+        assert_eq!(
+            catalog.text(class.conditional_context[0].condition.unwrap()),
+            "DISABLE_INVENTORY"
+        );
+
+        let declared = find(&catalog, SymbolKind::Method, "Declared");
+        assert_eq!(declared.callable_form, Some(CallableForm::Declaration));
+        let prototype = find(&catalog, SymbolKind::Method, "Prototype");
+        assert_eq!(prototype.callable_form, Some(CallableForm::Prototype));
+        let implemented = find(&catalog, SymbolKind::Method, "Implemented");
+        assert_eq!(
+            implemented.callable_form,
+            Some(CallableForm::Implementation)
+        );
+
+        let other = find(&catalog, SymbolKind::Class, "Other");
+        assert_eq!(
+            other.conditional_context[0].kind,
+            PreprocessorBranchKind::Else
+        );
+        assert_eq!(
+            catalog.text(other.conditional_context[0].condition.unwrap()),
+            "DISABLE_INVENTORY"
+        );
     }
 
     #[test]

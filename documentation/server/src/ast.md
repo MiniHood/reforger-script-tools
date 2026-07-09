@@ -12,6 +12,10 @@ This file is the first Rust AST layer. It sits above syntax parsing and below fu
 
 The AST layer exposes `AstSourceFile` for one parsed source file and best-effort declaration wrappers for classes, enums, typedefs, functions, top-level fields/globals, class fields, class methods, constructors, destructors, parameters, attributes, modifiers, doc comments, and empty semicolon declarations. Extracted names and text are returned as span-backed slices into the original source text. Uncertain names or type text return `Option` instead of inventing semantic facts. Class, enum, function, field, and method attributes are exposed through declaration wrappers. Leading `//!` and `/*! ... */` documentation comments are exposed as raw `DocComment` values attached from immediate leading trivia; tags and comment text are not parsed or normalized. Top-level fields are returned as `Declaration::Field`, while class fields remain `ClassMember::Field`. Field extraction ignores preserved semicolons that belong to leading attribute lists before scanning the actual declaration tokens. Typedef declarations expose the alias name and raw aliased type text, such as `typedef string FactionKey;` producing name `FactionKey` and type text `string`, without resolving the alias. Enum members expose source-backed explicit value text when present, but values are not evaluated or resolved. Destructor methods such as `void ~Example()` are detected through `MethodDecl::is_destructor()`, keep `name()` as `Example`, and return `void` from `return_type_text()` rather than `void ~`. Constructor classification is exposed through `ClassDecl::classify_method()` because it requires comparing a method name with the containing class name. Parameters expose raw text plus best-effort name, leading type text, default text, and top-level `out`/`inout`/`notnull` modifiers. `ref` remains part of parameter type text because it is strong-reference/type ownership syntax in Reforger sources. `ParameterKind` distinguishes real declaration parameters from preserved non-declaration callable fragments such as literal-only `false` inside declaration-shaped conditional source; `parameters()` returns declaration parameters and `parameter_fragments()` returns those preserved fragments.
 
+Static-array field declarations keep the field identifier before the array suffix as the field name. For example, `string TAGS[COUNT];` exposes name `TAGS` and type text `string`; the `[COUNT]` suffix is preserved by source span for the model type-shape layer rather than folded into `type_text`.
+
+Comma-separated field declarations expose `FieldDeclarator` views from one parser `FieldDecl`. For example, `Widget a, b, c;` exposes three declarators with shared type text `Widget` and local declarator spans. The parser node remains full-fidelity and unchanged; AST is responsible for splitting the field-list view for model/index consumers.
+
 ## Dependencies and Boundaries
 
 This file depends only on lexer span/token types and parser syntax types. It must not resolve symbols, evaluate type aliases, understand inheritance, inspect workspace files, read game data, call Workbench, emit diagnostics, or handle LSP requests. It must preserve the parser as the source of structure and keep all source text external.
@@ -31,6 +35,8 @@ This file depends only on lexer span/token types and parser syntax types. It mus
 - Added source-backed parameter name, type text, default text, and modifier extraction.
 - Added `ParameterKind` and callable-fragment extraction so future language features do not treat preserved literal fragments as declaration parameters.
 - Added source-backed typedef aliased type text extraction.
+- Fixed static-array field extraction so array bound identifiers do not replace the actual field name.
+- Added `FieldDeclarator` extraction so comma-separated field declarations expose every declared field with the correct shared type text.
 
 ## Future Improvements
 

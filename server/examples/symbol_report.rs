@@ -1,8 +1,8 @@
 use reforger_language_server::ast::AstSourceFile;
 use reforger_language_server::lexer::TextSpan;
 use reforger_language_server::model::{
-    SourceFileMetadata, SourceKind, SymbolCatalog, SymbolId, SymbolKind, SymbolRecord,
-    SOURCE_PRIORITY_FIXTURE,
+    source_category_for_path, SourceFileMetadata, SourceKind, SymbolCatalog, SymbolId, SymbolKind,
+    SymbolRecord, SOURCE_PRIORITY_FIXTURE,
 };
 use reforger_language_server::parser::parse_source;
 use std::env;
@@ -186,11 +186,13 @@ fn append_fixture(report: &mut String, fixture: Fixture) {
 
 fn fixture_metadata(path: &str) -> SourceFileMetadata {
     let root = repo_root();
+    let relative_path = PathBuf::from(path);
     SourceFileMetadata {
         kind: SourceKind::Fixture,
+        category: source_category_for_path(SourceKind::Fixture, Some(&relative_path)),
         absolute_path: Some(root.join(path)),
         root_path: Some(root),
-        relative_path: Some(PathBuf::from(path)),
+        relative_path: Some(relative_path),
         priority: SOURCE_PRIORITY_FIXTURE,
     }
 }

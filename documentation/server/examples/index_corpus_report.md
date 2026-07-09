@@ -10,7 +10,9 @@ This is developer review tooling for index lookup quality. It is not VS Code run
 
 ## Current Behavior
 
-The example uses `server/src/index_build.rs` to scan `.c` files under a scripts folder, parse each file, build AST/model catalogs with game-data metadata, aggregate them into `SymbolIndex`, and write `tools/reports/index-corpus.report.md` by default. It reports indexed file/symbol totals, lossy-decoded file details with first replacement locations and bounded ASCII-stable snippets, parse diagnostic snippets, top-level versus child/member symbol breakdowns, wall-clock build timings, map counts, source-kind counts, symbol-kind frequency, duplicate classification buckets, focused suspicious conflict tables, bounded duplicate top-level name groups with symbol details, top-level-only preferred duplicate samples, lookup samples for classes and typedefs, grouped method owner/name samples with overload counts and bounded signature examples, callable details, raw aggregate completion shadows, and preferred-class completion shadows. Shadow review subsections are nested under their owning completion view so repeated summaries remain easy to scan.
+The example uses `server/src/index_build.rs` to scan `.c` files under a scripts folder, parse each file, build AST/model catalogs with game-data metadata, aggregate them into `SymbolIndex`, and write `tools/reports/index-corpus.report.md` by default. It reports indexed file/symbol totals, lossy-decoded file details with first replacement locations and bounded ASCII-stable snippets, parse diagnostic snippets, top-level versus child/member symbol breakdowns, wall-clock build timings, map counts, source-kind counts, source-category counts, editor-completion source-policy counts, symbol-kind frequency, presentation metadata coverage, display detail coverage by symbol kind, bounded missing-detail samples, bounded doc-preview quality samples, duplicate classification buckets, focused suspicious conflict tables, suspicious duplicate provenance, classified same-owner shadow groups, unknown/high-risk same-owner shadows, editor-completion filtering decisions by conflict class, bounded unknown-conflict snippets, bounded duplicate top-level name groups with symbol details, top-level-only preferred duplicate samples, lookup samples for classes and typedefs, grouped method owner/name samples with overload counts and bounded signature examples, callable details, raw aggregate completion shadows, and preferred-class completion shadows. Shadow review subsections are nested under their owning completion view so repeated summaries remain easy to scan.
+
+Conflict rows include callable form and preprocessor conditional context when present. This makes branch-preserved duplicates and prototype/declaration duplicates visible without evaluating macros or removing raw index facts.
 
 It accepts `--scripts <path>` and `--out <path>`. If no scripts path is provided, it uses the downloaded game-data global-storage scripts folder.
 
@@ -39,6 +41,12 @@ Uses only Rust standard library APIs plus the crate index builder and index modu
 - Added a focused suspicious conflict report that pulls same-kind and mixed-kind top-level duplicates plus preferred-class same-owner completion shadow conflicts out of the broader review tables.
 - Lossy decode snippets now render replacement characters as `<U+FFFD>` instead of relying on terminal-specific replacement glyph display.
 - Reorganized completion shadow report headings so raw aggregate and preferred-class summaries each own their nested shadow review subsections.
+- Added path/context-derived source categories and provenance buckets for suspicious top-level duplicates and same-owner shadow conflicts, with bounded snippets for conflicts that remain unknown. Source categories include generated, docs/Doxygen, test/autotest, Workbench, GameCode, Game, GameLib, Core, workspace, and unknown.
+- Added an editor-completion filtering decision matrix that states which same-owner conflict classes may be collapsed in completion, which must remain debug-visible, and which future semantic/preprocessor/source-provenance work is required before stronger filtering.
+- Added editor-completion source-policy counts and conflict metadata for callable form plus preserved preprocessor branch context.
+- Added presentation metadata coverage counts for symbols with display details, callable signatures, doc comments, attributes, modifiers, and missing labels.
+- Added presentation QA sections for display detail coverage by kind, missing-detail samples, and doc-preview quality samples including Doxygen-tag-looking previews.
+- Reworded same-owner shadow output so classified cases are separated from unknown/high-risk cases.
 
 ## Future Improvements
 
