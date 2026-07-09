@@ -10,7 +10,7 @@ This is developer review tooling for model/catalog quality. It is not VS Code ru
 
 ## Current Behavior
 
-The example scans `.c` files under a scripts folder, parses each file, builds an `AstSourceFile`, creates a `SymbolCatalog`, and writes `tools/reports/symbol-corpus.report.md` by default. It reports corpus totals, parse diagnostics, total symbols, missing symbol names, parent-child coverage, non-declaration callable fragments, attribute/doc-comment coverage, symbol kind frequencies, modifier frequency, attribute name frequency resolved through the catalog API, doc-comment coverage by symbol kind, base/type/return text frequencies, duplicate top-level names with kind and per-declaration path details, regular method overload groups, constructor overload groups, destructor overload groups, sample symbols by kind, and bounded snippets for non-declaration callable fragments.
+The example scans `.c` files under a scripts folder, parses each file, builds an `AstSourceFile`, creates a `SymbolCatalog` with game-data source metadata, and writes `tools/reports/symbol-corpus.report.md` by default. The summary shows source kind, source root, and source priority for the scanned corpus. It reports corpus totals, parse diagnostics, total symbols, missing symbol names, parent-child coverage, non-declaration callable fragments, attribute/doc-comment coverage, symbol kind frequencies, modifier frequency, attribute name frequency resolved through the catalog API, doc-comment coverage by symbol kind, base/type/return text frequencies, type-shape base/qualifier/generic-arity/array-suffix frequencies, duplicate top-level names with kind and per-declaration path details, regular method overload groups, constructor overload groups, destructor overload groups, sample symbols by kind, and bounded snippets for non-declaration callable fragments.
 
 It accepts `--scripts <path>` and `--out <path>`. If no scripts path is provided, it uses the downloaded game-data global-storage scripts folder.
 
@@ -25,6 +25,8 @@ Uses only Rust standard library APIs plus the crate parser, AST, and model modul
 - Attribute name frequency now uses `SymbolCatalog::attribute_name()` instead of local parsing.
 - Duplicate top-level names now list each declaration as kind, name, path, and line.
 - Constructor and destructor overload groups are reported separately from regular methods.
+- Added corpus visibility for source-backed type-shape base names, qualifiers, generic arities, and array suffixes.
+- Corpus catalogs now carry game-data source metadata with absolute path, scripts root, relative path, and priority.
 
 ## Future Improvements
 

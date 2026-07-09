@@ -3,6 +3,52 @@ use crate::ast::{
     TextValue,
 };
 use crate::lexer::TextSpan;
+use std::path::PathBuf;
+
+pub const SOURCE_PRIORITY_UNKNOWN: u16 = 0;
+pub const SOURCE_PRIORITY_FIXTURE: u16 = 50;
+pub const SOURCE_PRIORITY_GAME_DATA: u16 = 100;
+pub const SOURCE_PRIORITY_WORKSPACE: u16 = 200;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SourceKind {
+    Unknown,
+    GameData,
+    Workspace,
+    Fixture,
+}
+
+impl SourceKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "Unknown",
+            Self::GameData => "GameData",
+            Self::Workspace => "Workspace",
+            Self::Fixture => "Fixture",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceFileMetadata {
+    pub kind: SourceKind,
+    pub absolute_path: Option<PathBuf>,
+    pub root_path: Option<PathBuf>,
+    pub relative_path: Option<PathBuf>,
+    pub priority: u16,
+}
+
+impl SourceFileMetadata {
+    pub const fn unknown() -> Self {
+        Self {
+            kind: SourceKind::Unknown,
+            absolute_path: None,
+            root_path: None,
+            relative_path: None,
+            priority: SOURCE_PRIORITY_UNKNOWN,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SymbolId(pub usize);
@@ -65,14 +111,79 @@ pub struct SymbolRecord {
 
 pub struct SymbolCatalog<'source> {
     source: &'source str,
+    metadata: SourceFileMetadata,
     records: Vec<SymbolRecord>,
     non_declaration_callable_fragments: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeShape<'source> {
+    source: &'source str,
+    span: TextSpan,
+    qualifiers: Vec<TextSpan>,
+    base_name: Option<TextSpan>,
+    generic_args: Vec<TypeShape<'source>>,
+    array_suffixes: Vec<TextSpan>,
+}
+
+impl<'source> TypeShape<'source> {
+    pub const fn span(&self) -> TextSpan {
+        self.span
+    }
+
+    pub fn text(&self) -> &'source str {
+        &self.source[self.span.start..self.span.end]
+    }
+
+    pub fn qualifier_spans(&self) -> &[TextSpan] {
+        &self.qualifiers
+    }
+
+    pub fn qualifier_texts(&self) -> Vec<&'source str> {
+        self.qualifiers
+            .iter()
+            .map(|span| &self.source[span.start..span.end])
+            .collect()
+    }
+
+    pub const fn base_name_span(&self) -> Option<TextSpan> {
+        self.base_name
+    }
+
+    pub fn base_name_text(&self) -> Option<&'source str> {
+        self.base_name
+            .map(|span| &self.source[span.start..span.end])
+    }
+
+    pub fn generic_args(&self) -> &[TypeShape<'source>] {
+        &self.generic_args
+    }
+
+    pub fn array_suffix_spans(&self) -> &[TextSpan] {
+        &self.array_suffixes
+    }
+
+    pub fn array_suffix_texts(&self) -> Vec<&'source str> {
+        self.array_suffixes
+            .iter()
+            .map(|span| &self.source[span.start..span.end])
+            .collect()
+    }
+}
+
 impl<'source> SymbolCatalog<'source> {
     pub fn from_ast(source: &'source str, ast: &AstSourceFile<'source, '_>) -> Self {
+        Self::from_ast_with_metadata(source, ast, SourceFileMetadata::unknown())
+    }
+
+    pub fn from_ast_with_metadata(
+        source: &'source str,
+        ast: &AstSourceFile<'source, '_>,
+        metadata: SourceFileMetadata,
+    ) -> Self {
         let mut builder = SymbolCatalogBuilder {
             source,
+            metadata,
             records: Vec::new(),
             non_declaration_callable_fragments: 0,
         };
@@ -82,6 +193,10 @@ impl<'source> SymbolCatalog<'source> {
 
     pub const fn source(&self) -> &'source str {
         self.source
+    }
+
+    pub const fn metadata(&self) -> &SourceFileMetadata {
+        &self.metadata
     }
 
     pub fn records(&self) -> &[SymbolRecord] {
@@ -112,6 +227,21 @@ impl<'source> SymbolCatalog<'source> {
             .collect()
     }
 
+    pub fn type_shape(&self, span: TextSpan) -> TypeShape<'source> {
+        parse_type_shape(self.source, trim_span(self.source, span))
+    }
+
+    pub fn record_type_shape(&self, record: &SymbolRecord) -> Option<TypeShape<'source>> {
+        let type_text = record.detail.type_text?;
+        let mut shape = self.type_shape(type_text);
+        if let Some(name) = record.name {
+            shape
+                .array_suffixes
+                .extend(array_suffixes_after_name(self.source, record.span, name));
+        }
+        Some(shape)
+    }
+
     pub const fn non_declaration_callable_fragments(&self) -> usize {
         self.non_declaration_callable_fragments
     }
@@ -119,6 +249,7 @@ impl<'source> SymbolCatalog<'source> {
 
 struct SymbolCatalogBuilder<'source> {
     source: &'source str,
+    metadata: SourceFileMetadata,
     records: Vec<SymbolRecord>,
     non_declaration_callable_fragments: usize,
 }
@@ -133,6 +264,7 @@ impl<'source> SymbolCatalogBuilder<'source> {
     fn finish(self) -> SymbolCatalog<'source> {
         SymbolCatalog {
             source: self.source,
+            metadata: self.metadata,
             records: self.records,
             non_declaration_callable_fragments: self.non_declaration_callable_fragments,
         }
@@ -359,6 +491,200 @@ fn attribute_name(text: &str) -> Option<&str> {
     }
 }
 
+fn parse_type_shape(source: &str, span: TextSpan) -> TypeShape<'_> {
+    let span = trim_span(source, span);
+    let mut position = span.start;
+    let mut qualifiers = Vec::new();
+
+    loop {
+        position = skip_whitespace(source, position, span.end);
+        let Some(identifier) = identifier_span_at(source, position, span.end) else {
+            break;
+        };
+        if !is_type_qualifier(&source[identifier.start..identifier.end]) {
+            break;
+        }
+        qualifiers.push(identifier);
+        position = identifier.end;
+    }
+
+    position = skip_whitespace(source, position, span.end);
+    let base_name = identifier_span_at(source, position, span.end);
+    if let Some(base) = base_name {
+        position = base.end;
+    }
+
+    let mut generic_args = Vec::new();
+    position = skip_whitespace(source, position, span.end);
+    if position < span.end && source.as_bytes()[position] == b'<' {
+        if let Some(generic_end) = matching_generic_end(source, position, span.end) {
+            generic_args = parse_generic_args(source, position + 1, generic_end);
+            position = generic_end + 1;
+        }
+    }
+
+    let array_suffixes = array_suffixes_after_offset(source, position, span.end);
+
+    TypeShape {
+        source,
+        span,
+        qualifiers,
+        base_name,
+        generic_args,
+        array_suffixes,
+    }
+}
+
+fn trim_span(source: &str, span: TextSpan) -> TextSpan {
+    let mut start = span.start;
+    let mut end = span.end;
+
+    while start < end {
+        let Some(value) = source[start..end].chars().next() else {
+            break;
+        };
+        if !value.is_whitespace() {
+            break;
+        }
+        start += value.len_utf8();
+    }
+
+    while start < end {
+        let Some(value) = source[start..end].chars().next_back() else {
+            break;
+        };
+        if !value.is_whitespace() {
+            break;
+        }
+        end -= value.len_utf8();
+    }
+
+    TextSpan::new(start, end)
+}
+
+fn skip_whitespace(source: &str, mut position: usize, end: usize) -> usize {
+    while position < end {
+        let Some(value) = source[position..end].chars().next() else {
+            break;
+        };
+        if !value.is_whitespace() {
+            break;
+        }
+        position += value.len_utf8();
+    }
+    position
+}
+
+fn identifier_span_at(source: &str, position: usize, end: usize) -> Option<TextSpan> {
+    let mut chars = source[position..end].char_indices();
+    let (_, first) = chars.next()?;
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return None;
+    }
+
+    let mut identifier_end = position + first.len_utf8();
+    for (index, value) in chars {
+        if value.is_ascii_alphanumeric() || value == '_' {
+            identifier_end = position + index + value.len_utf8();
+        } else {
+            break;
+        }
+    }
+
+    Some(TextSpan::new(position, identifier_end))
+}
+
+fn is_type_qualifier(text: &str) -> bool {
+    matches!(text, "ref" | "notnull" | "autoptr" | "owned")
+}
+
+fn matching_generic_end(source: &str, start: usize, end: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    for (index, value) in source[start..end].char_indices() {
+        let offset = start + index;
+        match value {
+            '<' => depth += 1,
+            '>' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(offset);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn parse_generic_args(source: &str, start: usize, end: usize) -> Vec<TypeShape<'_>> {
+    let mut args = Vec::new();
+    let mut arg_start = start;
+    let mut angle_depth = 0usize;
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
+
+    for (index, value) in source[start..end].char_indices() {
+        let offset = start + index;
+        match value {
+            '<' => angle_depth += 1,
+            '>' => angle_depth = angle_depth.saturating_sub(1),
+            '(' => paren_depth += 1,
+            ')' => paren_depth = paren_depth.saturating_sub(1),
+            '[' => bracket_depth += 1,
+            ']' => bracket_depth = bracket_depth.saturating_sub(1),
+            ',' if angle_depth == 0 && paren_depth == 0 && bracket_depth == 0 => {
+                let span = trim_span(source, TextSpan::new(arg_start, offset));
+                if !span.is_empty() {
+                    args.push(parse_type_shape(source, span));
+                }
+                arg_start = offset + value.len_utf8();
+            }
+            _ => {}
+        }
+    }
+
+    let span = trim_span(source, TextSpan::new(arg_start, end));
+    if !span.is_empty() {
+        args.push(parse_type_shape(source, span));
+    }
+
+    args
+}
+
+fn array_suffixes_after_name(
+    source: &str,
+    record_span: TextSpan,
+    name_span: TextSpan,
+) -> Vec<TextSpan> {
+    array_suffixes_after_offset(source, name_span.end, record_span.end)
+}
+
+fn array_suffixes_after_offset(source: &str, mut position: usize, end: usize) -> Vec<TextSpan> {
+    let mut suffixes = Vec::new();
+
+    loop {
+        position = skip_whitespace(source, position, end);
+        if position >= end || source.as_bytes()[position] != b'[' {
+            break;
+        }
+
+        let suffix_start = position;
+        position += 1;
+        while position < end {
+            let Some(value) = source[position..end].chars().next() else {
+                break;
+            };
+            position += value.len_utf8();
+            if value == ']' {
+                suffixes.push(TextSpan::new(suffix_start, position));
+                break;
+            }
+        }
+    }
+
+    suffixes
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -515,6 +841,123 @@ typedef map<ref Managed, ref Managed> TManagedMap;
             catalog.text(map.detail.type_text.unwrap()),
             "map<ref Managed, ref Managed>"
         );
+    }
+
+    #[test]
+    fn exposes_structured_type_shapes() {
+        let source = r#"typedef ScriptInvokerBase<Callback> ScriptInvoker;
+typedef map<ref Managed, ref array<string>> TManagedNames;
+
+class Example
+{
+	ref array<vector> m_aVectors;
+	void Run(array<ref SCR_Thing> things, float val[4]);
+}
+
+// type-shape sample: autoptr SCR_Type
+"#;
+        let catalog = catalog(source);
+
+        let invoker = find(&catalog, SymbolKind::Typedef, "ScriptInvoker");
+        let invoker_shape = catalog.record_type_shape(invoker).unwrap();
+        assert_eq!(invoker_shape.base_name_text(), Some("ScriptInvokerBase"));
+        assert!(invoker_shape.qualifier_texts().is_empty());
+        assert_eq!(invoker_shape.generic_args().len(), 1);
+        assert_eq!(
+            invoker_shape.generic_args()[0].base_name_text(),
+            Some("Callback")
+        );
+
+        let names = find(&catalog, SymbolKind::Typedef, "TManagedNames");
+        let names_shape = catalog.record_type_shape(names).unwrap();
+        assert_eq!(names_shape.base_name_text(), Some("map"));
+        assert_eq!(names_shape.generic_args().len(), 2);
+        assert_eq!(names_shape.generic_args()[0].qualifier_texts(), vec!["ref"]);
+        assert_eq!(
+            names_shape.generic_args()[0].base_name_text(),
+            Some("Managed")
+        );
+        assert_eq!(names_shape.generic_args()[1].qualifier_texts(), vec!["ref"]);
+        assert_eq!(
+            names_shape.generic_args()[1].base_name_text(),
+            Some("array")
+        );
+        assert_eq!(
+            names_shape.generic_args()[1].generic_args()[0].base_name_text(),
+            Some("string")
+        );
+
+        let vectors = find(&catalog, SymbolKind::Field, "m_aVectors");
+        let vectors_shape = catalog.record_type_shape(vectors).unwrap();
+        assert_eq!(vectors_shape.text(), "ref array<vector>");
+        assert_eq!(vectors_shape.qualifier_texts(), vec!["ref"]);
+        assert_eq!(vectors_shape.base_name_text(), Some("array"));
+        assert_eq!(
+            vectors_shape.generic_args()[0].base_name_text(),
+            Some("vector")
+        );
+        assert!(vectors_shape.array_suffix_texts().is_empty());
+
+        let autoptr_start = source.find("autoptr SCR_Type").unwrap();
+        let autoptr_shape = catalog.type_shape(TextSpan::new(
+            autoptr_start,
+            autoptr_start + "autoptr SCR_Type".len(),
+        ));
+        assert_eq!(autoptr_shape.qualifier_texts(), vec!["autoptr"]);
+        assert_eq!(autoptr_shape.base_name_text(), Some("SCR_Type"));
+
+        let things = find(&catalog, SymbolKind::Parameter, "things");
+        let things_shape = catalog.record_type_shape(things).unwrap();
+        assert_eq!(things_shape.base_name_text(), Some("array"));
+        assert_eq!(things_shape.generic_args().len(), 1);
+        assert_eq!(
+            things_shape.generic_args()[0].qualifier_texts(),
+            vec!["ref"]
+        );
+        assert_eq!(
+            things_shape.generic_args()[0].base_name_text(),
+            Some("SCR_Thing")
+        );
+
+        let val = find(&catalog, SymbolKind::Parameter, "val");
+        let val_shape = catalog.record_type_shape(val).unwrap();
+        assert_eq!(val_shape.base_name_text(), Some("float"));
+        assert_eq!(val_shape.array_suffix_texts(), vec!["[4]"]);
+    }
+
+    #[test]
+    fn from_ast_uses_unknown_metadata() {
+        let catalog = catalog("class Example {}");
+
+        assert_eq!(catalog.metadata().kind, SourceKind::Unknown);
+        assert_eq!(catalog.metadata().absolute_path, None);
+        assert_eq!(catalog.metadata().root_path, None);
+        assert_eq!(catalog.metadata().relative_path, None);
+        assert_eq!(catalog.metadata().priority, SOURCE_PRIORITY_UNKNOWN);
+    }
+
+    #[test]
+    fn metadata_constructor_preserves_file_identity_without_changing_records() {
+        let source = "class Example {}";
+        let parse = parse_source(source);
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
+        let ast = AstSourceFile::new(source, &parse);
+        let metadata = SourceFileMetadata {
+            kind: SourceKind::GameData,
+            absolute_path: Some(PathBuf::from("C:/scripts/Game/Example.c")),
+            root_path: Some(PathBuf::from("C:/scripts")),
+            relative_path: Some(PathBuf::from("Game/Example.c")),
+            priority: SOURCE_PRIORITY_GAME_DATA,
+        };
+
+        let catalog = SymbolCatalog::from_ast_with_metadata(source, &ast, metadata.clone());
+
+        assert_eq!(catalog.metadata(), &metadata);
+        assert_eq!(catalog.records().len(), 1);
+        let record = &catalog.records()[0];
+        assert_eq!(record.kind, SymbolKind::Class);
+        assert_eq!(catalog.record_name(record), Some("Example"));
+        assert_eq!(record.parent, None);
     }
 
     #[test]

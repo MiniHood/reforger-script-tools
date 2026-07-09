@@ -1,6 +1,9 @@
 use reforger_language_server::ast::AstSourceFile;
 use reforger_language_server::lexer::TextSpan;
-use reforger_language_server::model::{SymbolCatalog, SymbolId, SymbolKind, SymbolRecord};
+use reforger_language_server::model::{
+    SourceFileMetadata, SourceKind, SymbolCatalog, SymbolId, SymbolKind, SymbolRecord,
+    SOURCE_PRIORITY_FIXTURE, SOURCE_PRIORITY_WORKSPACE,
+};
 use reforger_language_server::parser::parse_source;
 use std::collections::BTreeSet;
 use std::env;
@@ -20,11 +23,26 @@ fn main() -> Result<(), String> {
         .map_err(|error| format!("Failed to read {}: {error}", file.display()))?;
     let parse = parse_source(&source);
     let ast = AstSourceFile::new(&source, &parse);
-    let catalog = SymbolCatalog::from_ast(&source, &ast);
+    let metadata = file_metadata(&file);
+    let catalog = SymbolCatalog::from_ast_with_metadata(&source, &ast, metadata);
 
     println!("# Symbol Debug");
     println!();
     println!("File: `{}`", file.display());
+    println!("Source kind: `{}`", catalog.metadata().kind.as_str());
+    println!(
+        "Absolute path: `{}`",
+        display_optional_path(&catalog.metadata().absolute_path)
+    );
+    println!(
+        "Root path: `{}`",
+        display_optional_path(&catalog.metadata().root_path)
+    );
+    println!(
+        "Relative path: `{}`",
+        display_optional_path(&catalog.metadata().relative_path)
+    );
+    println!("Source priority: {}", catalog.metadata().priority);
     println!("Bytes: {}", source.len());
     println!("Parse diagnostics: {}", parse.diagnostics.len());
     println!("Symbols: {}", catalog.records().len());
@@ -117,6 +135,28 @@ fn repo_root() -> PathBuf {
         .parent()
         .expect("server crate should be inside the repository root")
         .to_path_buf()
+}
+
+fn file_metadata(file: &Path) -> SourceFileMetadata {
+    let root = repo_root();
+    let fixture_root = root.join("tools").join("fixtures");
+    if file.starts_with(&fixture_root) {
+        return SourceFileMetadata {
+            kind: SourceKind::Fixture,
+            absolute_path: Some(file.to_path_buf()),
+            root_path: Some(root.clone()),
+            relative_path: file.strip_prefix(&root).ok().map(Path::to_path_buf),
+            priority: SOURCE_PRIORITY_FIXTURE,
+        };
+    }
+
+    SourceFileMetadata {
+        kind: SourceKind::Workspace,
+        absolute_path: Some(file.to_path_buf()),
+        root_path: file.starts_with(&root).then_some(root.clone()),
+        relative_path: file.strip_prefix(&root).ok().map(Path::to_path_buf),
+        priority: SOURCE_PRIORITY_WORKSPACE,
+    }
 }
 
 fn print_symbol_filter(catalog: &SymbolCatalog<'_>, symbol: &str) {
@@ -423,4 +463,10 @@ fn intersects(span: TextSpan, start: usize, end: usize) -> bool {
 
 fn escape_inline(value: &str) -> String {
     value.replace('`', "\\`").replace('\n', "\\n")
+}
+
+fn display_optional_path(path: &Option<PathBuf>) -> String {
+    path.as_ref()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "<none>".to_string())
 }

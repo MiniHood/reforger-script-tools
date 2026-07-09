@@ -1,6 +1,9 @@
 use reforger_language_server::ast::{AstSourceFile, ClassMember, Declaration};
 use reforger_language_server::lexer::TextSpan;
-use reforger_language_server::model::{SymbolCatalog, SymbolKind, SymbolRecord};
+use reforger_language_server::model::{
+    SourceFileMetadata, SourceKind, SymbolCatalog, SymbolKind, SymbolRecord,
+    SOURCE_PRIORITY_GAME_DATA,
+};
 use reforger_language_server::parser::parse_source;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -50,6 +53,10 @@ struct Frequencies {
     return_type_texts: BTreeMap<String, usize>,
     modifiers: BTreeMap<String, usize>,
     attribute_names: BTreeMap<String, usize>,
+    type_shape_base_names: BTreeMap<String, usize>,
+    type_shape_qualifiers: BTreeMap<String, usize>,
+    type_shape_generic_arities: BTreeMap<String, usize>,
+    type_shape_array_suffixes: BTreeMap<String, usize>,
 }
 
 #[derive(Default)]
@@ -199,7 +206,11 @@ fn render_report(scripts_path: &Path) -> Result<String, String> {
         let parse = parse_source(&source);
         totals.parse_diagnostics += parse.diagnostics.len();
         let ast = AstSourceFile::new(&source, &parse);
-        let catalog = SymbolCatalog::from_ast(&source, &ast);
+        let catalog = SymbolCatalog::from_ast_with_metadata(
+            &source,
+            &ast,
+            game_data_metadata(scripts_path, file),
+        );
         scan_catalog(
             scripts_path,
             file,
@@ -271,6 +282,30 @@ fn render_report(scripts_path: &Path) -> Result<String, String> {
     );
     append_counts(
         &mut report,
+        "Type Shape Base Name Frequency",
+        &frequencies.type_shape_base_names,
+        80,
+    );
+    append_counts(
+        &mut report,
+        "Type Shape Qualifier Frequency",
+        &frequencies.type_shape_qualifiers,
+        80,
+    );
+    append_counts(
+        &mut report,
+        "Type Shape Generic Arity Frequency",
+        &frequencies.type_shape_generic_arities,
+        16,
+    );
+    append_counts(
+        &mut report,
+        "Type Shape Array Suffix Frequency",
+        &frequencies.type_shape_array_suffixes,
+        32,
+    );
+    append_counts(
+        &mut report,
         "Regular Callable Return Type Frequency",
         &frequencies.return_type_texts,
         80,
@@ -304,6 +339,20 @@ fn render_report(scripts_path: &Path) -> Result<String, String> {
     append_fragment_snippets(&mut report, scripts_path, &fragment_files);
 
     Ok(report)
+}
+
+fn game_data_metadata(scripts_path: &Path, file: &Path) -> SourceFileMetadata {
+    SourceFileMetadata {
+        kind: SourceKind::GameData,
+        absolute_path: Some(file.to_path_buf()),
+        root_path: Some(scripts_path.to_path_buf()),
+        relative_path: Some(
+            file.strip_prefix(scripts_path)
+                .unwrap_or(file)
+                .to_path_buf(),
+        ),
+        priority: SOURCE_PRIORITY_GAME_DATA,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -381,6 +430,22 @@ fn scan_catalog(
 
         if let Some(type_text) = record.detail.type_text {
             count(&mut frequencies.type_texts, catalog.text(type_text));
+        }
+
+        if let Some(type_shape) = catalog.record_type_shape(record) {
+            if let Some(base_name) = type_shape.base_name_text() {
+                count(&mut frequencies.type_shape_base_names, base_name);
+            }
+            for qualifier in type_shape.qualifier_texts() {
+                count(&mut frequencies.type_shape_qualifiers, qualifier);
+            }
+            count(
+                &mut frequencies.type_shape_generic_arities,
+                &type_shape.generic_args().len().to_string(),
+            );
+            for suffix in type_shape.array_suffix_texts() {
+                count(&mut frequencies.type_shape_array_suffixes, suffix);
+            }
         }
 
         if let Some(return_type_text) = record.detail.return_type_text {
@@ -553,6 +618,15 @@ fn append_summary(report: &mut String, scripts_path: &Path, totals: &Totals) {
     report.push_str("| Metric | Value |\n");
     report.push_str("| --- | ---: |\n");
     report.push_str(&format!("| Source path | `{}` |\n", scripts_path.display()));
+    report.push_str(&format!(
+        "| Source kind | `{}` |\n",
+        SourceKind::GameData.as_str()
+    ));
+    report.push_str(&format!(
+        "| Source priority | {} |\n",
+        SOURCE_PRIORITY_GAME_DATA
+    ));
+    report.push_str(&format!("| Source root | `{}` |\n", scripts_path.display()));
     report.push_str(&format!(
         "| Scan timestamp unix seconds | {} |\n",
         timestamp()

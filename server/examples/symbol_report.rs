@@ -1,6 +1,9 @@
 use reforger_language_server::ast::AstSourceFile;
 use reforger_language_server::lexer::TextSpan;
-use reforger_language_server::model::{SymbolCatalog, SymbolId, SymbolKind, SymbolRecord};
+use reforger_language_server::model::{
+    SourceFileMetadata, SourceKind, SymbolCatalog, SymbolId, SymbolKind, SymbolRecord,
+    SOURCE_PRIORITY_FIXTURE,
+};
 use reforger_language_server::parser::parse_source;
 use std::env;
 use std::fs;
@@ -140,12 +143,25 @@ fn render_report() -> String {
 fn append_fixture(report: &mut String, fixture: Fixture) {
     let parse = parse_source(fixture.source);
     let ast = AstSourceFile::new(fixture.source, &parse);
-    let catalog = SymbolCatalog::from_ast(fixture.source, &ast);
+    let metadata = fixture_metadata(fixture.path);
+    let catalog = SymbolCatalog::from_ast_with_metadata(fixture.source, &ast, metadata);
 
     report.push_str(&format!("## `{}`\n\n", fixture.path));
     report.push_str("### Summary\n\n");
     report.push_str("| Metric | Value |\n");
     report.push_str("| --- | ---: |\n");
+    report.push_str(&format!(
+        "| Source kind | `{}` |\n",
+        catalog.metadata().kind.as_str()
+    ));
+    report.push_str(&format!(
+        "| Relative path | `{}` |\n",
+        display_optional_path(&catalog.metadata().relative_path)
+    ));
+    report.push_str(&format!(
+        "| Source priority | {} |\n",
+        catalog.metadata().priority
+    ));
     report.push_str(&format!("| Bytes | {} |\n", fixture.source.len()));
     report.push_str(&format!(
         "| Parse diagnostics | {} |\n",
@@ -166,6 +182,17 @@ fn append_fixture(report: &mut String, fixture: Fixture) {
         append_symbol_tree(report, &catalog, record, 0);
     }
     report.push('\n');
+}
+
+fn fixture_metadata(path: &str) -> SourceFileMetadata {
+    let root = repo_root();
+    SourceFileMetadata {
+        kind: SourceKind::Fixture,
+        absolute_path: Some(root.join(path)),
+        root_path: Some(root),
+        relative_path: Some(PathBuf::from(path)),
+        priority: SOURCE_PRIORITY_FIXTURE,
+    }
 }
 
 fn append_symbol_tree(
@@ -351,4 +378,10 @@ fn line_column(source: &str, offset: usize) -> (usize, usize) {
 
 fn escape_inline(value: &str) -> String {
     value.replace('`', "\\`").replace('\n', "\\n")
+}
+
+fn display_optional_path(path: &Option<PathBuf>) -> String {
+    path.as_ref()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "<none>".to_string())
 }
