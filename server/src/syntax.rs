@@ -14,6 +14,7 @@ pub enum SyntaxKind {
     FunctionDecl,
     MethodDecl,
     FieldDecl,
+    EmptyDecl,
     ParameterList,
     Parameter,
     TypeRef,

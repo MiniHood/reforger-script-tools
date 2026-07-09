@@ -66,7 +66,7 @@ fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
-fn fixtures() -> [Fixture; 9] {
+fn fixtures() -> [Fixture; 11] {
     [
         Fixture {
             path: "tools/fixtures/parser/core_types_declarations.c",
@@ -104,6 +104,16 @@ fn fixtures() -> [Fixture; 9] {
             path: "tools/fixtures/parser/workbench_basic_code_formatter_excerpt.c",
             source: include_str!(
                 "../../tools/fixtures/parser/workbench_basic_code_formatter_excerpt.c"
+            ),
+        },
+        Fixture {
+            path: "tools/fixtures/parser/game_optional_semicolon_shapes.c",
+            source: include_str!("../../tools/fixtures/parser/game_optional_semicolon_shapes.c"),
+        },
+        Fixture {
+            path: "tools/fixtures/parser/game_field_initializer_call_shapes.c",
+            source: include_str!(
+                "../../tools/fixtures/parser/game_field_initializer_call_shapes.c"
             ),
         },
     ]

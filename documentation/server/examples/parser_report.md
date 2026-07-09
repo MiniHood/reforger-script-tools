@@ -10,7 +10,7 @@ This is developer review tooling for the Rust parser scaffold. It is not VS Code
 
 ## Current Behavior
 
-Running `cargo run --manifest-path server/Cargo.toml --example parser_report` writes `tools/reports/parser-fixtures.report.md` by default. The report includes per-fixture summaries, parse diagnostic counts, syntax-kind counts, preserved token counts, and a syntax-tree outline. It includes both focused parser fixtures and larger game-data-derived class excerpts, including editor preview and Workbench formatter examples.
+Running `cargo run --manifest-path server/Cargo.toml --example parser_report` writes `tools/reports/parser-fixtures.report.md` by default. The report includes per-fixture summaries, parse diagnostic counts, syntax-kind counts, preserved token counts, and a syntax-tree outline. It includes both focused parser fixtures and larger game-data-derived class excerpts, including editor preview, Workbench formatter, optional-semicolon, and nested field-initializer call examples.
 
 The command also accepts `--out <path>` for an alternate report path.
 
@@ -23,6 +23,8 @@ The report generator uses only Rust standard library APIs and the crate parser/s
 - Added the first parser fixture report generator for human/Codex review.
 - Added larger game-code parser fixtures to the report input set.
 - Added editor preview and Workbench formatter fixtures to the report input set.
+- Added optional-semicolon fixture coverage to the report input set.
+- Added nested field-initializer call fixture coverage to the report input set.
 
 ## Future Improvements
 

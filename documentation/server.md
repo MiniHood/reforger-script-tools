@@ -6,11 +6,11 @@ Owns the Rust language-tooling foundation for Reforger Script Tools.
 
 ## Architecture Role
 
-This folder is the future language-engine side of the project. It should contain compiler-style language intelligence that must stay out of the TypeScript VS Code shell. Current slices include the lexer and the first declaration-level parser scaffold.
+This folder is the future language-engine side of the project. It should contain compiler-style language intelligence that must stay out of the TypeScript VS Code shell. Current slices include the lexer, the declaration-level parser scaffold, and the first syntax-backed AST declaration wrapper layer.
 
 ## Current Behavior
 
-The Rust crate exposes a full-fidelity lexer that returns token kinds and byte spans without copying source text into tokens. It also exposes a declaration-level parser that consumes lexer tokens and returns a full-fidelity syntax tree preserving trivia, tokens, and balanced method-body blocks.
+The Rust crate exposes a full-fidelity lexer that returns token kinds and byte spans without copying source text into tokens. It also exposes a declaration-level parser that consumes lexer tokens and returns a full-fidelity syntax tree preserving trivia, tokens, and balanced method-body blocks. The AST layer provides file-local declaration views over that syntax tree without semantic resolution.
 
 ## Dependencies and Boundaries
 
@@ -21,6 +21,7 @@ The crate currently has no external Rust dependencies. It must not import VS Cod
 - Added the initial `server/` crate as a single focused Rust library for language tooling.
 - Added lexer-only tokenization for identifiers, keywords, literals, trivia, punctuation, operators, preprocessor marker tokens, and unterminated string/comment errors.
 - Added the first parser scaffold for declaration-level syntax, full-fidelity token preservation, parse diagnostics, and parser fixture reporting.
+- Added the first AST declaration wrapper layer over parser syntax nodes.
 
 ## Future Improvements
 

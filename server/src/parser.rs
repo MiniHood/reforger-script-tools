@@ -74,6 +74,10 @@ impl Parser<'_> {
             prefix.push(self.parse_preprocessor_directive());
             return node(SyntaxKind::PreprocessorDirective, prefix);
         }
+        if self.at(TokenKind::Semicolon) {
+            prefix.push(self.bump_token());
+            return node(SyntaxKind::EmptyDecl, prefix);
+        }
         if self.at(TokenKind::RightBrace) {
             prefix.push(self.bump_token());
             return node(SyntaxKind::Error, prefix);
@@ -227,6 +231,10 @@ impl Parser<'_> {
         self.collect_trivia(&mut children);
         if self.at(TokenKind::LeftBrace) {
             children.push(self.parse_balanced_block());
+            self.collect_trivia(&mut children);
+            if self.at(TokenKind::Semicolon) {
+                children.push(self.bump_token());
+            }
         } else {
             self.expect(
                 TokenKind::Semicolon,
@@ -244,29 +252,51 @@ impl Parser<'_> {
 
     fn parse_field_decl(&mut self, mut children: Vec<SyntaxElement>) -> SyntaxElement {
         let mut has_assignment = false;
+        let mut paren_depth = 0usize;
+        let mut bracket_depth = 0usize;
+        let mut angle_depth = 0usize;
+        let mut brace_depth = 0usize;
 
-        while !matches!(
-            self.current().kind,
-            TokenKind::Semicolon | TokenKind::LeftBrace | TokenKind::RightBrace | TokenKind::Eof
-        ) {
-            if self.at_operator(Operator::Equal) {
-                has_assignment = true;
+        while !self.at(TokenKind::Eof) {
+            let kind = self.current().kind;
+            let at_top_level =
+                paren_depth == 0 && bracket_depth == 0 && angle_depth == 0 && brace_depth == 0;
+
+            if at_top_level && matches!(kind, TokenKind::Semicolon | TokenKind::RightBrace) {
+                break;
             }
+
+            if at_top_level && has_assignment && self.at(TokenKind::LeftBrace) {
+                children.push(self.parse_balanced_initializer_list());
+                continue;
+            }
+
+            match kind {
+                TokenKind::LeftParen => paren_depth += 1,
+                TokenKind::RightParen => paren_depth = paren_depth.saturating_sub(1),
+                TokenKind::LeftBracket => bracket_depth += 1,
+                TokenKind::RightBracket => bracket_depth = bracket_depth.saturating_sub(1),
+                TokenKind::LeftBrace => brace_depth += 1,
+                TokenKind::RightBrace => brace_depth = brace_depth.saturating_sub(1),
+                TokenKind::Operator(Operator::Less) => angle_depth += 1,
+                TokenKind::Operator(Operator::Greater) => {
+                    angle_depth = angle_depth.saturating_sub(1)
+                }
+                TokenKind::Operator(Operator::GreaterGreater) => {
+                    angle_depth = angle_depth.saturating_sub(2)
+                }
+                TokenKind::Operator(Operator::Equal) => has_assignment = true,
+                _ => {}
+            }
+
             children.push(self.bump_token());
         }
 
-        if self.at(TokenKind::LeftBrace) {
-            if has_assignment {
-                children.push(self.parse_balanced_initializer_list());
-            } else {
-                children.push(self.parse_balanced_block());
-            }
+        if self.at(TokenKind::Semicolon) {
+            children.push(self.bump_token());
+        } else if !self.at(TokenKind::RightBrace) {
+            self.error_here("Expected field semicolon");
         }
-        self.expect(
-            TokenKind::Semicolon,
-            &mut children,
-            "Expected field semicolon",
-        );
         node(SyntaxKind::FieldDecl, children)
     }
 
@@ -374,12 +404,14 @@ impl Parser<'_> {
         let mut paren_depth = 0usize;
         let mut bracket_depth = 0usize;
         let mut angle_depth = 0usize;
+        let mut brace_depth = 0usize;
 
         while !self.at(TokenKind::Eof) {
             let kind = self.current().kind;
             if paren_depth == 0
                 && bracket_depth == 0
                 && angle_depth == 0
+                && brace_depth == 0
                 && matches!(kind, TokenKind::Comma | TokenKind::RightParen)
             {
                 break;
@@ -390,6 +422,8 @@ impl Parser<'_> {
                 TokenKind::RightParen => paren_depth = paren_depth.saturating_sub(1),
                 TokenKind::LeftBracket => bracket_depth += 1,
                 TokenKind::RightBracket => bracket_depth = bracket_depth.saturating_sub(1),
+                TokenKind::LeftBrace => brace_depth += 1,
+                TokenKind::RightBrace => brace_depth = brace_depth.saturating_sub(1),
                 TokenKind::Operator(Operator::Less) => angle_depth += 1,
                 TokenKind::Operator(Operator::Greater) => {
                     angle_depth = angle_depth.saturating_sub(1)
@@ -514,6 +548,10 @@ impl Parser<'_> {
                 break;
             }
             children.push(self.parse_attribute_list());
+            self.collect_trivia(children);
+            if self.at(TokenKind::Semicolon) {
+                children.push(self.bump_token());
+            }
         }
     }
 
@@ -782,15 +820,16 @@ typedef map<ref Managed, ref Managed> TManagedRefManagedRefMap;
 	proto int Copy(map<TKey,TValue> from);
 	static override bool GetEntitySourceBudgetCost(IEntityComponentSource editableEntitySource, out notnull array<ref SCR_EntityBudgetValue> budgetValues);
 	void WithDefault(int value = Math.Clamp(1, 2, 3), string name = "ok");
+	void WithBraceDefault(vector targetPosition[4] = { "1 0 0", "0 1 0", "0 0 1", "0 0 0" }, bool disableInput = false, SCR_LoiterCustomAnimData customAnimData = SCR_LoiterCustomAnimData.Default);
 }
 "#;
 
         let parse = parse_source(source);
 
         assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
-        assert_eq!(count_kind(&parse.root, SyntaxKind::MethodDecl), 3);
-        assert_eq!(count_kind(&parse.root, SyntaxKind::ParameterList), 3);
-        assert_eq!(count_kind(&parse.root, SyntaxKind::Parameter), 5);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::MethodDecl), 4);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::ParameterList), 4);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::Parameter), 8);
     }
 
     #[test]
@@ -814,6 +853,86 @@ typedef map<ref Managed, ref Managed> TManagedRefManagedRefMap;
     }
 
     #[test]
+    fn keeps_nested_initializer_braces_inside_field_call_initializers() {
+        let source = r#"class Example
+{
+	protected static ref TStringArray s_aVarsOut2 = SCR_AINodePortsHelpers.MergeTwoArrays(SCR_AIGetWaypointParameters.s_aVarsOut_Base, {PORT_ENTITY});
+	protected ref array<int> m_aValues = {};
+}
+"#;
+
+        let parse = parse_source(source);
+
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::FieldDecl), 2);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::InitializerList), 1);
+    }
+
+    #[test]
+    fn accepts_game_data_optional_semicolons_after_attributes_and_bodies() {
+        let source = r#"class ScriptedLoadContainer: LoadContainer
+{
+	event protected bool StartObject() {return false;};
+	event protected bool StartArray(out int count) {return false;};
+}
+
+[BaseContainerProps()]
+class SCR_DefendWaypointPreset
+{
+	[Attribute("", UIWidgets.EditBox, "Preset name, only informative. Switch using index.")];
+	protected string m_sName;
+
+	[Attribute("true", UIWidgets.CheckBox, "Use turrets?")];
+	protected bool m_bUseTurrets;
+}
+"#;
+
+        let parse = parse_source(source);
+
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::ClassDecl), 2);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::MethodDecl), 2);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::FieldDecl), 2);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::AttributeList), 3);
+    }
+
+    #[test]
+    fn preserves_empty_semicolon_declarations() {
+        let source = r#";
+class Example
+{
+	protected ref array<WeaponSlotComponent> m_aWeaponSlots = new array<WeaponSlotComponent>(); ;
+	proto external void RequestPlayerSave(int iPlayerId);;
+}
+"#;
+
+        let parse = parse_source(source);
+
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::ClassDecl), 1);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::FieldDecl), 1);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::MethodDecl), 1);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::EmptyDecl), 3);
+    }
+
+    #[test]
+    fn tolerates_field_before_class_close_without_semicolon() {
+        let source = r#"class SerializerDefaultSpawnData: Managed
+{
+	vector Transform[4];
+	ResourceName Prefab
+}
+"#;
+
+        let parse = parse_source(source);
+
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::ClassDecl), 1);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::FieldDecl), 2);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::Block), 1);
+    }
+
+    #[test]
     fn preserves_all_tokens_in_committed_parser_fixtures() {
         let fixtures = [
             include_str!("../../tools/fixtures/parser/core_types_declarations.c"),
@@ -825,6 +944,8 @@ typedef map<ref Managed, ref Managed> TManagedRefManagedRefMap;
             include_str!("../../tools/fixtures/parser/game_editable_group_excerpt.c"),
             include_str!("../../tools/fixtures/parser/game_editor_preview_params.c"),
             include_str!("../../tools/fixtures/parser/workbench_basic_code_formatter_excerpt.c"),
+            include_str!("../../tools/fixtures/parser/game_optional_semicolon_shapes.c"),
+            include_str!("../../tools/fixtures/parser/game_field_initializer_call_shapes.c"),
         ];
 
         for fixture in fixtures {

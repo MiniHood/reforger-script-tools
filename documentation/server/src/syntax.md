@@ -10,7 +10,7 @@ This file is part of the Rust language-engine layer. It defines the full-fidelit
 
 ## Current Behavior
 
-The syntax layer exposes syntax kinds, syntax nodes, syntax elements, parse diagnostics, and parse results. Nodes store byte spans and child elements. Tokens are preserved as syntax elements so source text remains external and can be sliced by span. `InitializerList` distinguishes field initializer braces from class and method `Block` nodes.
+The syntax layer exposes syntax kinds, syntax nodes, syntax elements, parse diagnostics, and parse results. Nodes store byte spans and child elements. Tokens are preserved as syntax elements so source text remains external and can be sliced by span. `InitializerList` distinguishes field initializer braces from class and method `Block` nodes. `EmptyDecl` preserves standalone semicolons in declaration context without turning them into parser errors.
 
 ## Dependencies and Boundaries
 
@@ -20,6 +20,7 @@ This file depends only on lexer token/span types. It must not import VS Code API
 
 - Added initial full-fidelity syntax tree structures for parser scaffolding.
 - Added `InitializerList` for brace-delimited field initializer syntax.
+- Added `EmptyDecl` for standalone semicolon declarations.
 
 ## Future Improvements
 
