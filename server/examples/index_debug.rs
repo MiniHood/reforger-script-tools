@@ -322,7 +322,11 @@ fn print_query_results(
     if let Some(id) = preferred {
         println!("### Preferred Match");
         println!();
-        if symbol_matches_filters(index, args, id) {
+        if symbol_matches_filters(index, args, id) || matches!(&args.query, Query::Class(_)) {
+            if !symbol_matches_filters(index, args, id) {
+                println!("Preferred class anchor shown despite `--symbol` filter.");
+                println!();
+            }
             print_symbol(index, args, id);
         } else {
             println!("Preferred match hidden by `--symbol` filter.");
@@ -406,8 +410,13 @@ fn print_class_member_summary(
     println!();
     println!("This is `direct_members_by_owner()` output for the owner name across all indexed source files. In overlay mode it is not limited to the preferred class declaration.");
     println!();
-    let direct_members = filter_member_ids(index, args, index.direct_members_by_owner(owner));
-    println!("Members: {}", direct_members.len());
+    let direct_members_all = index.direct_members_by_owner(owner);
+    let direct_members = filter_member_ids(index, args, direct_members_all);
+    println!(
+        "Members: {} shown / {} total",
+        direct_members.len(),
+        direct_members_all.len()
+    );
     for id in direct_members.iter().take(args.limit) {
         print_member_summary(index, *id, args.show_docs);
     }
@@ -425,6 +434,7 @@ fn print_class_member_summary(
         .skip(index.direct_members_by_owner(owner).len())
         .copied()
         .collect::<Vec<_>>();
+    let inherited_total = inherited_members.len();
     let inherited_members = filter_member_ids(index, args, &inherited_members);
     println!(
         "## Owner-Name Aggregate Members Including Bases `{}`",
@@ -434,9 +444,11 @@ fn print_class_member_summary(
     println!("Raw all-candidates view for debugging. This uses exact owner/base names and can include members from multiple source kinds when an overlay is indexed.");
     println!();
     println!(
-        "Members: {} direct, {} inherited/base-chain, {} total",
+        "Members: {} direct shown / {} direct total, {} inherited/base-chain shown / {} inherited/base-chain total, {} raw total",
         direct_members.len(),
+        direct_members_all.len(),
         inherited_members.len(),
+        inherited_total,
         all_members.len()
     );
     for id in inherited_members.iter().take(args.limit) {
@@ -520,17 +532,18 @@ fn print_editor_completion_lookup(
     println!();
     println!("Future editor-facing completion facade. It applies source-category policy, preferred class selection, duplicate member de-duplication, source priority, and callable-form preference.");
     println!();
-    println!(
-        "Members: {} visible, {} raw candidates, {} shadow groups",
-        completion.candidates.len(),
-        completion.raw_candidates.len(),
-        completion.shadowed_groups.len()
-    );
     let candidates = completion
         .candidates
         .iter()
         .filter(|candidate| candidate_matches_filters(args, candidate))
         .collect::<Vec<_>>();
+    println!(
+        "Members: {} shown / {} visible, {} raw candidates, {} shadow groups",
+        candidates.len(),
+        completion.candidates.len(),
+        completion.raw_candidates.len(),
+        completion.shadowed_groups.len()
+    );
     for candidate in candidates.iter().take(args.limit) {
         print_editor_candidate(candidate);
     }
@@ -550,6 +563,11 @@ fn print_editor_completion_lookup(
             .iter()
             .filter(|group| shadow_group_matches_filters(index, args, group.kept, &group.shadowed))
             .collect::<Vec<_>>();
+        println!(
+            "Shadow groups: {} shown / {} total",
+            groups.len(),
+            completion.shadowed_groups.len()
+        );
         for group in groups.iter().take(args.limit) {
             println!("- `{}`", escape_inline(&group.key));
             println!("  Kept:");
@@ -670,13 +688,14 @@ fn print_completion_lookup(
     println!();
     println!("{description}");
     println!();
+    let members = filter_member_ids(index, args, &completion.members);
     println!(
-        "Members: {} visible, {} raw candidates, {} shadow groups",
+        "Members: {} shown / {} visible, {} raw candidates, {} shadow groups",
+        members.len(),
         completion.members.len(),
         completion.raw_candidates.len(),
         completion.shadowed_groups.len()
     );
-    let members = filter_member_ids(index, args, &completion.members);
     for id in members.iter().take(args.limit) {
         print_member_summary(index, *id, args.show_docs);
     }
@@ -696,6 +715,11 @@ fn print_completion_lookup(
             .iter()
             .filter(|group| shadow_group_matches_filters(index, args, group.kept, &group.shadowed))
             .collect::<Vec<_>>();
+        println!(
+            "Shadow groups: {} shown / {} total",
+            groups.len(),
+            completion.shadowed_groups.len()
+        );
         for group in groups.iter().take(args.limit) {
             println!(
                 "- `{}` cause `{}`",

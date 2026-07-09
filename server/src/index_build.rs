@@ -79,6 +79,9 @@ pub struct ParseDiagnosticDetail {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct IndexBuildTimings {
     pub file_discovery: Duration,
+    pub read_decode: Duration,
+    pub parse: Duration,
+    pub ast_model_catalog: Duration,
     pub catalog_build: Duration,
     pub index_build: Duration,
     pub total: Duration,
@@ -133,15 +136,21 @@ fn build_file(
     summary: &mut IndexBuildSummary,
 ) -> Result<(), String> {
     let catalog_build_start = Instant::now();
+    let read_decode_start = Instant::now();
     let bytes =
         fs::read(file).map_err(|error| format!("Failed to read {}: {error}", file.display()))?;
     let byte_count = bytes.len();
     let source = String::from_utf8_lossy(&bytes);
     let lossy = matches!(source, Cow::Owned(_));
     let source = source.into_owned();
+    summary.timings.read_decode += read_decode_start.elapsed();
 
+    let parse_start = Instant::now();
     let parse = parse_source(&source);
     let parse_diagnostics = parse.diagnostics.len();
+    summary.timings.parse += parse_start.elapsed();
+
+    let ast_model_catalog_start = Instant::now();
     let ast = AstSourceFile::new(&source, &parse);
     let catalog = SymbolCatalog::from_ast_with_metadata(
         &source,
@@ -150,6 +159,7 @@ fn build_file(
     );
     let indexed_symbols = catalog.records().len();
     let non_declaration_callable_fragments = catalog.non_declaration_callable_fragments();
+    summary.timings.ast_model_catalog += ast_model_catalog_start.elapsed();
     summary.timings.catalog_build += catalog_build_start.elapsed();
 
     let index_build_start = Instant::now();
@@ -400,6 +410,9 @@ mod tests {
         assert_eq!(result.summary.totals.files, 1);
         assert_eq!(result.summary.totals.indexed_files, 1);
         assert_eq!(result.summary.totals.indexed_symbols, 1);
+        assert!(result.summary.timings.catalog_build >= result.summary.timings.read_decode);
+        assert!(result.summary.timings.catalog_build >= result.summary.timings.parse);
+        assert!(result.summary.timings.catalog_build >= result.summary.timings.ast_model_catalog);
         let class = result.index.classes_by_name("GameOnly")[0];
         let file = result.index.file(class.file_id).unwrap();
         assert_eq!(file.metadata.kind, SourceKind::GameData);

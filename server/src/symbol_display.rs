@@ -110,21 +110,118 @@ fn push_prefixed(parts: &mut Vec<String>, label: &str, value: Option<&str>) {
 }
 
 fn doc_preview(comments: &[IndexedDocComment]) -> Option<String> {
-    comments
+    let lines = comments
         .iter()
-        .flat_map(|comment| comment.text.lines())
-        .map(readable_doc_line)
-        .find(|line| !line.is_empty())
+        .flat_map(|comment| readable_doc_lines(&comment.text))
+        .collect::<Vec<_>>();
+
+    lines
+        .iter()
+        .find_map(|line| display_brief_doc_line(line))
+        .or_else(|| lines.into_iter().find_map(display_doc_line))
         .map(|line| truncate_preview(&line, DOC_PREVIEW_LIMIT))
+}
+
+fn readable_doc_lines(comment: &str) -> Vec<String> {
+    comment.lines().map(readable_doc_line).collect()
 }
 
 fn readable_doc_line(line: &str) -> String {
     let mut value = line.trim();
-    value = value.strip_prefix("//!").unwrap_or(value).trim();
-    value = value.strip_prefix("/*!").unwrap_or(value).trim();
-    value = value.strip_prefix('*').unwrap_or(value).trim();
-    value = value.strip_suffix("*/").unwrap_or(value).trim();
-    value.to_string()
+    value = value.strip_prefix("//!").unwrap_or(value).trim_start();
+    value = value.strip_prefix("/*!").unwrap_or(value).trim_start();
+    value = value.strip_prefix("/*").unwrap_or(value).trim_start();
+    value = value.strip_prefix('*').unwrap_or(value).trim_start();
+    value = value.strip_suffix("*/").unwrap_or(value).trim_end();
+    value.trim().to_string()
+}
+
+fn display_doc_line(line: String) -> Option<String> {
+    let line = line.trim();
+    if line.is_empty() || is_doc_separator(line) {
+        return None;
+    }
+
+    if line == "\\code" || line == "@code" || line == "\\endcode" || line == "@endcode" {
+        return None;
+    }
+
+    if let Some(value) = strip_doc_tag(line, "\\brief").or_else(|| strip_doc_tag(line, "@brief")) {
+        return non_empty(value);
+    }
+    if let Some(value) = strip_doc_tag(line, "\\return").or_else(|| strip_doc_tag(line, "@return"))
+    {
+        return non_empty(format!("Returns {value}"));
+    }
+    if let Some(value) =
+        strip_doc_tag(line, "\\returns").or_else(|| strip_doc_tag(line, "@returns"))
+    {
+        return non_empty(format!("Returns {value}"));
+    }
+    if let Some(value) =
+        strip_doc_tag(line, "\\warning").or_else(|| strip_doc_tag(line, "@warning"))
+    {
+        return non_empty(format!("Warning: {value}"));
+    }
+    if let Some(value) = strip_doc_tag(line, "\\note").or_else(|| strip_doc_tag(line, "@note")) {
+        return non_empty(format!("Note: {value}"));
+    }
+    if let Some(value) = strip_param_doc_tag(line) {
+        return non_empty(format!("Parameter {value}"));
+    }
+    if line.starts_with('\\') || line.starts_with('@') {
+        return None;
+    }
+
+    Some(line.to_string())
+}
+
+fn display_brief_doc_line(line: &str) -> Option<String> {
+    let line = line.trim();
+    strip_doc_tag(line, "\\brief")
+        .or_else(|| strip_doc_tag(line, "@brief"))
+        .and_then(non_empty)
+}
+
+fn is_doc_separator(line: &str) -> bool {
+    line.chars()
+        .all(|ch| matches!(ch, '-' | '=' | '_' | '*' | '/'))
+}
+
+fn strip_doc_tag(line: &str, tag: &str) -> Option<String> {
+    line.strip_prefix(tag).map(|value| {
+        value
+            .trim_start_matches([' ', '\t', ':', '-'])
+            .trim()
+            .to_string()
+    })
+}
+
+fn strip_param_doc_tag(line: &str) -> Option<String> {
+    for tag in ["\\param", "@param"] {
+        let Some(rest) = line.strip_prefix(tag) else {
+            continue;
+        };
+        let rest = rest.trim_start();
+        let rest = if let Some(after_bracket) = rest.strip_prefix('[') {
+            after_bracket
+                .split_once(']')
+                .map(|(_, value)| value.trim_start())
+                .unwrap_or(rest)
+        } else {
+            rest
+        };
+        return Some(rest.to_string());
+    }
+    None
+}
+
+fn non_empty(value: String) -> Option<String> {
+    if value.trim().is_empty() {
+        None
+    } else {
+        Some(value)
+    }
 }
 
 fn truncate_preview(value: &str, limit: usize) -> String {
@@ -283,6 +380,99 @@ class Example
         assert!(display.doc_comments.is_empty());
         assert!(display.attributes.is_empty());
         assert!(display.modifiers.is_empty());
+    }
+
+    #[test]
+    fn renders_clean_doc_previews_without_changing_raw_comments() {
+        let index = index(
+            r#"//! \brief Example class.
+class Example
+{
+	/*!
+	 * \param value raw input value.
+	 * \return true when accepted.
+	 */
+	void Run(int value);
+}
+"#,
+        );
+
+        let class =
+            SymbolDisplay::for_symbol(&index, find(&index, SymbolKind::Class, "Example")).unwrap();
+        assert_eq!(
+            class.documentation_preview.as_deref(),
+            Some("Example class.")
+        );
+        assert_eq!(class.doc_comments[0].text, "//! \\brief Example class.");
+
+        let method =
+            SymbolDisplay::for_symbol(&index, find(&index, SymbolKind::Method, "Run")).unwrap();
+        assert_eq!(
+            method.documentation_preview.as_deref(),
+            Some("Parameter value raw input value.")
+        );
+        assert!(method.doc_comments[0]
+            .text
+            .contains("\\return true when accepted."));
+    }
+
+    #[test]
+    fn skips_empty_separator_and_code_only_doc_preview_lines() {
+        let index = index(
+            r#"/*!
+ * -------------------------------------------------------------------------
+ * \code
+ * int value = 1;
+ * \endcode
+ */
+class Example {}
+"#,
+        );
+        let display =
+            SymbolDisplay::for_symbol(&index, find(&index, SymbolKind::Class, "Example")).unwrap();
+
+        assert_eq!(
+            display.documentation_preview.as_deref(),
+            Some("int value = 1;")
+        );
+    }
+
+    #[test]
+    fn skips_unknown_doxygen_command_lines() {
+        let index = index(
+            r#"/*!
+ * \addtogroup Attributes
+ * Useful attribute docs.
+ */
+class Example {}
+"#,
+        );
+        let display =
+            SymbolDisplay::for_symbol(&index, find(&index, SymbolKind::Class, "Example")).unwrap();
+
+        assert_eq!(
+            display.documentation_preview.as_deref(),
+            Some("Useful attribute docs.")
+        );
+    }
+
+    #[test]
+    fn prefers_explicit_brief_preview_over_earlier_body_lines() {
+        let index = index(
+            r#"/*!
+ * < values from generated documentation.
+ * \brief Clear generated summary.
+ */
+class Example {}
+"#,
+        );
+        let display =
+            SymbolDisplay::for_symbol(&index, find(&index, SymbolKind::Class, "Example")).unwrap();
+
+        assert_eq!(
+            display.documentation_preview.as_deref(),
+            Some("Clear generated summary.")
+        );
     }
 
     fn index(source: &str) -> SymbolIndex {

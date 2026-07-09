@@ -12,19 +12,20 @@ This file sits above the raw symbol index and below future LSP hover, completion
 
 `SymbolDisplay::for_symbol()` returns `SymbolDisplayInfo` for one indexed symbol. The display record includes label, kind, detail text, callable signature, raw `doc_comments`, a bounded `documentation_preview`, modifiers, attributes, source provenance, spans, conditional context, and callable form.
 
-Callable symbols use `SymbolIndex::callable_signature()`. Non-callable symbols use existing indexed detail text such as type text, base type, enum value, default value, or typedef aliased type. Documentation comments are preserved as raw copied comment text; previews are display-only and do not parse Doxygen tags.
+Callable symbols use `SymbolIndex::callable_signature()`. Non-callable symbols use existing indexed detail text such as type text, base type, enum value, default value, or typedef aliased type. Documentation comments are preserved as raw copied comment text. `documentation_preview` is display-only: it strips comment markers and separator noise, trims common block-comment `*` prefixes, and lightly renders first-useful Doxygen-style tags such as `\brief`, `\param`, `\return`, `\warning`, and `\note` into readable preview text.
 
 ## Dependencies and Boundaries
 
-This file depends on `server/src/index.rs` and model/source metadata types. It must not parse source files, resolve symbols, evaluate types/defaults/enum values, normalize documentation, call Workbench, persist caches, or handle LSP protocol requests.
+This file depends on `server/src/index.rs` and model/source metadata types. It must not parse source files, resolve symbols, evaluate types/defaults/enum values, perform full Doxygen extraction, call Workbench, persist caches, or handle LSP protocol requests.
 
 ## Change Notes
 
 - Added the first symbol display layer so future editor features and debug tools can share one presentation shape.
 - Raw documentation storage is named `doc_comments`; `documentation_preview` is the only display-rendered documentation field.
 - Kept display source-backed through copied indexed facts because `SymbolIndex` does not retain source text.
+- Added lightweight doc-preview rendering so hover/completion previews avoid exposing raw Doxygen tags while raw comments remain unchanged.
 
 ## Future Improvements
 
 - Add LSP-specific conversion separately when hover, completion, or document-symbol handlers exist.
-- Add richer documentation rendering only after Doxygen/tag behavior is intentionally designed.
+- Add structured documentation extraction only after Doxygen/tag behavior is intentionally designed.

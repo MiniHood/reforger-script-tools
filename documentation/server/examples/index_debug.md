@@ -12,7 +12,7 @@ This is developer/Codex inspection tooling for the in-memory symbol index. It is
 
 The example uses `server/src/index_build.rs` to build the same parser, AST, model, and index pipeline used by index corpus reporting. It accepts `--scripts <path>`, optional `--workspace <path>`, and exactly one exact lookup mode: `--name`, `--top-level`, `--class`, `--typedef`, `--function`, or `--method <owner> <name>`. Output includes corpus totals, parse diagnostics, all matches, the preferred match, source kind, source category, editor-completion inclusion/exclusion, priority, path, symbol kind, spans, display details, callable signatures, modifiers, attributes, doc previews, callable form, conditional context, owner-name aggregate class-member summaries, raw best-effort inherited/base-chain member summaries, raw aggregate completion summaries, raw preferred-class overlay completion summaries, true `IndexQuery` editor completion summaries, shadowed member groups with report-style likely-cause labels, and immediate children when useful.
 
-Focused review flags keep large class output readable: `--limit <n>` caps repeated rows, `--member <name>` filters class member-heavy sections to an exact member name, `--symbol <name>` filters printed symbols/candidates by exact label, and `--show-docs` prints raw doc-comment text. By default, docs are shown as bounded previews only.
+Focused review flags keep large class output readable: `--limit <n>` caps repeated rows, `--member <name>` filters class member-heavy sections to an exact member name, `--symbol <name>` filters printed symbols/candidates by exact label, and `--show-docs` prints raw doc-comment text. By default, docs are shown as bounded previews only. Class lookups keep the preferred class anchor visible even when `--symbol` filters member/candidate rows, and member-heavy sections report filtered shown counts against total counts.
 
 For `--top-level`, the tool shows generic cross-kind preferred ordering for conflict/debug review and a separate kind-specific preferred section for class, typedef, and function lookups. Use the kind-specific rows when the expected declaration kind is known.
 
@@ -41,6 +41,7 @@ Uses only Rust standard library APIs plus the crate parser, AST, model, and inde
 - Class summary rows now separate raw aggregate completion counts from `IndexQuery` editor completion counts so excluded docs/tests/Workbench source does not look editor-visible.
 - Switched symbol detail output to `SymbolDisplay` and added modifier, attribute, and doc-preview output for matched symbols and completion candidates.
 - Added focused output filters for large debug queries: `--limit`, `--member`, `--symbol`, and `--show-docs`.
+- Kept class anchors visible under `--symbol` filters and changed member-heavy summaries to show filtered shown counts versus total counts.
 
 ## Future Improvements
 

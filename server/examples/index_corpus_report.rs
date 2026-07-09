@@ -501,11 +501,7 @@ fn append_presentation_coverage(report: &mut String, index: &SymbolIndex) {
         }
         if !display.doc_comments.is_empty() {
             with_docs += 1;
-            if display
-                .documentation_preview
-                .as_deref()
-                .is_some_and(is_doxygen_tag_preview)
-            {
+            if doc_comments_have_doxygen_tag(&display.doc_comments) {
                 if doxygen_doc_preview_samples.len() < MAX_SAMPLES {
                     doxygen_doc_preview_samples.push(symbol.id);
                 }
@@ -531,11 +527,11 @@ fn append_presentation_coverage(report: &mut String, index: &SymbolIndex) {
     }
 
     report.push_str("## Presentation Metadata Coverage\n\n");
-    report.push_str("Counts show indexed facts available to future hover, completion detail, document symbols, and debug output. Documentation is copied as raw doc-comment text; previews are bounded display helpers.\n\n");
+    report.push_str("Counts show indexed facts available to future hover, completion detail, document symbols, and debug output. Documentation is copied as raw doc-comment text; previews are bounded display helpers. Attribute counts here are symbol-level attribute applications, so a single source attribute can count more than once when one declaration emits multiple symbols.\n\n");
     report.push_str("| Presentation fact | Symbols | Percent of indexed symbols |\n");
     report.push_str("| --- | ---: | ---: |\n");
     report.push_str(&format!(
-        "| Display detail | {} | {} |\n",
+        "| Optional detail | {} | {} |\n",
         with_detail,
         percent(with_detail, total)
     ));
@@ -565,7 +561,8 @@ fn append_presentation_coverage(report: &mut String, index: &SymbolIndex) {
         percent(missing_labels, total)
     ));
 
-    report.push_str("### Display Detail Coverage By Kind\n\n");
+    report.push_str("### Optional Detail Coverage By Kind\n\n");
+    report.push_str("Optional detail means a compact extra fact such as a base type, field type, callable signature, enum-member value, typedef target, parameter type/default, or global type. Missing optional detail is expected for enums, classes without base types, and enum members without explicit values.\n\n");
     report.push_str("| Kind | With detail | Total | Percent |\n");
     report.push_str("| --- | ---: | ---: | ---: |\n");
     for (kind, (with_detail, total)) in sorted_detail_coverage(&detail_by_kind) {
@@ -579,7 +576,7 @@ fn append_presentation_coverage(report: &mut String, index: &SymbolIndex) {
     }
     report.push('\n');
 
-    report.push_str("### Missing Display Detail By Kind\n\n");
+    report.push_str("### Missing Optional Detail By Kind\n\n");
     let mut missing_by_kind = BTreeMap::<String, usize>::new();
     for (kind, (with_detail, total)) in &detail_by_kind {
         let missing = total.saturating_sub(*with_detail);
@@ -590,7 +587,7 @@ fn append_presentation_coverage(report: &mut String, index: &SymbolIndex) {
     if missing_by_kind.is_empty() {
         report.push_str("None.\n\n");
     } else {
-        report.push_str("| Kind | Missing detail |\n");
+        report.push_str("| Kind | Missing optional detail |\n");
         report.push_str("| --- | ---: |\n");
         for (kind, count) in sorted_counts(&missing_by_kind).into_iter().take(80) {
             report.push_str(&format!("| `{}` | {} |\n", escape_table(&kind), count));
@@ -601,7 +598,7 @@ fn append_presentation_coverage(report: &mut String, index: &SymbolIndex) {
     append_display_sample_table(
         report,
         index,
-        "Missing Display Detail Samples",
+        "Missing Optional Detail Samples",
         &missing_detail_samples,
         false,
     );
@@ -615,7 +612,7 @@ fn append_presentation_coverage(report: &mut String, index: &SymbolIndex) {
     append_display_sample_table(
         report,
         index,
-        "Doc Preview Quality Samples - Doxygen Tag Looking",
+        "Doc Preview Quality Samples - Doxygen Tag Source",
         &doxygen_doc_preview_samples,
         true,
     );
@@ -652,7 +649,12 @@ fn append_display_sample_table(
         return;
     }
 
-    if include_preview {
+    let include_raw_doc = include_preview && heading.contains("Doxygen Tag Source");
+    if include_raw_doc {
+        report
+            .push_str("| Kind | Name | Path | Line | Category | Raw tag line | Clean preview |\n");
+        report.push_str("| --- | --- | --- | ---: | --- | --- | --- |\n");
+    } else if include_preview {
         report.push_str("| Kind | Name | Path | Line | Category | Preview |\n");
         report.push_str("| --- | --- | --- | ---: | --- | --- |\n");
     } else {
@@ -679,7 +681,25 @@ fn append_display_sample_table(
         let line = symbol_line(index, *id)
             .map(|line| line.to_string())
             .unwrap_or_else(|| "?".to_string());
-        if include_preview {
+        if include_raw_doc {
+            let raw_tag_line = display
+                .as_ref()
+                .and_then(|display| first_doxygen_tag_line(&display.doc_comments))
+                .unwrap_or_default();
+            let preview = display
+                .and_then(|display| display.documentation_preview)
+                .unwrap_or_default();
+            report.push_str(&format!(
+                "| `{}` | `{}` | `{}` | {} | `{}` | `{}` | `{}` |\n",
+                kind_name(symbol.kind),
+                escape_table(name),
+                escape_table(&path),
+                line,
+                file.metadata.category.as_str(),
+                escape_table(&raw_tag_line),
+                escape_table(&preview)
+            ));
+        } else if include_preview {
             let preview = display
                 .and_then(|display| display.documentation_preview)
                 .unwrap_or_default();
@@ -706,8 +726,33 @@ fn append_display_sample_table(
     report.push('\n');
 }
 
-fn is_doxygen_tag_preview(preview: &str) -> bool {
-    let trimmed = preview.trim_start();
+fn doc_comments_have_doxygen_tag(
+    comments: &[reforger_language_server::index::IndexedDocComment],
+) -> bool {
+    first_doxygen_tag_line(comments).is_some()
+}
+
+fn first_doxygen_tag_line(
+    comments: &[reforger_language_server::index::IndexedDocComment],
+) -> Option<String> {
+    comments
+        .iter()
+        .flat_map(|comment| comment.text.lines())
+        .map(raw_doc_line_without_markers)
+        .find(|line| is_doxygen_tag_line(line))
+}
+
+fn raw_doc_line_without_markers(line: &str) -> String {
+    let mut value = line.trim();
+    value = value.strip_prefix("//!").unwrap_or(value).trim_start();
+    value = value.strip_prefix("/*!").unwrap_or(value).trim_start();
+    value = value.strip_prefix('*').unwrap_or(value).trim_start();
+    value = value.strip_suffix("*/").unwrap_or(value).trim_end();
+    value.trim().to_string()
+}
+
+fn is_doxygen_tag_line(line: &str) -> bool {
+    let trimmed = line.trim_start();
     [
         "\\param",
         "\\return",

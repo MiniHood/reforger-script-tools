@@ -16,7 +16,9 @@ Future dev tools, runtime startup, and LSP indexing code should use this module 
 
 Source category assignment is path-based and best-effort. Workspace roots are always `Workspace`. Game-data paths are classified into runtime and review categories such as Game, GameCode, GameLib, Core, generated, Workbench, docs/Doxygen, test/autotest, or unknown. These categories are provenance for query/report policy, not compiler truth.
 
-`IndexBuildSummary` records total and per-source-kind counts for files, bytes, lossy UTF-8 files, parse diagnostics, diagnostic files, indexed files, indexed symbols, and non-declaration callable fragments. It also stores bounded human-review details for lossy decoding and parse diagnostics, including location data and short source snippets. Snippets render UTF-8 replacement characters as the ASCII label `<U+FFFD>` so report output is readable across terminals and editors. `IndexBuildTimings` records file discovery, catalog build, index build, and total wall-clock durations for human review.
+`IndexBuildSummary` records total and per-source-kind counts for files, bytes, lossy UTF-8 files, parse diagnostics, diagnostic files, indexed files, indexed symbols, and non-declaration callable fragments. It also stores bounded human-review details for lossy decoding and parse diagnostics, including location data and short source snippets. Snippets render UTF-8 replacement characters as the ASCII label `<U+FFFD>` so report output is readable across terminals and editors.
+
+`IndexBuildTimings` records file discovery, read/decode, parse, AST/model catalog creation, aggregate catalog build, index aggregation, and total wall-clock durations for human review. The aggregate catalog build timing remains available for existing corpus reports, while the finer phases support runtime startup baseline reports.
 
 ## Dependencies and Boundaries
 
@@ -32,9 +34,10 @@ The builder is source-root explicit. VS Code workspace discovery and game-data s
 - Added bounded lossy decode details and parse diagnostic details so corpus, overlay, and debug tooling can show actionable source snippets without duplicating parser/report logic.
 - Render replacement characters in snippets as `<U+FFFD>` so lossy decode reports remain ASCII-stable and do not display mojibake in PowerShell or other terminals.
 - Added source-category assignment from source-root relative paths so editor-facing queries can include runtime/workspace sources while raw debug keeps docs/tests/Workbench sources visible.
+- Split build timings into read/decode, parse, AST/model catalog, and index aggregation phases while preserving the older aggregate catalog timing for compatibility.
 
 ## Future Improvements
 
 - Add incremental rebuild inputs after workspace file watching exists.
-- Add optional persisted cache only after runtime startup measurements justify it.
-- Add memory-size estimates if future language-server startup needs them.
+- Add optional persisted cache only after runtime startup baseline measurements justify it.
+- Improve memory-size estimates if future language-server startup needs more than the current lower-bound index-shape report.
