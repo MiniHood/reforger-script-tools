@@ -10,7 +10,9 @@ This file is TypeScript shell code. It resolves the packaged or development serv
 
 ## Current Behavior
 
-On activation, the module creates a VS Code log output channel, resolves `dist/server/<platform>-<arch>/reforger_language_server(.exe)` first, and falls back to `server/target/debug/reforger_language_server(.exe)` for development. It starts the server over stdio for files matching `**/{Scripts,scripts}/**/*.c`.
+On activation, the module creates a VS Code log output channel, resolves `dist/server/<platform>-<arch>/reforger_language_server(.exe)` first, and falls back to `server/target/debug/reforger_language_server(.exe)` for development. It starts the server over stdio for file documents whose VS Code language id is `enforce`.
+
+The `enforce` language id is contributed through `package.json` and is path-associated only for `.c` files under `Scripts/` or `scripts/`. The language client should target the language id, not duplicate path-glob logic.
 
 The client passes `globalStorageUri/logs/language-server.log` and the resolved game-data scripts path to the server. The game-data path uses the manual-folder setting when present, otherwise the downloaded global-storage `game-data/scripts` folder.
 
@@ -22,6 +24,7 @@ Uses VS Code APIs, Node path/filesystem APIs, `vscode-languageclient`, and exten
 
 - Added the first VS Code language-client startup path for the bundled Rust LSP server.
 - Kept document selection conservative so the extension does not claim every `.c` file globally.
+- Switched the client document selector to the contributed `enforce` language id.
 
 ## Future Improvements
 

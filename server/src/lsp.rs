@@ -1,8 +1,10 @@
 use crate::ast::AstSourceFile;
 use crate::index::{GlobalSymbolId, SymbolIndex};
 use crate::index_query::IndexQuery;
+use crate::lexer::TextSpan;
 use crate::model::{SourceFileMetadata, SymbolCatalog, SymbolKind};
 use crate::parser::parse_source;
+use crate::symbol_display::SymbolDisplayInfo;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -54,7 +56,7 @@ pub struct LspRange {
     pub end: LspPosition,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LspPosition {
     pub line: u32,
     pub character: u32,
@@ -66,9 +68,37 @@ pub struct LspDocumentSymbolReport {
     pub parse_diagnostics: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LspHover {
+    pub contents: LspMarkupContent,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub range: Option<LspRange>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LspMarkupContent {
+    pub kind: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LspHoverReport {
+    pub hover: Option<LspHover>,
+    pub parse_diagnostics: usize,
+    pub selected_label: Option<String>,
+    pub selected_kind: Option<SymbolKind>,
+}
+
 impl LspDocumentSymbolReport {
     pub fn total_symbol_count(&self) -> usize {
         document_symbol_count(&self.symbols)
+    }
+}
+
+impl LspHoverReport {
+    pub fn is_hit(&self) -> bool {
+        self.hover.is_some()
     }
 }
 
@@ -128,6 +158,13 @@ struct DocumentSymbolParams {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HoverParams {
+    text_document: TextDocumentIdentifier,
+    position: LspPosition,
+}
+
+#[derive(Debug, Deserialize)]
 struct TextDocumentIdentifier {
     uri: String,
 }
@@ -180,7 +217,8 @@ impl<W: Write> LspServer<W> {
                         json!({
                             "capabilities": {
                                 "textDocumentSync": 1,
-                                "documentSymbolProvider": true
+                                "documentSymbolProvider": true,
+                                "hoverProvider": true
                             },
                             "serverInfo": {
                                 "name": SERVER_NAME,
@@ -293,6 +331,50 @@ impl<W: Write> LspServer<W> {
                     self.respond(id, result)?;
                 }
             }
+            "textDocument/hover" => {
+                if let Some(id) = message.id {
+                    let start = Instant::now();
+                    let params = parse_params::<HoverParams>(message.params, method)?;
+                    let mut log_uri = "<missing>".to_string();
+                    let mut bytes = 0usize;
+                    let mut parse_diagnostics = 0usize;
+                    let mut selected_label = "<none>".to_string();
+                    let mut selected_kind = "None";
+                    let mut hit = false;
+                    let result = params
+                        .and_then(|params| {
+                            log_uri = params.text_document.uri;
+                            self.documents.get(&log_uri).map(|source| {
+                                bytes = source.len();
+                                let report =
+                                    hover_report_for_source_position(source, params.position);
+                                parse_diagnostics = report.parse_diagnostics;
+                                hit = report.is_hit();
+                                if let Some(label) = report.selected_label {
+                                    selected_label = label;
+                                }
+                                if let Some(kind) = report.selected_kind {
+                                    selected_kind = symbol_kind_label(kind);
+                                }
+                                report.hover
+                            })
+                        })
+                        .flatten()
+                        .map(|hover| serde_json::to_value(hover).unwrap_or(Value::Null))
+                        .unwrap_or(Value::Null);
+                    self.log(&format!(
+                        "request hover uri={} bytes={} hit={} label={} kind={} parse_diagnostics={} elapsed_ms={}",
+                        log_uri,
+                        bytes,
+                        hit,
+                        selected_label,
+                        selected_kind,
+                        parse_diagnostics,
+                        start.elapsed().as_millis()
+                    ));
+                    self.respond(id, result)?;
+                }
+            }
             _ => {
                 if let Some(id) = message.id {
                     self.respond_error(id, -32601, &format!("Method not found: {method}"))?;
@@ -353,6 +435,65 @@ pub fn document_symbols_for_source(source: &str) -> Vec<LspDocumentSymbol> {
 }
 
 pub fn document_symbol_report_for_source(source: &str) -> LspDocumentSymbolReport {
+    let analysis = file_index_for_source(source);
+    let query = IndexQuery::new(&analysis.index);
+    LspDocumentSymbolReport {
+        symbols: document_symbols_from_index(source, &analysis.index, &query),
+        parse_diagnostics: analysis.parse_diagnostics,
+    }
+}
+
+pub fn hover_report_for_source_position(source: &str, position: LspPosition) -> LspHoverReport {
+    let analysis = file_index_for_source(source);
+    let Some(offset) = offset_for_position(source, position) else {
+        return LspHoverReport {
+            hover: None,
+            parse_diagnostics: analysis.parse_diagnostics,
+            selected_label: None,
+            selected_kind: None,
+        };
+    };
+    let Some(id) = hover_symbol_at_offset(&analysis.index, offset) else {
+        return LspHoverReport {
+            hover: None,
+            parse_diagnostics: analysis.parse_diagnostics,
+            selected_label: None,
+            selected_kind: None,
+        };
+    };
+    let query = IndexQuery::new(&analysis.index);
+    let Some(display) = query.symbol_display(id) else {
+        return LspHoverReport {
+            hover: None,
+            parse_diagnostics: analysis.parse_diagnostics,
+            selected_label: None,
+            selected_kind: None,
+        };
+    };
+    let selected_kind = display.kind;
+    let selected_label = display.label.clone();
+    let symbol = analysis.index.symbol(id);
+    let range = symbol.map(|symbol| range_for_span(source, symbol.selection_span));
+    LspHoverReport {
+        hover: Some(LspHover {
+            contents: LspMarkupContent {
+                kind: "markdown".to_string(),
+                value: render_hover_markdown(&display),
+            },
+            range,
+        }),
+        parse_diagnostics: analysis.parse_diagnostics,
+        selected_label: Some(selected_label),
+        selected_kind: Some(selected_kind),
+    }
+}
+
+struct FileIndexAnalysis {
+    index: SymbolIndex,
+    parse_diagnostics: usize,
+}
+
+fn file_index_for_source(source: &str) -> FileIndexAnalysis {
     let parse = parse_source(source);
     let parse_diagnostics = parse.diagnostics.len();
     let ast = AstSourceFile::new(source, &parse);
@@ -370,9 +511,8 @@ pub fn document_symbol_report_for_source(source: &str) -> LspDocumentSymbolRepor
     );
     let mut index = SymbolIndex::default();
     index.add_catalog(&catalog);
-    let query = IndexQuery::new(&index);
-    LspDocumentSymbolReport {
-        symbols: document_symbols_from_index(source, &index, &query),
+    FileIndexAnalysis {
+        index,
         parse_diagnostics,
     }
 }
@@ -432,7 +572,7 @@ fn range_for_span(source: &str, span: crate::lexer::TextSpan) -> LspRange {
     }
 }
 
-fn position_for_offset(source: &str, offset: usize) -> LspPosition {
+pub fn position_for_offset(source: &str, offset: usize) -> LspPosition {
     let mut line = 0u32;
     let mut character = 0u32;
 
@@ -451,6 +591,99 @@ fn position_for_offset(source: &str, offset: usize) -> LspPosition {
     LspPosition { line, character }
 }
 
+pub fn offset_for_position(source: &str, position: LspPosition) -> Option<usize> {
+    let mut line = 0u32;
+    let mut character = 0u32;
+
+    for (index, value) in source.char_indices() {
+        if line == position.line {
+            if character == position.character {
+                return Some(index);
+            }
+            if value == '\n' {
+                return None;
+            }
+            let next_character = character + value.len_utf16() as u32;
+            if position.character < next_character {
+                return Some(index);
+            }
+            character = next_character;
+        } else if value == '\n' {
+            line += 1;
+            character = 0;
+        }
+    }
+
+    if line == position.line && character == position.character {
+        Some(source.len())
+    } else {
+        None
+    }
+}
+
+fn hover_symbol_at_offset(index: &SymbolIndex, offset: usize) -> Option<GlobalSymbolId> {
+    index
+        .symbols()
+        .iter()
+        .filter_map(|symbol| {
+            let selection_hit = span_contains_offset(symbol.selection_span, offset);
+            let span_hit = span_contains_offset(symbol.span, offset);
+            if !selection_hit && !span_hit {
+                return None;
+            }
+            let matched_span = if selection_hit {
+                symbol.selection_span
+            } else {
+                symbol.span
+            };
+            Some((
+                !selection_hit,
+                matched_span.end.saturating_sub(matched_span.start),
+                symbol.id,
+            ))
+        })
+        .min_by_key(|(span_rank, span_len, id)| (*span_rank, *span_len, id.file_id, id.symbol_id))
+        .map(|(_, _, id)| id)
+}
+
+fn span_contains_offset(span: TextSpan, offset: usize) -> bool {
+    span.start <= offset && offset < span.end
+}
+
+fn render_hover_markdown(display: &SymbolDisplayInfo) -> String {
+    let code = display.signature.as_ref().unwrap_or(&display.label);
+    let mut sections = Vec::new();
+    sections.push(format!("```enforce\n{code}\n```"));
+
+    if let Some(detail) = &display.detail {
+        if detail != code {
+            sections.push(detail.clone());
+        }
+    }
+    if let Some(preview) = &display.documentation_preview {
+        sections.push(preview.clone());
+    }
+    if !display.modifiers.is_empty() {
+        sections.push(format!("**Modifiers:** {}", display.modifiers.join(", ")));
+    }
+    let attribute_names = display
+        .attributes
+        .iter()
+        .map(|attribute| {
+            attribute
+                .name
+                .as_deref()
+                .unwrap_or(attribute.text.as_str())
+                .to_string()
+        })
+        .collect::<Vec<_>>();
+    if !attribute_names.is_empty() {
+        sections.push(format!("**Attributes:** {}", attribute_names.join(", ")));
+    }
+
+    sections.join("\n\n")
+}
+
 fn document_symbol_kind(kind: SymbolKind) -> u32 {
     match kind {
         SymbolKind::Class => 5,
@@ -464,6 +697,22 @@ fn document_symbol_kind(kind: SymbolKind) -> u32 {
         SymbolKind::Constructor => 9,
         SymbolKind::Destructor => 6,
         SymbolKind::Parameter => 13,
+    }
+}
+
+pub fn symbol_kind_label(kind: SymbolKind) -> &'static str {
+    match kind {
+        SymbolKind::Class => "Class",
+        SymbolKind::Enum => "Enum",
+        SymbolKind::EnumMember => "EnumMember",
+        SymbolKind::Typedef => "Typedef",
+        SymbolKind::Function => "Function",
+        SymbolKind::GlobalField => "GlobalField",
+        SymbolKind::Field => "Field",
+        SymbolKind::Method => "Method",
+        SymbolKind::Constructor => "Constructor",
+        SymbolKind::Destructor => "Destructor",
+        SymbolKind::Parameter => "Parameter",
     }
 }
 
@@ -647,6 +896,126 @@ class Example
     }
 
     #[test]
+    fn hover_selects_class_method_field_parameter_typedef_enum_member_and_global() {
+        let source = r#"//! Global typedef docs
+typedef string FactionKey;
+
+Game g_Game;
+
+[EnumBitFlag()]
+enum ExampleFlags
+{
+	None = 0,
+	Enabled = 1
+}
+
+//! Class docs.
+class Example : Base
+{
+	[Attribute("0")]
+	protected int m_Value;
+	void Run(string name);
+}
+"#;
+
+        assert_hover(
+            source,
+            "Example : Base",
+            "Example",
+            SymbolKind::Class,
+            "Example",
+        );
+        assert_hover(source, "m_Value", "m_Value", SymbolKind::Field, "m_Value");
+        assert_hover(source, "Run(string", "Run", SymbolKind::Method, "Run");
+        assert_hover(source, "string name", "name", SymbolKind::Parameter, "name");
+        assert_hover(
+            source,
+            "FactionKey;",
+            "FactionKey",
+            SymbolKind::Typedef,
+            "FactionKey",
+        );
+        assert_hover(
+            source,
+            "Enabled = 1",
+            "Enabled",
+            SymbolKind::EnumMember,
+            "Enabled",
+        );
+        assert_hover(
+            source,
+            "g_Game",
+            "g_Game",
+            SymbolKind::GlobalField,
+            "g_Game",
+        );
+    }
+
+    #[test]
+    fn hover_returns_none_for_whitespace_outside_symbols() {
+        let source = "\nclass Example {}\n";
+
+        let report = hover_report_for_source_position(
+            source,
+            LspPosition {
+                line: 0,
+                character: 0,
+            },
+        );
+
+        assert!(!report.is_hit());
+        assert_eq!(report.parse_diagnostics, 0);
+    }
+
+    #[test]
+    fn hover_markdown_uses_signature_detail_docs_modifiers_and_attributes() {
+        let source = r#"//! Runs the example.
+class Example
+{
+	//! Runs the example.
+	[Attribute("0")]
+	protected void Run(int value = 4);
+}
+"#;
+
+        let report = hover_at(source, "Run(int", "Run");
+        let hover = report.hover.unwrap();
+        let markdown = hover.contents.value;
+
+        assert!(markdown.contains("```enforce\nExample.Run(int value = 4) -> void\n```"));
+        assert!(markdown.contains("Runs the example."));
+        assert!(markdown.contains("**Modifiers:** protected"));
+        assert!(markdown.contains("**Attributes:** Attribute"));
+    }
+
+    #[test]
+    fn offset_conversion_uses_utf16_positions() {
+        let source = "class Sm😀ke {}\n";
+        let offset = source.find("ke").unwrap();
+
+        let position = position_for_offset(source, offset);
+
+        assert_eq!(
+            position,
+            LspPosition {
+                line: 0,
+                character: 10
+            }
+        );
+        assert_eq!(offset_for_position(source, position), Some(offset));
+        assert_eq!(
+            offset_for_position(
+                source,
+                LspPosition {
+                    line: 0,
+                    character: 9
+                }
+            ),
+            Some(source.find('😀').unwrap())
+        );
+    }
+
+    #[test]
     fn framed_lsp_smoke_test_handles_open_and_document_symbol() {
         let source = "class Smoke\n{\n\tvoid Run();\n}\n";
         let mut input = Vec::new();
@@ -722,6 +1091,87 @@ class Example
         assert!(output_text.contains("\"name\":\"Run\""));
     }
 
+    #[test]
+    fn framed_lsp_smoke_test_handles_hover() {
+        let source = "class Smoke\n{\n\tvoid Run(int value);\n}\n";
+        let hover_position = position_for_needle(source, "Run(int", "Run");
+        let mut input = Vec::new();
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {}
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": "file:///Scripts/Smoke.c",
+                        "languageId": "enforce",
+                        "version": 1,
+                        "text": source
+                    }
+                }
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "textDocument/hover",
+                "params": {
+                    "textDocument": {
+                        "uri": "file:///Scripts/Smoke.c"
+                    },
+                    "position": {
+                        "line": hover_position.line,
+                        "character": hover_position.character
+                    }
+                }
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "shutdown",
+                "params": null
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "exit",
+                "params": null
+            }),
+        );
+
+        let mut output = Vec::new();
+        run(
+            input.as_slice(),
+            &mut output,
+            LspServerOptions {
+                log_path: None,
+                game_data_scripts: None,
+            },
+        )
+        .unwrap();
+
+        let output_text = String::from_utf8(output).unwrap();
+        assert!(output_text.contains("\"hoverProvider\":true"));
+        assert!(output_text.contains("Smoke.Run(int value) -> void"));
+        assert!(output_text.contains("\"kind\":\"markdown\""));
+    }
+
     fn assert_ranges_are_sane(symbols: &[LspDocumentSymbol]) {
         for symbol in symbols {
             assert!(
@@ -745,5 +1195,34 @@ class Example
         let body = serde_json::to_vec(&value).unwrap();
         write!(output, "Content-Length: {}\r\n\r\n", body.len()).unwrap();
         output.extend_from_slice(&body);
+    }
+
+    fn assert_hover(
+        source: &str,
+        needle: &str,
+        cursor: &str,
+        expected_kind: SymbolKind,
+        expected_label: &str,
+    ) {
+        let report = hover_at(source, needle, cursor);
+
+        assert_eq!(report.parse_diagnostics, 0);
+        assert_eq!(report.selected_kind, Some(expected_kind));
+        assert_eq!(report.selected_label.as_deref(), Some(expected_label));
+        assert!(report.hover.is_some());
+    }
+
+    fn hover_at(source: &str, needle: &str, cursor: &str) -> LspHoverReport {
+        hover_report_for_source_position(source, position_for_needle(source, needle, cursor))
+    }
+
+    fn position_for_needle(source: &str, needle: &str, cursor: &str) -> LspPosition {
+        let start = source
+            .find(needle)
+            .unwrap_or_else(|| panic!("missing needle {needle}"));
+        let cursor_start = needle
+            .find(cursor)
+            .unwrap_or_else(|| panic!("missing cursor {cursor} in {needle}"));
+        position_for_offset(source, start + cursor_start)
     }
 }

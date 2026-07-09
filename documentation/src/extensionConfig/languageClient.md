@@ -10,7 +10,9 @@ This file is TypeScript extension-shell configuration. It keeps language-client 
 
 ## Current Behavior
 
-Exports constants for the language client ID/name, server binary name, packaged server folder, development fallback path, log location, and conservative Reforger script document selector.
+Exports constants for the language client ID/name, server binary name, packaged server folder, development fallback path, log location, contributed language id, and language-client document selector.
+
+The language id is `enforce`. The document selector targets that language id; path-scoped `.c` association belongs to `package.json`, not this TypeScript constants file.
 
 ## Dependencies and Boundaries
 
@@ -19,6 +21,7 @@ This file has no VS Code API calls, filesystem access, mutable state, parser log
 ## Change Notes
 
 - Added centralized constants for the first bundled Rust language-server client.
+- Added the centralized `enforce` language id used by the language-client selector.
 
 ## Future Improvements
 

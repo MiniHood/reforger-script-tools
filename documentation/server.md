@@ -10,7 +10,7 @@ This folder is the future language-engine side of the project. It should contain
 
 ## Current Behavior
 
-The Rust crate exposes a full-fidelity lexer that returns token kinds and byte spans without copying source text into tokens. It also exposes a declaration-level parser that consumes lexer tokens and returns a full-fidelity syntax tree preserving trivia, tokens, and balanced method-body blocks. The AST layer provides file-local declaration views over that syntax tree without semantic resolution. The model layer converts those AST views into source-backed file-local symbol records with stable IDs and parent-child relationships. The index layer aggregates many file-local catalogs into global symbol handles and lookup maps without semantic resolution or persistence. The index build layer owns reusable source-root scanning, parser/AST/model/index construction, and build timing summaries. The index query layer wraps the raw index with editor-facing lookup APIs so future LSP features use preferred, overlay-aware paths instead of debug aggregate maps by accident. The symbol display layer converts copied indexed facts into editor-ready labels, details, signatures, documentation previews, and provenance output. The LSP layer is the first stdio protocol boundary for VS Code and currently exposes document symbols for open files.
+The Rust crate exposes a full-fidelity lexer that returns token kinds and byte spans without copying source text into tokens. It also exposes a declaration-level parser that consumes lexer tokens and returns a full-fidelity syntax tree preserving trivia, tokens, and balanced method-body blocks. The AST layer provides file-local declaration views over that syntax tree without semantic resolution. The model layer converts those AST views into source-backed file-local symbol records with stable IDs and parent-child relationships. The index layer aggregates many file-local catalogs into global symbol handles and lookup maps without semantic resolution or persistence. The index build layer owns reusable source-root scanning, parser/AST/model/index construction, and build timing summaries. The index query layer wraps the raw index with editor-facing lookup APIs so future LSP features use preferred, overlay-aware paths instead of debug aggregate maps by accident. The symbol display layer converts copied indexed facts into editor-ready labels, details, signatures, documentation previews, and provenance output. The LSP layer is the first stdio protocol boundary for VS Code and currently exposes document symbols and file-local hover for open files.
 
 ## Dependencies and Boundaries
 
@@ -31,10 +31,11 @@ The crate currently uses only minimal bundled Rust dependencies for JSON protoco
 - Added the first stdio LSP scaffold and bundled binary entrypoint with document-symbol support.
 - Added a dev-only LSP fixture report for reviewing document-symbol output across committed parser fixtures.
 - Added a dev-only LSP corpus report for reviewing document-symbol projection over downloaded game-data scripts.
+- Added file-local LSP hover support and a dev-only hover fixture report.
 
 ## Future Improvements
 
 - Expand parser coverage into statements and expressions in separate verified slices.
 - Expand workspace indexing with incremental updates and workspace-over-game-data review.
-- Expand LSP behavior through small verified features such as diagnostics, hover, completion, and definition.
+- Expand LSP behavior through small verified features such as diagnostics, completion, and definition.
 - Consider splitting into `crates/` only if multiple Rust crates become necessary.

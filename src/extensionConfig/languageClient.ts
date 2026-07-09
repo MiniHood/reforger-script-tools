@@ -16,6 +16,10 @@ export const languageClientLogs = {
 	serverLogFile: 'language-server.log',
 } as const;
 
+export const languageClientLanguage = {
+	id: 'enforce',
+} as const;
+
 export const languageClientDocumentSelector = [
-	{ scheme: 'file', pattern: '**/{Scripts,scripts}/**/*.c' },
+	{ scheme: 'file', language: languageClientLanguage.id },
 ] as const;

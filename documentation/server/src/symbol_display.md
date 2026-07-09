@@ -12,7 +12,7 @@ This file sits above the raw symbol index and below future LSP hover, completion
 
 `SymbolDisplay::for_symbol()` returns `SymbolDisplayInfo` for one indexed symbol. The display record includes label, kind, detail text, callable signature, raw `doc_comments`, a bounded `documentation_preview`, modifiers, attributes, source provenance, spans, conditional context, and callable form.
 
-Callable symbols use `SymbolIndex::callable_signature()`. Non-callable symbols use existing indexed detail text such as type text, base type, enum value, default value, or typedef aliased type. Documentation comments are preserved as raw copied comment text. `documentation_preview` is display-only: it strips comment markers and separator noise, trims common block-comment `*` prefixes, and lightly renders first-useful Doxygen-style tags such as `\brief`, `\param`, `\return`, `\warning`, and `\note` into readable preview text.
+Callable symbols use `SymbolIndex::callable_signature()`, including source-backed parameter modifiers such as `out`, `inout`, and `notnull`. Non-callable symbols use existing indexed detail text such as type text, base type, enum value, default value, or typedef aliased type. Documentation comments are preserved as raw copied comment text. `documentation_preview` is display-only: it strips comment markers and separator noise, trims common block-comment `*` prefixes, and lightly renders first-useful Doxygen-style tags such as `\brief`, `\param`, `\return`, `\warning`, and `\note` into readable preview text.
 
 ## Dependencies and Boundaries
 

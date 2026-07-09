@@ -808,7 +808,13 @@ fn is_class_member_kind(kind: SymbolKind) -> bool {
 
 fn parameter_signature_text(symbol: &IndexedSymbol) -> String {
     let mut value = String::new();
+    if !symbol.modifiers.is_empty() {
+        value.push_str(&symbol.modifiers.join(" "));
+    }
     if let Some(type_text) = &symbol.detail.type_text {
+        if !value.is_empty() {
+            value.push(' ');
+        }
         value.push_str(type_text);
     }
     if let Some(name) = &symbol.name {
@@ -1139,6 +1145,7 @@ modded class Example
 	void OnGameStart();
 	void Begin(string suite, string test);
 	void Run(int value = 4);
+	array<SCR_BaseGameModeComponent> GetComponentsByType(typename componentType, out int foundCount);
 }
 "#,
             SourceFileMetadata::unknown(),
@@ -1148,6 +1155,8 @@ modded class Example
         let on_game_start = index.methods_by_owner_name("SCR_BaseGameMode", "OnGameStart")[0];
         let begin = index.methods_by_owner_name("SCR_BaseGameMode", "Begin")[0];
         let run = index.methods_by_owner_name("SCR_BaseGameMode", "Run")[0];
+        let get_components =
+            index.methods_by_owner_name("SCR_BaseGameMode", "GetComponentsByType")[0];
 
         assert_eq!(
             index.method_signature(on_game_start).as_deref(),
@@ -1161,6 +1170,10 @@ modded class Example
             index.method_signature(run).as_deref(),
             Some("SCR_BaseGameMode.Run(int value = 4) -> void")
         );
+        assert_eq!(
+            index.method_signature(get_components).as_deref(),
+            Some("SCR_BaseGameMode.GetComponentsByType(typename componentType, out int foundCount) -> array<SCR_BaseGameModeComponent>")
+        );
     }
 
     #[test]
@@ -1172,7 +1185,7 @@ class Example
 {
 	void Example(int value);
 	void ~Example();
-	void Run(string name);
+	void Run(notnull string name, inout int count);
 	int Count();
 	int m_Value;
 }
@@ -1203,7 +1216,7 @@ class Example
         );
         assert_eq!(
             index.callable_signature(run).as_deref(),
-            Some("Example.Run(string name) -> void")
+            Some("Example.Run(notnull string name, inout int count) -> void")
         );
         assert_eq!(
             index.callable_signature(constructor).as_deref(),
@@ -1217,7 +1230,7 @@ class Example
 
         assert_eq!(
             index.method_signature(run).as_deref(),
-            Some("Example.Run(string name) -> void")
+            Some("Example.Run(notnull string name, inout int count) -> void")
         );
         assert_eq!(index.method_signature(constructor), None);
         assert_eq!(index.method_signature(global_fn), None);
