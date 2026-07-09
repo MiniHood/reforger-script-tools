@@ -78,6 +78,7 @@ fn main() -> Result<(), String> {
                 symbols,
                 index.preferred_from_symbols(symbols).first().copied(),
             );
+            print_class_member_summary(&index, &name, symbols);
         }
         Query::Typedef(name) => {
             let symbols = index.typedefs_by_name(&name);
@@ -99,6 +100,7 @@ fn main() -> Result<(), String> {
             println!();
             println!("Overloads: {}", symbols.len());
             println!();
+            print_method_signatures(&index, symbols);
             print_query_results(
                 &index,
                 "Method Matches",
@@ -302,6 +304,100 @@ fn print_query_results(
     }
 }
 
+fn print_class_member_summary(index: &SymbolIndex, owner: &str, symbols: &[GlobalSymbolId]) {
+    if symbols.is_empty() {
+        return;
+    }
+
+    println!("## Direct Members `{}`", escape_inline(owner));
+    println!();
+    let direct_members = index.direct_members_by_owner(owner);
+    println!("Members: {}", direct_members.len());
+    for id in direct_members.iter().take(MAX_CHILDREN) {
+        print_member_summary(index, *id);
+    }
+    if direct_members.len() > MAX_CHILDREN {
+        println!(
+            "... {} more members omitted",
+            direct_members.len() - MAX_CHILDREN
+        );
+    }
+    println!();
+
+    let all_members = index.members_for_class_including_bases(owner);
+    let inherited_members = all_members
+        .iter()
+        .skip(direct_members.len())
+        .copied()
+        .collect::<Vec<_>>();
+    println!("## Members Including Bases `{}`", escape_inline(owner));
+    println!();
+    println!(
+        "Members: {} direct, {} inherited/base-chain, {} total",
+        direct_members.len(),
+        inherited_members.len(),
+        all_members.len()
+    );
+    for id in inherited_members.iter().take(MAX_CHILDREN) {
+        print_member_summary(index, *id);
+    }
+    if inherited_members.len() > MAX_CHILDREN {
+        println!(
+            "... {} more inherited/base-chain members omitted",
+            inherited_members.len() - MAX_CHILDREN
+        );
+    }
+    println!();
+
+    for class_id in symbols.iter().take(MAX_MATCHES) {
+        let Some(class_symbol) = index.symbol(*class_id) else {
+            continue;
+        };
+        let Some(class_name) = class_symbol.name.as_deref() else {
+            continue;
+        };
+        let fields = index
+            .members_by_owner(class_name)
+            .iter()
+            .filter_map(|id| index.symbol(*id))
+            .filter(|symbol| symbol.kind == SymbolKind::Field)
+            .count();
+        println!(
+            "- Class `{}` direct fields {} direct members {} inherited/base-chain members {} total members {}",
+            escape_inline(class_name),
+            fields,
+            index.direct_members_by_owner(class_name).len(),
+            index
+                .members_for_class_including_bases(class_name)
+                .len()
+                .saturating_sub(index.direct_members_by_owner(class_name).len()),
+            index.members_for_class_including_bases(class_name).len()
+        );
+    }
+    println!();
+}
+
+fn print_method_signatures(index: &SymbolIndex, symbols: &[GlobalSymbolId]) {
+    if symbols.is_empty() {
+        return;
+    }
+
+    println!("### Signatures");
+    println!();
+    for id in symbols.iter().take(MAX_MATCHES) {
+        if let Some(signature) = index.method_signature(*id) {
+            println!("- `{}`", escape_inline(&signature));
+        }
+    }
+    if symbols.len() > MAX_MATCHES {
+        println!(
+            "... {} more signatures omitted",
+            symbols.len() - MAX_MATCHES
+        );
+    }
+    println!();
+}
+
 fn print_symbol(index: &SymbolIndex, id: GlobalSymbolId) {
     let Some(symbol) = index.symbol(id) else {
         println!("- Missing symbol {:?}", id);
@@ -325,7 +421,7 @@ fn print_symbol(index: &SymbolIndex, id: GlobalSymbolId) {
         symbol.span.end,
         symbol.selection_span.start,
         symbol.selection_span.end,
-        detail_text(symbol),
+        detail_text(index, symbol),
     );
 
     let children = index.children(id);
@@ -339,7 +435,7 @@ fn print_symbol(index: &SymbolIndex, id: GlobalSymbolId) {
                     display_symbol_name(child),
                     child_id.file_id.0,
                     child_id.symbol_id.0,
-                    detail_text(child)
+                    detail_text(index, child)
                 );
             }
         }
@@ -351,6 +447,18 @@ fn print_symbol(index: &SymbolIndex, id: GlobalSymbolId) {
         }
     }
     println!();
+}
+
+fn print_member_summary(index: &SymbolIndex, id: GlobalSymbolId) {
+    let Some(symbol) = index.symbol(id) else {
+        return;
+    };
+    println!(
+        "- {} `{}`{}",
+        kind_name(symbol.kind),
+        display_symbol_name(symbol),
+        detail_text(index, symbol)
+    );
 }
 
 fn query_label(query: &Query) -> String {
@@ -380,8 +488,11 @@ fn display_path(file: &reforger_language_server::index::IndexedFile) -> String {
         .unwrap_or_else(|| "<unknown-path>".to_string())
 }
 
-fn detail_text(symbol: &IndexedSymbol) -> String {
+fn detail_text(index: &SymbolIndex, symbol: &IndexedSymbol) -> String {
     let mut values = Vec::new();
+    if let Some(signature) = index.method_signature(symbol.id) {
+        push_detail(&mut values, "signature", Some(&signature));
+    }
     push_detail(&mut values, "type", symbol.detail.type_text.as_deref());
     push_detail(
         &mut values,

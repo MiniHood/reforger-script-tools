@@ -10,7 +10,7 @@ This is developer/Codex inspection tooling for the in-memory symbol index. It is
 
 ## Current Behavior
 
-The example builds the same parser, AST, model, and index pipeline used by index corpus reporting. It accepts `--scripts <path>` and exactly one exact lookup mode: `--name`, `--top-level`, `--class`, `--typedef`, or `--method <owner> <name>`. Output includes corpus totals, parse diagnostics, all matches, the preferred match, source kind, priority, path, symbol kind, spans, details, and immediate children when useful.
+The example builds the same parser, AST, model, and index pipeline used by index corpus reporting. It accepts `--scripts <path>` and exactly one exact lookup mode: `--name`, `--top-level`, `--class`, `--typedef`, or `--method <owner> <name>`. Output includes corpus totals, parse diagnostics, all matches, the preferred match, source kind, priority, path, symbol kind, spans, details, method signatures, direct class-member summaries, best-effort inherited/base-chain member summaries, and immediate children when useful.
 
 ## Dependencies and Boundaries
 
@@ -20,6 +20,8 @@ Uses only Rust standard library APIs plus the crate parser, AST, model, and inde
 
 - Added dev-only index debugging for exact name, top-level, class, typedef, and method owner/name lookups.
 - The tool rebuilds the in-memory game-data index per invocation; persisted index cache behavior remains future work.
+- Method lookup now prints source-backed overload signatures, and class lookup shows direct member summaries from the index.
+- Class lookup now also shows inherited/base-chain member counts and bounded inherited member samples from the index's exact-name inherited member scaffold.
 
 ## Future Improvements
 

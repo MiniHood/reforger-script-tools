@@ -1,6 +1,6 @@
 use crate::lexer::TextSpan;
 use crate::model::{SourceFileMetadata, SourceKind, SymbolCatalog, SymbolId, SymbolKind};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SourceFileId(pub usize);
@@ -51,6 +51,8 @@ pub struct SymbolIndex {
     classes_by_name: BTreeMap<String, Vec<GlobalSymbolId>>,
     typedefs_by_name: BTreeMap<String, Vec<GlobalSymbolId>>,
     methods_by_owner_name: BTreeMap<(String, String), Vec<GlobalSymbolId>>,
+    fields_by_owner_name: BTreeMap<(String, String), Vec<GlobalSymbolId>>,
+    members_by_owner: BTreeMap<String, Vec<GlobalSymbolId>>,
 }
 
 impl SymbolIndex {
@@ -202,6 +204,59 @@ impl SymbolIndex {
         &self.methods_by_owner_name
     }
 
+    pub fn fields_by_owner_name(&self, owner: &str, name: &str) -> &[GlobalSymbolId] {
+        self.fields_by_owner_name
+            .get(&(owner.to_string(), name.to_string()))
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    pub fn members_by_owner(&self, owner: &str) -> &[GlobalSymbolId] {
+        self.members_by_owner
+            .get(owner)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    pub fn direct_members_by_owner(&self, owner: &str) -> &[GlobalSymbolId] {
+        self.members_by_owner(owner)
+    }
+
+    pub fn members_for_class_including_bases(&self, owner: &str) -> Vec<GlobalSymbolId> {
+        let mut members = Vec::new();
+        let mut visited = BTreeSet::new();
+        self.add_members_for_class_including_bases(owner, &mut visited, &mut members);
+        members
+    }
+
+    pub fn method_signature(&self, id: GlobalSymbolId) -> Option<String> {
+        let symbol = self.symbol(id)?;
+        if symbol.kind != SymbolKind::Method {
+            return None;
+        }
+
+        let owner = symbol
+            .parent
+            .and_then(|parent| self.symbol(parent))
+            .and_then(|parent| parent.name.as_deref())?;
+        let name = symbol.name.as_deref()?;
+        let parameters = self
+            .children(id)
+            .iter()
+            .filter_map(|child_id| self.symbol(*child_id))
+            .filter(|child| child.kind == SymbolKind::Parameter)
+            .map(parameter_signature_text)
+            .collect::<Vec<_>>()
+            .join(", ");
+        let return_type = symbol
+            .detail
+            .return_type_text
+            .as_deref()
+            .unwrap_or("<unknown>");
+
+        Some(format!("{owner}.{name}({parameters}) -> {return_type}"))
+    }
+
     pub fn names(&self) -> &BTreeMap<String, Vec<GlobalSymbolId>> {
         &self.by_name
     }
@@ -292,6 +347,22 @@ impl SymbolIndex {
             }
             _ => {}
         }
+
+        if is_class_member_kind(symbol.kind) {
+            if let Some(owner) = owner_class_name(catalog, symbol) {
+                self.members_by_owner
+                    .entry(owner.to_string())
+                    .or_default()
+                    .push(symbol.id);
+
+                if symbol.kind == SymbolKind::Field {
+                    self.fields_by_owner_name
+                        .entry((owner.to_string(), name.clone()))
+                        .or_default()
+                        .push(symbol.id);
+                }
+            }
+        }
     }
 
     fn compare_symbol_preference(
@@ -313,6 +384,78 @@ impl SymbolIndex {
             .then_with(|| left.file_id.cmp(&right.file_id))
             .then_with(|| left.symbol_id.cmp(&right.symbol_id))
     }
+
+    fn add_members_for_class_including_bases(
+        &self,
+        owner: &str,
+        visited: &mut BTreeSet<String>,
+        members: &mut Vec<GlobalSymbolId>,
+    ) {
+        if !visited.insert(owner.to_string()) {
+            return;
+        }
+
+        members.extend(self.members_by_owner(owner));
+
+        let Some(base_name) = self.preferred_class_base_name(owner) else {
+            return;
+        };
+        self.add_members_for_class_including_bases(&base_name, visited, members);
+    }
+
+    fn preferred_class_base_name(&self, owner: &str) -> Option<String> {
+        let class_id = self
+            .preferred_from_symbols(self.classes_by_name(owner))
+            .first()
+            .copied()?;
+        let class = self.symbol(class_id)?;
+        let base = class.detail.base_type.as_deref()?.trim();
+        if base.is_empty() {
+            None
+        } else {
+            Some(base.to_string())
+        }
+    }
+}
+
+fn owner_class_name<'source>(
+    catalog: &'source SymbolCatalog<'source>,
+    symbol: &IndexedSymbol,
+) -> Option<&'source str> {
+    let parent = symbol.parent?;
+    let parent_record = catalog.record(parent.symbol_id)?;
+    if parent_record.kind != SymbolKind::Class {
+        return None;
+    }
+    catalog.record_name(parent_record)
+}
+
+fn is_class_member_kind(kind: SymbolKind) -> bool {
+    matches!(
+        kind,
+        SymbolKind::Field | SymbolKind::Method | SymbolKind::Constructor | SymbolKind::Destructor
+    )
+}
+
+fn parameter_signature_text(symbol: &IndexedSymbol) -> String {
+    let mut value = String::new();
+    if let Some(type_text) = &symbol.detail.type_text {
+        value.push_str(type_text);
+    }
+    if let Some(name) = &symbol.name {
+        if !value.is_empty() {
+            value.push(' ');
+        }
+        value.push_str(name);
+    }
+    if value.is_empty() {
+        value.push_str("<unknown>");
+    }
+    if let Some(default_text) = &symbol.detail.default_text {
+        value.push_str(" = ");
+        value.push_str(default_text);
+    }
+    value
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -363,6 +506,8 @@ class Example : Base
         assert_eq!(index.classes_by_name("Example").len(), 1);
         assert_eq!(index.typedefs_by_name("FactionKey").len(), 1);
         assert_eq!(index.methods_by_owner_name("Example", "Run").len(), 1);
+        assert_eq!(index.fields_by_owner_name("Example", "m_Value").len(), 1);
+        assert_eq!(index.members_by_owner("Example").len(), 2);
         assert_eq!(index.symbols_for_kind(SymbolKind::Parameter).len(), 1);
 
         let class_id = index.classes_by_name("Example")[0];
@@ -542,6 +687,153 @@ class Example : Base
     }
 
     #[test]
+    fn formats_regular_method_signatures_from_indexed_parameter_children() {
+        let catalog = catalog(
+            r#"class SCR_BaseGameMode
+{
+	void OnGameStart();
+	void Begin(string suite, string test);
+	void Run(int value = 4);
+}
+"#,
+            SourceFileMetadata::unknown(),
+        );
+        let index = SymbolIndex::from_catalogs([&catalog]);
+
+        let on_game_start = index.methods_by_owner_name("SCR_BaseGameMode", "OnGameStart")[0];
+        let begin = index.methods_by_owner_name("SCR_BaseGameMode", "Begin")[0];
+        let run = index.methods_by_owner_name("SCR_BaseGameMode", "Run")[0];
+
+        assert_eq!(
+            index.method_signature(on_game_start).as_deref(),
+            Some("SCR_BaseGameMode.OnGameStart() -> void")
+        );
+        assert_eq!(
+            index.method_signature(begin).as_deref(),
+            Some("SCR_BaseGameMode.Begin(string suite, string test) -> void")
+        );
+        assert_eq!(
+            index.method_signature(run).as_deref(),
+            Some("SCR_BaseGameMode.Run(int value = 4) -> void")
+        );
+    }
+
+    #[test]
+    fn indexes_direct_class_fields_and_members_by_owner() {
+        let catalog = catalog(
+            r#"int m_Value;
+
+class Example
+{
+	int m_Value;
+	void Example();
+	void ~Example();
+	void Run(int value);
+}
+"#,
+            SourceFileMetadata::unknown(),
+        );
+        let index = SymbolIndex::from_catalogs([&catalog]);
+
+        let fields = index.fields_by_owner_name("Example", "m_Value");
+        assert_eq!(fields.len(), 1);
+        assert_eq!(index.symbol(fields[0]).unwrap().kind, SymbolKind::Field);
+
+        let members = index.members_by_owner("Example");
+        assert_eq!(members.len(), 4);
+        assert!(members
+            .iter()
+            .any(|id| index.symbol(*id).unwrap().kind == SymbolKind::Field));
+        assert!(members
+            .iter()
+            .any(|id| index.symbol(*id).unwrap().kind == SymbolKind::Method));
+        assert!(members
+            .iter()
+            .any(|id| index.symbol(*id).unwrap().kind == SymbolKind::Constructor));
+        assert!(members
+            .iter()
+            .any(|id| index.symbol(*id).unwrap().kind == SymbolKind::Destructor));
+        assert!(members
+            .iter()
+            .all(|id| index.symbol(*id).unwrap().kind != SymbolKind::Parameter));
+    }
+
+    #[test]
+    fn walks_direct_members_then_exact_name_base_class_members() {
+        let catalog = catalog(
+            r#"class Base
+{
+	int m_Base;
+	void Run();
+}
+
+class Child : Base
+{
+	int m_Child;
+	void Run(int value);
+}
+
+class GrandChild : Child
+{
+	int m_GrandChild;
+}
+"#,
+            SourceFileMetadata::unknown(),
+        );
+        let index = SymbolIndex::from_catalogs([&catalog]);
+
+        let members = index.members_for_class_including_bases("GrandChild");
+        let member_names = member_names(&index, &members);
+
+        assert_eq!(
+            member_names,
+            vec!["m_GrandChild", "m_Child", "Run", "m_Base", "Run"]
+        );
+        assert_eq!(index.direct_members_by_owner("GrandChild").len(), 1);
+        assert_eq!(index.members_by_owner("GrandChild").len(), 1);
+    }
+
+    #[test]
+    fn inherited_member_lookup_keeps_direct_members_when_base_is_missing() {
+        let catalog = catalog(
+            r#"class Child : MissingBase
+{
+	int m_Child;
+	void Run();
+}
+"#,
+            SourceFileMetadata::unknown(),
+        );
+        let index = SymbolIndex::from_catalogs([&catalog]);
+
+        let members = index.members_for_class_including_bases("Child");
+
+        assert_eq!(member_names(&index, &members), vec!["m_Child", "Run"]);
+    }
+
+    #[test]
+    fn inherited_member_lookup_stops_on_cycles() {
+        let catalog = catalog(
+            r#"class A : B
+{
+	int m_A;
+}
+
+class B : A
+{
+	int m_B;
+}
+"#,
+            SourceFileMetadata::unknown(),
+        );
+        let index = SymbolIndex::from_catalogs([&catalog]);
+
+        let members = index.members_for_class_including_bases("A");
+
+        assert_eq!(member_names(&index, &members), vec!["m_A", "m_B"]);
+    }
+
+    #[test]
     fn preferred_from_symbols_sorts_by_priority_then_stable_ids() {
         let first_game = catalog(
             "class Example {}",
@@ -596,10 +888,165 @@ class Example : Base
         assert_eq!(preferred[2].file_id, SourceFileId(2));
     }
 
+    #[test]
+    fn workspace_modded_class_is_preferred_over_game_data_class() {
+        let game = catalog(
+            "class SCR_BaseGameMode {}",
+            game_metadata("SCR_BaseGameMode.c"),
+        );
+        let workspace = catalog(
+            "modded class SCR_BaseGameMode {}",
+            workspace_metadata("SCR_BaseGameMode.c"),
+        );
+        let index = SymbolIndex::from_catalogs([&game, &workspace]);
+
+        let classes = index.classes_by_name("SCR_BaseGameMode");
+        assert_eq!(classes.len(), 2);
+
+        let preferred = index.preferred_from_symbols(classes);
+        let preferred_symbol = index.symbol(preferred[0]).unwrap();
+        let preferred_file = index.file(preferred[0].file_id).unwrap();
+
+        assert_eq!(preferred_symbol.kind, SymbolKind::Class);
+        assert_eq!(preferred_symbol.name.as_deref(), Some("SCR_BaseGameMode"));
+        assert_eq!(preferred_file.metadata.kind, SourceKind::Workspace);
+        assert_eq!(preferred_file.metadata.priority, SOURCE_PRIORITY_WORKSPACE);
+    }
+
+    #[test]
+    fn top_level_lookup_ignores_fields_and_parameters_with_same_name() {
+        let catalog = catalog(
+            r#"class SharedName
+{
+	int SharedName;
+	void Run(int SharedName);
+}
+"#,
+            workspace_metadata("SharedName.c"),
+        );
+        let index = SymbolIndex::from_catalogs([&catalog]);
+
+        let all = index.symbols_for_name("SharedName");
+        assert_eq!(all.len(), 3);
+        assert!(all
+            .iter()
+            .any(|id| index.symbol(*id).unwrap().kind == SymbolKind::Class));
+        assert!(all
+            .iter()
+            .any(|id| index.symbol(*id).unwrap().kind == SymbolKind::Field));
+        assert!(all
+            .iter()
+            .any(|id| index.symbol(*id).unwrap().kind == SymbolKind::Parameter));
+
+        let top_level = index.top_level_symbols_for_name("SharedName");
+        assert_eq!(top_level.len(), 1);
+        assert_eq!(index.symbol(top_level[0]).unwrap().kind, SymbolKind::Class);
+
+        let preferred = index.preferred_top_level_symbols_for_name("SharedName");
+        assert_eq!(preferred, top_level);
+    }
+
+    #[test]
+    fn method_owner_lookup_aggregates_game_data_and_workspace_methods() {
+        let game = catalog(
+            r#"class SCR_BaseGameMode
+{
+	void OnGameStart();
+}
+"#,
+            game_metadata("SCR_BaseGameMode.c"),
+        );
+        let workspace = catalog(
+            r#"modded class SCR_BaseGameMode
+{
+	override void OnGameStart();
+}
+"#,
+            workspace_metadata("SCR_BaseGameMode.c"),
+        );
+        let index = SymbolIndex::from_catalogs([&game, &workspace]);
+
+        let methods = index.methods_by_owner_name("SCR_BaseGameMode", "OnGameStart");
+        assert_eq!(methods.len(), 2);
+
+        let preferred = index.preferred_from_symbols(methods);
+        let preferred_symbol = index.symbol(preferred[0]).unwrap();
+        let preferred_file = index.file(preferred[0].file_id).unwrap();
+
+        assert_eq!(preferred_symbol.kind, SymbolKind::Method);
+        assert_eq!(preferred_symbol.name.as_deref(), Some("OnGameStart"));
+        assert_eq!(preferred_file.metadata.kind, SourceKind::Workspace);
+        assert_eq!(preferred_file.metadata.priority, SOURCE_PRIORITY_WORKSPACE);
+    }
+
+    #[test]
+    fn duplicate_top_level_conflict_records_include_review_metadata() {
+        let catalog = catalog(
+            r#"typedef string FactionKey;
+class FactionKey : string {}
+"#,
+            game_metadata("GameCode/Faction/FactionKey.c"),
+        );
+        let index = SymbolIndex::from_catalogs([&catalog]);
+
+        let duplicates = index.duplicate_top_level_names();
+        let faction_key = duplicates
+            .iter()
+            .find(|(name, _)| *name == "FactionKey")
+            .expect("FactionKey should be a duplicate top-level name");
+        assert_eq!(faction_key.1.len(), 2);
+
+        let kinds = faction_key
+            .1
+            .iter()
+            .map(|id| index.symbol(*id).unwrap().kind)
+            .collect::<Vec<_>>();
+        assert!(kinds.contains(&SymbolKind::Typedef));
+        assert!(kinds.contains(&SymbolKind::Class));
+
+        for id in faction_key.1 {
+            let file = index.file(id.file_id).unwrap();
+            assert_eq!(file.metadata.kind, SourceKind::GameData);
+            assert_eq!(file.metadata.priority, SOURCE_PRIORITY_GAME_DATA);
+            assert_eq!(
+                file.metadata.relative_path.as_deref(),
+                Some(std::path::Path::new("GameCode/Faction/FactionKey.c"))
+            );
+        }
+    }
+
     fn catalog(source: &str, metadata: SourceFileMetadata) -> SymbolCatalog<'_> {
         let parse = parse_source(source);
         assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
         let ast = AstSourceFile::new(source, &parse);
         SymbolCatalog::from_ast_with_metadata(source, &ast, metadata)
+    }
+
+    fn game_metadata(path: &str) -> SourceFileMetadata {
+        SourceFileMetadata {
+            kind: SourceKind::GameData,
+            absolute_path: Some(PathBuf::from("C:/game").join(path)),
+            root_path: Some(PathBuf::from("C:/game")),
+            relative_path: Some(PathBuf::from(path)),
+            priority: SOURCE_PRIORITY_GAME_DATA,
+        }
+    }
+
+    fn workspace_metadata(path: &str) -> SourceFileMetadata {
+        SourceFileMetadata {
+            kind: SourceKind::Workspace,
+            absolute_path: Some(PathBuf::from("C:/workspace").join(path)),
+            root_path: Some(PathBuf::from("C:/workspace")),
+            relative_path: Some(PathBuf::from(path)),
+            priority: SOURCE_PRIORITY_WORKSPACE,
+        }
+    }
+
+    fn member_names(index: &SymbolIndex, members: &[GlobalSymbolId]) -> Vec<String> {
+        members
+            .iter()
+            .filter_map(|id| index.symbol(*id))
+            .filter_map(|symbol| symbol.name.clone())
+            .collect()
     }
 }

@@ -10,7 +10,7 @@ This is developer review tooling for index lookup quality. It is not VS Code run
 
 ## Current Behavior
 
-The example scans `.c` files under a scripts folder, parses each file, builds AST/model catalogs with game-data metadata, aggregates them into `SymbolIndex`, and writes `tools/reports/index-corpus.report.md` by default. It reports indexed file/symbol totals, map counts, source-kind counts, symbol-kind frequency, bounded duplicate top-level name groups, top-level-only preferred duplicate samples, lookup samples for classes and typedefs, and grouped method owner/name samples with overload counts.
+The example scans `.c` files under a scripts folder, parses each file, builds AST/model catalogs with game-data metadata, aggregates them into `SymbolIndex`, and writes `tools/reports/index-corpus.report.md` by default. It reports indexed file/symbol totals, top-level versus child/member symbol breakdowns, wall-clock build timings, map counts, source-kind counts, symbol-kind frequency, bounded duplicate top-level name groups, top-level-only preferred duplicate samples, lookup samples for classes and typedefs, and grouped method owner/name samples with overload counts and bounded signature examples.
 
 It accepts `--scripts <path>` and `--out <path>`. If no scripts path is provided, it uses the downloaded game-data global-storage scripts folder.
 
@@ -22,9 +22,11 @@ Uses only Rust standard library APIs plus the crate parser, AST, model, and inde
 
 - Added corpus-scale index reporting for real downloaded/manual Reforger script data.
 - Preferred duplicate samples use top-level-only preferred lookup so member or parameter symbols cannot affect declaration conflict review.
-- Method owner/name samples render grouped owner-qualified method rows with overload counts, first path, and unique return types.
+- Method owner/name samples render grouped owner-qualified method rows with overload counts, first path, and bounded source-backed signature examples.
+- Added report-only visibility for top-level versus child/member symbol counts and rough build timing by phase.
+- Method owner/name samples now show indexed source-backed signature examples instead of return-type-only summaries.
 
 ## Future Improvements
 
 - Add workspace-vs-game-data override sections after the index can ingest workspace catalogs.
-- Add timing and memory estimates after a real language-server startup path exists.
+- Add memory estimates after a real language-server startup path exists.
