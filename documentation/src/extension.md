@@ -10,15 +10,17 @@ This file is TypeScript shell code. It should register editor-facing features an
 
 ## Current Behavior
 
-On activation, it registers game-data features. The game-data service performs startup checks, command registration, and global-storage management from its own module.
+On activation, it registers game-data features and starts the Rust language client. The game-data service performs startup checks, command registration, and global-storage management from its own module. The language-client module resolves and starts the bundled Rust LSP server.
 
 ## Dependencies and Boundaries
 
-Imports `vscode` and `registerGameDataFeatures`. Do not add parser, AST, indexing, or semantic-analysis logic here.
+Imports `vscode`, `registerGameDataFeatures`, and language-client registration/deactivation helpers. Do not add parser, AST, indexing, LSP request handling, or semantic-analysis logic here.
 
 ## Change Notes
 
 Removed the starter hello-world command so activation only wires real extension behavior.
+
+Added top-level registration for the Rust language client while keeping activation itself thin.
 
 ## Future Improvements
 
