@@ -416,11 +416,12 @@ impl<'source, 'tree> TypedefDecl<'source, 'tree> {
     }
 
     pub fn name(&self) -> Option<TextValue<'source>> {
-        recursive_tokens(self.node)
-            .take_while(|token| token.kind != TokenKind::Semicolon)
-            .filter(|token| is_name_token(token.kind))
-            .last()
-            .map(|token| text_value(self.source, token.span))
+        typedef_name_token(self.node).map(|token| text_value(self.source, token.span))
+    }
+
+    pub fn type_text(&self) -> Option<TextValue<'source>> {
+        let name = typedef_name_token(self.node)?;
+        typedef_type_text_before(self.source, self.node, name.span.start)
     }
 
     pub fn doc_comments(&self) -> Vec<DocComment<'source>> {
@@ -639,6 +640,13 @@ fn method_name_token(node: &SyntaxNode) -> Option<Token> {
         .last()
 }
 
+fn typedef_name_token(node: &SyntaxNode) -> Option<Token> {
+    recursive_tokens(node)
+        .take_while(|token| token.kind != TokenKind::Semicolon)
+        .filter(|token| is_name_token(token.kind))
+        .last()
+}
+
 fn parameter_name_token(node: &SyntaxNode) -> Option<Token> {
     let mut candidate = None;
     let mut paren_depth = 0usize;
@@ -797,6 +805,28 @@ fn leading_decl_text_before<'source>(
         .filter(|token| token.kind != TokenKind::Semicolon)
         .filter(|token| !is_declaration_prefix_token(token.kind))
         .collect();
+    let first = tokens.first()?;
+    let last = tokens.last()?;
+    if first.span.start >= last.span.end {
+        return None;
+    }
+    Some(text_value(
+        source,
+        TextSpan::new(first.span.start, last.span.end),
+    ))
+}
+
+fn typedef_type_text_before<'source>(
+    source: &'source str,
+    node: &SyntaxNode,
+    before: usize,
+) -> Option<TextValue<'source>> {
+    let tokens = recursive_tokens(node)
+        .take_while(|token| token.kind != TokenKind::Semicolon)
+        .filter(|token| !token.kind.is_trivia())
+        .filter(|token| token.span.end <= before)
+        .filter(|token| token.kind != TokenKind::Keyword(Keyword::Typedef))
+        .collect::<Vec<_>>();
     let first = tokens.first()?;
     let last = tokens.last()?;
     if first.span.start >= last.span.end {
@@ -1029,12 +1059,47 @@ Game g_Game;
             panic!("expected typedef");
         };
         assert_eq!(typedef_decl.name().unwrap().text(), "TManagedMap");
+        assert_eq!(
+            typedef_decl.type_text().unwrap().text(),
+            "map<ref Managed, ref Managed>"
+        );
 
         let Declaration::Field(field) = declarations[3] else {
             panic!("expected top-level field");
         };
         assert_eq!(field.name().unwrap().text(), "g_Game");
         assert_eq!(field.type_text().unwrap().text(), "Game");
+    }
+
+    #[test]
+    fn extracts_typedef_aliased_type_text() {
+        let source = r#"typedef string FactionKey;
+typedef func Callback;
+typedef map<ref Managed, ref Managed> TManagedMap;
+typedef ScriptInvokerBase<Callback> ScriptInvoker;
+"#;
+        let parse = parse_source(source);
+        let ast = AstSourceFile::new(source, &parse);
+        let declarations = ast.declarations();
+
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
+        assert_eq!(declarations.len(), 4);
+
+        let expected = [
+            ("FactionKey", "string"),
+            ("Callback", "func"),
+            ("TManagedMap", "map<ref Managed, ref Managed>"),
+            ("ScriptInvoker", "ScriptInvokerBase<Callback>"),
+        ];
+
+        for (declaration, (expected_name, expected_type)) in declarations.into_iter().zip(expected)
+        {
+            let Declaration::Typedef(typedef_decl) = declaration else {
+                panic!("expected typedef");
+            };
+            assert_eq!(typedef_decl.name().unwrap().text(), expected_name);
+            assert_eq!(typedef_decl.type_text().unwrap().text(), expected_type);
+        }
     }
 
     #[test]

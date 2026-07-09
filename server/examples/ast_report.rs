@@ -219,8 +219,9 @@ fn append_declaration(report: &mut String, declaration: Declaration<'_, '_>) {
         Declaration::Typedef(typedef_decl) => {
             let span = typedef_decl.text_span();
             report.push_str(&format!(
-                "- Typedef `{}` span {}..{}",
+                "- Typedef `{}` type `{}` span {}..{}",
                 display_value(typedef_decl.name()),
+                display_value(typedef_decl.type_text()),
                 span.start,
                 span.end
             ));

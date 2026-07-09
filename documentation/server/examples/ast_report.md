@@ -10,7 +10,7 @@ This is developer review tooling for the Rust AST wrapper layer. It is not runti
 
 ## Current Behavior
 
-The example parses each committed parser fixture, builds an `AstSourceFile`, and writes `tools/reports/ast-fixtures.report.md` by default. The report lists parse diagnostic counts, top-level declarations, global fields, enum attributes, enum member values, doc comment counts/previews, class members, names, spans, attribute counts, modifier text, return/type text, parameter counts, parameter name/type/default/modifier details, non-declaration callable fragments, constructor members, and destructor members.
+The example parses each committed parser fixture, builds an `AstSourceFile`, and writes `tools/reports/ast-fixtures.report.md` by default. The report lists parse diagnostic counts, top-level declarations, global fields, typedef aliased type text, enum attributes, enum member values, doc comment counts/previews, class members, names, spans, attribute counts, modifier text, return/type text, parameter counts, parameter name/type/default/modifier details, non-declaration callable fragments, constructor members, and destructor members.
 
 It accepts `--out <path>` for an explicit report destination.
 
@@ -29,6 +29,7 @@ Uses only Rust standard library APIs plus the crate parser and AST modules. It m
 - Added constructor rendering through AST class-context method classification.
 - Added parameter detail rendering from the AST parameter accessors.
 - Added rendering for AST-classified non-declaration callable fragments.
+- Added typedef aliased type text rendering.
 
 ## Future Improvements
 
