@@ -40,6 +40,20 @@ pub struct IndexedSymbol {
     pub detail: IndexedSymbolDetail,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompletionMemberLookup {
+    pub raw_candidates: Vec<GlobalSymbolId>,
+    pub members: Vec<GlobalSymbolId>,
+    pub shadowed_groups: Vec<MemberShadowGroup>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemberShadowGroup {
+    pub key: String,
+    pub kept: GlobalSymbolId,
+    pub shadowed: Vec<GlobalSymbolId>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct SymbolIndex {
     files: Vec<IndexedFile>,
@@ -50,6 +64,7 @@ pub struct SymbolIndex {
     children: BTreeMap<GlobalSymbolId, Vec<GlobalSymbolId>>,
     classes_by_name: BTreeMap<String, Vec<GlobalSymbolId>>,
     typedefs_by_name: BTreeMap<String, Vec<GlobalSymbolId>>,
+    functions_by_name: BTreeMap<String, Vec<GlobalSymbolId>>,
     methods_by_owner_name: BTreeMap<(String, String), Vec<GlobalSymbolId>>,
     fields_by_owner_name: BTreeMap<(String, String), Vec<GlobalSymbolId>>,
     members_by_owner: BTreeMap<String, Vec<GlobalSymbolId>>,
@@ -165,6 +180,18 @@ impl SymbolIndex {
         self.preferred_from_symbols(self.top_level_symbols_for_name(name))
     }
 
+    pub fn preferred_classes_by_name(&self, name: &str) -> Vec<GlobalSymbolId> {
+        self.preferred_from_symbols(self.classes_by_name(name))
+    }
+
+    pub fn preferred_typedefs_by_name(&self, name: &str) -> Vec<GlobalSymbolId> {
+        self.preferred_from_symbols(self.typedefs_by_name(name))
+    }
+
+    pub fn preferred_functions_by_name(&self, name: &str) -> Vec<GlobalSymbolId> {
+        self.preferred_from_symbols(self.functions_by_name(name))
+    }
+
     pub fn preferred_from_symbols(&self, symbols: &[GlobalSymbolId]) -> Vec<GlobalSymbolId> {
         let mut symbols = symbols.to_vec();
         symbols.sort_by(|left, right| self.compare_symbol_preference(*left, *right));
@@ -188,6 +215,13 @@ impl SymbolIndex {
 
     pub fn typedefs_by_name(&self, name: &str) -> &[GlobalSymbolId] {
         self.typedefs_by_name
+            .get(name)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    pub fn functions_by_name(&self, name: &str) -> &[GlobalSymbolId] {
+        self.functions_by_name
             .get(name)
             .map(Vec::as_slice)
             .unwrap_or(&[])
@@ -223,10 +257,103 @@ impl SymbolIndex {
     }
 
     pub fn members_for_class_including_bases(&self, owner: &str) -> Vec<GlobalSymbolId> {
+        self.member_segments_for_class_including_bases(owner)
+            .into_iter()
+            .flatten()
+            .collect()
+    }
+
+    pub fn completion_members_for_class(&self, owner: &str) -> CompletionMemberLookup {
+        let member_segments = self.member_segments_for_class_including_bases(owner);
+        self.completion_from_member_segments(member_segments)
+    }
+
+    pub fn completion_members_for_preferred_class(&self, owner: &str) -> CompletionMemberLookup {
+        let member_segments = self.preferred_class_member_segments_including_bases(owner);
+        self.completion_from_member_segments(member_segments)
+    }
+
+    fn completion_from_member_segments(
+        &self,
+        member_segments: Vec<Vec<GlobalSymbolId>>,
+    ) -> CompletionMemberLookup {
+        let raw_candidates = member_segments
+            .iter()
+            .flatten()
+            .copied()
+            .collect::<Vec<_>>();
         let mut members = Vec::new();
-        let mut visited = BTreeSet::new();
-        self.add_members_for_class_including_bases(owner, &mut visited, &mut members);
-        members
+        let mut kept_by_key = BTreeMap::<String, GlobalSymbolId>::new();
+        let mut shadow_group_by_key = BTreeMap::<String, usize>::new();
+        let mut shadowed_groups = Vec::new();
+
+        for segment in member_segments {
+            let mut ids_by_key = BTreeMap::<String, Vec<GlobalSymbolId>>::new();
+            let mut key_order = Vec::<String>::new();
+            for id in segment {
+                let key = self.completion_member_key(id);
+                if !ids_by_key.contains_key(&key) {
+                    key_order.push(key.clone());
+                }
+                ids_by_key.entry(key).or_default().push(id);
+            }
+
+            for key in key_order {
+                let ids = ids_by_key.remove(&key).unwrap_or_default();
+                let Some(preferred) = self.preferred_from_symbols(&ids).first().copied() else {
+                    continue;
+                };
+
+                if let Some(kept) = kept_by_key.get(&key).copied() {
+                    self.push_shadowed_members(
+                        &mut shadowed_groups,
+                        &mut shadow_group_by_key,
+                        key,
+                        kept,
+                        ids,
+                    );
+                } else {
+                    kept_by_key.insert(key.clone(), preferred);
+                    members.push(preferred);
+                    self.push_shadowed_members(
+                        &mut shadowed_groups,
+                        &mut shadow_group_by_key,
+                        key,
+                        preferred,
+                        ids.into_iter().filter(|id| *id != preferred).collect(),
+                    );
+                }
+            }
+        }
+
+        CompletionMemberLookup {
+            raw_candidates,
+            members,
+            shadowed_groups,
+        }
+    }
+
+    fn push_shadowed_members(
+        &self,
+        shadowed_groups: &mut Vec<MemberShadowGroup>,
+        shadow_group_by_key: &mut BTreeMap<String, usize>,
+        key: String,
+        kept: GlobalSymbolId,
+        shadowed: Vec<GlobalSymbolId>,
+    ) {
+        if shadowed.is_empty() {
+            return;
+        }
+
+        let group_index = *shadow_group_by_key.entry(key.clone()).or_insert_with(|| {
+            shadowed_groups.push(MemberShadowGroup {
+                key,
+                kept,
+                shadowed: Vec::new(),
+            });
+            shadowed_groups.len() - 1
+        });
+        shadowed_groups[group_index].shadowed.extend(shadowed);
     }
 
     pub fn method_signature(&self, id: GlobalSymbolId) -> Option<String> {
@@ -235,26 +362,59 @@ impl SymbolIndex {
             return None;
         }
 
-        let owner = symbol
-            .parent
-            .and_then(|parent| self.symbol(parent))
-            .and_then(|parent| parent.name.as_deref())?;
+        self.callable_signature(id)
+    }
+
+    pub fn callable_signature(&self, id: GlobalSymbolId) -> Option<String> {
+        let symbol = self.symbol(id)?;
         let name = symbol.name.as_deref()?;
-        let parameters = self
-            .children(id)
+        let parameters = self.callable_parameter_text(id);
+
+        match symbol.kind {
+            SymbolKind::Function => {
+                let return_type = symbol
+                    .detail
+                    .return_type_text
+                    .as_deref()
+                    .unwrap_or("<unknown>");
+                Some(format!("{name}({parameters}) -> {return_type}"))
+            }
+            SymbolKind::Method => {
+                let owner = self.callable_owner_name(symbol)?;
+                let return_type = symbol
+                    .detail
+                    .return_type_text
+                    .as_deref()
+                    .unwrap_or("<unknown>");
+                Some(format!("{owner}.{name}({parameters}) -> {return_type}"))
+            }
+            SymbolKind::Constructor => {
+                let owner = self.callable_owner_name(symbol)?;
+                Some(format!("{owner}({parameters})"))
+            }
+            SymbolKind::Destructor => {
+                let owner = self.callable_owner_name(symbol)?;
+                Some(format!("~{owner}({parameters})"))
+            }
+            _ => None,
+        }
+    }
+
+    fn callable_parameter_text(&self, id: GlobalSymbolId) -> String {
+        self.children(id)
             .iter()
             .filter_map(|child_id| self.symbol(*child_id))
             .filter(|child| child.kind == SymbolKind::Parameter)
             .map(parameter_signature_text)
             .collect::<Vec<_>>()
-            .join(", ");
-        let return_type = symbol
-            .detail
-            .return_type_text
-            .as_deref()
-            .unwrap_or("<unknown>");
+            .join(", ")
+    }
 
-        Some(format!("{owner}.{name}({parameters}) -> {return_type}"))
+    fn callable_owner_name<'a>(&'a self, symbol: &'a IndexedSymbol) -> Option<&'a str> {
+        symbol
+            .parent
+            .and_then(|parent| self.symbol(parent))
+            .and_then(|parent| parent.name.as_deref())
     }
 
     pub fn names(&self) -> &BTreeMap<String, Vec<GlobalSymbolId>> {
@@ -333,6 +493,12 @@ impl SymbolIndex {
                     .or_default()
                     .push(symbol.id);
             }
+            SymbolKind::Function => {
+                self.functions_by_name
+                    .entry(name.clone())
+                    .or_default()
+                    .push(symbol.id);
+            }
             SymbolKind::Method => {
                 if let Some(owner) = symbol
                     .parent
@@ -385,22 +551,64 @@ impl SymbolIndex {
             .then_with(|| left.symbol_id.cmp(&right.symbol_id))
     }
 
-    fn add_members_for_class_including_bases(
+    fn member_segments_for_class_including_bases(&self, owner: &str) -> Vec<Vec<GlobalSymbolId>> {
+        let mut segments = Vec::new();
+        let mut visited = BTreeSet::new();
+        self.add_member_segments_for_class_including_bases(owner, &mut visited, &mut segments);
+        segments
+    }
+
+    fn preferred_class_member_segments_including_bases(
+        &self,
+        owner: &str,
+    ) -> Vec<Vec<GlobalSymbolId>> {
+        let mut segments = Vec::new();
+        let mut visited = BTreeSet::new();
+        self.add_preferred_class_member_segments_including_bases(
+            owner,
+            &mut visited,
+            &mut segments,
+        );
+        segments
+    }
+
+    fn add_member_segments_for_class_including_bases(
         &self,
         owner: &str,
         visited: &mut BTreeSet<String>,
-        members: &mut Vec<GlobalSymbolId>,
+        segments: &mut Vec<Vec<GlobalSymbolId>>,
     ) {
         if !visited.insert(owner.to_string()) {
             return;
         }
 
-        members.extend(self.members_by_owner(owner));
+        segments.push(self.members_by_owner(owner).to_vec());
 
         let Some(base_name) = self.preferred_class_base_name(owner) else {
             return;
         };
-        self.add_members_for_class_including_bases(&base_name, visited, members);
+        self.add_member_segments_for_class_including_bases(&base_name, visited, segments);
+    }
+
+    fn add_preferred_class_member_segments_including_bases(
+        &self,
+        owner: &str,
+        visited: &mut BTreeSet<String>,
+        segments: &mut Vec<Vec<GlobalSymbolId>>,
+    ) {
+        if !visited.insert(owner.to_string()) {
+            return;
+        }
+
+        let classes = self.preferred_classes_by_name(owner);
+        for class_id in &classes {
+            segments.push(self.direct_members_for_class_declaration(*class_id));
+        }
+
+        let Some(base_name) = self.first_class_base_name(&classes) else {
+            return;
+        };
+        self.add_preferred_class_member_segments_including_bases(&base_name, visited, segments);
     }
 
     fn preferred_class_base_name(&self, owner: &str) -> Option<String> {
@@ -408,6 +616,16 @@ impl SymbolIndex {
             .preferred_from_symbols(self.classes_by_name(owner))
             .first()
             .copied()?;
+        self.class_base_name(class_id)
+    }
+
+    fn first_class_base_name(&self, class_ids: &[GlobalSymbolId]) -> Option<String> {
+        class_ids
+            .iter()
+            .find_map(|class_id| self.class_base_name(*class_id))
+    }
+
+    fn class_base_name(&self, class_id: GlobalSymbolId) -> Option<String> {
         let class = self.symbol(class_id)?;
         let base = class.detail.base_type.as_deref()?.trim();
         if base.is_empty() {
@@ -415,6 +633,69 @@ impl SymbolIndex {
         } else {
             Some(base.to_string())
         }
+    }
+
+    fn direct_members_for_class_declaration(
+        &self,
+        class_id: GlobalSymbolId,
+    ) -> Vec<GlobalSymbolId> {
+        self.children(class_id)
+            .iter()
+            .copied()
+            .filter(|child_id| {
+                self.symbol(*child_id)
+                    .is_some_and(|symbol| is_class_member_kind(symbol.kind))
+            })
+            .collect()
+    }
+
+    fn completion_member_key(&self, id: GlobalSymbolId) -> String {
+        let Some(symbol) = self.symbol(id) else {
+            return format!("Missing:{}:{}", id.file_id.0, id.symbol_id.0);
+        };
+        let name = symbol.name.as_deref().unwrap_or("<unknown>");
+
+        match symbol.kind {
+            SymbolKind::Field => format!("Field {name}"),
+            SymbolKind::Method => format!(
+                "Method {name}({}) -> {}",
+                self.parameter_type_shape(id),
+                symbol
+                    .detail
+                    .return_type_text
+                    .as_deref()
+                    .unwrap_or("<unknown>")
+            ),
+            SymbolKind::Constructor => {
+                format!("Constructor {name}({})", self.parameter_type_shape(id))
+            }
+            SymbolKind::Destructor => {
+                format!("Destructor {name}({})", self.parameter_type_shape(id))
+            }
+            _ => format!(
+                "{} {name} #{}:{}",
+                symbol_kind_key(symbol.kind),
+                id.file_id.0,
+                id.symbol_id.0
+            ),
+        }
+    }
+
+    fn parameter_type_shape(&self, id: GlobalSymbolId) -> String {
+        self.children(id)
+            .iter()
+            .filter_map(|child_id| self.symbol(*child_id))
+            .filter(|child| child.kind == SymbolKind::Parameter)
+            .map(|parameter| {
+                parameter
+                    .detail
+                    .type_text
+                    .as_deref()
+                    .unwrap_or("<unknown>")
+                    .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 }
 
@@ -456,6 +737,22 @@ fn parameter_signature_text(symbol: &IndexedSymbol) -> String {
         value.push_str(default_text);
     }
     value
+}
+
+fn symbol_kind_key(kind: SymbolKind) -> &'static str {
+    match kind {
+        SymbolKind::Class => "Class",
+        SymbolKind::Enum => "Enum",
+        SymbolKind::EnumMember => "EnumMember",
+        SymbolKind::Typedef => "Typedef",
+        SymbolKind::Function => "Function",
+        SymbolKind::GlobalField => "GlobalField",
+        SymbolKind::Field => "Field",
+        SymbolKind::Method => "Method",
+        SymbolKind::Constructor => "Constructor",
+        SymbolKind::Destructor => "Destructor",
+        SymbolKind::Parameter => "Parameter",
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -505,6 +802,7 @@ class Example : Base
         assert_eq!(index.top_level_symbols_for_name("Example").len(), 1);
         assert_eq!(index.classes_by_name("Example").len(), 1);
         assert_eq!(index.typedefs_by_name("FactionKey").len(), 1);
+        assert!(index.functions_by_name("FactionKey").is_empty());
         assert_eq!(index.methods_by_owner_name("Example", "Run").len(), 1);
         assert_eq!(index.fields_by_owner_name("Example", "m_Value").len(), 1);
         assert_eq!(index.members_by_owner("Example").len(), 2);
@@ -719,6 +1017,66 @@ class Example : Base
     }
 
     #[test]
+    fn formats_general_callable_signatures() {
+        let catalog = catalog(
+            r#"void GlobalFn(int value = 4);
+
+class Example
+{
+	void Example(int value);
+	void ~Example();
+	void Run(string name);
+	int Count();
+	int m_Value;
+}
+"#,
+            SourceFileMetadata::unknown(),
+        );
+        let index = SymbolIndex::from_catalogs([&catalog]);
+
+        let global_fn = index.symbols_for_name("GlobalFn")[0];
+        let run = index.methods_by_owner_name("Example", "Run")[0];
+        let constructor = index
+            .members_by_owner("Example")
+            .iter()
+            .copied()
+            .find(|id| index.symbol(*id).unwrap().kind == SymbolKind::Constructor)
+            .unwrap();
+        let destructor = index
+            .members_by_owner("Example")
+            .iter()
+            .copied()
+            .find(|id| index.symbol(*id).unwrap().kind == SymbolKind::Destructor)
+            .unwrap();
+        let field = index.fields_by_owner_name("Example", "m_Value")[0];
+
+        assert_eq!(
+            index.callable_signature(global_fn).as_deref(),
+            Some("GlobalFn(int value = 4) -> void")
+        );
+        assert_eq!(
+            index.callable_signature(run).as_deref(),
+            Some("Example.Run(string name) -> void")
+        );
+        assert_eq!(
+            index.callable_signature(constructor).as_deref(),
+            Some("Example(int value)")
+        );
+        assert_eq!(
+            index.callable_signature(destructor).as_deref(),
+            Some("~Example()")
+        );
+        assert_eq!(index.callable_signature(field), None);
+
+        assert_eq!(
+            index.method_signature(run).as_deref(),
+            Some("Example.Run(string name) -> void")
+        );
+        assert_eq!(index.method_signature(constructor), None);
+        assert_eq!(index.method_signature(global_fn), None);
+    }
+
+    #[test]
     fn indexes_direct_class_fields_and_members_by_owner() {
         let catalog = catalog(
             r#"int m_Value;
@@ -831,6 +1189,429 @@ class B : A
         let members = index.members_for_class_including_bases("A");
 
         assert_eq!(member_names(&index, &members), vec!["m_A", "m_B"]);
+    }
+
+    #[test]
+    fn completion_members_are_direct_first_and_hide_matching_base_members() {
+        let catalog = catalog(
+            r#"class Base
+{
+	int m_Value;
+	int m_BaseOnly;
+	void Run(int value);
+	void Run(string value);
+	void BaseOnly();
+}
+
+class Child : Base
+{
+	int m_Value;
+	void Run(int other);
+	void ChildOnly();
+}
+"#,
+            SourceFileMetadata::unknown(),
+        );
+        let index = SymbolIndex::from_catalogs([&catalog]);
+
+        let raw = index.members_for_class_including_bases("Child");
+        assert_eq!(
+            member_names(&index, &raw),
+            vec![
+                "m_Value",
+                "Run",
+                "ChildOnly",
+                "m_Value",
+                "m_BaseOnly",
+                "Run",
+                "Run",
+                "BaseOnly"
+            ]
+        );
+
+        let completion = index.completion_members_for_class("Child");
+        assert_eq!(completion.raw_candidates, raw);
+        assert_eq!(
+            member_names(&index, &completion.members),
+            vec![
+                "m_Value",
+                "Run",
+                "ChildOnly",
+                "m_BaseOnly",
+                "Run",
+                "BaseOnly"
+            ]
+        );
+        assert_eq!(completion.shadowed_groups.len(), 2);
+        assert!(completion
+            .shadowed_groups
+            .iter()
+            .any(|group| group.key == "Field m_Value" && group.shadowed.len() == 1));
+        assert!(completion
+            .shadowed_groups
+            .iter()
+            .any(|group| group.key == "Method Run(int) -> void" && group.shadowed.len() == 1));
+    }
+
+    #[test]
+    fn completion_members_prefer_workspace_within_same_owner_depth() {
+        let game = catalog(
+            r#"class SCR_BaseGameMode
+{
+	void OnGameStart();
+	void GameOnly();
+}
+"#,
+            game_metadata("SCR_BaseGameMode.c"),
+        );
+        let workspace = catalog(
+            r#"modded class SCR_BaseGameMode
+{
+	override void OnGameStart();
+	void WorkspaceOnly();
+}
+"#,
+            workspace_metadata("SCR_BaseGameMode.c"),
+        );
+        let index = SymbolIndex::from_catalogs([&game, &workspace]);
+
+        let raw = index.members_for_class_including_bases("SCR_BaseGameMode");
+        assert_eq!(
+            member_names(&index, &raw),
+            vec!["OnGameStart", "GameOnly", "OnGameStart", "WorkspaceOnly"]
+        );
+
+        let completion = index.completion_members_for_class("SCR_BaseGameMode");
+        assert_eq!(completion.raw_candidates, raw);
+        assert_eq!(
+            member_names(&index, &completion.members),
+            vec!["OnGameStart", "GameOnly", "WorkspaceOnly"]
+        );
+
+        let kept_on_game_start = completion
+            .members
+            .iter()
+            .copied()
+            .find(|id| index.symbol(*id).unwrap().name.as_deref() == Some("OnGameStart"))
+            .unwrap();
+        assert_eq!(
+            index
+                .file(kept_on_game_start.file_id)
+                .unwrap()
+                .metadata
+                .kind,
+            SourceKind::Workspace
+        );
+
+        let shadow_group = completion
+            .shadowed_groups
+            .iter()
+            .find(|group| group.key == "Method OnGameStart() -> void")
+            .unwrap();
+        assert_eq!(shadow_group.kept, kept_on_game_start);
+        assert_eq!(shadow_group.shadowed.len(), 1);
+        assert_eq!(
+            index
+                .file(shadow_group.shadowed[0].file_id)
+                .unwrap()
+                .metadata
+                .kind,
+            SourceKind::GameData
+        );
+    }
+
+    #[test]
+    fn preferred_class_completion_uses_preferred_declaration_then_overlay_then_bases() {
+        let base = catalog(
+            r#"class BaseGameMode
+{
+	void BaseOnly();
+}
+"#,
+            game_metadata("BaseGameMode.c"),
+        );
+        let game = catalog(
+            r#"class SCR_BaseGameMode : BaseGameMode
+{
+	void OnGameStart();
+	void GameOnly();
+}
+"#,
+            game_metadata("SCR_BaseGameMode.c"),
+        );
+        let workspace = catalog(
+            r#"modded class SCR_BaseGameMode
+{
+	override void OnGameStart();
+	void WorkspaceOnly();
+}
+"#,
+            workspace_metadata("SCR_BaseGameMode.c"),
+        );
+        let index = SymbolIndex::from_catalogs([&base, &game, &workspace]);
+
+        let raw = index.completion_members_for_class("SCR_BaseGameMode");
+        assert_eq!(
+            member_names(&index, &raw.members),
+            vec!["OnGameStart", "GameOnly", "WorkspaceOnly"]
+        );
+
+        let completion = index.completion_members_for_preferred_class("SCR_BaseGameMode");
+        assert_eq!(
+            member_names(&index, &completion.raw_candidates),
+            vec![
+                "OnGameStart",
+                "WorkspaceOnly",
+                "OnGameStart",
+                "GameOnly",
+                "BaseOnly"
+            ]
+        );
+        assert_eq!(
+            member_names(&index, &completion.members),
+            vec!["OnGameStart", "WorkspaceOnly", "GameOnly", "BaseOnly"]
+        );
+
+        let kept_on_game_start = completion
+            .members
+            .iter()
+            .copied()
+            .find(|id| index.symbol(*id).unwrap().name.as_deref() == Some("OnGameStart"))
+            .unwrap();
+        assert_eq!(
+            index
+                .file(kept_on_game_start.file_id)
+                .unwrap()
+                .metadata
+                .kind,
+            SourceKind::Workspace
+        );
+
+        let shadow_group = completion
+            .shadowed_groups
+            .iter()
+            .find(|group| group.key == "Method OnGameStart() -> void")
+            .unwrap();
+        assert_eq!(shadow_group.kept, kept_on_game_start);
+        assert_eq!(shadow_group.shadowed.len(), 1);
+        assert_eq!(
+            index
+                .file(shadow_group.shadowed[0].file_id)
+                .unwrap()
+                .metadata
+                .kind,
+            SourceKind::GameData
+        );
+    }
+
+    #[test]
+    fn preferred_class_completion_keeps_direct_overlay_before_higher_priority_base_members() {
+        let base = catalog(
+            r#"class Base
+{
+	void Run();
+}
+"#,
+            workspace_metadata("Base.c"),
+        );
+        let child = catalog(
+            r#"class Child : Base
+{
+	void Run();
+}
+"#,
+            game_metadata("Child.c"),
+        );
+        let index = SymbolIndex::from_catalogs([&base, &child]);
+
+        let completion = index.completion_members_for_preferred_class("Child");
+        let run = completion.members[0];
+
+        assert_eq!(index.symbol(run).unwrap().name.as_deref(), Some("Run"));
+        assert_eq!(
+            index.file(run.file_id).unwrap().metadata.kind,
+            SourceKind::GameData
+        );
+        assert_eq!(completion.shadowed_groups.len(), 1);
+        assert_eq!(completion.shadowed_groups[0].kept, run);
+        assert_eq!(
+            index
+                .file(completion.shadowed_groups[0].shadowed[0].file_id)
+                .unwrap()
+                .metadata
+                .kind,
+            SourceKind::Workspace
+        );
+    }
+
+    #[test]
+    fn preferred_class_completion_keeps_direct_members_when_base_is_missing() {
+        let catalog = catalog(
+            r#"class Child : MissingBase
+{
+	int m_Child;
+	void Run();
+}
+"#,
+            SourceFileMetadata::unknown(),
+        );
+        let index = SymbolIndex::from_catalogs([&catalog]);
+
+        let completion = index.completion_members_for_preferred_class("Child");
+
+        assert_eq!(
+            member_names(&index, &completion.members),
+            vec!["m_Child", "Run"]
+        );
+        assert!(completion.shadowed_groups.is_empty());
+    }
+
+    #[test]
+    fn preferred_class_completion_stops_on_cycles() {
+        let catalog = catalog(
+            r#"class A : B
+{
+	int m_A;
+	void Run();
+}
+
+class B : A
+{
+	int m_B;
+	void Run();
+}
+"#,
+            SourceFileMetadata::unknown(),
+        );
+        let index = SymbolIndex::from_catalogs([&catalog]);
+
+        let completion = index.completion_members_for_preferred_class("A");
+
+        assert_eq!(
+            member_names(&index, &completion.members),
+            vec!["m_A", "Run", "m_B"]
+        );
+        assert_eq!(completion.shadowed_groups.len(), 1);
+        assert_eq!(completion.shadowed_groups[0].key, "Method Run() -> void");
+    }
+
+    #[test]
+    fn completion_members_keep_direct_depth_before_higher_priority_base_members() {
+        let game_base = catalog(
+            r#"class Base
+{
+	void Run();
+}
+"#,
+            workspace_metadata("Base.c"),
+        );
+        let game_child = catalog(
+            r#"class Child : Base
+{
+	void Run();
+}
+"#,
+            game_metadata("Child.c"),
+        );
+        let index = SymbolIndex::from_catalogs([&game_base, &game_child]);
+
+        let completion = index.completion_members_for_class("Child");
+        let run = completion.members[0];
+
+        assert_eq!(index.symbol(run).unwrap().name.as_deref(), Some("Run"));
+        assert_eq!(
+            index.file(run.file_id).unwrap().metadata.kind,
+            SourceKind::GameData
+        );
+        assert_eq!(completion.shadowed_groups.len(), 1);
+        assert_eq!(completion.shadowed_groups[0].kept, run);
+        assert_eq!(
+            index
+                .file(completion.shadowed_groups[0].shadowed[0].file_id)
+                .unwrap()
+                .metadata
+                .kind,
+            SourceKind::Workspace
+        );
+    }
+
+    #[test]
+    fn completion_members_keep_direct_members_when_base_is_missing() {
+        let catalog = catalog(
+            r#"class Child : MissingBase
+{
+	int m_Child;
+	void Run();
+}
+"#,
+            SourceFileMetadata::unknown(),
+        );
+        let index = SymbolIndex::from_catalogs([&catalog]);
+
+        let completion = index.completion_members_for_class("Child");
+
+        assert_eq!(
+            member_names(&index, &completion.members),
+            vec!["m_Child", "Run"]
+        );
+        assert!(completion.shadowed_groups.is_empty());
+    }
+
+    #[test]
+    fn completion_member_lookup_stops_on_cycles() {
+        let catalog = catalog(
+            r#"class A : B
+{
+	int m_A;
+	void Run();
+}
+
+class B : A
+{
+	int m_B;
+	void Run();
+}
+"#,
+            SourceFileMetadata::unknown(),
+        );
+        let index = SymbolIndex::from_catalogs([&catalog]);
+
+        let completion = index.completion_members_for_class("A");
+
+        assert_eq!(
+            member_names(&index, &completion.members),
+            vec!["m_A", "Run", "m_B"]
+        );
+        assert_eq!(completion.shadowed_groups.len(), 1);
+        assert_eq!(completion.shadowed_groups[0].key, "Method Run() -> void");
+    }
+
+    #[test]
+    fn completion_member_lookup_deduplicates_constructor_and_destructor_shapes() {
+        let catalog = catalog(
+            r#"class Base
+{
+	void Base(int value);
+	void ~Base();
+}
+
+class Child : Base
+{
+	void Child(int value);
+	void ~Child();
+}
+"#,
+            SourceFileMetadata::unknown(),
+        );
+        let index = SymbolIndex::from_catalogs([&catalog]);
+
+        let completion = index.completion_members_for_class("Child");
+
+        assert_eq!(
+            member_names(&index, &completion.members),
+            vec!["Child", "Child", "Base", "Base"]
+        );
+        assert!(completion.shadowed_groups.is_empty());
     }
 
     #[test]
@@ -1013,6 +1794,189 @@ class FactionKey : string {}
                 Some(std::path::Path::new("GameCode/Faction/FactionKey.c"))
             );
         }
+    }
+
+    #[test]
+    fn preferred_kind_specific_top_level_lookup_separates_conflict_kinds() {
+        let catalog = catalog(
+            r#"typedef string FactionKey;
+class FactionKey : string {}
+void FactionKey(int value);
+"#,
+            workspace_metadata("GameCode/Faction/FactionKey.c"),
+        );
+        let index = SymbolIndex::from_catalogs([&catalog]);
+
+        let generic = index.preferred_top_level_symbols_for_name("FactionKey");
+        assert_eq!(generic.len(), 3);
+        assert!(generic.iter().any(|id| index
+            .symbol(*id)
+            .is_some_and(|symbol| symbol.kind == SymbolKind::Class)));
+        assert!(generic.iter().any(|id| index
+            .symbol(*id)
+            .is_some_and(|symbol| symbol.kind == SymbolKind::Typedef)));
+        assert!(generic.iter().any(|id| index
+            .symbol(*id)
+            .is_some_and(|symbol| symbol.kind == SymbolKind::Function)));
+
+        let preferred_class = index.preferred_classes_by_name("FactionKey");
+        let preferred_typedef = index.preferred_typedefs_by_name("FactionKey");
+        let preferred_function = index.preferred_functions_by_name("FactionKey");
+
+        assert_eq!(preferred_class.len(), 1);
+        assert_eq!(preferred_typedef.len(), 1);
+        assert_eq!(preferred_function.len(), 1);
+        assert_eq!(
+            index.symbol(preferred_class[0]).unwrap().kind,
+            SymbolKind::Class
+        );
+        assert_eq!(
+            index.symbol(preferred_typedef[0]).unwrap().kind,
+            SymbolKind::Typedef
+        );
+        assert_eq!(
+            index.symbol(preferred_function[0]).unwrap().kind,
+            SymbolKind::Function
+        );
+    }
+
+    #[test]
+    fn preferred_kind_specific_lookup_uses_workspace_priority_within_kind() {
+        let game = catalog(
+            r#"class Example {}
+typedef int ExampleAlias;
+void ExampleFn();
+"#,
+            game_metadata("Game.c"),
+        );
+        let workspace = catalog(
+            r#"modded class Example {}
+typedef float ExampleAlias;
+void ExampleFn(int value);
+"#,
+            workspace_metadata("Workspace.c"),
+        );
+        let index = SymbolIndex::from_catalogs([&game, &workspace]);
+
+        let preferred_class = index.preferred_classes_by_name("Example");
+        let preferred_typedef = index.preferred_typedefs_by_name("ExampleAlias");
+        let preferred_function = index.preferred_functions_by_name("ExampleFn");
+
+        for id in [
+            preferred_class[0],
+            preferred_typedef[0],
+            preferred_function[0],
+        ] {
+            assert_eq!(
+                index.file(id.file_id).unwrap().metadata.kind,
+                SourceKind::Workspace
+            );
+        }
+        assert_eq!(
+            index.symbol(preferred_class[0]).unwrap().kind,
+            SymbolKind::Class
+        );
+        assert_eq!(
+            index.symbol(preferred_typedef[0]).unwrap().kind,
+            SymbolKind::Typedef
+        );
+        assert_eq!(
+            index.symbol(preferred_function[0]).unwrap().kind,
+            SymbolKind::Function
+        );
+    }
+
+    #[test]
+    fn function_lookup_excludes_top_level_classes_and_typedefs_with_same_name() {
+        let catalog = catalog(
+            r#"typedef string Shared;
+class Shared {}
+void Shared();
+"#,
+            SourceFileMetadata::unknown(),
+        );
+        let index = SymbolIndex::from_catalogs([&catalog]);
+
+        assert_eq!(index.top_level_symbols_for_name("Shared").len(), 3);
+        assert_eq!(index.functions_by_name("Shared").len(), 1);
+        assert_eq!(
+            index
+                .symbol(index.functions_by_name("Shared")[0])
+                .unwrap()
+                .kind,
+            SymbolKind::Function
+        );
+    }
+
+    #[test]
+    fn overlay_index_prefers_workspace_symbols_over_game_data() {
+        let game = catalog(
+            r#"class SCR_BaseGameMode
+{
+	void OnGameStart();
+}
+
+typedef string FactionKey;
+"#,
+            game_metadata("Game.c"),
+        );
+        let workspace = catalog(
+            r#"modded class SCR_BaseGameMode
+{
+	override void OnGameStart();
+}
+
+class FactionKey : string
+{
+}
+"#,
+            workspace_metadata("Workspace.c"),
+        );
+        let index = SymbolIndex::from_catalogs([&game, &workspace]);
+
+        let source_counts = index.source_kind_counts();
+        assert_eq!(source_counts.get(&SourceKind::GameData), Some(&1));
+        assert_eq!(source_counts.get(&SourceKind::Workspace), Some(&1));
+
+        let preferred_class =
+            index.preferred_from_symbols(index.classes_by_name("SCR_BaseGameMode"));
+        assert_eq!(
+            index
+                .file(preferred_class[0].file_id)
+                .unwrap()
+                .metadata
+                .kind,
+            SourceKind::Workspace
+        );
+
+        let preferred_top_level = index.preferred_top_level_symbols_for_name("FactionKey");
+        assert_eq!(
+            index
+                .file(preferred_top_level[0].file_id)
+                .unwrap()
+                .metadata
+                .kind,
+            SourceKind::Workspace
+        );
+        assert_eq!(
+            index.symbol(preferred_top_level[0]).unwrap().kind,
+            SymbolKind::Class
+        );
+
+        let preferred_method = index
+            .preferred_from_symbols(index.methods_by_owner_name("SCR_BaseGameMode", "OnGameStart"));
+        assert_eq!(
+            index
+                .file(preferred_method[0].file_id)
+                .unwrap()
+                .metadata
+                .kind,
+            SourceKind::Workspace
+        );
+        assert_eq!(
+            index.symbol(preferred_method[0]).unwrap().kind,
+            SymbolKind::Method
+        );
     }
 
     fn catalog(source: &str, metadata: SourceFileMetadata) -> SymbolCatalog<'_> {

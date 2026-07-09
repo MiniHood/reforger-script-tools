@@ -1,12 +1,11 @@
-use reforger_language_server::ast::AstSourceFile;
 use reforger_language_server::index::{GlobalSymbolId, IndexedSymbol, SymbolIndex};
-use reforger_language_server::model::{
-    SourceFileMetadata, SourceKind, SymbolCatalog, SymbolKind, SOURCE_PRIORITY_GAME_DATA,
+use reforger_language_server::index_build::{
+    build_index, IndexBuildConfig, IndexBuildCounts, IndexSourceRoot,
 };
-use reforger_language_server::parser::parse_source;
-use std::borrow::Cow;
+use reforger_language_server::model::{
+    SourceKind, SymbolKind, SOURCE_PRIORITY_GAME_DATA, SOURCE_PRIORITY_WORKSPACE,
+};
 use std::env;
-use std::fs;
 use std::path::{Path, PathBuf};
 
 const DEFAULT_STORAGE_RELATIVE_PATH: &str =
@@ -16,6 +15,7 @@ const MAX_CHILDREN: usize = 20;
 
 struct Args {
     scripts_path: PathBuf,
+    workspace_path: Option<PathBuf>,
     query: Query,
 }
 
@@ -24,25 +24,21 @@ enum Query {
     TopLevel(String),
     Class(String),
     Typedef(String),
+    Function(String),
     Method { owner: String, name: String },
-}
-
-#[derive(Default)]
-struct Totals {
-    files: usize,
-    bytes: usize,
-    lossy_files: usize,
-    parse_diagnostics: usize,
 }
 
 fn main() -> Result<(), String> {
     let args = parse_args()?;
-    let (index, totals) = build_index(&args.scripts_path)?;
+    let (index, totals) = build_debug_index(&args.scripts_path, args.workspace_path.as_deref())?;
 
     println!("# Index Debug");
     println!();
     println!("Query: `{}`", query_label(&args.query));
     println!("Scripts: `{}`", args.scripts_path.display());
+    if let Some(workspace_path) = &args.workspace_path {
+        println!("Workspace: `{}`", workspace_path.display());
+    }
     println!("Files: {}", totals.files);
     println!("Bytes: {}", totals.bytes);
     println!("Files decoded lossily: {}", totals.lossy_files);
@@ -59,16 +55,19 @@ fn main() -> Result<(), String> {
             index.symbols_for_name(&name),
             index.preferred_symbols_for_name(&name).first().copied(),
         ),
-        Query::TopLevel(name) => print_query_results(
-            &index,
-            "Top-Level Symbols By Name",
-            &name,
-            index.top_level_symbols_for_name(&name),
-            index
-                .preferred_top_level_symbols_for_name(&name)
-                .first()
-                .copied(),
-        ),
+        Query::TopLevel(name) => {
+            print_query_results(
+                &index,
+                "Top-Level Symbols By Name",
+                &name,
+                index.top_level_symbols_for_name(&name),
+                index
+                    .preferred_top_level_symbols_for_name(&name)
+                    .first()
+                    .copied(),
+            );
+            print_kind_specific_top_level_preferred(&index, &name);
+        }
         Query::Class(name) => {
             let symbols = index.classes_by_name(&name);
             print_query_results(
@@ -76,7 +75,7 @@ fn main() -> Result<(), String> {
                 "Classes By Name",
                 &name,
                 symbols,
-                index.preferred_from_symbols(symbols).first().copied(),
+                index.preferred_classes_by_name(&name).first().copied(),
             );
             print_class_member_summary(&index, &name, symbols);
         }
@@ -87,7 +86,17 @@ fn main() -> Result<(), String> {
                 "Typedefs By Name",
                 &name,
                 symbols,
-                index.preferred_from_symbols(symbols).first().copied(),
+                index.preferred_typedefs_by_name(&name).first().copied(),
+            );
+        }
+        Query::Function(name) => {
+            let symbols = index.functions_by_name(&name);
+            print_query_results(
+                &index,
+                "Functions By Name",
+                &name,
+                symbols,
+                index.preferred_functions_by_name(&name).first().copied(),
             );
         }
         Query::Method { owner, name } => {
@@ -117,6 +126,7 @@ fn main() -> Result<(), String> {
 fn parse_args() -> Result<Args, String> {
     let mut args = env::args().skip(1);
     let mut scripts: Option<PathBuf> = None;
+    let mut workspace: Option<PathBuf> = None;
     let mut query: Option<Query> = None;
 
     while let Some(arg) = args.next() {
@@ -126,6 +136,12 @@ fn parse_args() -> Result<Args, String> {
                     return Err("--scripts requires a path".to_string());
                 };
                 scripts = Some(PathBuf::from(value));
+            }
+            "--workspace" => {
+                let Some(value) = args.next() else {
+                    return Err("--workspace requires a path".to_string());
+                };
+                workspace = Some(PathBuf::from(value));
             }
             "--name" => {
                 set_query(&mut query, Query::Name(take_value(&mut args, "--name")?))?;
@@ -143,6 +159,12 @@ fn parse_args() -> Result<Args, String> {
                 set_query(
                     &mut query,
                     Query::Typedef(take_value(&mut args, "--typedef")?),
+                )?;
+            }
+            "--function" => {
+                set_query(
+                    &mut query,
+                    Query::Function(take_value(&mut args, "--function")?),
                 )?;
             }
             "--method" => {
@@ -164,6 +186,7 @@ fn parse_args() -> Result<Args, String> {
 
     Ok(Args {
         scripts_path: scripts.unwrap_or_else(default_scripts_path),
+        workspace_path: workspace,
         query,
     })
 }
@@ -182,12 +205,13 @@ fn set_query(target: &mut Option<Query>, query: Query) -> Result<(), String> {
 }
 
 fn print_usage() {
-    println!("Usage: node tools/index-debug.mjs [--scripts <path>] <query>");
+    println!("Usage: node tools/index-debug.mjs [--scripts <path>] [--workspace <path>] <query>");
     println!("Queries:");
     println!("  --name <symbol>");
     println!("  --top-level <symbol>");
     println!("  --class <class>");
     println!("  --typedef <typedef>");
+    println!("  --function <function>");
     println!("  --method <owner> <method>");
 }
 
@@ -199,75 +223,25 @@ fn default_scripts_path() -> PathBuf {
     }
 }
 
-fn build_index(scripts_path: &Path) -> Result<(SymbolIndex, Totals), String> {
-    if !scripts_path.is_dir() {
-        return Err(format!(
-            "Scripts folder does not exist or is not a folder: {}",
-            scripts_path.display()
+fn build_debug_index(
+    scripts_path: &Path,
+    workspace_path: Option<&Path>,
+) -> Result<(SymbolIndex, IndexBuildCounts), String> {
+    let mut roots = vec![IndexSourceRoot::new(
+        scripts_path,
+        SourceKind::GameData,
+        SOURCE_PRIORITY_GAME_DATA,
+    )];
+    if let Some(workspace_path) = workspace_path {
+        roots.push(IndexSourceRoot::new(
+            workspace_path,
+            SourceKind::Workspace,
+            SOURCE_PRIORITY_WORKSPACE,
         ));
     }
 
-    let mut files = Vec::new();
-    collect_script_files(scripts_path, &mut files)?;
-    files.sort();
-
-    let mut totals = Totals::default();
-    let mut catalogs = Vec::new();
-
-    for file in &files {
-        let bytes = fs::read(file)
-            .map_err(|error| format!("Failed to read {}: {error}", file.display()))?;
-        totals.files += 1;
-        totals.bytes += bytes.len();
-
-        let source = String::from_utf8_lossy(&bytes);
-        if matches!(source, Cow::Owned(_)) {
-            totals.lossy_files += 1;
-        }
-        let source: &'static str = Box::leak(source.into_owned().into_boxed_str());
-
-        let parse = parse_source(source);
-        totals.parse_diagnostics += parse.diagnostics.len();
-        let ast = AstSourceFile::new(source, &parse);
-        catalogs.push(SymbolCatalog::from_ast_with_metadata(
-            source,
-            &ast,
-            game_data_metadata(scripts_path, file),
-        ));
-    }
-
-    Ok((SymbolIndex::from_catalogs(catalogs.iter()), totals))
-}
-
-fn game_data_metadata(scripts_path: &Path, file: &Path) -> SourceFileMetadata {
-    SourceFileMetadata {
-        kind: SourceKind::GameData,
-        absolute_path: Some(file.to_path_buf()),
-        root_path: Some(scripts_path.to_path_buf()),
-        relative_path: Some(
-            file.strip_prefix(scripts_path)
-                .unwrap_or(file)
-                .to_path_buf(),
-        ),
-        priority: SOURCE_PRIORITY_GAME_DATA,
-    }
-}
-
-fn collect_script_files(folder: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
-    for entry in fs::read_dir(folder)
-        .map_err(|error| format!("Failed to read folder {}: {error}", folder.display()))?
-    {
-        let entry = entry
-            .map_err(|error| format!("Failed to read entry in {}: {error}", folder.display()))?;
-        let path = entry.path();
-        if path.is_dir() {
-            collect_script_files(&path, files)?;
-        } else if path.extension().is_some_and(|extension| extension == "c") {
-            files.push(path);
-        }
-    }
-
-    Ok(())
+    let result = build_index(&IndexBuildConfig { roots })?;
+    Ok((result.index, result.summary.totals))
 }
 
 fn print_query_results(
@@ -304,12 +278,59 @@ fn print_query_results(
     }
 }
 
+fn print_kind_specific_top_level_preferred(index: &SymbolIndex, name: &str) {
+    println!(
+        "## Kind-Specific Preferred Top-Level `{}`",
+        escape_inline(name)
+    );
+    println!();
+    println!("Generic top-level preferred lookup is a cross-kind conflict/debug view. Use these kind-specific rows when the expected declaration kind is known.");
+    println!();
+    print_kind_specific_row(
+        index,
+        "Class",
+        index.classes_by_name(name),
+        index.preferred_classes_by_name(name).first().copied(),
+    );
+    print_kind_specific_row(
+        index,
+        "Typedef",
+        index.typedefs_by_name(name),
+        index.preferred_typedefs_by_name(name).first().copied(),
+    );
+    print_kind_specific_row(
+        index,
+        "Function",
+        index.functions_by_name(name),
+        index.preferred_functions_by_name(name).first().copied(),
+    );
+    println!();
+}
+
+fn print_kind_specific_row(
+    index: &SymbolIndex,
+    kind: &str,
+    symbols: &[GlobalSymbolId],
+    preferred: Option<GlobalSymbolId>,
+) {
+    println!("- {kind}: {} matches", symbols.len());
+    if let Some(preferred) = preferred {
+        println!("  Preferred:");
+        print_indented_member_summary(index, preferred, "  ");
+    }
+}
+
 fn print_class_member_summary(index: &SymbolIndex, owner: &str, symbols: &[GlobalSymbolId]) {
     if symbols.is_empty() {
         return;
     }
 
-    println!("## Direct Members `{}`", escape_inline(owner));
+    println!(
+        "## Direct Owner-Name Aggregate Members `{}`",
+        escape_inline(owner)
+    );
+    println!();
+    println!("This is `direct_members_by_owner()` output for the owner name across all indexed source files. In overlay mode it is not limited to the preferred class declaration.");
     println!();
     let direct_members = index.direct_members_by_owner(owner);
     println!("Members: {}", direct_members.len());
@@ -330,7 +351,12 @@ fn print_class_member_summary(index: &SymbolIndex, owner: &str, symbols: &[Globa
         .skip(direct_members.len())
         .copied()
         .collect::<Vec<_>>();
-    println!("## Members Including Bases `{}`", escape_inline(owner));
+    println!(
+        "## Owner-Name Aggregate Members Including Bases `{}`",
+        escape_inline(owner)
+    );
+    println!();
+    println!("Raw all-candidates view for debugging. This uses exact owner/base names and can include members from multiple source kinds when an overlay is indexed.");
     println!();
     println!(
         "Members: {} direct, {} inherited/base-chain, {} total",
@@ -349,6 +375,24 @@ fn print_class_member_summary(index: &SymbolIndex, owner: &str, symbols: &[Globa
     }
     println!();
 
+    let completion = index.completion_members_for_class(owner);
+    print_completion_lookup(
+        index,
+        owner,
+        "Completion Owner-Name Aggregate Members",
+        "Completion-ready view over the same owner-name aggregate candidates; it de-duplicates by member key but does not semantically merge modded classes. This remains a raw debug view, not the future editor completion truth.",
+        &completion,
+    );
+
+    let preferred_completion = index.completion_members_for_preferred_class(owner);
+    print_completion_lookup(
+        index,
+        owner,
+        "Preferred-Class Overlay Completion Members",
+        "Future editor-facing completion path. It starts from preferred class declarations, intentionally includes lower-priority same-owner overlay members, then appends exact-name base-chain members.",
+        &preferred_completion,
+    );
+
     for class_id in symbols.iter().take(MAX_MATCHES) {
         let Some(class_symbol) = index.symbol(*class_id) else {
             continue;
@@ -363,7 +407,7 @@ fn print_class_member_summary(index: &SymbolIndex, owner: &str, symbols: &[Globa
             .filter(|symbol| symbol.kind == SymbolKind::Field)
             .count();
         println!(
-            "- Class `{}` direct fields {} direct members {} inherited/base-chain members {} total members {}",
+            "- Class `{}` direct fields {} direct members {} inherited/base-chain members {} raw total {} completion visible {} shadow groups {}",
             escape_inline(class_name),
             fields,
             index.direct_members_by_owner(class_name).len(),
@@ -371,10 +415,65 @@ fn print_class_member_summary(index: &SymbolIndex, owner: &str, symbols: &[Globa
                 .members_for_class_including_bases(class_name)
                 .len()
                 .saturating_sub(index.direct_members_by_owner(class_name).len()),
-            index.members_for_class_including_bases(class_name).len()
+            index.members_for_class_including_bases(class_name).len(),
+            index.completion_members_for_class(class_name).members.len(),
+            index
+                .completion_members_for_class(class_name)
+                .shadowed_groups
+                .len()
         );
     }
     println!();
+}
+
+fn print_completion_lookup(
+    index: &SymbolIndex,
+    owner: &str,
+    heading: &str,
+    description: &str,
+    completion: &reforger_language_server::index::CompletionMemberLookup,
+) {
+    println!("## {heading} `{}`", escape_inline(owner));
+    println!();
+    println!("{description}");
+    println!();
+    println!(
+        "Members: {} visible, {} raw candidates, {} shadow groups",
+        completion.members.len(),
+        completion.raw_candidates.len(),
+        completion.shadowed_groups.len()
+    );
+    for id in completion.members.iter().take(MAX_CHILDREN) {
+        print_member_summary(index, *id);
+    }
+    if completion.members.len() > MAX_CHILDREN {
+        println!(
+            "... {} more completion members omitted",
+            completion.members.len() - MAX_CHILDREN
+        );
+    }
+    println!();
+
+    if !completion.shadowed_groups.is_empty() {
+        println!("### Shadowed Member Groups");
+        println!();
+        for group in completion.shadowed_groups.iter().take(MAX_CHILDREN) {
+            println!("- `{}`", escape_inline(&group.key));
+            println!("  Kept:");
+            print_indented_member_summary(index, group.kept, "  ");
+            println!("  Hidden:");
+            for hidden in &group.shadowed {
+                print_indented_member_summary(index, *hidden, "  ");
+            }
+        }
+        if completion.shadowed_groups.len() > MAX_CHILDREN {
+            println!(
+                "... {} more shadow groups omitted",
+                completion.shadowed_groups.len() - MAX_CHILDREN
+            );
+        }
+        println!();
+    }
 }
 
 fn print_method_signatures(index: &SymbolIndex, symbols: &[GlobalSymbolId]) {
@@ -385,7 +484,7 @@ fn print_method_signatures(index: &SymbolIndex, symbols: &[GlobalSymbolId]) {
     println!("### Signatures");
     println!();
     for id in symbols.iter().take(MAX_MATCHES) {
-        if let Some(signature) = index.method_signature(*id) {
+        if let Some(signature) = index.callable_signature(*id) {
             println!("- `{}`", escape_inline(&signature));
         }
     }
@@ -461,12 +560,28 @@ fn print_member_summary(index: &SymbolIndex, id: GlobalSymbolId) {
     );
 }
 
+fn print_indented_member_summary(index: &SymbolIndex, id: GlobalSymbolId, indent: &str) {
+    let Some(symbol) = index.symbol(id) else {
+        return;
+    };
+    let path = id.file_id.0.to_string() + ":" + &id.symbol_id.0.to_string();
+    println!(
+        "{}- {} `{}` {}{}",
+        indent,
+        kind_name(symbol.kind),
+        display_symbol_name(symbol),
+        path,
+        detail_text(index, symbol)
+    );
+}
+
 fn query_label(query: &Query) -> String {
     match query {
         Query::Name(name) => format!("--name {name}"),
         Query::TopLevel(name) => format!("--top-level {name}"),
         Query::Class(name) => format!("--class {name}"),
         Query::Typedef(name) => format!("--typedef {name}"),
+        Query::Function(name) => format!("--function {name}"),
         Query::Method { owner, name } => format!("--method {owner} {name}"),
     }
 }
@@ -490,7 +605,7 @@ fn display_path(file: &reforger_language_server::index::IndexedFile) -> String {
 
 fn detail_text(index: &SymbolIndex, symbol: &IndexedSymbol) -> String {
     let mut values = Vec::new();
-    if let Some(signature) = index.method_signature(symbol.id) {
+    if let Some(signature) = index.callable_signature(symbol.id) {
         push_detail(&mut values, "signature", Some(&signature));
     }
     push_detail(&mut values, "type", symbol.detail.type_text.as_deref());

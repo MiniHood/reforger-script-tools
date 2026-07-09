@@ -12,7 +12,13 @@ This file sits above the model layer and below future semantic resolution, diagn
 
 The index exposes `SymbolIndex::from_catalogs()` and `add_catalog()` for building an in-memory index from model catalogs. It assigns each catalog a `SourceFileId` and represents global symbols as `{ file_id, symbol_id }`, keeping `SymbolId` file-local. It stores compact copied lookup facts, including names and detail text, so lookup results remain usable without re-slicing source text.
 
-The index can answer all-symbol name lookup, top-level name lookup, all-symbol preferred-name lookup sorted by source priority, top-level-only preferred-name lookup for declaration conflict review, preferred ordering for an explicit symbol ID slice, symbol-kind lookup, class lookup by name, typedef lookup by name, method lookup by owner/name, field lookup by owner/name, direct class-member lookup by owner, best-effort inherited member lookup by exact base class name, method signature display, method owner/name group iteration for report tooling, child lookup, duplicate top-level-name review, source-kind counts, and map-size counts.
+The index can answer all-symbol name lookup, top-level name lookup, all-symbol preferred-name lookup sorted by source priority, top-level-only preferred-name lookup for declaration conflict review, preferred ordering for an explicit symbol ID slice, symbol-kind lookup, class lookup by name, typedef lookup by name, function lookup by name, kind-specific preferred class/typedef/function lookup, method lookup by owner/name, field lookup by owner/name, direct class-member lookup by owner, best-effort inherited member lookup by exact base class name, raw owner-name aggregate completion lookup, preferred-class overlay completion lookup, callable signature display, method owner/name group iteration for report tooling, child lookup, duplicate top-level-name review, source-kind counts, and map-size counts.
+
+Source-root scanning, file reading, metadata creation, parser/AST/model catalog construction, and index population are owned by `server/src/index_build.rs`. Future tools and runtime code should use that builder instead of duplicating the pipeline around `SymbolIndex::add_catalog`.
+
+Future editor/LSP features should prefer `server/src/index_query.rs` over calling raw `SymbolIndex` APIs directly. `IndexQuery` exposes the intended editor-facing path for kind-specific preferred lookup, top-level conflict review, callable signatures, and preferred-class completion while keeping raw aggregate lookup available only as an explicit debug escape hatch.
+
+Dev-only overlay tooling can build an index from game data and an explicit workspace folder by assigning game-data catalogs priority `100` and workspace catalogs priority `200`. This uses existing source-priority ordering only; it does not merge declarations or interpret `modded` semantics.
 
 ## Dependencies and Boundaries
 
@@ -24,10 +30,17 @@ This file depends on lexer spans and the model layer. It must not parse source, 
 - Kept global IDs separate from file-local `SymbolId`.
 - Added a separate top-level name map so conflict review is not polluted by repeated parameter/local member names.
 - Added source-priority ordering for all-symbol preferred lookup and top-level-only preferred lookup without treating either as semantic resolution.
+- Added kind-specific preferred lookup for classes, typedefs, and functions. Generic preferred top-level lookup remains a cross-kind conflict/debug view and should not be used as the authoritative answer when the desired declaration kind is known.
 - Added read-only method owner/name group access so reports can show overload groups without duplicating index state.
 - Added preferred ordering for explicit symbol ID slices so debug tooling can reuse index preference rules for class, typedef, and method queries.
 - Added direct class field/member lookup maps and method signature display for future completion/signature-help groundwork. These are direct-owner lookups only and do not perform inherited member resolution.
 - Added a best-effort inherited member lookup scaffold that walks `base_type` by exact class name with cycle protection. It preserves direct-then-base order and does not merge overrides, resolve generics, or apply modded-class semantics.
+- Added `completion_members_for_class()` as a completion-facing view over the raw inherited member scaffold. It keeps raw candidates for debug review, returns direct members before inherited members, and hides later candidates with the same kind/name/signature key. Method keys use method name, parameter type shape, and return type while excluding owner names, parameter names, and defaults. Field keys use kind and name. Same owner/depth duplicate keys are resolved by source priority, so workspace overlay members can replace game-data members without allowing inherited/base members to beat direct members. This is still non-semantic and source-backed; it does not prove compiler override behavior.
+- Added `completion_members_for_preferred_class()` as the future editor-facing class completion path. It starts from preferred class declarations, intentionally includes lower-priority same-owner overlay members, then appends exact-name base-chain members. The raw owner-name aggregate completion API remains available for debugging and report review.
+- Added dev-only overlay report/debug usage that validates workspace priority over game-data priority without changing index semantics.
+- Added `callable_signature()` for source-backed function, method, constructor, and destructor display. Kept `method_signature()` as a method-only compatibility API.
+- Added `IndexBuild` in `server/src/index_build.rs` as the shared builder for explicit source roots and report/debug summaries.
+- Added `IndexQuery` in `server/src/index_query.rs` as the future editor-facing facade over these raw lookup maps.
 
 ## Future Improvements
 
