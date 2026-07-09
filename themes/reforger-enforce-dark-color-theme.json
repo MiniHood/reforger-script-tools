@@ -1,0 +1,103 @@
+{
+  "$schema": "vscode://schemas/color-theme",
+  "name": "Reforger Enforce Dark",
+  "type": "dark",
+  "semanticHighlighting": true,
+  "semanticTokenColors": {
+    "class": "#40b5ac",
+    "enum": "#40b5ac",
+    "function": "#f3ad58",
+    "method": "#f3ad58",
+    "variable": "#cfcfcf",
+    "property": "#cfcfcf",
+    "parameter": "#cfcfcf",
+    "type": "#40b5ac",
+    "keyword": "#59A6E9",
+    "comment": "#59aa59",
+    "string": "#c178dd",
+    "number": "#cfcfcf"
+  },
+  "tokenColors": [
+    {
+      "name": "Comments",
+      "scope": [
+        "comment"
+      ],
+      "settings": {
+        "foreground": "#59aa59"
+      }
+    },
+    {
+      "name": "Strings",
+      "scope": [
+        "string",
+        "constant.character.escape"
+      ],
+      "settings": {
+        "foreground": "#c178dd"
+      }
+    },
+    {
+      "name": "Keywords",
+      "scope": [
+        "keyword",
+        "storage.modifier",
+        "storage.type"
+      ],
+      "settings": {
+        "foreground": "#59A6E9"
+      }
+    },
+    {
+      "name": "Types",
+      "scope": [
+        "support.type",
+        "support.type.primitive",
+        "entity.name.type",
+        "entity.name.type.class",
+        "entity.name.type.enum",
+        "entity.name.type.typedef"
+      ],
+      "settings": {
+        "foreground": "#40b5ac"
+      }
+    },
+    {
+      "name": "Functions",
+      "scope": [
+        "entity.name.function"
+      ],
+      "settings": {
+        "foreground": "#f3ad58"
+      }
+    },
+    {
+      "name": "Variables",
+      "scope": [
+        "variable",
+        "constant.numeric"
+      ],
+      "settings": {
+        "foreground": "#cfcfcf"
+      }
+    },
+    {
+      "name": "Punctuation",
+      "scope": [
+        "punctuation"
+      ],
+      "settings": {
+        "foreground": "#bfbfbf"
+      }
+    },
+    {
+      "name": "Preprocessor",
+      "scope": [
+        "meta.preprocessor"
+      ],
+      "settings": {
+        "foreground": "#d4fd95"
+      }
+    }
+  ]
+}

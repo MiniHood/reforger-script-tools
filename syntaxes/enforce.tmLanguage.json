@@ -1,0 +1,223 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Enforce",
+  "scopeName": "source.enforce",
+  "patterns": [
+    {
+      "include": "#comments"
+    },
+    {
+      "include": "#preprocessor"
+    },
+    {
+      "include": "#strings"
+    },
+    {
+      "include": "#attributes"
+    },
+    {
+      "include": "#declarations"
+    },
+    {
+      "include": "#keywords"
+    },
+    {
+      "include": "#types"
+    },
+    {
+      "include": "#functions"
+    },
+    {
+      "include": "#numbers"
+    },
+    {
+      "include": "#punctuation"
+    }
+  ],
+  "repository": {
+    "attributes": {
+      "patterns": [
+        {
+          "name": "meta.attribute.enforce",
+          "begin": "(\\[)\\s*([A-Za-z_][A-Za-z0-9_]*)",
+          "beginCaptures": {
+            "1": {
+              "name": "punctuation.definition.attribute.begin.enforce"
+            },
+            "2": {
+              "name": "entity.name.function.attribute.enforce"
+            }
+          },
+          "end": "\\]",
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.definition.attribute.end.enforce"
+            }
+          },
+          "patterns": [
+            {
+              "include": "#strings"
+            },
+            {
+              "include": "#numbers"
+            },
+            {
+              "include": "#punctuation"
+            },
+            {
+              "include": "#keywords"
+            },
+            {
+              "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b",
+              "name": "variable.other.enforce"
+            }
+          ]
+        }
+      ]
+    },
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.block.documentation.enforce",
+          "begin": "/\\*!",
+          "end": "\\*/"
+        },
+        {
+          "name": "comment.line.documentation.enforce",
+          "match": "//!.*$"
+        },
+        {
+          "name": "comment.block.enforce",
+          "begin": "/\\*",
+          "end": "\\*/"
+        },
+        {
+          "name": "comment.line.double-slash.enforce",
+          "match": "//.*$"
+        }
+      ]
+    },
+    "declarations": {
+      "patterns": [
+        {
+          "match": "\\b(class)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": {
+              "name": "keyword.declaration.class.enforce"
+            },
+            "2": {
+              "name": "entity.name.type.class.enforce"
+            }
+          }
+        },
+        {
+          "match": "\\b(enum)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": {
+              "name": "keyword.declaration.enum.enforce"
+            },
+            "2": {
+              "name": "entity.name.type.enum.enforce"
+            }
+          }
+        },
+        {
+          "match": "\\b(typedef)\\s+([^;]+?)\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s*;)",
+          "captures": {
+            "1": {
+              "name": "keyword.declaration.typedef.enforce"
+            },
+            "2": {
+              "name": "support.type.enforce"
+            },
+            "3": {
+              "name": "entity.name.type.typedef.enforce"
+            }
+          }
+        }
+      ]
+    },
+    "functions": {
+      "patterns": [
+        {
+          "match": "\\b([A-Za-z_][A-Za-z0-9_]*)\\s*(?=\\()",
+          "captures": {
+            "1": {
+              "name": "entity.name.function.enforce"
+            }
+          }
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "match": "\\b(autoptr|break|case|class|const|continue|debug|default|delete|do|else|enum|event|extends|external|false|for|foreach|func|if|inout|modded|native|new|notnull|null|out|override|owned|private|protected|proto|return|sealed|static|super|switch|this|thread|true|typedef|volatile|while)\\b",
+          "name": "keyword.enforce"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "match": "\\b(?:0[xX][0-9A-Fa-f]+|\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?)\\b",
+          "name": "constant.numeric.enforce"
+        }
+      ]
+    },
+    "preprocessor": {
+      "patterns": [
+        {
+          "name": "meta.preprocessor.enforce",
+          "match": "^\\s*#.*$"
+        }
+      ]
+    },
+    "punctuation": {
+      "patterns": [
+        {
+          "match": "==|!=|<=|>=|<<|>>|&&|\\|\\||[{}()\\[\\],.;:]|[=+\\-*/%<>!&|^~]",
+          "name": "punctuation.enforce"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.enforce",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            {
+              "name": "constant.character.escape.enforce",
+              "match": "\\\\."
+            }
+          ]
+        },
+        {
+          "name": "string.quoted.single.enforce",
+          "begin": "'",
+          "end": "'",
+          "patterns": [
+            {
+              "name": "constant.character.escape.enforce",
+              "match": "\\\\."
+            }
+          ]
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "match": "\\b(auto|bool|float|int|string|typename|vector|void)\\b",
+          "name": "support.type.primitive.enforce"
+        },
+        {
+          "match": "\\b[A-Z][A-Za-z0-9_]*\\b",
+          "name": "support.type.enforce"
+        }
+      ]
+    }
+  }
+}
