@@ -1,4 +1,4 @@
-//! Fixture truth: game-data-derived from Game/Commanding/SCR_PlayerCommandsConfig.c in BI script data 1.7.0.54; not Workbench-confirmed in this repo.
+// Fixture truth: game-data-derived from Game/Commanding/SCR_PlayerCommandsConfig.c in BI script data 1.7.0.54; not Workbench-confirmed in this repo.
 //! Commands config root
 [BaseContainerProps(configRoot: true)]
 class SCR_PlayerCommandsConfig : Managed

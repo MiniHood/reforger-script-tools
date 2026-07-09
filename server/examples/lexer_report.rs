@@ -65,23 +65,41 @@ fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
-fn fixtures() -> [Fixture; 4] {
+fn fixtures() -> [Fixture; 8] {
     [
         Fixture {
-            path: "fixtures/lexer/declarations.c",
-            source: include_str!("../../fixtures/lexer/declarations.c"),
+            path: "tools/fixtures/lexer/core_array_class.c",
+            source: include_str!("../../tools/fixtures/lexer/core_array_class.c"),
         },
         Fixture {
-            path: "fixtures/lexer/game_data_player_commands_config.c",
-            source: include_str!("../../fixtures/lexer/game_data_player_commands_config.c"),
+            path: "tools/fixtures/lexer/core_language_shapes.c",
+            source: include_str!("../../tools/fixtures/lexer/core_language_shapes.c"),
         },
         Fixture {
-            path: "fixtures/lexer/methods_generics.c",
-            source: include_str!("../../fixtures/lexer/methods_generics.c"),
+            path: "tools/fixtures/lexer/declarations.c",
+            source: include_str!("../../tools/fixtures/lexer/declarations.c"),
         },
         Fixture {
-            path: "fixtures/lexer/trivia_preprocessor_rpc.c",
-            source: include_str!("../../fixtures/lexer/trivia_preprocessor_rpc.c"),
+            path: "tools/fixtures/lexer/game_data_player_commands_config.c",
+            source: include_str!("../../tools/fixtures/lexer/game_data_player_commands_config.c"),
+        },
+        Fixture {
+            path: "tools/fixtures/lexer/game_editor_preview_params.c",
+            source: include_str!("../../tools/fixtures/lexer/game_editor_preview_params.c"),
+        },
+        Fixture {
+            path: "tools/fixtures/lexer/modded_game_mode_shapes.c",
+            source: include_str!("../../tools/fixtures/lexer/modded_game_mode_shapes.c"),
+        },
+        Fixture {
+            path: "tools/fixtures/lexer/trivia_preprocessor_rpc.c",
+            source: include_str!("../../tools/fixtures/lexer/trivia_preprocessor_rpc.c"),
+        },
+        Fixture {
+            path: "tools/fixtures/lexer/workbench_basic_code_formatter_excerpt.c",
+            source: include_str!(
+                "../../tools/fixtures/lexer/workbench_basic_code_formatter_excerpt.c"
+            ),
         },
     ]
 }
@@ -103,17 +121,19 @@ fn append_fixture_report(report: &mut String, fixture: Fixture) {
     let tokens = lex(fixture.source);
     let mut counts = BTreeMap::<String, usize>::new();
     let mut error_count = 0usize;
+    let mut doc_comment_count = 0usize;
 
     for token in &tokens {
         let name = format!("{:?}", token.kind);
         *counts.entry(name).or_default() += 1;
+        if token.kind.is_error() {
+            error_count += 1;
+        }
         if matches!(
             token.kind,
-            TokenKind::Unknown
-                | TokenKind::UnterminatedString
-                | TokenKind::UnterminatedBlockComment
+            TokenKind::DocLineComment | TokenKind::DocBlockComment
         ) {
-            error_count += 1;
+            doc_comment_count += 1;
         }
     }
 
@@ -124,6 +144,10 @@ fn append_fixture_report(report: &mut String, fixture: Fixture) {
     report.push_str(&format!("| Bytes | {} |\n", fixture.source.len()));
     report.push_str(&format!("| Lines | {} |\n", line_count(fixture.source)));
     report.push_str(&format!("| Tokens including trivia | {} |\n", tokens.len()));
+    report.push_str(&format!(
+        "| Documentation comments | {} |\n",
+        doc_comment_count
+    ));
     report.push_str(&format!("| Error tokens | {} |\n\n", error_count));
 
     report.push_str("### Token Counts\n\n");

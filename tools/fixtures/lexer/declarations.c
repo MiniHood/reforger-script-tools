@@ -1,4 +1,4 @@
-//! Fixture truth: game-data-derived from common declaration shapes; not Workbench-confirmed.
+// Fixture truth: game-data-derived from common declaration shapes; not Workbench-confirmed.
 [BaseContainerProps(configRoot: true, category: "Autotest")]
 class SCR_ExampleConfig : Managed
 {

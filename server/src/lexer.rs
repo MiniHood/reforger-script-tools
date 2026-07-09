@@ -28,11 +28,14 @@ pub struct Token {
 pub enum TokenKind {
     Whitespace,
     LineComment,
+    DocLineComment,
     BlockComment,
+    DocBlockComment,
     UnterminatedBlockComment,
     Identifier,
     Keyword(Keyword),
     Number,
+    InvalidNumber,
     String,
     UnterminatedString,
     LeftBrace,
@@ -52,6 +55,33 @@ pub enum TokenKind {
     Eof,
 }
 
+impl TokenKind {
+    pub const fn is_trivia(self) -> bool {
+        matches!(
+            self,
+            Self::Whitespace
+                | Self::LineComment
+                | Self::DocLineComment
+                | Self::BlockComment
+                | Self::DocBlockComment
+        )
+    }
+
+    pub const fn is_error(self) -> bool {
+        matches!(
+            self,
+            Self::UnterminatedBlockComment
+                | Self::InvalidNumber
+                | Self::UnterminatedString
+                | Self::Unknown
+        )
+    }
+
+    pub const fn is_keyword(self) -> bool {
+        matches!(self, Self::Keyword(_))
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Keyword {
     Class,
@@ -59,6 +89,7 @@ pub enum Keyword {
     Sealed,
     Extends,
     Typedef,
+    Func,
     Proto,
     External,
     Native,
@@ -85,8 +116,10 @@ pub enum Keyword {
     True,
     False,
     Null,
+    Auto,
     New,
     Delete,
+    Thread,
     If,
     Else,
     For,
@@ -101,6 +134,9 @@ pub enum Keyword {
     Return,
     This,
     Super,
+    Vanilla,
+    Debug,
+    Event,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -278,10 +314,19 @@ impl<'source> Lexer<'source> {
 
         if self.source[start..].starts_with("0x") || self.source[start..].starts_with("0X") {
             self.advance_char();
+            let hex_start = self.position;
             while matches!(self.peek_char(), Some(c) if c.is_ascii_hexdigit()) {
                 self.advance_char();
             }
-            self.push(TokenKind::Number, start, self.position);
+            let kind = if self.position == hex_start {
+                while matches!(self.peek_char(), Some(c) if is_identifier_continue(c)) {
+                    self.advance_char();
+                }
+                TokenKind::InvalidNumber
+            } else {
+                TokenKind::Number
+            };
+            self.push(kind, start, self.position);
             return;
         }
 
@@ -299,7 +344,6 @@ impl<'source> Lexer<'source> {
         }
 
         if matches!(self.peek_char(), Some('e' | 'E')) {
-            let exponent = self.position;
             self.advance_char();
             if matches!(self.peek_char(), Some('+' | '-')) {
                 self.advance_char();
@@ -310,7 +354,11 @@ impl<'source> Lexer<'source> {
                     self.advance_char();
                 }
             } else {
-                self.position = exponent;
+                while matches!(self.peek_char(), Some(c) if is_identifier_continue(c)) {
+                    self.advance_char();
+                }
+                self.push(TokenKind::InvalidNumber, start, self.position);
+                return;
             }
         }
 
@@ -350,6 +398,11 @@ impl<'source> Lexer<'source> {
 
     fn lex_slash_or_comment(&mut self, start: usize) {
         if self.source[start..].starts_with("//") {
+            let kind = if self.source[start..].starts_with("//!") {
+                TokenKind::DocLineComment
+            } else {
+                TokenKind::LineComment
+            };
             self.position += 2;
             while let Some(current) = self.peek_char() {
                 if current == '\n' || current == '\r' {
@@ -357,16 +410,21 @@ impl<'source> Lexer<'source> {
                 }
                 self.advance_char();
             }
-            self.push(TokenKind::LineComment, start, self.position);
+            self.push(kind, start, self.position);
             return;
         }
 
         if self.source[start..].starts_with("/*") {
+            let kind = if self.source[start..].starts_with("/*!") {
+                TokenKind::DocBlockComment
+            } else {
+                TokenKind::BlockComment
+            };
             self.position += 2;
             while !self.is_at_end() {
                 if self.source[self.position..].starts_with("*/") {
                     self.position += 2;
-                    self.push(TokenKind::BlockComment, start, self.position);
+                    self.push(kind, start, self.position);
                     return;
                 }
                 self.advance_char();
@@ -443,6 +501,7 @@ fn keyword_from_str(value: &str) -> Option<Keyword> {
         "sealed" => Some(Keyword::Sealed),
         "extends" => Some(Keyword::Extends),
         "typedef" => Some(Keyword::Typedef),
+        "func" => Some(Keyword::Func),
         "proto" => Some(Keyword::Proto),
         "external" => Some(Keyword::External),
         "native" => Some(Keyword::Native),
@@ -469,8 +528,10 @@ fn keyword_from_str(value: &str) -> Option<Keyword> {
         "true" => Some(Keyword::True),
         "false" => Some(Keyword::False),
         "null" | "NULL" => Some(Keyword::Null),
+        "auto" => Some(Keyword::Auto),
         "new" => Some(Keyword::New),
         "delete" => Some(Keyword::Delete),
+        "thread" => Some(Keyword::Thread),
         "if" => Some(Keyword::If),
         "else" => Some(Keyword::Else),
         "for" => Some(Keyword::For),
@@ -485,6 +546,9 @@ fn keyword_from_str(value: &str) -> Option<Keyword> {
         "return" => Some(Keyword::Return),
         "this" => Some(Keyword::This),
         "super" => Some(Keyword::Super),
+        "vanilla" => Some(Keyword::Vanilla),
+        "debug" => Some(Keyword::Debug),
+        "event" => Some(Keyword::Event),
         _ => None,
     }
 }
@@ -496,10 +560,7 @@ mod tests {
     fn non_trivia_kinds(source: &str) -> Vec<TokenKind> {
         lex(source)
             .into_iter()
-            .filter_map(|token| match token.kind {
-                TokenKind::Whitespace | TokenKind::LineComment | TokenKind::BlockComment => None,
-                kind => Some(kind),
-            })
+            .filter_map(|token| (!token.kind.is_trivia()).then_some(token.kind))
             .collect()
     }
 
@@ -551,11 +612,29 @@ modded class PlayerNameInputController
         let source = "//! doc\n/* block */\nclass Example {}";
         let tokens = lex(source);
 
-        assert_eq!(tokens[0].kind, TokenKind::LineComment);
+        assert_eq!(tokens[0].kind, TokenKind::DocLineComment);
         assert_eq!(&source[tokens[0].span.start..tokens[0].span.end], "//! doc");
         assert!(tokens
             .iter()
             .any(|token| token.kind == TokenKind::BlockComment));
+    }
+
+    #[test]
+    fn distinguishes_doc_comments_without_parsing_tags() {
+        let source = "/*!\n\\param value input\n\\return output\n\\code\nPrint(value);\n\\endcode\n*/\n// normal\n//! doc line";
+        let tokens = lex(source);
+
+        assert_eq!(tokens[0].kind, TokenKind::DocBlockComment);
+        assert_eq!(
+            &source[tokens[0].span.start..tokens[0].span.end],
+            "/*!\n\\param value input\n\\return output\n\\code\nPrint(value);\n\\endcode\n*/"
+        );
+        assert!(tokens
+            .iter()
+            .any(|token| token.kind == TokenKind::LineComment));
+        assert!(tokens
+            .iter()
+            .any(|token| token.kind == TokenKind::DocLineComment));
     }
 
     #[test]
@@ -573,6 +652,52 @@ modded class PlayerNameInputController
     }
 
     #[test]
+    fn lexes_documented_script_keywords_found_in_game_data() {
+        let source =
+            "typedef func Callback;\nevent protected void EOnInit(IEntity owner);\nauto item = new ClassName();\nthread DelayedStart(id);\ndebug;\nvanilla.Hello();";
+        let kinds = non_trivia_kinds(source);
+
+        assert!(kinds.contains(&TokenKind::Keyword(Keyword::Typedef)));
+        assert!(kinds.contains(&TokenKind::Keyword(Keyword::Func)));
+        assert!(kinds.contains(&TokenKind::Keyword(Keyword::Event)));
+        assert!(kinds.contains(&TokenKind::Keyword(Keyword::Auto)));
+        assert!(kinds.contains(&TokenKind::Keyword(Keyword::Thread)));
+        assert!(kinds.contains(&TokenKind::Keyword(Keyword::Debug)));
+        assert!(kinds.contains(&TokenKind::Keyword(Keyword::Vanilla)));
+    }
+
+    #[test]
+    fn lexes_hex_float_and_scientific_numbers() {
+        let source = "int color = 0xFFFFFFFF; float tiny = 1.0e-8; float ratio = 20.0;";
+        let tokens = lex(source);
+        let number_texts: Vec<&str> = tokens
+            .iter()
+            .filter_map(|token| {
+                if token.kind == TokenKind::Number {
+                    Some(&source[token.span.start..token.span.end])
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        assert_eq!(number_texts, vec!["0xFFFFFFFF", "1.0e-8", "20.0"]);
+    }
+
+    #[test]
+    fn reports_invalid_number_tokens() {
+        let invalid_hex = lex("int color = 0xG;");
+        assert!(invalid_hex
+            .iter()
+            .any(|token| token.kind == TokenKind::InvalidNumber));
+
+        let invalid_exponent = lex("float bad = 1e+;");
+        assert!(invalid_exponent
+            .iter()
+            .any(|token| token.kind == TokenKind::InvalidNumber));
+    }
+
+    #[test]
     fn reports_unterminated_string_and_comment_tokens() {
         let string_tokens = lex("\"unterminated");
         assert_eq!(string_tokens[0].kind, TokenKind::UnterminatedString);
@@ -584,21 +709,33 @@ modded class PlayerNameInputController
     #[test]
     fn lexes_committed_fixtures_without_error_tokens() {
         let fixtures = [
-            include_str!("../../fixtures/lexer/declarations.c"),
-            include_str!("../../fixtures/lexer/game_data_player_commands_config.c"),
-            include_str!("../../fixtures/lexer/methods_generics.c"),
-            include_str!("../../fixtures/lexer/trivia_preprocessor_rpc.c"),
+            include_str!("../../tools/fixtures/lexer/core_language_shapes.c"),
+            include_str!("../../tools/fixtures/lexer/declarations.c"),
+            include_str!("../../tools/fixtures/lexer/game_data_player_commands_config.c"),
+            include_str!("../../tools/fixtures/lexer/game_editor_preview_params.c"),
+            include_str!("../../tools/fixtures/lexer/core_array_class.c"),
+            include_str!("../../tools/fixtures/lexer/modded_game_mode_shapes.c"),
+            include_str!("../../tools/fixtures/lexer/trivia_preprocessor_rpc.c"),
+            include_str!("../../tools/fixtures/lexer/workbench_basic_code_formatter_excerpt.c"),
         ];
 
         for fixture in fixtures {
             let tokens = lex(fixture);
-            assert!(!tokens.iter().any(|token| matches!(
-                token.kind,
-                TokenKind::Unknown
-                    | TokenKind::UnterminatedString
-                    | TokenKind::UnterminatedBlockComment
-            )));
+            assert!(!tokens.iter().any(|token| token.kind.is_error()));
         }
+    }
+
+    #[test]
+    fn lexes_parser_facing_core_shapes() {
+        let source = "class func {}\nstring.ToString(item);\nclass map<Class TKey,Class TValue>: Managed {}\ntypedef map<ref Managed, ref Managed> TManagedRefManagedRefMap;\nproto int Init(T init[]);\nref map<typename, ref array<string>> m_mNames;";
+        let kinds = non_trivia_kinds(source);
+
+        assert!(kinds.contains(&TokenKind::Keyword(Keyword::Func)));
+        assert!(kinds.contains(&TokenKind::Keyword(Keyword::String)));
+        assert!(kinds.contains(&TokenKind::Keyword(Keyword::Typename)));
+        assert!(kinds.contains(&TokenKind::Operator(Operator::GreaterGreater)));
+        assert!(kinds.contains(&TokenKind::LeftBracket));
+        assert!(kinds.contains(&TokenKind::RightBracket));
     }
 
     #[test]
@@ -610,5 +747,15 @@ modded class PlayerNameInputController
         assert_eq!(&source[tokens[0].span.start..tokens[0].span.end], "class");
         assert_eq!(tokens[2].span, TextSpan::new(6, 13));
         assert_eq!(&source[tokens[2].span.start..tokens[2].span.end], "Example");
+    }
+
+    #[test]
+    fn classifies_token_helpers() {
+        assert!(TokenKind::Whitespace.is_trivia());
+        assert!(TokenKind::DocBlockComment.is_trivia());
+        assert!(TokenKind::InvalidNumber.is_error());
+        assert!(TokenKind::UnterminatedString.is_error());
+        assert!(TokenKind::Keyword(Keyword::Class).is_keyword());
+        assert!(!TokenKind::Identifier.is_keyword());
     }
 }

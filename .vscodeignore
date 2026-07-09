@@ -6,7 +6,7 @@ src/**
 server/**
 tools/**
 documentation/tools/**
-fixtures/**
+tools/fixtures/**
 tools/reports/**
 .gitignore
 .yarnrc

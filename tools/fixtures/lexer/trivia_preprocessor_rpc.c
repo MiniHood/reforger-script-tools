@@ -1,4 +1,4 @@
-//! Fixture truth: game-data-derived for comments, preprocessor, and Rpl-looking syntax; not Workbench-confirmed.
+// Fixture truth: game-data-derived for comments, preprocessor, and Rpl-looking syntax; not Workbench-confirmed.
 #define SCR_FEATURE_FLAG
 #ifdef SCR_FEATURE_FLAG
 

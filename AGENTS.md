@@ -40,7 +40,7 @@ Do not create placeholder folders for future systems. New folders MUST have a cl
 - `src/gameData/`: TypeScript runtime behavior for acquiring and locating Reforger game script data. Own GitHub checks, manual-folder validation, global-storage updates, metadata, and game-data source resolution. Do not parse or semantically model Enfusion Script here.
 - `src/languageClient/`: future TypeScript owner for starting, stopping, configuring, and communicating with the Rust LSP server. Own VS Code language-client glue, process lifecycle, server path resolution, and protocol wiring. Do not implement parser or analyzer logic here.
 - `server/` or `crates/`: future Rust workspace for language tooling. Use `server/` only for a single focused Rust language-server project. Use `crates/` if the Rust side becomes multi-crate.
-- `fixtures/`: future source examples for parser/analyzer tests only when needed. Organize by behavior, such as `fixtures/parser/`, `fixtures/model/`, `fixtures/index/`, and `fixtures/diagnostics/`.
+- `tools/fixtures/`: repo-only source examples for lexer/parser/analyzer tests and language-tooling research. Organize by behavior, such as `tools/fixtures/lexer/`, future `tools/fixtures/parser/`, `tools/fixtures/model/`, `tools/fixtures/index/`, and `tools/fixtures/diagnostics/`.
 - `tools/`: repo-only developer/Codex tooling that is not required by the runtime extension, future Rust LSP, tests, or packaged user features. Use this for game-data discovery scripts, corpus analysis, parser research scripts, one-off report generators, and investigation helpers.
 - `documentation/tools/`: documentation for non-trivial tooling under `tools/`.
 
@@ -210,6 +210,14 @@ If a verification step cannot be run, state why and describe the remaining risk.
 
 Workbench is the final compiler authority. The extension may provide faster diagnostics, richer navigation, and better editing support, but it must not knowingly contradict Workbench behavior.
 
+## Reforger Skill Usage
+
+For any Arma Reforger, Enfusion Script, Workbench, game-data, API, syntax, fixture, parser, model, indexing, or language-intelligence work, Codex MUST invoke and follow the `reforger` skill before reasoning or changing files.
+
+The `reforger` skill contains Reforger-specific wiki references, local game-data knowledge, source examples, and search/query scripts. Use it as the first grounding layer for Reforger facts instead of memory or generic language assumptions.
+
+When the task involves Reforger language or engine behavior, Codex MUST use the skill's references and game-data/search tooling to verify uncertain syntax, APIs, callbacks, attributes, inheritance, lifecycle behavior, replication/RPC behavior, Workbench surfaces, and source-backed examples. Workbench/compiler behavior remains the final truth when available.
+
 When implementing language features:
 
 - Treat Workbench/compiler behavior as the final answer.
@@ -221,7 +229,8 @@ When implementing language features:
 ## Fixtures and Truth
 
 - Future parser and analyzer behavior should be backed by small Enfusion Script fixtures.
-- Future `fixtures/` should exist only when parser/analyzer tests need source examples.
+- Fixtures belong under `tools/fixtures/` unless a future packaged runtime feature explicitly needs them elsewhere.
+- Future fixture folders should exist only when lexer/parser/analyzer tests or language-tooling research need source examples.
 - Fixtures must state whether they are Workbench-confirmed, official-sample-derived, or speculative.
 - Speculative behavior must not be treated as compiler truth.
 
