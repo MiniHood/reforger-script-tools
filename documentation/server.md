@@ -10,7 +10,7 @@ This folder is the future language-engine side of the project. It should contain
 
 ## Current Behavior
 
-The Rust crate exposes a full-fidelity lexer that returns token kinds and byte spans without copying source text into tokens. It also exposes a parser that consumes lexer tokens and returns a full-fidelity syntax tree preserving trivia, tokens, declarations, callable-body statements, and expressions. The AST layer provides file-local declaration views over that syntax tree without semantic resolution. The model layer converts those AST views into source-backed file-local symbol records with stable IDs and parent-child relationships. The index layer aggregates many file-local catalogs into global symbol handles and lookup maps without semantic resolution. The index build layer owns reusable source-root scanning, parser/AST/model/index construction, and build timing summaries. The index cache layer owns disposable runtime cache loading/rebuilding for game-data indexes. The index query layer wraps the raw index with editor-facing lookup APIs so future LSP features use preferred, overlay-aware paths instead of debug aggregate maps by accident. The resolver layer maps identifier cursor positions to candidate symbols and source-backed selection reasons for future hover and definition features. The symbol display layer converts copied indexed facts into editor-ready labels, details, signatures, documentation previews, and provenance output. The LSP layer is the first stdio protocol boundary for VS Code and currently exposes document symbols plus resolver-first hover over open-file symbols and a background-loaded game-data index.
+The Rust crate exposes a full-fidelity lexer that returns token kinds and byte spans without copying source text into tokens. It also exposes a parser that consumes lexer tokens and returns a full-fidelity syntax tree preserving trivia, tokens, declarations, callable-body statements, and expressions. The AST layer provides file-local declaration views over that syntax tree without semantic resolution. The model layer converts those AST views into source-backed file-local symbol records with stable IDs and parent-child relationships. The index layer aggregates many file-local catalogs into global symbol handles and lookup maps without semantic resolution. The index build layer owns reusable source-root scanning, parser/AST/model/index construction, and build timing summaries. The index cache layer owns disposable runtime cache loading/rebuilding for game-data indexes. The index query layer wraps the raw index with editor-facing lookup APIs so future LSP features use preferred, overlay-aware paths instead of debug aggregate maps by accident. The resolver layer maps identifier cursor positions to candidate symbols and source-backed selection reasons for hover and definition features. The symbol display layer converts copied indexed facts into editor-ready labels, details, signatures, documentation previews, and provenance output. The LSP layer is the first stdio protocol boundary for VS Code and currently exposes document symbols, resolver-first hover, and resolver-first definition over open-file symbols plus a background-loaded game-data index.
 
 ## Dependencies and Boundaries
 
@@ -36,11 +36,11 @@ The crate currently uses only minimal bundled Rust dependencies for JSON protoco
 - Added a dev-only LSP corpus report for reviewing document-symbol projection over downloaded game-data scripts.
 - Added file-local and external game-data LSP hover support plus a dev-only hover fixture report.
 - Added a dev-only LSP hover corpus report for sampled corpus-scale resolver-first hover review.
+- Added resolver-backed LSP definition support plus a dev-only definition fixture report.
 
 ## Future Improvements
 
-- Move resolver receiver/member lookup onto the new expression syntax after parser corpus review.
 - Expand workspace indexing with incremental updates and workspace-over-game-data review.
-- Expand LSP behavior through small verified features such as diagnostics, completion, and definition.
+- Expand LSP behavior through small verified features such as diagnostics, completion, and references.
 - Route future hover expansion and Ctrl+click definition through the resolver layer instead of adding protocol-local lookup shortcuts.
 - Consider splitting into `crates/` only if multiple Rust crates become necessary.

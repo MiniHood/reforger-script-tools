@@ -21,13 +21,13 @@ The report defaults to the downloaded game-data scripts folder under VS Code glo
 
 The companion wrapper is `tools/lsp-hover-corpus-report.mjs`. It accepts `--release` and runs `cargo run --release` while passing `--profile-label release` to the Rust example. Debug mode remains the default.
 
-The report includes hover hit/miss totals, file-local hit counts, external hit counts, resolver reason frequency, identifier context frequency, receiver owner/failure frequency, selected source frequency, selected symbol kind frequency, top files by hover misses, bounded miss samples, bounded hit samples, and timing. It intentionally samples identifiers instead of dumping every possible hover token.
+The report includes hover hit/miss totals, file-local hit counts, external hit counts, resolver reason frequency, identifier context frequency, receiver owner/failure frequency, receiver expression-kind samples, selected source frequency, selected symbol kind frequency, top files by hover misses, bounded miss samples, bounded hit samples, and timing. It intentionally samples identifiers instead of dumping every possible hover token.
 
 ## Dependencies and Boundaries
 
 Uses only Rust standard library APIs and existing crate LSP helpers. It must not register VS Code commands, package scripts, or runtime extension behavior.
 
-The report uses the game-data index as external context. Remaining misses are unresolved after file-local and external top-level/member lookup. Receiver/member-call resolution is shallow and source-backed; it is not full expression typing, overload resolution, Workbench validation, or workspace indexing.
+The report uses the game-data index as external context. Remaining misses are unresolved after file-local and external top-level/member lookup. Receiver/member-call resolution is syntax-backed through AST expression views but remains shallow and source-backed; it is not full expression typing, overload resolution, Workbench validation, or workspace indexing. Named argument labels are suppressed by resolver and classified separately as call or attribute labels so they do not look like actionable unresolved symbol failures.
 
 ## Change Notes
 
@@ -35,6 +35,7 @@ The report uses the game-data index as external context. Remaining misses are un
 - Added identifier context reporting so type-position behavior can be reviewed across sampled corpus hovers.
 - Added external game-data index context, selected-source frequency, and file-local/external hit counts.
 - Added receiver owner/failure frequencies and receiver details in hit/miss samples for member-access review.
+- Added receiver expression kind in hit/miss samples after member-access resolution moved to AST expression views.
 
 ## Future Improvements
 

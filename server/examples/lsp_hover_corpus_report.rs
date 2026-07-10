@@ -167,6 +167,11 @@ fn run() -> Result<(), String> {
                     context,
                     selected_source,
                     receiver_owner,
+                    report
+                        .receiver_resolution
+                        .as_ref()
+                        .map(|receiver| receiver.receiver_expression_kind.clone())
+                        .unwrap_or_else(|| "<none>".to_string()),
                     receiver_failure,
                 ));
             } else {
@@ -185,6 +190,11 @@ fn run() -> Result<(), String> {
                     context,
                     selected_source,
                     receiver_owner,
+                    report
+                        .receiver_resolution
+                        .as_ref()
+                        .map(|receiver| receiver.receiver_expression_kind.clone())
+                        .unwrap_or_else(|| "<none>".to_string()),
                     receiver_failure,
                 );
                 *miss_classification_counts
@@ -335,6 +345,7 @@ struct SampleRow {
     reason: String,
     context: String,
     receiver_owner: String,
+    receiver_expression_kind: String,
     receiver_failure: String,
     selected_source: String,
     selected: String,
@@ -352,6 +363,7 @@ impl SampleRow {
         context: String,
         selected_source: String,
         receiver_owner: String,
+        receiver_expression_kind: String,
         receiver_failure: String,
     ) -> Self {
         let position = position_for_offset(source, sample.span.start);
@@ -378,6 +390,7 @@ impl SampleRow {
             reason,
             context,
             receiver_owner,
+            receiver_expression_kind,
             receiver_failure,
             selected_source,
             selected,
@@ -406,6 +419,10 @@ fn classify_miss(
 
     if is_attribute_named_argument(token, snippet) {
         return "attribute named argument".to_string();
+    }
+
+    if is_call_named_argument_label(token, snippet) {
+        return "call named argument label".to_string();
     }
 
     if context == "member-access" {
@@ -447,6 +464,22 @@ fn is_attribute_named_argument(token: &str, snippet: &str) -> bool {
     before.rfind('[').is_some_and(|open| {
         before[open..].find(']').is_none() && after.trim_start().starts_with(':')
     })
+}
+
+fn is_call_named_argument_label(token: &str, snippet: &str) -> bool {
+    let Some(token_index) = snippet.find(token) else {
+        return false;
+    };
+    let before = &snippet[..token_index];
+    let after = &snippet[token_index + token.len()..];
+    if !after.trim_start().starts_with(':') {
+        return false;
+    }
+    let Some(open_paren) = before.rfind('(') else {
+        return false;
+    };
+    let last_close = before.rfind(')');
+    last_close.is_none_or(|close| close < open_paren)
 }
 
 fn is_invoker_like(receiver_owner: &str, receiver_failure: &str) -> bool {
@@ -646,19 +679,19 @@ fn append_miss_classification(
     writeln!(report).unwrap();
     writeln!(
         report,
-        "| Classification | File | Position | Token | Reason | Context | Receiver owner | Receiver failure | Source line |"
+        "| Classification | File | Position | Token | Reason | Context | Receiver owner | Receiver expression | Receiver failure | Source line |"
     )
     .unwrap();
     writeln!(
         report,
-        "| --- | --- | ---: | --- | --- | --- | --- | --- | --- |"
+        "| --- | --- | ---: | --- | --- | --- | --- | --- | --- | --- |"
     )
     .unwrap();
     for (classification, rows) in samples {
         for sample in rows {
             writeln!(
                 report,
-                "| `{}` | `{}` | {}:{} | `{}` | `{}` | `{}` | `{}` | `{}` | `{}` |",
+                "| `{}` | `{}` | {}:{} | `{}` | `{}` | `{}` | `{}` | `{}` | `{}` | `{}` |",
                 escape_table(classification),
                 escape_table(&sample.path),
                 sample.line,
@@ -667,6 +700,7 @@ fn append_miss_classification(
                 escape_table(&sample.reason),
                 escape_table(&sample.context),
                 escape_table(&sample.receiver_owner),
+                escape_table(&sample.receiver_expression_kind),
                 escape_table(&sample.receiver_failure),
                 escape_table(&sample.snippet)
             )
@@ -728,18 +762,18 @@ fn append_samples(report: &mut String, heading: &str, samples: &[SampleRow]) {
     }
     writeln!(
         report,
-        "| File | Position | Token | Hit | Reason | Context | Receiver owner | Receiver failure | Selected source | Selected | Source line |"
+        "| File | Position | Token | Hit | Reason | Context | Receiver owner | Receiver expression | Receiver failure | Selected source | Selected | Source line |"
     )
     .unwrap();
     writeln!(
         report,
-        "| --- | ---: | --- | --- | --- | --- | --- | --- | --- | --- | --- |"
+        "| --- | ---: | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"
     )
     .unwrap();
     for sample in samples {
         writeln!(
             report,
-            "| `{}` | {}:{} | `{}` | {} | `{}` | `{}` | `{}` | `{}` | `{}` | {} | `{}` |",
+            "| `{}` | {}:{} | `{}` | {} | `{}` | `{}` | `{}` | `{}` | `{}` | `{}` | {} | `{}` |",
             escape_table(&sample.path),
             sample.line,
             sample.column,
@@ -748,6 +782,7 @@ fn append_samples(report: &mut String, heading: &str, samples: &[SampleRow]) {
             escape_table(&sample.reason),
             escape_table(&sample.context),
             escape_table(&sample.receiver_owner),
+            escape_table(&sample.receiver_expression_kind),
             escape_table(&sample.receiver_failure),
             escape_table(&sample.selected_source),
             escape_table(&sample.selected),

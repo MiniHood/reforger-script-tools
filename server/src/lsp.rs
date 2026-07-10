@@ -8,8 +8,8 @@ use crate::lexer::{lex, Keyword, TextSpan, Token, TokenKind};
 use crate::model::{SourceFileMetadata, SymbolCatalog, SymbolKind};
 use crate::parser::parse_source;
 use crate::resolver::{
-    CandidateSource, HoverResolution, IdentifierContext, ReceiverResolution, ReferenceResolver,
-    ResolutionReason,
+    CandidateSource, HoverResolution, IdentifierContext, ReceiverResolution, ReferenceCandidate,
+    ReferenceResolver, ResolutionReason,
 };
 use crate::symbol_display::SymbolDisplayInfo;
 use crate::syntax::ParseDiagnostic;
@@ -18,7 +18,7 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
@@ -98,6 +98,24 @@ pub struct LspMarkupContent {
     pub value: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LspLocation {
+    pub uri: String,
+    pub range: LspRange,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LspDefinitionReport {
+    pub locations: Vec<LspLocation>,
+    pub parse_diagnostics: usize,
+    pub selected_label: Option<String>,
+    pub selected_kind: Option<SymbolKind>,
+    pub selected_source: Option<CandidateSource>,
+    pub resolver_reason: Option<ResolutionReason>,
+    pub identifier_context: Option<IdentifierContext>,
+    pub resolver_candidate_count: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LspHoverReport {
     pub hover: Option<LspHover>,
@@ -138,6 +156,12 @@ impl LspDocumentSymbolReport {
 impl LspHoverReport {
     pub fn is_hit(&self) -> bool {
         self.hover.is_some()
+    }
+}
+
+impl LspDefinitionReport {
+    pub fn is_hit(&self) -> bool {
+        !self.locations.is_empty()
     }
 }
 
@@ -482,7 +506,8 @@ impl<W: Write> LspServer<W> {
                             "capabilities": {
                                 "textDocumentSync": 1,
                                 "documentSymbolProvider": true,
-                                "hoverProvider": true
+                                "hoverProvider": true,
+                                "definitionProvider": true
                             },
                             "serverInfo": {
                                 "name": SERVER_NAME,
@@ -713,6 +738,82 @@ impl<W: Write> LspServer<W> {
                     self.respond(id, result)?;
                 }
             }
+            "textDocument/definition" => {
+                if let Some(id) = message.id {
+                    let start = Instant::now();
+                    let params = parse_params::<HoverParams>(message.params, method)?;
+                    let mut log_uri = "<missing>".to_string();
+                    let mut bytes = 0usize;
+                    let mut parse_diagnostics = 0usize;
+                    let mut selected_label = "<none>".to_string();
+                    let mut selected_kind = "None";
+                    let mut selected_source = "<none>";
+                    let mut resolver_reason = "<none>";
+                    let mut identifier_context = "<none>";
+                    let mut resolver_candidate_count = 0usize;
+                    let mut external_index_status = self.external_index.status_summary().status;
+                    let mut revision = 0u64;
+                    let mut hit = false;
+                    let result = params
+                        .and_then(|params| {
+                            log_uri = params.text_document.uri;
+                            self.documents.get(&log_uri).map(|document| {
+                                bytes = document.text.len();
+                                revision = document.revision;
+                                let external_index = self.external_index.state.lock().unwrap();
+                                external_index_status = external_index.status.as_str();
+                                let report = definition_report_for_cached_analysis_with_external(
+                                    &document.text,
+                                    &document.analysis,
+                                    &log_uri,
+                                    params.position,
+                                    external_index.index.as_ref(),
+                                );
+                                parse_diagnostics = report.parse_diagnostics;
+                                hit = report.is_hit();
+                                selected_source = report
+                                    .selected_source
+                                    .map(|source| source.as_str())
+                                    .unwrap_or("<none>");
+                                resolver_reason = report
+                                    .resolver_reason
+                                    .map(|reason| reason.as_str())
+                                    .unwrap_or("<none>");
+                                identifier_context = report
+                                    .identifier_context
+                                    .map(|context| context.as_str())
+                                    .unwrap_or("<none>");
+                                resolver_candidate_count = report.resolver_candidate_count;
+                                if let Some(label) = report.selected_label {
+                                    selected_label = label;
+                                }
+                                if let Some(kind) = report.selected_kind {
+                                    selected_kind = symbol_kind_label(kind);
+                                }
+                                report.locations
+                            })
+                        })
+                        .map(|locations| serde_json::to_value(locations).unwrap_or(Value::Null))
+                        .unwrap_or(Value::Null);
+                    self.log(&format!(
+                        "request definition uri={} bytes={} revision={} cached_analysis=true hit={} selected_source={} resolver_reason={} identifier_context={} resolver_candidates={} external_index_status={} label={} kind={} parse_diagnostics={} elapsed_ms={}",
+                        log_uri,
+                        bytes,
+                        revision,
+                        hit,
+                        selected_source,
+                        resolver_reason,
+                        identifier_context,
+                        resolver_candidate_count,
+                        external_index_status,
+                        selected_label,
+                        selected_kind,
+                        parse_diagnostics,
+                        start.elapsed().as_millis()
+                    ));
+                    self.respond(id, result)?;
+                }
+            }
             DEBUG_HOVER_METHOD => {
                 if let Some(id) = message.id {
                     let start = Instant::now();
@@ -884,6 +985,84 @@ pub fn hover_reports_for_source_positions_with_external(
         .collect()
 }
 
+pub fn definition_report_for_source_position(
+    source: &str,
+    uri: &str,
+    position: LspPosition,
+) -> LspDefinitionReport {
+    definition_report_for_source_position_with_external(source, uri, position, None)
+}
+
+pub fn definition_report_for_source_position_with_external(
+    source: &str,
+    uri: &str,
+    position: LspPosition,
+    external_index: Option<&SymbolIndex>,
+) -> LspDefinitionReport {
+    let analysis = file_index_for_source(source);
+    definition_report_for_cached_analysis_with_external(
+        source,
+        &analysis,
+        uri,
+        position,
+        external_index,
+    )
+}
+
+fn definition_report_for_cached_analysis_with_external(
+    source: &str,
+    analysis: &FileIndexAnalysis,
+    uri: &str,
+    position: LspPosition,
+    external_index: Option<&SymbolIndex>,
+) -> LspDefinitionReport {
+    let Some(offset) = offset_for_position(source, position) else {
+        return empty_definition_report(analysis.parse_diagnostics);
+    };
+    definition_report_for_offset(source, analysis, uri, offset, external_index)
+}
+
+fn definition_report_for_offset(
+    source: &str,
+    analysis: &FileIndexAnalysis,
+    uri: &str,
+    offset: usize,
+    external_index: Option<&SymbolIndex>,
+) -> LspDefinitionReport {
+    let resolver =
+        ReferenceResolver::new_with_parse(source, &analysis.index, &analysis.parse, external_index);
+    let Some(resolution) = resolver.resolve_at_offset(offset) else {
+        return empty_definition_report(analysis.parse_diagnostics);
+    };
+    let candidate_count = resolution.candidates.len();
+    let reason = resolution.reason;
+    let identifier_context = resolution.identifier_context;
+    let Some(selected) = resolution.selected.as_ref() else {
+        return LspDefinitionReport {
+            locations: Vec::new(),
+            parse_diagnostics: analysis.parse_diagnostics,
+            selected_label: None,
+            selected_kind: None,
+            selected_source: None,
+            resolver_reason: Some(reason),
+            identifier_context: Some(identifier_context),
+            resolver_candidate_count: candidate_count,
+        };
+    };
+
+    let location = definition_location_for_candidate(uri, source, selected);
+    LspDefinitionReport {
+        locations: location.into_iter().collect(),
+        parse_diagnostics: analysis.parse_diagnostics,
+        selected_label: selected.name.clone(),
+        selected_kind: Some(selected.kind),
+        selected_source: Some(selected.source),
+        resolver_reason: Some(reason),
+        identifier_context: Some(identifier_context),
+        resolver_candidate_count: candidate_count,
+    }
+}
+
 fn hover_report_for_offset(
     source: &str,
     analysis: &FileIndexAnalysis,
@@ -891,7 +1070,8 @@ fn hover_report_for_offset(
     external_index: Option<&SymbolIndex>,
 ) -> LspHoverReport {
     let query = IndexQuery::new(&analysis.index);
-    let resolver = ReferenceResolver::new(source, &analysis.index, external_index);
+    let resolver =
+        ReferenceResolver::new_with_parse(source, &analysis.index, &analysis.parse, external_index);
     match resolver.resolve_hover_at_offset(offset) {
         Some(HoverResolution::Identifier(resolution)) => {
             let candidate_count = resolution.candidates.len();
@@ -1034,6 +1214,19 @@ fn empty_hover_report(parse_diagnostics: usize) -> LspHoverReport {
     }
 }
 
+fn empty_definition_report(parse_diagnostics: usize) -> LspDefinitionReport {
+    LspDefinitionReport {
+        locations: Vec::new(),
+        parse_diagnostics,
+        selected_label: None,
+        selected_kind: None,
+        selected_source: None,
+        resolver_reason: None,
+        identifier_context: None,
+        resolver_candidate_count: 0,
+    }
+}
+
 pub fn debug_hover_report_for_source_position(source: &str, position: LspPosition) -> String {
     debug_hover_report_for_source_position_with_external(source, position, None, None)
 }
@@ -1066,7 +1259,8 @@ fn debug_hover_report_for_cached_analysis_with_external(
     let query = IndexQuery::new(index);
     let offset = offset_for_position(source, position);
     let tokens = lex(source);
-    let resolver = ReferenceResolver::new(source, index, external_index);
+    let resolver =
+        ReferenceResolver::new_with_parse(source, index, &analysis.parse, external_index);
     let resolver_resolution = offset.and_then(|offset| resolver.resolve_at_offset(offset));
     let candidates = offset
         .map(|offset| resolver.syntax_span_candidates_at_offset(offset))
@@ -1186,6 +1380,7 @@ fn debug_hover_report_for_cached_analysis_with_external(
 }
 
 struct FileIndexAnalysis {
+    parse: crate::syntax::Parse,
     index: SymbolIndex,
     parse_diagnostics: usize,
     diagnostics: Vec<ParseDiagnostic>,
@@ -1194,6 +1389,7 @@ struct FileIndexAnalysis {
 fn file_index_for_source(source: &str) -> FileIndexAnalysis {
     let parse = parse_source(source);
     let parse_diagnostics = parse.diagnostics.len();
+    let diagnostics = parse.diagnostics.clone();
     let ast = AstSourceFile::new(source, &parse);
     let catalog = SymbolCatalog::from_ast_with_metadata(
         source,
@@ -1210,9 +1406,10 @@ fn file_index_for_source(source: &str) -> FileIndexAnalysis {
     let mut index = SymbolIndex::default();
     index.add_catalog(&catalog);
     FileIndexAnalysis {
+        parse,
         index,
         parse_diagnostics,
-        diagnostics: parse.diagnostics,
+        diagnostics,
     }
 }
 
@@ -1269,6 +1466,53 @@ fn range_for_span(source: &str, span: crate::lexer::TextSpan) -> LspRange {
         start: position_for_offset(source, span.start),
         end: position_for_offset(source, span.end),
     }
+}
+
+fn definition_location_for_candidate(
+    current_uri: &str,
+    current_source: &str,
+    candidate: &ReferenceCandidate,
+) -> Option<LspLocation> {
+    match candidate.source {
+        CandidateSource::FileLocal => Some(LspLocation {
+            uri: current_uri.to_string(),
+            range: range_for_span(current_source, candidate.selection_span),
+        }),
+        CandidateSource::External => {
+            let path = candidate.absolute_path.as_ref()?;
+            let source = fs::read_to_string(path).ok()?;
+            Some(LspLocation {
+                uri: file_uri_for_path(path)?,
+                range: range_for_span(&source, candidate.selection_span),
+            })
+        }
+    }
+}
+
+fn file_uri_for_path(path: &Path) -> Option<String> {
+    if !path.is_absolute() {
+        return None;
+    }
+    let normalized = path.to_string_lossy().replace('\\', "/");
+    if normalized.starts_with('/') {
+        Some(format!("file://{}", percent_encode_uri_path(&normalized)))
+    } else {
+        Some(format!("file:///{}", percent_encode_uri_path(&normalized)))
+    }
+}
+
+fn percent_encode_uri_path(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        let keep =
+            byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b':' | b'-' | b'_' | b'.' | b'~');
+        if keep {
+            encoded.push(byte as char);
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    encoded
 }
 
 pub fn position_for_offset(source: &str, offset: usize) -> LspPosition {
@@ -1748,6 +1992,10 @@ fn append_resolver_resolution(
             "- Receiver text: `{}` at `{}`\n",
             escape_debug_text(&receiver.receiver_text),
             format_span(receiver.receiver_span)
+        ));
+        report.push_str(&format!(
+            "- Receiver expression kind: `{}`\n",
+            receiver.receiver_expression_kind
         ));
         report.push_str(&format!(
             "- Inferred owner type: `{}`\n",
@@ -2728,6 +2976,233 @@ class Example
     }
 
     #[test]
+    fn definition_selects_declarations_and_usages() {
+        let source = r#"typedef string FactionKey;
+Game g_Game;
+enum ExampleFlags
+{
+	Enabled = 1
+}
+class Example
+{
+	protected int m_Value;
+	void Run(string name)
+	{
+		int localValue = 5;
+		localValue = localValue + 1;
+		Print(name);
+		m_Value = localValue;
+		FactionKey key;
+		ExampleFlags flag = ExampleFlags.Enabled;
+		g_Game = null;
+	}
+}
+"#;
+        let uri = "file:///Scripts/Definition.c";
+
+        assert_definition(
+            source,
+            uri,
+            "class Example",
+            "Example",
+            SymbolKind::Class,
+            "Example",
+            "file:///Scripts/Definition.c",
+        );
+        assert_definition(
+            source,
+            uri,
+            "localValue + 1",
+            "localValue",
+            SymbolKind::LocalVariable,
+            "localValue",
+            "file:///Scripts/Definition.c",
+        );
+        assert_definition(
+            source,
+            uri,
+            "Print(name)",
+            "name",
+            SymbolKind::Parameter,
+            "name",
+            "file:///Scripts/Definition.c",
+        );
+        assert_definition(
+            source,
+            uri,
+            "m_Value = localValue",
+            "m_Value",
+            SymbolKind::Field,
+            "m_Value",
+            "file:///Scripts/Definition.c",
+        );
+        assert_definition(
+            source,
+            uri,
+            "FactionKey key",
+            "FactionKey",
+            SymbolKind::Typedef,
+            "FactionKey",
+            "file:///Scripts/Definition.c",
+        );
+        assert_definition(
+            source,
+            uri,
+            "ExampleFlags.Enabled",
+            "Enabled",
+            SymbolKind::EnumMember,
+            "Enabled",
+            "file:///Scripts/Definition.c",
+        );
+        assert_definition(
+            source,
+            uri,
+            "g_Game = null",
+            "g_Game",
+            SymbolKind::GlobalField,
+            "g_Game",
+            "file:///Scripts/Definition.c",
+        );
+    }
+
+    #[test]
+    fn definition_returns_null_for_non_targets() {
+        let source = r#"class LogLevel {}
+class Example
+{
+	void Run()
+	{
+		Print("hello", level: LogLevel);
+		MissingThing();
+	}
+}
+"#;
+        let whitespace = definition_report_for_source_position(
+            source,
+            "file:///Scripts/Definition.c",
+            LspPosition {
+                line: 0,
+                character: 0,
+            },
+        );
+        assert!(!whitespace.is_hit());
+        assert_eq!(whitespace.resolver_reason, None);
+
+        let named_arg = definition_at(source, "level: LogLevel", "level");
+        assert!(!named_arg.is_hit());
+        assert_eq!(
+            named_arg.resolver_reason,
+            Some(ResolutionReason::Unresolved)
+        );
+
+        let unresolved = definition_at(source, "MissingThing();", "MissingThing");
+        assert!(!unresolved.is_hit());
+        assert_eq!(
+            unresolved.resolver_reason,
+            Some(ResolutionReason::Unresolved)
+        );
+    }
+
+    #[test]
+    fn definition_uses_external_file_uri_when_available() {
+        let root = temp_test_dir("external_definition");
+        fs::create_dir_all(&root).unwrap();
+        let external_path = root.join("External Type.c");
+        fs::write(&external_path, "class ExternalType\n{\n\tvoid Run();\n}\n").unwrap();
+        let external = crate::index_build::build_index(&crate::index_build::IndexBuildConfig {
+            roots: vec![crate::index_build::IndexSourceRoot::new(
+                &root,
+                crate::model::SourceKind::GameData,
+                crate::model::SOURCE_PRIORITY_GAME_DATA,
+            )],
+        })
+        .unwrap()
+        .index;
+        let source = r#"class Example
+{
+	void Run()
+	{
+		ExternalType value;
+	}
+}
+"#;
+
+        let report = definition_report_for_source_position_with_external(
+            source,
+            "file:///Scripts/Definition.c",
+            position_for_needle(source, "ExternalType value", "ExternalType"),
+            Some(&external),
+        );
+
+        assert!(report.is_hit());
+        assert_eq!(report.selected_source, Some(CandidateSource::External));
+        assert_eq!(report.selected_kind, Some(SymbolKind::Class));
+        assert_eq!(report.selected_label.as_deref(), Some("ExternalType"));
+        assert_eq!(report.locations.len(), 1);
+        assert!(report.locations[0].uri.ends_with("/External%20Type.c"));
+        assert_eq!(
+            report.locations[0].range.start,
+            LspPosition {
+                line: 0,
+                character: 6
+            }
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn definition_resolves_receiver_member_with_external_index() {
+        let root = temp_test_dir("receiver_definition");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("Entity.c"),
+            "class IEntity\n{\n\tvector GetOrigin();\n}\n",
+        )
+        .unwrap();
+        let external = crate::index_build::build_index(&crate::index_build::IndexBuildConfig {
+            roots: vec![crate::index_build::IndexSourceRoot::new(
+                &root,
+                crate::model::SourceKind::GameData,
+                crate::model::SOURCE_PRIORITY_GAME_DATA,
+            )],
+        })
+        .unwrap()
+        .index;
+        let source = r#"class Example
+{
+	void Run(IEntity ent)
+	{
+		ent.GetOrigin();
+	}
+}
+"#;
+
+        let report = definition_report_for_source_position_with_external(
+            source,
+            "file:///Scripts/Definition.c",
+            position_for_needle(source, "ent.GetOrigin", "GetOrigin"),
+            Some(&external),
+        );
+
+        assert!(report.is_hit());
+        assert_eq!(report.selected_source, Some(CandidateSource::External));
+        assert_eq!(report.selected_kind, Some(SymbolKind::Method));
+        assert_eq!(report.selected_label.as_deref(), Some("GetOrigin"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn file_uri_for_path_encodes_windows_style_paths_and_spaces() {
+        if cfg!(windows) {
+            let uri = file_uri_for_path(Path::new("C:\\Game Data\\Scripts\\File Name.c")).unwrap();
+            assert_eq!(uri, "file:///C:/Game%20Data/Scripts/File%20Name.c");
+        } else {
+            let uri = file_uri_for_path(Path::new("/tmp/Game Data/File Name.c")).unwrap();
+            assert_eq!(uri, "file:///tmp/Game%20Data/File%20Name.c");
+        }
+    }
+
+    #[test]
     fn hover_markdown_uses_signature_detail_docs_modifiers_and_attributes() {
         let source = r#"//! Runs the example.
 class Example
@@ -2937,6 +3412,90 @@ class Example
     }
 
     #[test]
+    fn framed_lsp_smoke_test_handles_definition() {
+        let source = "class Smoke\n{\n\tvoid Run(int value)\n\t{\n\t\tPrint(value);\n\t}\n}\n";
+        let definition_position = position_for_needle(source, "Print(value)", "value");
+        let mut input = Vec::new();
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {}
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": "file:///Scripts/Smoke.c",
+                        "languageId": "enforce",
+                        "version": 1,
+                        "text": source
+                    }
+                }
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "textDocument/definition",
+                "params": {
+                    "textDocument": {
+                        "uri": "file:///Scripts/Smoke.c"
+                    },
+                    "position": {
+                        "line": definition_position.line,
+                        "character": definition_position.character
+                    }
+                }
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "shutdown",
+                "params": null
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "exit",
+                "params": null
+            }),
+        );
+
+        let mut output = Vec::new();
+        run(
+            input.as_slice(),
+            &mut output,
+            LspServerOptions {
+                log_path: None,
+                game_data_scripts: None,
+                game_data_metadata: None,
+                index_cache: None,
+            },
+        )
+        .unwrap();
+
+        let output_text = String::from_utf8(output).unwrap();
+        assert!(output_text.contains("\"definitionProvider\":true"));
+        assert!(output_text.contains("\"uri\":\"file:///Scripts/Smoke.c\""));
+        assert!(output_text.contains("\"line\":2"));
+        assert!(output_text.contains("\"character\":14"));
+    }
+
+    #[test]
     fn framed_lsp_uses_cached_analysis_for_repeated_hover() {
         let source = "class Smoke\n{\n\tvoid Run(int value);\n}\n";
         let hover_position = position_for_needle(source, "Run(int", "Run");
@@ -3039,6 +3598,7 @@ class Example
         let old_source = "class Old\n{\n\tvoid OldRun();\n}\n";
         let new_source = "class New\n{\n\tvoid NewRun();\n}\n";
         let hover_position = position_for_needle(new_source, "NewRun", "NewRun");
+        let definition_position = position_for_needle(new_source, "NewRun", "NewRun");
         let mut input = Vec::new();
         write_test_message(
             &mut input,
@@ -3104,6 +3664,23 @@ class Example
             json!({
                 "jsonrpc": "2.0",
                 "id": 3,
+                "method": "textDocument/definition",
+                "params": {
+                    "textDocument": {
+                        "uri": "file:///Scripts/Changed.c"
+                    },
+                    "position": {
+                        "line": definition_position.line,
+                        "character": definition_position.character
+                    }
+                }
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 4,
                 "method": "textDocument/documentSymbol",
                 "params": {
                     "textDocument": {
@@ -3116,7 +3693,7 @@ class Example
             &mut input,
             json!({
                 "jsonrpc": "2.0",
-                "id": 4,
+                "id": 5,
                 "method": "shutdown",
                 "params": null
             }),
@@ -3147,6 +3724,7 @@ class Example
         assert!(output_text.contains("New.NewRun() -> void"));
         assert!(output_text.contains("\"name\":\"New\""));
         assert!(output_text.contains("\"name\":\"NewRun\""));
+        assert!(output_text.contains("\"uri\":\"file:///Scripts/Changed.c\""));
         assert!(!output_text.contains("\"name\":\"Old\""));
         assert!(!output_text.contains("\"name\":\"OldRun\""));
     }
@@ -3382,6 +3960,16 @@ class Example
         let _ = std::fs::remove_file(path);
     }
 
+    fn temp_test_dir(name: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "reforger_lsp_{name}_{}_{}",
+            std::process::id(),
+            timestamp_millis()
+        ));
+        let _ = std::fs::remove_dir_all(&path);
+        path
+    }
+
     fn assert_hover(
         source: &str,
         needle: &str,
@@ -3412,6 +4000,39 @@ class Example
 
     fn hover_at(source: &str, needle: &str, cursor: &str) -> LspHoverReport {
         hover_report_for_source_position(source, position_for_needle(source, needle, cursor))
+    }
+
+    fn assert_definition(
+        source: &str,
+        uri: &str,
+        needle: &str,
+        cursor: &str,
+        expected_kind: SymbolKind,
+        expected_label: &str,
+        expected_uri: &str,
+    ) {
+        let report = definition_report_for_source_position(
+            source,
+            uri,
+            position_for_needle(source, needle, cursor),
+        );
+        assert!(
+            report.is_hit(),
+            "definition miss for needle `{needle}` cursor `{cursor}`"
+        );
+        assert_eq!(report.parse_diagnostics, 0);
+        assert_eq!(report.selected_kind, Some(expected_kind));
+        assert_eq!(report.selected_label.as_deref(), Some(expected_label));
+        assert_eq!(report.locations.len(), 1);
+        assert_eq!(report.locations[0].uri, expected_uri);
+    }
+
+    fn definition_at(source: &str, needle: &str, cursor: &str) -> LspDefinitionReport {
+        definition_report_for_source_position(
+            source,
+            "file:///Scripts/Definition.c",
+            position_for_needle(source, needle, cursor),
+        )
     }
 
     fn position_for_needle(source: &str, needle: &str, cursor: &str) -> LspPosition {

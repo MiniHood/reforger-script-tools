@@ -1,5 +1,5 @@
 use reforger_language_server::parser::parse_source;
-use reforger_language_server::syntax::{ParseDiagnostic, SyntaxElement, SyntaxNode};
+use reforger_language_server::syntax::{ParseDiagnostic, SyntaxElement, SyntaxKind, SyntaxNode};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::env;
@@ -24,6 +24,12 @@ struct FileDiagnostics {
     path: PathBuf,
     diagnostics: Vec<ParseDiagnostic>,
     source: String,
+}
+
+struct RecoveryFile {
+    path: PathBuf,
+    error_nodes: usize,
+    expected_error_nodes: usize,
 }
 
 struct LossyFile {
@@ -130,6 +136,7 @@ fn render_report(scripts_path: &Path) -> Result<String, String> {
     let mut syntax_counts = BTreeMap::<String, usize>::new();
     let mut diagnostic_counts = BTreeMap::<String, usize>::new();
     let mut files_with_diagnostics = Vec::<FileDiagnostics>::new();
+    let mut recovery_files = Vec::<RecoveryFile>::new();
     let mut lossy_files = Vec::<LossyFile>::new();
 
     for file in &files {
@@ -147,6 +154,14 @@ fn render_report(scripts_path: &Path) -> Result<String, String> {
         total_tokens += parse.root.token_count();
         total_diagnostics += parse.diagnostics.len();
         count_kinds(&parse.root, &mut syntax_counts);
+        let error_nodes = count_kind(&parse.root, SyntaxKind::Error);
+        if error_nodes > 0 {
+            recovery_files.push(RecoveryFile {
+                path: file.clone(),
+                error_nodes,
+                expected_error_nodes: expected_recovery_node_count(&parse.root, &source, file),
+            });
+        }
 
         for diagnostic in &parse.diagnostics {
             *diagnostic_counts
@@ -207,6 +222,7 @@ fn render_report(scripts_path: &Path) -> Result<String, String> {
     );
     append_diagnostic_files(&mut report, scripts_path, &files_with_diagnostics);
     append_diagnostic_snippets(&mut report, scripts_path, &files_with_diagnostics);
+    append_expected_recovery_nodes(&mut report, scripts_path, &recovery_files);
     append_lossy_files(&mut report, scripts_path, &lossy_files);
 
     Ok(report)
@@ -236,6 +252,27 @@ fn count_kinds(node: &SyntaxNode, counts: &mut BTreeMap<String, usize>) {
             count_kinds(child_node, counts);
         }
     }
+}
+
+fn count_kind(node: &SyntaxNode, kind: SyntaxKind) -> usize {
+    let own = usize::from(node.kind == kind);
+    own + node
+        .children
+        .iter()
+        .map(|child| match child {
+            SyntaxElement::Node(child) => count_kind(child, kind),
+            SyntaxElement::Token(_) => 0,
+        })
+        .sum::<usize>()
+}
+
+fn expected_recovery_node_count(node: &SyntaxNode, source: &str, path: &Path) -> usize {
+    let relative = path.display().to_string().replace('/', "\\");
+    if !relative.ends_with("Game\\game.c") || !source.contains("#ifdef BREAK_COMPILATION") {
+        return 0;
+    }
+
+    count_kind(node, SyntaxKind::Error)
 }
 
 fn append_counts(
@@ -331,6 +368,54 @@ fn append_source_snippet(report: &mut String, source: &str, line: usize) {
         ));
     }
     report.push_str("````\n\n");
+}
+
+fn append_expected_recovery_nodes(
+    report: &mut String,
+    scripts_path: &Path,
+    files: &[RecoveryFile],
+) {
+    report.push_str("## Expected Recovery Nodes\n\n");
+
+    if files.is_empty() {
+        report.push_str("None.\n\n");
+        return;
+    }
+
+    let total = files.iter().map(|file| file.error_nodes).sum::<usize>();
+    let expected = files
+        .iter()
+        .map(|file| file.expected_error_nodes)
+        .sum::<usize>();
+
+    report.push_str("| Metric | Count |\n");
+    report.push_str("| --- | ---: |\n");
+    report.push_str(&format!("| Error nodes | {total} |\n"));
+    report.push_str(&format!(
+        "| Expected preprocessor-test recovery | {expected} |\n"
+    ));
+    report.push_str(&format!(
+        "| Unexplained recovery nodes | {} |\n\n",
+        total.saturating_sub(expected)
+    ));
+
+    report.push_str("| File | Error nodes | Classification |\n");
+    report.push_str("| --- | ---: | --- |\n");
+    for file in files.iter().take(MAX_DIAGNOSTIC_FILES) {
+        let classification = if file.expected_error_nodes == file.error_nodes {
+            "expected `#ifdef BREAK_COMPILATION` preprocessor-test text"
+        } else if file.expected_error_nodes > 0 {
+            "mixed expected and unexplained recovery"
+        } else {
+            "unexplained recovery"
+        };
+        report.push_str(&format!(
+            "| `{}` | {} | {classification} |\n",
+            relative_path(scripts_path, &file.path),
+            file.error_nodes
+        ));
+    }
+    report.push('\n');
 }
 
 fn append_lossy_files(report: &mut String, scripts_path: &Path, files: &[LossyFile]) {

@@ -98,6 +98,257 @@ pub enum LocalVariableKind {
     ForInitializer,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExpressionKind {
+    Name,
+    Literal,
+    Call,
+    MemberAccess,
+    Index,
+    Cast,
+    New,
+    Unary,
+    Binary,
+    Assignment,
+    Ternary,
+    Initializer,
+    Parenthesized,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum Expression<'source, 'tree> {
+    Name(ExpressionNode<'source, 'tree>),
+    Literal(ExpressionNode<'source, 'tree>),
+    Call(ExpressionNode<'source, 'tree>),
+    MemberAccess(ExpressionNode<'source, 'tree>),
+    Index(ExpressionNode<'source, 'tree>),
+    Cast(ExpressionNode<'source, 'tree>),
+    New(ExpressionNode<'source, 'tree>),
+    Unary(ExpressionNode<'source, 'tree>),
+    Binary(ExpressionNode<'source, 'tree>),
+    Assignment(ExpressionNode<'source, 'tree>),
+    Ternary(ExpressionNode<'source, 'tree>),
+    Initializer(ExpressionNode<'source, 'tree>),
+    Parenthesized(ExpressionNode<'source, 'tree>),
+    Unknown(ExpressionNode<'source, 'tree>),
+}
+
+impl<'source, 'tree> Expression<'source, 'tree> {
+    pub fn from_node(source: &'source str, node: &'tree SyntaxNode) -> Option<Self> {
+        if !is_expression_syntax_kind(node.kind) {
+            return None;
+        }
+
+        let view = ExpressionNode { source, node };
+        Some(match node.kind {
+            SyntaxKind::NameExpression => Self::Name(view),
+            SyntaxKind::LiteralExpression => Self::Literal(view),
+            SyntaxKind::CallExpression => Self::Call(view),
+            SyntaxKind::MemberAccessExpression => Self::MemberAccess(view),
+            SyntaxKind::IndexExpression => Self::Index(view),
+            SyntaxKind::CastExpression => Self::Cast(view),
+            SyntaxKind::NewExpression => Self::New(view),
+            SyntaxKind::UnaryExpression | SyntaxKind::PostfixExpression => Self::Unary(view),
+            SyntaxKind::BinaryExpression => Self::Binary(view),
+            SyntaxKind::AssignmentExpression => Self::Assignment(view),
+            SyntaxKind::TernaryExpression => Self::Ternary(view),
+            SyntaxKind::InitializerExpression => Self::Initializer(view),
+            SyntaxKind::ParenthesizedExpression => Self::Parenthesized(view),
+            _ => Self::Unknown(view),
+        })
+    }
+
+    pub fn kind(&self) -> ExpressionKind {
+        match self {
+            Self::Name(_) => ExpressionKind::Name,
+            Self::Literal(_) => ExpressionKind::Literal,
+            Self::Call(_) => ExpressionKind::Call,
+            Self::MemberAccess(_) => ExpressionKind::MemberAccess,
+            Self::Index(_) => ExpressionKind::Index,
+            Self::Cast(_) => ExpressionKind::Cast,
+            Self::New(_) => ExpressionKind::New,
+            Self::Unary(_) => ExpressionKind::Unary,
+            Self::Binary(_) => ExpressionKind::Binary,
+            Self::Assignment(_) => ExpressionKind::Assignment,
+            Self::Ternary(_) => ExpressionKind::Ternary,
+            Self::Initializer(_) => ExpressionKind::Initializer,
+            Self::Parenthesized(_) => ExpressionKind::Parenthesized,
+            Self::Unknown(_) => ExpressionKind::Unknown,
+        }
+    }
+
+    pub const fn node(&self) -> ExpressionNode<'source, 'tree> {
+        match self {
+            Self::Name(node)
+            | Self::Literal(node)
+            | Self::Call(node)
+            | Self::MemberAccess(node)
+            | Self::Index(node)
+            | Self::Cast(node)
+            | Self::New(node)
+            | Self::Unary(node)
+            | Self::Binary(node)
+            | Self::Assignment(node)
+            | Self::Ternary(node)
+            | Self::Initializer(node)
+            | Self::Parenthesized(node)
+            | Self::Unknown(node) => *node,
+        }
+    }
+
+    pub const fn span(&self) -> TextSpan {
+        self.node().span()
+    }
+
+    pub fn selection_span(&self) -> TextSpan {
+        self.node().selection_span()
+    }
+
+    pub fn source_text(&self) -> &'source str {
+        self.node().source_text()
+    }
+
+    pub fn name_text(&self) -> Option<TextValue<'source>> {
+        self.node().name_text()
+    }
+
+    pub fn receiver(&self) -> Option<Expression<'source, 'tree>> {
+        self.node().receiver()
+    }
+
+    pub fn member_name(&self) -> Option<TextValue<'source>> {
+        self.node().member_name()
+    }
+
+    pub fn callee(&self) -> Option<Expression<'source, 'tree>> {
+        self.node().callee()
+    }
+
+    pub fn arguments(&self) -> Vec<Expression<'source, 'tree>> {
+        self.node().arguments()
+    }
+
+    pub fn index_expression(&self) -> Option<Expression<'source, 'tree>> {
+        self.node().index_expression()
+    }
+
+    pub fn return_like_type_text(&self) -> Option<TextValue<'source>> {
+        None
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ExpressionNode<'source, 'tree> {
+    source: &'source str,
+    node: &'tree SyntaxNode,
+}
+
+impl<'source, 'tree> ExpressionNode<'source, 'tree> {
+    pub const fn syntax_node(&self) -> &'tree SyntaxNode {
+        self.node
+    }
+
+    pub const fn span(&self) -> TextSpan {
+        self.node.span
+    }
+
+    pub fn selection_span(&self) -> TextSpan {
+        self.name_text()
+            .map(|value| value.span)
+            .unwrap_or(self.node.span)
+    }
+
+    pub fn source_text(&self) -> &'source str {
+        &self.source[self.node.span.start..self.node.span.end]
+    }
+
+    pub fn name_text(&self) -> Option<TextValue<'source>> {
+        match self.node.kind {
+            SyntaxKind::NameExpression | SyntaxKind::LiteralExpression => direct_tokens(self.node)
+                .find(|token| !token.kind.is_trivia())
+                .map(|token| text_value(self.source, token.span)),
+            _ => None,
+        }
+    }
+
+    pub fn receiver(&self) -> Option<Expression<'source, 'tree>> {
+        match self.node.kind {
+            SyntaxKind::MemberAccessExpression
+            | SyntaxKind::IndexExpression
+            | SyntaxKind::CallExpression => first_expression_child(self.source, self.node),
+            _ => None,
+        }
+    }
+
+    pub fn member_name(&self) -> Option<TextValue<'source>> {
+        if self.node.kind != SyntaxKind::MemberAccessExpression {
+            return None;
+        }
+
+        self.node
+            .children
+            .iter()
+            .rev()
+            .find_map(|child| match child {
+                SyntaxElement::Node(node) if node.kind == SyntaxKind::NameExpression => {
+                    Expression::from_node(self.source, node)?.name_text()
+                }
+                _ => None,
+            })
+    }
+
+    pub fn callee(&self) -> Option<Expression<'source, 'tree>> {
+        if self.node.kind != SyntaxKind::CallExpression {
+            return None;
+        }
+
+        first_expression_child(self.source, self.node)
+    }
+
+    pub fn arguments(&self) -> Vec<Expression<'source, 'tree>> {
+        let Some(argument_list) = first_child_node(self.node, SyntaxKind::ArgumentList) else {
+            return Vec::new();
+        };
+
+        argument_list
+            .children
+            .iter()
+            .filter_map(|child| match child {
+                SyntaxElement::Node(node) => first_expression_in_argument(self.source, node),
+                SyntaxElement::Token(_) => None,
+            })
+            .collect()
+    }
+
+    pub fn index_expression(&self) -> Option<Expression<'source, 'tree>> {
+        if self.node.kind != SyntaxKind::IndexExpression {
+            return None;
+        }
+
+        self.node
+            .children
+            .iter()
+            .filter_map(|child| match child {
+                SyntaxElement::Node(node) => Expression::from_node(self.source, node),
+                SyntaxElement::Token(_) => None,
+            })
+            .nth(1)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct MemberAccessExpression<'source, 'tree> {
+    pub expression: Expression<'source, 'tree>,
+    pub receiver: Expression<'source, 'tree>,
+    pub member_name: TextValue<'source>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct NamedArgumentLabel<'source> {
+    pub name: TextValue<'source>,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct ClassDecl<'source, 'tree> {
     source: &'source str,
@@ -1031,13 +1282,17 @@ fn collect_local_variables_from_node<'source>(
             return;
         }
         SyntaxKind::ForInitializer => {
-            let tokens = non_trivia_tokens(node);
-            push_for_initializer_variables(source, locals, &tokens);
+            push_for_initializer_variables_from_node(source, locals, node);
             return;
         }
-        SyntaxKind::ForeachHeader => {
+        SyntaxKind::ForeachVariable => {
             let tokens = non_trivia_tokens(node);
-            push_foreach_variables(source, locals, strip_enclosing_parens(&tokens));
+            push_statement_local_variables(
+                source,
+                locals,
+                &tokens,
+                LocalVariableKind::ForeachVariable,
+            );
             return;
         }
         _ => {}
@@ -1056,52 +1311,20 @@ fn non_trivia_tokens(node: &SyntaxNode) -> Vec<Token> {
         .collect()
 }
 
-fn strip_enclosing_parens(tokens: &[Token]) -> &[Token] {
-    let mut start = 0usize;
-    let mut end = tokens.len();
-    if tokens
-        .get(start)
-        .is_some_and(|token| token.kind == TokenKind::LeftParen)
-    {
-        start += 1;
-    }
-    if end > start
-        && tokens
-            .get(end - 1)
-            .is_some_and(|token| token.kind == TokenKind::RightParen)
-    {
-        end -= 1;
-    }
-    &tokens[start..end]
-}
-
-fn push_for_initializer_variables<'source>(
+fn push_for_initializer_variables_from_node<'source>(
     source: &'source str,
     locals: &mut Vec<LocalVariable<'source>>,
-    header_tokens: &[Token],
+    node: &SyntaxNode,
 ) {
-    let initializer = split_top_level_once(header_tokens, TokenKind::Semicolon)
-        .map(|(initializer, _)| initializer)
-        .unwrap_or(header_tokens);
-    push_statement_local_variables(
-        source,
-        locals,
-        initializer,
-        LocalVariableKind::ForInitializer,
-    );
-}
-
-fn push_foreach_variables<'source>(
-    source: &'source str,
-    locals: &mut Vec<LocalVariable<'source>>,
-    header_tokens: &[Token],
-) {
-    let Some((variables, _iterable)) = split_top_level_once(header_tokens, TokenKind::Colon) else {
-        return;
-    };
-
-    for segment in split_top_level(variables, TokenKind::Comma) {
-        push_statement_local_variables(source, locals, segment, LocalVariableKind::ForeachVariable);
+    for child in &node.children {
+        let SyntaxElement::Node(child) = child else {
+            continue;
+        };
+        if child.kind != SyntaxKind::LocalDeclStatement {
+            continue;
+        }
+        let tokens = non_trivia_tokens(child);
+        push_statement_local_variables(source, locals, &tokens, LocalVariableKind::ForInitializer);
     }
 }
 
@@ -1319,65 +1542,6 @@ fn local_modifier_tokens(tokens: &[Token], before: usize) -> Vec<Token> {
         .take_while(|token| token.span.end <= before)
         .filter(|token| is_local_modifier_token(token.kind))
         .collect()
-}
-
-fn split_top_level_once(tokens: &[Token], delimiter: TokenKind) -> Option<(&[Token], &[Token])> {
-    let mut paren_depth = 0usize;
-    let mut bracket_depth = 0usize;
-    let mut angle_depth = 0usize;
-    let mut brace_depth = 0usize;
-
-    for (index, token) in tokens.iter().enumerate() {
-        if paren_depth == 0
-            && bracket_depth == 0
-            && angle_depth == 0
-            && brace_depth == 0
-            && token.kind == delimiter
-        {
-            return Some((&tokens[..index], &tokens[index + 1..]));
-        }
-        update_local_depths(
-            token.kind,
-            &mut paren_depth,
-            &mut bracket_depth,
-            &mut angle_depth,
-            &mut brace_depth,
-        );
-    }
-
-    None
-}
-
-fn split_top_level(tokens: &[Token], delimiter: TokenKind) -> Vec<&[Token]> {
-    let mut segments = Vec::new();
-    let mut segment_start = 0usize;
-    let mut paren_depth = 0usize;
-    let mut bracket_depth = 0usize;
-    let mut angle_depth = 0usize;
-    let mut brace_depth = 0usize;
-
-    for (index, token) in tokens.iter().enumerate() {
-        if paren_depth == 0
-            && bracket_depth == 0
-            && angle_depth == 0
-            && brace_depth == 0
-            && token.kind == delimiter
-        {
-            segments.push(trim_token_slice(&tokens[segment_start..index]));
-            segment_start = index + 1;
-            continue;
-        }
-        update_local_depths(
-            token.kind,
-            &mut paren_depth,
-            &mut bracket_depth,
-            &mut angle_depth,
-            &mut brace_depth,
-        );
-    }
-
-    segments.push(trim_token_slice(&tokens[segment_start..]));
-    segments
 }
 
 fn split_top_level_preserving_braces(tokens: &[Token], delimiter: TokenKind) -> Vec<&[Token]> {
@@ -1699,6 +1863,207 @@ fn first_child_node(node: &SyntaxNode, kind: SyntaxKind) -> Option<&SyntaxNode> 
         SyntaxElement::Node(node) if node.kind == kind => Some(node.as_ref()),
         _ => None,
     })
+}
+
+pub fn smallest_expression_at_offset<'source, 'tree>(
+    source: &'source str,
+    root: &'tree SyntaxNode,
+    offset: usize,
+) -> Option<Expression<'source, 'tree>> {
+    let mut best = None;
+    collect_smallest_expression_at_offset(source, root, offset, &mut best);
+    best
+}
+
+pub fn member_access_for_member_name_at_offset<'source, 'tree>(
+    source: &'source str,
+    root: &'tree SyntaxNode,
+    token_span: TextSpan,
+) -> Option<MemberAccessExpression<'source, 'tree>> {
+    let mut best = None;
+    collect_member_access_for_member_name(source, root, token_span, &mut best);
+    best
+}
+
+pub fn named_argument_label_at_offset<'source>(
+    source: &'source str,
+    root: &SyntaxNode,
+    token_span: TextSpan,
+) -> Option<NamedArgumentLabel<'source>> {
+    let mut result = None;
+    collect_named_argument_label(source, root, token_span, &mut result);
+    result
+}
+
+fn collect_smallest_expression_at_offset<'source, 'tree>(
+    source: &'source str,
+    node: &'tree SyntaxNode,
+    offset: usize,
+    best: &mut Option<Expression<'source, 'tree>>,
+) {
+    if !span_contains_offset(node.span, offset) {
+        return;
+    }
+
+    if let Some(expression) = Expression::from_node(source, node) {
+        let replace = best
+            .as_ref()
+            .map(|best| expression.span().len() < best.span().len())
+            .unwrap_or(true);
+        if replace {
+            *best = Some(expression);
+        }
+    }
+
+    for child in &node.children {
+        if let SyntaxElement::Node(child) = child {
+            collect_smallest_expression_at_offset(source, child, offset, best);
+        }
+    }
+}
+
+fn collect_member_access_for_member_name<'source, 'tree>(
+    source: &'source str,
+    node: &'tree SyntaxNode,
+    token_span: TextSpan,
+    best: &mut Option<MemberAccessExpression<'source, 'tree>>,
+) {
+    if !span_contains_span(node.span, token_span) {
+        return;
+    }
+
+    if node.kind == SyntaxKind::MemberAccessExpression {
+        if let Some(expression) = Expression::from_node(source, node) {
+            if let (Some(receiver), Some(member_name)) =
+                (expression.receiver(), expression.member_name())
+            {
+                if member_name.span == token_span {
+                    let candidate = MemberAccessExpression {
+                        expression,
+                        receiver,
+                        member_name,
+                    };
+                    let replace = best
+                        .as_ref()
+                        .map(|best| {
+                            candidate.expression.span().len() < best.expression.span().len()
+                        })
+                        .unwrap_or(true);
+                    if replace {
+                        *best = Some(candidate);
+                    }
+                }
+            }
+        }
+    }
+
+    for child in &node.children {
+        if let SyntaxElement::Node(child) = child {
+            collect_member_access_for_member_name(source, child, token_span, best);
+        }
+    }
+}
+
+fn collect_named_argument_label<'source>(
+    source: &'source str,
+    node: &SyntaxNode,
+    token_span: TextSpan,
+    result: &mut Option<NamedArgumentLabel<'source>>,
+) {
+    if result.is_some() || !span_contains_span(node.span, token_span) {
+        return;
+    }
+
+    if node.kind == SyntaxKind::NamedArgument {
+        let mut seen_label = None;
+        for child in &node.children {
+            match child {
+                SyntaxElement::Token(token)
+                    if token.span == token_span && is_name_token(token.kind) =>
+                {
+                    seen_label = Some(text_value(source, token.span));
+                }
+                SyntaxElement::Token(token) if token.kind == TokenKind::Colon => {
+                    if let Some(name) = seen_label {
+                        *result = Some(NamedArgumentLabel { name });
+                    }
+                    return;
+                }
+                SyntaxElement::Node(child) if child.kind == SyntaxKind::NameExpression => {
+                    if let Some(name) =
+                        Expression::from_node(source, child).and_then(|expr| expr.name_text())
+                    {
+                        if name.span == token_span {
+                            seen_label = Some(name);
+                        }
+                    }
+                }
+                SyntaxElement::Node(_) => {}
+                _ => {}
+            }
+        }
+    }
+
+    for child in &node.children {
+        if let SyntaxElement::Node(child) = child {
+            collect_named_argument_label(source, child, token_span, result);
+        }
+    }
+}
+
+fn first_expression_child<'source, 'tree>(
+    source: &'source str,
+    node: &'tree SyntaxNode,
+) -> Option<Expression<'source, 'tree>> {
+    node.children.iter().find_map(|child| match child {
+        SyntaxElement::Node(node) => Expression::from_node(source, node),
+        SyntaxElement::Token(_) => None,
+    })
+}
+
+fn first_expression_in_argument<'source, 'tree>(
+    source: &'source str,
+    node: &'tree SyntaxNode,
+) -> Option<Expression<'source, 'tree>> {
+    if node.kind == SyntaxKind::NamedArgument {
+        return node.children.iter().find_map(|child| match child {
+            SyntaxElement::Node(node) if node.kind == SyntaxKind::NameExpression => None,
+            SyntaxElement::Node(node) => Expression::from_node(source, node),
+            SyntaxElement::Token(_) => None,
+        });
+    }
+
+    Expression::from_node(source, node)
+}
+
+fn is_expression_syntax_kind(kind: SyntaxKind) -> bool {
+    matches!(
+        kind,
+        SyntaxKind::Expression
+            | SyntaxKind::NameExpression
+            | SyntaxKind::LiteralExpression
+            | SyntaxKind::ParenthesizedExpression
+            | SyntaxKind::UnaryExpression
+            | SyntaxKind::BinaryExpression
+            | SyntaxKind::AssignmentExpression
+            | SyntaxKind::TernaryExpression
+            | SyntaxKind::CallExpression
+            | SyntaxKind::NamedArgument
+            | SyntaxKind::MemberAccessExpression
+            | SyntaxKind::IndexExpression
+            | SyntaxKind::CastExpression
+            | SyntaxKind::PostfixExpression
+            | SyntaxKind::NewExpression
+            | SyntaxKind::InitializerExpression
+    )
+}
+
+const fn span_contains_offset(span: TextSpan, offset: usize) -> bool {
+    span.start <= offset && offset < span.end
+}
+
+const fn span_contains_span(outer: TextSpan, inner: TextSpan) -> bool {
+    outer.start <= inner.start && inner.end <= outer.end
 }
 
 fn trimmed_node_text<'source>(
@@ -2770,6 +3135,9 @@ class Blocked
         assert!(count_kind(&parse.root, SyntaxKind::LocalDeclStatement) >= 7);
         assert_eq!(count_kind(&parse.root, SyntaxKind::ForInitializer), 1);
         assert_eq!(count_kind(&parse.root, SyntaxKind::ForeachHeader), 1);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::ForeachVariableList), 1);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::ForeachVariable), 2);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::ForeachIterable), 1);
 
         let facts = local_facts(method);
         assert!(
@@ -2884,6 +3252,110 @@ class Blocked
             !facts.iter().any(|(name, _, _, _)| name == "Make"),
             "{facts:?}"
         );
+    }
+
+    #[test]
+    fn exposes_expression_wrappers_and_lookup_helpers() {
+        let source = r#"class Example
+{
+	void Run(array<IEntity> items, int value)
+	{
+		items[value].GetOrigin();
+		IEntity entity = IEntity.Cast(items[0]);
+		bool ok = value > 0 ? true : false;
+		vector pos = { 1, 2, 3 };
+		IEntity spawned = new GenericEntity();
+	}
+}
+"#;
+        let parse = parse_source(source);
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
+
+        let get_origin_offset = source.find("GetOrigin").unwrap();
+        let expression =
+            smallest_expression_at_offset(source, &parse.root, get_origin_offset).unwrap();
+        assert_eq!(expression.kind(), ExpressionKind::Name);
+        assert_eq!(expression.name_text().unwrap().text(), "GetOrigin");
+
+        let member = member_access_for_member_name_at_offset(
+            source,
+            &parse.root,
+            expression.selection_span(),
+        )
+        .unwrap();
+        assert_eq!(member.member_name.text(), "GetOrigin");
+        assert_eq!(member.receiver.source_text(), "items[value]");
+        assert_eq!(member.receiver.kind(), ExpressionKind::Index);
+        assert_eq!(
+            member
+                .receiver
+                .receiver()
+                .and_then(|receiver| receiver.name_text())
+                .unwrap()
+                .text(),
+            "items"
+        );
+        assert_eq!(
+            member
+                .receiver
+                .index_expression()
+                .and_then(|index| index.name_text())
+                .unwrap()
+                .text(),
+            "value"
+        );
+
+        let cast_offset = source.find("IEntity.Cast").unwrap() + "IEntity.".len();
+        let cast_name = smallest_expression_at_offset(source, &parse.root, cast_offset).unwrap();
+        let cast_member = member_access_for_member_name_at_offset(
+            source,
+            &parse.root,
+            cast_name.selection_span(),
+        )
+        .unwrap();
+        assert_eq!(cast_member.expression.kind(), ExpressionKind::MemberAccess);
+        assert_eq!(cast_member.receiver.source_text().trim(), "IEntity");
+
+        for (needle, kind) in [
+            ("? true", ExpressionKind::Ternary),
+            ("{ 1, 2, 3 }", ExpressionKind::Initializer),
+            ("new GenericEntity", ExpressionKind::New),
+        ] {
+            let offset = source.find(needle).unwrap();
+            let expression = smallest_expression_at_offset(source, &parse.root, offset).unwrap();
+            assert_eq!(expression.kind(), kind, "{needle}");
+        }
+    }
+
+    #[test]
+    fn identifies_named_argument_labels_separately_from_values() {
+        let source = r#"class Example
+{
+	void Run()
+	{
+		Print("hello", level: LogLevel.WARNING);
+	}
+}
+"#;
+        let parse = parse_source(source);
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
+
+        let label_start = source.find("level:").unwrap();
+        let label = named_argument_label_at_offset(
+            source,
+            &parse.root,
+            TextSpan::new(label_start, label_start + "level".len()),
+        )
+        .unwrap();
+        assert_eq!(label.name.text(), "level");
+
+        let value_start = source.find("LogLevel").unwrap();
+        assert!(named_argument_label_at_offset(
+            source,
+            &parse.root,
+            TextSpan::new(value_start, value_start + "LogLevel".len())
+        )
+        .is_none());
     }
 
     #[test]

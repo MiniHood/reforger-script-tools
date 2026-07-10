@@ -1,3 +1,4 @@
+use reforger_language_server::lexer::TextSpan;
 use reforger_language_server::parser::parse_source;
 use reforger_language_server::syntax::{SyntaxElement, SyntaxKind, SyntaxNode};
 use std::borrow::Cow;
@@ -22,11 +23,26 @@ struct FileStats {
     path: PathBuf,
     diagnostics: usize,
     error_nodes: usize,
+    expected_error_nodes: usize,
     expression_depth: usize,
+    expression_depth_snippet: Option<String>,
+    chain_depth: usize,
+    chain_depth_snippet: Option<String>,
     named_arguments: usize,
     initializer_expressions: usize,
     statement_nodes: usize,
     expression_nodes: usize,
+    for_initializers: usize,
+    for_decl_initializers: usize,
+    for_expression_initializers: usize,
+    foreach_headers: usize,
+    foreach_variable_lists: usize,
+    foreach_variables: usize,
+    foreach_iterables: usize,
+    switch_statements: usize,
+    switch_sections: usize,
+    case_clauses: usize,
+    default_clauses: usize,
 }
 
 fn main() -> Result<(), String> {
@@ -105,6 +121,7 @@ fn render_report(scripts_path: &Path) -> Result<String, String> {
     let mut total_diagnostics = 0usize;
     let mut lossy_files = 0usize;
     let mut kind_counts = BTreeMap::<String, usize>::new();
+    let mut named_argument_labels = BTreeMap::<String, usize>::new();
     let mut file_stats = Vec::<FileStats>::new();
 
     for file in &files {
@@ -118,15 +135,28 @@ fn render_report(scripts_path: &Path) -> Result<String, String> {
         let source = source.into_owned();
         let parse = parse_source(&source);
 
+        let (expression_depth, expression_depth_span) = max_expression_depth_with_span(&parse.root);
+        let (chain_depth, chain_depth_span) = max_member_call_index_chain_with_span(&parse.root);
         let mut stats = FileStats {
             path: file.clone(),
             diagnostics: parse.diagnostics.len(),
-            expression_depth: max_expression_depth(&parse.root, 0),
+            expected_error_nodes: expected_recovery_node_count(&parse.root, &source, file),
+            expression_depth,
+            expression_depth_snippet: expression_depth_span
+                .map(|span| snippet_for_span(&source, span, 1)),
+            chain_depth,
+            chain_depth_snippet: chain_depth_span.map(|span| snippet_for_span(&source, span, 1)),
             ..FileStats::default()
         };
         total_tokens += parse.root.token_count();
         total_diagnostics += parse.diagnostics.len();
-        collect_stats(&parse.root, &mut kind_counts, &mut stats);
+        collect_stats(
+            &source,
+            &parse.root,
+            &mut kind_counts,
+            &mut named_argument_labels,
+            &mut stats,
+        );
         file_stats.push(stats);
     }
 
@@ -155,6 +185,17 @@ fn render_report(scripts_path: &Path) -> Result<String, String> {
         &mut report,
         "Statement / Expression Kind Frequency",
         &kind_counts,
+    );
+    append_for_initializer_coverage(&mut report, &file_stats);
+    append_foreach_header_coverage(&mut report, &file_stats);
+    append_switch_section_coverage(&mut report, &file_stats);
+    append_expected_recovery_nodes(&mut report, scripts_path, &file_stats);
+    append_expression_depth_samples(&mut report, scripts_path, &file_stats);
+    append_chain_depth_samples(&mut report, scripts_path, &file_stats);
+    append_counts(
+        &mut report,
+        "Named Argument Label Frequency",
+        &named_argument_labels,
     );
     append_top_files(
         &mut report,
@@ -205,8 +246,10 @@ fn collect_script_files(folder: &Path, files: &mut Vec<PathBuf>) -> Result<(), S
 }
 
 fn collect_stats(
+    source: &str,
     node: &SyntaxNode,
     kind_counts: &mut BTreeMap<String, usize>,
+    named_argument_labels: &mut BTreeMap<String, usize>,
     stats: &mut FileStats,
 ) {
     if is_statement_or_expression_kind(node.kind) {
@@ -220,15 +263,245 @@ fn collect_stats(
     }
     match node.kind {
         SyntaxKind::Error => stats.error_nodes += 1,
-        SyntaxKind::NamedArgument => stats.named_arguments += 1,
+        SyntaxKind::NamedArgument => {
+            stats.named_arguments += 1;
+            if let Some(label) = named_argument_label(source, node) {
+                *named_argument_labels.entry(label).or_default() += 1;
+            }
+        }
         SyntaxKind::InitializerExpression => stats.initializer_expressions += 1,
+        SyntaxKind::ForInitializer => {
+            stats.for_initializers += 1;
+            if direct_child_node_count(node, SyntaxKind::LocalDeclStatement) > 0 {
+                stats.for_decl_initializers += 1;
+            } else {
+                stats.for_expression_initializers += 1;
+            }
+        }
+        SyntaxKind::ForeachHeader => stats.foreach_headers += 1,
+        SyntaxKind::ForeachVariableList => stats.foreach_variable_lists += 1,
+        SyntaxKind::ForeachVariable => stats.foreach_variables += 1,
+        SyntaxKind::ForeachIterable => stats.foreach_iterables += 1,
+        SyntaxKind::SwitchStatement => stats.switch_statements += 1,
+        SyntaxKind::SwitchSection => stats.switch_sections += 1,
+        SyntaxKind::CaseClause => stats.case_clauses += 1,
+        SyntaxKind::DefaultClause => stats.default_clauses += 1,
         _ => {}
     }
     for child in &node.children {
         if let SyntaxElement::Node(child) = child {
-            collect_stats(child, kind_counts, stats);
+            collect_stats(source, child, kind_counts, named_argument_labels, stats);
         }
     }
+}
+
+fn append_for_initializer_coverage(report: &mut String, file_stats: &[FileStats]) {
+    let total = file_stats
+        .iter()
+        .map(|stats| stats.for_initializers)
+        .sum::<usize>();
+    let declarations = file_stats
+        .iter()
+        .map(|stats| stats.for_decl_initializers)
+        .sum::<usize>();
+    let expressions = file_stats
+        .iter()
+        .map(|stats| stats.for_expression_initializers)
+        .sum::<usize>();
+
+    report.push_str("## For Initializer Shape Coverage\n\n");
+    report.push_str("| Shape | Count |\n");
+    report.push_str("| --- | ---: |\n");
+    report.push_str(&format!("| Total `ForInitializer` nodes | {total} |\n"));
+    report.push_str(&format!(
+        "| Declaration-shaped with nested `LocalDeclStatement` | {declarations} |\n"
+    ));
+    report.push_str(&format!(
+        "| Expression-shaped initializer lists | {expressions} |\n\n"
+    ));
+}
+
+fn append_foreach_header_coverage(report: &mut String, file_stats: &[FileStats]) {
+    let headers = file_stats
+        .iter()
+        .map(|stats| stats.foreach_headers)
+        .sum::<usize>();
+    let lists = file_stats
+        .iter()
+        .map(|stats| stats.foreach_variable_lists)
+        .sum::<usize>();
+    let variables = file_stats
+        .iter()
+        .map(|stats| stats.foreach_variables)
+        .sum::<usize>();
+    let iterables = file_stats
+        .iter()
+        .map(|stats| stats.foreach_iterables)
+        .sum::<usize>();
+
+    report.push_str("## Foreach Header Shape Coverage\n\n");
+    report.push_str("| Shape | Count |\n");
+    report.push_str("| --- | ---: |\n");
+    report.push_str(&format!("| `ForeachHeader` nodes | {headers} |\n"));
+    report.push_str(&format!("| `ForeachVariableList` nodes | {lists} |\n"));
+    report.push_str(&format!("| `ForeachVariable` nodes | {variables} |\n"));
+    report.push_str(&format!("| `ForeachIterable` nodes | {iterables} |\n"));
+    report.push_str(&format!(
+        "| Headers without iterable node | {} |\n\n",
+        headers.saturating_sub(iterables)
+    ));
+}
+
+fn append_switch_section_coverage(report: &mut String, file_stats: &[FileStats]) {
+    let switches = file_stats
+        .iter()
+        .map(|stats| stats.switch_statements)
+        .sum::<usize>();
+    let sections = file_stats
+        .iter()
+        .map(|stats| stats.switch_sections)
+        .sum::<usize>();
+    let cases = file_stats
+        .iter()
+        .map(|stats| stats.case_clauses)
+        .sum::<usize>();
+    let defaults = file_stats
+        .iter()
+        .map(|stats| stats.default_clauses)
+        .sum::<usize>();
+
+    report.push_str("## Switch Section Coverage\n\n");
+    report.push_str("| Shape | Count |\n");
+    report.push_str("| --- | ---: |\n");
+    report.push_str(&format!("| `SwitchStatement` nodes | {switches} |\n"));
+    report.push_str(&format!("| `SwitchSection` nodes | {sections} |\n"));
+    report.push_str(&format!("| `CaseClause` labels | {cases} |\n"));
+    report.push_str(&format!("| `DefaultClause` labels | {defaults} |\n\n"));
+}
+
+fn append_expected_recovery_nodes(report: &mut String, root: &Path, file_stats: &[FileStats]) {
+    let expected = file_stats
+        .iter()
+        .map(|stats| stats.expected_error_nodes)
+        .sum::<usize>();
+    let total = file_stats
+        .iter()
+        .map(|stats| stats.error_nodes)
+        .sum::<usize>();
+
+    report.push_str("## Expected Recovery Nodes\n\n");
+    report.push_str("| Metric | Count |\n");
+    report.push_str("| --- | ---: |\n");
+    report.push_str(&format!("| Error nodes | {total} |\n"));
+    report.push_str(&format!(
+        "| Expected preprocessor-test recovery | {expected} |\n"
+    ));
+    report.push_str(&format!(
+        "| Unexplained recovery nodes | {} |\n\n",
+        total.saturating_sub(expected)
+    ));
+
+    let mut rows = file_stats
+        .iter()
+        .filter(|stats| stats.error_nodes > 0)
+        .collect::<Vec<_>>();
+    rows.sort_by(|left, right| left.path.cmp(&right.path));
+    if rows.is_empty() {
+        report.push_str("None.\n\n");
+        return;
+    }
+
+    report.push_str("| File | Error nodes | Classification |\n");
+    report.push_str("| --- | ---: | --- |\n");
+    for stats in rows.into_iter().take(MAX_ROWS) {
+        let classification = if stats.expected_error_nodes == stats.error_nodes {
+            "expected `#ifdef BREAK_COMPILATION` preprocessor-test text"
+        } else if stats.expected_error_nodes > 0 {
+            "mixed expected and unexplained recovery"
+        } else {
+            "unexplained recovery"
+        };
+        report.push_str(&format!(
+            "| `{}` | {} | {classification} |\n",
+            relative_path(root, &stats.path),
+            stats.error_nodes
+        ));
+    }
+    report.push('\n');
+}
+
+fn append_expression_depth_samples(report: &mut String, root: &Path, file_stats: &[FileStats]) {
+    let mut rows = file_stats
+        .iter()
+        .filter(|stats| stats.expression_depth > 0)
+        .collect::<Vec<_>>();
+    rows.sort_by(|left, right| {
+        right
+            .expression_depth
+            .cmp(&left.expression_depth)
+            .then_with(|| left.path.cmp(&right.path))
+    });
+
+    report.push_str("## Expression Depth Samples With Snippets\n\n");
+    if rows.is_empty() {
+        report.push_str("None.\n\n");
+        return;
+    }
+
+    report.push_str("| File | Depth | Snippet |\n");
+    report.push_str("| --- | ---: | --- |\n");
+    for stats in rows.into_iter().take(25) {
+        report.push_str(&format!(
+            "| `{}` | {} | `{}` |\n",
+            relative_path(root, &stats.path),
+            stats.expression_depth,
+            escape_table(
+                &stats
+                    .expression_depth_snippet
+                    .as_deref()
+                    .unwrap_or("")
+                    .replace('`', "\\`")
+            )
+        ));
+    }
+    report.push('\n');
+}
+
+fn append_chain_depth_samples(report: &mut String, root: &Path, file_stats: &[FileStats]) {
+    let mut rows = file_stats
+        .iter()
+        .filter(|stats| stats.chain_depth > 0)
+        .collect::<Vec<_>>();
+    rows.sort_by(|left, right| {
+        right
+            .chain_depth
+            .cmp(&left.chain_depth)
+            .then_with(|| left.path.cmp(&right.path))
+    });
+
+    report.push_str("## Member / Call / Index Chain Samples With Snippets\n\n");
+    if rows.is_empty() {
+        report.push_str("None.\n\n");
+        return;
+    }
+
+    report.push_str("| File | Depth | Snippet |\n");
+    report.push_str("| --- | ---: | --- |\n");
+    for stats in rows.into_iter().take(25) {
+        report.push_str(&format!(
+            "| `{}` | {} | `{}` |\n",
+            relative_path(root, &stats.path),
+            stats.chain_depth,
+            escape_table(
+                &stats
+                    .chain_depth_snippet
+                    .as_deref()
+                    .unwrap_or("")
+                    .replace('`', "\\`")
+            )
+        ));
+    }
+    report.push('\n');
 }
 
 fn append_counts(report: &mut String, title: &str, counts: &BTreeMap<String, usize>) {
@@ -281,20 +554,63 @@ fn append_top_files<F>(
     report.push('\n');
 }
 
-fn max_expression_depth(node: &SyntaxNode, current: usize) -> usize {
+fn max_expression_depth_with_span(node: &SyntaxNode) -> (usize, Option<TextSpan>) {
+    let mut best = (0usize, None);
+    max_expression_depth(node, 0, &mut best);
+    best
+}
+
+fn max_expression_depth(node: &SyntaxNode, current: usize, best: &mut (usize, Option<TextSpan>)) {
     let next = if is_expression_kind(node.kind) {
         current + 1
     } else {
         current
     };
-    node.children
-        .iter()
-        .filter_map(|child| match child {
-            SyntaxElement::Node(child) => Some(max_expression_depth(child, next)),
-            SyntaxElement::Token(_) => None,
-        })
-        .max()
-        .unwrap_or(next)
+    if is_expression_kind(node.kind) && next > best.0 {
+        *best = (next, Some(node.span));
+    }
+
+    for child in &node.children {
+        if let SyntaxElement::Node(child) = child {
+            max_expression_depth(child, next, best);
+        }
+    }
+}
+
+fn max_member_call_index_chain_with_span(node: &SyntaxNode) -> (usize, Option<TextSpan>) {
+    let mut best = (0usize, None);
+    max_member_call_index_chain(node, 0, &mut best);
+    best
+}
+
+fn max_member_call_index_chain(
+    node: &SyntaxNode,
+    current: usize,
+    best: &mut (usize, Option<TextSpan>),
+) {
+    let next = if is_chain_kind(node.kind) {
+        current + 1
+    } else {
+        current
+    };
+    if is_chain_kind(node.kind) && next > best.0 {
+        *best = (next, Some(node.span));
+    }
+
+    for child in &node.children {
+        if let SyntaxElement::Node(child) = child {
+            max_member_call_index_chain(child, next, best);
+        }
+    }
+}
+
+fn is_chain_kind(kind: SyntaxKind) -> bool {
+    matches!(
+        kind,
+        SyntaxKind::MemberAccessExpression
+            | SyntaxKind::CallExpression
+            | SyntaxKind::IndexExpression
+    )
 }
 
 fn is_statement_or_expression_kind(kind: SyntaxKind) -> bool {
@@ -310,6 +626,7 @@ fn is_statement_kind(kind: SyntaxKind) -> bool {
             | SyntaxKind::WhileStatement
             | SyntaxKind::DoWhileStatement
             | SyntaxKind::SwitchStatement
+            | SyntaxKind::SwitchSection
             | SyntaxKind::CaseClause
             | SyntaxKind::DefaultClause
             | SyntaxKind::ReturnStatement
@@ -324,7 +641,90 @@ fn is_statement_kind(kind: SyntaxKind) -> bool {
             | SyntaxKind::ForInitializer
             | SyntaxKind::ForCondition
             | SyntaxKind::ForIncrement
+            | SyntaxKind::ForeachHeader
+            | SyntaxKind::ForeachVariableList
+            | SyntaxKind::ForeachVariable
+            | SyntaxKind::ForeachIterable
     )
+}
+
+fn direct_child_node_count(node: &SyntaxNode, kind: SyntaxKind) -> usize {
+    node.children
+        .iter()
+        .filter(|child| matches!(child, SyntaxElement::Node(node) if node.kind == kind))
+        .count()
+}
+
+fn named_argument_label(source: &str, node: &SyntaxNode) -> Option<String> {
+    if node.kind != SyntaxKind::NamedArgument {
+        return None;
+    }
+
+    for child in &node.children {
+        match child {
+            SyntaxElement::Token(token)
+                if token.kind == reforger_language_server::lexer::TokenKind::Colon =>
+            {
+                return None;
+            }
+            SyntaxElement::Token(token) if !token.kind.is_trivia() => {
+                return Some(source[token.span.start..token.span.end].to_string());
+            }
+            SyntaxElement::Node(child) if child.kind == SyntaxKind::NameExpression => {
+                return Some(source[child.span.start..child.span.end].to_string());
+            }
+            SyntaxElement::Node(_) => {}
+            _ => {}
+        }
+    }
+
+    None
+}
+
+fn expected_recovery_node_count(node: &SyntaxNode, source: &str, path: &Path) -> usize {
+    let relative = path.display().to_string().replace('/', "\\");
+    if !relative.ends_with("Game\\game.c") || !source.contains("#ifdef BREAK_COMPILATION") {
+        return 0;
+    }
+
+    count_kind(node, SyntaxKind::Error)
+}
+
+fn count_kind(node: &SyntaxNode, kind: SyntaxKind) -> usize {
+    let own = usize::from(node.kind == kind);
+    own + node
+        .children
+        .iter()
+        .map(|child| match child {
+            SyntaxElement::Node(child) => count_kind(child, kind),
+            SyntaxElement::Token(_) => 0,
+        })
+        .sum::<usize>()
+}
+
+fn snippet_for_span(source: &str, span: TextSpan, context_lines: usize) -> String {
+    let mut line_start_offsets = vec![0usize];
+    for (index, byte) in source.bytes().enumerate() {
+        if byte == b'\n' {
+            line_start_offsets.push(index + 1);
+        }
+    }
+
+    let line_index = line_start_offsets
+        .partition_point(|offset| *offset <= span.start)
+        .saturating_sub(1);
+    let start_line = line_index.saturating_sub(context_lines);
+    let end_line = (line_index + context_lines + 1).min(line_start_offsets.len());
+    let mut lines = Vec::new();
+    for current in start_line..end_line {
+        let start = line_start_offsets[current];
+        let end = line_start_offsets
+            .get(current + 1)
+            .copied()
+            .unwrap_or(source.len());
+        lines.push(source[start..end].trim_end().replace('\t', "\\t"));
+    }
+    lines.join(" / ")
 }
 
 fn is_expression_kind(kind: SyntaxKind) -> bool {
@@ -355,6 +755,10 @@ fn relative_path(root: &Path, path: &Path) -> String {
         .unwrap_or(path)
         .display()
         .to_string()
+}
+
+fn escape_table(value: &str) -> String {
+    value.replace('|', "\\|")
 }
 
 fn timestamp() -> u64 {

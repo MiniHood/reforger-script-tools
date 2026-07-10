@@ -500,9 +500,9 @@ impl Parser<'_> {
                 if self.current().kind.is_trivia() {
                     children.push(self.bump_token());
                 } else if self.at_keyword(Keyword::Case) {
-                    children.push(self.parse_case_clause());
+                    children.push(self.parse_switch_section());
                 } else if self.at_keyword(Keyword::Default) {
-                    children.push(self.parse_default_clause());
+                    children.push(self.parse_switch_section());
                 } else {
                     children.push(self.parse_statement());
                 }
@@ -516,6 +516,33 @@ impl Parser<'_> {
             self.error_here("Expected switch body");
         }
         node(SyntaxKind::SwitchStatement, children)
+    }
+
+    fn parse_switch_section(&mut self) -> SyntaxElement {
+        let mut children = Vec::new();
+
+        while self.at_keyword(Keyword::Case) || self.at_keyword(Keyword::Default) {
+            if self.at_keyword(Keyword::Case) {
+                children.push(self.parse_case_clause());
+            } else {
+                children.push(self.parse_default_clause());
+            }
+            self.collect_trivia(&mut children);
+        }
+
+        while !self.at(TokenKind::RightBrace)
+            && !self.at(TokenKind::Eof)
+            && !self.at_keyword(Keyword::Case)
+            && !self.at_keyword(Keyword::Default)
+        {
+            if self.current().kind.is_trivia() {
+                children.push(self.bump_token());
+            } else {
+                children.push(self.parse_statement());
+            }
+        }
+
+        node(SyntaxKind::SwitchSection, children)
     }
 
     fn parse_case_clause(&mut self) -> SyntaxElement {
@@ -591,34 +618,33 @@ impl Parser<'_> {
     }
 
     fn parse_local_decl_statement(&mut self, mut children: Vec<SyntaxElement>) -> SyntaxElement {
-        while !self.at(TokenKind::Eof)
-            && !matches!(
-                self.current().kind,
-                TokenKind::Semicolon | TokenKind::RightBrace
-            )
-        {
+        self.parse_local_decl_statement_until(
+            &mut children,
+            &[TokenKind::Semicolon, TokenKind::RightBrace],
+        );
+        if self.at(TokenKind::Semicolon) {
+            children.push(self.bump_token());
+        }
+        node(SyntaxKind::LocalDeclStatement, children)
+    }
+
+    fn parse_local_decl_statement_until(
+        &mut self,
+        children: &mut Vec<SyntaxElement>,
+        stop: &[TokenKind],
+    ) {
+        while !self.at(TokenKind::Eof) && !stop.contains(&self.current().kind) {
             if self.current().kind.is_trivia() || self.at(TokenKind::Comma) {
                 children.push(self.bump_token());
             } else if self.at(TokenKind::LeftBrace) {
                 children.push(self.parse_initializer_expression());
             } else if self.at_operator(Operator::Equal) {
                 children.push(self.bump_token());
-                children.push(self.parse_expression_until(
-                    &[
-                        TokenKind::Comma,
-                        TokenKind::Semicolon,
-                        TokenKind::RightBrace,
-                    ],
-                    0,
-                ));
+                children.push(self.parse_expression_until(&local_decl_expression_stops(stop), 0));
             } else {
                 children.push(self.bump_token());
             }
         }
-        if self.at(TokenKind::Semicolon) {
-            children.push(self.bump_token());
-        }
-        node(SyntaxKind::LocalDeclStatement, children)
     }
 
     fn parse_for_header(&mut self) -> SyntaxElement {
@@ -660,20 +686,12 @@ impl Parser<'_> {
     fn parse_for_initializer(&mut self) -> SyntaxElement {
         let mut children = Vec::new();
         if self.looks_like_local_decl_statement_in_for_header() {
-            while !self.at(TokenKind::Eof) && !self.at(TokenKind::Semicolon) {
-                if self.current().kind.is_trivia() || self.at(TokenKind::Comma) {
-                    children.push(self.bump_token());
-                } else if self.at(TokenKind::LeftBrace) {
-                    children.push(self.parse_initializer_expression());
-                } else if self.at_operator(Operator::Equal) {
-                    children.push(self.bump_token());
-                    children.push(
-                        self.parse_expression_until(&[TokenKind::Comma, TokenKind::Semicolon], 0),
-                    );
-                } else {
-                    children.push(self.bump_token());
-                }
-            }
+            let mut declaration_children = Vec::new();
+            self.parse_local_decl_statement_until(
+                &mut declaration_children,
+                &[TokenKind::Semicolon],
+            );
+            children.push(node(SyntaxKind::LocalDeclStatement, declaration_children));
         } else {
             self.parse_for_expression_list(&mut children, &[TokenKind::Semicolon]);
         }
@@ -708,18 +726,17 @@ impl Parser<'_> {
     fn parse_foreach_header(&mut self) -> SyntaxElement {
         let mut children = Vec::new();
         children.push(self.bump_token());
-        while !self.at(TokenKind::RightParen) && !self.at(TokenKind::Eof) {
-            if self.current().kind.is_trivia()
-                || self.at(TokenKind::Comma)
-                || self.at(TokenKind::Colon)
-            {
-                children.push(self.bump_token());
-            } else {
-                children.push(self.parse_expression_until(
-                    &[TokenKind::Comma, TokenKind::Colon, TokenKind::RightParen],
-                    0,
-                ));
-            }
+        if !self.next_non_trivia_is_any(&[TokenKind::Colon, TokenKind::RightParen]) {
+            children.push(self.parse_foreach_variable_list());
+        }
+        self.collect_trivia(&mut children);
+        if self.at(TokenKind::Colon) {
+            children.push(self.bump_token());
+        } else if !self.at(TokenKind::RightParen) && !self.at(TokenKind::Eof) {
+            self.error_here("Expected foreach header colon");
+        }
+        if !self.next_non_trivia_is_any(&[TokenKind::RightParen]) {
+            children.push(self.parse_foreach_iterable());
         }
         self.collect_trivia(&mut children);
         self.expect(
@@ -728,6 +745,39 @@ impl Parser<'_> {
             "Expected foreach header closing paren",
         );
         node(SyntaxKind::ForeachHeader, children)
+    }
+
+    fn parse_foreach_variable_list(&mut self) -> SyntaxElement {
+        let mut children = Vec::new();
+        while !self.at(TokenKind::Colon)
+            && !self.at(TokenKind::RightParen)
+            && !self.at(TokenKind::Eof)
+        {
+            if self.current().kind.is_trivia() || self.at(TokenKind::Comma) {
+                children.push(self.bump_token());
+            } else {
+                children.push(self.parse_foreach_variable());
+            }
+        }
+        node(SyntaxKind::ForeachVariableList, children)
+    }
+
+    fn parse_foreach_variable(&mut self) -> SyntaxElement {
+        let mut children = Vec::new();
+        while !self.at(TokenKind::Comma)
+            && !self.at(TokenKind::Colon)
+            && !self.at(TokenKind::RightParen)
+            && !self.at(TokenKind::Eof)
+        {
+            children.push(self.bump_token());
+        }
+        node(SyntaxKind::ForeachVariable, children)
+    }
+
+    fn parse_foreach_iterable(&mut self) -> SyntaxElement {
+        let mut children = Vec::new();
+        children.push(self.parse_expression_until(&[TokenKind::RightParen], 0));
+        node(SyntaxKind::ForeachIterable, children)
     }
 
     fn parse_parenthesized_expression_node(&mut self, kind: SyntaxKind) -> SyntaxElement {
@@ -1671,6 +1721,12 @@ fn single_or_wrapped_expression(mut children: Vec<SyntaxElement>) -> SyntaxEleme
     }
 }
 
+fn local_decl_expression_stops(stop: &[TokenKind]) -> Vec<TokenKind> {
+    let mut stops = vec![TokenKind::Comma];
+    stops.extend_from_slice(stop);
+    stops
+}
+
 fn children_span(children: &[SyntaxElement]) -> TextSpan {
     let Some(first) = children.first() else {
         return TextSpan::new(0, 0);
@@ -1946,6 +2002,15 @@ ArmaReforgerScripted g_ARGame;
         assert_eq!(count_kind(&parse.root, SyntaxKind::ForInitializer), 1);
         assert_eq!(count_kind(&parse.root, SyntaxKind::ForCondition), 1);
         assert_eq!(count_kind(&parse.root, SyntaxKind::ForIncrement), 1);
+        let for_initializer =
+            first_node(&parse.root, SyntaxKind::ForInitializer).expect("for initializer");
+        assert_eq!(
+            direct_child_node_count(for_initializer, SyntaxKind::LocalDeclStatement),
+            1
+        );
+        assert_eq!(count_kind(&parse.root, SyntaxKind::ForeachVariableList), 1);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::ForeachVariable), 2);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::ForeachIterable), 1);
         assert!(count_kind(&parse.root, SyntaxKind::CallExpression) >= 5);
         assert!(count_kind(&parse.root, SyntaxKind::MemberAccessExpression) >= 4);
         assert!(count_kind(&parse.root, SyntaxKind::IndexExpression) >= 2);
@@ -1961,6 +2026,29 @@ ArmaReforgerScripted g_ARGame;
     }
 
     #[test]
+    fn keeps_expression_form_for_initializer_expression_shaped() {
+        let source = r#"class Example
+{
+	void Run(int count)
+	{
+		for (i = 0; i < count; i++)
+			DoSomething(i);
+	}
+}
+"#;
+
+        let parse = parse_source(source);
+
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
+        let for_initializer =
+            first_node(&parse.root, SyntaxKind::ForInitializer).expect("for initializer");
+        assert_eq!(
+            direct_child_node_count(for_initializer, SyntaxKind::LocalDeclStatement),
+            0
+        );
+    }
+
+    #[test]
     fn parses_switch_single_line_if_and_ternary_shapes() {
         let source = r#"class Example
 {
@@ -1969,6 +2057,7 @@ ArmaReforgerScripted g_ARGame;
 		switch (value)
 		{
 			case 1:
+			case 2:
 			{
 				if (value > 0)
 					return value ? 1 : 2;
@@ -1985,7 +2074,8 @@ ArmaReforgerScripted g_ARGame;
 
         assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
         assert_eq!(count_kind(&parse.root, SyntaxKind::SwitchStatement), 1);
-        assert_eq!(count_kind(&parse.root, SyntaxKind::CaseClause), 1);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::SwitchSection), 2);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::CaseClause), 2);
         assert_eq!(count_kind(&parse.root, SyntaxKind::DefaultClause), 1);
         assert_eq!(count_kind(&parse.root, SyntaxKind::IfStatement), 1);
         assert_eq!(count_kind(&parse.root, SyntaxKind::TernaryExpression), 1);

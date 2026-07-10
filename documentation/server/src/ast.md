@@ -16,7 +16,9 @@ Static-array field declarations keep the field identifier before the array suffi
 
 Comma-separated field declarations expose `FieldDeclarator` views from one parser `FieldDecl`. For example, `Widget a, b, c;` exposes three declarators with shared type text `Widget` and local declarator spans. The parser node remains full-fidelity and unchanged; AST is responsible for splitting the field-list view for model/index consumers.
 
-Method/function body blocks expose a narrow `LocalVariable` view for local declarations, `foreach` variables, and `for` initializer declarations. Local discovery is syntax-backed: AST walks parsed `LocalDeclStatement`, `ForInitializer`, and `ForeachHeader` nodes, then uses token-slice declarator helpers only inside those selected syntax nodes. It preserves names, source spans, raw type text, default text, and local modifiers without semantic scope resolution. Static-array locals with brace initializer defaults, such as `vector value[4] = {...};`, keep the array-suffixed local span and expose the complete brace initializer default text, including nested initializer lists. It is intended for hover and later local completion groundwork, not semantic scope resolution.
+Method/function body blocks expose a narrow `LocalVariable` view for local declarations, `foreach` variables, and `for` initializer declarations. Local discovery is syntax-backed: AST walks parsed `LocalDeclStatement` nodes, nested `LocalDeclStatement` nodes under `ForInitializer`, and `ForeachVariable` nodes under `ForeachVariableList`. It then uses token-slice declarator helpers only inside those selected syntax nodes. It preserves names, source spans, raw type text, default text, and local modifiers without semantic scope resolution. Static-array locals with brace initializer defaults, such as `vector value[4] = {...};`, keep the array-suffixed local span and expose the complete brace initializer default text, including nested initializer lists. It is intended for hover and later local completion groundwork, not semantic scope resolution.
+
+Expression syntax exposes lightweight `Expression` views for names, literals, calls, member access, indexing, casts, `new`, unary/binary/assignment/ternary expressions, initializer expressions, parenthesized expressions, and unknown expression nodes. These wrappers are source-backed views over parser syntax; they do not evaluate expressions. AST also provides lookup helpers for the smallest expression at a byte offset, member-access context for a hovered member name, and named-argument labels. Resolver member access consumes these wrappers as the single expression-understanding path instead of reconstructing receiver text from raw token spans.
 
 ## Dependencies and Boundaries
 
@@ -42,11 +44,11 @@ This file depends only on lexer span/token types and parser syntax types. It mus
 - Added local/block symbol extraction for local variables, `foreach` variables, and `for` initializer declarations.
 - Fixed local default extraction for static-array locals with brace initializer lists so hover/display details do not truncate the closing initializer braces.
 - Moved local discovery from broad block token scanning to parsed statement/header syntax nodes.
+- Added typed expression wrapper views and offset/member/named-argument lookup helpers for resolver and hover use.
 
 ## Future Improvements
 
-- Add richer typed wrappers as parser coverage expands into statements and expressions.
-- Add real statement/expression AST and lexical scope modeling in separate verified slices.
+- Add lexical scope modeling in a separate verified slice.
 - Add a normalized type-shape API separately; current parameter and field type text remains source-faithful.
 - Add a semantic model layer separately when declaration extraction is stable.
 - Add workspace indexing separately; AST wrappers should remain file-local.

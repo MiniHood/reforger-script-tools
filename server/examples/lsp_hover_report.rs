@@ -260,6 +260,11 @@ fn run() -> Result<(), String> {
                 .as_ref()
                 .and_then(|receiver| receiver.owner_type.clone())
                 .unwrap_or_else(|| "<none>".to_string()),
+            receiver_expression_kind: report
+                .receiver_resolution
+                .as_ref()
+                .map(|receiver| receiver.receiver_expression_kind.clone())
+                .unwrap_or_else(|| "<none>".to_string()),
             receiver_failure: report
                 .receiver_resolution
                 .as_ref()
@@ -319,16 +324,16 @@ fn run() -> Result<(), String> {
     writeln!(markdown).unwrap();
     writeln!(markdown, "This report exercises the same resolver-first hover path used by `textDocument/hover`, with game-data supplied as optional external index context. It is review tooling only; it does not perform semantic lookup or Workbench validation.").unwrap();
     writeln!(markdown).unwrap();
-    writeln!(markdown, "| File | Target | Position | Hit | Selection | Selected source | Resolver reason | Identifier context | Receiver owner | Receiver failure | Resolver candidates | Selected | Parse diagnostics | Elapsed ms | Hover preview |").unwrap();
+    writeln!(markdown, "| File | Target | Position | Hit | Selection | Selected source | Resolver reason | Identifier context | Receiver owner | Receiver expression | Receiver failure | Resolver candidates | Selected | Parse diagnostics | Elapsed ms | Hover preview |").unwrap();
     writeln!(
         markdown,
-        "| --- | --- | ---: | --- | --- | --- | --- | --- | --- | --- | ---: | --- | ---: | ---: | --- |"
+        "| --- | --- | ---: | --- | --- | --- | --- | --- | --- | --- | --- | ---: | --- | ---: | ---: | --- |"
     )
     .unwrap();
     for row in &rows {
         writeln!(
             markdown,
-            "| `{}` | {} | {}:{} | {} | `{}` | `{}` | `{}` | `{}` | `{}` | `{}` | {} | {} `{}` | {} | {} | {} |",
+            "| `{}` | {} | {}:{} | {} | `{}` | `{}` | `{}` | `{}` | `{}` | `{}` | `{}` | {} | {} `{}` | {} | {} | {} |",
             row.file,
             escape_markdown_cell(&row.target),
             row.line,
@@ -339,6 +344,7 @@ fn run() -> Result<(), String> {
             row.resolver_reason,
             row.identifier_context,
             escape_markdown_cell(&row.receiver_owner),
+            row.receiver_expression_kind,
             escape_markdown_cell(&row.receiver_failure),
             row.resolver_candidate_count,
             row.selected_kind,
@@ -497,6 +503,7 @@ struct HoverRow {
     resolver_reason: String,
     identifier_context: String,
     receiver_owner: String,
+    receiver_expression_kind: String,
     receiver_failure: String,
     resolver_candidate_count: usize,
     elapsed_ms: u128,

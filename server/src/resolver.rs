@@ -1,14 +1,21 @@
+use crate::ast::{
+    member_access_for_member_name_at_offset, named_argument_label_at_offset, Expression,
+};
 use crate::index::{GlobalSymbolId, IndexedFile, IndexedSymbol, SymbolIndex};
-use crate::lexer::{lex, Keyword, Operator, TextSpan, Token, TokenKind};
+use crate::lexer::{lex, TextSpan, TokenKind};
 use crate::model::{SourceCategory, SourceKind, SymbolKind};
+use crate::parser::parse_source;
+use crate::syntax::Parse;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct ReferenceResolver<'source, 'index> {
     source: &'source str,
     file_index: &'index SymbolIndex,
     external_index: Option<&'index SymbolIndex>,
+    parse: Option<&'index Parse>,
+    owned_parse: Option<Parse>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,6 +62,7 @@ pub struct ReferenceCandidate {
 pub struct ReceiverResolution {
     pub receiver_text: String,
     pub receiver_span: TextSpan,
+    pub receiver_expression_kind: String,
     pub owner_type: Option<String>,
     pub is_static: bool,
     pub lookup_path: Vec<String>,
@@ -133,7 +141,7 @@ impl IdentifierContext {
 }
 
 impl<'source, 'index> ReferenceResolver<'source, 'index> {
-    pub const fn new(
+    pub fn new(
         source: &'source str,
         file_index: &'index SymbolIndex,
         external_index: Option<&'index SymbolIndex>,
@@ -142,6 +150,23 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
             source,
             file_index,
             external_index,
+            parse: None,
+            owned_parse: Some(parse_source(source)),
+        }
+    }
+
+    pub const fn new_with_parse(
+        source: &'source str,
+        file_index: &'index SymbolIndex,
+        parse: &'index Parse,
+        external_index: Option<&'index SymbolIndex>,
+    ) -> Self {
+        Self {
+            source,
+            file_index,
+            external_index,
+            parse: Some(parse),
+            owned_parse: None,
         }
     }
 
@@ -152,6 +177,17 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
         }
 
         let token_text = self.source[token.span.start..token.span.end].to_string();
+        if named_argument_label_at_offset(self.source, &self.parse().root, token.span).is_some() {
+            return Some(ReferenceResolution {
+                token_text,
+                token_span: token.span,
+                identifier_context: IdentifierContext::ValueOrCallable,
+                candidates: Vec::new(),
+                selected: None,
+                reason: ResolutionReason::Unresolved,
+                receiver: None,
+            });
+        }
         let member_access = self.member_access_context(token.span);
         let identifier_context = if member_access.is_some() {
             IdentifierContext::MemberAccess
@@ -216,6 +252,12 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
             reason,
             receiver,
         })
+    }
+
+    fn parse(&self) -> &Parse {
+        self.parse
+            .or(self.owned_parse.as_ref())
+            .expect("resolver should always have parse context")
     }
 
     pub fn resolve_hover_at_offset(&self, offset: usize) -> Option<HoverResolution> {
@@ -526,23 +568,20 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
 
     fn push_receiver_member_candidates(
         &self,
-        member_access: &MemberAccessContext,
+        member_access: &MemberAccessContext<'source, '_>,
         member_name: &str,
         offset: usize,
         candidates: &mut Vec<ReferenceCandidate>,
         seen: &mut BTreeSet<CandidateKey>,
     ) -> ReceiverResolution {
         let mut lookup_path = Vec::new();
-        let inferred = self.infer_receiver_expression_type(
-            &member_access.receiver_text,
-            member_access.receiver_span,
-            offset,
-            &mut lookup_path,
-        );
+        let inferred =
+            self.infer_receiver_expression_type(member_access.receiver, offset, &mut lookup_path);
         let Some(inferred) = inferred else {
             return ReceiverResolution {
-                receiver_text: member_access.receiver_text.clone(),
+                receiver_text: member_access.receiver.source_text().trim().to_string(),
                 receiver_span: member_access.receiver_span,
+                receiver_expression_kind: format!("{:?}", member_access.receiver.kind()),
                 owner_type: None,
                 is_static: false,
                 lookup_path,
@@ -584,8 +623,9 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
         }
 
         ReceiverResolution {
-            receiver_text: member_access.receiver_text.clone(),
+            receiver_text: member_access.receiver.source_text().trim().to_string(),
             receiver_span: member_access.receiver_span,
+            receiver_expression_kind: format!("{:?}", member_access.receiver.kind()),
             owner_type: Some(inferred.owner_type),
             is_static: inferred.is_static,
             lookup_path,
@@ -736,110 +776,117 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
 
     fn infer_receiver_expression_type(
         &self,
-        expression: &str,
-        expression_span: TextSpan,
+        expression: Expression<'source, '_>,
         offset: usize,
         lookup_path: &mut Vec<String>,
     ) -> Option<InferredReceiverType> {
-        let expression = trim_expression(expression);
-        if expression.is_empty() {
-            return None;
-        }
+        match expression {
+            Expression::Call(node) => {
+                let callee = node.callee()?;
+                if let Some(member_access) = member_access_parts(callee) {
+                    let receiver_type = self.infer_receiver_expression_type(
+                        member_access.receiver,
+                        offset,
+                        lookup_path,
+                    )?;
+                    let member = member_access.member_name.text();
+                    let callee_text = callee.source_text().trim();
+                    if member == "Cast" && receiver_type.is_static {
+                        lookup_path.push(format!(
+                            "`{callee_text}` treated as cast returning `{}`",
+                            receiver_type.owner_type
+                        ));
+                        return Some(InferredReceiverType::instance(receiver_type.owner_type));
+                    }
+                    lookup_path.push(format!(
+                        "`{callee_text}` call receiver inferred as `{}`",
+                        receiver_type.owner_type
+                    ));
+                    return self.member_result_type(
+                        &receiver_type.owner_type,
+                        member,
+                        receiver_type.is_static,
+                        lookup_path,
+                    );
+                }
 
-        if let Some((callee, _arguments)) = split_call_expression(expression) {
-            let callee = trim_expression(callee);
-            if let Some((receiver, member)) = split_last_member_access(callee) {
+                let callee_name = callee.name_text()?.text();
+                lookup_path.push(format!("call `{callee_name}`"));
+                self.callable_result_type(callee_name, offset, lookup_path)
+            }
+            Expression::Index(node) => {
+                let base = node.receiver()?;
+                let base_type = self.infer_receiver_expression_type(base, offset, lookup_path)?;
+                if let Some(raw_type_text) = base_type.raw_type_text.as_deref() {
+                    if let Some(element_type) = collection_index_result_type(raw_type_text) {
+                        lookup_path.push(format!(
+                            "`{}` indexed receiver inferred as `{}`",
+                            expression.source_text().trim(),
+                            element_type.owner_type
+                        ));
+                        return Some(element_type);
+                    }
+                }
+                lookup_path.push(format!(
+                    "`{}` indexed receiver base inferred as `{}` without element type",
+                    expression.source_text().trim(),
+                    base_type.owner_type
+                ));
+                None
+            }
+            Expression::MemberAccess(_) => {
+                let member_access = member_access_parts(expression)?;
                 let receiver_type = self.infer_receiver_expression_type(
-                    receiver,
-                    expression_span,
+                    member_access.receiver,
                     offset,
                     lookup_path,
                 )?;
-                if member == "Cast" && receiver_type.is_static {
-                    lookup_path.push(format!(
-                        "`{callee}` treated as cast returning `{}`",
-                        receiver_type.owner_type
-                    ));
-                    return Some(InferredReceiverType::instance(receiver_type.owner_type));
-                }
+                let member = member_access.member_name.text();
                 lookup_path.push(format!(
-                    "`{callee}` call receiver inferred as `{}`",
+                    "`{}` member receiver inferred as `{}`",
+                    expression.source_text().trim(),
                     receiver_type.owner_type
                 ));
-                return self.member_result_type(
+                self.member_result_type(
                     &receiver_type.owner_type,
                     member,
                     receiver_type.is_static,
                     lookup_path,
-                );
+                )
             }
-
-            lookup_path.push(format!("call `{callee}`"));
-            return self.callable_result_type(callee, offset, lookup_path);
-        }
-
-        if let Some((base, _index)) = split_index_expression(expression) {
-            let base_type =
-                self.infer_receiver_expression_type(base, expression_span, offset, lookup_path)?;
-            if let Some(raw_type_text) = base_type.raw_type_text.as_deref() {
-                if let Some(element_type) = collection_index_result_type(raw_type_text) {
-                    lookup_path.push(format!(
-                        "`{expression}` indexed receiver inferred as `{}`",
-                        element_type.owner_type
-                    ));
-                    return Some(element_type);
+            Expression::Parenthesized(node) | Expression::Unknown(node) => {
+                first_expression_child(self.source, node.syntax_node()).and_then(|child| {
+                    self.infer_receiver_expression_type(child, offset, lookup_path)
+                })
+            }
+            _ => {
+                let name = expression.name_text()?.text();
+                if name == "this" {
+                    let class_name = self
+                        .containing_class(offset)
+                        .and_then(|id| self.file_index.symbol(id))
+                        .and_then(|symbol| symbol.name.clone());
+                    if let Some(class_name) = class_name {
+                        lookup_path.push(format!("`this` inferred as `{class_name}`"));
+                        return Some(InferredReceiverType::instance(class_name));
+                    }
                 }
-            }
-            lookup_path.push(format!(
-                "`{expression}` indexed receiver base inferred as `{}` without element type",
-                base_type.owner_type
-            ));
-            return None;
-        }
 
-        if let Some((receiver, member)) = split_last_member_access(expression) {
-            let receiver_type = self.infer_receiver_expression_type(
-                receiver,
-                expression_span,
-                offset,
-                lookup_path,
-            )?;
-            lookup_path.push(format!(
-                "`{expression}` member receiver inferred as `{}`",
-                receiver_type.owner_type
-            ));
-            return self.member_result_type(
-                &receiver_type.owner_type,
-                member,
-                receiver_type.is_static,
-                lookup_path,
-            );
-        }
+                if name == "super" {
+                    let base_type = self
+                        .containing_class(offset)
+                        .and_then(|id| self.file_index.symbol(id))
+                        .and_then(|symbol| symbol.detail.base_type.as_deref())
+                        .and_then(owner_type_from_type_text);
+                    if let Some(base_type) = base_type {
+                        lookup_path.push(format!("`super` inferred as base `{base_type}`"));
+                        return Some(InferredReceiverType::instance(base_type));
+                    }
+                }
 
-        if expression == "this" {
-            let class_name = self
-                .containing_class(offset)
-                .and_then(|id| self.file_index.symbol(id))
-                .and_then(|symbol| symbol.name.clone());
-            if let Some(class_name) = class_name {
-                lookup_path.push(format!("`this` inferred as `{class_name}`"));
-                return Some(InferredReceiverType::instance(class_name));
+                self.identifier_result_type(name, offset, lookup_path)
             }
         }
-
-        if expression == "super" {
-            let base_type = self
-                .containing_class(offset)
-                .and_then(|id| self.file_index.symbol(id))
-                .and_then(|symbol| symbol.detail.base_type.as_deref())
-                .and_then(owner_type_from_type_text);
-            if let Some(base_type) = base_type {
-                lookup_path.push(format!("`super` inferred as base `{base_type}`"));
-                return Some(InferredReceiverType::instance(base_type));
-            }
-        }
-
-        self.identifier_result_type(expression, offset, lookup_path)
     }
 
     fn identifier_result_type(
@@ -1054,20 +1101,15 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
         None
     }
 
-    fn member_access_context(&self, token_span: TextSpan) -> Option<MemberAccessContext> {
-        let tokens = syntax_tokens(self.source);
-        let token_index = tokens.iter().position(|token| token.span == token_span)?;
-        if token_index < 2 || tokens[token_index - 1].kind != TokenKind::Dot {
-            return None;
-        }
-
-        let receiver_span = receiver_span_before_dot(&tokens, token_index - 1)?;
-        let receiver_text = self.source[receiver_span.start..receiver_span.end]
-            .trim()
-            .to_string();
-        (!receiver_text.is_empty()).then_some(MemberAccessContext {
-            receiver_text,
-            receiver_span,
+    fn member_access_context(
+        &self,
+        token_span: TextSpan,
+    ) -> Option<MemberAccessContext<'source, '_>> {
+        let member_access =
+            member_access_for_member_name_at_offset(self.source, &self.parse().root, token_span)?;
+        Some(MemberAccessContext {
+            receiver: member_access.receiver,
+            receiver_span: member_access.receiver.span(),
         })
     }
 
@@ -1101,9 +1143,9 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct MemberAccessContext {
-    receiver_text: String,
+#[derive(Debug, Clone)]
+struct MemberAccessContext<'source, 'tree> {
+    receiver: Expression<'source, 'tree>,
     receiver_span: TextSpan,
 }
 
@@ -1247,205 +1289,31 @@ fn token_at_offset(source: &str, offset: usize) -> Option<crate::lexer::Token> {
         .find(|token| token.span.start <= offset && offset < token.span.end)
 }
 
-fn syntax_tokens(source: &str) -> Vec<Token> {
-    lex(source)
-        .into_iter()
-        .filter(|token| !token.kind.is_trivia() && token.kind != TokenKind::Eof)
-        .collect()
-}
-
-fn receiver_span_before_dot(tokens: &[Token], dot_index: usize) -> Option<TextSpan> {
-    if dot_index == 0 {
-        return None;
-    }
-
-    let mut start = tokens[dot_index - 1].span.start;
-    let end = tokens[dot_index].span.start;
-    let mut index = dot_index;
-    let mut paren_depth = 0usize;
-    let mut bracket_depth = 0usize;
-
-    while index > 0 {
-        let token = tokens[index - 1];
-        if paren_depth == 0
-            && bracket_depth == 0
-            && index < dot_index
-            && tokens[index].span.start > token.span.end
-        {
-            break;
+fn member_access_parts<'source, 'tree>(
+    expression: Expression<'source, 'tree>,
+) -> Option<crate::ast::MemberAccessExpression<'source, 'tree>> {
+    match expression {
+        Expression::MemberAccess(_) => {
+            let receiver = expression.receiver()?;
+            let member_name = expression.member_name()?;
+            Some(crate::ast::MemberAccessExpression {
+                expression,
+                receiver,
+                member_name,
+            })
         }
-
-        match token.kind {
-            TokenKind::RightParen => paren_depth += 1,
-            TokenKind::LeftParen => {
-                if paren_depth == 0 {
-                    break;
-                }
-                paren_depth -= 1;
-            }
-            TokenKind::RightBracket => bracket_depth += 1,
-            TokenKind::LeftBracket => {
-                if bracket_depth == 0 {
-                    break;
-                }
-                bracket_depth -= 1;
-            }
-            _ => {}
-        }
-
-        if paren_depth == 0 && bracket_depth == 0 && is_receiver_boundary(token.kind) {
-            break;
-        }
-
-        start = token.span.start;
-        index -= 1;
+        _ => None,
     }
-
-    (start < end).then_some(TextSpan::new(start, end))
 }
 
-fn is_receiver_boundary(kind: TokenKind) -> bool {
-    matches!(
-        kind,
-        TokenKind::Semicolon
-            | TokenKind::Comma
-            | TokenKind::LeftBrace
-            | TokenKind::RightBrace
-            | TokenKind::Colon
-            | TokenKind::Question
-            | TokenKind::Hash
-            | TokenKind::Keyword(Keyword::If)
-            | TokenKind::Keyword(Keyword::Else)
-            | TokenKind::Keyword(Keyword::For)
-            | TokenKind::Keyword(Keyword::Foreach)
-            | TokenKind::Keyword(Keyword::While)
-            | TokenKind::Keyword(Keyword::Do)
-            | TokenKind::Keyword(Keyword::Switch)
-            | TokenKind::Keyword(Keyword::Case)
-            | TokenKind::Keyword(Keyword::Return)
-            | TokenKind::Keyword(Keyword::New)
-            | TokenKind::Operator(Operator::Equal)
-            | TokenKind::Operator(Operator::Bang)
-            | TokenKind::Operator(Operator::Plus)
-            | TokenKind::Operator(Operator::Minus)
-            | TokenKind::Operator(Operator::Star)
-            | TokenKind::Operator(Operator::Slash)
-            | TokenKind::Operator(Operator::Percent)
-            | TokenKind::Operator(Operator::EqualEqual)
-            | TokenKind::Operator(Operator::BangEqual)
-            | TokenKind::Operator(Operator::Less)
-            | TokenKind::Operator(Operator::LessEqual)
-            | TokenKind::Operator(Operator::LessLess)
-            | TokenKind::Operator(Operator::LessLessEqual)
-            | TokenKind::Operator(Operator::Greater)
-            | TokenKind::Operator(Operator::GreaterEqual)
-            | TokenKind::Operator(Operator::GreaterGreater)
-            | TokenKind::Operator(Operator::GreaterGreaterEqual)
-            | TokenKind::Operator(Operator::Ampersand)
-            | TokenKind::Operator(Operator::AmpersandAmpersand)
-            | TokenKind::Operator(Operator::Pipe)
-            | TokenKind::Operator(Operator::PipePipe)
-            | TokenKind::Operator(Operator::Caret)
-            | TokenKind::Operator(Operator::PlusEqual)
-            | TokenKind::Operator(Operator::MinusEqual)
-            | TokenKind::Operator(Operator::StarEqual)
-            | TokenKind::Operator(Operator::SlashEqual)
-            | TokenKind::Operator(Operator::PercentEqual)
-            | TokenKind::Operator(Operator::PipeEqual)
-            | TokenKind::Operator(Operator::AmpersandEqual)
-            | TokenKind::Operator(Operator::CaretEqual)
-    )
-}
-
-fn trim_expression(expression: &str) -> &str {
-    expression.trim()
-}
-
-fn split_call_expression(expression: &str) -> Option<(&str, &str)> {
-    let expression = expression.trim();
-    if !expression.ends_with(')') {
-        return None;
-    }
-
-    let mut depth = 0usize;
-    for (index, ch) in expression.char_indices().rev() {
-        match ch {
-            ')' => depth += 1,
-            '(' => {
-                depth = depth.saturating_sub(1);
-                if depth == 0 {
-                    let callee = expression[..index].trim();
-                    let args = expression[index + 1..expression.len() - 1].trim();
-                    return (!callee.is_empty()).then_some((callee, args));
-                }
-            }
-            _ => {}
-        }
-    }
-
-    None
-}
-
-fn split_last_member_access(expression: &str) -> Option<(&str, &str)> {
-    let expression = expression.trim();
-    let mut paren_depth = 0usize;
-    let mut bracket_depth = 0usize;
-    let mut angle_depth = 0usize;
-
-    for (index, ch) in expression.char_indices().rev() {
-        match ch {
-            ')' => paren_depth += 1,
-            '(' => paren_depth = paren_depth.saturating_sub(1),
-            ']' => bracket_depth += 1,
-            '[' => bracket_depth = bracket_depth.saturating_sub(1),
-            '>' => angle_depth += 1,
-            '<' => angle_depth = angle_depth.saturating_sub(1),
-            '.' if paren_depth == 0 && bracket_depth == 0 && angle_depth == 0 => {
-                let receiver = expression[..index].trim();
-                let member = expression[index + 1..].trim();
-                if !receiver.is_empty() && is_identifier_text(member) {
-                    return Some((receiver, member));
-                }
-            }
-            _ => {}
-        }
-    }
-
-    None
-}
-
-fn split_index_expression(expression: &str) -> Option<(&str, &str)> {
-    let expression = expression.trim();
-    if !expression.ends_with(']') {
-        return None;
-    }
-
-    let mut bracket_depth = 0usize;
-    for (index, ch) in expression.char_indices().rev() {
-        match ch {
-            ']' => bracket_depth += 1,
-            '[' => {
-                bracket_depth = bracket_depth.saturating_sub(1);
-                if bracket_depth == 0 {
-                    let base = expression[..index].trim();
-                    let index_text = expression[index + 1..expression.len() - 1].trim();
-                    return (!base.is_empty()).then_some((base, index_text));
-                }
-            }
-            _ => {}
-        }
-    }
-
-    None
-}
-
-fn is_identifier_text(text: &str) -> bool {
-    let mut chars = text.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    (first == '_' || first.is_ascii_alphabetic())
-        && chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+fn first_expression_child<'source, 'tree>(
+    source: &'source str,
+    node: &'tree crate::syntax::SyntaxNode,
+) -> Option<Expression<'source, 'tree>> {
+    node.children.iter().find_map(|child| match child {
+        crate::syntax::SyntaxElement::Node(node) => Expression::from_node(source, node),
+        crate::syntax::SyntaxElement::Token(_) => None,
+    })
 }
 
 fn collection_index_result_type(type_text: &str) -> Option<InferredReceiverType> {
@@ -3113,6 +2981,41 @@ class Example
         assert_no_resolution(&index, source, "// comment value", "value");
         assert_no_resolution(&index, source, "\"value\"", "value");
         assert_no_resolution(&index, source, "(true)", "(");
+    }
+
+    #[test]
+    fn named_argument_labels_are_not_resolved_as_symbols() {
+        let source = r#"class LogLevel
+{
+	static LogLevel WARNING;
+}
+
+void Print(string text, LogLevel level);
+
+class Example
+{
+	void Run()
+	{
+		Print("hello", level: LogLevel.WARNING);
+		PrintFormat("Invalid resource path for autotest config: %1", path, level: LogLevel.WARNING);
+	}
+}
+"#;
+        let index = index_for_source(source, workspace_metadata("Example.c"));
+
+        let label = resolve_at_needle(&index, source, "level: LogLevel", "level");
+        assert_eq!(label.reason, ResolutionReason::Unresolved);
+        assert_eq!(label.selected, None);
+        assert!(label.candidates.is_empty());
+
+        let nested_label = resolve_at_needle(&index, source, "path, level: LogLevel", "level");
+        assert_eq!(nested_label.reason, ResolutionReason::Unresolved);
+        assert_eq!(nested_label.selected, None);
+        assert!(nested_label.candidates.is_empty());
+
+        let value = resolve_at_needle(&index, source, "level: LogLevel", "LogLevel");
+        assert_eq!(value.reason, ResolutionReason::TopLevel);
+        assert_eq!(value.selected.as_ref().unwrap().kind, SymbolKind::Class);
     }
 
     #[test]
