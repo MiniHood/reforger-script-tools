@@ -6,7 +6,7 @@ use serde_json::Value;
 use std::fs;
 use std::io::{BufReader, BufWriter};
 use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 const CACHE_FORMAT_VERSION: u32 = 1;
 const CACHE_SCHEMA: &str = "reforger-symbol-index";
@@ -24,6 +24,17 @@ pub struct GameDataIndexCacheResult {
     pub summary: RuntimeIndexSummary,
     pub cache_status: IndexCacheStatus,
     pub fingerprint: SourceFingerprint,
+    pub timings: IndexCacheTimings,
+    pub cache_file_bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct IndexCacheTimings {
+    pub fingerprint: Duration,
+    pub cache_read_deserialize_validate: Duration,
+    pub rebuild: Duration,
+    pub cache_write: Duration,
+    pub total: Duration,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -118,6 +129,8 @@ impl From<CachedIndexSummary> for RuntimeIndexSummary {
 pub fn load_or_build_game_data_index(
     config: &GameDataIndexCacheConfig,
 ) -> Result<GameDataIndexCacheResult, String> {
+    let total_start = Instant::now();
+    let mut timings = IndexCacheTimings::default();
     if !config.scripts_root.is_dir() {
         return Err(format!(
             "Game-data scripts folder does not exist: {}",
@@ -125,22 +138,32 @@ pub fn load_or_build_game_data_index(
         ));
     }
 
+    let fingerprint_start = Instant::now();
     let fingerprint = source_fingerprint(&config.scripts_root, config.metadata_path.as_deref())?;
+    timings.fingerprint = fingerprint_start.elapsed();
+    let initial_cache_file_bytes = cache_file_bytes(&config.cache_path);
 
+    let cache_read_start = Instant::now();
     match load_cached_index(&config.cache_path, &fingerprint) {
         Ok(Some(cached)) => {
+            timings.cache_read_deserialize_validate = cache_read_start.elapsed();
+            timings.total = total_start.elapsed();
             return Ok(GameDataIndexCacheResult {
                 index: cached.index,
                 summary: cached.summary.into(),
                 cache_status: IndexCacheStatus::Loaded,
                 fingerprint,
+                timings,
+                cache_file_bytes: initial_cache_file_bytes,
             });
         }
-        Ok(None) => {}
-        Err(_) => {}
+        Ok(None) | Err(_) => {
+            timings.cache_read_deserialize_validate = cache_read_start.elapsed();
+        }
     }
 
     let rebuild_reason = cache_rebuild_reason(&config.cache_path, &fingerprint);
+    let rebuild_start = Instant::now();
     let built = build_index(&IndexBuildConfig {
         roots: vec![IndexSourceRoot::new(
             &config.scripts_root,
@@ -148,8 +171,14 @@ pub fn load_or_build_game_data_index(
             SOURCE_PRIORITY_GAME_DATA,
         )],
     })?;
+    timings.rebuild = rebuild_start.elapsed();
     let summary = summary_from_build(&built);
+
+    let cache_write_start = Instant::now();
     write_cached_index(&config.cache_path, &fingerprint, &summary, &built.index)?;
+    timings.cache_write = cache_write_start.elapsed();
+    timings.total = total_start.elapsed();
+    let cache_file_bytes = cache_file_bytes(&config.cache_path);
 
     Ok(GameDataIndexCacheResult {
         index: built.index,
@@ -158,7 +187,13 @@ pub fn load_or_build_game_data_index(
             reason: rebuild_reason,
         },
         fingerprint,
+        timings,
+        cache_file_bytes,
     })
+}
+
+fn cache_file_bytes(cache_path: &Path) -> Option<u64> {
+    cache_path.metadata().ok().map(|metadata| metadata.len())
 }
 
 fn load_cached_index(
@@ -425,6 +460,9 @@ mod tests {
             second.index.methods_by_owner_name("Example", "Run").len(),
             1
         );
+        assert!(second.timings.cache_read_deserialize_validate > std::time::Duration::ZERO);
+        assert!(second.timings.total > std::time::Duration::ZERO);
+        assert!(second.cache_file_bytes.unwrap_or_default() > 0);
 
         cleanup(&root);
     }
@@ -481,6 +519,9 @@ mod tests {
             IndexCacheStatus::Rebuilt { .. }
         ));
         assert_eq!(result.index.classes_by_name("Example").len(), 1);
+        assert!(result.timings.rebuild > std::time::Duration::ZERO);
+        assert!(result.timings.cache_write > std::time::Duration::ZERO);
+        assert!(result.timings.total > std::time::Duration::ZERO);
 
         cleanup(&root);
     }

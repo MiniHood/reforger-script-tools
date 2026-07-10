@@ -28,6 +28,8 @@ The builder is source-root explicit. VS Code workspace discovery and game-data s
 
 Runtime cache loading and invalidation belong in `server/src/index_cache.rs`. This builder remains the source-to-index construction path used when a cache is missing, stale, corrupt, or incompatible.
 
+`server/examples/index_cache_baseline.rs` compares this direct build path against JSON cache load and cache miss rebuild/write. Use that report before changing cache strategy.
+
 ## Change Notes
 
 - Added the shared index-building pipeline for corpus report, overlay report, and index debug tooling.
@@ -38,6 +40,7 @@ Runtime cache loading and invalidation belong in `server/src/index_cache.rs`. Th
 - Added source-category assignment from source-root relative paths so editor-facing queries can include runtime/workspace sources while raw debug keeps docs/tests/Workbench sources visible.
 - Split build timings into read/decode, parse, AST/model catalog, and index aggregation phases while preserving the older aggregate catalog timing for compatibility.
 - Used by the runtime index cache to rebuild disposable game-data indexes when cache validation fails.
+- Cross-linked the cache baseline report so direct rebuild timing stays comparable to cache-hit timing.
 
 ## Future Improvements
 

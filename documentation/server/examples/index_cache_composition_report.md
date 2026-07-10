@@ -1,0 +1,29 @@
+# server/examples/index_cache_composition_report.rs
+
+## Purpose
+
+Explains what the disposable game-data index cache contains and how much of it is likely needed for editor hover/completion.
+
+## Architecture Role
+
+This is dev-only review tooling. It loads the current game-data index through `server/src/index_cache.rs`, inspects public `SymbolIndex` data, and writes a Markdown report under `tools/reports/`.
+
+## Current Behavior
+
+The report summarizes cache status, source-category composition, symbol-kind composition, presentation metadata counts, and editor-runtime versus debug/review-only slices. It also writes temporary JSON measurement snapshots outside tracked source paths and deletes them immediately. These snapshots are size probes only and are not reusable cache files.
+
+Editor-runtime classification uses `SourceCategory::is_editor_completion_default()`. Runtime categories are compared against docs/Doxygen, test/autotest, Workbench, and unknown categories so cache-format decisions can be made from actual index data.
+
+## Dependencies and Boundaries
+
+Depends on `index_cache`, `SymbolIndex`, `SourceCategory`, and serde JSON serialization for temporary measurement snapshots. It must not change cache format, cache invalidation, runtime language-server behavior, index semantics, source-category policy, or LSP behavior.
+
+## Change Notes
+
+- Added after the cache baseline showed JSON cache hits are faster than rebuilds but the cache is large.
+- The report is intended to decide whether a later split or filtered runtime cache is worth designing.
+
+## Future Improvements
+
+- Use this report before designing any binary cache or split runtime/debug cache.
+- Add additional slices only after hover/completion/definition clarify which facts are truly needed at startup.

@@ -139,10 +139,66 @@ impl LspHoverReport {
 
 struct LspServer<W: Write> {
     writer: W,
-    documents: BTreeMap<String, String>,
-    log_path: Option<PathBuf>,
+    documents: BTreeMap<String, OpenDocument>,
+    logger: LspLogger,
     external_index: ExternalIndexHandle,
     shutdown_requested: bool,
+}
+
+struct OpenDocument {
+    text: String,
+    version: Option<i32>,
+    revision: u64,
+    analysis: FileIndexAnalysis,
+}
+
+impl OpenDocument {
+    fn new(text: String, version: Option<i32>, revision: u64) -> Self {
+        let analysis = file_index_for_source(&text);
+        Self {
+            text,
+            version,
+            revision,
+            analysis,
+        }
+    }
+
+    fn replace(&mut self, text: String, version: Option<i32>) {
+        self.text = text;
+        self.version = version;
+        self.revision += 1;
+        self.analysis = file_index_for_source(&self.text);
+    }
+}
+
+#[derive(Clone)]
+struct LspLogger {
+    path: Option<PathBuf>,
+    lock: Arc<Mutex<()>>,
+}
+
+impl LspLogger {
+    fn new(path: Option<PathBuf>) -> Self {
+        Self {
+            path,
+            lock: Arc::new(Mutex::new(())),
+        }
+    }
+
+    fn log(&self, message: &str) {
+        let Some(log_path) = self.path.as_ref() else {
+            return;
+        };
+        let Ok(_guard) = self.lock.lock() else {
+            return;
+        };
+        if let Some(parent) = log_path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(log_path) {
+            let _ = writeln!(file, "[{}] {message}", timestamp_millis());
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -225,7 +281,7 @@ impl ExternalIndexHandle {
     }
 }
 
-fn start_external_index(options: &LspServerOptions) -> ExternalIndexHandle {
+fn start_external_index(options: &LspServerOptions, logger: LspLogger) -> ExternalIndexHandle {
     let Some(scripts_root) = options.game_data_scripts.clone() else {
         return ExternalIndexHandle::missing();
     };
@@ -247,17 +303,13 @@ fn start_external_index(options: &LspServerOptions) -> ExternalIndexHandle {
 
     let state = handle.state.clone();
     let metadata_path = options.game_data_metadata.clone();
-    let log_path = options.log_path.clone();
     thread::spawn(move || {
         let start = Instant::now();
-        write_lsp_log(
-            log_path.as_ref(),
-            &format!(
-                "externalIndex start scripts={} cache={}",
-                scripts_root.display(),
-                cache_path.display()
-            ),
-        );
+        logger.log(&format!(
+            "externalIndex start scripts={} cache={}",
+            scripts_root.display(),
+            cache_path.display()
+        ));
         let result = load_or_build_game_data_index(&GameDataIndexCacheConfig {
             scripts_root,
             cache_path,
@@ -270,18 +322,15 @@ fn start_external_index(options: &LspServerOptions) -> ExternalIndexHandle {
                 let cache_status = result.cache_status.as_str().to_string();
                 let cache_detail = result.cache_status.detail().map(str::to_string);
                 let fingerprint = result.fingerprint.summary();
-                write_lsp_log(
-                    log_path.as_ref(),
-                    &format!(
-                        "externalIndex ready cache_status={} cache_detail={} files={} symbols={} parse_diagnostics={} elapsed_ms={}",
-                        cache_status,
-                        cache_detail.as_deref().unwrap_or("<none>"),
-                        result.summary.files,
-                        result.summary.indexed_symbols,
-                        result.summary.parse_diagnostics,
-                        start.elapsed().as_millis()
-                    ),
-                );
+                logger.log(&format!(
+                    "externalIndex ready cache_status={} cache_detail={} files={} symbols={} parse_diagnostics={} elapsed_ms={}",
+                    cache_status,
+                    cache_detail.as_deref().unwrap_or("<none>"),
+                    result.summary.files,
+                    result.summary.indexed_symbols,
+                    result.summary.parse_diagnostics,
+                    start.elapsed().as_millis()
+                ));
                 state.status = ExternalIndexStatus::Ready;
                 state.index = Some(result.index);
                 state.summary = Some(result.summary);
@@ -291,14 +340,11 @@ fn start_external_index(options: &LspServerOptions) -> ExternalIndexHandle {
                 state.error = None;
             }
             Err(error) => {
-                write_lsp_log(
-                    log_path.as_ref(),
-                    &format!(
-                        "externalIndex failed error={} elapsed_ms={}",
-                        error,
-                        start.elapsed().as_millis()
-                    ),
-                );
+                logger.log(&format!(
+                    "externalIndex failed error={} elapsed_ms={}",
+                    error,
+                    start.elapsed().as_millis()
+                ));
                 state.status = ExternalIndexStatus::Failed;
                 state.index = None;
                 state.summary = None;
@@ -329,6 +375,7 @@ struct DidOpenTextDocumentParams {
 #[derive(Debug, Deserialize)]
 struct TextDocumentItem {
     uri: String,
+    version: Option<i32>,
     text: String,
 }
 
@@ -342,6 +389,7 @@ struct DidChangeTextDocumentParams {
 #[derive(Debug, Deserialize)]
 struct VersionedTextDocumentIdentifier {
     uri: String,
+    version: Option<i32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -375,12 +423,12 @@ struct TextDocumentIdentifier {
 
 impl<W: Write> LspServer<W> {
     fn new(writer: W, options: LspServerOptions) -> Self {
-        let log_path = options.log_path.clone();
-        let external_index = start_external_index(&options);
+        let logger = LspLogger::new(options.log_path.clone());
+        let external_index = start_external_index(&options, logger.clone());
         let server = Self {
             writer,
             documents: BTreeMap::new(),
-            log_path: log_path.clone(),
+            logger,
             external_index,
             shutdown_requested: false,
         };
@@ -460,20 +508,26 @@ impl<W: Write> LspServer<W> {
                 {
                     let start = Instant::now();
                     let uri = params.text_document.uri;
+                    let version = params.text_document.version;
                     let text = params.text_document.text;
-                    if self.log_path.is_some() {
-                        let bytes = text.len();
-                        let report = document_symbol_report_for_source(&text);
-                        self.log(&format!(
-                            "notification didOpen uri={} bytes={} symbols={} parse_diagnostics={} elapsed_ms={}",
-                            uri,
-                            bytes,
-                            report.total_symbol_count(),
-                            report.parse_diagnostics,
-                            start.elapsed().as_millis()
-                        ));
-                    }
-                    self.documents.insert(uri, text);
+                    let bytes = text.len();
+                    let document = OpenDocument::new(text, version, 1);
+                    let symbols =
+                        document_symbols_from_cached_analysis(&document.text, &document.analysis);
+                    let symbol_count = document_symbol_count(&symbols);
+                    let parse_diagnostics = document.analysis.parse_diagnostics;
+                    let revision = document.revision;
+                    self.documents.insert(uri.clone(), document);
+                    self.log(&format!(
+                        "notification didOpen uri={} bytes={} version={} revision={} cached_analysis=true symbols={} parse_diagnostics={} analysis_elapsed_ms={}",
+                        uri,
+                        bytes,
+                        format_optional_i32(version),
+                        revision,
+                        symbol_count,
+                        parse_diagnostics,
+                        start.elapsed().as_millis()
+                    ));
                 }
             }
             "textDocument/didChange" => {
@@ -483,20 +537,31 @@ impl<W: Write> LspServer<W> {
                     if let Some(change) = params.content_changes.into_iter().last() {
                         let start = Instant::now();
                         let uri = params.text_document.uri;
+                        let version = params.text_document.version;
                         let text = change.text;
-                        if self.log_path.is_some() {
-                            let bytes = text.len();
-                            let report = document_symbol_report_for_source(&text);
-                            self.log(&format!(
-                                "notification didChange uri={} bytes={} symbols={} parse_diagnostics={} elapsed_ms={}",
-                                uri,
-                                bytes,
-                                report.total_symbol_count(),
-                                report.parse_diagnostics,
-                                start.elapsed().as_millis()
-                            ));
-                        }
-                        self.documents.insert(uri, text);
+                        let bytes = text.len();
+                        let document = self
+                            .documents
+                            .entry(uri.clone())
+                            .or_insert_with(|| OpenDocument::new(String::new(), None, 0));
+                        document.replace(text, version);
+                        let symbols = document_symbols_from_cached_analysis(
+                            &document.text,
+                            &document.analysis,
+                        );
+                        let symbol_count = document_symbol_count(&symbols);
+                        let parse_diagnostics = document.analysis.parse_diagnostics;
+                        let revision = document.revision;
+                        self.log(&format!(
+                            "notification didChange uri={} bytes={} version={} revision={} cached_analysis=true symbols={} parse_diagnostics={} analysis_elapsed_ms={}",
+                            uri,
+                            bytes,
+                            format_optional_i32(version),
+                            revision,
+                            symbol_count,
+                            parse_diagnostics,
+                            start.elapsed().as_millis()
+                        ));
                     }
                 }
             }
@@ -519,23 +584,29 @@ impl<W: Write> LspServer<W> {
                     let mut bytes = 0usize;
                     let mut symbol_count = 0usize;
                     let mut parse_diagnostics = 0usize;
+                    let mut revision = 0u64;
                     let result = params
                         .and_then(|params| {
                             log_uri = params.text_document.uri;
-                            self.documents.get(&log_uri).map(|source| {
-                                bytes = source.len();
-                                let report = document_symbol_report_for_source(source);
-                                symbol_count = report.total_symbol_count();
-                                parse_diagnostics = report.parse_diagnostics;
-                                report.symbols
+                            self.documents.get(&log_uri).map(|document| {
+                                bytes = document.text.len();
+                                revision = document.revision;
+                                let symbols = document_symbols_from_cached_analysis(
+                                    &document.text,
+                                    &document.analysis,
+                                );
+                                symbol_count = document_symbol_count(&symbols);
+                                parse_diagnostics = document.analysis.parse_diagnostics;
+                                symbols
                             })
                         })
                         .map(|symbols| serde_json::to_value(symbols).unwrap_or(Value::Null))
                         .unwrap_or(Value::Null);
                     self.log(&format!(
-                        "request documentSymbol uri={} bytes={} symbols={} parse_diagnostics={} elapsed_ms={}",
+                        "request documentSymbol uri={} bytes={} revision={} cached_analysis=true symbols={} parse_diagnostics={} elapsed_ms={}",
                         log_uri,
                         bytes,
+                        revision,
                         symbol_count,
                         parse_diagnostics,
                         start.elapsed().as_millis()
@@ -558,16 +629,19 @@ impl<W: Write> LspServer<W> {
                     let mut identifier_context = "<none>";
                     let mut resolver_candidate_count = 0usize;
                     let mut external_index_status = self.external_index.status_summary().status;
+                    let mut revision = 0u64;
                     let mut hit = false;
                     let result = params
                         .and_then(|params| {
                             log_uri = params.text_document.uri;
-                            self.documents.get(&log_uri).map(|source| {
-                                bytes = source.len();
+                            self.documents.get(&log_uri).map(|document| {
+                                bytes = document.text.len();
+                                revision = document.revision;
                                 let external_index = self.external_index.state.lock().unwrap();
                                 external_index_status = external_index.status.as_str();
-                                let report = hover_report_for_source_position_with_external(
-                                    source,
+                                let report = hover_report_for_cached_analysis_with_external(
+                                    &document.text,
+                                    &document.analysis,
                                     params.position,
                                     external_index.index.as_ref(),
                                 );
@@ -600,9 +674,10 @@ impl<W: Write> LspServer<W> {
                         .map(|hover| serde_json::to_value(hover).unwrap_or(Value::Null))
                         .unwrap_or(Value::Null);
                     self.log(&format!(
-                        "request hover uri={} bytes={} hit={} selection_source={} selected_source={} resolver_reason={} identifier_context={} resolver_candidates={} external_index_status={} label={} kind={} parse_diagnostics={} elapsed_ms={}",
+                        "request hover uri={} bytes={} revision={} cached_analysis=true hit={} selection_source={} selected_source={} resolver_reason={} identifier_context={} resolver_candidates={} external_index_status={} label={} kind={} parse_diagnostics={} elapsed_ms={}",
                         log_uri,
                         bytes,
+                        revision,
                         hit,
                         selection_source.as_str(),
                         selected_source,
@@ -624,17 +699,20 @@ impl<W: Write> LspServer<W> {
                     let params = parse_params::<HoverParams>(message.params, method)?;
                     let mut log_uri = "<missing>".to_string();
                     let mut bytes = 0usize;
+                    let mut revision = 0u64;
                     let mut hit = false;
                     let mut selected_label = "<none>".to_string();
                     let result = params
                         .and_then(|params| {
                             log_uri = params.text_document.uri;
-                            self.documents.get(&log_uri).map(|source| {
-                                bytes = source.len();
+                            self.documents.get(&log_uri).map(|document| {
+                                bytes = document.text.len();
+                                revision = document.revision;
                                 let external_status = self.external_index.status_summary();
                                 let external_index = self.external_index.state.lock().unwrap();
-                                let report = debug_hover_report_for_source_position_with_external(
-                                    source,
+                                let report = debug_hover_report_for_cached_analysis_with_external(
+                                    &document.text,
+                                    &document.analysis,
                                     params.position,
                                     external_index.index.as_ref(),
                                     Some(&external_status),
@@ -653,9 +731,10 @@ impl<W: Write> LspServer<W> {
                             ))
                         });
                     self.log(&format!(
-                        "request debugHover uri={} bytes={} hit={} label={} elapsed_ms={}",
+                        "request debugHover uri={} bytes={} revision={} cached_analysis=true hit={} label={} elapsed_ms={}",
                         log_uri,
                         bytes,
+                        revision,
                         hit,
                         selected_label,
                         start.elapsed().as_millis()
@@ -706,19 +785,7 @@ impl<W: Write> LspServer<W> {
     }
 
     fn log(&self, message: &str) {
-        write_lsp_log(self.log_path.as_ref(), message);
-    }
-}
-
-fn write_lsp_log(log_path: Option<&PathBuf>, message: &str) {
-    let Some(log_path) = log_path else {
-        return;
-    };
-    if let Some(parent) = log_path.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(log_path) {
-        let _ = writeln!(file, "[{}] {message}", timestamp_millis());
+        self.logger.log(message);
     }
 }
 
@@ -728,11 +795,25 @@ pub fn document_symbols_for_source(source: &str) -> Vec<LspDocumentSymbol> {
 
 pub fn document_symbol_report_for_source(source: &str) -> LspDocumentSymbolReport {
     let analysis = file_index_for_source(source);
+    document_symbol_report_for_cached_analysis(source, &analysis)
+}
+
+fn document_symbol_report_for_cached_analysis(
+    source: &str,
+    analysis: &FileIndexAnalysis,
+) -> LspDocumentSymbolReport {
     let query = IndexQuery::new(&analysis.index);
     LspDocumentSymbolReport {
         symbols: document_symbols_from_index(source, &analysis.index, &query),
         parse_diagnostics: analysis.parse_diagnostics,
     }
+}
+
+fn document_symbols_from_cached_analysis(
+    source: &str,
+    analysis: &FileIndexAnalysis,
+) -> Vec<LspDocumentSymbol> {
+    document_symbol_report_for_cached_analysis(source, analysis).symbols
 }
 
 pub fn hover_report_for_source_position(source: &str, position: LspPosition) -> LspHoverReport {
@@ -745,6 +826,15 @@ pub fn hover_report_for_source_position_with_external(
     external_index: Option<&SymbolIndex>,
 ) -> LspHoverReport {
     let analysis = file_index_for_source(source);
+    hover_report_for_cached_analysis_with_external(source, &analysis, position, external_index)
+}
+
+fn hover_report_for_cached_analysis_with_external(
+    source: &str,
+    analysis: &FileIndexAnalysis,
+    position: LspPosition,
+    external_index: Option<&SymbolIndex>,
+) -> LspHoverReport {
     let Some(offset) = offset_for_position(source, position) else {
         return empty_hover_report(analysis.parse_diagnostics);
     };
@@ -926,31 +1016,33 @@ fn debug_hover_report_for_source_position_with_external(
     external_index: Option<&SymbolIndex>,
     external_status: Option<&ExternalIndexStatusSummary>,
 ) -> String {
-    let start = Instant::now();
-    let parse = parse_source(source);
-    let ast = AstSourceFile::new(source, &parse);
-    let catalog = SymbolCatalog::from_ast_with_metadata(
+    let analysis = file_index_for_source(source);
+    debug_hover_report_for_cached_analysis_with_external(
         source,
-        &ast,
-        SourceFileMetadata {
-            kind: crate::model::SourceKind::Workspace,
-            category: crate::model::SourceCategory::Workspace,
-            absolute_path: None,
-            root_path: None,
-            relative_path: None,
-            priority: crate::model::SOURCE_PRIORITY_WORKSPACE,
-        },
-    );
-    let mut index = SymbolIndex::default();
-    index.add_catalog(&catalog);
-    let query = IndexQuery::new(&index);
+        &analysis,
+        position,
+        external_index,
+        external_status,
+    )
+}
+
+fn debug_hover_report_for_cached_analysis_with_external(
+    source: &str,
+    analysis: &FileIndexAnalysis,
+    position: LspPosition,
+    external_index: Option<&SymbolIndex>,
+    external_status: Option<&ExternalIndexStatusSummary>,
+) -> String {
+    let start = Instant::now();
+    let index = &analysis.index;
+    let query = IndexQuery::new(index);
     let offset = offset_for_position(source, position);
     let tokens = lex(source);
     let resolver_resolution = offset.and_then(|offset| {
-        ReferenceResolver::new(source, &index, external_index).resolve_at_offset(offset)
+        ReferenceResolver::new(source, index, external_index).resolve_at_offset(offset)
     });
     let candidates = offset
-        .map(|offset| hover_candidates_at_offset(&index, offset))
+        .map(|offset| hover_candidates_at_offset(index, offset))
         .unwrap_or_default();
     let selected_id = resolver_resolution
         .as_ref()
@@ -984,7 +1076,7 @@ fn debug_hover_report_for_source_position_with_external(
     report.push_str("- Pipeline: lexer -> parser -> AST -> model -> index -> display\n");
     report.push_str(&format!(
         "- Parse diagnostics: {}\n",
-        parse.diagnostics.len()
+        analysis.parse_diagnostics
     ));
     report.push_str(&format!("- Indexed symbols: {}\n", index.symbols().len()));
     report.push_str(&format!(
@@ -1007,7 +1099,7 @@ fn debug_hover_report_for_source_position_with_external(
     append_theme_token_context(&mut report, source, &tokens, offset);
 
     report.push_str("\n## Parse Diagnostics\n\n");
-    append_parse_diagnostics(&mut report, source, &parse.diagnostics);
+    append_parse_diagnostics(&mut report, source, &analysis.diagnostics);
 
     report.push_str("\n## Resolver Resolution\n\n");
     append_resolver_resolution(
@@ -1022,7 +1114,7 @@ fn debug_hover_report_for_source_position_with_external(
 
     report.push_str("\n## Hover Selection\n\n");
     if let Some(id) = selected_id {
-        append_display_details(&mut report, source, &index, &query, id);
+        append_display_details(&mut report, source, index, &query, id);
         if let Some(display) = query.symbol_display(id) {
             report.push_str("\n### Hover Markdown\n\n");
             report.push_str("```markdown\n");
@@ -1043,14 +1135,14 @@ fn debug_hover_report_for_source_position_with_external(
     }
 
     report.push_str("\n## Candidate Symbols At Cursor\n\n");
-    append_hover_candidates(&mut report, &index, &query, &candidates);
+    append_hover_candidates(&mut report, index, &query, &candidates);
 
     if let Some(id) = selected_id {
         report.push_str("\n## Parent Chain\n\n");
-        append_parent_chain(&mut report, source, &index, &query, id);
+        append_parent_chain(&mut report, source, index, &query, id);
 
         report.push_str("\n## Immediate Children\n\n");
-        append_children(&mut report, source, &index, &query, id);
+        append_children(&mut report, source, index, &query, id);
     } else if let (Some(id), Some(external_index)) = (selected_external_id, external_index) {
         let external_query = IndexQuery::new(external_index);
         report.push_str("\n## Parent Chain\n\n");
@@ -1061,7 +1153,7 @@ fn debug_hover_report_for_source_position_with_external(
     }
 
     report.push_str("\n## Symbol Kind Counts\n\n");
-    append_symbol_kind_counts(&mut report, &index);
+    append_symbol_kind_counts(&mut report, index);
 
     report
 }
@@ -1069,6 +1161,7 @@ fn debug_hover_report_for_source_position_with_external(
 struct FileIndexAnalysis {
     index: SymbolIndex,
     parse_diagnostics: usize,
+    diagnostics: Vec<ParseDiagnostic>,
 }
 
 fn file_index_for_source(source: &str) -> FileIndexAnalysis {
@@ -1092,6 +1185,7 @@ fn file_index_for_source(source: &str) -> FileIndexAnalysis {
     FileIndexAnalysis {
         index,
         parse_diagnostics,
+        diagnostics: parse.diagnostics,
     }
 }
 
@@ -1956,6 +2050,12 @@ fn format_optional_usize(value: Option<usize>) -> String {
         .unwrap_or_else(|| "<invalid>".to_string())
 }
 
+fn format_optional_i32(value: Option<i32>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "<none>".to_string())
+}
+
 fn format_span(span: TextSpan) -> String {
     format!("{}..{}", span.start, span.end)
 }
@@ -2801,6 +2901,310 @@ class Example
     }
 
     #[test]
+    fn framed_lsp_uses_cached_analysis_for_repeated_hover() {
+        let source = "class Smoke\n{\n\tvoid Run(int value);\n}\n";
+        let hover_position = position_for_needle(source, "Run(int", "Run");
+        let log_path = test_log_path("cached_hover");
+        let mut input = Vec::new();
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {}
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": "file:///Scripts/Smoke.c",
+                        "languageId": "enforce",
+                        "version": 1,
+                        "text": source
+                    }
+                }
+            }),
+        );
+        for id in [2, 3] {
+            write_test_message(
+                &mut input,
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "method": "textDocument/hover",
+                    "params": {
+                        "textDocument": {
+                            "uri": "file:///Scripts/Smoke.c"
+                        },
+                        "position": {
+                            "line": hover_position.line,
+                            "character": hover_position.character
+                        }
+                    }
+                }),
+            );
+        }
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "shutdown",
+                "params": null
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "exit",
+                "params": null
+            }),
+        );
+
+        let mut output = Vec::new();
+        run(
+            input.as_slice(),
+            &mut output,
+            LspServerOptions {
+                log_path: Some(log_path.clone()),
+                game_data_scripts: None,
+                game_data_metadata: None,
+                index_cache: None,
+            },
+        )
+        .unwrap();
+
+        let output_text = String::from_utf8(output).unwrap();
+        assert_eq!(
+            output_text.matches("Smoke.Run(int value) -> void").count(),
+            2
+        );
+
+        let log = std::fs::read_to_string(&log_path).unwrap();
+        assert_eq!(log.matches("notification didOpen").count(), 1);
+        assert_eq!(log.matches("analysis_elapsed_ms=").count(), 1);
+        assert_eq!(log.matches("request hover").count(), 2);
+        assert_eq!(
+            log.matches("request hover").count(),
+            log.matches("cached_analysis=true").count() - 1
+        );
+
+        cleanup_log(&log_path);
+    }
+
+    #[test]
+    fn framed_lsp_did_change_replaces_cached_analysis() {
+        let old_source = "class Old\n{\n\tvoid OldRun();\n}\n";
+        let new_source = "class New\n{\n\tvoid NewRun();\n}\n";
+        let hover_position = position_for_needle(new_source, "NewRun", "NewRun");
+        let mut input = Vec::new();
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {}
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": "file:///Scripts/Changed.c",
+                        "languageId": "enforce",
+                        "version": 1,
+                        "text": old_source
+                    }
+                }
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didChange",
+                "params": {
+                    "textDocument": {
+                        "uri": "file:///Scripts/Changed.c",
+                        "version": 2
+                    },
+                    "contentChanges": [
+                        {
+                            "text": new_source
+                        }
+                    ]
+                }
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "textDocument/hover",
+                "params": {
+                    "textDocument": {
+                        "uri": "file:///Scripts/Changed.c"
+                    },
+                    "position": {
+                        "line": hover_position.line,
+                        "character": hover_position.character
+                    }
+                }
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "textDocument/documentSymbol",
+                "params": {
+                    "textDocument": {
+                        "uri": "file:///Scripts/Changed.c"
+                    }
+                }
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "shutdown",
+                "params": null
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "exit",
+                "params": null
+            }),
+        );
+
+        let mut output = Vec::new();
+        run(
+            input.as_slice(),
+            &mut output,
+            LspServerOptions {
+                log_path: None,
+                game_data_scripts: None,
+                game_data_metadata: None,
+                index_cache: None,
+            },
+        )
+        .unwrap();
+
+        let output_text = String::from_utf8(output).unwrap();
+        assert!(output_text.contains("New.NewRun() -> void"));
+        assert!(output_text.contains("\"name\":\"New\""));
+        assert!(output_text.contains("\"name\":\"NewRun\""));
+        assert!(!output_text.contains("\"name\":\"Old\""));
+        assert!(!output_text.contains("\"name\":\"OldRun\""));
+    }
+
+    #[test]
+    fn framed_lsp_did_close_removes_cached_document() {
+        let source = "class Closed {}\n";
+        let mut input = Vec::new();
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {}
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": "file:///Scripts/Closed.c",
+                        "languageId": "enforce",
+                        "version": 1,
+                        "text": source
+                    }
+                }
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didClose",
+                "params": {
+                    "textDocument": {
+                        "uri": "file:///Scripts/Closed.c"
+                    }
+                }
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "textDocument/documentSymbol",
+                "params": {
+                    "textDocument": {
+                        "uri": "file:///Scripts/Closed.c"
+                    }
+                }
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "shutdown",
+                "params": null
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "exit",
+                "params": null
+            }),
+        );
+
+        let mut output = Vec::new();
+        run(
+            input.as_slice(),
+            &mut output,
+            LspServerOptions {
+                log_path: None,
+                game_data_scripts: None,
+                game_data_metadata: None,
+                index_cache: None,
+            },
+        )
+        .unwrap();
+
+        let output_text = String::from_utf8(output).unwrap();
+        assert!(output_text.contains("\"result\":null"));
+        assert!(!output_text.contains("\"name\":\"Closed\""));
+    }
+
+    #[test]
     fn debug_hover_report_includes_language_engine_context() {
         let source = "class Smoke\n{\n\tvoid Run(int value);\n}\n";
         let hover_position = position_for_needle(source, "Run(int", "Run");
@@ -2926,6 +3330,20 @@ class Example
         let body = serde_json::to_vec(&value).unwrap();
         write!(output, "Content-Length: {}\r\n\r\n", body.len()).unwrap();
         output.extend_from_slice(&body);
+    }
+
+    fn test_log_path(name: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "reforger_lsp_{name}_{}_{}.log",
+            std::process::id(),
+            timestamp_millis()
+        ));
+        let _ = std::fs::remove_file(&path);
+        path
+    }
+
+    fn cleanup_log(path: &PathBuf) {
+        let _ = std::fs::remove_file(path);
     }
 
     fn assert_hover(
