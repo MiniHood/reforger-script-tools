@@ -1,9 +1,12 @@
 use reforger_language_server::index::{IndexedFile, IndexedSymbol, SymbolIndex};
+use reforger_language_server::index_build::{build_index, IndexBuildConfig, IndexSourceRoot};
 use reforger_language_server::index_cache::{
     load_or_build_game_data_index, GameDataIndexCacheConfig, GameDataIndexCacheResult,
     IndexCacheStatus,
 };
-use reforger_language_server::model::{CallableForm, SourceCategory, SymbolKind};
+use reforger_language_server::model::{
+    CallableForm, SourceCategory, SourceKind, SymbolKind, SOURCE_PRIORITY_GAME_DATA,
+};
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::env;
@@ -146,7 +149,15 @@ fn render_report(args: &Args) -> Result<String, String> {
         cache_path: args.cache_path.clone(),
         metadata_path: args.metadata_path.clone(),
     })?;
+    let full = build_index(&IndexBuildConfig {
+        roots: vec![IndexSourceRoot::new(
+            &args.scripts_path,
+            SourceKind::GameData,
+            SOURCE_PRIORITY_GAME_DATA,
+        )],
+    })?;
     let composition = compose_index(&cache.index);
+    let full_composition = compose_index(&full.index);
     let measurements = temporary_serialization_measurements(&cache.index)?;
 
     let mut report = String::new();
@@ -157,7 +168,9 @@ fn render_report(args: &Args) -> Result<String, String> {
     report.push_str("This report explains what the current game-data index cache contains and how much of it appears relevant to editor hover/completion. It is measurement data only; it does not define a new cache format.\n\n");
     append_inputs(&mut report, args);
     append_cache_status(&mut report, &cache);
+    append_runtime_pruning_summary(&mut report, &full.index, &cache.index);
     append_slice_summary(&mut report, &cache.index, &composition);
+    append_full_kind_comparison(&mut report, &full_composition, &composition);
     append_category_counts(&mut report, &composition);
     append_kind_counts(&mut report, &composition);
     append_feature_counts(&mut report, &composition, cache.index.symbols().len());
@@ -223,18 +236,55 @@ fn append_cache_status(report: &mut String, cache: &GameDataIndexCacheResult) {
     ));
 }
 
+fn append_runtime_pruning_summary(report: &mut String, full: &SymbolIndex, runtime: &SymbolIndex) {
+    let full_locals = count_kind(full, SymbolKind::LocalVariable);
+    let runtime_locals = count_kind(runtime, SymbolKind::LocalVariable);
+    let full_parameters = count_kind(full, SymbolKind::Parameter);
+    let runtime_parameters = count_kind(runtime, SymbolKind::Parameter);
+    let removed_symbols = full.symbols().len().saturating_sub(runtime.symbols().len());
+
+    report.push_str("## Runtime-Pruned Cache Summary\n\n");
+    report.push_str("The runtime game-data cache intentionally removes `LocalVariable` symbols only. Open-document analysis still keeps locals, while external game-data cache keeps parameters for callable signatures and future signature help.\n\n");
+    report.push_str("| Metric | Full direct index | Runtime cache | Delta |\n");
+    report.push_str("| --- | ---: | ---: | ---: |\n");
+    report.push_str(&format!(
+        "| Files | {} | {} | {} |\n",
+        full.files().len(),
+        runtime.files().len(),
+        full.files().len() as isize - runtime.files().len() as isize
+    ));
+    report.push_str(&format!(
+        "| Symbols | {} | {} | {} |\n",
+        full.symbols().len(),
+        runtime.symbols().len(),
+        removed_symbols
+    ));
+    report.push_str(&format!(
+        "| Local variables | {} | {} | {} |\n",
+        full_locals,
+        runtime_locals,
+        full_locals.saturating_sub(runtime_locals)
+    ));
+    report.push_str(&format!(
+        "| Parameters | {} | {} | {} |\n\n",
+        full_parameters,
+        runtime_parameters,
+        full_parameters as isize - runtime_parameters as isize
+    ));
+}
+
 fn append_slice_summary(report: &mut String, index: &SymbolIndex, composition: &Composition) {
     let total_files = index.files().len();
     let total_symbols = index.symbols().len();
     let total_bytes = composition.editor_bytes + composition.debug_bytes;
 
-    report.push_str("## Full vs Editor Runtime Slice\n\n");
-    report.push_str("Editor runtime uses the current `SourceCategory::is_editor_completion_default()` policy. Debug/review-only categories remain indexed today for broad lookup and report/debug tools.\n\n");
+    report.push_str("## Runtime Cache vs Editor Runtime Slice\n\n");
+    report.push_str("This section analyzes the runtime-pruned cache. Editor runtime uses the current `SourceCategory::is_editor_completion_default()` policy. Debug/review-only categories remain indexed today for broad lookup and report/debug tools.\n\n");
     report
         .push_str("| Slice | Files | Symbols | Lower-bound bytes | File % | Symbol % | Byte % |\n");
     report.push_str("| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n");
     report.push_str(&format!(
-        "| Full index | {} | {} | {} | 100.0% | 100.0% | 100.0% |\n",
+        "| Runtime cache index | {} | {} | {} | 100.0% | 100.0% | 100.0% |\n",
         total_files, total_symbols, total_bytes
     ));
     report.push_str(&format!(
@@ -255,6 +305,27 @@ fn append_slice_summary(report: &mut String, index: &SymbolIndex, composition: &
         percent(composition.debug_symbols, total_symbols),
         percent(composition.debug_bytes, total_bytes)
     ));
+}
+
+fn append_full_kind_comparison(report: &mut String, full: &Composition, runtime: &Composition) {
+    report.push_str("## Full Direct vs Runtime Cache By Symbol Kind\n\n");
+    report.push_str("| Symbol kind | Full direct | Runtime cache | Removed |\n");
+    report.push_str("| --- | ---: | ---: | ---: |\n");
+    for kind in symbol_kinds() {
+        let full_count = full.symbols_by_kind.get(&kind).copied().unwrap_or(0);
+        let runtime_count = runtime.symbols_by_kind.get(&kind).copied().unwrap_or(0);
+        if full_count == 0 && runtime_count == 0 {
+            continue;
+        }
+        report.push_str(&format!(
+            "| `{}` | {} | {} | {} |\n",
+            kind_name(kind),
+            full_count,
+            runtime_count,
+            full_count.saturating_sub(runtime_count)
+        ));
+    }
+    report.push('\n');
 }
 
 fn append_category_counts(report: &mut String, composition: &Composition) {
@@ -386,7 +457,7 @@ fn append_recommendation(
     let editor_symbol_percent = ratio(composition.editor_symbols, total_symbols);
     let full_json = measurements
         .iter()
-        .find(|measurement| measurement.label == "full-index-measurement")
+        .find(|measurement| measurement.label == "runtime-cache-measurement")
         .map(|measurement| measurement.bytes)
         .unwrap_or(0);
     let editor_json = measurements
@@ -526,10 +597,10 @@ fn temporary_serialization_measurements(
 
     Ok(vec![
         write_temp_snapshot(
-            "full-index-measurement",
+            "runtime-cache-measurement",
             full_files,
             full_symbols,
-            "full public file/symbol data",
+            "full runtime-pruned public file/symbol data",
         )?,
         write_temp_snapshot(
             "editor-runtime-categories",
@@ -686,6 +757,10 @@ fn kind_name(kind: SymbolKind) -> &'static str {
     }
 }
 
+fn count_kind(index: &SymbolIndex, kind: SymbolKind) -> usize {
+    index.symbols_for_kind(kind).len()
+}
+
 fn callable_form_name(form: CallableForm) -> &'static str {
     match form {
         CallableForm::Implementation => "implementation",
@@ -714,7 +789,7 @@ fn default_metadata_path(scripts_path: &Path) -> Option<PathBuf> {
 }
 
 fn default_cache_path() -> PathBuf {
-    default_storage_root().join("index-cache/game-data-symbol-index.v1.json")
+    default_storage_root().join("index-cache/game-data-symbol-index.v2.json")
 }
 
 fn default_storage_root() -> PathBuf {

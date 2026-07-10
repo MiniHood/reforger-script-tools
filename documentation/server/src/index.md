@@ -16,6 +16,8 @@ The index can answer all-symbol name lookup, top-level name lookup, all-symbol p
 
 Source-root scanning, file reading, metadata creation, parser/AST/model catalog construction, and index population are owned by `server/src/index_build.rs`. Runtime game-data cache loading and rebuilding are owned by `server/src/index_cache.rs`. Future tools and runtime code should use those modules instead of duplicating the pipeline around `SymbolIndex::add_catalog`.
 
+`SymbolIndex::without_local_variables()` exists for the runtime game-data cache only. It remaps file-local/global symbol IDs and rebuilds lookup maps after removing `LocalVariable` records. It must not be used for open-document analysis, corpus reports, or debug reports that need full source facts.
+
 Future editor/LSP features should prefer `server/src/index_query.rs` and `server/src/symbol_display.rs` over calling raw `SymbolIndex` APIs directly. `IndexQuery` exposes the intended editor-facing path for kind-specific preferred lookup, top-level conflict review, callable signatures, and preferred-class completion while keeping raw aggregate lookup available only as an explicit debug escape hatch. `SymbolDisplay` owns shared presentation formatting for labels, details, signatures, docs previews, attributes, modifiers, and provenance.
 
 Dev-only overlay tooling can build an index from game data and an explicit workspace folder by assigning game-data catalogs priority `100` and workspace catalogs priority `200`. This uses existing source-priority ordering only; it does not merge declarations or interpret `modded` semantics.
@@ -46,6 +48,7 @@ This file depends on lexer spans and the model layer. It must not parse source, 
 - Copied modifiers, attributes, and doc comments into indexed symbols so future editor display does not need source text to show hover/completion/document-symbol facts.
 - Indexed local variables by name and kind while keeping them out of top-level and class-member lookup maps.
 - Copied detail spans alongside detail text so resolver and debug layers can classify type-position identifiers without retaining full source text in the index.
+- Added a remap-based pruning helper used by the game-data runtime cache to drop external local variables while preserving parameters and callable signatures.
 
 ## Future Improvements
 

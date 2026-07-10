@@ -8,7 +8,7 @@ use std::io::{BufReader, BufWriter};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
-const CACHE_FORMAT_VERSION: u32 = 1;
+const CACHE_FORMAT_VERSION: u32 = 2;
 const CACHE_SCHEMA: &str = "reforger-symbol-index";
 
 #[derive(Debug)]
@@ -172,16 +172,17 @@ pub fn load_or_build_game_data_index(
         )],
     })?;
     timings.rebuild = rebuild_start.elapsed();
-    let summary = summary_from_build(&built);
+    let cached_index = built.index.without_local_variables();
+    let summary = summary_from_build_with_cached_index(&built, &cached_index);
 
     let cache_write_start = Instant::now();
-    write_cached_index(&config.cache_path, &fingerprint, &summary, &built.index)?;
+    write_cached_index(&config.cache_path, &fingerprint, &summary, &cached_index)?;
     timings.cache_write = cache_write_start.elapsed();
     timings.total = total_start.elapsed();
     let cache_file_bytes = cache_file_bytes(&config.cache_path);
 
     Ok(GameDataIndexCacheResult {
-        index: built.index,
+        index: cached_index,
         summary,
         cache_status: IndexCacheStatus::Rebuilt {
             reason: rebuild_reason,
@@ -401,6 +402,16 @@ fn summary_from_build(result: &IndexBuildResult) -> RuntimeIndexSummary {
     }
 }
 
+fn summary_from_build_with_cached_index(
+    result: &IndexBuildResult,
+    cached_index: &SymbolIndex,
+) -> RuntimeIndexSummary {
+    RuntimeIndexSummary {
+        indexed_symbols: cached_index.symbols().len(),
+        ..summary_from_build(result)
+    }
+}
+
 impl SourceFingerprint {
     pub fn summary(&self) -> String {
         match self {
@@ -420,6 +431,7 @@ impl SourceFingerprint {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::SymbolKind;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -491,6 +503,105 @@ mod tests {
         })
         .unwrap();
 
+        assert!(matches!(
+            rebuilt.cache_status,
+            IndexCacheStatus::Rebuilt { .. }
+        ));
+
+        cleanup(&root);
+    }
+
+    #[test]
+    fn cache_rebuild_writes_runtime_pruned_index() {
+        let root = test_root("pruned");
+        let cache = root.join("cache.json");
+        let scripts = root.join("scripts");
+        let metadata = root.join("metadata.json");
+        write_file(
+            &scripts.join("Game/Example.c"),
+            r#"class Example
+{
+	void Run(int value)
+	{
+		int localValue = value;
+	}
+}
+"#,
+        );
+        write_file(&metadata, r#"{"commitSha":"abc123"}"#);
+
+        let result = load_or_build_game_data_index(&GameDataIndexCacheConfig {
+            scripts_root: scripts.clone(),
+            cache_path: cache.clone(),
+            metadata_path: Some(metadata.clone()),
+        })
+        .unwrap();
+
+        assert!(matches!(
+            result.cache_status,
+            IndexCacheStatus::Rebuilt { .. }
+        ));
+        assert!(result
+            .index
+            .symbols_for_kind(SymbolKind::LocalVariable)
+            .is_empty());
+        assert_eq!(
+            result.index.symbols_for_kind(SymbolKind::Parameter).len(),
+            1
+        );
+        assert_eq!(result.index.symbols_for_name("localValue").len(), 0);
+        assert_eq!(
+            result
+                .index
+                .callable_signature(result.index.methods_by_owner_name("Example", "Run")[0])
+                .as_deref(),
+            Some("Example.Run(int value) -> void")
+        );
+
+        let loaded = load_or_build_game_data_index(&GameDataIndexCacheConfig {
+            scripts_root: scripts,
+            cache_path: cache,
+            metadata_path: Some(metadata),
+        })
+        .unwrap();
+        assert_eq!(loaded.cache_status, IndexCacheStatus::Loaded);
+        assert!(loaded
+            .index
+            .symbols_for_kind(SymbolKind::LocalVariable)
+            .is_empty());
+        assert_eq!(
+            loaded.index.symbols_for_kind(SymbolKind::Parameter).len(),
+            1
+        );
+
+        cleanup(&root);
+    }
+
+    #[test]
+    fn cache_rebuilds_when_format_version_is_stale() {
+        let root = test_root("format_version");
+        let cache = root.join("cache.json");
+        let scripts = root.join("scripts");
+        write_file(&scripts.join("Example.c"), "class Example {}");
+
+        let _ = load_or_build_game_data_index(&GameDataIndexCacheConfig {
+            scripts_root: scripts.clone(),
+            cache_path: cache.clone(),
+            metadata_path: None,
+        })
+        .unwrap();
+
+        let stale = fs::read_to_string(&cache)
+            .unwrap()
+            .replace("\"format_version\":2", "\"format_version\":1");
+        write_file(&cache, &stale);
+
+        let rebuilt = load_or_build_game_data_index(&GameDataIndexCacheConfig {
+            scripts_root: scripts,
+            cache_path: cache,
+            metadata_path: None,
+        })
+        .unwrap();
         assert!(matches!(
             rebuilt.cache_status,
             IndexCacheStatus::Rebuilt { .. }

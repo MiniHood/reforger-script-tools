@@ -4,7 +4,7 @@ use reforger_language_server::index_cache::{
     load_or_build_game_data_index, GameDataIndexCacheConfig, GameDataIndexCacheResult,
     IndexCacheStatus, IndexCacheTimings,
 };
-use reforger_language_server::model::{SourceKind, SOURCE_PRIORITY_GAME_DATA};
+use reforger_language_server::model::{SourceKind, SymbolKind, SOURCE_PRIORITY_GAME_DATA};
 use std::env;
 use std::fs;
 use std::mem::size_of;
@@ -308,13 +308,32 @@ fn append_count_comparison(
     report.push_str("### Count Consistency\n\n");
     report.push_str("| Comparison | Result |\n");
     report.push_str("| --- | --- |\n");
+    let direct_locals = count_kind(&direct.index, SymbolKind::LocalVariable);
+    let direct_parameters = count_kind(&direct.index, SymbolKind::Parameter);
+    let expected_pruned_symbols = direct.index.symbols().len().saturating_sub(direct_locals);
     report.push_str(&format!(
-        "| Existing cache symbols match direct rebuild | {} |\n",
-        yes_no(existing_cache.index.symbols().len() == direct.index.symbols().len())
+        "| Existing cache symbols match direct rebuild minus locals | {} |\n",
+        yes_no(existing_cache.index.symbols().len() == expected_pruned_symbols)
     ));
     report.push_str(&format!(
-        "| Temp cache symbols match direct rebuild | {} |\n",
-        yes_no(temp_cache.index.symbols().len() == direct.index.symbols().len())
+        "| Temp cache symbols match direct rebuild minus locals | {} |\n",
+        yes_no(temp_cache.index.symbols().len() == expected_pruned_symbols)
+    ));
+    report.push_str(&format!(
+        "| Existing cache local variables removed | {} |\n",
+        yes_no(count_kind(&existing_cache.index, SymbolKind::LocalVariable) == 0)
+    ));
+    report.push_str(&format!(
+        "| Temp cache local variables removed | {} |\n",
+        yes_no(count_kind(&temp_cache.index, SymbolKind::LocalVariable) == 0)
+    ));
+    report.push_str(&format!(
+        "| Existing cache parameters preserved | {} |\n",
+        yes_no(count_kind(&existing_cache.index, SymbolKind::Parameter) == direct_parameters)
+    ));
+    report.push_str(&format!(
+        "| Temp cache parameters preserved | {} |\n",
+        yes_no(count_kind(&temp_cache.index, SymbolKind::Parameter) == direct_parameters)
     ));
     report.push_str(&format!(
         "| Existing cache files match direct rebuild | {} |\n",
@@ -323,6 +342,9 @@ fn append_count_comparison(
     report.push_str(&format!(
         "| Temp cache files match direct rebuild | {} |\n\n",
         yes_no(temp_cache.index.files().len() == direct.index.files().len())
+    ));
+    report.push_str(&format!(
+        "Runtime cache pruning removed `{direct_locals}` local-variable symbols and preserved `{direct_parameters}` parameter symbols from the full direct index.\n\n"
     ));
 }
 
@@ -412,6 +434,10 @@ fn yes_no(value: bool) -> &'static str {
     }
 }
 
+fn count_kind(index: &SymbolIndex, kind: SymbolKind) -> usize {
+    index.symbols_for_kind(kind).len()
+}
+
 struct IndexShapeEstimate {
     total_lower_bound_bytes: usize,
 }
@@ -499,7 +525,7 @@ fn default_metadata_path(scripts_path: &Path) -> Option<PathBuf> {
 }
 
 fn default_cache_path() -> PathBuf {
-    default_storage_root().join("index-cache/game-data-symbol-index.v1.json")
+    default_storage_root().join("index-cache/game-data-symbol-index.v2.json")
 }
 
 fn default_storage_root() -> PathBuf {

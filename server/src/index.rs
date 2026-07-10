@@ -317,6 +317,63 @@ impl SymbolIndex {
         &self.symbols
     }
 
+    pub fn without_local_variables(&self) -> Self {
+        self.without_symbol_kind(SymbolKind::LocalVariable)
+    }
+
+    fn without_symbol_kind(&self, excluded_kind: SymbolKind) -> Self {
+        let mut filtered = Self::default();
+        let mut remapped_ids = BTreeMap::<GlobalSymbolId, GlobalSymbolId>::new();
+
+        for file in &self.files {
+            let new_file_id = SourceFileId(filtered.files.len());
+            let symbol_start = filtered.symbols.len();
+            let mut symbol_count = 0;
+
+            for symbol in self.symbols_for_file(file) {
+                if symbol.kind == excluded_kind {
+                    continue;
+                }
+
+                let new_id = GlobalSymbolId {
+                    file_id: new_file_id,
+                    symbol_id: SymbolId(symbol_count),
+                };
+                remapped_ids.insert(symbol.id, new_id);
+                symbol_count += 1;
+            }
+
+            filtered.files.push(IndexedFile {
+                id: new_file_id,
+                metadata: file.metadata.clone(),
+                symbol_start,
+                symbol_count,
+                non_declaration_callable_fragments: file.non_declaration_callable_fragments,
+            });
+        }
+
+        for file in &self.files {
+            for symbol in self.symbols_for_file(file) {
+                if symbol.kind == excluded_kind {
+                    continue;
+                }
+
+                let Some(new_id) = remapped_ids.get(&symbol.id).copied() else {
+                    continue;
+                };
+                let mut remapped = symbol.clone();
+                remapped.id = new_id;
+                remapped.parent = symbol
+                    .parent
+                    .and_then(|parent| remapped_ids.get(&parent).copied());
+                filtered.symbols.push(remapped);
+            }
+        }
+
+        filtered.rebuild_lookup_maps();
+        filtered
+    }
+
     pub fn file(&self, id: SourceFileId) -> Option<&IndexedFile> {
         self.files.get(id.0)
     }
@@ -624,6 +681,107 @@ impl SymbolIndex {
             *counts.entry(file.metadata.kind).or_default() += 1;
         }
         counts
+    }
+
+    fn symbols_for_file(&self, file: &IndexedFile) -> &[IndexedSymbol] {
+        &self.symbols[file.symbol_start..file.symbol_start + file.symbol_count]
+    }
+
+    fn rebuild_lookup_maps(&mut self) {
+        self.by_name.clear();
+        self.top_level_by_name.clear();
+        self.by_kind.clear();
+        self.children.clear();
+        self.classes_by_name.clear();
+        self.typedefs_by_name.clear();
+        self.functions_by_name.clear();
+        self.methods_by_owner_name.clear();
+        self.fields_by_owner_name.clear();
+        self.members_by_owner.clear();
+
+        let symbols = self.symbols.clone();
+        for symbol in &symbols {
+            self.index_existing_symbol(symbol);
+        }
+    }
+
+    fn index_existing_symbol(&mut self, symbol: &IndexedSymbol) {
+        self.by_kind.entry(symbol.kind).or_default().push(symbol.id);
+
+        if let Some(parent) = symbol.parent {
+            self.children.entry(parent).or_default().push(symbol.id);
+        }
+
+        let Some(name) = &symbol.name else {
+            return;
+        };
+
+        self.by_name
+            .entry(name.clone())
+            .or_default()
+            .push(symbol.id);
+
+        if symbol.parent.is_none() {
+            self.top_level_by_name
+                .entry(name.clone())
+                .or_default()
+                .push(symbol.id);
+        }
+
+        match symbol.kind {
+            SymbolKind::Class => {
+                self.classes_by_name
+                    .entry(name.clone())
+                    .or_default()
+                    .push(symbol.id);
+            }
+            SymbolKind::Typedef => {
+                self.typedefs_by_name
+                    .entry(name.clone())
+                    .or_default()
+                    .push(symbol.id);
+            }
+            SymbolKind::Function => {
+                self.functions_by_name
+                    .entry(name.clone())
+                    .or_default()
+                    .push(symbol.id);
+            }
+            SymbolKind::Method => {
+                if let Some(owner) = self.parent_class_name(symbol).map(str::to_string) {
+                    self.methods_by_owner_name
+                        .entry((owner, name.clone()))
+                        .or_default()
+                        .push(symbol.id);
+                }
+            }
+            _ => {}
+        }
+
+        if is_class_member_kind(symbol.kind) {
+            if let Some(owner) = self.parent_class_name(symbol).map(str::to_string) {
+                self.members_by_owner
+                    .entry(owner.clone())
+                    .or_default()
+                    .push(symbol.id);
+
+                if symbol.kind == SymbolKind::Field {
+                    self.fields_by_owner_name
+                        .entry((owner, name.clone()))
+                        .or_default()
+                        .push(symbol.id);
+                }
+            }
+        }
+    }
+
+    fn parent_class_name<'a>(&'a self, symbol: &'a IndexedSymbol) -> Option<&'a str> {
+        let parent = symbol.parent?;
+        let parent_symbol = self.symbol(parent)?;
+        if parent_symbol.kind != SymbolKind::Class {
+            return None;
+        }
+        parent_symbol.name.as_deref()
     }
 
     fn index_symbol<'source>(&mut self, catalog: &SymbolCatalog<'source>, symbol: &IndexedSymbol) {
@@ -2389,6 +2547,80 @@ class FactionKey : string
         );
     }
 
+    #[test]
+    fn pruned_index_removes_local_variables_and_preserves_parameters() {
+        let catalog = catalog(
+            r#"class Example
+{
+	int m_Value;
+	void Run(int value)
+	{
+		int localValue = value;
+		string localName = "ok";
+	}
+}
+"#,
+            game_metadata("Game/Example.c"),
+        );
+        let index = SymbolIndex::from_catalogs([&catalog]);
+        let pruned = index.without_local_variables();
+
+        assert_eq!(index.symbols_for_kind(SymbolKind::LocalVariable).len(), 2);
+        assert!(pruned
+            .symbols_for_kind(SymbolKind::LocalVariable)
+            .is_empty());
+        assert_eq!(pruned.symbols_for_kind(SymbolKind::Parameter).len(), 1);
+        assert_eq!(pruned.symbols_for_name("localValue").len(), 0);
+        assert_eq!(pruned.symbols_for_name("localName").len(), 0);
+        assert_eq!(pruned.symbols_for_name("value").len(), 1);
+        assert_eq!(pruned.classes_by_name("Example").len(), 1);
+        assert_eq!(pruned.fields_by_owner_name("Example", "m_Value").len(), 1);
+        assert_eq!(pruned.methods_by_owner_name("Example", "Run").len(), 1);
+        assert_eq!(
+            pruned
+                .callable_signature(pruned.methods_by_owner_name("Example", "Run")[0])
+                .as_deref(),
+            Some("Example.Run(int value) -> void")
+        );
+        assert_no_dangling_symbol_references(&pruned);
+    }
+
+    #[test]
+    fn pruned_index_remaps_file_local_symbol_ids() {
+        let catalog = catalog(
+            r#"class Example
+{
+	void First()
+	{
+		int localValue;
+	}
+
+	void Second(string name);
+}
+"#,
+            game_metadata("Game/Example.c"),
+        );
+        let pruned = SymbolIndex::from_catalogs([&catalog]).without_local_variables();
+
+        let first = pruned.methods_by_owner_name("Example", "First")[0];
+        let second = pruned.methods_by_owner_name("Example", "Second")[0];
+        assert_ne!(first.symbol_id, second.symbol_id);
+        assert_eq!(
+            pruned.callable_signature(second).as_deref(),
+            Some("Example.Second(string name) -> void")
+        );
+        for file in pruned.files() {
+            for local_id in 0..file.symbol_count {
+                let id = GlobalSymbolId {
+                    file_id: file.id,
+                    symbol_id: SymbolId(local_id),
+                };
+                assert!(pruned.symbol(id).is_some());
+            }
+        }
+        assert_no_dangling_symbol_references(&pruned);
+    }
+
     fn catalog(source: &str, metadata: SourceFileMetadata) -> SymbolCatalog<'_> {
         let parse = parse_source(source);
         assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
@@ -2430,5 +2662,31 @@ class FactionKey : string
             .filter_map(|id| index.symbol(*id))
             .filter_map(|symbol| symbol.name.clone())
             .collect()
+    }
+
+    fn assert_no_dangling_symbol_references(index: &SymbolIndex) {
+        for symbol in index.symbols() {
+            assert_eq!(
+                index.symbol(symbol.id).map(|found| found.id),
+                Some(symbol.id)
+            );
+            if let Some(parent) = symbol.parent {
+                assert!(
+                    index.symbol(parent).is_some(),
+                    "dangling parent {:?} for {:?}",
+                    parent,
+                    symbol.id
+                );
+            }
+            for child in index.children(symbol.id) {
+                assert!(
+                    index.symbol(*child).is_some(),
+                    "dangling child {:?} for {:?}",
+                    child,
+                    symbol.id
+                );
+                assert_eq!(index.symbol(*child).unwrap().parent, Some(symbol.id));
+            }
+        }
     }
 }
