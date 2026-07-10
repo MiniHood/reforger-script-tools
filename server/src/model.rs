@@ -438,7 +438,10 @@ impl<'source> SymbolCatalogBuilder<'source> {
                     kind: SymbolKind::Enum,
                     name: enum_decl.name(),
                     span: enum_decl.span(),
-                    detail: SymbolDetail::empty(),
+                    detail: SymbolDetail {
+                        base_type: enum_decl.base_type().map(|value| value.span),
+                        ..SymbolDetail::empty()
+                    },
                     attributes: spans(enum_decl.attributes()),
                     modifiers: Vec::new(),
                     doc_comments: doc_comment_records(enum_decl.doc_comments()),

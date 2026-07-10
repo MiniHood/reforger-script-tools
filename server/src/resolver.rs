@@ -298,6 +298,7 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
             return;
         };
 
+        let before = candidates.len();
         push_class_member_candidates_from_index(
             self.file_index,
             CandidateSource::FileLocal,
@@ -325,6 +326,27 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
                     external_index,
                     CandidateSource::External,
                     &base_type,
+                    token_text,
+                    candidates,
+                    seen,
+                );
+            }
+        }
+
+        if candidates.len() == before && is_pseudo_class_member_name(token_text) {
+            push_class_member_candidates_from_index(
+                self.file_index,
+                CandidateSource::FileLocal,
+                "Class",
+                token_text,
+                candidates,
+                seen,
+            );
+            if let Some(external_index) = self.external_index {
+                push_class_member_candidates_from_index(
+                    external_index,
+                    CandidateSource::External,
+                    "Class",
                     token_text,
                     candidates,
                     seen,
@@ -551,6 +573,12 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
             }
         }
 
+        if matching.is_empty() && !static_only && is_pseudo_class_member_name(member_name) {
+            for id in matching_members_for_exact_owner(index, "Class", member_name) {
+                push_unique_id(&mut matching, id);
+            }
+        }
+
         for id in matching {
             push_index_candidate(index, candidates, seen, source, id, reason);
         }
@@ -577,23 +605,8 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
         candidates: &mut Vec<ReferenceCandidate>,
         seen: &mut BTreeSet<CandidateKey>,
     ) {
-        for enum_id in index.top_level_symbols_for_name(owner) {
-            let Some(enum_symbol) = index.symbol(*enum_id) else {
-                continue;
-            };
-            if enum_symbol.kind != SymbolKind::Enum {
-                continue;
-            }
-            for child in index.children(*enum_id) {
-                let Some(member) = index.symbol(*child) else {
-                    continue;
-                };
-                if member.kind == SymbolKind::EnumMember
-                    && member.name.as_deref() == Some(member_name)
-                {
-                    push_index_candidate(index, candidates, seen, source, *child, reason);
-                }
-            }
+        for member in enum_member_ids_for_owner(index, owner, member_name) {
+            push_index_candidate(index, candidates, seen, source, member, reason);
         }
     }
 
@@ -1442,6 +1455,10 @@ fn member_result_type_from_index(
     member: &str,
     static_only: bool,
 ) -> Option<InferredReceiverType> {
+    if static_only && enum_member_exists(index, owner, member) {
+        return Some(InferredReceiverType::instance(owner.to_string()));
+    }
+
     for owner in member_lookup_owners(index, owner) {
         if let Some(result) = member_result_type_for_exact_owner(index, &owner, member, static_only)
         {
@@ -1449,7 +1466,62 @@ fn member_result_type_from_index(
         }
     }
 
+    if !static_only && is_pseudo_class_member_name(member) && owner != "Class" {
+        return member_result_type_for_exact_owner(index, "Class", member, false);
+    }
+
     None
+}
+
+fn enum_member_exists(index: &SymbolIndex, owner: &str, member: &str) -> bool {
+    !enum_member_ids_for_owner(index, owner, member).is_empty()
+}
+
+fn enum_member_ids_for_owner(
+    index: &SymbolIndex,
+    owner: &str,
+    member: &str,
+) -> Vec<GlobalSymbolId> {
+    let mut ids = Vec::new();
+    collect_enum_member_ids_for_owner(index, owner, member, &mut BTreeSet::new(), &mut ids);
+    ids
+}
+
+fn collect_enum_member_ids_for_owner(
+    index: &SymbolIndex,
+    owner: &str,
+    member: &str,
+    visited: &mut BTreeSet<String>,
+    ids: &mut Vec<GlobalSymbolId>,
+) {
+    if !visited.insert(owner.to_string()) {
+        return;
+    }
+
+    for enum_id in index.top_level_symbols_for_name(owner) {
+        let Some(enum_symbol) = index.symbol(*enum_id) else {
+            continue;
+        };
+        if enum_symbol.kind != SymbolKind::Enum {
+            continue;
+        }
+        for child in index.children(*enum_id) {
+            let Some(symbol) = index.symbol(*child) else {
+                continue;
+            };
+            if symbol.kind == SymbolKind::EnumMember && symbol.name.as_deref() == Some(member) {
+                push_unique_id(ids, *child);
+            }
+        }
+        if let Some(base_type) = enum_symbol
+            .detail
+            .base_type
+            .as_deref()
+            .and_then(owner_type_from_type_text)
+        {
+            collect_enum_member_ids_for_owner(index, &base_type, member, visited, ids);
+        }
+    }
 }
 
 fn member_result_type_for_exact_owner(
@@ -1458,17 +1530,7 @@ fn member_result_type_for_exact_owner(
     member: &str,
     static_only: bool,
 ) -> Option<InferredReceiverType> {
-    let lookup = index.completion_members_for_preferred_class(owner);
-    let mut matching = lookup
-        .members
-        .iter()
-        .copied()
-        .filter(|id| {
-            index.symbol(*id).is_some_and(|symbol| {
-                is_member_lookup_kind(symbol.kind) && symbol.name.as_deref() == Some(member)
-            })
-        })
-        .collect::<Vec<_>>();
+    let mut matching = matching_members_for_exact_owner(index, owner, member);
 
     if static_only {
         let static_matching = matching
@@ -1492,6 +1554,9 @@ fn member_result_type_for_exact_owner(
         if let Some(result) = inferred_instance_type_from_symbol(symbol) {
             return Some(result);
         }
+        if symbol.kind == SymbolKind::EnumMember {
+            return Some(InferredReceiverType::instance(owner.to_string()));
+        }
     }
 
     None
@@ -1504,16 +1569,7 @@ fn member_type_from_owner_for_name(
 ) -> Option<InferredReceiverType> {
     for owner in member_lookup_owners(index, owner) {
         let lookup = index.completion_members_for_preferred_class(&owner);
-        let matching = lookup
-            .members
-            .iter()
-            .copied()
-            .filter(|id| {
-                index.symbol(*id).is_some_and(|symbol| {
-                    is_member_lookup_kind(symbol.kind) && symbol.name.as_deref() == Some(name)
-                })
-            })
-            .collect::<Vec<_>>();
+        let matching = matching_members_from_ids(index, lookup.members.iter().copied(), name);
         for id in index.preferred_from_symbols(&matching) {
             let Some(symbol) = index.symbol(id) else {
                 continue;
@@ -1524,6 +1580,28 @@ fn member_type_from_owner_for_name(
         }
     }
     None
+}
+
+fn matching_members_for_exact_owner(
+    index: &SymbolIndex,
+    owner: &str,
+    name: &str,
+) -> Vec<GlobalSymbolId> {
+    let lookup = index.completion_members_for_preferred_class(owner);
+    matching_members_from_ids(index, lookup.members.iter().copied(), name)
+}
+
+fn matching_members_from_ids(
+    index: &SymbolIndex,
+    ids: impl Iterator<Item = GlobalSymbolId>,
+    name: &str,
+) -> Vec<GlobalSymbolId> {
+    ids.filter(|id| {
+        index.symbol(*id).is_some_and(|symbol| {
+            is_member_lookup_kind(symbol.kind) && symbol.name.as_deref() == Some(name)
+        })
+    })
+    .collect()
 }
 
 fn inferred_instance_type_from_symbol(symbol: &IndexedSymbol) -> Option<InferredReceiverType> {
@@ -1626,6 +1704,10 @@ fn is_member_lookup_kind(kind: SymbolKind) -> bool {
         kind,
         SymbolKind::Field | SymbolKind::Method | SymbolKind::Constructor | SymbolKind::Destructor
     )
+}
+
+fn is_pseudo_class_member_name(name: &str) -> bool {
+    matches!(name, "ClassName" | "IsInherited" | "ToString" | "Type")
 }
 
 fn has_modifier(symbol: &IndexedSymbol, modifier: &str) -> bool {
@@ -2171,6 +2253,37 @@ class Example
     }
 
     #[test]
+    fn static_enum_member_resolves_from_base_enum() {
+        let source = r#"enum EHitZoneGroup
+{
+	VIRTUAL,
+}
+
+enum ECharacterHitZoneGroup : EHitZoneGroup
+{
+	HEAD,
+}
+
+class Example
+{
+	void Run()
+	{
+		ECharacterHitZoneGroup.VIRTUAL;
+	}
+}
+"#;
+        let index = index_for_source(source, workspace_metadata("Example.c"));
+
+        let resolution =
+            resolve_at_needle(&index, source, "ECharacterHitZoneGroup.VIRTUAL", "VIRTUAL");
+
+        assert_eq!(resolution.reason, ResolutionReason::StaticMember);
+        let selected = resolution.selected.as_ref().unwrap();
+        assert_eq!(selected.kind, SymbolKind::EnumMember);
+        assert_eq!(selected.name.as_deref(), Some("VIRTUAL"));
+    }
+
+    #[test]
     fn type_cast_falls_back_to_generic_class_cast_member() {
         let source = r#"class IEntity {}
 class Class
@@ -2200,6 +2313,198 @@ class Example
         assert_eq!(selected.kind, SymbolKind::Method);
         assert_eq!(selected.name.as_deref(), Some("Cast"));
         assert_eq!(resolution.receiver.as_ref().unwrap().failure_reason, None);
+    }
+
+    #[test]
+    fn pseudo_class_member_fallback_resolves_instance_members() {
+        let source = r#"class ExampleType {}
+
+class Example
+{
+	void Run(ExampleType test)
+	{
+		test.ClassName();
+		test.Type();
+		test.IsInherited(ExampleType);
+		test.ToString();
+	}
+}
+"#;
+        let file_index = index_for_source(source, workspace_metadata("Example.c"));
+        let external_index = index_for_source(
+            r#"class Class
+{
+	proto native external bool IsInherited(typename type);
+	proto native owned external string ClassName();
+	proto native external typename Type();
+	proto external string ToString();
+}
+"#,
+            game_metadata("Core/proto/Types.c"),
+        );
+
+        for (needle, cursor) in [
+            ("test.ClassName", "ClassName"),
+            ("test.Type", "Type"),
+            ("test.IsInherited", "IsInherited"),
+            ("test.ToString", "ToString"),
+        ] {
+            let resolution = resolve_at_needle_with_external(
+                &file_index,
+                &external_index,
+                source,
+                needle,
+                cursor,
+            );
+
+            assert_eq!(resolution.reason, ResolutionReason::ReceiverMember);
+            assert_eq!(
+                resolution.receiver.as_ref().unwrap().owner_type.as_deref(),
+                Some("ExampleType")
+            );
+            let selected = resolution.selected.as_ref().unwrap();
+            assert_eq!(selected.source, CandidateSource::External);
+            assert_eq!(selected.kind, SymbolKind::Method);
+            assert_eq!(selected.name.as_deref(), Some(cursor));
+        }
+    }
+
+    #[test]
+    fn concrete_member_beats_pseudo_class_member_fallback() {
+        let source = r#"class ExampleType
+{
+	string ToString();
+}
+
+class Example
+{
+	void Run(ExampleType test)
+	{
+		test.ToString();
+	}
+}
+"#;
+        let file_index = index_for_source(source, workspace_metadata("Example.c"));
+        let external_index = index_for_source(
+            r#"class Class
+{
+	proto external string ToString();
+}
+"#,
+            game_metadata("Core/proto/Types.c"),
+        );
+
+        let resolution = resolve_at_needle_with_external(
+            &file_index,
+            &external_index,
+            source,
+            "test.ToString",
+            "ToString",
+        );
+
+        assert_eq!(resolution.reason, ResolutionReason::ReceiverMember);
+        let selected = resolution.selected.as_ref().unwrap();
+        assert_eq!(selected.source, CandidateSource::FileLocal);
+        assert_eq!(selected.name.as_deref(), Some("ToString"));
+    }
+
+    #[test]
+    fn unqualified_pseudo_call_resolves_to_class_member() {
+        let source = r#"class Example
+{
+	void Run()
+	{
+		Type().ToString();
+	}
+}
+"#;
+        let file_index = index_for_source(source, workspace_metadata("Example.c"));
+        let external_index = index_for_source(
+            r#"class Class
+{
+	proto native external typename Type();
+	proto external string ToString();
+}
+"#,
+            game_metadata("Core/proto/Types.c"),
+        );
+
+        let type_resolution =
+            resolve_at_needle_with_external(&file_index, &external_index, source, "Type()", "Type");
+        assert_eq!(type_resolution.reason, ResolutionReason::ClassMember);
+        assert_eq!(
+            type_resolution.selected.as_ref().unwrap().source,
+            CandidateSource::External
+        );
+
+        let to_string_resolution = resolve_at_needle_with_external(
+            &file_index,
+            &external_index,
+            source,
+            "Type().ToString",
+            "ToString",
+        );
+        assert_eq!(
+            to_string_resolution.reason,
+            ResolutionReason::ReceiverMember
+        );
+        assert_eq!(
+            to_string_resolution
+                .receiver
+                .as_ref()
+                .unwrap()
+                .owner_type
+                .as_deref(),
+            Some("typename")
+        );
+        assert_eq!(
+            to_string_resolution.selected.as_ref().unwrap().source,
+            CandidateSource::External
+        );
+    }
+
+    #[test]
+    fn enum_member_receiver_can_use_pseudo_class_members() {
+        let source = r#"enum ExampleKind
+{
+	One,
+}
+
+class Example
+{
+	void Run()
+	{
+		ExampleKind.One.ToString();
+	}
+}
+"#;
+        let file_index = index_for_source(source, workspace_metadata("Example.c"));
+        let external_index = index_for_source(
+            r#"class Class
+{
+	proto external string ToString();
+}
+"#,
+            game_metadata("Core/proto/Types.c"),
+        );
+
+        let resolution = resolve_at_needle_with_external(
+            &file_index,
+            &external_index,
+            source,
+            "ExampleKind.One.ToString",
+            "ToString",
+        );
+
+        assert_eq!(resolution.reason, ResolutionReason::ReceiverMember);
+        assert_eq!(
+            resolution.receiver.as_ref().unwrap().owner_type.as_deref(),
+            Some("ExampleKind")
+        );
+        assert_eq!(
+            resolution.selected.as_ref().unwrap().source,
+            CandidateSource::External
+        );
     }
 
     #[test]

@@ -443,6 +443,11 @@ impl<'source, 'tree> EnumDecl<'source, 'tree> {
         attributes(self.source, self.node)
     }
 
+    pub fn base_type(&self) -> Option<TextValue<'source>> {
+        first_child_node(self.node, SyntaxKind::TypeRef)
+            .and_then(|node| trimmed_node_text(self.source, node))
+    }
+
     pub fn doc_comments(&self) -> Vec<DocComment<'source>> {
         leading_doc_comments(self.source, self.container, self.node)
     }
