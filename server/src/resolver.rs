@@ -298,17 +298,36 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
             return;
         };
 
-        for member in self.file_index.members_by_owner(class_name) {
-            let Some(symbol) = self.file_index.symbol(*member) else {
-                continue;
-            };
-            if symbol.name.as_deref() == Some(token_text) {
-                self.push_candidate(
+        push_class_member_candidates_from_index(
+            self.file_index,
+            CandidateSource::FileLocal,
+            class_name,
+            token_text,
+            candidates,
+            seen,
+        );
+        if let Some(external_index) = self.external_index {
+            push_class_member_candidates_from_index(
+                external_index,
+                CandidateSource::External,
+                class_name,
+                token_text,
+                candidates,
+                seen,
+            );
+            if let Some(base_type) = self
+                .file_index
+                .symbol(class)
+                .and_then(|symbol| symbol.detail.base_type.as_deref())
+                .and_then(owner_type_from_type_text)
+            {
+                push_class_member_candidates_from_index(
+                    external_index,
+                    CandidateSource::External,
+                    &base_type,
+                    token_text,
                     candidates,
                     seen,
-                    CandidateSource::FileLocal,
-                    *member,
-                    ResolutionReason::ClassMember,
                 );
             }
         }
@@ -504,18 +523,18 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
         candidates: &mut Vec<ReferenceCandidate>,
         seen: &mut BTreeSet<CandidateKey>,
     ) {
-        let lookup = index.completion_members_for_preferred_class(owner);
-        let mut matching = lookup
-            .members
-            .iter()
-            .copied()
-            .filter(|id| {
-                index.symbol(*id).is_some_and(|symbol| {
+        let mut matching = Vec::new();
+        for owner in member_lookup_owners(index, owner) {
+            let lookup = index.completion_members_for_preferred_class(&owner);
+            for id in lookup.members.iter().copied() {
+                if index.symbol(id).is_some_and(|symbol| {
                     is_member_lookup_kind(symbol.kind)
                         && symbol.name.as_deref() == Some(member_name)
-                })
-            })
-            .collect::<Vec<_>>();
+                }) {
+                    push_unique_id(&mut matching, id);
+                }
+            }
+        }
 
         if static_only {
             let static_matching = matching
@@ -639,10 +658,7 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
                         "`{callee}` treated as cast returning `{}`",
                         receiver_type.owner_type
                     ));
-                    return Some(InferredReceiverType {
-                        owner_type: receiver_type.owner_type,
-                        is_static: false,
-                    });
+                    return Some(InferredReceiverType::instance(receiver_type.owner_type));
                 }
                 lookup_path.push(format!(
                     "`{callee}` call receiver inferred as `{}`",
@@ -658,6 +674,25 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
 
             lookup_path.push(format!("call `{callee}`"));
             return self.callable_result_type(callee, offset, lookup_path);
+        }
+
+        if let Some((base, _index)) = split_index_expression(expression) {
+            let base_type =
+                self.infer_receiver_expression_type(base, expression_span, offset, lookup_path)?;
+            if let Some(raw_type_text) = base_type.raw_type_text.as_deref() {
+                if let Some(element_type) = collection_index_result_type(raw_type_text) {
+                    lookup_path.push(format!(
+                        "`{expression}` indexed receiver inferred as `{}`",
+                        element_type.owner_type
+                    ));
+                    return Some(element_type);
+                }
+            }
+            lookup_path.push(format!(
+                "`{expression}` indexed receiver base inferred as `{}` without element type",
+                base_type.owner_type
+            ));
+            return None;
         }
 
         if let Some((receiver, member)) = split_last_member_access(expression) {
@@ -686,10 +721,7 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
                 .and_then(|symbol| symbol.name.clone());
             if let Some(class_name) = class_name {
                 lookup_path.push(format!("`this` inferred as `{class_name}`"));
-                return Some(InferredReceiverType {
-                    owner_type: class_name,
-                    is_static: false,
-                });
+                return Some(InferredReceiverType::instance(class_name));
             }
         }
 
@@ -701,10 +733,7 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
                 .and_then(owner_type_from_type_text);
             if let Some(base_type) = base_type {
                 lookup_path.push(format!("`super` inferred as base `{base_type}`"));
-                return Some(InferredReceiverType {
-                    owner_type: base_type,
-                    is_static: false,
-                });
+                return Some(InferredReceiverType::instance(base_type));
             }
         }
 
@@ -729,16 +758,13 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
                     if kind == SymbolKind::LocalVariable && symbol.selection_span.start > offset {
                         continue;
                     }
-                    if let Some(owner_type) = owner_type_from_symbol(symbol) {
+                    if let Some(result) = inferred_instance_type_from_symbol(symbol) {
                         lookup_path.push(format!(
                             "`{name}` inferred from `{}` `{}`",
                             symbol_kind_label_for_path(kind),
-                            owner_type
+                            result.owner_type
                         ));
-                        return Some(InferredReceiverType {
-                            owner_type,
-                            is_static: false,
-                        });
+                        return Some(result);
                     }
                 }
             }
@@ -750,20 +776,39 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
                 .symbol(class)
                 .and_then(|symbol| symbol.name.as_deref());
             if let Some(class_name) = class_name {
-                for member in self.file_index.members_by_owner(class_name) {
-                    let Some(symbol) = self.file_index.symbol(*member) else {
-                        continue;
-                    };
-                    if symbol.name.as_deref() == Some(name) {
-                        if let Some(owner_type) = owner_type_from_symbol(symbol) {
+                if let Some(result) =
+                    member_type_from_owner_for_name(self.file_index, class_name, name)
+                {
+                    lookup_path.push(format!(
+                        "`{name}` inferred from class member `{}`",
+                        result.owner_type
+                    ));
+                    return Some(result);
+                }
+                if let Some(external_index) = self.external_index {
+                    if let Some(result) =
+                        member_type_from_owner_for_name(external_index, class_name, name)
+                    {
+                        lookup_path.push(format!(
+                            "`{name}` inferred from external class member `{}`",
+                            result.owner_type
+                        ));
+                        return Some(result);
+                    }
+                    if let Some(base_type) = self
+                        .file_index
+                        .symbol(class)
+                        .and_then(|symbol| symbol.detail.base_type.as_deref())
+                        .and_then(owner_type_from_type_text)
+                    {
+                        if let Some(result) =
+                            member_type_from_owner_for_name(external_index, &base_type, name)
+                        {
                             lookup_path.push(format!(
-                                "`{name}` inferred from class member `{}`",
-                                owner_type
+                                "`{name}` inferred from external base member `{}`",
+                                result.owner_type
                             ));
-                            return Some(InferredReceiverType {
-                                owner_type,
-                                is_static: false,
-                            });
+                            return Some(result);
                         }
                     }
                 }
@@ -822,13 +867,10 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
                 };
                 if symbol.kind == SymbolKind::LocalVariable && symbol.name.as_deref() == Some(name)
                 {
-                    if let Some(owner_type) = owner_type_from_symbol(symbol) {
+                    if let Some(result) = inferred_instance_type_from_symbol(symbol) {
                         lookup_path
                             .push(format!("call `{name}` matched local callable-like value"));
-                        return Some(InferredReceiverType {
-                            owner_type,
-                            is_static: false,
-                        });
+                        return Some(result);
                     }
                 }
             }
@@ -845,6 +887,19 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
                     lookup_path.push(format!("call `{name}` matched containing class member"));
                     return Some(result);
                 }
+                if let Some(base_type) = self
+                    .file_index
+                    .symbol(class)
+                    .and_then(|symbol| symbol.detail.base_type.as_deref())
+                    .and_then(owner_type_from_type_text)
+                {
+                    if let Some(result) =
+                        self.member_result_type(&base_type, name, false, lookup_path)
+                    {
+                        lookup_path.push(format!("call `{name}` matched containing base member"));
+                        return Some(result);
+                    }
+                }
             }
         }
 
@@ -852,17 +907,9 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
             let Some(symbol) = self.file_index.symbol(*id) else {
                 continue;
             };
-            if let Some(owner_type) = symbol
-                .detail
-                .return_type_text
-                .as_deref()
-                .and_then(owner_type_from_type_text)
-            {
+            if let Some(result) = inferred_instance_type_from_symbol(symbol) {
                 lookup_path.push(format!("call `{name}` matched file-local function"));
-                return Some(InferredReceiverType {
-                    owner_type,
-                    is_static: false,
-                });
+                return Some(result);
             }
         }
 
@@ -871,17 +918,9 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
                 let Some(symbol) = external_index.symbol(id) else {
                     continue;
                 };
-                if let Some(owner_type) = symbol
-                    .detail
-                    .return_type_text
-                    .as_deref()
-                    .and_then(owner_type_from_type_text)
-                {
+                if let Some(result) = inferred_instance_type_from_symbol(symbol) {
                     lookup_path.push(format!("call `{name}` matched external function"));
-                    return Some(InferredReceiverType {
-                        owner_type,
-                        is_static: false,
-                    });
+                    return Some(result);
                 }
             }
         }
@@ -970,6 +1009,33 @@ struct MemberAccessContext {
 struct InferredReceiverType {
     owner_type: String,
     is_static: bool,
+    raw_type_text: Option<String>,
+}
+
+impl InferredReceiverType {
+    fn instance(owner_type: String) -> Self {
+        Self {
+            owner_type,
+            is_static: false,
+            raw_type_text: None,
+        }
+    }
+
+    fn instance_with_raw(owner_type: String, raw_type_text: String) -> Self {
+        Self {
+            owner_type,
+            is_static: false,
+            raw_type_text: Some(raw_type_text),
+        }
+    }
+
+    fn static_type(owner_type: String) -> Self {
+        Self {
+            owner_type,
+            is_static: true,
+            raw_type_text: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -1009,6 +1075,32 @@ fn push_index_candidate(
         return;
     };
     candidates.push(candidate_from_symbol(source, id, reason, symbol, file));
+}
+
+fn push_class_member_candidates_from_index(
+    index: &SymbolIndex,
+    source: CandidateSource,
+    class_name: &str,
+    token_text: &str,
+    candidates: &mut Vec<ReferenceCandidate>,
+    seen: &mut BTreeSet<CandidateKey>,
+) {
+    let lookup = index.completion_members_for_preferred_class(class_name);
+    for member in lookup.members {
+        let Some(symbol) = index.symbol(member) else {
+            continue;
+        };
+        if symbol.name.as_deref() == Some(token_text) {
+            push_index_candidate(
+                index,
+                candidates,
+                seen,
+                source,
+                member,
+                ResolutionReason::ClassMember,
+            );
+        }
+    }
 }
 
 fn candidate_from_symbol(
@@ -1207,6 +1299,31 @@ fn split_last_member_access(expression: &str) -> Option<(&str, &str)> {
     None
 }
 
+fn split_index_expression(expression: &str) -> Option<(&str, &str)> {
+    let expression = expression.trim();
+    if !expression.ends_with(']') {
+        return None;
+    }
+
+    let mut bracket_depth = 0usize;
+    for (index, ch) in expression.char_indices().rev() {
+        match ch {
+            ']' => bracket_depth += 1,
+            '[' => {
+                bracket_depth = bracket_depth.saturating_sub(1);
+                if bracket_depth == 0 {
+                    let base = expression[..index].trim();
+                    let index_text = expression[index + 1..expression.len() - 1].trim();
+                    return (!base.is_empty()).then_some((base, index_text));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
+}
+
 fn is_identifier_text(text: &str) -> bool {
     let mut chars = text.chars();
     let Some(first) = chars.next() else {
@@ -1214,6 +1331,72 @@ fn is_identifier_text(text: &str) -> bool {
     };
     (first == '_' || first.is_ascii_alphabetic())
         && chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+}
+
+fn collection_index_result_type(type_text: &str) -> Option<InferredReceiverType> {
+    let text = strip_all_type_prefixes(type_text);
+    let (owner, args) = generic_owner_and_args(text)?;
+    let target = match owner {
+        "array" | "set" => args.first()?,
+        "map" => args.get(1)?,
+        _ => return None,
+    };
+    let owner_type = owner_type_from_type_text(target)?;
+    Some(InferredReceiverType::instance_with_raw(
+        owner_type,
+        target.trim().to_string(),
+    ))
+}
+
+fn generic_owner_and_args(type_text: &str) -> Option<(&str, Vec<String>)> {
+    let type_text = type_text.trim();
+    let less = type_text.find('<')?;
+    let owner = type_text[..less].trim();
+    let mut depth = 0usize;
+    let mut close = None;
+    for (index, ch) in type_text.char_indices().skip(less) {
+        match ch {
+            '<' => depth += 1,
+            '>' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    close = Some(index);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let close = close?;
+    let args = split_top_level_commas(&type_text[less + 1..close]);
+    (!owner.is_empty()).then_some((owner, args))
+}
+
+fn split_top_level_commas(text: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut start = 0usize;
+    let mut angle_depth = 0usize;
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
+
+    for (index, ch) in text.char_indices() {
+        match ch {
+            '<' => angle_depth += 1,
+            '>' => angle_depth = angle_depth.saturating_sub(1),
+            '(' => paren_depth += 1,
+            ')' => paren_depth = paren_depth.saturating_sub(1),
+            '[' => bracket_depth += 1,
+            ']' => bracket_depth = bracket_depth.saturating_sub(1),
+            ',' if angle_depth == 0 && paren_depth == 0 && bracket_depth == 0 => {
+                args.push(text[start..index].trim().to_string());
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    args.push(text[start..].trim().to_string());
+    args.retain(|arg| !arg.is_empty());
+    args
 }
 
 fn owner_type_from_symbol(symbol: &IndexedSymbol) -> Option<String> {
@@ -1244,22 +1427,32 @@ fn inferred_type_from_top_level_symbol(symbol: &IndexedSymbol) -> Option<Inferre
                 .name
                 .clone()
                 .or_else(|| owner_type_from_symbol(symbol))?;
-            Some(InferredReceiverType {
-                owner_type,
-                is_static: true,
-            })
+            Some(InferredReceiverType::static_type(owner_type))
         }
         SymbolKind::Function | SymbolKind::GlobalField => {
-            owner_type_from_symbol(symbol).map(|owner_type| InferredReceiverType {
-                owner_type,
-                is_static: false,
-            })
+            inferred_instance_type_from_symbol(symbol)
         }
         _ => None,
     }
 }
 
 fn member_result_type_from_index(
+    index: &SymbolIndex,
+    owner: &str,
+    member: &str,
+    static_only: bool,
+) -> Option<InferredReceiverType> {
+    for owner in member_lookup_owners(index, owner) {
+        if let Some(result) = member_result_type_for_exact_owner(index, &owner, member, static_only)
+        {
+            return Some(result);
+        }
+    }
+
+    None
+}
+
+fn member_result_type_for_exact_owner(
     index: &SymbolIndex,
     owner: &str,
     member: &str,
@@ -1296,26 +1489,90 @@ fn member_result_type_from_index(
         let Some(symbol) = index.symbol(id) else {
             continue;
         };
-        if let Some(owner_type) = owner_type_from_symbol(symbol) {
-            return Some(InferredReceiverType {
-                owner_type,
-                is_static: false,
-            });
+        if let Some(result) = inferred_instance_type_from_symbol(symbol) {
+            return Some(result);
         }
     }
 
     None
 }
 
-fn owner_type_from_type_text(type_text: &str) -> Option<String> {
-    let mut text = type_text.trim();
-    loop {
-        let stripped = strip_type_prefix(text).trim_start();
-        if stripped == text {
-            break;
+fn member_type_from_owner_for_name(
+    index: &SymbolIndex,
+    owner: &str,
+    name: &str,
+) -> Option<InferredReceiverType> {
+    for owner in member_lookup_owners(index, owner) {
+        let lookup = index.completion_members_for_preferred_class(&owner);
+        let matching = lookup
+            .members
+            .iter()
+            .copied()
+            .filter(|id| {
+                index.symbol(*id).is_some_and(|symbol| {
+                    is_member_lookup_kind(symbol.kind) && symbol.name.as_deref() == Some(name)
+                })
+            })
+            .collect::<Vec<_>>();
+        for id in index.preferred_from_symbols(&matching) {
+            let Some(symbol) = index.symbol(id) else {
+                continue;
+            };
+            if let Some(result) = inferred_instance_type_from_symbol(symbol) {
+                return Some(result);
+            }
         }
-        text = stripped;
     }
+    None
+}
+
+fn inferred_instance_type_from_symbol(symbol: &IndexedSymbol) -> Option<InferredReceiverType> {
+    let raw_type_text = match symbol.kind {
+        SymbolKind::LocalVariable
+        | SymbolKind::Parameter
+        | SymbolKind::Field
+        | SymbolKind::GlobalField
+        | SymbolKind::Typedef => symbol.detail.type_text.as_deref(),
+        SymbolKind::Function | SymbolKind::Method => symbol.detail.return_type_text.as_deref(),
+        SymbolKind::Constructor | SymbolKind::Class | SymbolKind::Enum => {
+            return symbol.name.clone().map(InferredReceiverType::instance)
+        }
+        _ => None,
+    }?;
+    let owner_type = owner_type_from_type_text(raw_type_text)?;
+    Some(InferredReceiverType::instance_with_raw(
+        owner_type,
+        raw_type_text.to_string(),
+    ))
+}
+
+fn member_lookup_owners(index: &SymbolIndex, owner: &str) -> Vec<String> {
+    let mut owners = Vec::new();
+    push_unique_string(&mut owners, owner.to_string());
+
+    for id in index.preferred_typedefs_by_name(owner) {
+        let Some(symbol) = index.symbol(id) else {
+            continue;
+        };
+        let Some(type_text) = symbol.detail.type_text.as_deref() else {
+            continue;
+        };
+        if let Some(target_owner) = owner_type_from_type_text(type_text) {
+            push_unique_string(&mut owners, target_owner);
+        }
+    }
+
+    owners
+}
+
+fn push_unique_string(values: &mut Vec<String>, value: String) {
+    if !values.contains(&value) {
+        values.push(value);
+    }
+}
+
+fn owner_type_from_type_text(type_text: &str) -> Option<String> {
+    let text = strip_all_type_prefixes(type_text);
 
     if text.is_empty() {
         return None;
@@ -1334,6 +1591,17 @@ fn owner_type_from_type_text(type_text: &str) -> Option<String> {
         .trim();
 
     (!owner.is_empty()).then(|| owner.to_string())
+}
+
+fn strip_all_type_prefixes(type_text: &str) -> &str {
+    let mut text = type_text.trim();
+    loop {
+        let stripped = strip_type_prefix(text).trim_start();
+        if stripped == text {
+            return text;
+        }
+        text = stripped;
+    }
 }
 
 fn strip_type_prefix(text: &str) -> &str {
@@ -2164,6 +2432,231 @@ class Example
         assert_eq!(receiver.receiver_text, "GetGame()");
         assert_eq!(receiver.owner_type.as_deref(), Some("Game"));
         assert_eq!(receiver.failure_reason, None);
+    }
+
+    #[test]
+    fn unqualified_call_resolves_inherited_member() {
+        let source = r#"class Base
+{
+	protected void SendCancelMessagesToAllAgents();
+}
+
+class Example : Base
+{
+	void Run()
+	{
+		SendCancelMessagesToAllAgents();
+	}
+}
+"#;
+        let index = index_for_source(source, workspace_metadata("Example.c"));
+
+        let resolution = resolve_at_needle(
+            &index,
+            source,
+            "\t\tSendCancelMessagesToAllAgents();",
+            "SendCancelMessagesToAllAgents",
+        );
+
+        assert_eq!(resolution.reason, ResolutionReason::ClassMember);
+        assert_eq!(
+            resolution.selected.as_ref().unwrap().kind,
+            SymbolKind::Method
+        );
+    }
+
+    #[test]
+    fn unqualified_call_resolves_external_inherited_member() {
+        let source = r#"class Example : Node
+{
+	void Run()
+	{
+		GetVariableIn("Value", value);
+	}
+}
+"#;
+        let file_index = index_for_source(source, workspace_metadata("Example.c"));
+        let external_index = index_for_source(
+            "class Node { proto bool GetVariableIn(string name, out void val); }",
+            game_metadata("Game/generated/AI/Node.c"),
+        );
+
+        let resolution = resolve_at_needle_with_external(
+            &file_index,
+            &external_index,
+            source,
+            "GetVariableIn(",
+            "GetVariableIn",
+        );
+
+        assert_eq!(resolution.reason, ResolutionReason::ClassMember);
+        assert_eq!(
+            resolution.selected.as_ref().unwrap().source,
+            CandidateSource::External
+        );
+        assert_eq!(
+            resolution.selected.as_ref().unwrap().kind,
+            SymbolKind::Method
+        );
+    }
+
+    #[test]
+    fn script_invoker_typedef_receiver_resolves_base_members() {
+        let source = r#"class Example
+{
+	void Run(ScriptInvoker inv, func fn)
+	{
+		inv.Insert(fn);
+		inv.Remove(fn);
+		inv.Invoke();
+	}
+}
+"#;
+        let file_index = index_for_source(source, workspace_metadata("Example.c"));
+        let external_index = index_for_source(
+            r#"class ScriptInvokerBase<Class T>: Managed
+{
+	proto void Invoke();
+	proto void Insert(T fn);
+	proto void Remove(T fn);
+}
+typedef ScriptInvokerBase<func> ScriptInvoker;
+"#,
+            game_metadata("GameLib/tools.c"),
+        );
+
+        for (needle, cursor) in [
+            ("inv.Insert", "Insert"),
+            ("inv.Remove", "Remove"),
+            ("inv.Invoke", "Invoke"),
+        ] {
+            let resolution = resolve_at_needle_with_external(
+                &file_index,
+                &external_index,
+                source,
+                needle,
+                cursor,
+            );
+            assert_eq!(resolution.reason, ResolutionReason::ReceiverMember);
+            assert_eq!(
+                resolution.receiver.as_ref().unwrap().owner_type.as_deref(),
+                Some("ScriptInvoker")
+            );
+            assert_eq!(
+                resolution.selected.as_ref().unwrap().source,
+                CandidateSource::External
+            );
+            assert_eq!(
+                resolution.selected.as_ref().unwrap().kind,
+                SymbolKind::Method
+            );
+        }
+    }
+
+    #[test]
+    fn array_index_receiver_uses_element_type() {
+        let source = r#"class Example
+{
+	void Run(array<IEntity> items)
+	{
+		items[0].GetOrigin();
+	}
+}
+"#;
+        let file_index = index_for_source(source, workspace_metadata("Example.c"));
+        let external_index = index_for_source(
+            "class IEntity { vector GetOrigin(); }",
+            game_metadata("Game/generated/Entities/IEntity.c"),
+        );
+
+        let resolution = resolve_at_needle_with_external(
+            &file_index,
+            &external_index,
+            source,
+            "items[0].GetOrigin",
+            "GetOrigin",
+        );
+
+        assert_eq!(resolution.reason, ResolutionReason::ReceiverMember);
+        assert_eq!(
+            resolution.receiver.as_ref().unwrap().owner_type.as_deref(),
+            Some("IEntity")
+        );
+        assert_eq!(
+            resolution.selected.as_ref().unwrap().kind,
+            SymbolKind::Method
+        );
+    }
+
+    #[test]
+    fn map_index_receiver_uses_value_type() {
+        let source = r#"class Example
+{
+	void Run(map<string, Widget> widgets, string key)
+	{
+		widgets[key].SetVisible(true);
+	}
+}
+"#;
+        let file_index = index_for_source(source, workspace_metadata("Example.c"));
+        let external_index = index_for_source(
+            "class Widget { void SetVisible(bool visible); }",
+            game_metadata("Core/generated/UI/Widget.c"),
+        );
+
+        let resolution = resolve_at_needle_with_external(
+            &file_index,
+            &external_index,
+            source,
+            "widgets[key].SetVisible",
+            "SetVisible",
+        );
+
+        assert_eq!(resolution.reason, ResolutionReason::ReceiverMember);
+        assert_eq!(
+            resolution.receiver.as_ref().unwrap().owner_type.as_deref(),
+            Some("Widget")
+        );
+        assert_eq!(
+            resolution.selected.as_ref().unwrap().kind,
+            SymbolKind::Method
+        );
+    }
+
+    #[test]
+    fn chained_field_receiver_uses_each_field_type() {
+        let source = r#"class TextWidget
+{
+	void SetText(string value);
+}
+
+class WidgetBundle
+{
+	TextWidget m_wTitle;
+}
+
+class Example
+{
+	WidgetBundle m_Widgets;
+	void Run()
+	{
+		m_Widgets.m_wTitle.SetText("ok");
+	}
+}
+"#;
+        let index = index_for_source(source, workspace_metadata("Example.c"));
+
+        let resolution = resolve_at_needle(&index, source, "m_wTitle.SetText", "SetText");
+
+        assert_eq!(resolution.reason, ResolutionReason::ReceiverMember);
+        assert_eq!(
+            resolution.receiver.as_ref().unwrap().owner_type.as_deref(),
+            Some("TextWidget")
+        );
+        assert_eq!(
+            resolution.selected.as_ref().unwrap().kind,
+            SymbolKind::Method
+        );
     }
 
     #[test]

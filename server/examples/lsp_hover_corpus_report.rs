@@ -20,6 +20,7 @@ const DEFAULT_SAMPLES_PER_FILE: usize = 12;
 const MAX_ROWS: usize = 100;
 const MAX_MISS_SAMPLES: usize = 75;
 const MAX_HIT_SAMPLES: usize = 75;
+const MAX_CLASSIFICATION_SAMPLES_PER_BUCKET: usize = 3;
 
 fn main() {
     if let Err(error) = run() {
@@ -62,6 +63,8 @@ fn run() -> Result<(), String> {
     let mut receiver_failure_counts = BTreeMap::<String, usize>::new();
     let mut selected_source_counts = BTreeMap::<String, usize>::new();
     let mut kind_counts = BTreeMap::<String, usize>::new();
+    let mut miss_classification_counts = BTreeMap::<String, usize>::new();
+    let mut miss_classification_samples = BTreeMap::<String, Vec<SampleRow>>::new();
     let mut miss_samples = Vec::new();
     let mut hit_samples = Vec::new();
 
@@ -173,7 +176,7 @@ fn run() -> Result<(), String> {
                     row.unresolved_misses += 1;
                     totals.unresolved_misses += 1;
                 }
-                miss_samples.push(SampleRow::new(
+                let sample_row = SampleRow::new(
                     &relative_path,
                     &source,
                     sample,
@@ -183,7 +186,17 @@ fn run() -> Result<(), String> {
                     selected_source,
                     receiver_owner,
                     receiver_failure,
-                ));
+                );
+                *miss_classification_counts
+                    .entry(sample_row.miss_classification.clone())
+                    .or_default() += 1;
+                let bucket = miss_classification_samples
+                    .entry(sample_row.miss_classification.clone())
+                    .or_default();
+                if bucket.len() < MAX_CLASSIFICATION_SAMPLES_PER_BUCKET {
+                    bucket.push(sample_row.clone());
+                }
+                miss_samples.push(sample_row);
             }
         }
         file_rows.push(row);
@@ -201,6 +214,8 @@ fn run() -> Result<(), String> {
         &receiver_failure_counts,
         &selected_source_counts,
         &kind_counts,
+        &miss_classification_counts,
+        &miss_classification_samples,
         &sample_evenly_rows(&miss_samples, MAX_MISS_SAMPLES),
         &sample_evenly_rows(&hit_samples, MAX_HIT_SAMPLES),
         discovery_elapsed,
@@ -323,6 +338,7 @@ struct SampleRow {
     receiver_failure: String,
     selected_source: String,
     selected: String,
+    miss_classification: String,
     snippet: String,
 }
 
@@ -343,6 +359,16 @@ impl SampleRow {
             (Some(kind), Some(label)) => format!("{} `{}`", symbol_kind_label(*kind), label),
             _ => "<none>".to_string(),
         };
+        let snippet = source_line(source, position.line);
+        let miss_classification = classify_miss(
+            report,
+            &sample.token,
+            &reason,
+            &context,
+            &receiver_owner,
+            &receiver_failure,
+            &snippet,
+        );
         Self {
             path: path.to_string(),
             line: position.line + 1,
@@ -355,9 +381,107 @@ impl SampleRow {
             receiver_failure,
             selected_source,
             selected,
-            snippet: source_line(source, position.line),
+            miss_classification,
+            snippet,
         }
     }
+}
+
+fn classify_miss(
+    report: &LspHoverReport,
+    token: &str,
+    reason: &str,
+    context: &str,
+    receiver_owner: &str,
+    receiver_failure: &str,
+    snippet: &str,
+) -> String {
+    if report.is_hit() {
+        return "<hit>".to_string();
+    }
+
+    if is_preprocessor_token(token, snippet) {
+        return "preprocessor directive token".to_string();
+    }
+
+    if is_attribute_named_argument(token, snippet) {
+        return "attribute named argument".to_string();
+    }
+
+    if context == "member-access" {
+        if is_invoker_like(receiver_owner, receiver_failure) {
+            return "invoker/delegate member".to_string();
+        }
+        if is_indexed_receiver(snippet, token) {
+            return "indexed receiver".to_string();
+        }
+        if is_pseudo_or_primitive_member(receiver_owner, token) {
+            return "pseudo/primitive member".to_string();
+        }
+        if is_field_chain_receiver(snippet, token) {
+            return "field-chain receiver".to_string();
+        }
+        return "receiver unresolved".to_string();
+    }
+
+    if reason == "unresolved" && looks_like_call(token, snippet) {
+        return "unqualified inherited member".to_string();
+    }
+
+    "unknown unresolved".to_string()
+}
+
+fn is_preprocessor_token(token: &str, snippet: &str) -> bool {
+    matches!(
+        token,
+        "if" | "ifdef" | "ifndef" | "elif" | "else" | "endif" | "define" | "undef" | "include"
+    ) || snippet.trim_start().starts_with('#')
+}
+
+fn is_attribute_named_argument(token: &str, snippet: &str) -> bool {
+    let Some(token_index) = snippet.find(token) else {
+        return false;
+    };
+    let before = &snippet[..token_index];
+    let after = &snippet[token_index + token.len()..];
+    before.rfind('[').is_some_and(|open| {
+        before[open..].find(']').is_none() && after.trim_start().starts_with(':')
+    })
+}
+
+fn is_invoker_like(receiver_owner: &str, receiver_failure: &str) -> bool {
+    receiver_owner.contains("Invoker")
+        || receiver_owner.contains("ScriptInvoker")
+        || ["Insert", "Remove", "Invoke", "Clear"]
+            .iter()
+            .any(|member| receiver_failure.contains(&format!("`{member}`")))
+}
+
+fn is_indexed_receiver(snippet: &str, token: &str) -> bool {
+    snippet.find(token).is_some_and(|index| {
+        let before = &snippet[..index];
+        before.contains("].")
+    })
+}
+
+fn is_pseudo_or_primitive_member(receiver_owner: &str, token: &str) -> bool {
+    matches!(
+        receiver_owner,
+        "T" | "int" | "float" | "bool" | "string" | "vector" | "typename" | "Class"
+    ) || matches!(token, "ToString" | "Type" | "ClassName" | "IsInherited")
+}
+
+fn is_field_chain_receiver(snippet: &str, token: &str) -> bool {
+    snippet.find(token).is_some_and(|index| {
+        let before = &snippet[..index];
+        before.matches('.').count() >= 2
+    })
+}
+
+fn looks_like_call(token: &str, snippet: &str) -> bool {
+    snippet
+        .find(token)
+        .is_some_and(|index| snippet[index + token.len()..].trim_start().starts_with('('))
 }
 
 fn render_report(
@@ -370,6 +494,8 @@ fn render_report(
     receiver_failure_counts: &BTreeMap<String, usize>,
     selected_source_counts: &BTreeMap<String, usize>,
     kind_counts: &BTreeMap<String, usize>,
+    miss_classification_counts: &BTreeMap<String, usize>,
+    miss_classification_samples: &BTreeMap<String, Vec<SampleRow>>,
     miss_samples: &[SampleRow],
     hit_samples: &[SampleRow],
     discovery_elapsed: u128,
@@ -408,6 +534,11 @@ fn render_report(
         &mut report,
         "Receiver Failure Frequency",
         receiver_failure_counts,
+    );
+    append_miss_classification(
+        &mut report,
+        miss_classification_counts,
+        miss_classification_samples,
     );
     append_counts(
         &mut report,
@@ -481,6 +612,66 @@ fn append_counts(report: &mut String, heading: &str, counts: &BTreeMap<String, u
     writeln!(report, "| --- | ---: |").unwrap();
     for (value, count) in sorted_counts(counts) {
         writeln!(report, "| `{}` | {} |", escape_table(&value), count).unwrap();
+    }
+    writeln!(report).unwrap();
+}
+
+fn append_miss_classification(
+    report: &mut String,
+    counts: &BTreeMap<String, usize>,
+    samples: &BTreeMap<String, Vec<SampleRow>>,
+) {
+    writeln!(report, "## Remaining Miss Classification").unwrap();
+    writeln!(report).unwrap();
+    if counts.is_empty() {
+        writeln!(report, "None.").unwrap();
+        writeln!(report).unwrap();
+        return;
+    }
+
+    writeln!(report, "| Classification | Count |").unwrap();
+    writeln!(report, "| --- | ---: |").unwrap();
+    for (classification, count) in sorted_counts(counts) {
+        writeln!(
+            report,
+            "| `{}` | {} |",
+            escape_table(&classification),
+            count
+        )
+        .unwrap();
+    }
+    writeln!(report).unwrap();
+
+    writeln!(report, "### Classification Samples").unwrap();
+    writeln!(report).unwrap();
+    writeln!(
+        report,
+        "| Classification | File | Position | Token | Reason | Context | Receiver owner | Receiver failure | Source line |"
+    )
+    .unwrap();
+    writeln!(
+        report,
+        "| --- | --- | ---: | --- | --- | --- | --- | --- | --- |"
+    )
+    .unwrap();
+    for (classification, rows) in samples {
+        for sample in rows {
+            writeln!(
+                report,
+                "| `{}` | `{}` | {}:{} | `{}` | `{}` | `{}` | `{}` | `{}` | `{}` |",
+                escape_table(classification),
+                escape_table(&sample.path),
+                sample.line,
+                sample.column,
+                escape_table(&sample.token),
+                escape_table(&sample.reason),
+                escape_table(&sample.context),
+                escape_table(&sample.receiver_owner),
+                escape_table(&sample.receiver_failure),
+                escape_table(&sample.snippet)
+            )
+            .unwrap();
+        }
     }
     writeln!(report).unwrap();
 }
