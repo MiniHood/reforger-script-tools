@@ -226,6 +226,16 @@ impl SymbolIndex {
         index
     }
 
+    pub fn from_indexed_parts(files: Vec<IndexedFile>, symbols: Vec<IndexedSymbol>) -> Self {
+        let mut index = Self {
+            files,
+            symbols,
+            ..Self::default()
+        };
+        index.rebuild_lookup_maps();
+        index
+    }
+
     pub fn add_catalog<'source>(&mut self, catalog: &SymbolCatalog<'source>) -> SourceFileId {
         let file_id = SourceFileId(self.files.len());
         let symbol_start = self.symbols.len();
@@ -319,6 +329,22 @@ impl SymbolIndex {
 
     pub fn without_local_variables(&self) -> Self {
         self.without_symbol_kind(SymbolKind::LocalVariable)
+    }
+
+    pub fn compact_for_runtime_cache(&self) -> Self {
+        let mut compact = self.without_local_variables();
+        compact.strip_detail_spans();
+        compact
+    }
+
+    fn strip_detail_spans(&mut self) {
+        for symbol in &mut self.symbols {
+            symbol.detail.type_text_span = None;
+            symbol.detail.return_type_text_span = None;
+            symbol.detail.base_type_span = None;
+            symbol.detail.default_text_span = None;
+            symbol.detail.enum_value_text_span = None;
+        }
     }
 
     fn without_symbol_kind(&self, excluded_kind: SymbolKind) -> Self {
@@ -2583,6 +2609,63 @@ class FactionKey : string
             Some("Example.Run(int value) -> void")
         );
         assert_no_dangling_symbol_references(&pruned);
+    }
+
+    #[test]
+    fn runtime_cache_compaction_removes_locals_and_detail_spans_only() {
+        let catalog = catalog(
+            r#"class Example : BaseExample
+{
+	ref array<int> m_Values;
+
+	int Run(string name = "ok")
+	{
+		int localValue;
+		return 0;
+	}
+}
+"#,
+            game_metadata("Game/Example.c"),
+        );
+        let index = SymbolIndex::from_catalogs([&catalog]);
+        let compact = index.compact_for_runtime_cache();
+
+        assert_eq!(index.symbols_for_kind(SymbolKind::LocalVariable).len(), 1);
+        assert!(compact
+            .symbols_for_kind(SymbolKind::LocalVariable)
+            .is_empty());
+        assert_eq!(compact.symbols_for_kind(SymbolKind::Parameter).len(), 1);
+
+        let class = compact
+            .symbol(compact.classes_by_name("Example")[0])
+            .unwrap();
+        assert_eq!(class.detail.base_type.as_deref(), Some("BaseExample"));
+        assert!(class.detail.base_type_span.is_none());
+
+        let field = compact
+            .symbol(compact.fields_by_owner_name("Example", "m_Values")[0])
+            .unwrap();
+        assert_eq!(field.detail.type_text.as_deref(), Some("ref array<int>"));
+        assert!(field.detail.type_text_span.is_none());
+
+        let method = compact
+            .symbol(compact.methods_by_owner_name("Example", "Run")[0])
+            .unwrap();
+        assert_eq!(method.detail.return_type_text.as_deref(), Some("int"));
+        assert!(method.detail.return_type_text_span.is_none());
+        assert_eq!(
+            compact.callable_signature(method.id).as_deref(),
+            Some("Example.Run(string name = \"ok\") -> int")
+        );
+
+        let parameter = compact.symbols_for_name("name")[0];
+        let parameter = compact.symbol(parameter).unwrap();
+        assert_eq!(parameter.detail.type_text.as_deref(), Some("string"));
+        assert_eq!(parameter.detail.default_text.as_deref(), Some("\"ok\""));
+        assert!(parameter.detail.type_text_span.is_none());
+        assert!(parameter.detail.default_text_span.is_none());
+
+        assert_no_dangling_symbol_references(&compact);
     }
 
     #[test]

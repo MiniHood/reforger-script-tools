@@ -10,7 +10,7 @@ This is dev-only review tooling. It exercises the runtime cache path in `server/
 
 ## Current Behavior
 
-The report measures an existing cache path, a temporary cache-miss rebuild/write, and a direct rebuild without cache. Cache measurements use the runtime-pruned game-data cache, while direct rebuild measures the full source index. The report therefore checks that cache symbols equal direct rebuild symbols minus local variables and that parameter symbols remain preserved. The Node wrapper runs debug and release profiles and combines them into `tools/reports/index-cache-baseline.report.md`.
+The report measures an existing cache path, a temporary cache-miss rebuild/write, and a direct rebuild without cache. Cache measurements use the v3 runtime-pruned game-data cache, while direct rebuild measures the full source index. The report therefore checks that cache symbols equal direct rebuild symbols minus local variables and that parameter symbols remain preserved. It also compares a v2-style full-map JSON estimate against the v3 actual cache file, including detail-span stripping and lookup-map rebuild visibility. The Node wrapper runs debug and release profiles and combines them into `tools/reports/index-cache-baseline.report.md`.
 
 Release timing is the only timing used for the cache usefulness decision. Debug timing is informational.
 
@@ -23,6 +23,7 @@ Depends on `index_cache`, `index_build`, and public `SymbolIndex` data for count
 - Added to compare the large JSON cache against release rebuild time before expanding runtime indexing.
 - Temporary benchmark caches are written outside tracked source paths and removed after the run.
 - Updated for v2 runtime cache pruning so local-variable removal and parameter preservation are visible in the count comparison.
+- Updated for v3 structural cache optimization so full-map estimates, detail-span stripping, and map rebuild behavior are visible.
 
 ## Future Improvements
 

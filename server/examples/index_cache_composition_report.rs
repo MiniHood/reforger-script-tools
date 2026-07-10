@@ -159,6 +159,7 @@ fn render_report(args: &Args) -> Result<String, String> {
     let composition = compose_index(&cache.index);
     let full_composition = compose_index(&full.index);
     let measurements = temporary_serialization_measurements(&cache.index)?;
+    let v2_style_cache_bytes = v2_style_runtime_cache_bytes(&full.index)?;
 
     let mut report = String::new();
     report.push_str("# Index Cache Composition Report\n\n");
@@ -169,6 +170,13 @@ fn render_report(args: &Args) -> Result<String, String> {
     append_inputs(&mut report, args);
     append_cache_status(&mut report, &cache);
     append_runtime_pruning_summary(&mut report, &full.index, &cache.index);
+    append_structural_optimization_summary(
+        &mut report,
+        &full.index,
+        &cache.index,
+        cache.cache_file_bytes.unwrap_or(0),
+        v2_style_cache_bytes,
+    );
     append_slice_summary(&mut report, &cache.index, &composition);
     append_full_kind_comparison(&mut report, &full_composition, &composition);
     append_category_counts(&mut report, &composition);
@@ -271,6 +279,75 @@ fn append_runtime_pruning_summary(report: &mut String, full: &SymbolIndex, runti
         runtime_parameters,
         full_parameters as isize - runtime_parameters as isize
     ));
+}
+
+fn append_structural_optimization_summary(
+    report: &mut String,
+    full: &SymbolIndex,
+    runtime: &SymbolIndex,
+    cache_file_bytes: u64,
+    v2_style_cache_bytes: u64,
+) {
+    let full_detail_spans = detail_span_count(full);
+    let runtime_detail_spans = detail_span_count(runtime);
+    let removed_maps = [
+        "by_name",
+        "top_level_by_name",
+        "by_kind",
+        "children",
+        "classes_by_name",
+        "typedefs_by_name",
+        "functions_by_name",
+        "methods_by_owner_name",
+        "fields_by_owner_name",
+        "members_by_owner",
+    ];
+    let bytes_saved = v2_style_cache_bytes.saturating_sub(cache_file_bytes);
+
+    report.push_str("## V3 Structural Optimization Summary\n\n");
+    report.push_str("The v3 runtime cache persists files and symbols only, strips source-only detail spans, and rebuilds derived lookup maps after deserialization. This keeps editor-visible facts while avoiding duplicate serialized lookup data.\n\n");
+    report.push_str("| Metric | Value |\n");
+    report.push_str("| --- | ---: |\n");
+    report.push_str(&format!(
+        "| V2-style full-map runtime JSON estimate | {} |\n",
+        v2_style_cache_bytes
+    ));
+    report.push_str(&format!(
+        "| V3 actual cache file bytes | {} |\n",
+        cache_file_bytes
+    ));
+    report.push_str(&format!("| Estimated bytes saved | {} |\n", bytes_saved));
+    report.push_str(&format!(
+        "| Estimated size reduction | {} |\n",
+        percent(bytes_saved as usize, v2_style_cache_bytes as usize)
+    ));
+    report.push_str(&format!(
+        "| Derived lookup maps omitted | {} |\n",
+        removed_maps.len()
+    ));
+    report.push_str(&format!(
+        "| Full direct detail span fields | {} |\n",
+        full_detail_spans
+    ));
+    report.push_str(&format!(
+        "| V3 runtime detail span fields | {} |\n",
+        runtime_detail_spans
+    ));
+    report.push_str(&format!(
+        "| Runtime symbols still carrying copied detail text | {} |\n\n",
+        runtime
+            .symbols()
+            .iter()
+            .filter(|symbol| symbol.detail.type_text.is_some()
+                || symbol.detail.return_type_text.is_some()
+                || symbol.detail.base_type.is_some()
+                || symbol.detail.default_text.is_some()
+                || symbol.detail.enum_value_text.is_some())
+            .count()
+    ));
+    report.push_str("Omitted maps: ");
+    report.push_str(&removed_maps.join(", "));
+    report.push_str(".\n\n");
 }
 
 fn append_slice_summary(report: &mut String, index: &SymbolIndex, composition: &Composition) {
@@ -617,6 +694,13 @@ fn temporary_serialization_measurements(
     ])
 }
 
+fn v2_style_runtime_cache_bytes(index: &SymbolIndex) -> Result<u64, String> {
+    let v2_style = index.without_local_variables();
+    serde_json::to_vec(&v2_style)
+        .map(|bytes| bytes.len() as u64)
+        .map_err(|error| format!("Failed to serialize v2-style full-map estimate: {error}"))
+}
+
 fn write_temp_snapshot(
     label: &'static str,
     files: Vec<&IndexedFile>,
@@ -687,6 +771,20 @@ fn estimated_symbol_bytes(symbol: &IndexedSymbol) -> usize {
             .iter()
             .map(|branch| option_string_bytes(branch.condition.as_deref()))
             .sum::<usize>()
+}
+
+fn detail_span_count(index: &SymbolIndex) -> usize {
+    index
+        .symbols()
+        .iter()
+        .map(|symbol| {
+            usize::from(symbol.detail.type_text_span.is_some())
+                + usize::from(symbol.detail.return_type_text_span.is_some())
+                + usize::from(symbol.detail.base_type_span.is_some())
+                + usize::from(symbol.detail.default_text_span.is_some())
+                + usize::from(symbol.detail.enum_value_text_span.is_some())
+        })
+        .sum()
 }
 
 fn temp_snapshot_path(label: &str) -> PathBuf {
@@ -789,7 +887,7 @@ fn default_metadata_path(scripts_path: &Path) -> Option<PathBuf> {
 }
 
 fn default_cache_path() -> PathBuf {
-    default_storage_root().join("index-cache/game-data-symbol-index.v2.json")
+    default_storage_root().join("index-cache/game-data-symbol-index.v3.json")
 }
 
 fn default_storage_root() -> PathBuf {

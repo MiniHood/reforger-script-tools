@@ -12,11 +12,13 @@ This file sits above the model layer and below future semantic resolution, diagn
 
 The index exposes `SymbolIndex::from_catalogs()` and `add_catalog()` for building an in-memory index from model catalogs. It assigns each catalog a `SourceFileId` and represents global symbols as `{ file_id, symbol_id }`, keeping `SymbolId` file-local. It stores compact copied lookup and presentation facts, including names, detail text and detail spans, modifier text, raw attribute text and names, raw doc comments, conditional context summaries, and callable form metadata, so lookup and display results remain usable without re-slicing source text.
 
+`SymbolIndex::from_indexed_parts()` exists for cache loading and other trusted reconstruction paths. It accepts already-copied file and symbol records, then rebuilds all derived lookup maps from those records. Callers should use this instead of persisting or manually reconstructing lookup maps.
+
 The index can answer all-symbol name lookup, top-level name lookup, all-symbol preferred-name lookup sorted by source priority, top-level-only preferred-name lookup for declaration conflict review, preferred ordering for an explicit symbol ID slice, symbol-kind lookup, class lookup by name, typedef lookup by name, function lookup by name, kind-specific preferred class/typedef/function lookup, method lookup by owner/name, field lookup by owner/name, direct class-member lookup by owner, best-effort inherited member lookup by exact base class name, raw owner-name aggregate completion lookup, preferred-class overlay completion lookup, callable signature display, method owner/name group iteration for report tooling, child lookup, duplicate top-level-name review, source-kind counts, and map-size counts. Local variables are indexed for all-symbol lookup and hover/debug display, but they are not top-level declarations, class members, inherited members, or completion members.
 
 Source-root scanning, file reading, metadata creation, parser/AST/model catalog construction, and index population are owned by `server/src/index_build.rs`. Runtime game-data cache loading and rebuilding are owned by `server/src/index_cache.rs`. Future tools and runtime code should use those modules instead of duplicating the pipeline around `SymbolIndex::add_catalog`.
 
-`SymbolIndex::without_local_variables()` exists for the runtime game-data cache only. It remaps file-local/global symbol IDs and rebuilds lookup maps after removing `LocalVariable` records. It must not be used for open-document analysis, corpus reports, or debug reports that need full source facts.
+`SymbolIndex::without_local_variables()` exists for the runtime game-data cache only. It remaps file-local/global symbol IDs and rebuilds lookup maps after removing `LocalVariable` records. `SymbolIndex::compact_for_runtime_cache()` additionally strips source-only detail span fields while preserving copied detail text. These helpers must not be used for open-document analysis, corpus reports, or debug reports that need full source facts.
 
 Future editor/LSP features should prefer `server/src/index_query.rs` and `server/src/symbol_display.rs` over calling raw `SymbolIndex` APIs directly. `IndexQuery` exposes the intended editor-facing path for kind-specific preferred lookup, top-level conflict review, callable signatures, and preferred-class completion while keeping raw aggregate lookup available only as an explicit debug escape hatch. `SymbolDisplay` owns shared presentation formatting for labels, details, signatures, docs previews, attributes, modifiers, and provenance.
 
@@ -49,6 +51,7 @@ This file depends on lexer spans and the model layer. It must not parse source, 
 - Indexed local variables by name and kind while keeping them out of top-level and class-member lookup maps.
 - Copied detail spans alongside detail text so resolver and debug layers can classify type-position identifiers without retaining full source text in the index.
 - Added a remap-based pruning helper used by the game-data runtime cache to drop external local variables while preserving parameters and callable signatures.
+- Added `from_indexed_parts()` and `compact_for_runtime_cache()` so the v3 runtime cache can persist only files/symbols, strip detail spans, and rebuild lookup maps after load.
 
 ## Future Improvements
 

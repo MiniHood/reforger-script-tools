@@ -12,7 +12,7 @@ This file is TypeScript extension-shell configuration. It keeps language-client 
 
 Exports constants for the language client ID/name, hover-debug output channel name, language-client command IDs, server binary name, packaged server folder, development fallback path, log locations, index-cache locations, contributed language id, custom LSP request names, and language-client document selector.
 
-The runtime game-data index cache file is `index-cache/game-data-symbol-index.v2.json`. The v2 cache is disposable and prunes external game-data local variables while preserving parameters and declaration facts needed by hover/signature-style display.
+The runtime game-data index cache file is `index-cache/game-data-symbol-index.v3.json`. The v3 cache is disposable and prunes external game-data local variables, strips source-only detail spans, rebuilds lookup maps after load, and preserves parameters and declaration facts needed by hover/signature-style display.
 
 The language id is `enforce`. The document selector targets that language id; path-scoped `.c` association belongs to `package.json`, not this TypeScript constants file.
 

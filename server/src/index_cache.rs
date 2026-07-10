@@ -1,4 +1,4 @@
-use crate::index::SymbolIndex;
+use crate::index::{IndexedFile, IndexedSymbol, SymbolIndex};
 use crate::index_build::{build_index, IndexBuildConfig, IndexBuildResult, IndexSourceRoot};
 use crate::model::{SourceKind, SOURCE_PRIORITY_GAME_DATA};
 use serde::{Deserialize, Serialize};
@@ -8,7 +8,7 @@ use std::io::{BufReader, BufWriter};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
-const CACHE_FORMAT_VERSION: u32 = 2;
+const CACHE_FORMAT_VERSION: u32 = 3;
 const CACHE_SCHEMA: &str = "reforger-symbol-index";
 
 #[derive(Debug)]
@@ -90,7 +90,28 @@ struct CachedGameDataIndex {
     crate_version: String,
     fingerprint: SourceFingerprint,
     summary: CachedIndexSummary,
-    index: SymbolIndex,
+    index: CachedSymbolIndex,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct CachedSymbolIndex {
+    files: Vec<IndexedFile>,
+    symbols: Vec<IndexedSymbol>,
+}
+
+impl From<&SymbolIndex> for CachedSymbolIndex {
+    fn from(index: &SymbolIndex) -> Self {
+        Self {
+            files: index.files().to_vec(),
+            symbols: index.symbols().to_vec(),
+        }
+    }
+}
+
+impl From<CachedSymbolIndex> for SymbolIndex {
+    fn from(snapshot: CachedSymbolIndex) -> Self {
+        SymbolIndex::from_indexed_parts(snapshot.files, snapshot.symbols)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -149,7 +170,7 @@ pub fn load_or_build_game_data_index(
             timings.cache_read_deserialize_validate = cache_read_start.elapsed();
             timings.total = total_start.elapsed();
             return Ok(GameDataIndexCacheResult {
-                index: cached.index,
+                index: cached.index.into(),
                 summary: cached.summary.into(),
                 cache_status: IndexCacheStatus::Loaded,
                 fingerprint,
@@ -172,7 +193,7 @@ pub fn load_or_build_game_data_index(
         )],
     })?;
     timings.rebuild = rebuild_start.elapsed();
-    let cached_index = built.index.without_local_variables();
+    let cached_index = built.index.compact_for_runtime_cache();
     let summary = summary_from_build_with_cached_index(&built, &cached_index);
 
     let cache_write_start = Instant::now();
@@ -259,7 +280,7 @@ fn write_cached_index(
         crate_version: env!("CARGO_PKG_VERSION").to_string(),
         fingerprint: fingerprint.clone(),
         summary: CachedIndexSummary::from(summary),
-        index: index.clone(),
+        index: CachedSymbolIndex::from(index),
     };
     serde_json::to_writer(writer, &cached).map_err(|error| {
         format!(
@@ -461,7 +482,7 @@ mod tests {
 
         let second = load_or_build_game_data_index(&GameDataIndexCacheConfig {
             scripts_root: scripts,
-            cache_path: cache,
+            cache_path: cache.clone(),
             metadata_path: Some(root.join("metadata.json")),
         })
         .unwrap();
@@ -475,6 +496,10 @@ mod tests {
         assert!(second.timings.cache_read_deserialize_validate > std::time::Duration::ZERO);
         assert!(second.timings.total > std::time::Duration::ZERO);
         assert!(second.cache_file_bytes.unwrap_or_default() > 0);
+        let cache_json = fs::read_to_string(&cache).unwrap();
+        assert!(cache_json.contains("\"format_version\":3"));
+        assert!(!cache_json.contains("\"by_name\""));
+        assert!(!cache_json.contains("\"methods_by_owner_name\""));
 
         cleanup(&root);
     }
@@ -521,9 +546,12 @@ mod tests {
             &scripts.join("Game/Example.c"),
             r#"class Example
 {
-	void Run(int value)
+	ref array<int> m_Values;
+
+	int Run(string name = "ok")
 	{
-		int localValue = value;
+		int localValue = 1;
+		return localValue;
 	}
 }
 "#,
@@ -550,13 +578,25 @@ mod tests {
             1
         );
         assert_eq!(result.index.symbols_for_name("localValue").len(), 0);
+        let field = result
+            .index
+            .symbol(result.index.fields_by_owner_name("Example", "m_Values")[0])
+            .unwrap();
+        assert_eq!(field.detail.type_text.as_deref(), Some("ref array<int>"));
+        assert!(field.detail.type_text_span.is_none());
         assert_eq!(
             result
                 .index
                 .callable_signature(result.index.methods_by_owner_name("Example", "Run")[0])
                 .as_deref(),
-            Some("Example.Run(int value) -> void")
+            Some("Example.Run(string name = \"ok\") -> int")
         );
+        let parameter = result.index.symbols_for_name("name")[0];
+        let parameter = result.index.symbol(parameter).unwrap();
+        assert_eq!(parameter.detail.type_text.as_deref(), Some("string"));
+        assert_eq!(parameter.detail.default_text.as_deref(), Some("\"ok\""));
+        assert!(parameter.detail.type_text_span.is_none());
+        assert!(parameter.detail.default_text_span.is_none());
 
         let loaded = load_or_build_game_data_index(&GameDataIndexCacheConfig {
             scripts_root: scripts,
@@ -572,6 +612,103 @@ mod tests {
         assert_eq!(
             loaded.index.symbols_for_kind(SymbolKind::Parameter).len(),
             1
+        );
+        assert_eq!(loaded.index.classes_by_name("Example").len(), 1);
+        assert_eq!(
+            loaded
+                .index
+                .fields_by_owner_name("Example", "m_Values")
+                .len(),
+            1
+        );
+        assert_eq!(
+            loaded.index.methods_by_owner_name("Example", "Run").len(),
+            1
+        );
+        assert_eq!(
+            loaded
+                .index
+                .callable_signature(loaded.index.methods_by_owner_name("Example", "Run")[0])
+                .as_deref(),
+            Some("Example.Run(string name = \"ok\") -> int")
+        );
+
+        cleanup(&root);
+    }
+
+    #[test]
+    fn v3_cache_load_rebuilds_lookup_maps_from_files_and_symbols() {
+        let root = test_root("rebuild_maps");
+        let cache = root.join("cache.json");
+        let scripts = root.join("scripts");
+        let metadata = root.join("metadata.json");
+        write_file(
+            &scripts.join("Game/Example.c"),
+            r#"typedef string FactionKey;
+
+void GlobalFn(int value);
+
+class Example : BaseExample
+{
+	int m_Value;
+	void Run(string name);
+}
+"#,
+        );
+        write_file(&metadata, r#"{"commitSha":"abc123"}"#);
+
+        let _ = load_or_build_game_data_index(&GameDataIndexCacheConfig {
+            scripts_root: scripts.clone(),
+            cache_path: cache.clone(),
+            metadata_path: Some(metadata.clone()),
+        })
+        .unwrap();
+
+        let loaded = load_or_build_game_data_index(&GameDataIndexCacheConfig {
+            scripts_root: scripts,
+            cache_path: cache,
+            metadata_path: Some(metadata),
+        })
+        .unwrap();
+
+        assert_eq!(loaded.cache_status, IndexCacheStatus::Loaded);
+        assert_eq!(loaded.index.classes_by_name("Example").len(), 1);
+        assert_eq!(loaded.index.typedefs_by_name("FactionKey").len(), 1);
+        assert_eq!(loaded.index.functions_by_name("GlobalFn").len(), 1);
+        assert_eq!(loaded.index.symbols_for_kind(SymbolKind::Class).len(), 1);
+        assert_eq!(loaded.index.symbols_for_name("m_Value").len(), 1);
+        assert_eq!(
+            loaded
+                .index
+                .fields_by_owner_name("Example", "m_Value")
+                .len(),
+            1
+        );
+        assert_eq!(
+            loaded.index.methods_by_owner_name("Example", "Run").len(),
+            1
+        );
+        assert!(loaded
+            .index
+            .members_by_owner("Example")
+            .iter()
+            .any(|id| loaded
+                .index
+                .symbol(*id)
+                .is_some_and(|symbol| symbol.name.as_deref() == Some("m_Value"))));
+
+        let class = loaded.index.classes_by_name("Example")[0];
+        assert!(!loaded.index.children(class).is_empty());
+        assert_eq!(
+            loaded.index.preferred_classes_by_name("Example"),
+            vec![class]
+        );
+        assert_eq!(
+            loaded
+                .index
+                .callable_signature(loaded.index.methods_by_owner_name("Example", "Run")[0])
+                .as_deref(),
+            Some("Example.Run(string name) -> void")
         );
 
         cleanup(&root);
@@ -593,7 +730,7 @@ mod tests {
 
         let stale = fs::read_to_string(&cache)
             .unwrap()
-            .replace("\"format_version\":2", "\"format_version\":1");
+            .replace("\"format_version\":3", "\"format_version\":2");
         write_file(&cache, &stale);
 
         let rebuilt = load_or_build_game_data_index(&GameDataIndexCacheConfig {

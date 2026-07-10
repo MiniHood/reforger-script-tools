@@ -152,6 +152,7 @@ fn render_report(args: &Args) -> Result<String, String> {
     );
     append_direct_measurement(&mut report, &direct);
     append_count_comparison(&mut report, &existing_cache, &temp_cache, &direct);
+    append_structural_optimization(&mut report, &existing_cache, &direct);
     append_memory_and_cache_size(&mut report, &existing_cache, &direct.index);
     append_decision(&mut report, args, &existing_cache, &direct);
     Ok(report)
@@ -348,6 +349,49 @@ fn append_count_comparison(
     ));
 }
 
+fn append_structural_optimization(
+    report: &mut String,
+    existing_cache: &GameDataIndexCacheResult,
+    direct: &DirectBuildMeasurement,
+) {
+    let v2_style = direct.index.without_local_variables();
+    let v2_style_bytes = serde_json::to_vec(&v2_style)
+        .map(|bytes| bytes.len() as u64)
+        .unwrap_or(0);
+    let v3_bytes = existing_cache.cache_file_bytes.unwrap_or(0);
+    let v3_detail_spans = detail_span_count(&existing_cache.index);
+    let full_detail_spans = detail_span_count(&direct.index);
+    let saved = v2_style_bytes.saturating_sub(v3_bytes);
+
+    report.push_str("## Runtime Cache Structural Optimization\n\n");
+    report.push_str("V3 persists cache metadata plus files/symbols only, strips source-only detail spans, removes external local variables, and rebuilds lookup maps after load. The v2-style estimate serializes the runtime-pruned index with derived maps still present.\n\n");
+    report.push_str("| Metric | Value |\n");
+    report.push_str("| --- | ---: |\n");
+    report.push_str(&format!(
+        "| V2-style full-map runtime JSON estimate | {} |\n",
+        v2_style_bytes
+    ));
+    report.push_str(&format!("| V3 actual cache file bytes | {} |\n", v3_bytes));
+    report.push_str(&format!("| Estimated bytes saved | {} |\n", saved));
+    report.push_str(&format!(
+        "| Estimated size reduction | {} |\n",
+        percent(saved as usize, v2_style_bytes as usize)
+    ));
+    report.push_str(&format!(
+        "| Full direct detail span fields | {} |\n",
+        full_detail_spans
+    ));
+    report.push_str(&format!(
+        "| V3 cached detail span fields | {} |\n",
+        v3_detail_spans
+    ));
+    report.push_str(&format!("| Lookup maps persisted | {} |\n", yes_no(false)));
+    report.push_str(&format!(
+        "| Lookup maps rebuilt on load | {} |\n\n",
+        yes_no(!existing_cache.index.symbols().is_empty())
+    ));
+}
+
 fn append_memory_and_cache_size(
     report: &mut String,
     cache_result: &GameDataIndexCacheResult,
@@ -434,8 +478,29 @@ fn yes_no(value: bool) -> &'static str {
     }
 }
 
+fn percent(part: usize, total: usize) -> String {
+    if total == 0 {
+        return "0.0%".to_string();
+    }
+    format!("{:.1}%", part as f64 * 100.0 / total as f64)
+}
+
 fn count_kind(index: &SymbolIndex, kind: SymbolKind) -> usize {
     index.symbols_for_kind(kind).len()
+}
+
+fn detail_span_count(index: &SymbolIndex) -> usize {
+    index
+        .symbols()
+        .iter()
+        .map(|symbol| {
+            usize::from(symbol.detail.type_text_span.is_some())
+                + usize::from(symbol.detail.return_type_text_span.is_some())
+                + usize::from(symbol.detail.base_type_span.is_some())
+                + usize::from(symbol.detail.default_text_span.is_some())
+                + usize::from(symbol.detail.enum_value_text_span.is_some())
+        })
+        .sum()
 }
 
 struct IndexShapeEstimate {
@@ -525,7 +590,7 @@ fn default_metadata_path(scripts_path: &Path) -> Option<PathBuf> {
 }
 
 fn default_cache_path() -> PathBuf {
-    default_storage_root().join("index-cache/game-data-symbol-index.v2.json")
+    default_storage_root().join("index-cache/game-data-symbol-index.v3.json")
 }
 
 fn default_storage_root() -> PathBuf {
