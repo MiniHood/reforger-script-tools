@@ -16,7 +16,7 @@ Static-array field declarations keep the field identifier before the array suffi
 
 Comma-separated field declarations expose `FieldDeclarator` views from one parser `FieldDecl`. For example, `Widget a, b, c;` exposes three declarators with shared type text `Widget` and local declarator spans. The parser node remains full-fidelity and unchanged; AST is responsible for splitting the field-list view for model/index consumers.
 
-Method/function body blocks expose a narrow `LocalVariable` view for local declarations, `foreach` variables, and `for` initializer declarations. This is a token-scanned scaffold over the existing full-fidelity `Block`; it preserves names, source spans, raw type text, default text, and local modifiers without parsing statements or expressions. Static-array locals with brace initializer defaults, such as `vector value[4] = {...};`, keep the array-suffixed local span and expose the complete brace initializer default text, including nested initializer lists. It is intended for hover and later local completion groundwork, not semantic scope resolution.
+Method/function body blocks expose a narrow `LocalVariable` view for local declarations, `foreach` variables, and `for` initializer declarations. Local discovery is syntax-backed: AST walks parsed `LocalDeclStatement`, `ForInitializer`, and `ForeachHeader` nodes, then uses token-slice declarator helpers only inside those selected syntax nodes. It preserves names, source spans, raw type text, default text, and local modifiers without semantic scope resolution. Static-array locals with brace initializer defaults, such as `vector value[4] = {...};`, keep the array-suffixed local span and expose the complete brace initializer default text, including nested initializer lists. It is intended for hover and later local completion groundwork, not semantic scope resolution.
 
 ## Dependencies and Boundaries
 
@@ -39,8 +39,9 @@ This file depends only on lexer span/token types and parser syntax types. It mus
 - Added source-backed typedef aliased type text extraction.
 - Fixed static-array field extraction so array bound identifiers do not replace the actual field name.
 - Added `FieldDeclarator` extraction so comma-separated field declarations expose every declared field with the correct shared type text.
-- Added local/block symbol extraction for local variables, `foreach` variables, and `for` initializer declarations without starting full statement or expression parsing.
+- Added local/block symbol extraction for local variables, `foreach` variables, and `for` initializer declarations.
 - Fixed local default extraction for static-array locals with brace initializer lists so hover/display details do not truncate the closing initializer braces.
+- Moved local discovery from broad block token scanning to parsed statement/header syntax nodes.
 
 ## Future Improvements
 

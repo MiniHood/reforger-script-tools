@@ -1296,11 +1296,13 @@ impl Parser<'_> {
         let mut saw_equal = false;
         let mut paren_depth = 0usize;
         let mut bracket_depth = 0usize;
+        let mut brace_depth = 0usize;
         let mut angle_depth = 0usize;
 
         while index < self.tokens.len() {
             let kind = self.tokens[index].kind;
-            let at_top_level = paren_depth == 0 && bracket_depth == 0 && angle_depth == 0;
+            let at_top_level =
+                paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 && angle_depth == 0;
 
             if at_top_level && matches!(kind, TokenKind::Semicolon | TokenKind::RightParen) {
                 return saw_name_after_type;
@@ -1334,6 +1336,8 @@ impl Parser<'_> {
                 TokenKind::RightParen => paren_depth = paren_depth.saturating_sub(1),
                 TokenKind::LeftBracket => bracket_depth += 1,
                 TokenKind::RightBracket => bracket_depth = bracket_depth.saturating_sub(1),
+                TokenKind::LeftBrace => brace_depth += 1,
+                TokenKind::RightBrace => brace_depth = brace_depth.saturating_sub(1),
                 TokenKind::Operator(Operator::Less) if !saw_equal => angle_depth += 1,
                 TokenKind::Operator(Operator::Greater) if !saw_equal => {
                     angle_depth = angle_depth.saturating_sub(1)
@@ -1689,6 +1693,7 @@ fn is_declaration_start(kind: TokenKind) -> bool {
             | TokenKind::Keyword(Keyword::String)
             | TokenKind::Keyword(Keyword::Vector)
             | TokenKind::Keyword(Keyword::Typename)
+            | TokenKind::Keyword(Keyword::Const)
             | TokenKind::Keyword(Keyword::Ref)
             | TokenKind::Keyword(Keyword::Notnull)
             | TokenKind::Keyword(Keyword::Auto)

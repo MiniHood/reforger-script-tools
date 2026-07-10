@@ -1009,130 +1009,70 @@ fn local_variables_in_block<'source>(
     source: &'source str,
     block: &SyntaxNode,
 ) -> Vec<LocalVariable<'source>> {
-    let tokens = recursive_tokens(block)
-        .filter(|token| !token.kind.is_trivia())
-        .collect::<Vec<_>>();
     let mut locals = Vec::new();
-    let mut statement = Vec::new();
-    let mut index = 0usize;
-    let mut paren_depth = 0usize;
-    let mut bracket_depth = 0usize;
-    let mut angle_depth = 0usize;
-
-    while index < tokens.len() {
-        let token = tokens[index];
-
-        if token.kind == TokenKind::Keyword(Keyword::Foreach) {
-            push_statement_local_variables(
-                source,
-                &mut locals,
-                &statement,
-                LocalVariableKind::LocalVariable,
-            );
-            statement.clear();
-            if let Some((header_start, header_end)) = parenthesized_range_after(&tokens, index) {
-                push_foreach_variables(source, &mut locals, &tokens[header_start..header_end]);
-                index = header_end + 1;
-                continue;
-            }
-        }
-
-        if token.kind == TokenKind::Keyword(Keyword::For) {
-            push_statement_local_variables(
-                source,
-                &mut locals,
-                &statement,
-                LocalVariableKind::LocalVariable,
-            );
-            statement.clear();
-            if let Some((header_start, header_end)) = parenthesized_range_after(&tokens, index) {
-                push_for_initializer_variables(
-                    source,
-                    &mut locals,
-                    &tokens[header_start..header_end],
-                );
-                index = header_end + 1;
-                continue;
-            }
-        }
-
-        match token.kind {
-            TokenKind::LeftBrace | TokenKind::RightBrace
-                if paren_depth == 0
-                    && bracket_depth == 0
-                    && angle_depth == 0
-                    && !statement_has_top_level_equal(&statement)
-                    && !statement_ends_with_equal(&statement) =>
-            {
-                push_statement_local_variables(
-                    source,
-                    &mut locals,
-                    &statement,
-                    LocalVariableKind::LocalVariable,
-                );
-                statement.clear();
-            }
-            TokenKind::Semicolon if paren_depth == 0 && bracket_depth == 0 && angle_depth == 0 => {
-                push_statement_local_variables(
-                    source,
-                    &mut locals,
-                    &statement,
-                    LocalVariableKind::LocalVariable,
-                );
-                statement.clear();
-            }
-            _ => {
-                statement.push(token);
-                match token.kind {
-                    TokenKind::LeftParen => paren_depth += 1,
-                    TokenKind::RightParen => paren_depth = paren_depth.saturating_sub(1),
-                    TokenKind::LeftBracket => bracket_depth += 1,
-                    TokenKind::RightBracket => bracket_depth = bracket_depth.saturating_sub(1),
-                    TokenKind::Operator(Operator::Less) => angle_depth += 1,
-                    TokenKind::Operator(Operator::Greater) => {
-                        angle_depth = angle_depth.saturating_sub(1)
-                    }
-                    TokenKind::Operator(Operator::GreaterGreater) => {
-                        angle_depth = angle_depth.saturating_sub(2)
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        index += 1;
-    }
-
-    push_statement_local_variables(
-        source,
-        &mut locals,
-        &statement,
-        LocalVariableKind::LocalVariable,
-    );
+    collect_local_variables_from_node(source, block, &mut locals);
     locals
 }
 
-fn parenthesized_range_after(tokens: &[Token], start: usize) -> Option<(usize, usize)> {
-    let left = tokens
-        .iter()
-        .enumerate()
-        .skip(start + 1)
-        .find(|(_, token)| token.kind == TokenKind::LeftParen)?
-        .0;
-    let mut depth = 0usize;
-    for (index, token) in tokens.iter().enumerate().skip(left) {
-        match token.kind {
-            TokenKind::LeftParen => depth += 1,
-            TokenKind::RightParen => {
-                depth = depth.saturating_sub(1);
-                if depth == 0 {
-                    return Some((left + 1, index));
-                }
-            }
-            _ => {}
+fn collect_local_variables_from_node<'source>(
+    source: &'source str,
+    node: &SyntaxNode,
+    locals: &mut Vec<LocalVariable<'source>>,
+) {
+    match node.kind {
+        SyntaxKind::LocalDeclStatement => {
+            let tokens = non_trivia_tokens(node);
+            push_statement_local_variables(
+                source,
+                locals,
+                &tokens,
+                LocalVariableKind::LocalVariable,
+            );
+            return;
+        }
+        SyntaxKind::ForInitializer => {
+            let tokens = non_trivia_tokens(node);
+            push_for_initializer_variables(source, locals, &tokens);
+            return;
+        }
+        SyntaxKind::ForeachHeader => {
+            let tokens = non_trivia_tokens(node);
+            push_foreach_variables(source, locals, strip_enclosing_parens(&tokens));
+            return;
+        }
+        _ => {}
+    }
+
+    for child in &node.children {
+        if let SyntaxElement::Node(child) = child {
+            collect_local_variables_from_node(source, child, locals);
         }
     }
-    None
+}
+
+fn non_trivia_tokens(node: &SyntaxNode) -> Vec<Token> {
+    recursive_tokens(node)
+        .filter(|token| !token.kind.is_trivia())
+        .collect()
+}
+
+fn strip_enclosing_parens(tokens: &[Token]) -> &[Token] {
+    let mut start = 0usize;
+    let mut end = tokens.len();
+    if tokens
+        .get(start)
+        .is_some_and(|token| token.kind == TokenKind::LeftParen)
+    {
+        start += 1;
+    }
+    if end > start
+        && tokens
+            .get(end - 1)
+            .is_some_and(|token| token.kind == TokenKind::RightParen)
+    {
+        end -= 1;
+    }
+    &tokens[start..end]
 }
 
 fn push_for_initializer_variables<'source>(
@@ -1569,18 +1509,6 @@ fn is_local_declaration_candidate(tokens: &[Token]) -> bool {
     name_count_before_boundary >= 2
 }
 
-fn statement_has_top_level_equal(tokens: &[Token]) -> bool {
-    tokens
-        .iter()
-        .any(|token| token.kind == TokenKind::Operator(Operator::Equal))
-}
-
-fn statement_ends_with_equal(tokens: &[Token]) -> bool {
-    tokens
-        .last()
-        .is_some_and(|token| token.kind == TokenKind::Operator(Operator::Equal))
-}
-
 fn is_statement_leading_keyword(kind: TokenKind) -> bool {
     matches!(
         kind,
@@ -1880,6 +1808,48 @@ fn is_literal_parameter_fragment(text: &str) -> bool {
 mod tests {
     use super::*;
     use crate::parser::parse_source;
+
+    fn count_kind(node: &SyntaxNode, kind: SyntaxKind) -> usize {
+        let own = usize::from(node.kind == kind);
+        own + node
+            .children
+            .iter()
+            .map(|child| match child {
+                SyntaxElement::Node(node) => count_kind(node, kind),
+                SyntaxElement::Token(_) => 0,
+            })
+            .sum::<usize>()
+    }
+
+    fn first_method<'source, 'tree>(
+        ast: &AstSourceFile<'source, 'tree>,
+    ) -> MethodDecl<'source, 'tree> {
+        let declarations = ast.declarations();
+        let Declaration::Class(class) = declarations[0] else {
+            panic!("expected class");
+        };
+        let ClassMember::Method(method) = class.members()[0] else {
+            panic!("expected method");
+        };
+        method
+    }
+
+    fn local_facts(
+        method: MethodDecl<'_, '_>,
+    ) -> Vec<(String, Option<String>, Option<String>, LocalVariableKind)> {
+        method
+            .local_variables()
+            .iter()
+            .map(|local| {
+                (
+                    local.name().text().to_string(),
+                    local.type_text().map(|value| value.text().to_string()),
+                    local.default_text().map(|value| value.text().to_string()),
+                    local.kind(),
+                )
+            })
+            .collect()
+    }
 
     #[test]
     fn extracts_top_level_declarations() {
@@ -2575,83 +2545,116 @@ class Blocked
             )),
             "{local_facts:?}"
         );
-        assert!(local_facts.contains(&(
-            "currentBudgetValue",
-            Some("int"),
-            Some("GetBudgetValue()"),
-            LocalVariableKind::LocalVariable,
-            vec!["const"]
-        )));
-        assert!(local_facts.contains(&(
-            "dataEvent",
-            Some("ref SCR_PlayerDataEvent"),
-            Some("new SCR_PlayerDataEvent"),
-            LocalVariableKind::LocalVariable,
-            Vec::new()
-        )));
-        assert!(local_facts.contains(&(
-            "playerID",
-            Some("int"),
-            None,
-            LocalVariableKind::LocalVariable,
-            Vec::new()
-        )));
-        assert!(local_facts.contains(&(
-            "param2",
-            Some("int"),
-            None,
-            LocalVariableKind::LocalVariable,
-            Vec::new()
-        )));
-        assert!(local_facts.contains(&(
-            "debugPoints",
-            Some("vector"),
-            None,
-            LocalVariableKind::LocalVariable,
-            Vec::new()
-        )));
-        assert!(local_facts.contains(&(
-            "data",
-            Some("SCR_OutfitFactionData"),
-            None,
-            LocalVariableKind::ForeachVariable,
-            Vec::new()
-        )));
-        assert!(local_facts.contains(&(
-            "idx",
-            Some("int"),
-            None,
-            LocalVariableKind::ForeachVariable,
-            Vec::new()
-        )));
-        assert!(local_facts.contains(&(
-            "quickslot",
-            Some("auto"),
-            None,
-            LocalVariableKind::ForeachVariable,
-            Vec::new()
-        )));
-        assert!(local_facts.contains(&(
-            "i",
-            Some("int"),
-            Some("0"),
-            LocalVariableKind::ForInitializer,
-            Vec::new()
-        )));
-        assert!(local_facts.contains(&(
-            "count",
-            Some("int"),
-            Some("outfitDataArray.Count()"),
-            LocalVariableKind::ForInitializer,
-            Vec::new()
-        )));
-        assert!(local_facts.contains(&(
-            "currentData",
-            Some("SCR_OutfitFactionData"),
-            Some("outfitDataArray[i]"),
-            LocalVariableKind::LocalVariable,
-            Vec::new()
-        )));
+        assert!(
+            local_facts.contains(&(
+                "currentBudgetValue",
+                Some("int"),
+                Some("GetBudgetValue()"),
+                LocalVariableKind::LocalVariable,
+                vec!["const"]
+            )),
+            "{local_facts:?}"
+        );
+        assert!(
+            local_facts.contains(&(
+                "dataEvent",
+                Some("ref SCR_PlayerDataEvent"),
+                Some("new SCR_PlayerDataEvent"),
+                LocalVariableKind::LocalVariable,
+                Vec::new()
+            )),
+            "{local_facts:?}"
+        );
+        assert!(
+            local_facts.contains(&(
+                "playerID",
+                Some("int"),
+                None,
+                LocalVariableKind::LocalVariable,
+                Vec::new()
+            )),
+            "{local_facts:?}"
+        );
+        assert!(
+            local_facts.contains(&(
+                "param2",
+                Some("int"),
+                None,
+                LocalVariableKind::LocalVariable,
+                Vec::new()
+            )),
+            "{local_facts:?}"
+        );
+        assert!(
+            local_facts.contains(&(
+                "debugPoints",
+                Some("vector"),
+                None,
+                LocalVariableKind::LocalVariable,
+                Vec::new()
+            )),
+            "{local_facts:?}"
+        );
+        assert!(
+            local_facts.contains(&(
+                "data",
+                Some("SCR_OutfitFactionData"),
+                None,
+                LocalVariableKind::ForeachVariable,
+                Vec::new()
+            )),
+            "{local_facts:?}"
+        );
+        assert!(
+            local_facts.contains(&(
+                "idx",
+                Some("int"),
+                None,
+                LocalVariableKind::ForeachVariable,
+                Vec::new()
+            )),
+            "{local_facts:?}"
+        );
+        assert!(
+            local_facts.contains(&(
+                "quickslot",
+                Some("auto"),
+                None,
+                LocalVariableKind::ForeachVariable,
+                Vec::new()
+            )),
+            "{local_facts:?}"
+        );
+        assert!(
+            local_facts.contains(&(
+                "i",
+                Some("int"),
+                Some("0"),
+                LocalVariableKind::ForInitializer,
+                Vec::new()
+            )),
+            "{local_facts:?}"
+        );
+        assert!(
+            local_facts.contains(&(
+                "count",
+                Some("int"),
+                Some("outfitDataArray.Count()"),
+                LocalVariableKind::ForInitializer,
+                Vec::new()
+            )),
+            "{local_facts:?}"
+        );
+        assert!(
+            local_facts.contains(&(
+                "currentData",
+                Some("SCR_OutfitFactionData"),
+                Some("outfitDataArray[i]"),
+                LocalVariableKind::LocalVariable,
+                Vec::new()
+            )),
+            "{local_facts:?}"
+        );
     }
 
     #[test]
@@ -2729,6 +2732,157 @@ class Blocked
                 "nested[2]".to_string()
             )),
             "{local_facts:?}"
+        );
+    }
+
+    #[test]
+    fn extracts_locals_from_statement_syntax_nodes() {
+        let source = r#"class Example
+{
+	void Run(array<Widget> items)
+	{
+		Widget value;
+		int a, b;
+		vector points[4];
+		int count = items.Count();
+		vector values[4] = {vector.Zero, vector.Zero, vector.Zero, vector.Zero};
+		if (count > 0)
+		{
+			string nested = "ok";
+		}
+		for (int i = 0, total = items.Count(); i < total; i++)
+		{
+			Widget current = items[i];
+		}
+		foreach (int index, Widget item : items)
+		{
+			item.SetVisible(true);
+		}
+		Widget.Make().value = 1;
+	}
+}
+"#;
+        let parse = parse_source(source);
+        let ast = AstSourceFile::new(source, &parse);
+        let method = first_method(&ast);
+
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
+        assert!(count_kind(&parse.root, SyntaxKind::LocalDeclStatement) >= 7);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::ForInitializer), 1);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::ForeachHeader), 1);
+
+        let facts = local_facts(method);
+        assert!(
+            facts.contains(&(
+                "value".to_string(),
+                Some("Widget".to_string()),
+                None,
+                LocalVariableKind::LocalVariable
+            )),
+            "{facts:?}"
+        );
+        assert!(
+            facts.contains(&(
+                "a".to_string(),
+                Some("int".to_string()),
+                None,
+                LocalVariableKind::LocalVariable
+            )),
+            "{facts:?}"
+        );
+        assert!(
+            facts.contains(&(
+                "b".to_string(),
+                Some("int".to_string()),
+                None,
+                LocalVariableKind::LocalVariable
+            )),
+            "{facts:?}"
+        );
+        assert!(
+            facts.contains(&(
+                "points".to_string(),
+                Some("vector".to_string()),
+                None,
+                LocalVariableKind::LocalVariable
+            )),
+            "{facts:?}"
+        );
+        assert!(
+            facts.contains(&(
+                "count".to_string(),
+                Some("int".to_string()),
+                Some("items.Count()".to_string()),
+                LocalVariableKind::LocalVariable
+            )),
+            "{facts:?}"
+        );
+        assert!(
+            facts.contains(&(
+                "values".to_string(),
+                Some("vector".to_string()),
+                Some("{vector.Zero, vector.Zero, vector.Zero, vector.Zero}".to_string()),
+                LocalVariableKind::LocalVariable
+            )),
+            "{facts:?}"
+        );
+        assert!(
+            facts.contains(&(
+                "nested".to_string(),
+                Some("string".to_string()),
+                Some("\"ok\"".to_string()),
+                LocalVariableKind::LocalVariable
+            )),
+            "{facts:?}"
+        );
+        assert!(
+            facts.contains(&(
+                "i".to_string(),
+                Some("int".to_string()),
+                Some("0".to_string()),
+                LocalVariableKind::ForInitializer
+            )),
+            "{facts:?}"
+        );
+        assert!(
+            facts.contains(&(
+                "total".to_string(),
+                Some("int".to_string()),
+                Some("items.Count()".to_string()),
+                LocalVariableKind::ForInitializer
+            )),
+            "{facts:?}"
+        );
+        assert!(
+            facts.contains(&(
+                "index".to_string(),
+                Some("int".to_string()),
+                None,
+                LocalVariableKind::ForeachVariable
+            )),
+            "{facts:?}"
+        );
+        assert!(
+            facts.contains(&(
+                "item".to_string(),
+                Some("Widget".to_string()),
+                None,
+                LocalVariableKind::ForeachVariable
+            )),
+            "{facts:?}"
+        );
+        assert!(
+            facts.contains(&(
+                "current".to_string(),
+                Some("Widget".to_string()),
+                Some("items[i]".to_string()),
+                LocalVariableKind::LocalVariable
+            )),
+            "{facts:?}"
+        );
+        assert!(
+            !facts.iter().any(|(name, _, _, _)| name == "Make"),
+            "{facts:?}"
         );
     }
 

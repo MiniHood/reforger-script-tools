@@ -14,7 +14,7 @@ The parser structures classes, attributes, modifiers, generic class parameters, 
 
 Callable bodies now parse into full-fidelity statement and expression syntax nodes instead of token-only balanced blocks. Covered body forms include control flow, `for`, `foreach`, `switch/case/default`, flow statements, local declarations, calls, member access, indexing, casts, unary/binary/assignment/ternary expressions, named arguments, `new`, `thread`, `delete`, and initializer expressions. This is syntax-only: it does not evaluate expressions, resolve overloads, infer types, evaluate preprocessor directives, or claim Workbench/compiler truth.
 
-`ForHeader` now contains bounded `ForInitializer`, `ForCondition`, and `ForIncrement` child nodes. Initializer declarations preserve their declaration tokens while parsing default expressions where possible; condition and increment sections parse expression syntax. Existing AST local-variable extraction still recognizes `for` initializer locals from header tokens, and a later AST cleanup can read them directly from these section nodes.
+`ForHeader` now contains bounded `ForInitializer`, `ForCondition`, and `ForIncrement` child nodes. Initializer declarations preserve their declaration tokens while parsing default expressions where possible; condition and increment sections parse expression syntax. AST local-variable extraction reads `for` initializer locals from these section nodes.
 
 Optional semicolons after method bodies and between attribute lists and decorated declarations are preserved because both forms appear in game data. Extra standalone semicolons are preserved as `EmptyDecl` nodes so future AST and index layers can ignore them explicitly. Fields may also terminate at a class closing brace for generated-source tolerance; this is parser recovery behavior and must not be treated as Workbench/compiler proof that field semicolons are optional. Fixture coverage includes larger game-data-derived editor and Workbench class excerpts.
 
@@ -38,5 +38,4 @@ The parser depends on the lexer and syntax modules only. It must not resolve sym
 
 ## Future Improvements
 
-- Move AST local-variable extraction from token scanning to the new statement syntax after body parsing stabilizes.
 - Update resolver hover to consume expression syntax for receiver/member chains in a later slice.

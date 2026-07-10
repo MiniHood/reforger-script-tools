@@ -24,7 +24,7 @@ Conditional context is descriptive only. It stores the visible `#if`, `#ifdef`, 
 
 Callable form is attached to functions, methods, constructors, and destructors. A callable with a body is an implementation, a semicolon form with `proto`, `native`, or `external` is a prototype, and a semicolon form without those markers is a declaration.
 
-Classes own fields and callable members. Enums own enum members. Functions, methods, constructors, and destructors own declaration parameters and local variables discovered by the AST block scanner. Local variables are source facts for hover/debug and future local completion; the model does not build lexical scopes, evaluate visibility, or resolve shadowing. Global fields are top-level symbols. Non-declaration callable fragments are counted for review but are not emitted as parameter symbols.
+Classes own fields and callable members. Enums own enum members. Functions, methods, constructors, and destructors own declaration parameters and local variables discovered from AST statement/header syntax. Local variables are source facts for hover/debug and future local completion; the model does not build lexical scopes, evaluate visibility, or resolve shadowing. Global fields are top-level symbols. Non-declaration callable fragments are counted for review but are not emitted as parameter symbols.
 
 ## Dependencies and Boundaries
 

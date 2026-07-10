@@ -63,6 +63,7 @@ When Rust language tooling exists, organize by compiler-style responsibility:
 - Build for the best final tool, not the fastest demo.
 - Prefer full-fidelity parsing and precise semantic data over approximate text matching.
 - Prefer explicit, durable architecture over clever local shortcuts.
+- Prefer one authoritative implementation path per feature. Do not create fallback, parallel, cascading, or compatibility systems for the same feature unless the slice explicitly needs a temporary migration boundary with a removal plan. Multiple systems hide the real failure mode and usually make debugging harder; go all in on the chosen system so broken behavior is visible and fixable.
 - Prefer small, verified slices over broad rewrites.
 - Preserve current working behavior unless the task explicitly changes it.
 - Avoid abstractions until they remove real complexity or establish a necessary boundary.
