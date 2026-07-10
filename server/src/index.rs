@@ -4,18 +4,19 @@ use crate::model::{
     CallableForm, ConditionalBranch, PreprocessorBranchKind, SourceFileMetadata, SourceKind,
     SymbolCatalog, SymbolId, SymbolKind,
 };
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::{BTreeMap, BTreeSet};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct SourceFileId(pub usize);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct GlobalSymbolId {
     pub file_id: SourceFileId,
     pub symbol_id: SymbolId,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IndexedFile {
     pub id: SourceFileId,
     pub metadata: SourceFileMetadata,
@@ -24,16 +25,21 @@ pub struct IndexedFile {
     pub non_declaration_callable_fragments: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IndexedSymbolDetail {
     pub type_text: Option<String>,
+    pub type_text_span: Option<TextSpan>,
     pub return_type_text: Option<String>,
+    pub return_type_text_span: Option<TextSpan>,
     pub base_type: Option<String>,
+    pub base_type_span: Option<TextSpan>,
     pub default_text: Option<String>,
+    pub default_text_span: Option<TextSpan>,
     pub enum_value_text: Option<String>,
+    pub enum_value_text_span: Option<TextSpan>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IndexedSymbol {
     pub id: GlobalSymbolId,
     pub parent: Option<GlobalSymbolId>,
@@ -49,19 +55,19 @@ pub struct IndexedSymbol {
     pub callable_form: Option<CallableForm>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IndexedAttribute {
     pub name: Option<String>,
     pub text: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IndexedDocComment {
     pub kind: DocCommentKind,
     pub text: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IndexedConditionalBranch {
     pub kind: PreprocessorBranchKind,
     pub condition: Option<String>,
@@ -95,6 +101,118 @@ pub struct SymbolIndex {
     methods_by_owner_name: BTreeMap<(String, String), Vec<GlobalSymbolId>>,
     fields_by_owner_name: BTreeMap<(String, String), Vec<GlobalSymbolId>>,
     members_by_owner: BTreeMap<String, Vec<GlobalSymbolId>>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SymbolIndexSnapshot {
+    files: Vec<IndexedFile>,
+    symbols: Vec<IndexedSymbol>,
+    by_name: Vec<(String, Vec<GlobalSymbolId>)>,
+    top_level_by_name: Vec<(String, Vec<GlobalSymbolId>)>,
+    by_kind: Vec<(SymbolKind, Vec<GlobalSymbolId>)>,
+    children: Vec<(GlobalSymbolId, Vec<GlobalSymbolId>)>,
+    classes_by_name: Vec<(String, Vec<GlobalSymbolId>)>,
+    typedefs_by_name: Vec<(String, Vec<GlobalSymbolId>)>,
+    functions_by_name: Vec<(String, Vec<GlobalSymbolId>)>,
+    methods_by_owner_name: Vec<((String, String), Vec<GlobalSymbolId>)>,
+    fields_by_owner_name: Vec<((String, String), Vec<GlobalSymbolId>)>,
+    members_by_owner: Vec<(String, Vec<GlobalSymbolId>)>,
+}
+
+impl From<&SymbolIndex> for SymbolIndexSnapshot {
+    fn from(index: &SymbolIndex) -> Self {
+        Self {
+            files: index.files.clone(),
+            symbols: index.symbols.clone(),
+            by_name: index
+                .by_name
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+            top_level_by_name: index
+                .top_level_by_name
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+            by_kind: index
+                .by_kind
+                .iter()
+                .map(|(key, value)| (*key, value.clone()))
+                .collect(),
+            children: index
+                .children
+                .iter()
+                .map(|(key, value)| (*key, value.clone()))
+                .collect(),
+            classes_by_name: index
+                .classes_by_name
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+            typedefs_by_name: index
+                .typedefs_by_name
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+            functions_by_name: index
+                .functions_by_name
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+            methods_by_owner_name: index
+                .methods_by_owner_name
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+            fields_by_owner_name: index
+                .fields_by_owner_name
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+            members_by_owner: index
+                .members_by_owner
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+        }
+    }
+}
+
+impl From<SymbolIndexSnapshot> for SymbolIndex {
+    fn from(snapshot: SymbolIndexSnapshot) -> Self {
+        Self {
+            files: snapshot.files,
+            symbols: snapshot.symbols,
+            by_name: snapshot.by_name.into_iter().collect(),
+            top_level_by_name: snapshot.top_level_by_name.into_iter().collect(),
+            by_kind: snapshot.by_kind.into_iter().collect(),
+            children: snapshot.children.into_iter().collect(),
+            classes_by_name: snapshot.classes_by_name.into_iter().collect(),
+            typedefs_by_name: snapshot.typedefs_by_name.into_iter().collect(),
+            functions_by_name: snapshot.functions_by_name.into_iter().collect(),
+            methods_by_owner_name: snapshot.methods_by_owner_name.into_iter().collect(),
+            fields_by_owner_name: snapshot.fields_by_owner_name.into_iter().collect(),
+            members_by_owner: snapshot.members_by_owner.into_iter().collect(),
+        }
+    }
+}
+
+impl Serialize for SymbolIndex {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        SymbolIndexSnapshot::from(self).serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for SymbolIndex {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        SymbolIndexSnapshot::deserialize(deserializer).map(Self::from)
+    }
 }
 
 impl SymbolIndex {
@@ -141,22 +259,27 @@ impl SymbolIndex {
                         .detail
                         .type_text
                         .map(|span| catalog.text(span).to_string()),
+                    type_text_span: record.detail.type_text,
                     return_type_text: record
                         .detail
                         .return_type_text
                         .map(|span| catalog.text(span).to_string()),
+                    return_type_text_span: record.detail.return_type_text,
                     base_type: record
                         .detail
                         .base_type
                         .map(|span| catalog.text(span).to_string()),
+                    base_type_span: record.detail.base_type,
                     default_text: record
                         .detail
                         .default_text
                         .map(|span| catalog.text(span).to_string()),
+                    default_text_span: record.detail.default_text,
                     enum_value_text: record
                         .detail
                         .enum_value_text
                         .map(|span| catalog.text(span).to_string()),
+                    enum_value_text_span: record.detail.enum_value_text,
                 },
                 attributes: indexed_attributes(catalog, &record.attributes),
                 modifiers: record

@@ -1,5 +1,6 @@
 use crate::lexer::{Keyword, Operator, TextSpan, Token, TokenKind};
 use crate::syntax::{Parse, SyntaxElement, SyntaxKind, SyntaxNode};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TextValue<'source> {
@@ -13,7 +14,7 @@ impl<'source> TextValue<'source> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DocCommentKind {
     Line,
     Block,

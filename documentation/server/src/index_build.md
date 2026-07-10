@@ -26,6 +26,8 @@ This file depends on parser, AST, model, and index modules. It must not resolve 
 
 The builder is source-root explicit. VS Code workspace discovery and game-data source resolution belong in future TypeScript/LSP integration layers, not here.
 
+Runtime cache loading and invalidation belong in `server/src/index_cache.rs`. This builder remains the source-to-index construction path used when a cache is missing, stale, corrupt, or incompatible.
+
 ## Change Notes
 
 - Added the shared index-building pipeline for corpus report, overlay report, and index debug tooling.
@@ -35,9 +37,10 @@ The builder is source-root explicit. VS Code workspace discovery and game-data s
 - Render replacement characters in snippets as `<U+FFFD>` so lossy decode reports remain ASCII-stable and do not display mojibake in PowerShell or other terminals.
 - Added source-category assignment from source-root relative paths so editor-facing queries can include runtime/workspace sources while raw debug keeps docs/tests/Workbench sources visible.
 - Split build timings into read/decode, parse, AST/model catalog, and index aggregation phases while preserving the older aggregate catalog timing for compatibility.
+- Used by the runtime index cache to rebuild disposable game-data indexes when cache validation fails.
 
 ## Future Improvements
 
 - Add incremental rebuild inputs after workspace file watching exists.
-- Add optional persisted cache only after runtime startup baseline measurements justify it.
+- Keep persisted cache policy in `index_cache`; this module should continue to only build indexes from explicit source roots.
 - Improve memory-size estimates if future language-server startup needs more than the current lower-bound index-shape report.

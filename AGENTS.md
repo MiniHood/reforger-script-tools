@@ -124,6 +124,8 @@ Logging ownership must stay clear:
 - The future Rust/LSP layer logs parser, analyzer, indexer, and workspace operations through its own controlled debug path.
 - Workbench validation logs record command/input, summarized output, exit status, and relevant paths.
 
+Hover and AST troubleshooting has a dedicated single-record debug report. Codex MUST check `globalStorageUri/logs/hover-debug/latest.md` first when investigating hover selection, cursor position, lexer/parser/AST/model/index output, or symbol display issues. This file MUST remain separate from normal runtime logs and MUST be fully overwritten on each hover-debug command run; do not append multiple records to it.
+
 ## Piece-Meal Implementation Strategy
 
 Every implementation plan must be broken into small slices. Each slice must state:

@@ -10,11 +10,11 @@ This file sits above the model layer and below future semantic resolution, diagn
 
 ## Current Behavior
 
-The index exposes `SymbolIndex::from_catalogs()` and `add_catalog()` for building an in-memory index from model catalogs. It assigns each catalog a `SourceFileId` and represents global symbols as `{ file_id, symbol_id }`, keeping `SymbolId` file-local. It stores compact copied lookup and presentation facts, including names, detail text, modifier text, raw attribute text and names, raw doc comments, conditional context summaries, and callable form metadata, so lookup and display results remain usable without re-slicing source text.
+The index exposes `SymbolIndex::from_catalogs()` and `add_catalog()` for building an in-memory index from model catalogs. It assigns each catalog a `SourceFileId` and represents global symbols as `{ file_id, symbol_id }`, keeping `SymbolId` file-local. It stores compact copied lookup and presentation facts, including names, detail text and detail spans, modifier text, raw attribute text and names, raw doc comments, conditional context summaries, and callable form metadata, so lookup and display results remain usable without re-slicing source text.
 
 The index can answer all-symbol name lookup, top-level name lookup, all-symbol preferred-name lookup sorted by source priority, top-level-only preferred-name lookup for declaration conflict review, preferred ordering for an explicit symbol ID slice, symbol-kind lookup, class lookup by name, typedef lookup by name, function lookup by name, kind-specific preferred class/typedef/function lookup, method lookup by owner/name, field lookup by owner/name, direct class-member lookup by owner, best-effort inherited member lookup by exact base class name, raw owner-name aggregate completion lookup, preferred-class overlay completion lookup, callable signature display, method owner/name group iteration for report tooling, child lookup, duplicate top-level-name review, source-kind counts, and map-size counts. Local variables are indexed for all-symbol lookup and hover/debug display, but they are not top-level declarations, class members, inherited members, or completion members.
 
-Source-root scanning, file reading, metadata creation, parser/AST/model catalog construction, and index population are owned by `server/src/index_build.rs`. Future tools and runtime code should use that builder instead of duplicating the pipeline around `SymbolIndex::add_catalog`.
+Source-root scanning, file reading, metadata creation, parser/AST/model catalog construction, and index population are owned by `server/src/index_build.rs`. Runtime game-data cache loading and rebuilding are owned by `server/src/index_cache.rs`. Future tools and runtime code should use those modules instead of duplicating the pipeline around `SymbolIndex::add_catalog`.
 
 Future editor/LSP features should prefer `server/src/index_query.rs` and `server/src/symbol_display.rs` over calling raw `SymbolIndex` APIs directly. `IndexQuery` exposes the intended editor-facing path for kind-specific preferred lookup, top-level conflict review, callable signatures, and preferred-class completion while keeping raw aggregate lookup available only as an explicit debug escape hatch. `SymbolDisplay` owns shared presentation formatting for labels, details, signatures, docs previews, attributes, modifiers, and provenance.
 
@@ -22,7 +22,7 @@ Dev-only overlay tooling can build an index from game data and an explicit works
 
 ## Dependencies and Boundaries
 
-This file depends on lexer spans and the model layer. It must not parse source, extract AST declarations, resolve symbols semantically, evaluate typedefs/defaults/enum values, infer inheritance, merge partial classes, call Workbench, perform file watching, write binary caches, or handle LSP requests. Persistence and cache formats are future work and must remain optional cache behavior, not source truth.
+This file depends on lexer spans and the model layer. It must not parse source, extract AST declarations, resolve symbols semantically, evaluate typedefs/defaults/enum values, infer inheritance, merge partial classes, call Workbench, perform file watching, own cache invalidation, or handle LSP requests. Persistence and cache formats belong in `index_cache` and must remain optional cache behavior, not source truth.
 
 ## Change Notes
 
@@ -40,10 +40,12 @@ This file depends on lexer spans and the model layer. It must not parse source, 
 - Added dev-only overlay report/debug usage that validates workspace priority over game-data priority without changing index semantics.
 - Added `callable_signature()` for source-backed function, method, constructor, and destructor display. Parameter display includes source-backed parameter modifiers such as `out`, `inout`, and `notnull`. Kept `method_signature()` as a method-only compatibility API.
 - Added `IndexBuild` in `server/src/index_build.rs` as the shared builder for explicit source roots and report/debug summaries.
+- Added serde-backed snapshot serialization for copied index data so `index_cache` can persist disposable runtime indexes without changing lookup behavior.
 - Added `IndexQuery` in `server/src/index_query.rs` as the future editor-facing facade over these raw lookup maps.
 - Copied source category, conditional context, and callable form facts from model catalogs into indexed symbols for debug/report/query policy. `SymbolIndex` remains raw and policy-free; filtering belongs in `IndexQuery`.
 - Copied modifiers, attributes, and doc comments into indexed symbols so future editor display does not need source text to show hover/completion/document-symbol facts.
 - Indexed local variables by name and kind while keeping them out of top-level and class-member lookup maps.
+- Copied detail spans alongside detail text so resolver and debug layers can classify type-position identifiers without retaining full source text in the index.
 
 ## Future Improvements
 
@@ -51,5 +53,5 @@ This file depends on lexer spans and the model layer. It must not parse source, 
 - Add local-scope-aware lookup only after a real scope model exists.
 - Add explicit workspace-over-game-data override reporting after real workspace indexing exists.
 - Replace best-effort inherited member lookup with semantic class/inheritance resolution when that layer exists.
-- Add optional persisted cache only if startup measurements justify it.
+- Keep cache invalidation and runtime cache policy in `index_cache`; do not add cache ownership here.
 - Add semantic resolution as a separate model/index layer after lookup behavior is validated.

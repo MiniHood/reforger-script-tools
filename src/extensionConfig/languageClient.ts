@@ -1,6 +1,11 @@
 export const languageClientIds = {
 	id: 'reforgerScriptTools.languageClient',
 	name: 'Reforger Script Tools Language Server',
+	debugOutputName: 'Reforger Script Tools Hover Debug',
+} as const;
+
+export const languageClientCommands = {
+	debugHoverAtCursor: 'reforger-sript-tools.debug.hoverAtCursor',
 } as const;
 
 export const languageClientServer = {
@@ -14,10 +19,21 @@ export const languageClientServer = {
 export const languageClientLogs = {
 	rootFolder: 'logs',
 	serverLogFile: 'language-server.log',
+	hoverDebugFolder: 'hover-debug',
+	hoverDebugLatestFile: 'latest.md',
+} as const;
+
+export const languageClientIndexCache = {
+	rootFolder: 'index-cache',
+	gameDataIndexFile: 'game-data-symbol-index.v1.json',
 } as const;
 
 export const languageClientLanguage = {
 	id: 'enforce',
+} as const;
+
+export const languageClientRequests = {
+	debugHover: 'reforger/debugHover',
 } as const;
 
 export const languageClientDocumentSelector = [

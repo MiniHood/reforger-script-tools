@@ -44,6 +44,10 @@
     ],
     "commands": [
       {
+        "command": "reforger-sript-tools.debug.hoverAtCursor",
+        "title": "Reforger Script Tools: Debug Hover At Cursor"
+      },
+      {
         "command": "reforger-sript-tools.gameData.checkForUpdates",
         "title": "Reforger Script Tools: Check Game Data Updates"
       },
@@ -61,7 +65,14 @@
           "description": "Optional manual Reforger game data folder. Set this to either the folder containing scripts/ or the scripts/ folder itself. When set, GitHub game-data checks and downloads are skipped."
         }
       }
-    }
+    },
+    "keybindings": [
+      {
+        "command": "reforger-sript-tools.debug.hoverAtCursor",
+        "key": "ctrl+f1",
+        "when": "editorTextFocus && editorLangId == enforce"
+      }
+    ]
   },
   "scripts": {
     "vscode:prepublish": "npm run package",

@@ -12,6 +12,8 @@ This grammar is editor presentation support. It gives VS Code scopes that themes
 
 The grammar scopes comments, documentation comments, preprocessor lines, strings, attributes, declaration names, keywords, primitive and PascalCase-like types, function-like identifiers, numbers, and punctuation/operators.
 
+The hover-debug report includes a bounded expected-scope table for nearby tokens. It uses lexer context to approximate the scopes this grammar should emit, so it is useful for checking theme expectations alongside `Developer: Inspect Editor Tokens and Scopes`.
+
 ## Dependencies and Boundaries
 
 The grammar is declarative JSON consumed by VS Code. It must not encode semantic truth, workspace lookup, inheritance, or compiler validation. Keep complex language intelligence in Rust semantic-token/LSP features later.
@@ -20,6 +22,7 @@ The grammar is declarative JSON consumed by VS Code. It must not encode semantic
 
 - Added baseline `source.enforce` scopes for theme coloring.
 - Fixed the punctuation/operator regex so the grammar can emit child scopes instead of falling back to only `source.enforce`.
+- Added documentation that hover-debug reports include expected scope/color context for grammar troubleshooting.
 
 ## Future Improvements
 

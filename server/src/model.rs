@@ -3,6 +3,7 @@ use crate::ast::{
     MethodKind, TextValue,
 };
 use crate::lexer::TextSpan;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 pub const SOURCE_PRIORITY_UNKNOWN: u16 = 0;
@@ -10,7 +11,7 @@ pub const SOURCE_PRIORITY_FIXTURE: u16 = 50;
 pub const SOURCE_PRIORITY_GAME_DATA: u16 = 100;
 pub const SOURCE_PRIORITY_WORKSPACE: u16 = 200;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum SourceKind {
     Unknown,
     GameData,
@@ -29,7 +30,7 @@ impl SourceKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum SourceCategory {
     Workspace,
     Game,
@@ -72,7 +73,7 @@ impl SourceCategory {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceFileMetadata {
     pub kind: SourceKind,
     pub category: SourceCategory,
@@ -128,10 +129,10 @@ pub fn source_category_for_path(kind: SourceKind, path: Option<&Path>) -> Source
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct SymbolId(pub usize);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum SymbolKind {
     Class,
     Enum,
@@ -174,7 +175,7 @@ pub struct DocCommentRecord {
     pub kind: DocCommentKind,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PreprocessorBranchKind {
     If,
     Ifdef,
@@ -202,7 +203,7 @@ pub struct ConditionalBranch {
     pub condition: Option<TextSpan>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum CallableForm {
     Implementation,
     Declaration,

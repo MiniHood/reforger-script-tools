@@ -10,7 +10,7 @@ This file is TypeScript extension-shell configuration. It keeps language-client 
 
 ## Current Behavior
 
-Exports constants for the language client ID/name, server binary name, packaged server folder, development fallback path, log location, contributed language id, and language-client document selector.
+Exports constants for the language client ID/name, hover-debug output channel name, language-client command IDs, server binary name, packaged server folder, development fallback path, log locations, index-cache locations, contributed language id, custom LSP request names, and language-client document selector.
 
 The language id is `enforce`. The document selector targets that language id; path-scoped `.c` association belongs to `package.json`, not this TypeScript constants file.
 
@@ -22,6 +22,9 @@ This file has no VS Code API calls, filesystem access, mutable state, parser log
 
 - Added centralized constants for the first bundled Rust language-server client.
 - Added the centralized `enforce` language id used by the language-client selector.
+- Added centralized constants for the hover-debug command and `reforger/debugHover` request.
+- Added centralized storage names for the single-record hover-debug report under `logs/hover-debug/latest.md`.
+- Added centralized storage names for the disposable game-data symbol index cache under `index-cache/`.
 
 ## Future Improvements
 

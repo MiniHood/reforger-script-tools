@@ -14,6 +14,8 @@ The binary accepts:
 
 - `--log <path>` for language-server log output.
 - `--game-data-scripts <path>` for game-data source provenance.
+- `--game-data-metadata <path>` for downloaded game-data commit metadata used by cache invalidation.
+- `--index-cache <path>` for the disposable serialized game-data symbol index.
 
 It starts the stdio LSP loop and exits with a nonzero status if the server returns an error.
 
@@ -24,6 +26,7 @@ This file must stay thin. Do not add parser, index, Workbench, VS Code, cache, o
 ## Change Notes
 
 - Added the first binary entrypoint for packaging a self-contained language server with the VS Code extension.
+- Added game-data metadata and index-cache path flags for runtime external hover lookup.
 
 ## Future Improvements
 

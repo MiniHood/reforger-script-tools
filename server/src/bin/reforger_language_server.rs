@@ -25,9 +25,19 @@ fn parse_args() -> LspServerOptions {
                     options.game_data_scripts = Some(PathBuf::from(value));
                 }
             }
+            "--game-data-metadata" => {
+                if let Some(value) = args.next() {
+                    options.game_data_metadata = Some(PathBuf::from(value));
+                }
+            }
+            "--index-cache" => {
+                if let Some(value) = args.next() {
+                    options.index_cache = Some(PathBuf::from(value));
+                }
+            }
             "--help" | "-h" => {
                 println!(
-                    "Usage: reforger_language_server [--log <path>] [--game-data-scripts <path>]"
+                    "Usage: reforger_language_server [--log <path>] [--game-data-scripts <path>] [--game-data-metadata <path>] [--index-cache <path>]"
                 );
                 std::process::exit(0);
             }
