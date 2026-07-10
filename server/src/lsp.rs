@@ -8,7 +8,8 @@ use crate::lexer::{lex, Keyword, TextSpan, Token, TokenKind};
 use crate::model::{SourceFileMetadata, SymbolCatalog, SymbolKind};
 use crate::parser::parse_source;
 use crate::resolver::{
-    CandidateSource, IdentifierContext, ReceiverResolution, ReferenceResolver, ResolutionReason,
+    CandidateSource, HoverResolution, IdentifierContext, ReceiverResolution, ReferenceResolver,
+    ResolutionReason,
 };
 use crate::symbol_display::SymbolDisplayInfo;
 use crate::syntax::ParseDiagnostic;
@@ -113,16 +114,16 @@ pub struct LspHoverReport {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HoverSelectionSource {
-    Resolver,
-    SpanFallback,
+    ResolverIdentifier,
+    ResolverSyntaxSpan,
     None,
 }
 
 impl HoverSelectionSource {
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Resolver => "resolver",
-            Self::SpanFallback => "span-fallback",
+            Self::ResolverIdentifier => "resolver-identifier",
+            Self::ResolverSyntaxSpan => "resolver-syntax-span",
             Self::None => "none",
         }
     }
@@ -890,42 +891,23 @@ fn hover_report_for_offset(
     external_index: Option<&SymbolIndex>,
 ) -> LspHoverReport {
     let query = IndexQuery::new(&analysis.index);
-    if let Some(resolution) =
-        ReferenceResolver::new(source, &analysis.index, external_index).resolve_at_offset(offset)
-    {
-        let candidate_count = resolution.candidates.len();
-        let reason = resolution.reason;
-        let identifier_context = resolution.identifier_context;
-        if let Some(selected) = resolution.selected.as_ref() {
-            match selected.source {
-                CandidateSource::FileLocal => {
-                    if let Some(mut report) = hover_report_for_symbol(
-                        source,
-                        &analysis.index,
-                        &query,
-                        selected.id,
-                        None,
-                        HoverSelectionSource::Resolver,
-                        Some(CandidateSource::FileLocal),
-                        Some(reason),
-                        Some(identifier_context),
-                        candidate_count,
-                    ) {
-                        report.receiver_resolution = resolution.receiver.clone();
-                        return report.with_parse_diagnostics(analysis.parse_diagnostics);
-                    }
-                }
-                CandidateSource::External => {
-                    if let Some(external_index) = external_index {
-                        let external_query = IndexQuery::new(external_index);
+    let resolver = ReferenceResolver::new(source, &analysis.index, external_index);
+    match resolver.resolve_hover_at_offset(offset) {
+        Some(HoverResolution::Identifier(resolution)) => {
+            let candidate_count = resolution.candidates.len();
+            let reason = resolution.reason;
+            let identifier_context = resolution.identifier_context;
+            if let Some(selected) = resolution.selected.as_ref() {
+                match selected.source {
+                    CandidateSource::FileLocal => {
                         if let Some(mut report) = hover_report_for_symbol(
                             source,
-                            external_index,
-                            &external_query,
+                            &analysis.index,
+                            &query,
                             selected.id,
-                            Some(range_for_span(source, resolution.token_span)),
-                            HoverSelectionSource::Resolver,
-                            Some(CandidateSource::External),
+                            None,
+                            HoverSelectionSource::ResolverIdentifier,
+                            Some(CandidateSource::FileLocal),
                             Some(reason),
                             Some(identifier_context),
                             candidate_count,
@@ -934,40 +916,62 @@ fn hover_report_for_offset(
                             return report.with_parse_diagnostics(analysis.parse_diagnostics);
                         }
                     }
+                    CandidateSource::External => {
+                        if let Some(external_index) = external_index {
+                            let external_query = IndexQuery::new(external_index);
+                            if let Some(mut report) = hover_report_for_symbol(
+                                source,
+                                external_index,
+                                &external_query,
+                                selected.id,
+                                Some(range_for_span(source, resolution.token_span)),
+                                HoverSelectionSource::ResolverIdentifier,
+                                Some(CandidateSource::External),
+                                Some(reason),
+                                Some(identifier_context),
+                                candidate_count,
+                            ) {
+                                report.receiver_resolution = resolution.receiver.clone();
+                                return report.with_parse_diagnostics(analysis.parse_diagnostics);
+                            }
+                        }
+                    }
                 }
             }
+            LspHoverReport {
+                hover: None,
+                parse_diagnostics: analysis.parse_diagnostics,
+                selected_label: None,
+                selected_kind: None,
+                selected_source: None,
+                selection_source: HoverSelectionSource::None,
+                resolver_reason: Some(reason),
+                identifier_context: Some(identifier_context),
+                resolver_candidate_count: candidate_count,
+                receiver_resolution: resolution.receiver.clone(),
+            }
         }
-        return LspHoverReport {
-            hover: None,
-            parse_diagnostics: analysis.parse_diagnostics,
-            selected_label: None,
-            selected_kind: None,
-            selected_source: None,
-            selection_source: HoverSelectionSource::None,
-            resolver_reason: Some(reason),
-            identifier_context: Some(identifier_context),
-            resolver_candidate_count: candidate_count,
-            receiver_resolution: resolution.receiver.clone(),
-        };
+        Some(HoverResolution::SyntaxSpan(resolution)) => {
+            let Some(selected) = resolution.selected.as_ref() else {
+                return empty_hover_report(analysis.parse_diagnostics);
+            };
+            hover_report_for_symbol(
+                source,
+                &analysis.index,
+                &query,
+                selected.id,
+                None,
+                HoverSelectionSource::ResolverSyntaxSpan,
+                Some(CandidateSource::FileLocal),
+                Some(resolution.reason),
+                None,
+                resolution.candidates.len(),
+            )
+            .map(|report| report.with_parse_diagnostics(analysis.parse_diagnostics))
+            .unwrap_or_else(|| empty_hover_report(analysis.parse_diagnostics))
+        }
+        None => empty_hover_report(analysis.parse_diagnostics),
     }
-
-    let Some(id) = hover_symbol_at_offset(&analysis.index, offset) else {
-        return empty_hover_report(analysis.parse_diagnostics);
-    };
-    hover_report_for_symbol(
-        source,
-        &analysis.index,
-        &query,
-        id,
-        None,
-        HoverSelectionSource::SpanFallback,
-        Some(CandidateSource::FileLocal),
-        None,
-        None,
-        0,
-    )
-    .map(|report| report.with_parse_diagnostics(analysis.parse_diagnostics))
-    .unwrap_or_else(|| empty_hover_report(analysis.parse_diagnostics))
 }
 
 fn hover_report_for_symbol(
@@ -1062,11 +1066,10 @@ fn debug_hover_report_for_cached_analysis_with_external(
     let query = IndexQuery::new(index);
     let offset = offset_for_position(source, position);
     let tokens = lex(source);
-    let resolver_resolution = offset.and_then(|offset| {
-        ReferenceResolver::new(source, index, external_index).resolve_at_offset(offset)
-    });
+    let resolver = ReferenceResolver::new(source, index, external_index);
+    let resolver_resolution = offset.and_then(|offset| resolver.resolve_at_offset(offset));
     let candidates = offset
-        .map(|offset| hover_candidates_at_offset(index, offset))
+        .map(|offset| resolver.syntax_span_candidates_at_offset(offset))
         .unwrap_or_default();
     let selected_id = resolver_resolution
         .as_ref()
@@ -1315,61 +1318,6 @@ pub fn offset_for_position(source: &str, position: LspPosition) -> Option<usize>
     } else {
         None
     }
-}
-
-#[derive(Debug, Clone, Copy)]
-struct HoverCandidate {
-    id: GlobalSymbolId,
-    selection_hit: bool,
-    span_hit: bool,
-    matched_span: TextSpan,
-}
-
-fn hover_symbol_at_offset(index: &SymbolIndex, offset: usize) -> Option<GlobalSymbolId> {
-    hover_candidates_at_offset(index, offset)
-        .first()
-        .map(|candidate| candidate.id)
-}
-
-fn hover_candidates_at_offset(index: &SymbolIndex, offset: usize) -> Vec<HoverCandidate> {
-    let mut candidates = index
-        .symbols()
-        .iter()
-        .filter_map(|symbol| {
-            let selection_hit = span_contains_offset(symbol.selection_span, offset);
-            let span_hit = span_contains_offset(symbol.span, offset);
-            if !selection_hit && !span_hit {
-                return None;
-            }
-            let matched_span = if selection_hit {
-                symbol.selection_span
-            } else {
-                symbol.span
-            };
-            Some(HoverCandidate {
-                id: symbol.id,
-                selection_hit,
-                span_hit,
-                matched_span,
-            })
-        })
-        .collect::<Vec<_>>();
-    candidates.sort_by_key(|candidate| {
-        (
-            !candidate.selection_hit,
-            candidate
-                .matched_span
-                .end
-                .saturating_sub(candidate.matched_span.start),
-            candidate.id.file_id,
-            candidate.id.symbol_id,
-        )
-    });
-    candidates
-}
-
-fn span_contains_offset(span: TextSpan, offset: usize) -> bool {
-    span.start <= offset && offset < span.end
 }
 
 fn render_hover_markdown(display: &SymbolDisplayInfo) -> String {
@@ -1732,7 +1680,7 @@ fn append_hover_candidates(
     report: &mut String,
     index: &SymbolIndex,
     query: &IndexQuery<'_>,
-    candidates: &[HoverCandidate],
+    candidates: &[crate::resolver::ReferenceCandidate],
 ) {
     if candidates.is_empty() {
         report.push_str("None.\n");
@@ -1743,17 +1691,10 @@ fn append_hover_candidates(
     for (index_in_list, candidate) in candidates.iter().take(DEBUG_CANDIDATE_LIMIT).enumerate() {
         let display = query.symbol_display(candidate.id);
         let symbol = index.symbol(candidate.id);
-        let match_text = if candidate.selection_hit {
-            "selection"
-        } else if candidate.span_hit {
-            "declaration"
-        } else {
-            "none"
-        };
         report.push_str(&format!(
             "| {} | {} | `{}` | `{}` | `{}` | `{}` |\n",
             index_in_list + 1,
-            match_text,
+            candidate.reason.as_str(),
             display
                 .as_ref()
                 .map(|display| symbol_kind_label(display.kind))
@@ -1787,7 +1728,7 @@ fn append_resolver_resolution(
     resolution: Option<&crate::resolver::ReferenceResolution>,
 ) {
     let Some(resolution) = resolution else {
-        report.push_str("Cursor is not on an identifier token; hover will use span fallback.\n");
+        report.push_str("Cursor is not on an identifier token; resolver syntax-span hover will be used if a symbol span contains the cursor.\n");
         return;
     };
 
@@ -2747,7 +2688,7 @@ class Example
     }
 
     #[test]
-    fn hover_uses_span_fallback_for_non_identifier_inside_symbol_span() {
+    fn hover_uses_resolver_syntax_span_for_non_identifier_inside_symbol_span() {
         let source = r#"class Example
 {
 	void Run(int value);
@@ -2757,15 +2698,18 @@ class Example
         let report = hover_at(source, "void Run", "void");
 
         assert!(report.is_hit());
-        assert_eq!(report.selection_source, HoverSelectionSource::SpanFallback);
-        assert_eq!(report.resolver_reason, None);
-        assert_eq!(report.resolver_candidate_count, 0);
+        assert_eq!(
+            report.selection_source,
+            HoverSelectionSource::ResolverSyntaxSpan
+        );
+        assert_eq!(report.resolver_reason, Some(ResolutionReason::SyntaxSpan));
+        assert!(report.resolver_candidate_count > 0);
         assert_eq!(report.selected_kind, Some(SymbolKind::Method));
         assert_eq!(report.selected_label.as_deref(), Some("Run"));
     }
 
     #[test]
-    fn hover_returns_none_for_unresolved_identifier_without_span_fallback() {
+    fn hover_returns_none_for_unresolved_identifier_without_syntax_span_selection() {
         let source = r#"class Example
 {
 	void Run()
@@ -3459,7 +3403,10 @@ class Example
             "hover label mismatch for needle `{needle}` cursor `{cursor}`"
         );
         assert!(report.hover.is_some());
-        assert_eq!(report.selection_source, HoverSelectionSource::Resolver);
+        assert_eq!(
+            report.selection_source,
+            HoverSelectionSource::ResolverIdentifier
+        );
         assert!(report.resolver_candidate_count > 0);
     }
 

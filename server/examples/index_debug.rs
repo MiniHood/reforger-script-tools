@@ -428,7 +428,7 @@ fn print_class_member_summary(
     }
     println!();
 
-    let all_members = index.members_for_class_including_bases(owner);
+    let all_members = index.raw_members_for_class_including_bases(owner);
     let inherited_members = all_members
         .iter()
         .skip(index.direct_members_by_owner(owner).len())
@@ -462,7 +462,7 @@ fn print_class_member_summary(
     }
     println!();
 
-    let completion = index.completion_members_for_class(owner);
+    let completion = index.raw_completion_members_for_owner_name(owner);
     print_completion_lookup(
         index,
         args,
@@ -499,9 +499,9 @@ fn print_class_member_summary(
             .filter(|symbol| symbol.kind == SymbolKind::Field)
             .count();
         let direct_member_count = index.direct_members_by_owner(class_name).len();
-        let raw_members = index.members_for_class_including_bases(class_name);
+        let raw_members = index.raw_members_for_class_including_bases(class_name);
         let inherited_member_count = raw_members.len().saturating_sub(direct_member_count);
-        let raw_completion = index.completion_members_for_class(class_name);
+        let raw_completion = index.raw_completion_members_for_owner_name(class_name);
         let editor_completion = IndexQuery::new(index).completion_members_for_class(class_name);
         println!(
             "- Class `{}` direct fields {} direct members {} inherited/base-chain members {} raw total {} raw aggregate completion {} raw aggregate shadow groups {} editor completion {} editor shadow groups {}",

@@ -98,7 +98,7 @@ impl<'index> IndexQuery<'index> {
     }
 
     pub fn raw_completion_members_for_owner_name(&self, owner: &str) -> CompletionMemberLookup {
-        self.index.completion_members_for_class(owner)
+        self.index.raw_completion_members_for_owner_name(owner)
     }
 
     fn editor_completion_members(

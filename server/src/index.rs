@@ -508,14 +508,14 @@ impl SymbolIndex {
         self.members_by_owner(owner)
     }
 
-    pub fn members_for_class_including_bases(&self, owner: &str) -> Vec<GlobalSymbolId> {
+    pub fn raw_members_for_class_including_bases(&self, owner: &str) -> Vec<GlobalSymbolId> {
         self.member_segments_for_class_including_bases(owner)
             .into_iter()
             .flatten()
             .collect()
     }
 
-    pub fn completion_members_for_class(&self, owner: &str) -> CompletionMemberLookup {
+    pub fn raw_completion_members_for_owner_name(&self, owner: &str) -> CompletionMemberLookup {
         let member_segments = self.member_segments_for_class_including_bases(owner);
         self.completion_from_member_segments(member_segments)
     }
@@ -606,15 +606,6 @@ impl SymbolIndex {
             shadowed_groups.len() - 1
         });
         shadowed_groups[group_index].shadowed.extend(shadowed);
-    }
-
-    pub fn method_signature(&self, id: GlobalSymbolId) -> Option<String> {
-        let symbol = self.symbol(id)?;
-        if symbol.kind != SymbolKind::Method {
-            return None;
-        }
-
-        self.callable_signature(id)
     }
 
     pub fn callable_signature(&self, id: GlobalSymbolId) -> Option<String> {
@@ -1467,19 +1458,19 @@ modded class Example
             index.methods_by_owner_name("SCR_BaseGameMode", "GetComponentsByType")[0];
 
         assert_eq!(
-            index.method_signature(on_game_start).as_deref(),
+            index.callable_signature(on_game_start).as_deref(),
             Some("SCR_BaseGameMode.OnGameStart() -> void")
         );
         assert_eq!(
-            index.method_signature(begin).as_deref(),
+            index.callable_signature(begin).as_deref(),
             Some("SCR_BaseGameMode.Begin(string suite, string test) -> void")
         );
         assert_eq!(
-            index.method_signature(run).as_deref(),
+            index.callable_signature(run).as_deref(),
             Some("SCR_BaseGameMode.Run(int value = 4) -> void")
         );
         assert_eq!(
-            index.method_signature(get_components).as_deref(),
+            index.callable_signature(get_components).as_deref(),
             Some("SCR_BaseGameMode.GetComponentsByType(typename componentType, out int foundCount) -> array<SCR_BaseGameModeComponent>")
         );
     }
@@ -1535,13 +1526,6 @@ class Example
             Some("~Example()")
         );
         assert_eq!(index.callable_signature(field), None);
-
-        assert_eq!(
-            index.method_signature(run).as_deref(),
-            Some("Example.Run(notnull string name, inout int count) -> void")
-        );
-        assert_eq!(index.method_signature(constructor), None);
-        assert_eq!(index.method_signature(global_fn), None);
     }
 
     #[test]
@@ -1608,7 +1592,7 @@ class GrandChild : Child
         );
         let index = SymbolIndex::from_catalogs([&catalog]);
 
-        let members = index.members_for_class_including_bases("GrandChild");
+        let members = index.raw_members_for_class_including_bases("GrandChild");
         let member_names = member_names(&index, &members);
 
         assert_eq!(
@@ -1632,7 +1616,7 @@ class GrandChild : Child
         );
         let index = SymbolIndex::from_catalogs([&catalog]);
 
-        let members = index.members_for_class_including_bases("Child");
+        let members = index.raw_members_for_class_including_bases("Child");
 
         assert_eq!(member_names(&index, &members), vec!["m_Child", "Run"]);
     }
@@ -1654,7 +1638,7 @@ class B : A
         );
         let index = SymbolIndex::from_catalogs([&catalog]);
 
-        let members = index.members_for_class_including_bases("A");
+        let members = index.raw_members_for_class_including_bases("A");
 
         assert_eq!(member_names(&index, &members), vec!["m_A", "m_B"]);
     }
@@ -1682,7 +1666,7 @@ class Child : Base
         );
         let index = SymbolIndex::from_catalogs([&catalog]);
 
-        let raw = index.members_for_class_including_bases("Child");
+        let raw = index.raw_members_for_class_including_bases("Child");
         assert_eq!(
             member_names(&index, &raw),
             vec![
@@ -1697,7 +1681,7 @@ class Child : Base
             ]
         );
 
-        let completion = index.completion_members_for_class("Child");
+        let completion = index.raw_completion_members_for_owner_name("Child");
         assert_eq!(completion.raw_candidates, raw);
         assert_eq!(
             member_names(&index, &completion.members),
@@ -1743,7 +1727,7 @@ class Child : Base
             .iter()
             .all(|id| index.symbol(*id).unwrap().detail.type_text.as_deref() == Some("int")));
 
-        let completion = index.completion_members_for_class("Example");
+        let completion = index.raw_completion_members_for_owner_name("Example");
 
         assert_eq!(
             member_names(&index, &completion.members),
@@ -1788,7 +1772,7 @@ class Child : Base
         let values = index.symbol(index.fields_by_owner_name("Example", "values")[0]);
         assert_eq!(values.unwrap().detail.type_text.as_deref(), Some("int"));
 
-        let completion = index.completion_members_for_class("Example");
+        let completion = index.raw_completion_members_for_owner_name("Example");
         assert_eq!(
             member_names(&index, &completion.members),
             vec![
@@ -1825,13 +1809,13 @@ class Child : Base
         );
         let index = SymbolIndex::from_catalogs([&game, &workspace]);
 
-        let raw = index.members_for_class_including_bases("SCR_BaseGameMode");
+        let raw = index.raw_members_for_class_including_bases("SCR_BaseGameMode");
         assert_eq!(
             member_names(&index, &raw),
             vec!["OnGameStart", "GameOnly", "OnGameStart", "WorkspaceOnly"]
         );
 
-        let completion = index.completion_members_for_class("SCR_BaseGameMode");
+        let completion = index.raw_completion_members_for_owner_name("SCR_BaseGameMode");
         assert_eq!(completion.raw_candidates, raw);
         assert_eq!(
             member_names(&index, &completion.members),
@@ -1900,7 +1884,7 @@ class Child : Base
         );
         let index = SymbolIndex::from_catalogs([&base, &game, &workspace]);
 
-        let raw = index.completion_members_for_class("SCR_BaseGameMode");
+        let raw = index.raw_completion_members_for_owner_name("SCR_BaseGameMode");
         assert_eq!(
             member_names(&index, &raw.members),
             vec!["OnGameStart", "GameOnly", "WorkspaceOnly"]
@@ -2065,7 +2049,7 @@ class B : A
         );
         let index = SymbolIndex::from_catalogs([&game_base, &game_child]);
 
-        let completion = index.completion_members_for_class("Child");
+        let completion = index.raw_completion_members_for_owner_name("Child");
         let run = completion.members[0];
 
         assert_eq!(index.symbol(run).unwrap().name.as_deref(), Some("Run"));
@@ -2098,7 +2082,7 @@ class B : A
         );
         let index = SymbolIndex::from_catalogs([&catalog]);
 
-        let completion = index.completion_members_for_class("Child");
+        let completion = index.raw_completion_members_for_owner_name("Child");
 
         assert_eq!(
             member_names(&index, &completion.members),
@@ -2126,7 +2110,7 @@ class B : A
         );
         let index = SymbolIndex::from_catalogs([&catalog]);
 
-        let completion = index.completion_members_for_class("A");
+        let completion = index.raw_completion_members_for_owner_name("A");
 
         assert_eq!(
             member_names(&index, &completion.members),
@@ -2155,7 +2139,7 @@ class Child : Base
         );
         let index = SymbolIndex::from_catalogs([&catalog]);
 
-        let completion = index.completion_members_for_class("Child");
+        let completion = index.raw_completion_members_for_owner_name("Child");
 
         assert_eq!(
             member_names(&index, &completion.members),
@@ -2315,7 +2299,7 @@ class Child : Base
             .iter()
             .all(|id| index.symbol(*id).unwrap().kind != SymbolKind::LocalVariable));
         assert!(index
-            .completion_members_for_class("Example")
+            .raw_completion_members_for_owner_name("Example")
             .members
             .iter()
             .all(|id| index.symbol(*id).unwrap().kind != SymbolKind::LocalVariable));

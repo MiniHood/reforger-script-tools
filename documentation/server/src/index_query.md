@@ -16,7 +16,7 @@ This file sits above `server/src/index.rs` and below future LSP request handlers
 - top-level conflict lookup without treating cross-kind results as semantic truth
 - callable signature lookup for functions, methods, constructors, and destructors
 - symbol display lookup through `SymbolDisplay`
-- editor-facing class completion through `completion_members_for_preferred_class`
+- editor-facing class completion through `IndexQuery::completion_members_for_class`, backed by `SymbolIndex::completion_members_for_preferred_class`
 - explicit raw/debug escape hatches for all-symbol lookup, top-level lookup, and owner-name aggregate completion
 
 Editor completion candidates include symbol identity, name, kind, detail/signature text, source kind, source category, priority, paths, spans, conditional context, callable form, a shared `SymbolDisplayInfo`, and a best-effort origin of direct, overlay, inherited, or unknown. The display record exposes raw `doc_comments` plus a bounded `documentation_preview`; future editor code should not rebuild documentation presentation from raw index internals. The origin is derived from the current preferred-class completion ordering and owner class names; it is not semantic inheritance proof.
@@ -34,7 +34,7 @@ Raw methods on `IndexQuery` are debug escape hatches. Future editor features sho
 ## Change Notes
 
 - Added the first query facade so future LSP/editor code has a clear safe path over `SymbolIndex`.
-- Kept raw owner-name aggregate completion available but separated it from editor-facing preferred-class completion.
+- Kept raw owner-name aggregate completion available as `raw_completion_members_for_owner_name`, separated from editor-facing preferred-class completion.
 - Added source and origin metadata to completion candidates for human review and future completion-item construction.
 - Added source-category filtering, included-source preferred class anchoring, conditional context exposure, callable form exposure, and implementation-over-declaration/prototype preference for editor completion candidates.
 - Added `symbol_display()` and embedded display info in completion candidates so future editor code has one canonical presentation shape.

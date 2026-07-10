@@ -202,6 +202,13 @@ fn run() -> Result<(), String> {
     checks.push(HoverCheck::inline(
         "inline_usage_hover_shapes.c",
         INLINE_USAGE_HOVER_SOURCE,
+        "syntax span method return type",
+        "void Run(string name, Entity ent)",
+        "void",
+    ));
+    checks.push(HoverCheck::inline(
+        "inline_usage_hover_shapes.c",
+        INLINE_USAGE_HOVER_SOURCE,
         "unresolved identifier miss",
         "MissingThing();",
         "MissingThing",

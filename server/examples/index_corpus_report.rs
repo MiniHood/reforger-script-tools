@@ -1464,7 +1464,7 @@ fn collect_completion_shadow_samples(
         let completion = if preferred_class_view {
             index.completion_members_for_preferred_class(&class_name)
         } else {
-            index.completion_members_for_class(&class_name)
+            index.raw_completion_members_for_owner_name(&class_name)
         };
         for group in completion.shadowed_groups {
             samples.push(MemberShadowSample {

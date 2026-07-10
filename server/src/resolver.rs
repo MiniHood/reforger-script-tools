@@ -23,6 +23,19 @@ pub struct ReferenceResolution {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HoverResolution {
+    Identifier(ReferenceResolution),
+    SyntaxSpan(SyntaxSpanResolution),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyntaxSpanResolution {
+    pub candidates: Vec<ReferenceCandidate>,
+    pub selected: Option<ReferenceCandidate>,
+    pub reason: ResolutionReason,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReferenceCandidate {
     pub source: CandidateSource,
     pub id: GlobalSymbolId,
@@ -71,6 +84,9 @@ pub enum ResolutionReason {
     ClassMember,
     ReceiverMember,
     StaticMember,
+    EngineClassCast,
+    PseudoClassMember,
+    SyntaxSpan,
     ReceiverUnresolved,
     TopLevel,
     ExternalPreferred,
@@ -86,6 +102,9 @@ impl ResolutionReason {
             Self::ClassMember => "class-member",
             Self::ReceiverMember => "receiver-member",
             Self::StaticMember => "static-member",
+            Self::EngineClassCast => "engine-class-cast",
+            Self::PseudoClassMember => "pseudo-class-member",
+            Self::SyntaxSpan => "syntax-span",
             Self::ReceiverUnresolved => "receiver-unresolved",
             Self::TopLevel => "top-level",
             Self::ExternalPreferred => "external-preferred",
@@ -196,6 +215,65 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
             selected,
             reason,
             receiver,
+        })
+    }
+
+    pub fn resolve_hover_at_offset(&self, offset: usize) -> Option<HoverResolution> {
+        if let Some(reference) = self.resolve_at_offset(offset) {
+            return Some(HoverResolution::Identifier(reference));
+        }
+
+        let span_resolution = self.resolve_syntax_span_hover_at_offset(offset)?;
+        Some(HoverResolution::SyntaxSpan(span_resolution))
+    }
+
+    pub fn syntax_span_candidates_at_offset(&self, offset: usize) -> Vec<ReferenceCandidate> {
+        let mut candidates = self
+            .file_index
+            .symbols()
+            .iter()
+            .filter_map(|symbol| {
+                let selection_hit = span_contains(symbol.selection_span, offset);
+                let span_hit = span_contains(symbol.span, offset);
+                if !selection_hit && !span_hit {
+                    return None;
+                }
+                let matched_span = if selection_hit {
+                    symbol.selection_span
+                } else {
+                    symbol.span
+                };
+                let file = self.file_index.file(symbol.id.file_id)?;
+                Some((
+                    !selection_hit,
+                    matched_span.end.saturating_sub(matched_span.start),
+                    symbol.id.file_id,
+                    symbol.id.symbol_id,
+                    candidate_from_symbol(
+                        CandidateSource::FileLocal,
+                        symbol.id,
+                        ResolutionReason::SyntaxSpan,
+                        symbol,
+                        file,
+                    ),
+                ))
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_by_key(|candidate| (candidate.0, candidate.1, candidate.2, candidate.3));
+        candidates
+            .into_iter()
+            .map(|(_, _, _, _, candidate)| candidate)
+            .collect()
+    }
+
+    fn resolve_syntax_span_hover_at_offset(&self, offset: usize) -> Option<SyntaxSpanResolution> {
+        let candidates = self.syntax_span_candidates_at_offset(offset);
+        let selected = candidates.first().cloned();
+        selected.as_ref()?;
+        Some(SyntaxSpanResolution {
+            candidates,
+            selected,
+            reason: ResolutionReason::SyntaxSpan,
         })
     }
 
@@ -334,24 +412,7 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
         }
 
         if candidates.len() == before && is_pseudo_class_member_name(token_text) {
-            push_class_member_candidates_from_index(
-                self.file_index,
-                CandidateSource::FileLocal,
-                "Class",
-                token_text,
-                candidates,
-                seen,
-            );
-            if let Some(external_index) = self.external_index {
-                push_class_member_candidates_from_index(
-                    external_index,
-                    CandidateSource::External,
-                    "Class",
-                    token_text,
-                    candidates,
-                    seen,
-                );
-            }
+            self.push_pseudo_class_member_rule(token_text, candidates, seen);
         }
     }
 
@@ -519,7 +580,7 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
         }
 
         if candidates.len() == before && inferred.is_static {
-            self.push_static_fallback_candidates(member_name, reason, candidates, seen);
+            self.push_engine_class_cast_rule(member_name, candidates, seen);
         }
 
         ReceiverResolution {
@@ -541,7 +602,7 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
         owner: &str,
         member_name: &str,
         static_only: bool,
-        reason: ResolutionReason,
+        mut reason: ResolutionReason,
         candidates: &mut Vec<ReferenceCandidate>,
         seen: &mut BTreeSet<CandidateKey>,
     ) {
@@ -577,6 +638,7 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
             for id in matching_members_for_exact_owner(index, "Class", member_name) {
                 push_unique_id(&mut matching, id);
             }
+            reason = ResolutionReason::PseudoClassMember;
         }
 
         for id in matching {
@@ -610,10 +672,9 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
         }
     }
 
-    fn push_static_fallback_candidates(
+    fn push_engine_class_cast_rule(
         &self,
         member_name: &str,
-        reason: ResolutionReason,
         candidates: &mut Vec<ReferenceCandidate>,
         seen: &mut BTreeSet<CandidateKey>,
     ) {
@@ -627,7 +688,7 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
             "Class",
             member_name,
             true,
-            reason,
+            ResolutionReason::EngineClassCast,
             candidates,
             seen,
         );
@@ -638,7 +699,35 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
                 "Class",
                 member_name,
                 true,
-                reason,
+                ResolutionReason::EngineClassCast,
+                candidates,
+                seen,
+            );
+        }
+    }
+
+    fn push_pseudo_class_member_rule(
+        &self,
+        member_name: &str,
+        candidates: &mut Vec<ReferenceCandidate>,
+        seen: &mut BTreeSet<CandidateKey>,
+    ) {
+        push_class_member_candidates_from_index_with_reason(
+            self.file_index,
+            CandidateSource::FileLocal,
+            "Class",
+            member_name,
+            ResolutionReason::PseudoClassMember,
+            candidates,
+            seen,
+        );
+        if let Some(external_index) = self.external_index {
+            push_class_member_candidates_from_index_with_reason(
+                external_index,
+                CandidateSource::External,
+                "Class",
+                member_name,
+                ResolutionReason::PseudoClassMember,
                 candidates,
                 seen,
             );
@@ -1098,20 +1187,33 @@ fn push_class_member_candidates_from_index(
     candidates: &mut Vec<ReferenceCandidate>,
     seen: &mut BTreeSet<CandidateKey>,
 ) {
+    push_class_member_candidates_from_index_with_reason(
+        index,
+        source,
+        class_name,
+        token_text,
+        ResolutionReason::ClassMember,
+        candidates,
+        seen,
+    );
+}
+
+fn push_class_member_candidates_from_index_with_reason(
+    index: &SymbolIndex,
+    source: CandidateSource,
+    class_name: &str,
+    token_text: &str,
+    reason: ResolutionReason,
+    candidates: &mut Vec<ReferenceCandidate>,
+    seen: &mut BTreeSet<CandidateKey>,
+) {
     let lookup = index.completion_members_for_preferred_class(class_name);
     for member in lookup.members {
         let Some(symbol) = index.symbol(member) else {
             continue;
         };
         if symbol.name.as_deref() == Some(token_text) {
-            push_index_candidate(
-                index,
-                candidates,
-                seen,
-                source,
-                member,
-                ResolutionReason::ClassMember,
-            );
+            push_index_candidate(index, candidates, seen, source, member, reason);
         }
     }
 }
@@ -2284,7 +2386,7 @@ class Example
     }
 
     #[test]
-    fn type_cast_falls_back_to_generic_class_cast_member() {
+    fn type_cast_uses_engine_class_cast_rule() {
         let source = r#"class IEntity {}
 class Class
 {
@@ -2308,7 +2410,7 @@ class Example
             resolution.identifier_context,
             IdentifierContext::MemberAccess
         );
-        assert_eq!(resolution.reason, ResolutionReason::StaticMember);
+        assert_eq!(resolution.reason, ResolutionReason::EngineClassCast);
         let selected = resolution.selected.as_ref().unwrap();
         assert_eq!(selected.kind, SymbolKind::Method);
         assert_eq!(selected.name.as_deref(), Some("Cast"));
@@ -2316,7 +2418,7 @@ class Example
     }
 
     #[test]
-    fn pseudo_class_member_fallback_resolves_instance_members() {
+    fn pseudo_class_member_rule_resolves_instance_members() {
         let source = r#"class ExampleType {}
 
 class Example
@@ -2357,7 +2459,7 @@ class Example
                 cursor,
             );
 
-            assert_eq!(resolution.reason, ResolutionReason::ReceiverMember);
+            assert_eq!(resolution.reason, ResolutionReason::PseudoClassMember);
             assert_eq!(
                 resolution.receiver.as_ref().unwrap().owner_type.as_deref(),
                 Some("ExampleType")
@@ -2370,7 +2472,7 @@ class Example
     }
 
     #[test]
-    fn concrete_member_beats_pseudo_class_member_fallback() {
+    fn concrete_member_beats_pseudo_class_member_rule() {
         let source = r#"class ExampleType
 {
 	string ToString();
@@ -2431,7 +2533,7 @@ class Example
 
         let type_resolution =
             resolve_at_needle_with_external(&file_index, &external_index, source, "Type()", "Type");
-        assert_eq!(type_resolution.reason, ResolutionReason::ClassMember);
+        assert_eq!(type_resolution.reason, ResolutionReason::PseudoClassMember);
         assert_eq!(
             type_resolution.selected.as_ref().unwrap().source,
             CandidateSource::External
@@ -2446,7 +2548,7 @@ class Example
         );
         assert_eq!(
             to_string_resolution.reason,
-            ResolutionReason::ReceiverMember
+            ResolutionReason::PseudoClassMember
         );
         assert_eq!(
             to_string_resolution
@@ -2496,7 +2598,7 @@ class Example
             "ToString",
         );
 
-        assert_eq!(resolution.reason, ResolutionReason::ReceiverMember);
+        assert_eq!(resolution.reason, ResolutionReason::PseudoClassMember);
         assert_eq!(
             resolution.receiver.as_ref().unwrap().owner_type.as_deref(),
             Some("ExampleKind")
