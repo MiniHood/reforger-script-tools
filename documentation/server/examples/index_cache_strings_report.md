@@ -34,7 +34,7 @@ node tools/index-cache-strings-report.mjs --scripts <path> --metadata <path|none
 
 ## Change Notes
 
-- Added after v3 cache optimization to determine whether string interning or path-table storage would provide meaningful savings without removing editor-visible facts.
+- Added after v4 cache optimization to determine whether string interning or path-table storage would provide meaningful savings without removing editor-visible facts.
 
 ## Future Improvements
 

@@ -252,6 +252,7 @@ impl Parser<'_> {
 
     fn parse_field_decl(&mut self, mut children: Vec<SyntaxElement>) -> SyntaxElement {
         let mut has_assignment = false;
+        let mut hit_preprocessor_boundary = false;
         let mut paren_depth = 0usize;
         let mut bracket_depth = 0usize;
         let mut angle_depth = 0usize;
@@ -263,6 +264,11 @@ impl Parser<'_> {
                 paren_depth == 0 && bracket_depth == 0 && angle_depth == 0 && brace_depth == 0;
 
             if at_top_level && matches!(kind, TokenKind::Semicolon | TokenKind::RightBrace) {
+                break;
+            }
+
+            if at_top_level && self.at(TokenKind::Hash) {
+                hit_preprocessor_boundary = true;
                 break;
             }
 
@@ -294,10 +300,14 @@ impl Parser<'_> {
 
         if self.at(TokenKind::Semicolon) {
             children.push(self.bump_token());
-        } else if !self.at(TokenKind::RightBrace) {
+        } else if !self.at(TokenKind::RightBrace) && !hit_preprocessor_boundary {
             self.error_here("Expected field semicolon");
         }
-        node(SyntaxKind::FieldDecl, children)
+        if hit_preprocessor_boundary {
+            node(SyntaxKind::Error, children)
+        } else {
+            node(SyntaxKind::FieldDecl, children)
+        }
     }
 
     fn parse_class_body(&mut self) -> SyntaxElement {
@@ -930,6 +940,28 @@ class Example
         assert_eq!(count_kind(&parse.root, SyntaxKind::ClassDecl), 1);
         assert_eq!(count_kind(&parse.root, SyntaxKind::FieldDecl), 2);
         assert_eq!(count_kind(&parse.root, SyntaxKind::Block), 1);
+    }
+
+    #[test]
+    fn preprocessor_invalid_branch_text_does_not_swallow_later_declarations() {
+        let source = r#"#ifdef BREAK_COMPILATION
+	THIS DEFINE BREAKS GAME SCRIPT MODULE COMPILATION
+	DO NOT REMOVE IT
+#endif
+
+class ArmaReforgerScripted : ChimeraGame
+{
+}
+
+ArmaReforgerScripted g_ARGame;
+"#;
+
+        let parse = parse_source(source);
+
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::ClassDecl), 1);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::FieldDecl), 1);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::Error), 1);
     }
 
     #[test]

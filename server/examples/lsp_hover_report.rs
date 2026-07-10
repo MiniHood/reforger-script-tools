@@ -28,17 +28,39 @@ enum ExampleFlags
 const INLINE_USAGE_HOVER_SOURCE: &str = r#"// Fixture truth: game-data-shaped hover usage coverage source; not Workbench-confirmed in this repo.
 Game g_Game;
 typedef string FactionKey;
+class array
+{
+	void Insert(int value);
+}
+class Entity
+{
+	vector GetOrigin();
+}
+class Game
+{
+	Entity GetWorld();
+}
+Game GetGame();
 
 class Example
 {
 	protected int m_Value;
+	protected ref array<int> m_Values;
 
-	void Run(string name)
+	void DoThing();
+	static Example Cast(Entity entity);
+
+	void Run(string name, Entity ent)
 	{
 		int index = 4;
 		index = index + 1;
 		Print(name);
 		m_Value = index;
+		ent.GetOrigin();
+		m_Values.Insert(index);
+		this.DoThing();
+		Example.Cast(ent).DoThing();
+		GetGame().GetWorld();
 		FactionKey key;
 		g_Game = null;
 		MissingThing();
@@ -131,6 +153,41 @@ fn run() -> Result<(), String> {
     checks.push(HoverCheck::inline(
         "inline_usage_hover_shapes.c",
         INLINE_USAGE_HOVER_SOURCE,
+        "receiver parameter method",
+        "ent.GetOrigin",
+        "GetOrigin",
+    ));
+    checks.push(HoverCheck::inline(
+        "inline_usage_hover_shapes.c",
+        INLINE_USAGE_HOVER_SOURCE,
+        "receiver field collection method",
+        "m_Values.Insert",
+        "Insert",
+    ));
+    checks.push(HoverCheck::inline(
+        "inline_usage_hover_shapes.c",
+        INLINE_USAGE_HOVER_SOURCE,
+        "receiver this method",
+        "this.DoThing",
+        "DoThing",
+    ));
+    checks.push(HoverCheck::inline(
+        "inline_usage_hover_shapes.c",
+        INLINE_USAGE_HOVER_SOURCE,
+        "receiver cast chain method",
+        "Example.Cast(ent).DoThing",
+        "DoThing",
+    ));
+    checks.push(HoverCheck::inline(
+        "inline_usage_hover_shapes.c",
+        INLINE_USAGE_HOVER_SOURCE,
+        "receiver function chain method",
+        "GetGame().GetWorld",
+        "GetWorld",
+    ));
+    checks.push(HoverCheck::inline(
+        "inline_usage_hover_shapes.c",
+        INLINE_USAGE_HOVER_SOURCE,
         "typedef reference",
         "FactionKey key",
         "FactionKey",
@@ -191,6 +248,16 @@ fn run() -> Result<(), String> {
                 .identifier_context
                 .map(|context| context.as_str().to_string())
                 .unwrap_or_else(|| "<none>".to_string()),
+            receiver_owner: report
+                .receiver_resolution
+                .as_ref()
+                .and_then(|receiver| receiver.owner_type.clone())
+                .unwrap_or_else(|| "<none>".to_string()),
+            receiver_failure: report
+                .receiver_resolution
+                .as_ref()
+                .and_then(|receiver| receiver.failure_reason.clone())
+                .unwrap_or_else(|| "<none>".to_string()),
             resolver_candidate_count: report.resolver_candidate_count,
             selected_source: report
                 .selected_source
@@ -245,16 +312,16 @@ fn run() -> Result<(), String> {
     writeln!(markdown).unwrap();
     writeln!(markdown, "This report exercises the same resolver-first hover path used by `textDocument/hover`, with game-data supplied as optional external index context. It is review tooling only; it does not perform semantic lookup or Workbench validation.").unwrap();
     writeln!(markdown).unwrap();
-    writeln!(markdown, "| File | Target | Position | Hit | Selection | Selected source | Resolver reason | Identifier context | Resolver candidates | Selected | Parse diagnostics | Elapsed ms | Hover preview |").unwrap();
+    writeln!(markdown, "| File | Target | Position | Hit | Selection | Selected source | Resolver reason | Identifier context | Receiver owner | Receiver failure | Resolver candidates | Selected | Parse diagnostics | Elapsed ms | Hover preview |").unwrap();
     writeln!(
         markdown,
-        "| --- | --- | ---: | --- | --- | --- | --- | --- | ---: | --- | ---: | ---: | --- |"
+        "| --- | --- | ---: | --- | --- | --- | --- | --- | --- | --- | ---: | --- | ---: | ---: | --- |"
     )
     .unwrap();
     for row in &rows {
         writeln!(
             markdown,
-            "| `{}` | {} | {}:{} | {} | `{}` | `{}` | `{}` | `{}` | {} | {} `{}` | {} | {} | {} |",
+            "| `{}` | {} | {}:{} | {} | `{}` | `{}` | `{}` | `{}` | `{}` | `{}` | {} | {} `{}` | {} | {} | {} |",
             row.file,
             escape_markdown_cell(&row.target),
             row.line,
@@ -264,6 +331,8 @@ fn run() -> Result<(), String> {
             row.selected_source,
             row.resolver_reason,
             row.identifier_context,
+            escape_markdown_cell(&row.receiver_owner),
+            escape_markdown_cell(&row.receiver_failure),
             row.resolver_candidate_count,
             row.selected_kind,
             escape_markdown_cell(&row.selected_label),
@@ -420,6 +489,8 @@ struct HoverRow {
     selected_source: String,
     resolver_reason: String,
     identifier_context: String,
+    receiver_owner: String,
+    receiver_failure: String,
     resolver_candidate_count: usize,
     elapsed_ms: u128,
     hover_preview: String,

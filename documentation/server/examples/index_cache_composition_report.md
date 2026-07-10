@@ -10,9 +10,9 @@ This is dev-only review tooling. It loads the current game-data index through `s
 
 ## Current Behavior
 
-The report summarizes cache status, full-direct-index versus runtime-cache counts, v3 structural optimization, source-category composition, symbol-kind composition, presentation metadata counts, and editor-runtime versus debug/review-only slices. It also writes temporary JSON measurement snapshots outside tracked source paths and deletes them immediately. These snapshots are size probes only and are not reusable cache files.
+The report summarizes cache status, full-direct-index versus runtime-cache counts, v4 structural optimization, source-category composition, symbol-kind composition, presentation metadata counts, and editor-runtime versus debug/review-only slices. It also writes temporary JSON measurement snapshots outside tracked source paths and deletes them immediately. These snapshots are size probes only and are not reusable cache files.
 
-The runtime cache section should show that `LocalVariable` symbols are removed from persisted game-data cache data while `Parameter` symbols are preserved. The v3 structural section should show that lookup maps are omitted, detail span fields are stripped, copied detail text remains present, and map rebuild happens on load. Open-document analysis and dev/debug reports remain full fidelity.
+The runtime cache section should show that `LocalVariable` symbols are removed from persisted game-data cache data while `Parameter` symbols are preserved. The v4 structural section should show that lookup maps are omitted, detail span fields are stripped, copied detail text remains present, and map rebuild happens on load. Open-document analysis and dev/debug reports remain full fidelity.
 
 Editor-runtime classification uses `SourceCategory::is_editor_completion_default()`. Runtime categories are compared against docs/Doxygen, test/autotest, Workbench, and unknown categories so cache-format decisions can be made from actual index data.
 

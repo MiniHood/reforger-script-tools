@@ -8,7 +8,7 @@ use std::io::{BufReader, BufWriter};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
-const CACHE_FORMAT_VERSION: u32 = 3;
+const CACHE_FORMAT_VERSION: u32 = 4;
 const CACHE_SCHEMA: &str = "reforger-symbol-index";
 
 #[derive(Debug)]
@@ -497,7 +497,7 @@ mod tests {
         assert!(second.timings.total > std::time::Duration::ZERO);
         assert!(second.cache_file_bytes.unwrap_or_default() > 0);
         let cache_json = fs::read_to_string(&cache).unwrap();
-        assert!(cache_json.contains("\"format_version\":3"));
+        assert!(cache_json.contains("\"format_version\":4"));
         assert!(!cache_json.contains("\"by_name\""));
         assert!(!cache_json.contains("\"methods_by_owner_name\""));
 
@@ -637,7 +637,7 @@ mod tests {
     }
 
     #[test]
-    fn v3_cache_load_rebuilds_lookup_maps_from_files_and_symbols() {
+    fn v4_cache_load_rebuilds_lookup_maps_from_files_and_symbols() {
         let root = test_root("rebuild_maps");
         let cache = root.join("cache.json");
         let scripts = root.join("scripts");

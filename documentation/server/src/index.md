@@ -51,7 +51,7 @@ This file depends on lexer spans and the model layer. It must not parse source, 
 - Indexed local variables by name and kind while keeping them out of top-level and class-member lookup maps.
 - Copied detail spans alongside detail text so resolver and debug layers can classify type-position identifiers without retaining full source text in the index.
 - Added a remap-based pruning helper used by the game-data runtime cache to drop external local variables while preserving parameters and callable signatures.
-- Added `from_indexed_parts()` and `compact_for_runtime_cache()` so the v3 runtime cache can persist only files/symbols, strip detail spans, and rebuild lookup maps after load.
+- Added `from_indexed_parts()` and `compact_for_runtime_cache()` so the v4 runtime cache can persist only files/symbols, strip detail spans, and rebuild lookup maps after load.
 
 ## Future Improvements
 

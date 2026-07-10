@@ -7,7 +7,9 @@ use crate::index_query::IndexQuery;
 use crate::lexer::{lex, Keyword, TextSpan, Token, TokenKind};
 use crate::model::{SourceFileMetadata, SymbolCatalog, SymbolKind};
 use crate::parser::parse_source;
-use crate::resolver::{CandidateSource, IdentifierContext, ReferenceResolver, ResolutionReason};
+use crate::resolver::{
+    CandidateSource, IdentifierContext, ReceiverResolution, ReferenceResolver, ResolutionReason,
+};
 use crate::symbol_display::SymbolDisplayInfo;
 use crate::syntax::ParseDiagnostic;
 use serde::{Deserialize, Serialize};
@@ -106,6 +108,7 @@ pub struct LspHoverReport {
     pub resolver_reason: Option<ResolutionReason>,
     pub identifier_context: Option<IdentifierContext>,
     pub resolver_candidate_count: usize,
+    pub receiver_resolution: Option<ReceiverResolution>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -628,6 +631,8 @@ impl<W: Write> LspServer<W> {
                     let mut resolver_reason = "<none>";
                     let mut identifier_context = "<none>";
                     let mut resolver_candidate_count = 0usize;
+                    let mut receiver_owner = "<none>".to_string();
+                    let mut receiver_failure = "<none>".to_string();
                     let mut external_index_status = self.external_index.status_summary().status;
                     let mut revision = 0u64;
                     let mut hit = false;
@@ -661,6 +666,18 @@ impl<W: Write> LspServer<W> {
                                     .map(|context| context.as_str())
                                     .unwrap_or("<none>");
                                 resolver_candidate_count = report.resolver_candidate_count;
+                                if let Some(receiver) = report.receiver_resolution.as_ref() {
+                                    receiver_owner = receiver
+                                        .owner_type
+                                        .as_deref()
+                                        .unwrap_or("<none>")
+                                        .to_string();
+                                    receiver_failure = receiver
+                                        .failure_reason
+                                        .as_deref()
+                                        .unwrap_or("<none>")
+                                        .to_string();
+                                }
                                 if let Some(label) = report.selected_label {
                                     selected_label = label;
                                 }
@@ -674,7 +691,7 @@ impl<W: Write> LspServer<W> {
                         .map(|hover| serde_json::to_value(hover).unwrap_or(Value::Null))
                         .unwrap_or(Value::Null);
                     self.log(&format!(
-                        "request hover uri={} bytes={} revision={} cached_analysis=true hit={} selection_source={} selected_source={} resolver_reason={} identifier_context={} resolver_candidates={} external_index_status={} label={} kind={} parse_diagnostics={} elapsed_ms={}",
+                        "request hover uri={} bytes={} revision={} cached_analysis=true hit={} selection_source={} selected_source={} resolver_reason={} identifier_context={} resolver_candidates={} receiver_owner={} receiver_failure={} external_index_status={} label={} kind={} parse_diagnostics={} elapsed_ms={}",
                         log_uri,
                         bytes,
                         revision,
@@ -684,6 +701,8 @@ impl<W: Write> LspServer<W> {
                         resolver_reason,
                         identifier_context,
                         resolver_candidate_count,
+                        receiver_owner,
+                        receiver_failure,
                         external_index_status,
                         selected_label,
                         selected_kind,
@@ -880,7 +899,7 @@ fn hover_report_for_offset(
         if let Some(selected) = resolution.selected.as_ref() {
             match selected.source {
                 CandidateSource::FileLocal => {
-                    if let Some(report) = hover_report_for_symbol(
+                    if let Some(mut report) = hover_report_for_symbol(
                         source,
                         &analysis.index,
                         &query,
@@ -892,13 +911,14 @@ fn hover_report_for_offset(
                         Some(identifier_context),
                         candidate_count,
                     ) {
+                        report.receiver_resolution = resolution.receiver.clone();
                         return report.with_parse_diagnostics(analysis.parse_diagnostics);
                     }
                 }
                 CandidateSource::External => {
                     if let Some(external_index) = external_index {
                         let external_query = IndexQuery::new(external_index);
-                        if let Some(report) = hover_report_for_symbol(
+                        if let Some(mut report) = hover_report_for_symbol(
                             source,
                             external_index,
                             &external_query,
@@ -910,6 +930,7 @@ fn hover_report_for_offset(
                             Some(identifier_context),
                             candidate_count,
                         ) {
+                            report.receiver_resolution = resolution.receiver.clone();
                             return report.with_parse_diagnostics(analysis.parse_diagnostics);
                         }
                     }
@@ -926,6 +947,7 @@ fn hover_report_for_offset(
             resolver_reason: Some(reason),
             identifier_context: Some(identifier_context),
             resolver_candidate_count: candidate_count,
+            receiver_resolution: resolution.receiver.clone(),
         };
     }
 
@@ -982,6 +1004,7 @@ fn hover_report_for_symbol(
         resolver_reason,
         identifier_context,
         resolver_candidate_count,
+        receiver_resolution: None,
     })
 }
 
@@ -1003,6 +1026,7 @@ fn empty_hover_report(parse_diagnostics: usize) -> LspHoverReport {
         resolver_reason: None,
         identifier_context: None,
         resolver_candidate_count: 0,
+        receiver_resolution: None,
     }
 }
 
@@ -1777,6 +1801,36 @@ fn append_resolver_resolution(
         "- Identifier context: `{}`\n",
         resolution.identifier_context.as_str()
     ));
+    if let Some(receiver) = &resolution.receiver {
+        report.push_str("\n### Receiver\n\n");
+        report.push_str(&format!(
+            "- Receiver text: `{}` at `{}`\n",
+            escape_debug_text(&receiver.receiver_text),
+            format_span(receiver.receiver_span)
+        ));
+        report.push_str(&format!(
+            "- Inferred owner type: `{}`\n",
+            receiver
+                .owner_type
+                .as_deref()
+                .map(escape_debug_text)
+                .unwrap_or_else(|| "<none>".to_string())
+        ));
+        report.push_str(&format!(
+            "- Static-looking receiver: `{}`\n",
+            receiver.is_static
+        ));
+        if let Some(failure) = &receiver.failure_reason {
+            report.push_str(&format!("- Failure: `{}`\n", escape_debug_text(failure)));
+        }
+        if !receiver.lookup_path.is_empty() {
+            report.push_str("- Lookup path:\n");
+            for step in &receiver.lookup_path {
+                report.push_str(&format!("  - `{}`\n", escape_debug_text(step)));
+            }
+        }
+        report.push('\n');
+    }
     report.push_str(&format!("- Candidates: {}\n", resolution.candidates.len()));
     if let Some(selected) = &resolution.selected {
         let selected_label = selected
@@ -2581,6 +2635,44 @@ class Example : Base
         assert_eq!(
             constructor_call.identifier_context,
             Some(IdentifierContext::ValueOrCallable)
+        );
+    }
+
+    #[test]
+    fn hover_resolves_member_access_through_receiver_type() {
+        let source = r#"class Entity
+{
+	vector GetOrigin();
+}
+
+class Example
+{
+	void Run(Entity ent)
+	{
+		ent.GetOrigin();
+	}
+}
+"#;
+
+        let report = hover_at(source, "ent.GetOrigin", "GetOrigin");
+
+        assert_eq!(report.selected_kind, Some(SymbolKind::Method));
+        assert_eq!(report.selected_label.as_deref(), Some("GetOrigin"));
+        assert_eq!(
+            report.identifier_context,
+            Some(IdentifierContext::MemberAccess)
+        );
+        assert_eq!(
+            report.resolver_reason,
+            Some(ResolutionReason::ReceiverMember)
+        );
+        assert_eq!(report.resolver_candidate_count, 1);
+        assert_eq!(
+            report
+                .receiver_resolution
+                .as_ref()
+                .and_then(|receiver| receiver.owner_type.as_deref()),
+            Some("Entity")
         );
     }
 

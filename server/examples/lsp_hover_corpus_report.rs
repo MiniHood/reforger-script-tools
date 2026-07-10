@@ -58,6 +58,8 @@ fn run() -> Result<(), String> {
     let mut file_rows = Vec::new();
     let mut reason_counts = BTreeMap::<String, usize>::new();
     let mut context_counts = BTreeMap::<String, usize>::new();
+    let mut receiver_owner_counts = BTreeMap::<String, usize>::new();
+    let mut receiver_failure_counts = BTreeMap::<String, usize>::new();
     let mut selected_source_counts = BTreeMap::<String, usize>::new();
     let mut kind_counts = BTreeMap::<String, usize>::new();
     let mut miss_samples = Vec::new();
@@ -119,6 +121,26 @@ fn run() -> Result<(), String> {
             *selected_source_counts
                 .entry(selected_source.clone())
                 .or_default() += 1;
+            let receiver_owner = report
+                .receiver_resolution
+                .as_ref()
+                .and_then(|receiver| receiver.owner_type.clone())
+                .unwrap_or_else(|| "<none>".to_string());
+            if receiver_owner != "<none>" {
+                *receiver_owner_counts
+                    .entry(receiver_owner.clone())
+                    .or_default() += 1;
+            }
+            let receiver_failure = report
+                .receiver_resolution
+                .as_ref()
+                .and_then(|receiver| receiver.failure_reason.clone())
+                .unwrap_or_else(|| "<none>".to_string());
+            if receiver_failure != "<none>" {
+                *receiver_failure_counts
+                    .entry(receiver_failure.clone())
+                    .or_default() += 1;
+            }
 
             if report.is_hit() {
                 row.hits += 1;
@@ -141,6 +163,8 @@ fn run() -> Result<(), String> {
                     reason,
                     context,
                     selected_source,
+                    receiver_owner,
+                    receiver_failure,
                 ));
             } else {
                 row.misses += 1;
@@ -157,6 +181,8 @@ fn run() -> Result<(), String> {
                     reason,
                     context,
                     selected_source,
+                    receiver_owner,
+                    receiver_failure,
                 ));
             }
         }
@@ -171,6 +197,8 @@ fn run() -> Result<(), String> {
         &file_rows,
         &reason_counts,
         &context_counts,
+        &receiver_owner_counts,
+        &receiver_failure_counts,
         &selected_source_counts,
         &kind_counts,
         &sample_evenly_rows(&miss_samples, MAX_MISS_SAMPLES),
@@ -291,6 +319,8 @@ struct SampleRow {
     hit: bool,
     reason: String,
     context: String,
+    receiver_owner: String,
+    receiver_failure: String,
     selected_source: String,
     selected: String,
     snippet: String,
@@ -305,6 +335,8 @@ impl SampleRow {
         reason: String,
         context: String,
         selected_source: String,
+        receiver_owner: String,
+        receiver_failure: String,
     ) -> Self {
         let position = position_for_offset(source, sample.span.start);
         let selected = match (&report.selected_kind, &report.selected_label) {
@@ -319,6 +351,8 @@ impl SampleRow {
             hit: report.is_hit(),
             reason,
             context,
+            receiver_owner,
+            receiver_failure,
             selected_source,
             selected,
             snippet: source_line(source, position.line),
@@ -332,6 +366,8 @@ fn render_report(
     file_rows: &[FileRow],
     reason_counts: &BTreeMap<String, usize>,
     context_counts: &BTreeMap<String, usize>,
+    receiver_owner_counts: &BTreeMap<String, usize>,
+    receiver_failure_counts: &BTreeMap<String, usize>,
     selected_source_counts: &BTreeMap<String, usize>,
     kind_counts: &BTreeMap<String, usize>,
     miss_samples: &[SampleRow],
@@ -363,6 +399,16 @@ fn render_report(
     append_summary(&mut report, totals);
     append_counts(&mut report, "Resolver Reason Frequency", reason_counts);
     append_counts(&mut report, "Identifier Context Frequency", context_counts);
+    append_counts(
+        &mut report,
+        "Receiver Owner Frequency",
+        receiver_owner_counts,
+    );
+    append_counts(
+        &mut report,
+        "Receiver Failure Frequency",
+        receiver_failure_counts,
+    );
     append_counts(
         &mut report,
         "Selected Source Frequency",
@@ -491,18 +537,18 @@ fn append_samples(report: &mut String, heading: &str, samples: &[SampleRow]) {
     }
     writeln!(
         report,
-        "| File | Position | Token | Hit | Reason | Context | Selected source | Selected | Source line |"
+        "| File | Position | Token | Hit | Reason | Context | Receiver owner | Receiver failure | Selected source | Selected | Source line |"
     )
     .unwrap();
     writeln!(
         report,
-        "| --- | ---: | --- | --- | --- | --- | --- | --- | --- |"
+        "| --- | ---: | --- | --- | --- | --- | --- | --- | --- | --- | --- |"
     )
     .unwrap();
     for sample in samples {
         writeln!(
             report,
-            "| `{}` | {}:{} | `{}` | {} | `{}` | `{}` | `{}` | {} | `{}` |",
+            "| `{}` | {}:{} | `{}` | {} | `{}` | `{}` | `{}` | `{}` | `{}` | {} | `{}` |",
             escape_table(&sample.path),
             sample.line,
             sample.column,
@@ -510,6 +556,8 @@ fn append_samples(report: &mut String, heading: &str, samples: &[SampleRow]) {
             if sample.hit { "yes" } else { "no" },
             escape_table(&sample.reason),
             escape_table(&sample.context),
+            escape_table(&sample.receiver_owner),
+            escape_table(&sample.receiver_failure),
             escape_table(&sample.selected_source),
             escape_table(&sample.selected),
             escape_table(&sample.snippet)
@@ -523,7 +571,7 @@ fn append_notes(report: &mut String) {
     writeln!(report, "## Review Notes").unwrap();
     writeln!(report).unwrap();
     writeln!(report, "- Samples are deterministic, bounded identifier-token positions per file; hit and miss sample tables are evenly selected from the full corpus result set.").unwrap();
-    writeln!(report, "- The report supplies the full game-data index as external hover context. Remaining misses are unresolved after file-local and external top-level lookup.").unwrap();
+    writeln!(report, "- The report supplies the full game-data index as external hover context. Remaining misses are unresolved after file-local and external top-level/member lookup.").unwrap();
     writeln!(report, "- Miss samples are planning evidence for resolver/index work, not Workbench compiler truth.").unwrap();
     writeln!(report).unwrap();
 }
