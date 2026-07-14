@@ -15,7 +15,8 @@ Feature projection code is split into focused child modules:
 - `server/src/lsp/definition.rs` owns definition reports and `Location[]` URI/range projection.
 - `server/src/lsp/diagnostics.rs` owns parser diagnostic conversion and publish/clear messages.
 - `server/src/lsp/external_overlay.rs` owns runtime game-data/workspace overlay indexing, update/delete handling, recompute, and status summaries.
-- `server/src/lsp/hover.rs` owns normal hover selection and Markdown rendering.
+- `server/src/lsp/hover.rs` owns normal hover selection and hover report construction.
+- `server/src/lsp/hover_render.rs` owns normal hover Markdown presentation.
 - `server/src/lsp/open_documents.rs` owns open-document source text, revision, and cached file-local analysis.
 - `server/src/lsp/semantic_tokens.rs` owns semantic-token legend, projection, and debug rows.
 

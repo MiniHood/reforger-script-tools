@@ -10,9 +10,11 @@ This module sits inside the Rust LSP layer as a targeted debug/report path. It u
 
 ## Current Behavior
 
-The report includes cursor/source context, nearby lexer tokens, nearby semantic-token coloring, parse diagnostics, resolver resolution, external-index status, selected symbol display facts, hover Markdown, span candidates, parent/child context, and symbol-kind counts. It is intentionally heavier than runtime logs and should only run through the explicit debug-hover command/request.
+The report includes cursor/source context, nearby lexer tokens, nearby semantic-token coloring, parse diagnostics, resolver resolution, external-index status, selected symbol display facts, rendered hover Markdown, span candidates, parent/child context, and symbol-kind counts. It is intentionally heavier than runtime logs and should only run through the explicit debug-hover command/request.
 
 Debug-hover selection follows the same resolver hover decision as normal hover. It may still list syntax-span candidates as debug evidence, but comments, whitespace, strings, and other non-symbol token classes should not be reported as selected symbols just because they are inside a broader declaration span.
+
+The rendered hover Markdown section uses `server/src/lsp/hover_render.rs`, so Ctrl+F1 previews the same structured documentation, colored kind label, metadata, and bounded class member summary as normal hover.
 
 The module also exposes a tiny label extraction helper used by `lsp.rs` request logging after a debug-hover request.
 

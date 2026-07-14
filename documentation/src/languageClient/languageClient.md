@@ -10,13 +10,15 @@ This file is TypeScript shell code. It resolves the packaged or development serv
 
 ## Current Behavior
 
-On activation, the module creates a VS Code log output channel and a separate hover-debug output channel. In Extension Development Host mode, it resolves `server/target/debug/reforger_language_server(.exe)` first so newly compiled server changes are used without depending on the packaged `dist` copy. Outside development mode, it resolves `dist/server/<platform>-<arch>/reforger_language_server(.exe)` first and falls back to the development binary only when needed. It starts the server over stdio for file documents whose VS Code language id is `enforce`.
+On activation, the module creates a VS Code log output channel and a separate hover-debug output channel. In Extension Development Host mode, it resolves `server/target/debug/reforger_language_server(.exe)` first so newly compiled server changes are used without depending on the packaged `dist` copy. Outside development mode, it resolves `dist/server/<platform>-<arch>/reforger_language_server(.exe)` first and falls back to the development binary only when needed. It starts the server over stdio for file documents whose VS Code language id is `enforce`. The client enables VS Code Markdown HTML support for LSP hover content so Rust-produced colored kind labels can render; TypeScript does not generate or classify hover content.
 
 In Extension Development Host mode, the module watches the resolved development server binary. When `npm run compile` replaces that binary, the client stops the current language-server process and starts a new one against the updated executable. This is development-only restart plumbing; marketplace/runtime users still use the packaged binary path without a binary watcher.
 
 The `enforce` language id is contributed through `package.json` and is path-associated only for `.c` files under `Scripts/` or `scripts/`. The language client should target the language id, not duplicate path-glob logic.
 
 The client passes `globalStorageUri/logs/language-server.log`, `globalStorageUri/index-cache/game-data-symbol-index.v6.json`, and the resolved game-data scripts path to the server. The game-data path uses the manual-folder setting when present, otherwise the downloaded global-storage `game-data/scripts` folder. For downloaded game data, the client also passes `game-data/metadata.json` so the Rust cache can invalidate by commit SHA. For manual folders, metadata is omitted and Rust uses a file-metadata fingerprint. The v6 runtime cache prunes external game-data local variables, strips source-only detail spans, rebuilds lookup maps after load, preserves compacted per-file symbol ranges, and preserves parameters and declaration facts used by hover/signature-style display.
+
+LSP hover content comes from Rust as Markdown. The built-in language-client hover provider is suppressed by middleware, and this module registers one explicit VS Code hover provider that sends the standard `textDocument/hover` request to the Rust server, then converts the returned Markdown into fresh `MarkdownString` objects with `supportHtml` enabled. This is a rendering bridge only: TypeScript must not create hover text, classify symbols, or duplicate Rust language analysis. It exists because VS Code hover color uses sanitized Markdown HTML spans, not semantic-token coloring inside hover code blocks.
 
 The client discovers workspace script roots from each VS Code workspace folder. If a workspace folder itself is named `Scripts` or `scripts`, that folder is passed directly; otherwise existing `Scripts/` and `scripts/` children are passed as repeatable `--workspace-scripts` arguments. The client also registers file-system watchers for workspace `.c` files under those script folders. Create/change/delete events are debounced and sent to Rust as `reforger/workspaceFileChanged` or `reforger/workspaceFileDeleted`; TypeScript sends full file text but does not parse it.
 
@@ -40,6 +42,7 @@ Workspace file watchers and development binary watchers are client-owned process
 - Added workspace script root discovery and debounced file-watch notifications for the live Rust workspace overlay index.
 - Updated the runtime game-data cache path to v6 after fixing compacted multi-file symbol range remapping.
 - Added development-host binary watching so replacing `server/target/debug/reforger_language_server(.exe)` restarts the language client automatically.
+- Enabled safe/trusted HTML rendering for LSP hover Markdown so Rust-produced colored kind labels display in VS Code. The built-in language-client hover provider is suppressed and replaced by an explicit provider that sends the same Rust `textDocument/hover` request, then rebuilds returned contents as HTML-capable Markdown strings; it must not build hover text or duplicate language analysis.
 
 ## Future Improvements
 

@@ -1,5 +1,8 @@
 use crate::index::{GlobalSymbolId, SymbolIndex};
 use crate::index_query::IndexQuery;
+use crate::lsp::hover_render::{
+    render_hover_markdown as render_hover_markdown_with_context, HoverRenderContext,
+};
 use crate::lsp::{
     file_index_for_source, offset_for_position, range_for_span, FileIndexAnalysis,
     LspMarkupContent, LspPosition, LspRange,
@@ -9,7 +12,6 @@ use crate::resolver::{
     CandidateSource, HoverResolution, IdentifierContext, ReceiverResolution, ReferenceResolver,
     ResolutionReason,
 };
-use crate::symbol_display::SymbolDisplayInfo;
 use serde::Serialize;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -228,7 +230,10 @@ fn hover_report_for_symbol(
         hover: Some(LspHover {
             contents: LspMarkupContent {
                 kind: "markdown".to_string(),
-                value: render_hover_markdown(&display),
+                value: render_hover_markdown_with_context(
+                    &display,
+                    Some(HoverRenderContext { query }),
+                ),
             },
             range,
         }),
@@ -242,40 +247,6 @@ fn hover_report_for_symbol(
         resolver_candidate_count,
         receiver_resolution: None,
     })
-}
-
-pub(crate) fn render_hover_markdown(display: &SymbolDisplayInfo) -> String {
-    let code = display.signature.as_ref().unwrap_or(&display.label);
-    let mut sections = Vec::new();
-    sections.push(format!("```enforce\n{code}\n```"));
-
-    if let Some(detail) = &display.detail {
-        if detail != code {
-            sections.push(detail.clone());
-        }
-    }
-    if let Some(preview) = &display.documentation_preview {
-        sections.push(preview.clone());
-    }
-    if !display.modifiers.is_empty() {
-        sections.push(format!("**Modifiers:** {}", display.modifiers.join(", ")));
-    }
-    let attribute_names = display
-        .attributes
-        .iter()
-        .map(|attribute| {
-            attribute
-                .name
-                .as_deref()
-                .unwrap_or(attribute.text.as_str())
-                .to_string()
-        })
-        .collect::<Vec<_>>();
-    if !attribute_names.is_empty() {
-        sections.push(format!("**Attributes:** {}", attribute_names.join(", ")));
-    }
-
-    sections.join("\n\n")
 }
 
 fn empty_hover_report(parse_diagnostics: usize) -> LspHoverReport {

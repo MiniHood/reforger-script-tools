@@ -956,8 +956,8 @@ fn semantic_modifier_names(modifiers: u32) -> Vec<&'static str> {
         .collect()
 }
 
-fn semantic_token_color(token_type: u32) -> &'static str {
-    match semantic_token_type_name(token_type) {
+pub(crate) fn semantic_token_color_for_type(token_type: &str) -> &'static str {
+    match token_type {
         "class" | "enum" | "type" | "typeParameter" => "#40b5ac",
         "function" | "method" => "#f3ad58",
         "enumMember" | "variable" | "property" | "parameter" | "number" => "#cfcfcf",
@@ -968,6 +968,10 @@ fn semantic_token_color(token_type: u32) -> &'static str {
         "preprocessor" | "decorator" => "#d4fd95",
         _ => "<default>",
     }
+}
+
+fn semantic_token_color(token_type: u32) -> &'static str {
+    semantic_token_color_for_type(semantic_token_type_name(token_type))
 }
 
 fn previous_non_trivia(tokens: &[Token], index: usize) -> Option<Token> {

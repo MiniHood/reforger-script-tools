@@ -29,6 +29,22 @@ pub struct SymbolDisplayInfo {
     pub callable_form: Option<CallableForm>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DocumentationDisplay {
+    pub summary: Option<String>,
+    pub parameters: Vec<DocumentationParameter>,
+    pub returns: Option<String>,
+    pub warnings: Vec<String>,
+    pub notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocumentationParameter {
+    pub name: String,
+    pub direction: Option<String>,
+    pub description: String,
+}
+
 pub struct SymbolDisplay;
 
 impl SymbolDisplay {
@@ -37,6 +53,7 @@ impl SymbolDisplay {
         let file = index.file(id.file_id)?;
         let signature = index.callable_signature(id);
         let detail = symbol_display_detail(index, id);
+        let documentation = documentation_display(&symbol.doc_comments);
 
         Some(SymbolDisplayInfo {
             id,
@@ -48,7 +65,7 @@ impl SymbolDisplay {
             detail,
             signature,
             doc_comments: symbol.doc_comments.clone(),
-            documentation_preview: doc_preview(&symbol.doc_comments),
+            documentation_preview: documentation_preview(&documentation),
             modifiers: symbol.modifiers.clone(),
             attributes: symbol.attributes.clone(),
             source_kind: file.metadata.kind,
@@ -62,6 +79,77 @@ impl SymbolDisplay {
             callable_form: symbol.callable_form,
         })
     }
+}
+
+pub fn documentation_display(comments: &[IndexedDocComment]) -> DocumentationDisplay {
+    let lines = comments
+        .iter()
+        .flat_map(|comment| readable_doc_lines(&comment.text))
+        .collect::<Vec<_>>();
+
+    let mut display = DocumentationDisplay::default();
+    for line in lines {
+        let Some(doc_line) = classify_doc_line(&line) else {
+            continue;
+        };
+        match doc_line {
+            DocLine::Summary(value) => {
+                if display.summary.is_none() {
+                    display.summary = Some(value);
+                }
+            }
+            DocLine::Brief(value) => {
+                display.summary = Some(value);
+            }
+            DocLine::Parameter(parameter) => display.parameters.push(parameter),
+            DocLine::Returns(value) => {
+                if display.returns.is_none() {
+                    display.returns = Some(value);
+                }
+            }
+            DocLine::Warning(value) => display.warnings.push(value),
+            DocLine::Note(value) => display.notes.push(value),
+        }
+    }
+
+    display
+}
+
+fn documentation_preview(display: &DocumentationDisplay) -> Option<String> {
+    display
+        .summary
+        .clone()
+        .or_else(|| {
+            display.parameters.first().map(|parameter| {
+                let direction = parameter
+                    .direction
+                    .as_deref()
+                    .map(|direction| format!("[{direction}] "))
+                    .unwrap_or_default();
+                if parameter.description.is_empty() {
+                    format!("Parameter {direction}{}", parameter.name)
+                } else {
+                    format!(
+                        "Parameter {direction}{} {}",
+                        parameter.name, parameter.description
+                    )
+                }
+            })
+        })
+        .or_else(|| {
+            display
+                .returns
+                .as_ref()
+                .map(|value| format!("Returns {value}"))
+        })
+        .or_else(|| {
+            display
+                .warnings
+                .first()
+                .map(|value| format!("Warning: {value}"))
+        })
+        .or_else(|| display.notes.first().map(|value| format!("Note: {value}")))
+        .map(|value| truncate_preview(&value, DOC_PREVIEW_LIMIT))
 }
 
 fn symbol_display_detail(index: &SymbolIndex, id: GlobalSymbolId) -> Option<String> {
@@ -112,19 +200,6 @@ fn push_prefixed(parts: &mut Vec<String>, label: &str, value: Option<&str>) {
     }
 }
 
-fn doc_preview(comments: &[IndexedDocComment]) -> Option<String> {
-    let lines = comments
-        .iter()
-        .flat_map(|comment| readable_doc_lines(&comment.text))
-        .collect::<Vec<_>>();
-
-    lines
-        .iter()
-        .find_map(|line| display_brief_doc_line(line))
-        .or_else(|| lines.into_iter().find_map(display_doc_line))
-        .map(|line| truncate_preview(&line, DOC_PREVIEW_LIMIT))
-}
-
 fn readable_doc_lines(comment: &str) -> Vec<String> {
     comment.lines().map(readable_doc_line).collect()
 }
@@ -139,7 +214,16 @@ fn readable_doc_line(line: &str) -> String {
     value.trim().to_string()
 }
 
-fn display_doc_line(line: String) -> Option<String> {
+enum DocLine {
+    Summary(String),
+    Brief(String),
+    Parameter(DocumentationParameter),
+    Returns(String),
+    Warning(String),
+    Note(String),
+}
+
+fn classify_doc_line(line: &str) -> Option<DocLine> {
     let line = line.trim();
     if line.is_empty() || is_doc_separator(line) {
         return None;
@@ -150,40 +234,33 @@ fn display_doc_line(line: String) -> Option<String> {
     }
 
     if let Some(value) = strip_doc_tag(line, "\\brief").or_else(|| strip_doc_tag(line, "@brief")) {
-        return non_empty(value);
+        return non_empty(value).map(DocLine::Brief);
     }
     if let Some(value) = strip_doc_tag(line, "\\return").or_else(|| strip_doc_tag(line, "@return"))
     {
-        return non_empty(format!("Returns {value}"));
+        return non_empty(value).map(DocLine::Returns);
     }
     if let Some(value) =
         strip_doc_tag(line, "\\returns").or_else(|| strip_doc_tag(line, "@returns"))
     {
-        return non_empty(format!("Returns {value}"));
+        return non_empty(value).map(DocLine::Returns);
     }
     if let Some(value) =
         strip_doc_tag(line, "\\warning").or_else(|| strip_doc_tag(line, "@warning"))
     {
-        return non_empty(format!("Warning: {value}"));
+        return non_empty(value).map(DocLine::Warning);
     }
     if let Some(value) = strip_doc_tag(line, "\\note").or_else(|| strip_doc_tag(line, "@note")) {
-        return non_empty(format!("Note: {value}"));
+        return non_empty(value).map(DocLine::Note);
     }
-    if let Some(value) = strip_param_doc_tag(line) {
-        return non_empty(format!("Parameter {value}"));
+    if let Some(parameter) = strip_param_doc_tag(line) {
+        return Some(DocLine::Parameter(parameter));
     }
     if line.starts_with('\\') || line.starts_with('@') {
         return None;
     }
 
-    Some(line.to_string())
-}
-
-fn display_brief_doc_line(line: &str) -> Option<String> {
-    let line = line.trim();
-    strip_doc_tag(line, "\\brief")
-        .or_else(|| strip_doc_tag(line, "@brief"))
-        .and_then(non_empty)
+    Some(DocLine::Summary(line.to_string()))
 }
 
 fn is_doc_separator(line: &str) -> bool {
@@ -200,21 +277,33 @@ fn strip_doc_tag(line: &str, tag: &str) -> Option<String> {
     })
 }
 
-fn strip_param_doc_tag(line: &str) -> Option<String> {
+fn strip_param_doc_tag(line: &str) -> Option<DocumentationParameter> {
     for tag in ["\\param", "@param"] {
         let Some(rest) = line.strip_prefix(tag) else {
             continue;
         };
         let rest = rest.trim_start();
-        let rest = if let Some(after_bracket) = rest.strip_prefix('[') {
+        let (direction, rest) = if let Some(after_bracket) = rest.strip_prefix('[') {
             after_bracket
                 .split_once(']')
-                .map(|(_, value)| value.trim_start())
-                .unwrap_or(rest)
+                .map(|(direction, value)| {
+                    (non_empty(direction.trim().to_string()), value.trim_start())
+                })
+                .unwrap_or((None, rest))
         } else {
-            rest
+            (None, rest)
         };
-        return Some(rest.to_string());
+        let mut parts = rest.splitn(2, char::is_whitespace);
+        let name = parts.next().unwrap_or_default().trim();
+        if name.is_empty() {
+            return None;
+        }
+        let description = parts.next().unwrap_or_default().trim().to_string();
+        return Some(DocumentationParameter {
+            name: name.to_string(),
+            direction,
+            description,
+        });
     }
     None
 }

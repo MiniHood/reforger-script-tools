@@ -2,11 +2,11 @@
 
 ## Purpose
 
-Owns normal LSP hover selection and Markdown rendering.
+Owns normal LSP hover selection and delegates Markdown rendering.
 
 ## Architecture Role
 
-This module sits inside the Rust LSP layer and turns cached file-local analysis plus an optional external workspace/game-data overlay into `textDocument/hover` responses and hover fixture/corpus report data. `server/src/lsp.rs` keeps protocol dispatch and open-document cache lifecycle.
+This module sits inside the Rust LSP layer and turns cached file-local analysis plus an optional external workspace/game-data overlay into `textDocument/hover` responses and hover fixture/corpus report data. `server/src/lsp.rs` keeps protocol dispatch and open-document cache lifecycle. `server/src/lsp/hover_render.rs` owns Markdown presentation.
 
 ## Current Behavior
 
@@ -14,17 +14,17 @@ Hover is resolver-owned. The module asks `ReferenceResolver` for identifier or s
 
 Syntax-span hover is intentionally limited to useful declaration syntax inside source-backed type, return-type, or base-type detail spans, such as a callable return type keyword. Comments, whitespace, strings, punctuation, modifiers such as `protected` / `private` / `static` / `const`, and other non-symbol token classes return no hover instead of selecting a containing class or method.
 
-The Markdown renderer shows a fenced Enforce signature or label, optional detail text, documentation preview, modifiers, and attribute names. It intentionally does not show source provenance in normal hover output.
+The hover Markdown shows a colored kind label, fenced Enforce signature or label, kind-specific detail text, structured documentation sections, bounded class member summaries, modifiers, attributes, and concise source path when available. Color is best-effort Markdown presentation only; semantic tokens remain the editor coloring source.
 
 ## Dependencies and Boundaries
 
-Depends on `ReferenceResolver`, `IndexQuery`, `SymbolDisplay`, `SymbolIndex`, and LSP range/position helpers. It does not own debug-hover reports, protocol dispatch, document storage, workspace indexing, completion, definition, diagnostics, or semantic tokens.
+Depends on `ReferenceResolver`, `IndexQuery`, `SymbolDisplay`, `SymbolIndex`, hover rendering, and LSP range/position helpers. It does not own debug-hover reports, protocol dispatch, document storage, workspace indexing, completion, definition, diagnostics, or semantic tokens.
 
 Debug-hover may reuse `render_hover_markdown`, but debug report assembly belongs in its own path.
 
 ## Change Notes
 
-Extracted from `server/src/lsp.rs` without behavior changes. This keeps hover selection/rendering as one authoritative implementation path while reducing LSP dispatch size.
+Extracted from `server/src/lsp.rs` without behavior changes. Hover presentation later moved to `hover_render.rs` so selection and rendering have separate owners while retaining one authoritative hover path.
 
 ## Future Improvements
 

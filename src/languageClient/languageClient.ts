@@ -101,6 +101,13 @@ async function startLanguageClient(
 	const clientOptions: LanguageClientOptions = {
 		documentSelector: [...languageClientDocumentSelector],
 		outputChannel,
+		markdown: {
+			isTrusted: true,
+			supportHtml: true,
+		},
+		middleware: {
+			provideHover: () => null,
+		},
 	};
 
 	client = new LanguageClient(
@@ -116,12 +123,90 @@ async function startLanguageClient(
 		if (workspaceScriptRoots.length > 0) {
 			outputChannel.appendLine(`Workspace script roots: ${workspaceScriptRoots.join('; ')}`);
 		}
+		clientDisposables.push(registerHtmlHoverProvider(client, outputChannel));
 		clientDisposables.push(...registerWorkspaceScriptWatchers(context, client, outputChannel));
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		outputChannel.appendLine(`Language server failed to start: ${message}`);
 		vscode.window.showWarningMessage(`Reforger language server failed to start: ${message}`);
 	}
+}
+
+function registerHtmlHoverProvider(
+	activeClient: LanguageClient,
+	outputChannel: vscode.LogOutputChannel,
+): vscode.Disposable {
+	return vscode.languages.registerHoverProvider(languageClientDocumentSelector, {
+		provideHover: async (document, position, token) => {
+			try {
+				const hover = await activeClient.sendRequest<LspHoverResponse | null>(
+					'textDocument/hover',
+					{
+						textDocument: { uri: document.uri.toString() },
+						position: { line: position.line, character: position.character },
+					},
+					token,
+				);
+				return hover ? hoverFromLspResponse(hover) : null;
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				outputChannel.debug(`HTML hover request failed for ${document.uri.toString()}: ${message}`);
+				return null;
+			}
+		},
+	});
+}
+
+interface LspHoverResponse {
+	contents: LspMarkupContent | string | Array<LspMarkupContent | string>;
+	range?: LspRange;
+}
+
+interface LspMarkupContent {
+	kind?: string;
+	value?: string;
+}
+
+interface LspRange {
+	start: LspPosition;
+	end: LspPosition;
+}
+
+interface LspPosition {
+	line: number;
+	character: number;
+}
+
+function hoverFromLspResponse(hover: LspHoverResponse): vscode.Hover | null {
+	const contents = Array.isArray(hover.contents) ? hover.contents : [hover.contents];
+	const markdown = contents.map(content => htmlMarkdownContent(content));
+	if (markdown.length === 0) {
+		return null;
+	}
+	return new vscode.Hover(markdown, hover.range ? rangeFromLsp(hover.range) : undefined);
+}
+
+function htmlMarkdownContent(content: LspMarkupContent | string): vscode.MarkdownString {
+	const markdown = new vscode.MarkdownString();
+	markdown.isTrusted = true;
+	markdown.supportHtml = true;
+
+	if (typeof content === 'string') {
+		markdown.appendMarkdown(content);
+	} else if (content.kind === 'plaintext') {
+		markdown.appendText(content.value ?? '');
+	} else {
+		markdown.appendMarkdown(content.value ?? '');
+	}
+
+	return markdown;
+}
+
+function rangeFromLsp(range: LspRange): vscode.Range {
+	return new vscode.Range(
+		new vscode.Position(range.start.line, range.start.character),
+		new vscode.Position(range.end.line, range.end.character),
+	);
 }
 
 function registerDevelopmentServerWatcher(

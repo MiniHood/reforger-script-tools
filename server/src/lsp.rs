@@ -28,6 +28,7 @@ mod definition;
 mod diagnostics;
 mod external_overlay;
 mod hover;
+mod hover_render;
 mod open_documents;
 mod semantic_tokens;
 

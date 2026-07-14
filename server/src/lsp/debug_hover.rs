@@ -1,7 +1,7 @@
 use crate::index::{GlobalSymbolId, SymbolIndex};
 use crate::index_query::IndexQuery;
 use crate::lexer::{lex, TextSpan, Token};
-use crate::lsp::hover::render_hover_markdown;
+use crate::lsp::hover_render::{render_hover_markdown, HoverRenderContext};
 use crate::lsp::semantic_tokens::semantic_tokens_report_for_cached_analysis_with_external;
 use crate::lsp::{
     file_index_for_source, offset_for_position, position_for_offset, span_text, symbol_kind_label,
@@ -128,7 +128,10 @@ pub(crate) fn debug_hover_report_for_cached_analysis_with_external(
         append_display_details(&mut report, source, index, &query, id);
         if let Some(display) = query.symbol_display(id) {
             report.push_str("\n### Hover Markdown\n\n```markdown\n");
-            report.push_str(&escape_fence_text(&render_hover_markdown(&display)));
+            report.push_str(&escape_fence_text(&render_hover_markdown(
+                &display,
+                Some(HoverRenderContext { query: &query }),
+            )));
             report.push_str("\n```\n");
         }
     } else if let (Some(id), Some(external_index)) = (selected_external_id, external_index) {
@@ -136,7 +139,12 @@ pub(crate) fn debug_hover_report_for_cached_analysis_with_external(
         append_external_display_details(&mut report, external_index, &external_query, id);
         if let Some(display) = external_query.symbol_display(id) {
             report.push_str("\n### Hover Markdown\n\n```markdown\n");
-            report.push_str(&escape_fence_text(&render_hover_markdown(&display)));
+            report.push_str(&escape_fence_text(&render_hover_markdown(
+                &display,
+                Some(HoverRenderContext {
+                    query: &external_query,
+                }),
+            )));
             report.push_str("\n```\n");
         }
     } else {
