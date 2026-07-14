@@ -9,6 +9,10 @@ pub struct TextValue<'source> {
 }
 
 impl<'source> TextValue<'source> {
+    pub const fn new(source: &'source str, span: TextSpan) -> Self {
+        Self { span, source }
+    }
+
     pub fn text(self) -> &'source str {
         &self.source[self.span.start..self.span.end]
     }
@@ -303,7 +307,12 @@ impl<'source, 'tree> ExpressionNode<'source, 'tree> {
             return None;
         }
 
-        first_expression_child(self.source, self.node)
+        self.node.children.iter().find_map(|child| match child {
+            SyntaxElement::Node(node) if node.kind == SyntaxKind::ArgumentList => None,
+            SyntaxElement::Node(node) => Expression::from_node(self.source, node)
+                .or_else(|| first_expression_descendant(self.source, node)),
+            SyntaxElement::Token(_) => None,
+        })
     }
 
     pub fn arguments(&self) -> Vec<Expression<'source, 'tree>> {
@@ -389,6 +398,12 @@ impl<'source, 'tree> ClassDecl<'source, 'tree> {
 
     pub fn modifiers(&self) -> Vec<TextValue<'source>> {
         modifiers(self.source, self.node)
+    }
+
+    pub fn type_parameters(&self) -> Vec<TypeParameter<'source>> {
+        first_child_node(self.node, SyntaxKind::GenericArgList)
+            .map(|node| type_parameters_from_generic_arg_list(self.source, node))
+            .unwrap_or_default()
     }
 
     pub fn members(&self) -> Vec<ClassMember<'source, 'tree>> {
@@ -573,6 +588,29 @@ impl<'source, 'tree> MethodDecl<'source, 'tree> {
         first_child_node(self.node, SyntaxKind::Block)
             .map(|block| local_variables_in_block(self.source, block))
             .unwrap_or_default()
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct TypeParameter<'source> {
+    source: &'source str,
+    name: Token,
+    constraint_span: Option<TextSpan>,
+    span: TextSpan,
+}
+
+impl<'source> TypeParameter<'source> {
+    pub const fn span(&self) -> TextSpan {
+        self.span
+    }
+
+    pub fn name(&self) -> TextValue<'source> {
+        text_value(self.source, self.name.span)
+    }
+
+    pub fn constraint_text(&self) -> Option<TextValue<'source>> {
+        self.constraint_span
+            .map(|span| text_value(self.source, span))
     }
 }
 
@@ -1013,6 +1051,54 @@ fn field_declarators<'source>(
     declarators
 }
 
+fn type_parameters_from_generic_arg_list<'source>(
+    source: &'source str,
+    node: &SyntaxNode,
+) -> Vec<TypeParameter<'source>> {
+    let tokens = direct_tokens(node)
+        .filter(|token| {
+            !token.kind.is_trivia()
+                && !matches!(
+                    token.kind,
+                    TokenKind::Operator(Operator::Less)
+                        | TokenKind::Operator(Operator::Greater)
+                        | TokenKind::Operator(Operator::GreaterGreater)
+                )
+        })
+        .collect::<Vec<_>>();
+    split_top_level_preserving_angles(&tokens, TokenKind::Comma)
+        .into_iter()
+        .filter_map(|segment| type_parameter_from_segment(source, segment))
+        .collect()
+}
+
+fn type_parameter_from_segment<'source>(
+    source: &'source str,
+    segment: &[Token],
+) -> Option<TypeParameter<'source>> {
+    let segment = trim_token_slice(segment);
+    let name = segment
+        .iter()
+        .rev()
+        .find(|token| is_name_token(token.kind))
+        .copied()?;
+    let first = segment.first()?;
+    let last = segment.last()?;
+    let span = trim_text_span(source, TextSpan::new(first.span.start, last.span.end));
+    let constraint_span = if first.span.start < name.span.start {
+        let constraint = trim_text_span(source, TextSpan::new(first.span.start, name.span.start));
+        (!constraint.is_empty()).then_some(constraint)
+    } else {
+        None
+    };
+    Some(TypeParameter {
+        source,
+        name,
+        constraint_span,
+        span,
+    })
+}
+
 fn field_direct_tokens(node: &SyntaxNode) -> Vec<Token> {
     let mut tokens = Vec::new();
     let mut saw_declaration_token = false;
@@ -1160,7 +1246,7 @@ fn parameter_name_token(node: &SyntaxNode) -> Option<Token> {
     let mut bracket_depth = 0usize;
     let mut angle_depth = 0usize;
 
-    for token in direct_tokens(node).filter(|token| !token.kind.is_trivia()) {
+    for token in recursive_tokens(node).filter(|token| !token.kind.is_trivia()) {
         let kind = token.kind;
         let at_top_level = paren_depth == 0 && bracket_depth == 0 && angle_depth == 0;
 
@@ -1576,6 +1662,38 @@ fn split_top_level_preserving_braces(tokens: &[Token], delimiter: TokenKind) -> 
     segments
 }
 
+fn split_top_level_preserving_angles(tokens: &[Token], delimiter: TokenKind) -> Vec<&[Token]> {
+    let mut segments = Vec::new();
+    let mut segment_start = 0usize;
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut angle_depth = 0usize;
+
+    for (index, token) in tokens.iter().enumerate() {
+        if paren_depth == 0 && bracket_depth == 0 && angle_depth == 0 && token.kind == delimiter {
+            segments.push(trim_token_slice(&tokens[segment_start..index]));
+            segment_start = index + 1;
+            continue;
+        }
+
+        match token.kind {
+            TokenKind::LeftParen => paren_depth += 1,
+            TokenKind::RightParen => paren_depth = paren_depth.saturating_sub(1),
+            TokenKind::LeftBracket => bracket_depth += 1,
+            TokenKind::RightBracket => bracket_depth = bracket_depth.saturating_sub(1),
+            TokenKind::Operator(Operator::Less) => angle_depth += 1,
+            TokenKind::Operator(Operator::Greater) => angle_depth = angle_depth.saturating_sub(1),
+            TokenKind::Operator(Operator::GreaterGreater) => {
+                angle_depth = angle_depth.saturating_sub(2)
+            }
+            _ => {}
+        }
+    }
+
+    segments.push(trim_token_slice(&tokens[segment_start..]));
+    segments
+}
+
 fn trim_token_slice(tokens: &[Token]) -> &[Token] {
     let start = tokens
         .iter()
@@ -1647,7 +1765,19 @@ fn is_local_declaration_candidate(tokens: &[Token]) -> bool {
         .take_while(|token| {
             !matches!(
                 token.kind,
-                TokenKind::Operator(Operator::Equal) | TokenKind::Semicolon | TokenKind::Comma
+                TokenKind::Operator(Operator::Equal)
+                    | TokenKind::Operator(Operator::PlusEqual)
+                    | TokenKind::Operator(Operator::MinusEqual)
+                    | TokenKind::Operator(Operator::StarEqual)
+                    | TokenKind::Operator(Operator::SlashEqual)
+                    | TokenKind::Operator(Operator::PercentEqual)
+                    | TokenKind::Operator(Operator::AmpersandEqual)
+                    | TokenKind::Operator(Operator::PipeEqual)
+                    | TokenKind::Operator(Operator::CaretEqual)
+                    | TokenKind::Operator(Operator::LessLessEqual)
+                    | TokenKind::Operator(Operator::GreaterGreaterEqual)
+                    | TokenKind::Semicolon
+                    | TokenKind::Comma
             )
         })
         .any(|token| {
@@ -1665,7 +1795,19 @@ fn is_local_declaration_candidate(tokens: &[Token]) -> bool {
         .take_while(|token| {
             !matches!(
                 token.kind,
-                TokenKind::Operator(Operator::Equal) | TokenKind::Semicolon | TokenKind::Comma
+                TokenKind::Operator(Operator::Equal)
+                    | TokenKind::Operator(Operator::PlusEqual)
+                    | TokenKind::Operator(Operator::MinusEqual)
+                    | TokenKind::Operator(Operator::StarEqual)
+                    | TokenKind::Operator(Operator::SlashEqual)
+                    | TokenKind::Operator(Operator::PercentEqual)
+                    | TokenKind::Operator(Operator::AmpersandEqual)
+                    | TokenKind::Operator(Operator::PipeEqual)
+                    | TokenKind::Operator(Operator::CaretEqual)
+                    | TokenKind::Operator(Operator::LessLessEqual)
+                    | TokenKind::Operator(Operator::GreaterGreaterEqual)
+                    | TokenKind::Semicolon
+                    | TokenKind::Comma
             )
         })
         .filter(|token| is_name_token(token.kind) && !is_local_modifier_token(token.kind))
@@ -1710,7 +1852,7 @@ fn enum_member_value_text<'source>(
     let mut seen_equal = false;
     let mut tokens = Vec::new();
 
-    for token in direct_tokens(node).filter(|token| !token.kind.is_trivia()) {
+    for token in recursive_tokens(node).filter(|token| !token.kind.is_trivia()) {
         if !seen_equal {
             if token.kind == TokenKind::Operator(Operator::Equal) {
                 seen_equal = true;
@@ -1843,7 +1985,7 @@ fn trailing_parameter_default_text_after<'source>(
     node: &SyntaxNode,
     after: usize,
 ) -> Option<TextValue<'source>> {
-    let tokens: Vec<Token> = direct_tokens(node)
+    let tokens: Vec<Token> = recursive_tokens(node)
         .filter(|token| !token.kind.is_trivia())
         .filter(|token| token.span.start >= after)
         .collect();
@@ -2017,6 +2159,20 @@ fn first_expression_child<'source, 'tree>(
 ) -> Option<Expression<'source, 'tree>> {
     node.children.iter().find_map(|child| match child {
         SyntaxElement::Node(node) => Expression::from_node(source, node),
+        SyntaxElement::Token(_) => None,
+    })
+}
+
+fn first_expression_descendant<'source, 'tree>(
+    source: &'source str,
+    node: &'tree SyntaxNode,
+) -> Option<Expression<'source, 'tree>> {
+    if let Some(expression) = Expression::from_node(source, node) {
+        return Some(expression);
+    }
+
+    node.children.iter().find_map(|child| match child {
+        SyntaxElement::Node(node) => first_expression_descendant(source, node),
         SyntaxElement::Token(_) => None,
     })
 }
@@ -2324,6 +2480,41 @@ typedef ScriptInvokerBase<Callback> ScriptInvoker;
             assert_eq!(typedef_decl.name().unwrap().text(), expected_name);
             assert_eq!(typedef_decl.type_text().unwrap().text(), expected_type);
         }
+    }
+
+    #[test]
+    fn extracts_class_generic_type_parameters() {
+        let source = r#"class array<Class T>: Managed
+{
+}
+
+class map<Class TKey,Class TValue>: Managed
+{
+}
+"#;
+        let parse = parse_source(source);
+        let ast = AstSourceFile::new(source, &parse);
+        let classes = ast
+            .declarations()
+            .into_iter()
+            .filter_map(|declaration| match declaration {
+                Declaration::Class(class) => Some(class),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
+        assert_eq!(classes.len(), 2);
+        assert_eq!(classes[0].type_parameters()[0].name().text(), "T");
+        assert_eq!(
+            classes[0].type_parameters()[0]
+                .constraint_text()
+                .unwrap()
+                .text(),
+            "Class"
+        );
+        assert_eq!(classes[1].type_parameters()[0].name().text(), "TKey");
+        assert_eq!(classes[1].type_parameters()[1].name().text(), "TValue");
     }
 
     #[test]
@@ -2776,6 +2967,7 @@ class Blocked
 {
 	protected Widget m_ContentWidget, m_ButtonPrevWidget, m_ButtonNextWidget;
 	protected ref array<int> m_aValues, m_aOtherValues;
+	ref SCR_AIEntityWaypointParameters m_EntityWaypointParameters;
 	protected int count, values[COUNT], other = 4;
 	protected map<Widget, SCR_Item> m_mItems, m_mOtherItems;
 }
@@ -2829,7 +3021,25 @@ class Blocked
             ]
         );
 
-        let ClassMember::Field(mixed) = members[2] else {
+        let ClassMember::Field(ref_field) = members[2] else {
+            panic!("expected ref field");
+        };
+        assert_eq!(
+            ref_field
+                .declarators()
+                .iter()
+                .map(|declarator| (
+                    declarator.name().text(),
+                    declarator.type_text().unwrap().text()
+                ))
+                .collect::<Vec<_>>(),
+            vec![(
+                "m_EntityWaypointParameters",
+                "ref SCR_AIEntityWaypointParameters"
+            )]
+        );
+
+        let ClassMember::Field(mixed) = members[3] else {
             panic!("expected mixed field list");
         };
         let mixed_declarators = mixed.declarators();
@@ -2846,9 +3056,9 @@ class Blocked
         let values_span = mixed_declarators[1].span();
         let other_span = mixed_declarators[2].span();
         assert_eq!(&source[values_span.start..values_span.end], "values[COUNT]");
-        assert_eq!(&source[other_span.start..other_span.end], "other = 4");
+        assert_eq!(&source[other_span.start..other_span.end], "other");
 
-        let ClassMember::Field(generic) = members[3] else {
+        let ClassMember::Field(generic) = members[4] else {
             panic!("expected generic field list");
         };
         assert_eq!(
@@ -2864,6 +3074,40 @@ class Blocked
                 ("m_mItems", "map<Widget, SCR_Item>"),
                 ("m_mOtherItems", "map<Widget, SCR_Item>")
             ]
+        );
+    }
+
+    #[test]
+    fn keeps_attribute_attached_to_ref_field_before_methods() {
+        let source = r#"class SCR_BoardingEntityWaypoint : SCR_BoardingWaypoint
+{
+	[Attribute("", UIWidgets.Object, "Related entity")]
+	ref SCR_AIEntityWaypointParameters m_EntityWaypointParameters;
+	
+	string GetEntityName()
+	{
+		if (m_EntityWaypointParameters)
+			return m_EntityWaypointParameters.GetEntityName();
+		return "";
+	}
+}
+"#;
+        let parse = parse_source(source);
+        let ast = AstSourceFile::new(source, &parse);
+        let Declaration::Class(class) = ast.declarations()[0] else {
+            panic!("expected class");
+        };
+        let members = class.members();
+
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
+        let ClassMember::Field(field) = members[0] else {
+            panic!("expected field");
+        };
+        assert_eq!(field.attributes().len(), 1);
+        assert_eq!(field.name().unwrap().text(), "m_EntityWaypointParameters");
+        assert_eq!(
+            field.type_text().unwrap().text(),
+            "ref SCR_AIEntityWaypointParameters"
         );
     }
 
@@ -3123,6 +3367,8 @@ class Blocked
 		{
 			item.SetVisible(true);
 		}
+		string absPath;
+		addonsDir += absPath;
 		Widget.Make().value = 1;
 	}
 }
@@ -3133,6 +3379,12 @@ class Blocked
 
         assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
         assert!(count_kind(&parse.root, SyntaxKind::LocalDeclStatement) >= 7);
+        assert_eq!(
+            count_kind(&parse.root, SyntaxKind::ForStatement),
+            1,
+            "{:?}",
+            parse.root
+        );
         assert_eq!(count_kind(&parse.root, SyntaxKind::ForInitializer), 1);
         assert_eq!(count_kind(&parse.root, SyntaxKind::ForeachHeader), 1);
         assert_eq!(count_kind(&parse.root, SyntaxKind::ForeachVariableList), 1);
@@ -3248,8 +3500,54 @@ class Blocked
             )),
             "{facts:?}"
         );
+        assert_eq!(
+            facts
+                .iter()
+                .filter(|(name, _, _, _)| name == "absPath")
+                .count(),
+            1,
+            "{facts:?}"
+        );
+        assert!(
+            !facts
+                .iter()
+                .any(|(_, type_text, _, _)| type_text.as_deref() == Some("addonsDir +=")),
+            "{facts:?}"
+        );
         assert!(
             !facts.iter().any(|(name, _, _, _)| name == "Make"),
+            "{facts:?}"
+        );
+    }
+
+    #[test]
+    fn extracts_for_initializer_local_from_compact_header_with_call_condition() {
+        let source = r#"class Example
+{
+	void Run()
+	{
+		for( int iRow = 0; iRow < m_iMatrix.Count(); iRow++ )
+		{
+			GetRow(iRow);
+		}
+	}
+}
+"#;
+        let parse = parse_source(source);
+        let ast = AstSourceFile::new(source, &parse);
+        let method = first_method(&ast);
+        let facts = local_facts(method);
+
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::ForInitializer), 1);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::LocalDeclStatement), 1);
+        assert!(
+            facts.contains(&(
+                "iRow".to_string(),
+                Some("int".to_string()),
+                Some("0".to_string()),
+                LocalVariableKind::ForInitializer
+            )),
             "{facts:?}"
         );
     }

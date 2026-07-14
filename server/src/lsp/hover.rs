@@ -1,0 +1,294 @@
+use crate::index::{GlobalSymbolId, SymbolIndex};
+use crate::index_query::IndexQuery;
+use crate::lsp::{
+    file_index_for_source, offset_for_position, range_for_span, FileIndexAnalysis,
+    LspMarkupContent, LspPosition, LspRange,
+};
+use crate::model::SymbolKind;
+use crate::resolver::{
+    CandidateSource, HoverResolution, IdentifierContext, ReceiverResolution, ReferenceResolver,
+    ResolutionReason,
+};
+use crate::symbol_display::SymbolDisplayInfo;
+use serde::Serialize;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LspHover {
+    pub contents: LspMarkupContent,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub range: Option<LspRange>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LspHoverReport {
+    pub hover: Option<LspHover>,
+    pub parse_diagnostics: usize,
+    pub selected_label: Option<String>,
+    pub selected_kind: Option<SymbolKind>,
+    pub selected_source: Option<CandidateSource>,
+    pub selection_source: HoverSelectionSource,
+    pub resolver_reason: Option<ResolutionReason>,
+    pub identifier_context: Option<IdentifierContext>,
+    pub resolver_candidate_count: usize,
+    pub receiver_resolution: Option<ReceiverResolution>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HoverSelectionSource {
+    ResolverIdentifier,
+    ResolverSyntaxSpan,
+    None,
+}
+
+impl HoverSelectionSource {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ResolverIdentifier => "resolver-identifier",
+            Self::ResolverSyntaxSpan => "resolver-syntax-span",
+            Self::None => "none",
+        }
+    }
+}
+
+impl LspHoverReport {
+    pub fn is_hit(&self) -> bool {
+        self.hover.is_some()
+    }
+
+    fn with_parse_diagnostics(mut self, parse_diagnostics: usize) -> Self {
+        self.parse_diagnostics = parse_diagnostics;
+        self
+    }
+}
+
+pub fn hover_report_for_source_position(source: &str, position: LspPosition) -> LspHoverReport {
+    hover_report_for_source_position_with_external(source, position, None)
+}
+
+pub fn hover_report_for_source_position_with_external(
+    source: &str,
+    position: LspPosition,
+    external_index: Option<&SymbolIndex>,
+) -> LspHoverReport {
+    let analysis = file_index_for_source(source);
+    hover_report_for_cached_analysis_with_external(source, &analysis, position, external_index)
+}
+
+pub(crate) fn hover_report_for_cached_analysis_with_external(
+    source: &str,
+    analysis: &FileIndexAnalysis,
+    position: LspPosition,
+    external_index: Option<&SymbolIndex>,
+) -> LspHoverReport {
+    let Some(offset) = offset_for_position(source, position) else {
+        return empty_hover_report(analysis.parse_diagnostics);
+    };
+    hover_report_for_offset(source, analysis, offset, external_index)
+}
+
+pub fn hover_reports_for_source_positions(
+    source: &str,
+    positions: &[LspPosition],
+) -> Vec<LspHoverReport> {
+    hover_reports_for_source_positions_with_external(source, positions, None)
+}
+
+pub fn hover_reports_for_source_positions_with_external(
+    source: &str,
+    positions: &[LspPosition],
+    external_index: Option<&SymbolIndex>,
+) -> Vec<LspHoverReport> {
+    let analysis = file_index_for_source(source);
+    positions
+        .iter()
+        .map(|position| {
+            offset_for_position(source, *position)
+                .map(|offset| hover_report_for_offset(source, &analysis, offset, external_index))
+                .unwrap_or_else(|| empty_hover_report(analysis.parse_diagnostics))
+        })
+        .collect()
+}
+
+fn hover_report_for_offset(
+    source: &str,
+    analysis: &FileIndexAnalysis,
+    offset: usize,
+    external_index: Option<&SymbolIndex>,
+) -> LspHoverReport {
+    let query = IndexQuery::new(&analysis.index);
+    let resolver = ReferenceResolver::new_with_parse_and_scope(
+        source,
+        &analysis.index,
+        &analysis.parse,
+        &analysis.scope,
+        external_index,
+    );
+    match resolver.resolve_hover_at_offset(offset) {
+        Some(HoverResolution::Identifier(resolution)) => {
+            let candidate_count = resolution.candidates.len();
+            let reason = resolution.reason;
+            let identifier_context = resolution.identifier_context;
+            if let Some(selected) = resolution.selected.as_ref() {
+                match selected.source {
+                    CandidateSource::FileLocal => {
+                        if let Some(mut report) = hover_report_for_symbol(
+                            source,
+                            &analysis.index,
+                            &query,
+                            selected.id,
+                            None,
+                            HoverSelectionSource::ResolverIdentifier,
+                            Some(CandidateSource::FileLocal),
+                            Some(reason),
+                            Some(identifier_context),
+                            candidate_count,
+                        ) {
+                            report.receiver_resolution = resolution.receiver.clone();
+                            return report.with_parse_diagnostics(analysis.parse_diagnostics);
+                        }
+                    }
+                    CandidateSource::External => {
+                        if let Some(external_index) = external_index {
+                            let external_query = IndexQuery::new(external_index);
+                            if let Some(mut report) = hover_report_for_symbol(
+                                source,
+                                external_index,
+                                &external_query,
+                                selected.id,
+                                Some(range_for_span(source, resolution.token_span)),
+                                HoverSelectionSource::ResolverIdentifier,
+                                Some(CandidateSource::External),
+                                Some(reason),
+                                Some(identifier_context),
+                                candidate_count,
+                            ) {
+                                report.receiver_resolution = resolution.receiver.clone();
+                                return report.with_parse_diagnostics(analysis.parse_diagnostics);
+                            }
+                        }
+                    }
+                }
+            }
+            LspHoverReport {
+                hover: None,
+                parse_diagnostics: analysis.parse_diagnostics,
+                selected_label: None,
+                selected_kind: None,
+                selected_source: None,
+                selection_source: HoverSelectionSource::None,
+                resolver_reason: Some(reason),
+                identifier_context: Some(identifier_context),
+                resolver_candidate_count: candidate_count,
+                receiver_resolution: resolution.receiver.clone(),
+            }
+        }
+        Some(HoverResolution::SyntaxSpan(resolution)) => {
+            let Some(selected) = resolution.selected.as_ref() else {
+                return empty_hover_report(analysis.parse_diagnostics);
+            };
+            hover_report_for_symbol(
+                source,
+                &analysis.index,
+                &query,
+                selected.id,
+                None,
+                HoverSelectionSource::ResolverSyntaxSpan,
+                Some(CandidateSource::FileLocal),
+                Some(resolution.reason),
+                None,
+                resolution.candidates.len(),
+            )
+            .map(|report| report.with_parse_diagnostics(analysis.parse_diagnostics))
+            .unwrap_or_else(|| empty_hover_report(analysis.parse_diagnostics))
+        }
+        None => empty_hover_report(analysis.parse_diagnostics),
+    }
+}
+
+fn hover_report_for_symbol(
+    source: &str,
+    index: &SymbolIndex,
+    query: &IndexQuery<'_>,
+    id: GlobalSymbolId,
+    range_override: Option<LspRange>,
+    selection_source: HoverSelectionSource,
+    selected_source: Option<CandidateSource>,
+    resolver_reason: Option<ResolutionReason>,
+    identifier_context: Option<IdentifierContext>,
+    resolver_candidate_count: usize,
+) -> Option<LspHoverReport> {
+    let display = query.symbol_display(id)?;
+    let selected_kind = display.kind;
+    let selected_label = display.label.clone();
+    let symbol = index.symbol(id);
+    let range = range_override
+        .or_else(|| symbol.map(|symbol| range_for_span(source, symbol.selection_span)));
+    Some(LspHoverReport {
+        hover: Some(LspHover {
+            contents: LspMarkupContent {
+                kind: "markdown".to_string(),
+                value: render_hover_markdown(&display),
+            },
+            range,
+        }),
+        parse_diagnostics: 0,
+        selected_label: Some(selected_label),
+        selected_kind: Some(selected_kind),
+        selected_source,
+        selection_source,
+        resolver_reason,
+        identifier_context,
+        resolver_candidate_count,
+        receiver_resolution: None,
+    })
+}
+
+pub(crate) fn render_hover_markdown(display: &SymbolDisplayInfo) -> String {
+    let code = display.signature.as_ref().unwrap_or(&display.label);
+    let mut sections = Vec::new();
+    sections.push(format!("```enforce\n{code}\n```"));
+
+    if let Some(detail) = &display.detail {
+        if detail != code {
+            sections.push(detail.clone());
+        }
+    }
+    if let Some(preview) = &display.documentation_preview {
+        sections.push(preview.clone());
+    }
+    if !display.modifiers.is_empty() {
+        sections.push(format!("**Modifiers:** {}", display.modifiers.join(", ")));
+    }
+    let attribute_names = display
+        .attributes
+        .iter()
+        .map(|attribute| {
+            attribute
+                .name
+                .as_deref()
+                .unwrap_or(attribute.text.as_str())
+                .to_string()
+        })
+        .collect::<Vec<_>>();
+    if !attribute_names.is_empty() {
+        sections.push(format!("**Attributes:** {}", attribute_names.join(", ")));
+    }
+
+    sections.join("\n\n")
+}
+
+fn empty_hover_report(parse_diagnostics: usize) -> LspHoverReport {
+    LspHoverReport {
+        hover: None,
+        parse_diagnostics,
+        selected_label: None,
+        selected_kind: None,
+        selected_source: None,
+        selection_source: HoverSelectionSource::None,
+        resolver_reason: None,
+        identifier_context: None,
+        resolver_candidate_count: 0,
+        receiver_resolution: None,
+    }
+}

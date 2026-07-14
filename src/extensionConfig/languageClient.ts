@@ -25,7 +25,7 @@ export const languageClientLogs = {
 
 export const languageClientIndexCache = {
 	rootFolder: 'index-cache',
-	gameDataIndexFile: 'game-data-symbol-index.v4.json',
+	gameDataIndexFile: 'game-data-symbol-index.v6.json',
 } as const;
 
 export const languageClientLanguage = {
@@ -34,6 +34,11 @@ export const languageClientLanguage = {
 
 export const languageClientRequests = {
 	debugHover: 'reforger/debugHover',
+} as const;
+
+export const languageClientNotifications = {
+	workspaceFileChanged: 'reforger/workspaceFileChanged',
+	workspaceFileDeleted: 'reforger/workspaceFileDeleted',
 } as const;
 
 export const languageClientDocumentSelector = [

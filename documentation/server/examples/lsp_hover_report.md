@@ -10,7 +10,7 @@ This example sits above the Rust LSP helper API. It exercises the same file-loca
 
 ## Current Behavior
 
-The report reads targeted committed parser fixtures, downloaded game-data checks when available, plus small inline hover coverage sources for enum/global-field and usage cases. When game data exists, it builds a game-data index once and supplies it as external hover context. It writes `tools/reports/lsp-hover-fixtures.report.md` with target positions, hit/miss state, selection source, selected source, resolver reason, identifier context, receiver owner/failure, receiver expression kind, resolver candidate count, selected symbol kind/name, parse diagnostics, elapsed time, and a compact Markdown hover preview. Current checks include class, field, method, parameter, typedef, enum member, global field, local variable, `foreach` variable, `for` initializer, receiver/member access, resolver syntax-span hover on a non-identifier return type, whitespace miss behavior, `SCR_BaseGameMode` game-data hover cases, external type checks for `Widget`, `IEntity`, and `SCR_ScenarioFrameworkGet`, and `SCR_AutotestResult` constructor/type-name collision cases.
+The report reads targeted committed parser fixtures, downloaded game-data checks when available, plus small inline hover coverage sources for enum/global-field and usage cases. When game data exists, it builds a game-data index once and supplies it as external hover context. It writes `tools/reports/lsp-hover-fixtures.report.md` with target positions, hit/miss state, selection source, selected source, resolver reason, identifier context, receiver owner/failure, receiver expression kind, receiver lookup path, resolver candidate count, selected symbol kind/name, parse diagnostics, elapsed time, and a compact Markdown hover preview. Current checks include class, field, method, parameter, typedef, enum member, global field, local variable, `foreach` variable, `for` initializer, receiver/member access, resolver syntax-span hover on a non-identifier return type, whitespace miss behavior, `SCR_BaseGameMode` game-data hover cases, external type checks for `Widget`, `IEntity`, and `SCR_ScenarioFrameworkGet`, `SCR_AutotestResult` constructor/type-name collision cases, and `GetGame()` external receiver-chain cases.
 
 ## Dependencies and Boundaries
 
@@ -28,6 +28,7 @@ The report uses only Rust standard library code and the existing LSP/index helpe
 - Added receiver/member-access hover checks and receiver owner/failure report columns.
 - Added a resolver syntax-span hover check for non-identifier positions inside declarations.
 - Added receiver expression kind reporting now that member-access hover consumes AST expression views.
+- Added receiver lookup path reporting and game-data checks for external function receiver chains such as `GetGame().GetWorld().GetWorldTime()`.
 
 ## Future Improvements
 

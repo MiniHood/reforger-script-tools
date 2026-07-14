@@ -1,47 +1,112 @@
-use crate::ast::AstSourceFile;
 use crate::index::{GlobalSymbolId, SymbolIndex};
-use crate::index_cache::{
-    load_or_build_game_data_index, GameDataIndexCacheConfig, RuntimeIndexSummary,
-};
 use crate::index_query::IndexQuery;
-use crate::lexer::{lex, Keyword, TextSpan, Token, TokenKind};
-use crate::model::{SourceFileMetadata, SymbolCatalog, SymbolKind};
+use crate::lexer::TextSpan;
+use crate::model::SymbolKind;
+#[cfg(test)]
 use crate::parser::parse_source;
-use crate::resolver::{
-    CandidateSource, HoverResolution, IdentifierContext, ReceiverResolution, ReferenceCandidate,
-    ReferenceResolver, ResolutionReason,
-};
-use crate::symbol_display::SymbolDisplayInfo;
+#[cfg(test)]
+use crate::resolver::CandidateSource;
+#[cfg(test)]
+use crate::resolver::{IdentifierContext, ResolutionReason};
+#[cfg(test)]
 use crate::syntax::ParseDiagnostic;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+#[cfg(test)]
+use std::path::Path;
+use std::path::PathBuf;
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+mod completion;
+mod debug_hover;
+mod definition;
+mod diagnostics;
+mod external_overlay;
+mod hover;
+mod open_documents;
+mod semantic_tokens;
+
+use completion::empty_completion_list;
+pub use completion::{
+    completion_report_for_cached_analysis_with_external,
+    completion_report_for_source_position_with_external, LspCompletionItem,
+    LspCompletionItemLabelDetails, LspCompletionList, LspCompletionReport, LspCompletionTimings,
+    LspTextEdit,
+};
+use debug_hover::debug_hover_report_for_cached_analysis_with_external;
+pub use debug_hover::debug_hover_report_for_source_position;
+pub(crate) use debug_hover::selected_label_from_debug_report;
+#[cfg(test)]
+pub(crate) use definition::file_uri_for_path;
+pub use definition::{
+    definition_report_for_cached_analysis_with_external, definition_report_for_source_position,
+    definition_report_for_source_position_with_external, LspDefinitionReport, LspLocation,
+    LspLocationLink,
+};
+use diagnostics::{clear_diagnostics_message, publish_diagnostics_message};
+pub use diagnostics::{parser_diagnostics_for_source, LspDiagnostic};
+pub(crate) use external_overlay::ExternalIndexStatusSummary;
+use external_overlay::{start_external_index, ExternalIndexHandle};
+use hover::hover_report_for_cached_analysis_with_external;
+pub use hover::{
+    hover_report_for_source_position, hover_report_for_source_position_with_external,
+    hover_reports_for_source_positions, hover_reports_for_source_positions_with_external,
+    HoverSelectionSource, LspHover, LspHoverReport,
+};
+pub(crate) use open_documents::OpenDocument;
+pub use open_documents::{file_index_for_source, FileIndexAnalysis};
+use semantic_tokens::{
+    fast_semantic_tokens_for_cached_analysis, semantic_tokens_for_cached_analysis_with_external,
+    LspSemanticTokenProjection, LspSemanticTokens, SEMANTIC_TOKEN_MODIFIERS, SEMANTIC_TOKEN_TYPES,
+};
+pub use semantic_tokens::{
+    fast_semantic_tokens_for_source, semantic_tokens_for_source_with_external,
+    semantic_tokens_report_for_source, semantic_tokens_report_for_source_with_external,
+    LspSemanticTokenReport, LspSemanticTokenTimings, SemanticTokenDebug,
+};
 
 const SERVER_NAME: &str = "reforger-language-server";
 const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 const DEBUG_HOVER_METHOD: &str = "reforger/debugHover";
-const DEBUG_TOKEN_CONTEXT: usize = 8;
-const DEBUG_CANDIDATE_LIMIT: usize = 20;
-const DEBUG_CHILD_LIMIT: usize = 20;
-
+const WORKSPACE_FILE_CHANGED_METHOD: &str = "reforger/workspaceFileChanged";
+const WORKSPACE_FILE_DELETED_METHOD: &str = "reforger/workspaceFileDeleted";
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LspServerOptions {
     pub log_path: Option<PathBuf>,
     pub game_data_scripts: Option<PathBuf>,
     pub game_data_metadata: Option<PathBuf>,
     pub index_cache: Option<PathBuf>,
+    pub workspace_scripts: Vec<PathBuf>,
 }
 
 pub fn run_stdio(options: LspServerOptions) -> Result<(), String> {
-    let stdin = io::stdin();
     let stdout = io::stdout();
-    run(stdin.lock(), stdout.lock(), options)
+    let mut server = LspServer::new(stdout.lock(), options);
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let stdin = io::stdin();
+        let mut reader = BufReader::new(stdin.lock());
+        loop {
+            match read_message(&mut reader) {
+                Ok(Some(message)) => {
+                    if sender.send(Ok(message)).is_err() {
+                        break;
+                    }
+                }
+                Ok(None) => break,
+                Err(error) => {
+                    let _ = sender.send(Err(error));
+                    break;
+                }
+            }
+        }
+    });
+    server.run_message_channel(receiver)
 }
 
 pub fn run<R: Read, W: Write>(
@@ -85,66 +150,9 @@ pub struct LspDocumentSymbolReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct LspHover {
-    pub contents: LspMarkupContent,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub range: Option<LspRange>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct LspMarkupContent {
     pub kind: String,
     pub value: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct LspLocation {
-    pub uri: String,
-    pub range: LspRange,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LspDefinitionReport {
-    pub locations: Vec<LspLocation>,
-    pub parse_diagnostics: usize,
-    pub selected_label: Option<String>,
-    pub selected_kind: Option<SymbolKind>,
-    pub selected_source: Option<CandidateSource>,
-    pub resolver_reason: Option<ResolutionReason>,
-    pub identifier_context: Option<IdentifierContext>,
-    pub resolver_candidate_count: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LspHoverReport {
-    pub hover: Option<LspHover>,
-    pub parse_diagnostics: usize,
-    pub selected_label: Option<String>,
-    pub selected_kind: Option<SymbolKind>,
-    pub selected_source: Option<CandidateSource>,
-    pub selection_source: HoverSelectionSource,
-    pub resolver_reason: Option<ResolutionReason>,
-    pub identifier_context: Option<IdentifierContext>,
-    pub resolver_candidate_count: usize,
-    pub receiver_resolution: Option<ReceiverResolution>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HoverSelectionSource {
-    ResolverIdentifier,
-    ResolverSyntaxSpan,
-    None,
-}
-
-impl HoverSelectionSource {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::ResolverIdentifier => "resolver-identifier",
-            Self::ResolverSyntaxSpan => "resolver-syntax-span",
-            Self::None => "none",
-        }
-    }
 }
 
 impl LspDocumentSymbolReport {
@@ -153,50 +161,14 @@ impl LspDocumentSymbolReport {
     }
 }
 
-impl LspHoverReport {
-    pub fn is_hit(&self) -> bool {
-        self.hover.is_some()
-    }
-}
-
-impl LspDefinitionReport {
-    pub fn is_hit(&self) -> bool {
-        !self.locations.is_empty()
-    }
-}
-
 struct LspServer<W: Write> {
     writer: W,
     documents: BTreeMap<String, OpenDocument>,
     logger: LspLogger,
     external_index: ExternalIndexHandle,
+    next_server_request_id: u64,
+    last_semantic_external_generation: u64,
     shutdown_requested: bool,
-}
-
-struct OpenDocument {
-    text: String,
-    version: Option<i32>,
-    revision: u64,
-    analysis: FileIndexAnalysis,
-}
-
-impl OpenDocument {
-    fn new(text: String, version: Option<i32>, revision: u64) -> Self {
-        let analysis = file_index_for_source(&text);
-        Self {
-            text,
-            version,
-            revision,
-            analysis,
-        }
-    }
-
-    fn replace(&mut self, text: String, version: Option<i32>) {
-        self.text = text;
-        self.version = version;
-        self.revision += 1;
-        self.analysis = file_index_for_source(&self.text);
-    }
 }
 
 #[derive(Clone)]
@@ -229,162 +201,15 @@ impl LspLogger {
     }
 }
 
-#[derive(Clone)]
-struct ExternalIndexHandle {
-    state: Arc<Mutex<ExternalIndexState>>,
-}
-
-#[derive(Debug)]
-struct ExternalIndexState {
-    status: ExternalIndexStatus,
-    index: Option<SymbolIndex>,
-    summary: Option<RuntimeIndexSummary>,
-    cache_status: Option<String>,
-    cache_detail: Option<String>,
-    fingerprint: Option<String>,
-    error: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ExternalIndexStatus {
-    Missing,
-    Building,
-    Ready,
-    Failed,
-}
-
-impl ExternalIndexStatus {
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::Missing => "missing",
-            Self::Building => "building",
-            Self::Ready => "ready",
-            Self::Failed => "failed",
-        }
+fn format_paths(paths: &[PathBuf]) -> String {
+    if paths.is_empty() {
+        return "<none>".to_string();
     }
-}
-
-#[derive(Debug, Clone)]
-struct ExternalIndexStatusSummary {
-    status: &'static str,
-    files: usize,
-    symbols: usize,
-    parse_diagnostics: usize,
-    cache_status: Option<String>,
-    cache_detail: Option<String>,
-    fingerprint: Option<String>,
-    error: Option<String>,
-}
-
-impl ExternalIndexHandle {
-    fn missing() -> Self {
-        Self {
-            state: Arc::new(Mutex::new(ExternalIndexState {
-                status: ExternalIndexStatus::Missing,
-                index: None,
-                summary: None,
-                cache_status: None,
-                cache_detail: None,
-                fingerprint: None,
-                error: None,
-            })),
-        }
-    }
-
-    fn status_summary(&self) -> ExternalIndexStatusSummary {
-        let state = self.state.lock().unwrap();
-        let summary = state.summary.as_ref();
-        ExternalIndexStatusSummary {
-            status: state.status.as_str(),
-            files: summary.map(|summary| summary.files).unwrap_or(0),
-            symbols: summary.map(|summary| summary.indexed_symbols).unwrap_or(0),
-            parse_diagnostics: summary
-                .map(|summary| summary.parse_diagnostics)
-                .unwrap_or(0),
-            cache_status: state.cache_status.clone(),
-            cache_detail: state.cache_detail.clone(),
-            fingerprint: state.fingerprint.clone(),
-            error: state.error.clone(),
-        }
-    }
-}
-
-fn start_external_index(options: &LspServerOptions, logger: LspLogger) -> ExternalIndexHandle {
-    let Some(scripts_root) = options.game_data_scripts.clone() else {
-        return ExternalIndexHandle::missing();
-    };
-    let Some(cache_path) = options.index_cache.clone() else {
-        return ExternalIndexHandle::missing();
-    };
-
-    let handle = ExternalIndexHandle {
-        state: Arc::new(Mutex::new(ExternalIndexState {
-            status: ExternalIndexStatus::Building,
-            index: None,
-            summary: None,
-            cache_status: None,
-            cache_detail: None,
-            fingerprint: None,
-            error: None,
-        })),
-    };
-
-    let state = handle.state.clone();
-    let metadata_path = options.game_data_metadata.clone();
-    thread::spawn(move || {
-        let start = Instant::now();
-        logger.log(&format!(
-            "externalIndex start scripts={} cache={}",
-            scripts_root.display(),
-            cache_path.display()
-        ));
-        let result = load_or_build_game_data_index(&GameDataIndexCacheConfig {
-            scripts_root,
-            cache_path,
-            metadata_path,
-        });
-
-        let mut state = state.lock().unwrap();
-        match result {
-            Ok(result) => {
-                let cache_status = result.cache_status.as_str().to_string();
-                let cache_detail = result.cache_status.detail().map(str::to_string);
-                let fingerprint = result.fingerprint.summary();
-                logger.log(&format!(
-                    "externalIndex ready cache_status={} cache_detail={} files={} symbols={} parse_diagnostics={} elapsed_ms={}",
-                    cache_status,
-                    cache_detail.as_deref().unwrap_or("<none>"),
-                    result.summary.files,
-                    result.summary.indexed_symbols,
-                    result.summary.parse_diagnostics,
-                    start.elapsed().as_millis()
-                ));
-                state.status = ExternalIndexStatus::Ready;
-                state.index = Some(result.index);
-                state.summary = Some(result.summary);
-                state.cache_status = Some(cache_status);
-                state.cache_detail = cache_detail;
-                state.fingerprint = Some(fingerprint);
-                state.error = None;
-            }
-            Err(error) => {
-                logger.log(&format!(
-                    "externalIndex failed error={} elapsed_ms={}",
-                    error,
-                    start.elapsed().as_millis()
-                ));
-                state.status = ExternalIndexStatus::Failed;
-                state.index = None;
-                state.summary = None;
-                state.cache_status = None;
-                state.cache_detail = None;
-                state.fingerprint = None;
-                state.error = Some(error);
-            }
-        }
-    });
-
-    handle
+    paths
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(";")
 }
 
 #[derive(Debug, Deserialize)]
@@ -433,6 +258,19 @@ struct DidCloseTextDocumentParams {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct WorkspaceFileChangedParams {
+    path: String,
+    text: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkspaceFileDeletedParams {
+    path: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct DocumentSymbolParams {
     text_document: TextDocumentIdentifier,
 }
@@ -458,10 +296,12 @@ impl<W: Write> LspServer<W> {
             documents: BTreeMap::new(),
             logger,
             external_index,
+            next_server_request_id: 1,
+            last_semantic_external_generation: 0,
             shutdown_requested: false,
         };
         server.log(&format!(
-            "startup server={SERVER_NAME} version={SERVER_VERSION} game_data_scripts={} index_cache={} external_index_status={}",
+            "startup server={SERVER_NAME} version={SERVER_VERSION} game_data_scripts={} index_cache={} workspace_roots={} external_index_status={}",
             options
                 .game_data_scripts
                 .as_ref()
@@ -472,6 +312,7 @@ impl<W: Write> LspServer<W> {
                 .as_ref()
                 .map(|path| path.display().to_string())
                 .unwrap_or_else(|| "<unset>".to_string()),
+            format_paths(&options.workspace_scripts),
             server.external_index.status_summary().status
         ));
         server
@@ -483,6 +324,29 @@ impl<W: Write> LspServer<W> {
             let should_exit = self.handle_message(message)?;
             if should_exit {
                 break;
+            }
+        }
+        self.log("exit");
+        Ok(())
+    }
+
+    fn run_message_channel(
+        &mut self,
+        receiver: mpsc::Receiver<Result<Value, String>>,
+    ) -> Result<(), String> {
+        loop {
+            match receiver.recv_timeout(Duration::from_millis(100)) {
+                Ok(Ok(message)) => {
+                    let should_exit = self.handle_message(message)?;
+                    if should_exit {
+                        break;
+                    }
+                }
+                Ok(Err(error)) => return Err(error),
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    self.request_semantic_tokens_refresh_if_external_generation_changed()?;
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
         }
         self.log("exit");
@@ -507,7 +371,18 @@ impl<W: Write> LspServer<W> {
                                 "textDocumentSync": 1,
                                 "documentSymbolProvider": true,
                                 "hoverProvider": true,
-                                "definitionProvider": true
+                                "definitionProvider": true,
+                                "completionProvider": {
+                                    "triggerCharacters": ["."]
+                                },
+                                "semanticTokensProvider": {
+                                    "legend": {
+                                        "tokenTypes": SEMANTIC_TOKEN_TYPES,
+                                        "tokenModifiers": SEMANTIC_TOKEN_MODIFIERS
+                                    },
+                                    "full": true,
+                                    "range": false
+                                }
                             },
                             "serverInfo": {
                                 "name": SERVER_NAME,
@@ -546,7 +421,13 @@ impl<W: Write> LspServer<W> {
                     let symbol_count = document_symbol_count(&symbols);
                     let parse_diagnostics = document.analysis.parse_diagnostics;
                     let revision = document.revision;
+                    let diagnostics_message = publish_diagnostics_message(
+                        &uri,
+                        &document.text,
+                        &document.analysis.diagnostics,
+                    );
                     self.documents.insert(uri.clone(), document);
+                    self.write_message(diagnostics_message)?;
                     self.log(&format!(
                         "notification didOpen uri={} bytes={} version={} revision={} cached_analysis=true symbols={} parse_diagnostics={} analysis_elapsed_ms={}",
                         uri,
@@ -581,6 +462,12 @@ impl<W: Write> LspServer<W> {
                         let symbol_count = document_symbol_count(&symbols);
                         let parse_diagnostics = document.analysis.parse_diagnostics;
                         let revision = document.revision;
+                        let diagnostics_message = publish_diagnostics_message(
+                            &uri,
+                            &document.text,
+                            &document.analysis.diagnostics,
+                        );
+                        self.write_message(diagnostics_message)?;
                         self.log(&format!(
                             "notification didChange uri={} bytes={} version={} revision={} cached_analysis=true symbols={} parse_diagnostics={} analysis_elapsed_ms={}",
                             uri,
@@ -603,6 +490,69 @@ impl<W: Write> LspServer<W> {
                         params.text_document.uri
                     ));
                     self.documents.remove(&params.text_document.uri);
+                    self.write_message(clear_diagnostics_message(&params.text_document.uri))?;
+                }
+            }
+            WORKSPACE_FILE_CHANGED_METHOD => {
+                if let Some(params) =
+                    parse_params::<WorkspaceFileChangedParams>(message.params, method)?
+                {
+                    let start = Instant::now();
+                    let path = PathBuf::from(params.path);
+                    let bytes = params.text.len();
+                    let result = self
+                        .external_index
+                        .update_workspace_file(path.clone(), params.text);
+                    match result {
+                        Ok((symbols, parse_diagnostics)) => {
+                            let status = self.external_index.status_summary();
+                            self.log(&format!(
+                                "notification workspaceFileChanged path={} bytes={} symbols={} parse_diagnostics={} overlay_status={} overlay_generation={} overlay_files={} overlay_symbols={} elapsed_ms={}",
+                                path.display(),
+                                bytes,
+                                symbols,
+                                parse_diagnostics,
+                                status.status,
+                                status.generation,
+                                status.files,
+                                status.symbols,
+                                start.elapsed().as_millis()
+                            ));
+                            self.request_semantic_tokens_refresh()?;
+                        }
+                        Err(error) => {
+                            self.log(&format!(
+                                "notification workspaceFileChanged path={} bytes={} error={} elapsed_ms={}",
+                                path.display(),
+                                bytes,
+                                error,
+                                start.elapsed().as_millis()
+                            ));
+                        }
+                    }
+                }
+            }
+            WORKSPACE_FILE_DELETED_METHOD => {
+                if let Some(params) =
+                    parse_params::<WorkspaceFileDeletedParams>(message.params, method)?
+                {
+                    let start = Instant::now();
+                    let path = PathBuf::from(params.path);
+                    let removed = self.external_index.delete_workspace_file(&path);
+                    let status = self.external_index.status_summary();
+                    self.log(&format!(
+                        "notification workspaceFileDeleted path={} removed={} overlay_status={} overlay_generation={} overlay_files={} overlay_symbols={} elapsed_ms={}",
+                        path.display(),
+                        removed,
+                        status.status,
+                        status.generation,
+                        status.files,
+                        status.symbols,
+                        start.elapsed().as_millis()
+                    ));
+                    if removed {
+                        self.request_semantic_tokens_refresh()?;
+                    }
                 }
             }
             "textDocument/documentSymbol" => {
@@ -643,6 +593,173 @@ impl<W: Write> LspServer<W> {
                     self.respond(id, result)?;
                 }
             }
+            "textDocument/completion" => {
+                if let Some(id) = message.id {
+                    let start = Instant::now();
+                    let params = parse_params::<HoverParams>(message.params, method)?;
+                    let mut log_uri = "<missing>".to_string();
+                    let mut bytes = 0usize;
+                    let mut parse_diagnostics = 0usize;
+                    let mut revision = 0u64;
+                    let mut receiver = "<none>".to_string();
+                    let mut owner_type = "<none>".to_string();
+                    let mut completion_context = "none".to_string();
+                    let mut prefix = String::new();
+                    let mut candidate_count = 0usize;
+                    let mut failure_reason = "<none>".to_string();
+                    let mut context_ms = 0u128;
+                    let mut lookup_ms = 0u128;
+                    let mut render_ms = 0u128;
+                    let mut external_index_status = self.external_index.status_summary().status;
+                    let result = params
+                        .and_then(|params| {
+                            log_uri = params.text_document.uri;
+                            self.documents.get(&log_uri).map(|document| {
+                                bytes = document.text.len();
+                                revision = document.revision;
+                                let report = self.external_index.with_index(|status, index| {
+                                    external_index_status = status;
+                                    completion_report_for_cached_analysis_with_external(
+                                        &document.text,
+                                        &document.analysis,
+                                        params.position,
+                                        index,
+                                    )
+                                });
+                                parse_diagnostics = report.parse_diagnostics;
+                                completion_context = report.completion_context.clone();
+                                receiver = report
+                                    .receiver_text
+                                    .clone()
+                                    .unwrap_or_else(|| "<none>".to_string());
+                                owner_type = report
+                                    .owner_type
+                                    .clone()
+                                    .unwrap_or_else(|| "<none>".to_string());
+                                prefix = report.prefix.clone();
+                                candidate_count = report.candidate_count;
+                                failure_reason = report
+                                    .failure_reason
+                                    .clone()
+                                    .unwrap_or_else(|| "<none>".to_string());
+                                context_ms = report.timings.context_detection.as_millis();
+                                lookup_ms = report.timings.candidate_lookup.as_millis();
+                                render_ms = report.timings.item_rendering.as_millis();
+                                report.list
+                            })
+                        })
+                        .map(|list| serde_json::to_value(list).unwrap_or(Value::Null))
+                        .unwrap_or_else(|| {
+                            serde_json::to_value(empty_completion_list()).unwrap_or(Value::Null)
+                        });
+                    self.log(&format!(
+                        "request completion uri={} bytes={} revision={} cached_analysis=true context={} receiver={} owner_type={} prefix={} candidates={} failure_reason={} external_index_status={} parse_diagnostics={} context_ms={} lookup_ms={} render_ms={} elapsed_ms={}",
+                        log_uri,
+                        bytes,
+                        revision,
+                        completion_context,
+                        receiver,
+                        owner_type,
+                        prefix,
+                        candidate_count,
+                        failure_reason,
+                        external_index_status,
+                        parse_diagnostics,
+                        context_ms,
+                        lookup_ms,
+                        render_ms,
+                        start.elapsed().as_millis()
+                    ));
+                    self.respond(id, result)?;
+                }
+            }
+            "textDocument/semanticTokens/full" => {
+                if let Some(id) = message.id {
+                    let start = Instant::now();
+                    let params = parse_params::<DocumentSymbolParams>(message.params, method)?;
+                    let mut log_uri = "<missing>".to_string();
+                    let mut bytes = 0usize;
+                    let mut revision = 0u64;
+                    let mut token_count = 0usize;
+                    let mut parse_diagnostics = 0usize;
+                    let external_index_summary = self.external_index.status_summary();
+                    let external_index_status = external_index_summary.status;
+                    let external_generation = external_index_summary.generation;
+                    let mut projection_mode = "missing-document";
+                    let mut lex_ms = 0u128;
+                    let mut resolver_ms = 0u128;
+                    let mut resolver_calls = 0usize;
+                    let mut token_loop_ms = 0u128;
+                    let mut encode_ms = 0u128;
+                    let mut rich_work: Option<(String, u64, u64)> = None;
+                    let result = params
+                        .and_then(|params| {
+                            log_uri = params.text_document.uri;
+                            self.documents.get(&log_uri).map(|document| {
+                                bytes = document.text.len();
+                                revision = document.revision;
+                                let projection = if let Some(projection) = document
+                                    .semantic_tokens
+                                    .rich_for_revision_and_external_generation(
+                                        document.revision,
+                                        external_generation,
+                                    ) {
+                                    projection_mode = "rich-cache";
+                                    projection.clone()
+                                } else {
+                                    projection_mode = "fast-compute";
+                                    rich_work = Some((
+                                        log_uri.clone(),
+                                        document.revision,
+                                        external_generation,
+                                    ));
+                                    fast_semantic_tokens_for_cached_analysis(
+                                        &document.text,
+                                        &document.analysis,
+                                    )
+                                };
+                                token_count = projection.token_count;
+                                parse_diagnostics = projection.parse_diagnostics;
+                                lex_ms = projection.timings.lex_ms;
+                                resolver_ms = projection.timings.resolver_ms;
+                                resolver_calls = projection.timings.identifier_resolver_calls;
+                                token_loop_ms = projection.timings.token_loop_ms;
+                                encode_ms = projection.timings.encode_ms;
+                                projection.tokens
+                            })
+                        })
+                        .map(|tokens| serde_json::to_value(tokens).unwrap_or(Value::Null))
+                        .unwrap_or_else(|| {
+                            serde_json::to_value(LspSemanticTokens { data: Vec::new() })
+                                .unwrap_or(Value::Null)
+                        });
+                    self.log(&format!(
+                        "request semanticTokens uri={} bytes={} revision={} cached_analysis=true mode={} tokens={} external_index_status={} external_generation={} parse_diagnostics={} lex_ms={} token_loop_ms={} resolver_ms={} resolver_calls={} encode_ms={} elapsed_ms={}",
+                        log_uri,
+                        bytes,
+                        revision,
+                        projection_mode,
+                        token_count,
+                        external_index_status,
+                        external_generation,
+                        parse_diagnostics,
+                        lex_ms,
+                        token_loop_ms,
+                        resolver_ms,
+                        resolver_calls,
+                        encode_ms,
+                        start.elapsed().as_millis()
+                    ));
+                    self.respond(id, result)?;
+                    if let Some((uri, rich_revision, rich_external_generation)) = rich_work {
+                        self.prepare_rich_semantic_tokens(
+                            &uri,
+                            rich_revision,
+                            rich_external_generation,
+                        )?;
+                    }
+                }
+            }
             "textDocument/hover" => {
                 if let Some(id) = message.id {
                     let start = Instant::now();
@@ -668,14 +785,15 @@ impl<W: Write> LspServer<W> {
                             self.documents.get(&log_uri).map(|document| {
                                 bytes = document.text.len();
                                 revision = document.revision;
-                                let external_index = self.external_index.state.lock().unwrap();
-                                external_index_status = external_index.status.as_str();
-                                let report = hover_report_for_cached_analysis_with_external(
-                                    &document.text,
-                                    &document.analysis,
-                                    params.position,
-                                    external_index.index.as_ref(),
-                                );
+                                let report = self.external_index.with_index(|status, index| {
+                                    external_index_status = status;
+                                    hover_report_for_cached_analysis_with_external(
+                                        &document.text,
+                                        &document.analysis,
+                                        params.position,
+                                        index,
+                                    )
+                                });
                                 parse_diagnostics = report.parse_diagnostics;
                                 hit = report.is_hit();
                                 selection_source = report.selection_source;
@@ -760,15 +878,16 @@ impl<W: Write> LspServer<W> {
                             self.documents.get(&log_uri).map(|document| {
                                 bytes = document.text.len();
                                 revision = document.revision;
-                                let external_index = self.external_index.state.lock().unwrap();
-                                external_index_status = external_index.status.as_str();
-                                let report = definition_report_for_cached_analysis_with_external(
-                                    &document.text,
-                                    &document.analysis,
-                                    &log_uri,
-                                    params.position,
-                                    external_index.index.as_ref(),
-                                );
+                                let report = self.external_index.with_index(|status, index| {
+                                    external_index_status = status;
+                                    definition_report_for_cached_analysis_with_external(
+                                        &document.text,
+                                        &document.analysis,
+                                        &log_uri,
+                                        params.position,
+                                        index,
+                                    )
+                                });
                                 parse_diagnostics = report.parse_diagnostics;
                                 hit = report.is_hit();
                                 selected_source = report
@@ -790,10 +909,10 @@ impl<W: Write> LspServer<W> {
                                 if let Some(kind) = report.selected_kind {
                                     selected_kind = symbol_kind_label(kind);
                                 }
-                                report.locations
+                                report.links
                             })
                         })
-                        .map(|locations| serde_json::to_value(locations).unwrap_or(Value::Null))
+                        .map(|links| serde_json::to_value(links).unwrap_or(Value::Null))
                         .unwrap_or(Value::Null);
                     self.log(&format!(
                         "request definition uri={} bytes={} revision={} cached_analysis=true hit={} selected_source={} resolver_reason={} identifier_context={} resolver_candidates={} external_index_status={} label={} kind={} parse_diagnostics={} elapsed_ms={}",
@@ -830,14 +949,15 @@ impl<W: Write> LspServer<W> {
                                 bytes = document.text.len();
                                 revision = document.revision;
                                 let external_status = self.external_index.status_summary();
-                                let external_index = self.external_index.state.lock().unwrap();
-                                let report = debug_hover_report_for_cached_analysis_with_external(
-                                    &document.text,
-                                    &document.analysis,
-                                    params.position,
-                                    external_index.index.as_ref(),
-                                    Some(&external_status),
-                                );
+                                let report = self.external_index.with_index(|_, index| {
+                                    debug_hover_report_for_cached_analysis_with_external(
+                                        &document.text,
+                                        &document.analysis,
+                                        params.position,
+                                        index,
+                                        Some(&external_status),
+                                    )
+                                });
                                 hit = report.contains("Selected Symbol: yes");
                                 if let Some(label) = selected_label_from_debug_report(&report) {
                                     selected_label = label;
@@ -870,7 +990,146 @@ impl<W: Write> LspServer<W> {
             }
         }
 
+        self.request_semantic_tokens_refresh_if_external_generation_changed()?;
+
         Ok(self.shutdown_requested && method == "exit")
+    }
+
+    fn prepare_rich_semantic_tokens(
+        &mut self,
+        uri: &str,
+        revision: u64,
+        external_generation: u64,
+    ) -> Result<(), String> {
+        let start = Instant::now();
+        let mut external_index_status = self.external_index.status_summary().status;
+        let Some(projection) =
+            self.rich_semantic_tokens_for_revision(uri, revision, &mut external_index_status)
+        else {
+            self.log(&format!(
+                "semanticTokensRich skipped uri={} revision={} reason=stale-or-missing-document elapsed_ms={}",
+                uri,
+                revision,
+                start.elapsed().as_millis()
+            ));
+            return Ok(());
+        };
+        let token_count = projection.token_count;
+        let parse_diagnostics = projection.parse_diagnostics;
+        let lex_ms = projection.timings.lex_ms;
+        let token_loop_ms = projection.timings.token_loop_ms;
+        let resolver_ms = projection.timings.resolver_ms;
+        let resolver_calls = projection.timings.identifier_resolver_calls;
+        let encode_ms = projection.timings.encode_ms;
+        let Some(current_revision) = self.documents.get(uri).map(|document| document.revision)
+        else {
+            self.log(&format!(
+                "semanticTokensRich discarded uri={} revision={} reason=missing-document elapsed_ms={}",
+                uri,
+                revision,
+                start.elapsed().as_millis()
+            ));
+            return Ok(());
+        };
+        if current_revision != revision {
+            self.log(&format!(
+                "semanticTokensRich discarded uri={} revision={} current_revision={} reason=stale-revision elapsed_ms={}",
+                uri,
+                revision,
+                current_revision,
+                start.elapsed().as_millis()
+            ));
+            return Ok(());
+        }
+        let current_external_generation = self.external_index.status_summary().generation;
+        if current_external_generation != external_generation {
+            self.log(&format!(
+                "semanticTokensRich discarded uri={} revision={} external_generation={} current_external_generation={} reason=stale-external-index elapsed_ms={}",
+                uri,
+                revision,
+                external_generation,
+                current_external_generation,
+                start.elapsed().as_millis()
+            ));
+            return Ok(());
+        }
+        if let Some(document) = self.documents.get_mut(uri) {
+            document
+                .semantic_tokens
+                .set_rich(revision, external_generation, projection);
+        }
+        self.log(&format!(
+            "semanticTokensRich ready uri={} revision={} external_generation={} tokens={} external_index_status={} parse_diagnostics={} lex_ms={} token_loop_ms={} resolver_ms={} resolver_calls={} encode_ms={} elapsed_ms={}",
+            uri,
+            revision,
+            external_generation,
+            token_count,
+            external_index_status,
+            parse_diagnostics,
+            lex_ms,
+            token_loop_ms,
+            resolver_ms,
+            resolver_calls,
+            encode_ms,
+            start.elapsed().as_millis()
+        ));
+        self.request_semantic_tokens_refresh()
+    }
+
+    fn rich_semantic_tokens_for_revision(
+        &self,
+        uri: &str,
+        revision: u64,
+        external_index_status: &mut &'static str,
+    ) -> Option<LspSemanticTokenProjection> {
+        let document = self.documents.get(uri)?;
+        if document.revision != revision {
+            return None;
+        }
+        Some(self.external_index.with_index(|status, index| {
+            *external_index_status = status;
+            semantic_tokens_for_cached_analysis_with_external(
+                &document.text,
+                &document.analysis,
+                index,
+            )
+        }))
+    }
+
+    fn request_semantic_tokens_refresh(&mut self) -> Result<(), String> {
+        let request_id = self.next_server_request_id;
+        self.next_server_request_id += 1;
+        self.log(&format!(
+            "request workspace/semanticTokens/refresh id=server-{request_id}"
+        ));
+        self.write_message(json!({
+            "jsonrpc": "2.0",
+            "id": format!("server-{request_id}"),
+            "method": "workspace/semanticTokens/refresh",
+            "params": null
+        }))
+    }
+
+    fn request_semantic_tokens_refresh_if_external_generation_changed(
+        &mut self,
+    ) -> Result<(), String> {
+        if self.documents.is_empty() {
+            self.last_semantic_external_generation =
+                self.external_index.status_summary().generation;
+            return Ok(());
+        }
+        let status = self.external_index.status_summary();
+        if status.generation == self.last_semantic_external_generation {
+            return Ok(());
+        }
+        self.last_semantic_external_generation = status.generation;
+        self.log(&format!(
+            "semanticTokens external overlay changed generation={} status={} documents={} requesting_refresh=true",
+            status.generation,
+            status.status,
+            self.documents.len()
+        ));
+        self.request_semantic_tokens_refresh()
     }
 
     fn respond(&mut self, id: Value, result: Value) -> Result<(), String> {
@@ -937,482 +1196,6 @@ fn document_symbols_from_cached_analysis(
     document_symbol_report_for_cached_analysis(source, analysis).symbols
 }
 
-pub fn hover_report_for_source_position(source: &str, position: LspPosition) -> LspHoverReport {
-    hover_report_for_source_position_with_external(source, position, None)
-}
-
-pub fn hover_report_for_source_position_with_external(
-    source: &str,
-    position: LspPosition,
-    external_index: Option<&SymbolIndex>,
-) -> LspHoverReport {
-    let analysis = file_index_for_source(source);
-    hover_report_for_cached_analysis_with_external(source, &analysis, position, external_index)
-}
-
-fn hover_report_for_cached_analysis_with_external(
-    source: &str,
-    analysis: &FileIndexAnalysis,
-    position: LspPosition,
-    external_index: Option<&SymbolIndex>,
-) -> LspHoverReport {
-    let Some(offset) = offset_for_position(source, position) else {
-        return empty_hover_report(analysis.parse_diagnostics);
-    };
-    hover_report_for_offset(source, &analysis, offset, external_index)
-}
-
-pub fn hover_reports_for_source_positions(
-    source: &str,
-    positions: &[LspPosition],
-) -> Vec<LspHoverReport> {
-    hover_reports_for_source_positions_with_external(source, positions, None)
-}
-
-pub fn hover_reports_for_source_positions_with_external(
-    source: &str,
-    positions: &[LspPosition],
-    external_index: Option<&SymbolIndex>,
-) -> Vec<LspHoverReport> {
-    let analysis = file_index_for_source(source);
-    positions
-        .iter()
-        .map(|position| {
-            offset_for_position(source, *position)
-                .map(|offset| hover_report_for_offset(source, &analysis, offset, external_index))
-                .unwrap_or_else(|| empty_hover_report(analysis.parse_diagnostics))
-        })
-        .collect()
-}
-
-pub fn definition_report_for_source_position(
-    source: &str,
-    uri: &str,
-    position: LspPosition,
-) -> LspDefinitionReport {
-    definition_report_for_source_position_with_external(source, uri, position, None)
-}
-
-pub fn definition_report_for_source_position_with_external(
-    source: &str,
-    uri: &str,
-    position: LspPosition,
-    external_index: Option<&SymbolIndex>,
-) -> LspDefinitionReport {
-    let analysis = file_index_for_source(source);
-    definition_report_for_cached_analysis_with_external(
-        source,
-        &analysis,
-        uri,
-        position,
-        external_index,
-    )
-}
-
-fn definition_report_for_cached_analysis_with_external(
-    source: &str,
-    analysis: &FileIndexAnalysis,
-    uri: &str,
-    position: LspPosition,
-    external_index: Option<&SymbolIndex>,
-) -> LspDefinitionReport {
-    let Some(offset) = offset_for_position(source, position) else {
-        return empty_definition_report(analysis.parse_diagnostics);
-    };
-    definition_report_for_offset(source, analysis, uri, offset, external_index)
-}
-
-fn definition_report_for_offset(
-    source: &str,
-    analysis: &FileIndexAnalysis,
-    uri: &str,
-    offset: usize,
-    external_index: Option<&SymbolIndex>,
-) -> LspDefinitionReport {
-    let resolver =
-        ReferenceResolver::new_with_parse(source, &analysis.index, &analysis.parse, external_index);
-    let Some(resolution) = resolver.resolve_at_offset(offset) else {
-        return empty_definition_report(analysis.parse_diagnostics);
-    };
-    let candidate_count = resolution.candidates.len();
-    let reason = resolution.reason;
-    let identifier_context = resolution.identifier_context;
-    let Some(selected) = resolution.selected.as_ref() else {
-        return LspDefinitionReport {
-            locations: Vec::new(),
-            parse_diagnostics: analysis.parse_diagnostics,
-            selected_label: None,
-            selected_kind: None,
-            selected_source: None,
-            resolver_reason: Some(reason),
-            identifier_context: Some(identifier_context),
-            resolver_candidate_count: candidate_count,
-        };
-    };
-
-    let location = definition_location_for_candidate(uri, source, selected);
-    LspDefinitionReport {
-        locations: location.into_iter().collect(),
-        parse_diagnostics: analysis.parse_diagnostics,
-        selected_label: selected.name.clone(),
-        selected_kind: Some(selected.kind),
-        selected_source: Some(selected.source),
-        resolver_reason: Some(reason),
-        identifier_context: Some(identifier_context),
-        resolver_candidate_count: candidate_count,
-    }
-}
-
-fn hover_report_for_offset(
-    source: &str,
-    analysis: &FileIndexAnalysis,
-    offset: usize,
-    external_index: Option<&SymbolIndex>,
-) -> LspHoverReport {
-    let query = IndexQuery::new(&analysis.index);
-    let resolver =
-        ReferenceResolver::new_with_parse(source, &analysis.index, &analysis.parse, external_index);
-    match resolver.resolve_hover_at_offset(offset) {
-        Some(HoverResolution::Identifier(resolution)) => {
-            let candidate_count = resolution.candidates.len();
-            let reason = resolution.reason;
-            let identifier_context = resolution.identifier_context;
-            if let Some(selected) = resolution.selected.as_ref() {
-                match selected.source {
-                    CandidateSource::FileLocal => {
-                        if let Some(mut report) = hover_report_for_symbol(
-                            source,
-                            &analysis.index,
-                            &query,
-                            selected.id,
-                            None,
-                            HoverSelectionSource::ResolverIdentifier,
-                            Some(CandidateSource::FileLocal),
-                            Some(reason),
-                            Some(identifier_context),
-                            candidate_count,
-                        ) {
-                            report.receiver_resolution = resolution.receiver.clone();
-                            return report.with_parse_diagnostics(analysis.parse_diagnostics);
-                        }
-                    }
-                    CandidateSource::External => {
-                        if let Some(external_index) = external_index {
-                            let external_query = IndexQuery::new(external_index);
-                            if let Some(mut report) = hover_report_for_symbol(
-                                source,
-                                external_index,
-                                &external_query,
-                                selected.id,
-                                Some(range_for_span(source, resolution.token_span)),
-                                HoverSelectionSource::ResolverIdentifier,
-                                Some(CandidateSource::External),
-                                Some(reason),
-                                Some(identifier_context),
-                                candidate_count,
-                            ) {
-                                report.receiver_resolution = resolution.receiver.clone();
-                                return report.with_parse_diagnostics(analysis.parse_diagnostics);
-                            }
-                        }
-                    }
-                }
-            }
-            LspHoverReport {
-                hover: None,
-                parse_diagnostics: analysis.parse_diagnostics,
-                selected_label: None,
-                selected_kind: None,
-                selected_source: None,
-                selection_source: HoverSelectionSource::None,
-                resolver_reason: Some(reason),
-                identifier_context: Some(identifier_context),
-                resolver_candidate_count: candidate_count,
-                receiver_resolution: resolution.receiver.clone(),
-            }
-        }
-        Some(HoverResolution::SyntaxSpan(resolution)) => {
-            let Some(selected) = resolution.selected.as_ref() else {
-                return empty_hover_report(analysis.parse_diagnostics);
-            };
-            hover_report_for_symbol(
-                source,
-                &analysis.index,
-                &query,
-                selected.id,
-                None,
-                HoverSelectionSource::ResolverSyntaxSpan,
-                Some(CandidateSource::FileLocal),
-                Some(resolution.reason),
-                None,
-                resolution.candidates.len(),
-            )
-            .map(|report| report.with_parse_diagnostics(analysis.parse_diagnostics))
-            .unwrap_or_else(|| empty_hover_report(analysis.parse_diagnostics))
-        }
-        None => empty_hover_report(analysis.parse_diagnostics),
-    }
-}
-
-fn hover_report_for_symbol(
-    source: &str,
-    index: &SymbolIndex,
-    query: &IndexQuery<'_>,
-    id: GlobalSymbolId,
-    range_override: Option<LspRange>,
-    selection_source: HoverSelectionSource,
-    selected_source: Option<CandidateSource>,
-    resolver_reason: Option<ResolutionReason>,
-    identifier_context: Option<IdentifierContext>,
-    resolver_candidate_count: usize,
-) -> Option<LspHoverReport> {
-    let display = query.symbol_display(id)?;
-    let selected_kind = display.kind;
-    let selected_label = display.label.clone();
-    let symbol = index.symbol(id);
-    let range = range_override
-        .or_else(|| symbol.map(|symbol| range_for_span(source, symbol.selection_span)));
-    Some(LspHoverReport {
-        hover: Some(LspHover {
-            contents: LspMarkupContent {
-                kind: "markdown".to_string(),
-                value: render_hover_markdown(&display),
-            },
-            range,
-        }),
-        parse_diagnostics: 0,
-        selected_label: Some(selected_label),
-        selected_kind: Some(selected_kind),
-        selected_source,
-        selection_source,
-        resolver_reason,
-        identifier_context,
-        resolver_candidate_count,
-        receiver_resolution: None,
-    })
-}
-
-impl LspHoverReport {
-    fn with_parse_diagnostics(mut self, parse_diagnostics: usize) -> Self {
-        self.parse_diagnostics = parse_diagnostics;
-        self
-    }
-}
-
-fn empty_hover_report(parse_diagnostics: usize) -> LspHoverReport {
-    LspHoverReport {
-        hover: None,
-        parse_diagnostics,
-        selected_label: None,
-        selected_kind: None,
-        selected_source: None,
-        selection_source: HoverSelectionSource::None,
-        resolver_reason: None,
-        identifier_context: None,
-        resolver_candidate_count: 0,
-        receiver_resolution: None,
-    }
-}
-
-fn empty_definition_report(parse_diagnostics: usize) -> LspDefinitionReport {
-    LspDefinitionReport {
-        locations: Vec::new(),
-        parse_diagnostics,
-        selected_label: None,
-        selected_kind: None,
-        selected_source: None,
-        resolver_reason: None,
-        identifier_context: None,
-        resolver_candidate_count: 0,
-    }
-}
-
-pub fn debug_hover_report_for_source_position(source: &str, position: LspPosition) -> String {
-    debug_hover_report_for_source_position_with_external(source, position, None, None)
-}
-
-fn debug_hover_report_for_source_position_with_external(
-    source: &str,
-    position: LspPosition,
-    external_index: Option<&SymbolIndex>,
-    external_status: Option<&ExternalIndexStatusSummary>,
-) -> String {
-    let analysis = file_index_for_source(source);
-    debug_hover_report_for_cached_analysis_with_external(
-        source,
-        &analysis,
-        position,
-        external_index,
-        external_status,
-    )
-}
-
-fn debug_hover_report_for_cached_analysis_with_external(
-    source: &str,
-    analysis: &FileIndexAnalysis,
-    position: LspPosition,
-    external_index: Option<&SymbolIndex>,
-    external_status: Option<&ExternalIndexStatusSummary>,
-) -> String {
-    let start = Instant::now();
-    let index = &analysis.index;
-    let query = IndexQuery::new(index);
-    let offset = offset_for_position(source, position);
-    let tokens = lex(source);
-    let resolver =
-        ReferenceResolver::new_with_parse(source, index, &analysis.parse, external_index);
-    let resolver_resolution = offset.and_then(|offset| resolver.resolve_at_offset(offset));
-    let candidates = offset
-        .map(|offset| resolver.syntax_span_candidates_at_offset(offset))
-        .unwrap_or_default();
-    let selected_id = resolver_resolution
-        .as_ref()
-        .and_then(|resolution| resolution.selected.as_ref())
-        .filter(|candidate| candidate.source == CandidateSource::FileLocal)
-        .map(|candidate| candidate.id)
-        .or_else(|| {
-            if resolver_resolution.is_none() {
-                candidates.first().map(|candidate| candidate.id)
-            } else {
-                None
-            }
-        });
-    let selected_external_id = resolver_resolution
-        .as_ref()
-        .and_then(|resolution| resolution.selected.as_ref())
-        .filter(|candidate| candidate.source == CandidateSource::External)
-        .map(|candidate| candidate.id);
-
-    let mut report = String::new();
-    report.push_str("# Reforger Hover Debug\n\n");
-    report.push_str(&format!(
-        "- Position: line {} character {} (UTF-16, zero-based)\n",
-        position.line, position.character
-    ));
-    report.push_str(&format!(
-        "- Byte offset: {}\n",
-        format_optional_usize(offset)
-    ));
-    report.push_str(&format!("- Source bytes: {}\n", source.len()));
-    report.push_str("- Pipeline: lexer -> parser -> AST -> model -> index -> display\n");
-    report.push_str(&format!(
-        "- Parse diagnostics: {}\n",
-        analysis.parse_diagnostics
-    ));
-    report.push_str(&format!("- Indexed symbols: {}\n", index.symbols().len()));
-    report.push_str(&format!(
-        "- Selected Symbol: {}\n",
-        if selected_id.is_some() || selected_external_id.is_some() {
-            "yes"
-        } else {
-            "no"
-        }
-    ));
-    report.push_str(&format!("- Elapsed: {} ms\n", start.elapsed().as_millis()));
-
-    report.push_str("\n## Source Line\n\n");
-    append_source_line(&mut report, source, position);
-
-    report.push_str("\n## Tokens Around Cursor\n\n");
-    append_token_context(&mut report, source, &tokens, offset);
-
-    report.push_str("\n## Theme / Token Coloring Context\n\n");
-    append_theme_token_context(&mut report, source, &tokens, offset);
-
-    report.push_str("\n## Parse Diagnostics\n\n");
-    append_parse_diagnostics(&mut report, source, &analysis.diagnostics);
-
-    report.push_str("\n## Resolver Resolution\n\n");
-    append_resolver_resolution(
-        &mut report,
-        &query,
-        external_index,
-        resolver_resolution.as_ref(),
-    );
-
-    report.push_str("\n## External Index\n\n");
-    append_external_index_status(&mut report, external_status);
-
-    report.push_str("\n## Hover Selection\n\n");
-    if let Some(id) = selected_id {
-        append_display_details(&mut report, source, index, &query, id);
-        if let Some(display) = query.symbol_display(id) {
-            report.push_str("\n### Hover Markdown\n\n");
-            report.push_str("```markdown\n");
-            report.push_str(&escape_fence_text(&render_hover_markdown(&display)));
-            report.push_str("\n```\n");
-        }
-    } else if let (Some(id), Some(external_index)) = (selected_external_id, external_index) {
-        let external_query = IndexQuery::new(external_index);
-        append_external_display_details(&mut report, external_index, &external_query, id);
-        if let Some(display) = external_query.symbol_display(id) {
-            report.push_str("\n### Hover Markdown\n\n");
-            report.push_str("```markdown\n");
-            report.push_str(&escape_fence_text(&render_hover_markdown(&display)));
-            report.push_str("\n```\n");
-        }
-    } else {
-        report.push_str("No symbol matched the cursor position.\n");
-    }
-
-    report.push_str("\n## Candidate Symbols At Cursor\n\n");
-    append_hover_candidates(&mut report, index, &query, &candidates);
-
-    if let Some(id) = selected_id {
-        report.push_str("\n## Parent Chain\n\n");
-        append_parent_chain(&mut report, source, index, &query, id);
-
-        report.push_str("\n## Immediate Children\n\n");
-        append_children(&mut report, source, index, &query, id);
-    } else if let (Some(id), Some(external_index)) = (selected_external_id, external_index) {
-        let external_query = IndexQuery::new(external_index);
-        report.push_str("\n## Parent Chain\n\n");
-        append_external_parent_chain(&mut report, external_index, &external_query, id);
-
-        report.push_str("\n## Immediate Children\n\n");
-        append_external_children(&mut report, external_index, &external_query, id);
-    }
-
-    report.push_str("\n## Symbol Kind Counts\n\n");
-    append_symbol_kind_counts(&mut report, index);
-
-    report
-}
-
-struct FileIndexAnalysis {
-    parse: crate::syntax::Parse,
-    index: SymbolIndex,
-    parse_diagnostics: usize,
-    diagnostics: Vec<ParseDiagnostic>,
-}
-
-fn file_index_for_source(source: &str) -> FileIndexAnalysis {
-    let parse = parse_source(source);
-    let parse_diagnostics = parse.diagnostics.len();
-    let diagnostics = parse.diagnostics.clone();
-    let ast = AstSourceFile::new(source, &parse);
-    let catalog = SymbolCatalog::from_ast_with_metadata(
-        source,
-        &ast,
-        SourceFileMetadata {
-            kind: crate::model::SourceKind::Workspace,
-            category: crate::model::SourceCategory::Workspace,
-            absolute_path: None,
-            root_path: None,
-            relative_path: None,
-            priority: crate::model::SOURCE_PRIORITY_WORKSPACE,
-        },
-    );
-    let mut index = SymbolIndex::default();
-    index.add_catalog(&catalog);
-    FileIndexAnalysis {
-        parse,
-        index,
-        parse_diagnostics,
-        diagnostics,
-    }
-}
-
 pub fn document_symbol_count(symbols: &[LspDocumentSymbol]) -> usize {
     symbols
         .iter()
@@ -1461,58 +1244,11 @@ fn document_symbol_for_id(
     })
 }
 
-fn range_for_span(source: &str, span: crate::lexer::TextSpan) -> LspRange {
+pub(crate) fn range_for_span(source: &str, span: crate::lexer::TextSpan) -> LspRange {
     LspRange {
         start: position_for_offset(source, span.start),
         end: position_for_offset(source, span.end),
     }
-}
-
-fn definition_location_for_candidate(
-    current_uri: &str,
-    current_source: &str,
-    candidate: &ReferenceCandidate,
-) -> Option<LspLocation> {
-    match candidate.source {
-        CandidateSource::FileLocal => Some(LspLocation {
-            uri: current_uri.to_string(),
-            range: range_for_span(current_source, candidate.selection_span),
-        }),
-        CandidateSource::External => {
-            let path = candidate.absolute_path.as_ref()?;
-            let source = fs::read_to_string(path).ok()?;
-            Some(LspLocation {
-                uri: file_uri_for_path(path)?,
-                range: range_for_span(&source, candidate.selection_span),
-            })
-        }
-    }
-}
-
-fn file_uri_for_path(path: &Path) -> Option<String> {
-    if !path.is_absolute() {
-        return None;
-    }
-    let normalized = path.to_string_lossy().replace('\\', "/");
-    if normalized.starts_with('/') {
-        Some(format!("file://{}", percent_encode_uri_path(&normalized)))
-    } else {
-        Some(format!("file:///{}", percent_encode_uri_path(&normalized)))
-    }
-}
-
-fn percent_encode_uri_path(value: &str) -> String {
-    let mut encoded = String::with_capacity(value.len());
-    for byte in value.bytes() {
-        let keep =
-            byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b':' | b'-' | b'_' | b'.' | b'~');
-        if keep {
-            encoded.push(byte as char);
-        } else {
-            encoded.push_str(&format!("%{byte:02X}"));
-        }
-    }
-    encoded
 }
 
 pub fn position_for_offset(source: &str, offset: usize) -> LspPosition {
@@ -1564,43 +1300,10 @@ pub fn offset_for_position(source: &str, position: LspPosition) -> Option<usize>
     }
 }
 
-fn render_hover_markdown(display: &SymbolDisplayInfo) -> String {
-    let code = display.signature.as_ref().unwrap_or(&display.label);
-    let mut sections = Vec::new();
-    sections.push(format!("```enforce\n{code}\n```"));
-
-    if let Some(detail) = &display.detail {
-        if detail != code {
-            sections.push(detail.clone());
-        }
-    }
-    if let Some(preview) = &display.documentation_preview {
-        sections.push(preview.clone());
-    }
-    if !display.modifiers.is_empty() {
-        sections.push(format!("**Modifiers:** {}", display.modifiers.join(", ")));
-    }
-    let attribute_names = display
-        .attributes
-        .iter()
-        .map(|attribute| {
-            attribute
-                .name
-                .as_deref()
-                .unwrap_or(attribute.text.as_str())
-                .to_string()
-        })
-        .collect::<Vec<_>>();
-    if !attribute_names.is_empty() {
-        sections.push(format!("**Attributes:** {}", attribute_names.join(", ")));
-    }
-
-    sections.join("\n\n")
-}
-
 fn document_symbol_kind(kind: SymbolKind) -> u32 {
     match kind {
         SymbolKind::Class => 5,
+        SymbolKind::TypeParameter => 26,
         SymbolKind::Enum => 10,
         SymbolKind::EnumMember => 22,
         SymbolKind::Typedef => 26,
@@ -1612,12 +1315,14 @@ fn document_symbol_kind(kind: SymbolKind) -> u32 {
         SymbolKind::Destructor => 6,
         SymbolKind::Parameter => 13,
         SymbolKind::LocalVariable => 13,
+        SymbolKind::PreprocessorMacro => 13,
     }
 }
 
 pub fn symbol_kind_label(kind: SymbolKind) -> &'static str {
     match kind {
         SymbolKind::Class => "Class",
+        SymbolKind::TypeParameter => "TypeParameter",
         SymbolKind::Enum => "Enum",
         SymbolKind::EnumMember => "EnumMember",
         SymbolKind::Typedef => "Typedef",
@@ -1629,668 +1334,18 @@ pub fn symbol_kind_label(kind: SymbolKind) -> &'static str {
         SymbolKind::Destructor => "Destructor",
         SymbolKind::Parameter => "Parameter",
         SymbolKind::LocalVariable => "LocalVariable",
+        SymbolKind::PreprocessorMacro => "PreprocessorMacro",
     }
 }
 
 fn is_document_symbol_excluded_kind(kind: SymbolKind) -> bool {
-    matches!(kind, SymbolKind::Parameter | SymbolKind::LocalVariable)
-}
-
-fn append_source_line(report: &mut String, source: &str, position: LspPosition) {
-    let Some((start, end)) = line_bounds(source, position.line) else {
-        report.push_str("Position is outside the document.\n");
-        return;
-    };
-    let line = &source[start..end];
-    report.push_str("```text\n");
-    report.push_str(&escape_debug_text(line));
-    report.push('\n');
-    report.push_str(&" ".repeat(position.character as usize));
-    report.push_str("^\n");
-    report.push_str("```\n");
-}
-
-fn append_token_context(
-    report: &mut String,
-    source: &str,
-    tokens: &[Token],
-    offset: Option<usize>,
-) {
-    if tokens.is_empty() {
-        report.push_str("No tokens.\n");
-        return;
-    }
-    let center = offset
-        .and_then(|offset| {
-            tokens
-                .iter()
-                .position(|token| span_contains_or_touches_offset(token.span, offset))
-        })
-        .unwrap_or(0);
-    let start = center.saturating_sub(DEBUG_TOKEN_CONTEXT);
-    let end = (center + DEBUG_TOKEN_CONTEXT + 1).min(tokens.len());
-    report.push_str("| Hit | Kind | Span | Text |\n");
-    report.push_str("| --- | --- | --- | --- |\n");
-    for token in &tokens[start..end] {
-        let hit = offset.is_some_and(|offset| span_contains_or_touches_offset(token.span, offset));
-        report.push_str(&format!(
-            "| {} | `{:?}` | `{}` | `{}` |\n",
-            if hit { "*" } else { "" },
-            token.kind,
-            format_span(token.span),
-            escape_table_text(span_text(source, token.span))
-        ));
-    }
-}
-
-fn append_theme_token_context(
-    report: &mut String,
-    source: &str,
-    tokens: &[Token],
-    offset: Option<usize>,
-) {
-    report.push_str("Expected scopes/colors are derived from the Enforce lexer plus the bundled TextMate grammar/theme palette. VS Code does not expose the active TextMate color at a cursor position through the extension API.\n\n");
-    if tokens.is_empty() {
-        report.push_str("No tokens.\n");
-        return;
-    }
-
-    let center = offset
-        .and_then(|offset| {
-            tokens
-                .iter()
-                .position(|token| span_contains_or_touches_offset(token.span, offset))
-        })
-        .unwrap_or(0);
-    let start = center.saturating_sub(DEBUG_TOKEN_CONTEXT);
-    let end = (center + DEBUG_TOKEN_CONTEXT + 1).min(tokens.len());
-
-    report.push_str("| Hit | Text | Lexer kind | Expected scope | Theme role | Color |\n");
-    report.push_str("| --- | --- | --- | --- | --- | --- |\n");
-    for index in start..end {
-        let token = tokens[index];
-        let hit = offset.is_some_and(|offset| span_contains_or_touches_offset(token.span, offset));
-        let theme = token_theme_classification(source, tokens, index);
-        report.push_str(&format!(
-            "| {} | `{}` | `{:?}` | `{}` | `{}` | `{}` |\n",
-            if hit { "*" } else { "" },
-            escape_table_text(span_text(source, token.span)),
-            token.kind,
-            theme.scope,
-            theme.role,
-            theme.color,
-        ));
-    }
-}
-
-fn append_parse_diagnostics(report: &mut String, source: &str, diagnostics: &[ParseDiagnostic]) {
-    if diagnostics.is_empty() {
-        report.push_str("None.\n");
-        return;
-    }
-    for diagnostic in diagnostics.iter().take(10) {
-        report.push_str(&format!(
-            "- {} at `{}` {}\n",
-            diagnostic.message,
-            format_span(diagnostic.span),
-            format_range(source, diagnostic.span)
-        ));
-    }
-    if diagnostics.len() > 10 {
-        report.push_str(&format!(
-            "- ... {} more diagnostics\n",
-            diagnostics.len() - 10
-        ));
-    }
-}
-
-fn append_display_details(
-    report: &mut String,
-    source: &str,
-    index: &SymbolIndex,
-    query: &IndexQuery<'_>,
-    id: GlobalSymbolId,
-) {
-    let Some(symbol) = index.symbol(id) else {
-        report.push_str("Selected symbol is missing from the index.\n");
-        return;
-    };
-    let Some(display) = query.symbol_display(id) else {
-        report.push_str("Selected symbol has no display information.\n");
-        return;
-    };
-
-    report.push_str(&format!("- Kind: `{}`\n", symbol_kind_label(display.kind)));
-    report.push_str(&format!(
-        "- Label: `{}`\n",
-        escape_debug_text(&display.label)
-    ));
-    if let Some(signature) = &display.signature {
-        report.push_str(&format!(
-            "- Signature: `{}`\n",
-            escape_debug_text(signature)
-        ));
-    }
-    if let Some(detail) = &display.detail {
-        report.push_str(&format!("- Detail: `{}`\n", escape_debug_text(detail)));
-    }
-    report.push_str(&format!(
-        "- Span: `{}` {}\n",
-        format_span(symbol.span),
-        format_range(source, symbol.span)
-    ));
-    report.push_str(&format!(
-        "- Selection span: `{}` {}\n",
-        format_span(symbol.selection_span),
-        format_range(source, symbol.selection_span)
-    ));
-    if !display.modifiers.is_empty() {
-        report.push_str(&format!(
-            "- Modifiers: `{}`\n",
-            display.modifiers.join(", ")
-        ));
-    }
-    if !display.attributes.is_empty() {
-        report.push_str(&format!(
-            "- Attributes: `{}`\n",
-            display
-                .attributes
-                .iter()
-                .map(|attribute| attribute.name.as_deref().unwrap_or(attribute.text.as_str()))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
-    }
-    if let Some(preview) = &display.documentation_preview {
-        report.push_str(&format!(
-            "- Doc preview: `{}`\n",
-            escape_debug_text(preview)
-        ));
-    }
-    if !display.doc_comments.is_empty() {
-        report.push_str(&format!(
-            "- Raw doc comments: `{}`\n",
-            display.doc_comments.len()
-        ));
-    }
-    if let Some(form) = display.callable_form {
-        report.push_str(&format!("- Callable form: `{}`\n", form.as_str()));
-    }
-    if !display.conditional_context.is_empty() {
-        report.push_str(&format!(
-            "- Conditional context: `{}`\n",
-            display
-                .conditional_context
-                .iter()
-                .map(|branch| format!(
-                    "{} {}",
-                    branch.kind.as_str(),
-                    branch.condition.as_deref().unwrap_or("")
-                ))
-                .collect::<Vec<_>>()
-                .join(" > ")
-        ));
-    }
-}
-
-fn append_external_display_details(
-    report: &mut String,
-    index: &SymbolIndex,
-    query: &IndexQuery<'_>,
-    id: GlobalSymbolId,
-) {
-    let Some(symbol) = index.symbol(id) else {
-        report.push_str("Selected external symbol is missing from the index.\n");
-        return;
-    };
-    let Some(display) = query.symbol_display(id) else {
-        report.push_str("Selected external symbol has no display information.\n");
-        return;
-    };
-    let file = index.file(id.file_id);
-
-    report.push_str("- Source: `external`\n");
-    report.push_str(&format!("- Kind: `{}`\n", symbol_kind_label(display.kind)));
-    report.push_str(&format!(
-        "- Label: `{}`\n",
-        escape_debug_text(&display.label)
-    ));
-    if let Some(signature) = &display.signature {
-        report.push_str(&format!(
-            "- Signature: `{}`\n",
-            escape_debug_text(signature)
-        ));
-    }
-    if let Some(detail) = &display.detail {
-        report.push_str(&format!("- Detail: `{}`\n", escape_debug_text(detail)));
-    }
-    report.push_str(&format!("- Span: `{}`\n", format_span(symbol.span)));
-    report.push_str(&format!(
-        "- Selection span: `{}`\n",
-        format_span(symbol.selection_span)
-    ));
-    if let Some(file) = file {
-        report.push_str(&format!(
-            "- Source kind: `{}`\n",
-            file.metadata.kind.as_str()
-        ));
-        report.push_str(&format!(
-            "- Source category: `{}`\n",
-            file.metadata.category.as_str()
-        ));
-        report.push_str(&format!("- Priority: `{}`\n", file.metadata.priority));
-        if let Some(path) = &file.metadata.relative_path {
-            report.push_str(&format!(
-                "- Relative path: `{}`\n",
-                escape_debug_text(&path.display().to_string())
-            ));
-        }
-        if let Some(path) = &file.metadata.absolute_path {
-            report.push_str(&format!(
-                "- Absolute path: `{}`\n",
-                escape_debug_text(&path.display().to_string())
-            ));
-        }
-    }
-    if !display.modifiers.is_empty() {
-        report.push_str(&format!(
-            "- Modifiers: `{}`\n",
-            display.modifiers.join(", ")
-        ));
-    }
-    if !display.attributes.is_empty() {
-        report.push_str(&format!(
-            "- Attributes: `{}`\n",
-            display
-                .attributes
-                .iter()
-                .map(|attribute| attribute.name.as_deref().unwrap_or(attribute.text.as_str()))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
-    }
-    if let Some(preview) = &display.documentation_preview {
-        report.push_str(&format!(
-            "- Doc preview: `{}`\n",
-            escape_debug_text(preview)
-        ));
-    }
-    if let Some(form) = display.callable_form {
-        report.push_str(&format!("- Callable form: `{}`\n", form.as_str()));
-    }
-}
-
-fn append_hover_candidates(
-    report: &mut String,
-    index: &SymbolIndex,
-    query: &IndexQuery<'_>,
-    candidates: &[crate::resolver::ReferenceCandidate],
-) {
-    if candidates.is_empty() {
-        report.push_str("None.\n");
-        return;
-    }
-    report.push_str("| Rank | Match | Kind | Label | Span | Detail |\n");
-    report.push_str("| ---: | --- | --- | --- | --- | --- |\n");
-    for (index_in_list, candidate) in candidates.iter().take(DEBUG_CANDIDATE_LIMIT).enumerate() {
-        let display = query.symbol_display(candidate.id);
-        let symbol = index.symbol(candidate.id);
-        report.push_str(&format!(
-            "| {} | {} | `{}` | `{}` | `{}` | `{}` |\n",
-            index_in_list + 1,
-            candidate.reason.as_str(),
-            display
-                .as_ref()
-                .map(|display| symbol_kind_label(display.kind))
-                .unwrap_or("<missing>"),
-            display
-                .as_ref()
-                .map(|display| escape_table_text(&display.label))
-                .unwrap_or_else(|| "<missing>".to_string()),
-            symbol
-                .map(|symbol| format_span(symbol.selection_span))
-                .unwrap_or_else(|| "<missing>".to_string()),
-            display
-                .as_ref()
-                .and_then(|display| display.signature.as_ref().or(display.detail.as_ref()))
-                .map(|value| escape_table_text(value))
-                .unwrap_or_default()
-        ));
-    }
-    if candidates.len() > DEBUG_CANDIDATE_LIMIT {
-        report.push_str(&format!(
-            "\n{} additional candidates omitted.\n",
-            candidates.len() - DEBUG_CANDIDATE_LIMIT
-        ));
-    }
-}
-
-fn append_resolver_resolution(
-    report: &mut String,
-    query: &IndexQuery<'_>,
-    external_index: Option<&SymbolIndex>,
-    resolution: Option<&crate::resolver::ReferenceResolution>,
-) {
-    let Some(resolution) = resolution else {
-        report.push_str("Cursor is not on an identifier token; resolver syntax-span hover will be used if a symbol span contains the cursor.\n");
-        return;
-    };
-
-    report.push_str(&format!(
-        "- Token: `{}` at `{}`\n",
-        escape_debug_text(&resolution.token_text),
-        format_span(resolution.token_span)
-    ));
-    report.push_str(&format!("- Reason: `{}`\n", resolution.reason.as_str()));
-    report.push_str(&format!(
-        "- Identifier context: `{}`\n",
-        resolution.identifier_context.as_str()
-    ));
-    if let Some(receiver) = &resolution.receiver {
-        report.push_str("\n### Receiver\n\n");
-        report.push_str(&format!(
-            "- Receiver text: `{}` at `{}`\n",
-            escape_debug_text(&receiver.receiver_text),
-            format_span(receiver.receiver_span)
-        ));
-        report.push_str(&format!(
-            "- Receiver expression kind: `{}`\n",
-            receiver.receiver_expression_kind
-        ));
-        report.push_str(&format!(
-            "- Inferred owner type: `{}`\n",
-            receiver
-                .owner_type
-                .as_deref()
-                .map(escape_debug_text)
-                .unwrap_or_else(|| "<none>".to_string())
-        ));
-        report.push_str(&format!(
-            "- Static-looking receiver: `{}`\n",
-            receiver.is_static
-        ));
-        if let Some(failure) = &receiver.failure_reason {
-            report.push_str(&format!("- Failure: `{}`\n", escape_debug_text(failure)));
-        }
-        if !receiver.lookup_path.is_empty() {
-            report.push_str("- Lookup path:\n");
-            for step in &receiver.lookup_path {
-                report.push_str(&format!("  - `{}`\n", escape_debug_text(step)));
-            }
-        }
-        report.push('\n');
-    }
-    report.push_str(&format!("- Candidates: {}\n", resolution.candidates.len()));
-    if let Some(selected) = &resolution.selected {
-        let selected_label = selected
-            .name
-            .as_deref()
-            .map(escape_debug_text)
-            .unwrap_or_else(|| "<unknown>".to_string());
-        report.push_str(&format!(
-            "- Selected: `{}` `{}` from `{}`\n",
-            symbol_kind_label(selected.kind),
-            selected_label,
-            selected.source.as_str()
-        ));
-    } else {
-        report.push_str("- Selected: none\n");
-    }
-
-    if resolution.candidates.is_empty() {
-        return;
-    }
-
-    report.push_str("\n| Rank | Source | Reason | Kind | Label | Span | Detail |\n");
-    report.push_str("| ---: | --- | --- | --- | --- | --- | --- |\n");
-    for (index_in_list, candidate) in resolution
-        .candidates
-        .iter()
-        .take(DEBUG_CANDIDATE_LIMIT)
-        .enumerate()
-    {
-        let display = match candidate.source {
-            CandidateSource::FileLocal => query.symbol_display(candidate.id),
-            CandidateSource::External => external_index
-                .map(IndexQuery::new)
-                .and_then(|query| query.symbol_display(candidate.id)),
-        };
-        report.push_str(&format!(
-            "| {} | `{}` | `{}` | `{}` | `{}` | `{}` | `{}` |\n",
-            index_in_list + 1,
-            candidate.source.as_str(),
-            candidate.reason.as_str(),
-            symbol_kind_label(candidate.kind),
-            candidate
-                .name
-                .as_deref()
-                .map(escape_table_text)
-                .unwrap_or_else(|| "<unknown>".to_string()),
-            format_span(candidate.selection_span),
-            display
-                .as_ref()
-                .and_then(|display| display.signature.as_ref().or(display.detail.as_ref()))
-                .map(|value| escape_table_text(value))
-                .unwrap_or_default()
-        ));
-    }
-    if resolution.candidates.len() > DEBUG_CANDIDATE_LIMIT {
-        report.push_str(&format!(
-            "\n{} additional resolver candidates omitted.\n",
-            resolution.candidates.len() - DEBUG_CANDIDATE_LIMIT
-        ));
-    }
-}
-
-fn append_external_index_status(report: &mut String, status: Option<&ExternalIndexStatusSummary>) {
-    let Some(status) = status else {
-        report.push_str("No runtime external index status was provided.\n");
-        return;
-    };
-
-    report.push_str(&format!("- Status: `{}`\n", status.status));
-    report.push_str(&format!("- Files: `{}`\n", status.files));
-    report.push_str(&format!("- Symbols: `{}`\n", status.symbols));
-    report.push_str(&format!(
-        "- Parse diagnostics: `{}`\n",
-        status.parse_diagnostics
-    ));
-    if let Some(cache_status) = &status.cache_status {
-        report.push_str(&format!(
-            "- Cache status: `{}`\n",
-            escape_debug_text(cache_status)
-        ));
-    }
-    if let Some(detail) = &status.cache_detail {
-        report.push_str(&format!(
-            "- Cache detail: `{}`\n",
-            escape_debug_text(detail)
-        ));
-    }
-    if let Some(fingerprint) = &status.fingerprint {
-        report.push_str(&format!(
-            "- Fingerprint: `{}`\n",
-            escape_debug_text(fingerprint)
-        ));
-    }
-    if let Some(error) = &status.error {
-        report.push_str(&format!("- Error: `{}`\n", escape_debug_text(error)));
-    }
-}
-
-fn append_parent_chain(
-    report: &mut String,
-    source: &str,
-    index: &SymbolIndex,
-    query: &IndexQuery<'_>,
-    id: GlobalSymbolId,
-) {
-    let mut current = index.symbol(id).and_then(|symbol| symbol.parent);
-    if current.is_none() {
-        report.push_str("None.\n");
-        return;
-    }
-    while let Some(parent_id) = current {
-        append_symbol_bullet(report, source, index, query, parent_id);
-        current = index.symbol(parent_id).and_then(|symbol| symbol.parent);
-    }
-}
-
-fn append_children(
-    report: &mut String,
-    source: &str,
-    index: &SymbolIndex,
-    query: &IndexQuery<'_>,
-    id: GlobalSymbolId,
-) {
-    let children = index.children(id);
-    if children.is_empty() {
-        report.push_str("None.\n");
-        return;
-    }
-    for child in children.iter().take(DEBUG_CHILD_LIMIT) {
-        append_symbol_bullet(report, source, index, query, *child);
-    }
-    if children.len() > DEBUG_CHILD_LIMIT {
-        report.push_str(&format!(
-            "- ... {} more children\n",
-            children.len() - DEBUG_CHILD_LIMIT
-        ));
-    }
-}
-
-fn append_external_parent_chain(
-    report: &mut String,
-    index: &SymbolIndex,
-    query: &IndexQuery<'_>,
-    id: GlobalSymbolId,
-) {
-    let mut current = index.symbol(id).and_then(|symbol| symbol.parent);
-    if current.is_none() {
-        report.push_str("None.\n");
-        return;
-    }
-    while let Some(parent_id) = current {
-        append_external_symbol_bullet(report, index, query, parent_id);
-        current = index.symbol(parent_id).and_then(|symbol| symbol.parent);
-    }
-}
-
-fn append_external_children(
-    report: &mut String,
-    index: &SymbolIndex,
-    query: &IndexQuery<'_>,
-    id: GlobalSymbolId,
-) {
-    let children = index.children(id);
-    if children.is_empty() {
-        report.push_str("None.\n");
-        return;
-    }
-    for child in children.iter().take(DEBUG_CHILD_LIMIT) {
-        append_external_symbol_bullet(report, index, query, *child);
-    }
-    if children.len() > DEBUG_CHILD_LIMIT {
-        report.push_str(&format!(
-            "- ... {} more children\n",
-            children.len() - DEBUG_CHILD_LIMIT
-        ));
-    }
-}
-
-fn append_external_symbol_bullet(
-    report: &mut String,
-    index: &SymbolIndex,
-    query: &IndexQuery<'_>,
-    id: GlobalSymbolId,
-) {
-    let Some(symbol) = index.symbol(id) else {
-        return;
-    };
-    let Some(display) = query.symbol_display(id) else {
-        return;
-    };
-    let detail = display
-        .signature
-        .as_ref()
-        .or(display.detail.as_ref())
-        .map(|value| format!(" - `{}`", escape_debug_text(value)))
-        .unwrap_or_default();
-    let path = index
-        .file(id.file_id)
-        .and_then(|file| file.metadata.relative_path.as_ref())
-        .map(|path| format!(" `{}`", escape_debug_text(&path.display().to_string())))
-        .unwrap_or_default();
-    report.push_str(&format!(
-        "- `{}` `{}`{} at `{}`{}\n",
-        symbol_kind_label(display.kind),
-        escape_debug_text(&display.label),
-        detail,
-        format_span(symbol.selection_span),
-        path
-    ));
-}
-
-fn append_symbol_bullet(
-    report: &mut String,
-    source: &str,
-    index: &SymbolIndex,
-    query: &IndexQuery<'_>,
-    id: GlobalSymbolId,
-) {
-    let Some(symbol) = index.symbol(id) else {
-        return;
-    };
-    let Some(display) = query.symbol_display(id) else {
-        return;
-    };
-    let detail = display
-        .signature
-        .as_ref()
-        .or(display.detail.as_ref())
-        .map(|value| format!(" - `{}`", escape_debug_text(value)))
-        .unwrap_or_default();
-    report.push_str(&format!(
-        "- `{}` `{}`{} at `{}` {}\n",
-        symbol_kind_label(display.kind),
-        escape_debug_text(&display.label),
-        detail,
-        format_span(symbol.selection_span),
-        format_range(source, symbol.selection_span)
-    ));
-}
-
-fn append_symbol_kind_counts(report: &mut String, index: &SymbolIndex) {
-    let mut counts = BTreeMap::<SymbolKind, usize>::new();
-    for symbol in index.symbols() {
-        *counts.entry(symbol.kind).or_default() += 1;
-    }
-    report.push_str("| Kind | Count |\n");
-    report.push_str("| --- | ---: |\n");
-    for (kind, count) in counts {
-        report.push_str(&format!("| `{}` | {} |\n", symbol_kind_label(kind), count));
-    }
-}
-
-fn line_bounds(source: &str, target_line: u32) -> Option<(usize, usize)> {
-    let mut current_line = 0u32;
-    let mut start = 0usize;
-    for (index, value) in source.char_indices() {
-        if current_line == target_line && value == '\n' {
-            return Some((start, index));
-        }
-        if value == '\n' {
-            current_line += 1;
-            start = index + value.len_utf8();
-        }
-    }
-    (current_line == target_line).then_some((start, source.len()))
-}
-
-fn format_optional_usize(value: Option<usize>) -> String {
-    value
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| "<invalid>".to_string())
+    matches!(
+        kind,
+        SymbolKind::TypeParameter
+            | SymbolKind::Parameter
+            | SymbolKind::LocalVariable
+            | SymbolKind::PreprocessorMacro
+    )
 }
 
 fn format_optional_i32(value: Option<i32>) -> String {
@@ -2299,176 +1354,8 @@ fn format_optional_i32(value: Option<i32>) -> String {
         .unwrap_or_else(|| "<none>".to_string())
 }
 
-fn format_span(span: TextSpan) -> String {
-    format!("{}..{}", span.start, span.end)
-}
-
-fn format_range(source: &str, span: TextSpan) -> String {
-    let start = position_for_offset(source, span.start);
-    let end = position_for_offset(source, span.end);
-    format!(
-        "L{}:C{}-L{}:C{}",
-        start.line, start.character, end.line, end.character
-    )
-}
-
-fn span_text(source: &str, span: TextSpan) -> &str {
+pub(crate) fn span_text(source: &str, span: TextSpan) -> &str {
     source.get(span.start..span.end).unwrap_or("")
-}
-
-fn span_contains_or_touches_offset(span: TextSpan, offset: usize) -> bool {
-    if span.is_empty() {
-        return span.start == offset;
-    }
-    span.start <= offset && offset < span.end
-}
-
-#[derive(Debug, Clone, Copy)]
-struct ThemeClassification {
-    scope: &'static str,
-    role: &'static str,
-    color: &'static str,
-}
-
-fn token_theme_classification(source: &str, tokens: &[Token], index: usize) -> ThemeClassification {
-    let token = tokens[index];
-    if is_preprocessor_line_token(source, token) {
-        return theme("meta.preprocessor.enforce", "preprocessor", "#d4fd95");
-    }
-
-    match token.kind {
-        TokenKind::LineComment | TokenKind::BlockComment => {
-            theme("comment.enforce", "comment", "#59aa59")
-        }
-        TokenKind::DocLineComment | TokenKind::DocBlockComment => {
-            theme("comment.documentation.enforce", "comment", "#59aa59")
-        }
-        TokenKind::String | TokenKind::UnterminatedString => {
-            theme("string.quoted.double.enforce", "string", "#c178dd")
-        }
-        TokenKind::Number | TokenKind::InvalidNumber => {
-            theme("constant.numeric.enforce", "variable/number", "#cfcfcf")
-        }
-        TokenKind::Hash => theme("meta.preprocessor.enforce", "preprocessor", "#d4fd95"),
-        TokenKind::Identifier => identifier_theme_classification(source, tokens, index),
-        TokenKind::Keyword(keyword) => keyword_theme_classification(keyword),
-        TokenKind::LeftBrace
-        | TokenKind::RightBrace
-        | TokenKind::LeftParen
-        | TokenKind::RightParen
-        | TokenKind::LeftBracket
-        | TokenKind::RightBracket
-        | TokenKind::Semicolon
-        | TokenKind::Colon
-        | TokenKind::Comma
-        | TokenKind::Dot
-        | TokenKind::Question
-        | TokenKind::Operator(_) => theme("punctuation.enforce", "punctuation", "#bfbfbf"),
-        TokenKind::Whitespace | TokenKind::Eof => theme("source.enforce", "plain", "<default>"),
-        TokenKind::Unknown | TokenKind::UnterminatedBlockComment => {
-            theme("source.enforce", "unknown", "<default>")
-        }
-    }
-}
-
-fn identifier_theme_classification(
-    source: &str,
-    tokens: &[Token],
-    index: usize,
-) -> ThemeClassification {
-    if previous_non_trivia(tokens, index)
-        .is_some_and(|token| token.kind == TokenKind::Keyword(Keyword::Class))
-    {
-        return theme("entity.name.type.class.enforce", "class/type", "#40b5ac");
-    }
-    if previous_non_trivia(tokens, index)
-        .is_some_and(|token| token.kind == TokenKind::Keyword(Keyword::Enum))
-    {
-        return theme("entity.name.type.enum.enforce", "enum/type", "#40b5ac");
-    }
-    if previous_non_trivia(tokens, index)
-        .is_some_and(|token| token.kind == TokenKind::Keyword(Keyword::Typedef))
-    {
-        return theme("support.type.enforce", "type", "#40b5ac");
-    }
-    if next_non_trivia(tokens, index).is_some_and(|token| token.kind == TokenKind::LeftParen) {
-        return theme("entity.name.function.enforce", "function", "#f3ad58");
-    }
-
-    let text = span_text(source, tokens[index].span);
-    if text.starts_with(|value: char| value.is_ascii_uppercase()) {
-        theme("support.type.enforce", "type", "#40b5ac")
-    } else {
-        theme("variable.other.enforce", "variable", "#cfcfcf")
-    }
-}
-
-fn keyword_theme_classification(keyword: Keyword) -> ThemeClassification {
-    match keyword {
-        Keyword::Void
-        | Keyword::Int
-        | Keyword::Float
-        | Keyword::Bool
-        | Keyword::String
-        | Keyword::Vector
-        | Keyword::Typename => theme("support.type.primitive.enforce", "type", "#40b5ac"),
-        Keyword::Class => theme("keyword.declaration.class.enforce", "keyword", "#59A6E9"),
-        Keyword::Enum => theme("keyword.declaration.enum.enforce", "keyword", "#59A6E9"),
-        Keyword::Typedef => theme("keyword.declaration.typedef.enforce", "keyword", "#59A6E9"),
-        _ => theme("keyword.enforce", "keyword", "#59A6E9"),
-    }
-}
-
-fn theme(scope: &'static str, role: &'static str, color: &'static str) -> ThemeClassification {
-    ThemeClassification { scope, role, color }
-}
-
-fn previous_non_trivia(tokens: &[Token], index: usize) -> Option<Token> {
-    tokens[..index]
-        .iter()
-        .rev()
-        .copied()
-        .find(|token| !token.kind.is_trivia())
-}
-
-fn next_non_trivia(tokens: &[Token], index: usize) -> Option<Token> {
-    tokens
-        .get(index + 1..)
-        .unwrap_or_default()
-        .iter()
-        .copied()
-        .find(|token| !token.kind.is_trivia())
-}
-
-fn is_preprocessor_line_token(source: &str, token: Token) -> bool {
-    let line_start = source[..token.span.start]
-        .rfind('\n')
-        .map(|index| index + 1)
-        .unwrap_or(0);
-    let before_token = &source[line_start..token.span.start];
-    let from_token = &source[token.span.start..];
-    before_token.trim_start().starts_with('#')
-        || before_token.trim().is_empty() && from_token.trim_start().starts_with('#')
-}
-
-fn escape_table_text(value: &str) -> String {
-    escape_debug_text(value).replace('|', "\\|")
-}
-
-fn escape_debug_text(value: &str) -> String {
-    value.chars().flat_map(char::escape_default).collect()
-}
-
-fn escape_fence_text(value: &str) -> String {
-    value.replace("```", "`\u{200b}``")
-}
-
-fn selected_label_from_debug_report(report: &str) -> Option<String> {
-    report
-        .lines()
-        .find_map(|line| line.strip_prefix("- Label: `"))
-        .and_then(|line| line.strip_suffix('`'))
-        .map(str::to_string)
 }
 
 fn parse_params<T: for<'de> Deserialize<'de>>(
@@ -2585,6 +1472,565 @@ mod tests {
                 character: 6
             }
         );
+    }
+
+    #[test]
+    fn semantic_tokens_classify_lexer_and_symbol_facts() {
+        let source = r#"// docs
+[Attribute()]
+class Base
+{
+}
+
+class Example
+	: Base
+{
+	static const int COUNT = 4;
+	void Run(int value)
+	{
+		string name = "x";
+		Example other;
+		other.Run(value);
+	}
+}
+#ifdef DEBUG
+#define GAME_MODE_DEBUG
+#endif
+"#;
+
+        let report = semantic_tokens_report_for_source(source);
+
+        assert_eq!(report.parse_diagnostics, 0);
+        assert!(!report.tokens.data.is_empty());
+        assert_eq!(report.tokens.data.len() % 5, 0);
+        assert!(report
+            .decoded
+            .iter()
+            .any(|token| token.text == "Example" && token.token_type == "class"));
+        assert!(report
+            .decoded
+            .iter()
+            .any(|token| token.text == "Run" && token.token_type == "method"));
+        assert!(
+            report
+                .decoded
+                .iter()
+                .filter(|token| token.text == "Run" && token.token_type == "method")
+                .count()
+                >= 2
+        );
+        assert!(
+            report
+                .decoded
+                .iter()
+                .filter(|token| token.text == "Example" && token.token_type == "class")
+                .count()
+                >= 2
+        );
+        assert!(
+            report
+                .decoded
+                .iter()
+                .filter(|token| token.text == "Base" && token.token_type == "class")
+                .count()
+                >= 2,
+            "{:?}",
+            report.decoded
+        );
+        assert!(report
+            .decoded
+            .iter()
+            .any(|token| token.text == "COUNT" && token.token_type == "property"));
+        assert!(report
+            .decoded
+            .iter()
+            .any(|token| token.text == "value" && token.token_type == "parameter"));
+        assert!(report
+            .decoded
+            .iter()
+            .any(|token| token.text == "name" && token.token_type == "variable"));
+        assert!(report
+            .decoded
+            .iter()
+            .any(|token| token.text == "Attribute" && token.token_type == "class"));
+        assert!(report
+            .decoded
+            .iter()
+            .any(|token| token.text == "void" && token.token_type == "keyword"));
+        assert!(report
+            .decoded
+            .iter()
+            .any(|token| token.text == "int" && token.token_type == "keyword"));
+        assert!(report
+            .decoded
+            .iter()
+            .any(|token| token.text == "string" && token.token_type == "class"));
+        assert!(report
+            .decoded
+            .iter()
+            .any(|token| token.text == "\"x\"" && token.token_type == "string"));
+        assert!(report
+            .decoded
+            .iter()
+            .any(|token| token.text == "4" && token.token_type == "number"));
+        assert!(report
+            .decoded
+            .iter()
+            .any(|token| token.text == "// docs" && token.token_type == "comment"));
+        assert!(report
+            .decoded
+            .iter()
+            .any(|token| token.text == "ifdef" && token.token_type == "preprocessor"));
+        assert!(report
+            .decoded
+            .iter()
+            .any(|token| token.text == "define" && token.token_type == "preprocessor"));
+        assert_semantic_token(&report, "DEBUG", "variable", Some("#cfcfcf"));
+        assert_semantic_token(&report, "GAME_MODE_DEBUG", "variable", Some("#cfcfcf"));
+    }
+
+    #[test]
+    fn semantic_tokens_color_external_enum_member_references() {
+        let root = temp_test_dir("semantic_tokens_external_enum");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("EWeaponType.c"),
+            "enum EWeaponType\n{\n\tWT_NONE,\n\tWT_FRAGGRENADE,\n}\n",
+        )
+        .unwrap();
+        let external = crate::index_build::build_index(&crate::index_build::IndexBuildConfig {
+            roots: vec![crate::index_build::IndexSourceRoot::new(
+                &root,
+                crate::model::SourceKind::GameData,
+                crate::model::SOURCE_PRIORITY_GAME_DATA,
+            )],
+        })
+        .unwrap()
+        .index;
+        let source = r#"class Example
+{
+	void Run()
+	{
+		EWeaponType value = EWeaponType.WT_FRAGGRENADE;
+	}
+}
+"#;
+
+        let report = semantic_tokens_report_for_source_with_external(source, Some(&external));
+
+        assert!(
+            report
+                .decoded
+                .iter()
+                .any(|token| token.text == "WT_FRAGGRENADE" && token.token_type == "enumMember"),
+            "{:?}",
+            report.decoded
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn semantic_tokens_color_primitive_keywords_and_external_class_types_separately() {
+        let root = temp_test_dir("semantic_tokens_external_class_type");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("KickCauseCode.c"),
+            "class KickCauseCode : handle64\n{\n\tstatic KickCauseCode NONE;\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("SCR_InstigatorContextData.c"),
+            "class SCR_InstigatorContextData {}\n",
+        )
+        .unwrap();
+        fs::write(root.join("IEntity.c"), "class IEntity {}\n").unwrap();
+        fs::write(root.join("array.c"), "class array {}\n").unwrap();
+        fs::write(
+            root.join("EResourceType.c"),
+            "enum EResourceType\n{\n\tSUPPLIES,\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("ScriptInvokerBase.c"),
+            "class ScriptInvokerBase {}\n",
+        )
+        .unwrap();
+        let external = crate::index_build::build_index(&crate::index_build::IndexBuildConfig {
+            roots: vec![crate::index_build::IndexSourceRoot::new(
+                &root,
+                crate::model::SourceKind::GameData,
+                crate::model::SOURCE_PRIORITY_GAME_DATA,
+            )],
+        })
+        .unwrap()
+        .index;
+        let source = "\
+void SCR_BaseGameMode_OnPlayerDisconnected(int playerId, KickCauseCode cause = KickCauseCode.NONE, int timeout = -1);
+void SCR_BaseGameMode_OnControllableDestroyed(notnull SCR_InstigatorContextData instigatorContextData);
+void SCR_BaseGameMode_PlayerIdAndEntity(int playerId, IEntity player);
+void SCR_BaseGameMode_OnResourceEnabledChanged(array<EResourceType> disabledResourceTypes);
+typedef ScriptInvokerBase<OnPreloadFinished> OnPreloadFinishedInvoker;
+class Example { protected ref ScriptInvoker m_OnGameEnd = new ScriptInvoker(); }
+";
+
+        let report = semantic_tokens_report_for_source_with_external(source, Some(&external));
+
+        assert!(
+            report
+                .decoded
+                .iter()
+                .any(|token| token.text == "void" && token.token_type == "keyword"),
+            "{:?}",
+            report.decoded
+        );
+        assert!(
+            report
+                .decoded
+                .iter()
+                .filter(|token| token.text == "int" && token.token_type == "keyword")
+                .count()
+                >= 2,
+            "{:?}",
+            report.decoded
+        );
+        assert!(
+            report
+                .decoded
+                .iter()
+                .filter(|token| token.text == "KickCauseCode" && token.token_type == "class")
+                .count()
+                >= 2,
+            "{:?}",
+            report.decoded
+        );
+        assert_semantic_token(&report, "SCR_InstigatorContextData", "class", None);
+        assert_semantic_token(&report, "IEntity", "class", None);
+        assert_semantic_token(&report, "array", "class", None);
+        assert_semantic_token(&report, "EResourceType", "enum", None);
+        assert_semantic_token(&report, "ScriptInvokerBase", "class", None);
+        assert!(
+            report
+                .decoded
+                .iter()
+                .any(|token| token.text == "NONE" && token.token_type == "property"),
+            "{:?}",
+            report.decoded
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn semantic_tokens_color_source_backed_type_spans_before_external_index_is_ready() {
+        let source = "\
+void SCR_BaseGameMode_OnPlayerDisconnected(int playerId, KickCauseCode cause = KickCauseCode.NONE, int timeout = -1);
+void SCR_BaseGameMode_OnControllableDestroyed(notnull SCR_InstigatorContextData instigatorContextData);
+void SCR_BaseGameMode_PlayerIdAndEntity(int playerId, IEntity player);
+void SCR_BaseGameMode_OnResourceEnabledChanged(array<EResourceType> disabledResourceTypes);
+typedef ScriptInvokerBase<OnPreloadFinished> OnPreloadFinishedInvoker;
+class Example { protected ref ScriptInvoker m_OnGameEnd = new ScriptInvoker(); }
+";
+
+        let report = semantic_tokens_report_for_source(source);
+
+        assert_semantic_token(&report, "void", "keyword", Some("#59A6E9"));
+        assert_semantic_token(&report, "int", "keyword", Some("#59A6E9"));
+        assert_semantic_token(&report, "KickCauseCode", "class", Some("#40b5ac"));
+        assert_semantic_token(
+            &report,
+            "SCR_InstigatorContextData",
+            "class",
+            Some("#40b5ac"),
+        );
+        assert_semantic_token(&report, "IEntity", "class", Some("#40b5ac"));
+        assert_semantic_token(&report, "array", "class", Some("#40b5ac"));
+        assert_semantic_token(&report, "EResourceType", "class", Some("#40b5ac"));
+        assert_semantic_token(&report, "ScriptInvokerBase", "class", Some("#40b5ac"));
+        assert_semantic_token_count_at_least(&report, "ScriptInvoker", "class", 2);
+    }
+
+    #[test]
+    fn semantic_tokens_apply_type_keyword_color_policy_in_declarations() {
+        let source = r#"class SCR_Class {}
+enum SCR_EEnum { VALUE, }
+class ResourceName {}
+class LocalizedString {}
+class Curve {}
+class Color {}
+class array<Class T> {}
+class map<Class TKey, Class TValue> {}
+class set<Class T> {}
+
+class Example
+{
+	bool m_bValue;
+	int m_iValue;
+	float m_fValue;
+	string m_sValue;
+	SCR_EEnum m_eValue;
+	vector m_vValue;
+	array<SCR_Class> m_aValue;
+	map<string, SCR_Class> m_mValue;
+	ResourceName m_sResourceName;
+	LocalizedString m_sLocalisedString;
+	Curve m_aCurve;
+	SCR_Class m_ClassInstance;
+	typename m_ClassTypename;
+	set<SCR_Class> m_Set;
+	Color m_Color;
+	void Run()
+	{
+		bool b = true;
+		bool c = false;
+	}
+}
+"#;
+
+        let report = semantic_tokens_report_for_source(source);
+
+        for text in ["bool", "int", "float", "typename", "true", "false"] {
+            assert_semantic_token(&report, text, "keyword", Some("#59A6E9"));
+        }
+        for text in [
+            "string",
+            "SCR_EEnum",
+            "vector",
+            "array",
+            "map",
+            "ResourceName",
+            "LocalizedString",
+            "Curve",
+            "SCR_Class",
+            "set",
+            "Color",
+        ] {
+            assert_semantic_type_family_token_count_at_least(&report, text, 1);
+        }
+    }
+
+    #[test]
+    fn semantic_tokens_color_enum_static_member_values_as_variables() {
+        let source = r#"enum EHealthState
+{
+	INJURED,
+}
+
+class Example
+{
+	void Run()
+	{
+		EHealthState state = EHealthState.INJURED;
+	}
+}
+"#;
+
+        let report = semantic_tokens_report_for_source(source);
+
+        assert_semantic_token(&report, "EHealthState", "enum", Some("#40b5ac"));
+        assert_semantic_token(&report, "INJURED", "enumMember", Some("#cfcfcf"));
+    }
+
+    #[test]
+    fn semantic_tokens_keep_generic_callback_type_arguments_type_colored() {
+        let source = "\
+void SCR_BaseGameMode_PlayerId(int playerId);
+typedef func SCR_BaseGameMode_PlayerId;
+class Example
+{
+\tprotected ref ScriptInvokerBase<SCR_BaseGameMode_PlayerId> m_OnPlayerAuditSuccess = new ScriptInvokerBase<SCR_BaseGameMode_PlayerId>();
+}
+";
+
+        let report = semantic_tokens_report_for_source(source);
+
+        assert_semantic_type_family_token_count_at_least(&report, "SCR_BaseGameMode_PlayerId", 2);
+        assert_semantic_token_count_at_least(&report, "ScriptInvokerBase", "class", 2);
+        assert_eq!(
+            report
+                .decoded
+                .iter()
+                .filter(|token| {
+                    token.text == "SCR_BaseGameMode_PlayerId" && token.token_type == "function"
+                })
+                .count(),
+            1,
+            "{:?}",
+            report.decoded
+        );
+    }
+
+    #[test]
+    fn semantic_tokens_resolve_attribute_argument_expressions() {
+        let root = temp_test_dir("semantic_tokens_attribute_arguments");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("Attribute.c"),
+            r#"class Attribute {}
+class UIWidgets
+{
+	static const string Flags = "flags";
+}
+class ParamEnumArray
+{
+	static ParamEnumArray FromEnum(typename value);
+}
+enum EGameFlags
+{
+	TEST,
+}
+"#,
+        )
+        .unwrap();
+        let external = crate::index_build::build_index(&crate::index_build::IndexBuildConfig {
+            roots: vec![crate::index_build::IndexSourceRoot::new(
+                &root,
+                crate::model::SourceKind::GameData,
+                crate::model::SOURCE_PRIORITY_GAME_DATA,
+            )],
+        })
+        .unwrap()
+        .index;
+        let source = r#"class Example
+{
+	static const string WB_GAME_MODE_CATEGORY = "Game";
+	[Attribute("0", uiwidget: UIWidgets.Flags, "Test Game Flags for when you run mission via WE.", "", ParamEnumArray.FromEnum(EGameFlags), WB_GAME_MODE_CATEGORY)]
+	protected EGameFlags m_eTestGameFlags;
+}
+"#;
+
+        let report = semantic_tokens_report_for_source_with_external(source, Some(&external));
+
+        assert_semantic_token(&report, "Attribute", "class", Some("#40b5ac"));
+        assert_semantic_token(&report, "uiwidget", "variable", Some("#cfcfcf"));
+        assert_semantic_token(&report, "UIWidgets", "class", Some("#40b5ac"));
+        assert_semantic_token(&report, "Flags", "enumMember", Some("#cfcfcf"));
+        assert_semantic_token(&report, "ParamEnumArray", "class", Some("#40b5ac"));
+        assert_semantic_token(&report, "FromEnum", "method", Some("#f3ad58"));
+        assert_semantic_token(&report, "EGameFlags", "enum", Some("#40b5ac"));
+        assert_semantic_token(
+            &report,
+            "WB_GAME_MODE_CATEGORY",
+            "property",
+            Some("#cfcfcf"),
+        );
+        assert!(
+            !report.decoded.iter().any(|token| {
+                matches!(
+                    token.text.as_str(),
+                    "Attribute"
+                        | "uiwidget"
+                        | "UIWidgets"
+                        | "Flags"
+                        | "ParamEnumArray"
+                        | "FromEnum"
+                        | "EGameFlags"
+                        | "WB_GAME_MODE_CATEGORY"
+                ) && token.token_type == "decorator"
+            }),
+            "{:?}",
+            report.decoded
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn semantic_tokens_refine_unqualified_attribute_arguments_with_external_facts() {
+        let root = temp_test_dir("semantic_tokens_attribute_argument_enum");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("Attribute.c"), "class Attribute {}\n").unwrap();
+        fs::write(root.join("EGameFlags.c"), "enum EGameFlags { Test, }\n").unwrap();
+        let external = crate::index_build::build_index(&crate::index_build::IndexBuildConfig {
+            roots: vec![crate::index_build::IndexSourceRoot::new(
+                root.clone(),
+                crate::model::SourceKind::GameData,
+                crate::model::SOURCE_PRIORITY_GAME_DATA,
+            )],
+        })
+        .unwrap()
+        .index;
+        let source = r#"class Example
+{
+	[Attribute(ParamEnumArray.FromEnum(EGameFlags))]
+	void Run();
+}
+"#;
+
+        let fast_report = semantic_tokens_report_for_source(source);
+        assert_semantic_token(&fast_report, "EGameFlags", "class", Some("#40b5ac"));
+
+        let rich_report = semantic_tokens_report_for_source_with_external(source, Some(&external));
+        assert_semantic_token(&rich_report, "EGameFlags", "enum", Some("#40b5ac"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn semantic_tokens_color_attribute_expression_shape_before_external_index_is_ready() {
+        let source = r#"class Example
+{
+	[Attribute("0", uiwidget: UIWidgets.Flags, "Test", "", ParamEnumArray.FromEnum(EGameFlags), WB_GAME_MODE_CATEGORY)]
+	protected EGameFlags m_eTestGameFlags;
+}
+"#;
+
+        let report = semantic_tokens_report_for_source(source);
+
+        assert_semantic_token(&report, "Attribute", "class", Some("#40b5ac"));
+        assert_semantic_token(&report, "uiwidget", "variable", Some("#cfcfcf"));
+        assert_semantic_token(&report, "UIWidgets", "class", Some("#40b5ac"));
+        assert_semantic_token(&report, "Flags", "enumMember", Some("#cfcfcf"));
+        assert_semantic_token(&report, "ParamEnumArray", "class", Some("#40b5ac"));
+        assert_semantic_token(&report, "FromEnum", "method", Some("#f3ad58"));
+        assert_semantic_token(&report, "EGameFlags", "class", Some("#40b5ac"));
+        assert_semantic_token(
+            &report,
+            "WB_GAME_MODE_CATEGORY",
+            "variable",
+            Some("#cfcfcf"),
+        );
+        assert!(
+            report
+                .decoded
+                .iter()
+                .filter(|token| matches!(
+                    token.text.as_str(),
+                    "Attribute"
+                        | "uiwidget"
+                        | "UIWidgets"
+                        | "Flags"
+                        | "ParamEnumArray"
+                        | "FromEnum"
+                        | "WB_GAME_MODE_CATEGORY"
+                ))
+                .all(|token| token.token_type != "decorator"),
+            "{:?}",
+            report.decoded
+        );
+    }
+
+    #[test]
+    fn semantic_token_cache_is_keyed_by_external_generation() {
+        let mut cache = open_documents::SemanticTokenCache::default();
+        let projection = LspSemanticTokenProjection {
+            tokens: LspSemanticTokens {
+                data: vec![1, 2, 3],
+            },
+            token_count: 1,
+            parse_diagnostics: 0,
+            timings: LspSemanticTokenTimings::default(),
+        };
+
+        cache.set_rich(7, 1, projection);
+
+        assert!(cache
+            .rich_for_revision_and_external_generation(7, 1)
+            .is_some());
+        assert!(cache
+            .rich_for_revision_and_external_generation(7, 2)
+            .is_none());
+        assert!(cache
+            .rich_for_revision_and_external_generation(8, 1)
+            .is_none());
     }
 
     #[test]
@@ -2750,6 +2196,7 @@ class Example : Base
             SymbolKind::LocalVariable,
             "count",
         );
+        assert_hover(source, "i++)", "i++", SymbolKind::LocalVariable, "i");
         assert_hover(
             source,
             "typedef string FactionKey",
@@ -2917,6 +2364,510 @@ class Example
     }
 
     #[test]
+    fn completion_returns_members_for_receiver_and_replaces_prefix() {
+        let source = r#"class Example
+{
+	void Run()
+	{
+		Widget widget;
+		widget.Set
+	}
+}
+"#;
+        let external = file_index_for_source(
+            r#"class Widget
+{
+	void SetVisible(bool visible);
+	void SetText(string text);
+}
+"#,
+        )
+        .index;
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "widget.Set"),
+            Some(&external),
+        );
+
+        assert_eq!(report.receiver_text.as_deref(), Some("widget"));
+        assert_eq!(report.owner_type.as_deref(), Some("Widget"));
+        assert_eq!(report.prefix, "Set");
+        assert!(report.candidate_count >= 2);
+        assert!(report
+            .list
+            .items
+            .iter()
+            .any(|item| item.label == "SetVisible"
+                && item.kind == 2
+                && item.text_edit.new_text == "SetVisible(visible)"
+                && item.insert_text_format == Some(2)
+                && item
+                    .label_details
+                    .as_ref()
+                    .and_then(|details| details.detail.as_deref())
+                    == Some("(bool visible)")
+                && item
+                    .label_details
+                    .as_ref()
+                    .and_then(|details| details.description.as_deref())
+                    == Some("-> void")
+                && item.text_edit.range.start.character == 9
+                && item.text_edit.range.end.character == 12));
+    }
+
+    #[test]
+    fn completion_labels_overloads_and_sorts_workspace_before_game_data() {
+        let source = r#"class Widget
+{
+	void SetVisible(bool visible);
+	void SetVisible(bool visible, bool animate);
+}
+
+class Example
+{
+	void Run()
+	{
+		Widget widget;
+		widget.Set
+	}
+}
+"#;
+        let external = file_index_for_source(
+            r#"class Widget
+{
+	void SetText(string text);
+}
+"#,
+        )
+        .index;
+
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "widget.Set"),
+            Some(&external),
+        );
+
+        let overload_details = report
+            .list
+            .items
+            .iter()
+            .filter(|item| item.label == "SetVisible")
+            .filter_map(|item| {
+                item.label_details
+                    .as_ref()
+                    .and_then(|details| details.detail.as_deref())
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            overload_details,
+            vec!["(bool visible)", "(bool visible, bool animate)"]
+        );
+        let first = report.list.items.first().unwrap();
+        assert_eq!(first.label, "SetVisible");
+        assert!(first.sort_text.as_deref().unwrap_or("").starts_with("01:"));
+    }
+
+    #[test]
+    fn completion_returns_type_candidates_in_type_position() {
+        let source = "class Example { void Run(SCR_ value) {} }";
+        let external = file_index_for_source(
+            r#"class SCR_Widget {}
+enum SCR_Mode {}
+typedef int SCR_Alias;
+void SCR_Function();
+int SCR_Global;
+"#,
+        )
+        .index;
+
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "SCR_"),
+            Some(&external),
+        );
+
+        assert_eq!(report.completion_context, "type");
+        assert_eq!(report.prefix, "SCR_");
+        assert_eq!(
+            report
+                .list
+                .items
+                .iter()
+                .map(|item| (item.label.as_str(), item.kind))
+                .collect::<Vec<_>>(),
+            vec![("SCR_Alias", 25), ("SCR_Mode", 13), ("SCR_Widget", 7)]
+        );
+        assert!(report
+            .list
+            .items
+            .iter()
+            .all(|item| item.text_edit.range.start.character == 25
+                && item.text_edit.range.end.character == 29));
+    }
+
+    #[test]
+    fn completion_uses_identifier_prefix_inside_existing_token() {
+        let source = "class Example { void Run(SCR_Widget value) { GetGame(); } }";
+        let external = file_index_for_source(
+            r#"class SCR_Widget {}
+class SCR_Other {}
+void GetGame();
+void GetGameMode();
+"#,
+        )
+        .index;
+
+        let type_report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "SCR_"),
+            Some(&external),
+        );
+        let value_report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "GetG"),
+            Some(&external),
+        );
+
+        assert_eq!(type_report.completion_context, "type");
+        assert_eq!(type_report.prefix, "SCR_");
+        assert!(type_report
+            .list
+            .items
+            .iter()
+            .any(|item| item.label == "SCR_Widget"));
+        assert_eq!(value_report.completion_context, "top-level");
+        assert_eq!(value_report.prefix, "GetG");
+        assert!(value_report
+            .list
+            .items
+            .iter()
+            .any(|item| item.label == "GetGame"));
+    }
+
+    #[test]
+    fn completion_returns_type_candidates_in_generic_type_argument() {
+        let source = "class Example { void Run() { array<SCR_> values; } }";
+        let external = file_index_for_source(
+            r#"class SCR_Widget {}
+void SCR_Function();
+"#,
+        )
+        .index;
+
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "SCR_"),
+            Some(&external),
+        );
+
+        assert_eq!(report.completion_context, "type");
+        assert_eq!(
+            report
+                .list
+                .items
+                .iter()
+                .map(|item| item.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["SCR_Widget"]
+        );
+    }
+
+    #[test]
+    fn completion_returns_top_level_value_candidates_for_prefix() {
+        let source = "class Example { void Run() { SCR_ } }";
+        let external = file_index_for_source(
+            r#"class SCR_Widget {}
+enum SCR_Mode
+{
+	SCR_Value
+}
+typedef int SCR_Alias;
+void SCR_Function();
+int SCR_Global;
+"#,
+        )
+        .index;
+
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "SCR_"),
+            Some(&external),
+        );
+
+        assert_eq!(report.completion_context, "top-level");
+        assert_eq!(report.prefix, "SCR_");
+        let labels = report
+            .list
+            .items
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>();
+        assert!(labels.contains(&"SCR_Function"));
+        assert!(labels.contains(&"SCR_Global"));
+        assert!(labels.contains(&"SCR_Value"));
+    }
+
+    #[test]
+    fn completion_returns_enum_members_for_static_enum_owner() {
+        let source = r#"enum LogLevel
+{
+	DEBUG,
+	NORMAL
+}
+
+class Example
+{
+	void Run()
+	{
+		LogLevel.
+	}
+}
+"#;
+
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "LogLevel."),
+            None,
+        );
+
+        assert_eq!(report.receiver_text.as_deref(), Some("LogLevel"));
+        assert_eq!(report.owner_type.as_deref(), Some("LogLevel"));
+        assert_eq!(
+            report
+                .list
+                .items
+                .iter()
+                .map(|item| (item.label.as_str(), item.kind))
+                .collect::<Vec<_>>(),
+            vec![("DEBUG", 20), ("NORMAL", 20)]
+        );
+    }
+
+    #[test]
+    fn completion_returns_static_class_members_for_static_class_owner() {
+        let source = r#"class Example
+{
+	static int s_Value;
+	static void StaticRun();
+	void InstanceRun();
+	int m_Value;
+}
+
+class User
+{
+	void Run()
+	{
+		Example.
+	}
+}
+"#;
+
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "Example."),
+            None,
+        );
+
+        let labels = report
+            .list
+            .items
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(report.receiver_text.as_deref(), Some("Example"));
+        assert_eq!(labels, vec!["s_Value", "StaticRun"]);
+    }
+
+    #[test]
+    fn completion_returns_engine_class_cast_for_static_class_owner() {
+        let source = r#"class Example
+{
+}
+
+class User
+{
+	void Run()
+	{
+		Example.
+	}
+}
+"#;
+        let external = file_index_for_source(
+            r#"class Class
+{
+	static Class Cast(Class from);
+}
+
+class Example
+{
+}
+"#,
+        )
+        .index;
+
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "Example."),
+            Some(&external),
+        );
+
+        assert_eq!(
+            report
+                .list
+                .items
+                .iter()
+                .map(|item| (item.label.as_str(), item.kind))
+                .collect::<Vec<_>>(),
+            vec![("Cast", 2)]
+        );
+    }
+
+    #[test]
+    fn completion_expands_typedef_receiver_owner() {
+        let source = r#"class Example
+{
+	void Run(TIntArray values)
+	{
+		values.
+	}
+}
+"#;
+        let external = file_index_for_source(
+            r#"class array<Class T>
+{
+	void Insert(T value);
+	void Remove(T value);
+}
+
+typedef array<int> TIntArray;
+"#,
+        )
+        .index;
+
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "values."),
+            Some(&external),
+        );
+
+        let labels = report
+            .list
+            .items
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(report.owner_type.as_deref(), Some("TIntArray"));
+        assert_eq!(labels, vec!["Insert", "Remove"]);
+    }
+
+    #[test]
+    fn completion_infers_direct_new_expression_receiver() {
+        let source = r#"class SCR_AIAnimateBehavior
+{
+	array<string> GetPortNames();
+}
+
+class Example
+{
+	void Run()
+	{
+		(new SCR_AIAnimateBehavior()).
+	}
+}
+"#;
+
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "())."),
+            None,
+        );
+
+        let labels = report
+            .list
+            .items
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            report.receiver_text.as_deref(),
+            Some("(new SCR_AIAnimateBehavior())")
+        );
+        assert_eq!(report.owner_type.as_deref(), Some("SCR_AIAnimateBehavior"));
+        assert_eq!(labels, vec!["GetPortNames"]);
+    }
+
+    #[test]
+    fn completion_uses_full_receiver_chain_before_dot() {
+        let source = r#"class AIWaypoint
+{
+	string ToString();
+}
+
+class SCR_BTParam<Class T>
+{
+	T m_Value;
+}
+
+class SCR_AIDefendBehavior
+{
+	ref SCR_BTParam<AIWaypoint> m_RelatedWaypoint;
+
+	void Run()
+	{
+		m_RelatedWaypoint.m_Value.
+	}
+}
+"#;
+
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "m_Value."),
+            None,
+        );
+
+        let labels = report
+            .list
+            .items
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            report.receiver_text.as_deref(),
+            Some("m_RelatedWaypoint.m_Value")
+        );
+        assert_eq!(report.owner_type.as_deref(), Some("AIWaypoint"));
+        assert_eq!(labels, vec!["ToString"]);
+    }
+
+    #[test]
+    fn completion_returns_empty_for_non_member_positions_and_unresolved_receivers() {
+        let non_member = "class Example {}";
+        let non_member_report = completion_report_for_source_position_with_external(
+            non_member,
+            LspPosition {
+                line: 0,
+                character: 5,
+            },
+            None,
+        );
+        assert!(non_member_report.list.items.is_empty());
+
+        let unresolved = "class Example { void Run() { missing. } }";
+        let unresolved_report = completion_report_for_source_position_with_external(
+            unresolved,
+            position_after_needle(unresolved, "missing."),
+            None,
+        );
+        assert_eq!(unresolved_report.receiver_text.as_deref(), Some("missing"));
+        assert_eq!(unresolved_report.owner_type, None);
+        assert!(unresolved_report.list.items.is_empty());
+        assert_eq!(
+            unresolved_report.failure_reason.as_deref(),
+            Some("receiver type was not inferred")
+        );
+    }
+
+    #[test]
     fn hover_returns_none_for_whitespace_outside_symbols() {
         let source = "\nclass Example {}\n";
 
@@ -2954,6 +2905,66 @@ class Example
         assert!(report.resolver_candidate_count > 0);
         assert_eq!(report.selected_kind, Some(SymbolKind::Method));
         assert_eq!(report.selected_label.as_deref(), Some("Run"));
+    }
+
+    #[test]
+    fn hover_does_not_use_broad_class_span_for_modifiers() {
+        let source = r#"class Example : Base
+{
+	protected RplComponent m_RplComponent;
+	private static const int COUNT = 4;
+}
+"#;
+
+        for (needle, cursor) in [
+            ("protected RplComponent", "protected"),
+            ("private static", "private"),
+            ("static const", "static"),
+            ("const int", "const"),
+        ] {
+            let report = hover_at(source, needle, cursor);
+            assert!(
+                !report.is_hit(),
+                "modifier `{cursor}` should not select enclosing symbol: {report:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn hover_returns_none_for_comments_inside_symbol_span() {
+        let source = r#"class ExampleClass
+{
+	/*
+		ExampleClass comment text should not select the class.
+	*/
+}
+"#;
+
+        let report = hover_at(source, "ExampleClass comment", "ExampleClass");
+
+        assert!(!report.is_hit());
+        assert_eq!(report.selection_source, HoverSelectionSource::None);
+        assert_eq!(report.resolver_reason, None);
+        assert_eq!(report.resolver_candidate_count, 0);
+    }
+
+    #[test]
+    fn debug_hover_does_not_select_symbol_for_comments_inside_symbol_span() {
+        let source = r#"class ExampleClass
+{
+	/*
+		ExampleClass comment text should not select the class.
+	*/
+}
+"#;
+        let position = position_for_needle(source, "ExampleClass comment", "ExampleClass");
+
+        let report = debug_hover_report_for_source_position(source, position);
+
+        assert!(report.contains("- Selected Symbol: no"));
+        assert!(report.contains("Cursor is not on an identifier token"));
+        assert!(report.contains("No symbol matched the cursor position."));
+        assert!(!report.contains("| 1 | syntax-span | `Class` | `ExampleClass`"));
     }
 
     #[test]
@@ -3092,7 +3103,7 @@ class Example
         assert!(!named_arg.is_hit());
         assert_eq!(
             named_arg.resolver_reason,
-            Some(ResolutionReason::Unresolved)
+            Some(ResolutionReason::NamedArgumentLabel)
         );
 
         let unresolved = definition_at(source, "MissingThing();", "MissingThing");
@@ -3100,6 +3111,50 @@ class Example
         assert_eq!(
             unresolved.resolver_reason,
             Some(ResolutionReason::Unresolved)
+        );
+    }
+
+    #[test]
+    fn definition_resolves_preprocessor_macro_references_when_defined() {
+        let source = r#"#define ENABLE_DIAG
+#ifdef ENABLE_DIAG
+#define GAME_MODE_DEBUG
+#endif
+"#;
+
+        let report = definition_report_for_source_position(
+            source,
+            "file:///Scripts/Preprocessor.c",
+            position_for_needle(source, "#ifdef ENABLE_DIAG", "ENABLE_DIAG"),
+        );
+
+        assert!(report.is_hit(), "{report:?}");
+        assert_eq!(report.selected_kind, Some(SymbolKind::PreprocessorMacro));
+        assert_eq!(report.selected_label.as_deref(), Some("ENABLE_DIAG"));
+        assert_eq!(
+            report.resolver_reason,
+            Some(ResolutionReason::PreprocessorMacro)
+        );
+        assert_eq!(
+            report.locations[0].range.start,
+            LspPosition {
+                line: 0,
+                character: 8
+            }
+        );
+
+        let missing = definition_report_for_source_position(
+            "#ifdef MISSING_DIAG\n#endif\n",
+            "file:///Scripts/Preprocessor.c",
+            LspPosition {
+                line: 0,
+                character: 8,
+            },
+        );
+        assert!(!missing.is_hit());
+        assert_eq!(
+            missing.resolver_reason,
+            Some(ResolutionReason::PreprocessorMacro)
         );
     }
 
@@ -3147,6 +3202,66 @@ class Example
                 character: 6
             }
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn definition_resolves_keyword_type_positions_to_external_generated_types() {
+        let root = temp_test_dir("external_keyword_type_definition");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("string.c"), "sealed class string\n{\n}\n").unwrap();
+        fs::write(root.join("vector.c"), "sealed class vector\n{\n}\n").unwrap();
+        fs::write(root.join("bool.c"), "sealed class bool\n{\n}\n").unwrap();
+        let external = crate::index_build::build_index(&crate::index_build::IndexBuildConfig {
+            roots: vec![crate::index_build::IndexSourceRoot::new(
+                &root,
+                crate::model::SourceKind::GameData,
+                crate::model::SOURCE_PRIORITY_GAME_DATA,
+            )],
+        })
+        .unwrap()
+        .index;
+        let source = r#"class Example
+{
+	string m_sValue;
+	vector m_vValue;
+	bool m_bValue;
+	void Run()
+	{
+		bool value = true;
+	}
+}
+"#;
+
+        for (needle, cursor, expected) in [
+            ("string m_sValue", "string", "string.c"),
+            ("vector m_vValue", "vector", "vector.c"),
+            ("bool m_bValue", "bool", "bool.c"),
+        ] {
+            let report = definition_report_for_source_position_with_external(
+                source,
+                "file:///Scripts/KeywordTypes.c",
+                position_for_needle(source, needle, cursor),
+                Some(&external),
+            );
+            assert!(report.is_hit(), "{cursor}: {report:?}");
+            assert_eq!(report.selected_source, Some(CandidateSource::External));
+            assert_eq!(report.selected_kind, Some(SymbolKind::Class));
+            assert!(
+                report.locations[0].uri.ends_with(expected),
+                "{:?}",
+                report.locations
+            );
+        }
+
+        let literal = definition_report_for_source_position_with_external(
+            source,
+            "file:///Scripts/KeywordTypes.c",
+            position_for_needle(source, "true;", "true"),
+            Some(&external),
+        );
+        assert!(!literal.is_hit());
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -3318,6 +3433,7 @@ class Example
                 game_data_scripts: None,
                 game_data_metadata: None,
                 index_cache: None,
+                workspace_scripts: Vec::new(),
             },
         )
         .unwrap();
@@ -3401,12 +3517,14 @@ class Example
                 game_data_scripts: None,
                 game_data_metadata: None,
                 index_cache: None,
+                workspace_scripts: Vec::new(),
             },
         )
         .unwrap();
 
         let output_text = String::from_utf8(output).unwrap();
         assert!(output_text.contains("\"hoverProvider\":true"));
+        assert!(output_text.contains("\"completionProvider\":{\"triggerCharacters\":[\".\"]}"));
         assert!(output_text.contains("Smoke.Run(int value) -> void"));
         assert!(output_text.contains("\"kind\":\"markdown\""));
     }
@@ -3484,15 +3602,368 @@ class Example
                 game_data_scripts: None,
                 game_data_metadata: None,
                 index_cache: None,
+                workspace_scripts: Vec::new(),
             },
         )
         .unwrap();
 
         let output_text = String::from_utf8(output).unwrap();
         assert!(output_text.contains("\"definitionProvider\":true"));
-        assert!(output_text.contains("\"uri\":\"file:///Scripts/Smoke.c\""));
+        assert!(output_text.contains("\"targetUri\":\"file:///Scripts/Smoke.c\""));
+        assert!(output_text.contains("\"originSelectionRange\""));
+        assert!(output_text.contains("\"targetRange\""));
+        assert!(output_text.contains("\"targetSelectionRange\""));
         assert!(output_text.contains("\"line\":2"));
         assert!(output_text.contains("\"character\":14"));
+    }
+
+    #[test]
+    fn framed_lsp_smoke_test_handles_member_completion() {
+        let source = "class Widget\n{\n\tvoid SetVisible(bool visible);\n}\nclass Smoke\n{\n\tvoid Run()\n\t{\n\t\tWidget widget;\n\t\twidget.\n\t}\n}\n";
+        let completion_position = position_after_needle(source, "widget.");
+        let mut input = Vec::new();
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {}
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": "file:///Scripts/Smoke.c",
+                        "languageId": "enforce",
+                        "version": 1,
+                        "text": source
+                    }
+                }
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "textDocument/completion",
+                "params": {
+                    "textDocument": {
+                        "uri": "file:///Scripts/Smoke.c"
+                    },
+                    "position": {
+                        "line": completion_position.line,
+                        "character": completion_position.character
+                    }
+                }
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "shutdown",
+                "params": null
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "exit",
+                "params": null
+            }),
+        );
+
+        let mut output = Vec::new();
+        run(input.as_slice(), &mut output, LspServerOptions::default()).unwrap();
+
+        let output_text = String::from_utf8(output).unwrap();
+        assert!(output_text.contains("\"completionProvider\":{\"triggerCharacters\":[\".\"]}"));
+        assert!(output_text.contains("\"isIncomplete\":false"));
+        assert!(output_text.contains("\"label\":\"SetVisible\""));
+        assert!(output_text.contains("\"newText\":\"SetVisible(visible)\""));
+    }
+
+    #[test]
+    fn framed_lsp_smoke_test_handles_semantic_tokens() {
+        let source =
+            "class Smoke\n{\n\tvoid Run(int value)\n\t{\n\t\tstring name = \"x\";\n\t}\n}\n";
+        let mut input = Vec::new();
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {}
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": "file:///Scripts/Smoke.c",
+                        "languageId": "enforce",
+                        "version": 1,
+                        "text": source
+                    }
+                }
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "textDocument/semanticTokens/full",
+                "params": {
+                    "textDocument": {
+                        "uri": "file:///Scripts/Smoke.c"
+                    }
+                }
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "id": "server-1",
+                "result": null
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "textDocument/semanticTokens/full",
+                "params": {
+                    "textDocument": {
+                        "uri": "file:///Scripts/Smoke.c"
+                    }
+                }
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 5,
+                "method": "shutdown",
+                "params": null
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "exit",
+                "params": null
+            }),
+        );
+
+        let mut output = Vec::new();
+        run(input.as_slice(), &mut output, LspServerOptions::default()).unwrap();
+
+        let output_text = String::from_utf8(output).unwrap();
+        assert!(output_text.contains("\"semanticTokensProvider\""));
+        assert!(output_text.contains("\"tokenTypes\":[\"class\",\"enum\",\"type\""));
+        assert!(output_text.contains("\"id\":2"));
+        assert!(output_text.contains("\"method\":\"workspace/semanticTokens/refresh\""));
+        assert!(output_text.contains("\"id\":4"));
+        assert!(output_text.contains("\"data\":["));
+    }
+
+    #[test]
+    fn framed_lsp_workspace_overlay_updates_hover_and_definition() {
+        let root = temp_test_dir("workspace_overlay");
+        let scripts = root.join("Scripts");
+        std::fs::create_dir_all(&scripts).unwrap();
+        let workspace_file = scripts.join("WorkspaceThing.c");
+        let user_file = scripts.join("User.c");
+        let workspace_source = "class WorkspaceThing\n{\n\tvoid WorkspaceMethod();\n}\n";
+        std::fs::write(&workspace_file, workspace_source).unwrap();
+
+        let user_source = "class User\n{\n\tvoid Run()\n\t{\n\t\tWorkspaceThing thing;\n\t\tthing.WorkspaceMethod();\n\t}\n}\n";
+        let hover_position =
+            position_for_needle(user_source, "thing.WorkspaceMethod", "WorkspaceMethod");
+        let completion_position = position_after_needle(user_source, "thing.");
+        let definition_position =
+            position_for_needle(user_source, "WorkspaceThing thing", "WorkspaceThing");
+        let user_uri = file_uri_for_path(&user_file).unwrap();
+        let target_uri = file_uri_for_path(&workspace_file).unwrap();
+        let mut input = Vec::new();
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {}
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": user_uri,
+                        "languageId": "enforce",
+                        "version": 1,
+                        "text": user_source
+                    }
+                }
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "method": WORKSPACE_FILE_CHANGED_METHOD,
+                "params": {
+                    "path": workspace_file.display().to_string(),
+                    "text": workspace_source
+                }
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "textDocument/hover",
+                "params": {
+                    "textDocument": {
+                        "uri": user_uri
+                    },
+                    "position": {
+                        "line": hover_position.line,
+                        "character": hover_position.character
+                    }
+                }
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "textDocument/completion",
+                "params": {
+                    "textDocument": {
+                        "uri": user_uri
+                    },
+                    "position": {
+                        "line": completion_position.line,
+                        "character": completion_position.character
+                    }
+                }
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "textDocument/definition",
+                "params": {
+                    "textDocument": {
+                        "uri": user_uri
+                    },
+                    "position": {
+                        "line": definition_position.line,
+                        "character": definition_position.character
+                    }
+                }
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "method": WORKSPACE_FILE_DELETED_METHOD,
+                "params": {
+                    "path": workspace_file.display().to_string()
+                }
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 5,
+                "method": "textDocument/completion",
+                "params": {
+                    "textDocument": {
+                        "uri": user_uri
+                    },
+                    "position": {
+                        "line": completion_position.line,
+                        "character": completion_position.character
+                    }
+                }
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 6,
+                "method": "textDocument/hover",
+                "params": {
+                    "textDocument": {
+                        "uri": user_uri
+                    },
+                    "position": {
+                        "line": hover_position.line,
+                        "character": hover_position.character
+                    }
+                }
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 7,
+                "method": "shutdown",
+                "params": null
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "exit",
+                "params": null
+            }),
+        );
+
+        let mut output = Vec::new();
+        run(input.as_slice(), &mut output, LspServerOptions::default()).unwrap();
+
+        let output_text = String::from_utf8(output).unwrap();
+        assert!(output_text.contains("WorkspaceThing.WorkspaceMethod() -> void"));
+        assert!(output_text.contains("\"label\":\"WorkspaceMethod\""));
+        assert!(output_text.contains(&target_uri));
+        assert!(output_text.contains(
+            "{\"id\":5,\"jsonrpc\":\"2.0\",\"result\":{\"isIncomplete\":false,\"items\":[]}}"
+        ));
+        assert!(output_text.contains("{\"id\":6,\"jsonrpc\":\"2.0\",\"result\":null}"));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -3571,6 +4042,7 @@ class Example
                 game_data_scripts: None,
                 game_data_metadata: None,
                 index_cache: None,
+                workspace_scripts: Vec::new(),
             },
         )
         .unwrap();
@@ -3716,6 +4188,7 @@ class Example
                 game_data_scripts: None,
                 game_data_metadata: None,
                 index_cache: None,
+                workspace_scripts: Vec::new(),
             },
         )
         .unwrap();
@@ -3809,6 +4282,7 @@ class Example
                 game_data_scripts: None,
                 game_data_metadata: None,
                 index_cache: None,
+                workspace_scripts: Vec::new(),
             },
         )
         .unwrap();
@@ -3816,6 +4290,147 @@ class Example
         let output_text = String::from_utf8(output).unwrap();
         assert!(output_text.contains("\"result\":null"));
         assert!(!output_text.contains("\"name\":\"Closed\""));
+    }
+
+    #[test]
+    fn framed_lsp_publishes_and_clears_parser_diagnostics() {
+        let broken_source = "class Broken\n{\n\tvoid Run(\n}\n";
+        let fixed_source = "class Fixed\n{\n\tvoid Run();\n}\n";
+        let mut input = Vec::new();
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {}
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": "file:///Scripts/Diagnostics.c",
+                        "languageId": "enforce",
+                        "version": 1,
+                        "text": broken_source
+                    }
+                }
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didChange",
+                "params": {
+                    "textDocument": {
+                        "uri": "file:///Scripts/Diagnostics.c",
+                        "version": 2
+                    },
+                    "contentChanges": [
+                        {
+                            "text": fixed_source
+                        }
+                    ]
+                }
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didClose",
+                "params": {
+                    "textDocument": {
+                        "uri": "file:///Scripts/Diagnostics.c"
+                    }
+                }
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "shutdown",
+                "params": null
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "exit",
+                "params": null
+            }),
+        );
+
+        let mut output = Vec::new();
+        run(
+            input.as_slice(),
+            &mut output,
+            LspServerOptions {
+                log_path: None,
+                game_data_scripts: None,
+                game_data_metadata: None,
+                index_cache: None,
+                workspace_scripts: Vec::new(),
+            },
+        )
+        .unwrap();
+
+        let output_text = String::from_utf8(output).unwrap();
+        assert_eq!(
+            output_text
+                .matches("textDocument/publishDiagnostics")
+                .count(),
+            3
+        );
+        assert!(output_text.contains("Reforger Script Tools parser"));
+        assert!(output_text.contains("reforger.parser.syntax"));
+        assert!(output_text.contains("\"severity\":1"));
+        assert!(output_text.contains("\"diagnostics\":[]"));
+    }
+
+    #[test]
+    fn parser_diagnostic_projection_adds_stable_source_and_code() {
+        let source = "class Broken\n{\n\tvoid Run(\n}\n";
+        let parse = parse_source(source);
+
+        let diagnostics = parser_diagnostics_for_source(source, &parse.diagnostics);
+
+        assert!(!diagnostics.is_empty());
+        assert!(diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.source == diagnostics::PARSER_DIAGNOSTIC_SOURCE));
+        assert!(diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.code == diagnostics::PARSER_DIAGNOSTIC_CODE));
+        assert!(diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.severity == 1));
+    }
+
+    #[test]
+    fn parser_diagnostic_projection_expands_zero_width_ranges() {
+        let source = "class Broken\n";
+        let diagnostics = parser_diagnostics_for_source(
+            source,
+            &[ParseDiagnostic {
+                message: "Expected declaration".to_string(),
+                span: TextSpan::new(source.len(), source.len()),
+            }],
+        );
+
+        let range = diagnostics[0].range;
+        assert_ne!(
+            range.start, range.end,
+            "zero-width parser diagnostics should project to a visible editor range"
+        );
     }
 
     #[test]
@@ -3828,13 +4443,13 @@ class Example
         assert!(report.contains("# Reforger Hover Debug"));
         assert!(report.contains("## Resolver Resolution"));
         assert!(report.contains("## Tokens Around Cursor"));
-        assert!(report.contains("## Theme / Token Coloring Context"));
+        assert!(report.contains("## Semantic Token Coloring Context"));
         assert!(report.contains("## Candidate Symbols At Cursor"));
         assert!(report.contains("- Selected Symbol: yes"));
         assert!(report.contains("- Label: `Run`"));
         assert!(report.contains("Smoke.Run(int value) -> void"));
         assert!(report.contains("`Method`"));
-        assert!(report.contains("entity.name.function.enforce"));
+        assert!(report.contains("`method`"));
         assert!(report.contains("#f3ad58"));
     }
 
@@ -3911,6 +4526,7 @@ class Example
                 game_data_scripts: None,
                 game_data_metadata: None,
                 index_cache: None,
+                workspace_scripts: Vec::new(),
             },
         )
         .unwrap();
@@ -4043,5 +4659,71 @@ class Example
             .find(cursor)
             .unwrap_or_else(|| panic!("missing cursor {cursor} in {needle}"));
         position_for_offset(source, start + cursor_start)
+    }
+
+    fn position_after_needle(source: &str, needle: &str) -> LspPosition {
+        let start = source
+            .find(needle)
+            .unwrap_or_else(|| panic!("missing needle {needle}"));
+        position_for_offset(source, start + needle.len())
+    }
+
+    fn assert_semantic_token(
+        report: &LspSemanticTokenReport,
+        text: &str,
+        token_type: &str,
+        color: Option<&str>,
+    ) {
+        assert!(
+            report.decoded.iter().any(|token| {
+                token.text == text
+                    && token.token_type == token_type
+                    && color.is_none_or(|color| token.color == color)
+            }),
+            "missing semantic token text={text:?} type={token_type:?} color={color:?}: {:?}",
+            report.decoded
+        );
+    }
+
+    fn assert_semantic_token_count_at_least(
+        report: &LspSemanticTokenReport,
+        text: &str,
+        token_type: &str,
+        expected: usize,
+    ) {
+        let actual = report
+            .decoded
+            .iter()
+            .filter(|token| token.text == text && token.token_type == token_type)
+            .count();
+        assert!(
+            actual >= expected,
+            "expected at least {expected} semantic tokens text={text:?} type={token_type:?}, found {actual}: {:?}",
+            report.decoded
+        );
+    }
+
+    fn assert_semantic_type_family_token_count_at_least(
+        report: &LspSemanticTokenReport,
+        text: &str,
+        expected: usize,
+    ) {
+        let actual = report
+            .decoded
+            .iter()
+            .filter(|token| {
+                token.text == text
+                    && matches!(
+                        token.token_type,
+                        "class" | "enum" | "type" | "typeParameter"
+                    )
+                    && token.color == "#40b5ac"
+            })
+            .count();
+        assert!(
+            actual >= expected,
+            "expected at least {expected} green type-family semantic tokens text={text:?}, found {actual}: {:?}",
+            report.decoded
+        );
     }
 }

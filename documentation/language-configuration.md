@@ -10,15 +10,16 @@ This file belongs to the VS Code shell contribution layer. It gives VS Code comm
 
 ## Current Behavior
 
-The configuration defines `//` line comments, `/* */` block comments, braces, brackets, parentheses, and double-quote auto-closing/surrounding pairs.
+The configuration defines `//` line comments, `/* */` block comments, braces, brackets, parentheses, and double-quote auto-closing/surrounding pairs. Enforce coloring is intentionally not handled here; it comes from Rust LSP semantic tokens and the bundled theme.
 
 ## Dependencies and Boundaries
 
-This file must stay lightweight. It must not encode parser semantics, Workbench truth, or broad formatting rules. Syntax highlighting is intentionally out of scope for this slice.
+This file must stay lightweight. It must not encode parser semantics, Workbench truth, syntax highlighting, or broad formatting rules.
 
 ## Change Notes
 
 - Added initial editor configuration for the `enforce` language contribution.
+- Clarified that coloring is owned by semantic tokens, not language configuration or TextMate grammar.
 
 ## Future Improvements
 

@@ -135,6 +135,7 @@ pub struct SymbolId(pub usize);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum SymbolKind {
     Class,
+    TypeParameter,
     Enum,
     EnumMember,
     Typedef,
@@ -146,6 +147,7 @@ pub enum SymbolKind {
     Destructor,
     Parameter,
     LocalVariable,
+    PreprocessorMacro,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -383,6 +385,7 @@ struct SymbolCatalogBuilder<'source> {
 
 impl<'source> SymbolCatalogBuilder<'source> {
     fn add_ast(&mut self, ast: &AstSourceFile<'source, '_>) {
+        self.add_preprocessor_macros();
         for declaration in ast.declarations() {
             self.add_declaration(declaration);
         }
@@ -414,6 +417,23 @@ impl<'source> SymbolCatalogBuilder<'source> {
                     doc_comments: doc_comment_records(class.doc_comments()),
                     callable_form: None,
                 });
+
+                for parameter in class.type_parameters() {
+                    self.push_record(NewSymbol {
+                        parent: Some(class_id),
+                        kind: SymbolKind::TypeParameter,
+                        name: Some(parameter.name()),
+                        span: parameter.span(),
+                        detail: SymbolDetail {
+                            type_text: parameter.constraint_text().map(|value| value.span),
+                            ..SymbolDetail::empty()
+                        },
+                        attributes: Vec::new(),
+                        modifiers: Vec::new(),
+                        doc_comments: Vec::new(),
+                        callable_form: None,
+                    });
+                }
 
                 for member in class.members() {
                     match member {
@@ -487,6 +507,22 @@ impl<'source> SymbolCatalogBuilder<'source> {
             Declaration::Field(field) => {
                 self.add_field(None, SymbolKind::GlobalField, field);
             }
+        }
+    }
+
+    fn add_preprocessor_macros(&mut self) {
+        for (line_span, name_span) in preprocessor_macro_definitions(self.source) {
+            self.push_record(NewSymbol {
+                parent: None,
+                kind: SymbolKind::PreprocessorMacro,
+                name: Some(TextValue::new(self.source, name_span)),
+                span: line_span,
+                detail: SymbolDetail::empty(),
+                attributes: Vec::new(),
+                modifiers: Vec::new(),
+                doc_comments: Vec::new(),
+                callable_form: None,
+            });
         }
     }
 
@@ -647,6 +683,75 @@ fn callable_form(method: MethodDecl<'_, '_>) -> CallableForm {
     } else {
         CallableForm::Declaration
     }
+}
+
+fn preprocessor_macro_definitions(source: &str) -> Vec<(TextSpan, TextSpan)> {
+    let mut result = Vec::new();
+    let mut line_start = 0usize;
+    for line in source.split_inclusive('\n') {
+        let line_end = line_start + line.trim_end_matches(['\r', '\n']).len();
+        if let Some(name_span) = preprocessor_define_name_span(source, line_start, line_end) {
+            result.push((TextSpan::new(line_start, line_end), name_span));
+        }
+        line_start += line.len();
+    }
+    if line_start < source.len() {
+        let line_end = source.len();
+        if let Some(name_span) = preprocessor_define_name_span(source, line_start, line_end) {
+            result.push((TextSpan::new(line_start, line_end), name_span));
+        }
+    }
+    result
+}
+
+fn preprocessor_define_name_span(
+    source: &str,
+    line_start: usize,
+    line_end: usize,
+) -> Option<TextSpan> {
+    let line = &source[line_start..line_end];
+    let trimmed_start = line
+        .char_indices()
+        .find_map(|(index, character)| (!character.is_whitespace()).then_some(index))?;
+    let after_hash = line[trimmed_start..].strip_prefix('#')?;
+    let after_hash_start = line_start + trimmed_start + 1;
+    let directive_offset = after_hash
+        .char_indices()
+        .find_map(|(index, character)| (!character.is_whitespace()).then_some(index))?;
+    let directive_start = after_hash_start + directive_offset;
+    let directive = &source[directive_start..line_end];
+    let define_tail = directive.strip_prefix("define")?;
+    if define_tail
+        .chars()
+        .next()
+        .is_some_and(is_identifier_continue)
+    {
+        return None;
+    }
+    let name_relative_start = define_tail
+        .char_indices()
+        .find_map(|(index, character)| (!character.is_whitespace()).then_some(index))?;
+    let name_start = directive_start + "define".len() + name_relative_start;
+    let mut name_end = name_start;
+    for (index, character) in source[name_start..line_end].char_indices() {
+        if index == 0 {
+            if !is_identifier_start(character) {
+                return None;
+            }
+        } else if !is_identifier_continue(character) {
+            break;
+        }
+        name_end = name_start + index + character.len_utf8();
+    }
+    (name_end > name_start).then_some(TextSpan::new(name_start, name_end))
+}
+
+fn is_identifier_start(character: char) -> bool {
+    character == '_' || character.is_ascii_alphabetic()
+}
+
+fn is_identifier_continue(character: char) -> bool {
+    character == '_' || character.is_ascii_alphanumeric()
 }
 
 fn conditional_context_at(source: &str, offset: usize) -> Vec<ConditionalBranch> {
@@ -1017,6 +1122,37 @@ class Example : Base
     }
 
     #[test]
+    fn catalogs_preprocessor_macro_definitions_as_source_symbols() {
+        let source = r#"#ifdef ENABLE_DIAG
+#define GAME_MODE_DEBUG
+#define ENABLE_DIAG 1
+#endif
+
+class Example {}
+"#;
+        let catalog = catalog(source);
+
+        assert_eq!(count_kind(&catalog, SymbolKind::PreprocessorMacro), 2);
+        let game_mode_debug = find(&catalog, SymbolKind::PreprocessorMacro, "GAME_MODE_DEBUG");
+        assert_eq!(
+            catalog.record_name(game_mode_debug),
+            Some("GAME_MODE_DEBUG")
+        );
+        assert_eq!(
+            catalog.text(game_mode_debug.span),
+            "#define GAME_MODE_DEBUG"
+        );
+        assert_eq!(
+            game_mode_debug.selection_span,
+            game_mode_debug.name.unwrap()
+        );
+        assert_eq!(game_mode_debug.parent, None);
+
+        let enable_diag = find(&catalog, SymbolKind::PreprocessorMacro, "ENABLE_DIAG");
+        assert_eq!(catalog.text(enable_diag.span), "#define ENABLE_DIAG 1");
+    }
+
+    #[test]
     fn catalogs_class_members_and_parameters_with_parent_links() {
         let source = r#"class Example
 {
@@ -1060,6 +1196,28 @@ class Example : Base
                 .collect::<Vec<_>>(),
             vec!["out", "notnull"]
         );
+    }
+
+    #[test]
+    fn catalogs_class_type_parameters_with_parent_links() {
+        let source = r#"class map<Class TKey,Class TValue>: Managed
+{
+	proto TValue Get(TKey key);
+}
+"#;
+        let catalog = catalog(source);
+        let class = find(&catalog, SymbolKind::Class, "map");
+        let key = find(&catalog, SymbolKind::TypeParameter, "TKey");
+        let value = find(&catalog, SymbolKind::TypeParameter, "TValue");
+
+        assert_eq!(
+            child_count(&catalog, class.id, SymbolKind::TypeParameter),
+            2
+        );
+        assert_eq!(key.parent, Some(class.id));
+        assert_eq!(value.parent, Some(class.id));
+        assert_eq!(catalog.text(key.detail.type_text.unwrap()), "Class");
+        assert_eq!(catalog.text(value.detail.type_text.unwrap()), "Class");
     }
 
     #[test]

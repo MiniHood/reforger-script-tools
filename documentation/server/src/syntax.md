@@ -10,7 +10,7 @@ This file is part of the Rust language-engine layer. It defines the full-fidelit
 
 ## Current Behavior
 
-The syntax layer exposes syntax kinds, syntax nodes, syntax elements, parse diagnostics, and parse results. Nodes store byte spans and child elements. Tokens are preserved as syntax elements so source text remains external and can be sliced by span. `InitializerList` distinguishes field initializer braces from class and method `Block` nodes. `EmptyDecl` preserves standalone semicolons in declaration context without turning them into parser errors.
+The syntax layer exposes syntax kinds, syntax nodes, syntax elements, parse diagnostics, and parse results. Nodes store byte spans and child elements. Tokens are preserved as syntax elements so source text remains external and can be sliced by span. Brace initializer defaults are represented as structured `InitializerExpression` nodes, which keeps them distinct from class and method `Block` nodes while still exposing nested expressions. `EmptyDecl` preserves standalone semicolons in declaration context without turning them into parser errors.
 
 Callable body `Block` nodes can contain statement and expression syntax nodes. Statement kinds cover control flow, loops, switch sections and labels, flow statements, local declarations, and expression statements. `ForHeader` contains `ForInitializer`, `ForCondition`, and `ForIncrement`; declaration-shaped `ForInitializer` nodes own a nested `LocalDeclStatement`. `ForeachHeader` contains `ForeachVariableList`, `ForeachVariable`, and `ForeachIterable` nodes. `SwitchStatement` owns `SwitchSection` groups, each containing `CaseClause` / `DefaultClause` labels and the following statements until the next section. Expression kinds cover names, literals, calls, arguments, named arguments, member access, indexing, casts, unary/binary/assignment/ternary expressions, postfix operations, `new`, and initializer expressions.
 
@@ -21,7 +21,7 @@ This file depends only on lexer token/span types. It must not import VS Code API
 ## Change Notes
 
 - Added initial full-fidelity syntax tree structures for parser scaffolding.
-- Added `InitializerList` for brace-delimited field initializer syntax.
+- Added structured brace initializer syntax for field and body expressions.
 - Added `EmptyDecl` for standalone semicolon declarations.
 - Added statement and expression syntax kinds for callable body parsing.
 - Added structured `for` initializer declarations, `foreach` header parts, and switch sections.

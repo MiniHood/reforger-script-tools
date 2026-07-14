@@ -14,6 +14,8 @@ The report reads targeted committed parser fixtures, downloaded game-data checks
 
 Current checks include class, method, field, parameter, local variable, typedef, enum member, global field, external type, receiver/member access, named-argument label miss, and unresolved miss behavior.
 
+Definition currently returns standard LSP `Location[]` targets using the selected declaration name range. That is enough for the current Ctrl+click foundation. Future `LocationLink` support would add origin selection ranges and separate target declaration ranges, but should use the same resolver-owned target selection rather than adding a competing definition path.
+
 ## Dependencies and Boundaries
 
 The report uses only Rust standard library code and existing LSP/index helper functions. It accepts `--scripts <path>` to override the downloaded game-data scripts folder. It must remain dev-only review tooling. It must not perform semantic lookup, Workbench validation, runtime logging, VS Code command registration, or source mutation.
@@ -26,5 +28,4 @@ The report uses only Rust standard library code and existing LSP/index helper fu
 
 ## Future Improvements
 
-- Add corpus-scale definition sampling if definition misses need broad review.
-- Add workspace-overlay definition checks once workspace indexing is wired into the LSP runtime.
+- Add `LocationLink` review output only when the runtime definition response moves to `LocationLink[]`.

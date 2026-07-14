@@ -65,7 +65,6 @@ pub enum SyntaxKind {
     PostfixExpression,
     NewExpression,
     InitializerExpression,
-    InitializerList,
     PreprocessorDirective,
     Error,
 }

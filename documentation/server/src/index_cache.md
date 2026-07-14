@@ -12,9 +12,9 @@ This file sits beside `server/src/index_build.rs`. It does not build language fa
 
 The cache is keyed by scripts-root identity and source fingerprint. Downloaded game data uses `metadata.json` `commitSha` as the primary invalidation key. Manual folders use a recursive `.c` file fingerprint made from file count, byte count, and latest modified timestamp. Cache payloads include a format version, crate version, fingerprint, summary counts, and a compact index snapshot.
 
-The persisted game-data cache is runtime-pruned in format v4: it removes only external `LocalVariable` symbols before serialization. Parameters, callable signatures, docs, attributes, modifiers, classes, fields, methods, constructors, destructors, typedefs, enum values, conditional context, private/protected/static members, global fields, and source provenance remain cached. Open-document analysis and dev corpus/debug builds still use full indexes with locals.
+The persisted game-data cache is runtime-pruned in format v6: it removes only external `LocalVariable` symbols before serialization. Parameters, callable signatures, docs, attributes, modifiers, classes, fields, methods, constructors, destructors, typedefs, enum values, type parameters, conditional context, private/protected/static members, global fields, and source provenance remain cached. Open-document analysis and dev corpus/debug builds still use full indexes with locals.
 
-The v4 cache is written as JSON with only metadata, files, symbols, and summary counts. Derived lookup maps are not persisted; they are rebuilt after deserialization from the stored file and symbol records. Source-only detail span fields are stripped from persisted game-data symbols because the external cache does not retain source text, but copied detail text remains available for hover, signatures, and debug display. Any cache mismatch or deserialization failure falls back to rebuilding and replacing the cache.
+The v6 cache is written as JSON with only metadata, files, symbols, and summary counts. Derived lookup maps are not persisted; they are rebuilt after deserialization from the stored file and symbol records. Source-only detail span fields are stripped from persisted game-data symbols because the external cache does not retain source text, but copied detail text remains available for hover, signatures, and debug display. Any cache mismatch or deserialization failure falls back to rebuilding and replacing the cache.
 
 Cache operations now return timing data for fingerprinting, cache read/deserialization/validation, rebuild, write, and total load-or-build time. These timings are review data only; they do not change cache behavior.
 
@@ -32,7 +32,8 @@ Depends on `serde`, `serde_json`, `server/src/index_build.rs`, and the copied in
 - Added cache timing fields for `server/examples/index_cache_baseline.rs` so JSON cache usefulness can be compared against release rebuild time.
 - Added the cache composition report as the review path for deciding whether a future split or filtered runtime cache is worthwhile.
 - Bumped the runtime game-data cache to format v2 and pruned external `LocalVariable` symbols from persisted cache writes while preserving parameters.
-- Bumped the runtime game-data cache to format v4 after parser recovery changes. The cache persists files/symbols only, strips detail spans, rebuilds lookup maps on load, and rejects stale older cache files.
+- Bumped the runtime game-data cache to format v5 after adding type-parameter symbols. The cache persists files/symbols only, strips detail spans, rebuilds lookup maps on load, and rejects stale older cache files.
+- Bumped the runtime game-data cache to format v6 after fixing compacted multi-file symbol ranges. This rejects older caches that can return lookup IDs which dereference against the wrong file-local symbol range.
 - Added the cache string duplication report as the review path for deciding whether string interning or path-table cache work is worthwhile.
 
 ## Future Improvements

@@ -270,6 +270,17 @@ fn run() -> Result<(), String> {
                 .as_ref()
                 .and_then(|receiver| receiver.failure_reason.clone())
                 .unwrap_or_else(|| "<none>".to_string()),
+            receiver_lookup_path: report
+                .receiver_resolution
+                .as_ref()
+                .map(|receiver| {
+                    if receiver.lookup_path.is_empty() {
+                        "<none>".to_string()
+                    } else {
+                        receiver.lookup_path.join(" -> ")
+                    }
+                })
+                .unwrap_or_else(|| "<none>".to_string()),
             resolver_candidate_count: report.resolver_candidate_count,
             selected_source: report
                 .selected_source
@@ -324,16 +335,16 @@ fn run() -> Result<(), String> {
     writeln!(markdown).unwrap();
     writeln!(markdown, "This report exercises the same resolver-first hover path used by `textDocument/hover`, with game-data supplied as optional external index context. It is review tooling only; it does not perform semantic lookup or Workbench validation.").unwrap();
     writeln!(markdown).unwrap();
-    writeln!(markdown, "| File | Target | Position | Hit | Selection | Selected source | Resolver reason | Identifier context | Receiver owner | Receiver expression | Receiver failure | Resolver candidates | Selected | Parse diagnostics | Elapsed ms | Hover preview |").unwrap();
+    writeln!(markdown, "| File | Target | Position | Hit | Selection | Selected source | Resolver reason | Identifier context | Receiver owner | Receiver expression | Receiver failure | Receiver lookup path | Resolver candidates | Selected | Parse diagnostics | Elapsed ms | Hover preview |").unwrap();
     writeln!(
         markdown,
-        "| --- | --- | ---: | --- | --- | --- | --- | --- | --- | --- | --- | ---: | --- | ---: | ---: | --- |"
+        "| --- | --- | ---: | --- | --- | --- | --- | --- | --- | --- | --- | --- | ---: | --- | ---: | ---: | --- |"
     )
     .unwrap();
     for row in &rows {
         writeln!(
             markdown,
-            "| `{}` | {} | {}:{} | {} | `{}` | `{}` | `{}` | `{}` | `{}` | `{}` | `{}` | {} | {} `{}` | {} | {} | {} |",
+            "| `{}` | {} | {}:{} | {} | `{}` | `{}` | `{}` | `{}` | `{}` | `{}` | `{}` | `{}` | {} | {} `{}` | {} | {} | {} |",
             row.file,
             escape_markdown_cell(&row.target),
             row.line,
@@ -346,6 +357,7 @@ fn run() -> Result<(), String> {
             escape_markdown_cell(&row.receiver_owner),
             row.receiver_expression_kind,
             escape_markdown_cell(&row.receiver_failure),
+            escape_markdown_cell(&row.receiver_lookup_path),
             row.resolver_candidate_count,
             row.selected_kind,
             escape_markdown_cell(&row.selected_label),
@@ -505,6 +517,7 @@ struct HoverRow {
     receiver_owner: String,
     receiver_expression_kind: String,
     receiver_failure: String,
+    receiver_lookup_path: String,
     resolver_candidate_count: usize,
     elapsed_ms: u128,
     hover_preview: String,
@@ -696,6 +709,28 @@ fn game_data_hover_checks(scripts_root: &Path) -> Vec<HoverCheck<'static>> {
             "ref SCR_ScenarioFrameworkGet m_Getter;",
             "SCR_ScenarioFrameworkGet",
         ));
+    }
+
+    let get_game_chain = scripts_root
+        .join("Game")
+        .join("AI")
+        .join("Behavior")
+        .join("SCR_AIRetreatBehavior.c");
+    if get_game_chain.exists() {
+        checks.extend([
+            HoverCheck::path(
+                get_game_chain.clone(),
+                "GetGame external function receiver chain",
+                "float current = GetGame().GetWorld().GetWorldTime();",
+                "GetWorld",
+            ),
+            HoverCheck::path(
+                get_game_chain,
+                "GetWorld inherited receiver chain",
+                "float current = GetGame().GetWorld().GetWorldTime();",
+                "GetWorldTime",
+            ),
+        ]);
     }
 
     checks

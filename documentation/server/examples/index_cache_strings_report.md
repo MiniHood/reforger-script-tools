@@ -12,7 +12,7 @@ This is dev-only review tooling. It loads the current disposable game-data cache
 
 The report counts string occurrences, unique strings, occurrence bytes, unique bytes, and duplicated string bytes. It groups strings by source, including file absolute paths, root paths, relative paths, symbol names, detail text, modifiers, attribute names/raw text, doc comments, and conditional expressions.
 
-The path review section exists because v3 stores absolute path, root path, and relative path per file. That is useful for debug output, but repeated path prefixes are a likely future path-table optimization if cache size or memory pressure becomes a real problem.
+The path review section exists because v6 stores absolute path, root path, and relative path per file. That is useful for debug output, but repeated path prefixes are a likely future path-table optimization if cache size or memory pressure becomes a real problem.
 
 ## Boundaries
 
@@ -34,7 +34,7 @@ node tools/index-cache-strings-report.mjs --scripts <path> --metadata <path|none
 
 ## Change Notes
 
-- Added after v4 cache optimization to determine whether string interning or path-table storage would provide meaningful savings without removing editor-visible facts.
+- Added after v6 cache optimization to determine whether string interning or path-table storage would provide meaningful savings without removing editor-visible facts.
 
 ## Future Improvements
 

@@ -86,7 +86,7 @@ impl Parser<'_> {
         if self.looks_like_callable_decl() {
             self.parse_callable_decl(prefix, in_class)
         } else if is_declaration_start(kind) {
-            self.parse_field_decl(prefix)
+            self.parse_field_decl(prefix, in_class)
         } else {
             self.parse_error_until_sync(prefix)
         }
@@ -175,12 +175,23 @@ impl Parser<'_> {
     fn parse_enum_member(&mut self) -> SyntaxElement {
         let mut children = Vec::new();
         children.push(self.bump_token());
-        while !matches!(
-            self.current().kind,
-            TokenKind::Comma | TokenKind::RightBrace | TokenKind::Eof
-        ) {
+        self.collect_trivia(&mut children);
+        if self.at_operator(Operator::Equal) {
             children.push(self.bump_token());
+            if !self.next_non_trivia_is_any(&[TokenKind::Comma, TokenKind::RightBrace]) {
+                children.push(
+                    self.parse_expression_until(&[TokenKind::Comma, TokenKind::RightBrace], 0),
+                );
+            }
+        } else {
+            while !matches!(
+                self.current().kind,
+                TokenKind::Comma | TokenKind::RightBrace | TokenKind::Eof
+            ) {
+                children.push(self.bump_token());
+            }
         }
+        self.collect_trivia(&mut children);
         if self.at(TokenKind::Comma) {
             children.push(self.bump_token());
         }
@@ -250,9 +261,13 @@ impl Parser<'_> {
         }
     }
 
-    fn parse_field_decl(&mut self, mut children: Vec<SyntaxElement>) -> SyntaxElement {
-        let mut has_assignment = false;
+    fn parse_field_decl(
+        &mut self,
+        mut children: Vec<SyntaxElement>,
+        allow_implicit_member_boundary: bool,
+    ) -> SyntaxElement {
         let mut hit_preprocessor_boundary = false;
+        let mut hit_implicit_member_boundary = false;
         let mut paren_depth = 0usize;
         let mut bracket_depth = 0usize;
         let mut angle_depth = 0usize;
@@ -267,17 +282,41 @@ impl Parser<'_> {
                 break;
             }
 
+            if allow_implicit_member_boundary
+                && at_top_level
+                && self.starts_new_member_after_unterminated_field(&children)
+            {
+                hit_implicit_member_boundary = true;
+                break;
+            }
+
             if at_top_level && self.at(TokenKind::Hash) {
                 hit_preprocessor_boundary = true;
                 break;
             }
 
-            if at_top_level && has_assignment && self.at(TokenKind::LeftBrace) {
-                children.push(self.parse_balanced_initializer_list());
-                continue;
-            }
-
             match kind {
+                TokenKind::Operator(Operator::Equal) if at_top_level => {
+                    children.push(self.bump_token());
+                    if self.next_non_trivia_is(TokenKind::LeftBrace) {
+                        self.collect_trivia(&mut children);
+                        children.push(self.parse_initializer_expression());
+                    } else if !self.next_non_trivia_is_any(&[
+                        TokenKind::Comma,
+                        TokenKind::Semicolon,
+                        TokenKind::RightBrace,
+                    ]) {
+                        children.push(self.parse_expression_until(
+                            &[
+                                TokenKind::Comma,
+                                TokenKind::Semicolon,
+                                TokenKind::RightBrace,
+                            ],
+                            0,
+                        ));
+                    }
+                    continue;
+                }
                 TokenKind::LeftParen => paren_depth += 1,
                 TokenKind::RightParen => paren_depth = paren_depth.saturating_sub(1),
                 TokenKind::LeftBracket => bracket_depth += 1,
@@ -291,7 +330,6 @@ impl Parser<'_> {
                 TokenKind::Operator(Operator::GreaterGreater) => {
                     angle_depth = angle_depth.saturating_sub(2)
                 }
-                TokenKind::Operator(Operator::Equal) => has_assignment = true,
                 _ => {}
             }
 
@@ -300,7 +338,10 @@ impl Parser<'_> {
 
         if self.at(TokenKind::Semicolon) {
             children.push(self.bump_token());
-        } else if !self.at(TokenKind::RightBrace) && !hit_preprocessor_boundary {
+        } else if !self.at(TokenKind::RightBrace)
+            && !hit_preprocessor_boundary
+            && !hit_implicit_member_boundary
+        {
             self.error_here("Expected field semicolon");
         }
         if hit_preprocessor_boundary {
@@ -633,7 +674,15 @@ impl Parser<'_> {
         children: &mut Vec<SyntaxElement>,
         stop: &[TokenKind],
     ) {
+        let mut paren_depth = 0usize;
+        let mut bracket_depth = 0usize;
+        let mut angle_depth = 0usize;
         while !self.at(TokenKind::Eof) && !stop.contains(&self.current().kind) {
+            let at_top_level = paren_depth == 0 && bracket_depth == 0 && angle_depth == 0;
+            if at_top_level && self.starts_new_statement_after_unterminated_local(children) {
+                break;
+            }
+
             if self.current().kind.is_trivia() || self.at(TokenKind::Comma) {
                 children.push(self.bump_token());
             } else if self.at(TokenKind::LeftBrace) {
@@ -642,6 +691,20 @@ impl Parser<'_> {
                 children.push(self.bump_token());
                 children.push(self.parse_expression_until(&local_decl_expression_stops(stop), 0));
             } else {
+                match self.current().kind {
+                    TokenKind::LeftParen => paren_depth += 1,
+                    TokenKind::RightParen => paren_depth = paren_depth.saturating_sub(1),
+                    TokenKind::LeftBracket => bracket_depth += 1,
+                    TokenKind::RightBracket => bracket_depth = bracket_depth.saturating_sub(1),
+                    TokenKind::Operator(Operator::Less) => angle_depth += 1,
+                    TokenKind::Operator(Operator::Greater) => {
+                        angle_depth = angle_depth.saturating_sub(1)
+                    }
+                    TokenKind::Operator(Operator::GreaterGreater) => {
+                        angle_depth = angle_depth.saturating_sub(2)
+                    }
+                    _ => {}
+                }
                 children.push(self.bump_token());
             }
         }
@@ -685,6 +748,7 @@ impl Parser<'_> {
 
     fn parse_for_initializer(&mut self) -> SyntaxElement {
         let mut children = Vec::new();
+        self.collect_trivia(&mut children);
         if self.looks_like_local_decl_statement_in_for_header() {
             let mut declaration_children = Vec::new();
             self.parse_local_decl_statement_until(
@@ -764,11 +828,37 @@ impl Parser<'_> {
 
     fn parse_foreach_variable(&mut self) -> SyntaxElement {
         let mut children = Vec::new();
-        while !self.at(TokenKind::Comma)
-            && !self.at(TokenKind::Colon)
-            && !self.at(TokenKind::RightParen)
-            && !self.at(TokenKind::Eof)
-        {
+        let mut paren_depth = 0usize;
+        let mut bracket_depth = 0usize;
+        let mut angle_depth = 0usize;
+
+        while !self.at(TokenKind::Eof) {
+            let kind = self.current().kind;
+            let at_top_level = paren_depth == 0 && bracket_depth == 0 && angle_depth == 0;
+            if at_top_level
+                && matches!(
+                    kind,
+                    TokenKind::Comma | TokenKind::Colon | TokenKind::RightParen
+                )
+            {
+                break;
+            }
+
+            match kind {
+                TokenKind::LeftParen => paren_depth += 1,
+                TokenKind::RightParen => paren_depth = paren_depth.saturating_sub(1),
+                TokenKind::LeftBracket => bracket_depth += 1,
+                TokenKind::RightBracket => bracket_depth = bracket_depth.saturating_sub(1),
+                TokenKind::Operator(Operator::Less) => angle_depth += 1,
+                TokenKind::Operator(Operator::Greater) => {
+                    angle_depth = angle_depth.saturating_sub(1)
+                }
+                TokenKind::Operator(Operator::GreaterGreater) => {
+                    angle_depth = angle_depth.saturating_sub(2)
+                }
+                _ => {}
+            }
+
             children.push(self.bump_token());
         }
         node(SyntaxKind::ForeachVariable, children)
@@ -1029,36 +1119,6 @@ impl Parser<'_> {
         node(SyntaxKind::InitializerExpression, children)
     }
 
-    fn parse_balanced_initializer_list(&mut self) -> SyntaxElement {
-        let mut children = Vec::new();
-        let mut depth = 0usize;
-
-        while !self.at(TokenKind::Eof) {
-            if self.at(TokenKind::LeftBrace) {
-                depth += 1;
-                children.push(self.bump_token());
-                continue;
-            }
-
-            if self.at(TokenKind::RightBrace) {
-                children.push(self.bump_token());
-                depth = depth.saturating_sub(1);
-                if depth == 0 {
-                    return node(SyntaxKind::InitializerList, children);
-                }
-                continue;
-            }
-
-            children.push(self.bump_token());
-        }
-
-        self.error_at_span(
-            "Expected initializer-list closing brace",
-            children_span(&children),
-        );
-        node(SyntaxKind::InitializerList, children)
-    }
-
     fn parse_parameter_list(&mut self) -> SyntaxElement {
         let mut children = Vec::new();
         children.push(self.bump_token());
@@ -1088,6 +1148,8 @@ impl Parser<'_> {
 
         while !self.at(TokenKind::Eof) {
             let kind = self.current().kind;
+            let at_top_level =
+                paren_depth == 0 && bracket_depth == 0 && angle_depth == 0 && brace_depth == 0;
             if paren_depth == 0
                 && bracket_depth == 0
                 && angle_depth == 0
@@ -1095,6 +1157,16 @@ impl Parser<'_> {
                 && matches!(kind, TokenKind::Comma | TokenKind::RightParen)
             {
                 break;
+            }
+
+            if at_top_level && kind == TokenKind::Operator(Operator::Equal) {
+                children.push(self.bump_token());
+                if !self.next_non_trivia_is_any(&[TokenKind::Comma, TokenKind::RightParen]) {
+                    children.push(
+                        self.parse_expression_until(&[TokenKind::Comma, TokenKind::RightParen], 0),
+                    );
+                }
+                continue;
             }
 
             match kind {
@@ -1213,6 +1285,9 @@ impl Parser<'_> {
             self.current().kind,
             TokenKind::Semicolon | TokenKind::LeftBrace | TokenKind::RightBrace | TokenKind::Eof
         ) {
+            if !children.is_empty() && is_declaration_sync_start(self.current().kind) {
+                break;
+            }
             children.push(self.bump_token());
         }
         if self.at(TokenKind::Semicolon) {
@@ -1263,7 +1338,7 @@ impl Parser<'_> {
             TokenKind::Comma | TokenKind::RightBracket | TokenKind::Eof
         ) {
             if self.at(TokenKind::LeftParen) {
-                children.push(self.parse_balanced_parens());
+                children.push(self.parse_attribute_args());
             } else {
                 children.push(self.bump_token());
             }
@@ -1274,27 +1349,23 @@ impl Parser<'_> {
         node(SyntaxKind::Attribute, children)
     }
 
-    fn parse_balanced_parens(&mut self) -> SyntaxElement {
+    fn parse_attribute_args(&mut self) -> SyntaxElement {
         let mut children = Vec::new();
-        let mut depth = 0usize;
+        children.push(self.bump_token());
 
-        while !self.at(TokenKind::Eof) {
-            if self.at(TokenKind::LeftParen) {
-                depth += 1;
+        while !self.at(TokenKind::RightParen) && !self.at(TokenKind::Eof) {
+            if self.current().kind.is_trivia() || self.at(TokenKind::Comma) {
                 children.push(self.bump_token());
-                continue;
+            } else {
+                children.push(self.parse_argument());
             }
-            if self.at(TokenKind::RightParen) {
-                children.push(self.bump_token());
-                depth = depth.saturating_sub(1);
-                if depth == 0 {
-                    break;
-                }
-                continue;
-            }
-            children.push(self.bump_token());
         }
 
+        self.expect(
+            TokenKind::RightParen,
+            &mut children,
+            "Expected attribute argument-list closing paren",
+        );
         node(SyntaxKind::AttributeArgs, children)
     }
 
@@ -1322,18 +1393,90 @@ impl Parser<'_> {
 
     fn looks_like_callable_decl(&self) -> bool {
         let mut index = self.position;
+        let mut name_like_count = 0usize;
         while index < self.tokens.len() {
-            match self.tokens[index].kind {
+            let token = self.tokens[index];
+            if token.kind.is_trivia() {
+                if name_like_count >= 2
+                    && self.token_text(token).contains('\n')
+                    && self
+                        .next_non_trivia_kind_after(index + 1)
+                        .is_some_and(is_declaration_or_modifier_start)
+                {
+                    return false;
+                }
+                index += 1;
+                continue;
+            }
+
+            match token.kind {
                 TokenKind::LeftParen => return true,
                 TokenKind::Operator(Operator::Equal) => return false,
                 TokenKind::Semicolon
                 | TokenKind::LeftBrace
                 | TokenKind::RightBrace
                 | TokenKind::Eof => return false,
+                TokenKind::Identifier | TokenKind::Keyword(_) => {
+                    name_like_count += 1;
+                    index += 1;
+                }
                 _ => index += 1,
             }
         }
         false
+    }
+
+    fn starts_new_member_after_unterminated_field(&self, children: &[SyntaxElement]) -> bool {
+        if children.is_empty() || !is_declaration_or_modifier_start(self.current().kind) {
+            return false;
+        }
+
+        if !partial_field_has_declarator(children) {
+            return false;
+        }
+
+        let mut saw_trailing_newline = false;
+        for child in children.iter().rev() {
+            match child {
+                SyntaxElement::Token(token) if token.kind.is_trivia() => {
+                    saw_trailing_newline |= self.token_text(*token).contains('\n');
+                }
+                SyntaxElement::Token(_) | SyntaxElement::Node(_) => return saw_trailing_newline,
+            }
+        }
+
+        false
+    }
+
+    fn starts_new_statement_after_unterminated_local(&self, children: &[SyntaxElement]) -> bool {
+        if children.is_empty() || !self.current_token_can_start_statement_after_local() {
+            return false;
+        }
+
+        let mut saw_newline = false;
+        for child in children.iter().rev() {
+            match child {
+                SyntaxElement::Token(token) if token.kind.is_trivia() => {
+                    if self.token_text(*token).contains('\n') {
+                        saw_newline = true;
+                    }
+                }
+                SyntaxElement::Token(token) => {
+                    return saw_newline
+                        && !matches!(
+                            token.kind,
+                            TokenKind::Comma | TokenKind::Operator(Operator::Equal)
+                        );
+                }
+                SyntaxElement::Node(_) => return saw_newline,
+            }
+        }
+
+        false
+    }
+
+    fn current_token_can_start_statement_after_local(&self) -> bool {
+        token_kind_can_start_statement_after_local(self.current().kind)
     }
 
     fn looks_like_local_decl_statement(&self) -> bool {
@@ -1344,15 +1487,30 @@ impl Parser<'_> {
         let mut index = self.position;
         let mut saw_name_after_type = false;
         let mut saw_equal = false;
+        let mut saw_newline_after_name = false;
         let mut paren_depth = 0usize;
         let mut bracket_depth = 0usize;
         let mut brace_depth = 0usize;
         let mut angle_depth = 0usize;
 
         while index < self.tokens.len() {
-            let kind = self.tokens[index].kind;
+            let token = self.tokens[index];
+            let kind = token.kind;
             let at_top_level =
                 paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 && angle_depth == 0;
+
+            if at_top_level && saw_name_after_type && kind.is_trivia() {
+                saw_newline_after_name |= self.token_text(token).contains('\n');
+                index += 1;
+                continue;
+            }
+
+            if at_top_level
+                && saw_newline_after_name
+                && token_kind_can_start_statement_after_local(kind)
+            {
+                return true;
+            }
 
             if at_top_level && matches!(kind, TokenKind::Semicolon | TokenKind::RightParen) {
                 return saw_name_after_type;
@@ -1363,7 +1521,12 @@ impl Parser<'_> {
             if at_top_level && !saw_equal && matches!(kind, TokenKind::Dot | TokenKind::Question) {
                 return false;
             }
-            if at_top_level && kind == TokenKind::Operator(Operator::Equal) && !saw_name_after_type
+            if at_top_level && is_assignment_operator(kind) && !saw_name_after_type {
+                return false;
+            }
+            if at_top_level
+                && is_assignment_operator(kind)
+                && kind != TokenKind::Operator(Operator::Equal)
             {
                 return false;
             }
@@ -1379,6 +1542,7 @@ impl Parser<'_> {
                 && matches!(kind, TokenKind::Identifier | TokenKind::Keyword(_))
             {
                 saw_name_after_type = true;
+                saw_newline_after_name = false;
             }
 
             match kind {
@@ -1422,33 +1586,31 @@ impl Parser<'_> {
             let at_top_level =
                 paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 && angle_depth == 0;
 
-            if at_top_level && kind == TokenKind::Semicolon {
+            if at_top_level && matches!(kind, TokenKind::Semicolon | TokenKind::RightParen) {
                 return saw_name_after_type;
             }
-            if at_top_level
-                && matches!(
-                    kind,
-                    TokenKind::RightParen | TokenKind::RightBrace | TokenKind::Eof
-                )
-            {
+            if at_top_level && matches!(kind, TokenKind::RightBrace | TokenKind::Eof) {
+                return false;
+            }
+            if at_top_level && !saw_equal && matches!(kind, TokenKind::Dot | TokenKind::Question) {
+                return false;
+            }
+            if at_top_level && is_assignment_operator(kind) && !saw_name_after_type {
                 return false;
             }
             if at_top_level
-                && !saw_equal
-                && matches!(
-                    kind,
-                    TokenKind::Dot | TokenKind::Question | TokenKind::Colon
-                )
-            {
-                return false;
-            }
-            if at_top_level && kind == TokenKind::Operator(Operator::Equal) && !saw_name_after_type
+                && is_assignment_operator(kind)
+                && kind != TokenKind::Operator(Operator::Equal)
             {
                 return false;
             }
             if at_top_level && kind == TokenKind::Operator(Operator::Equal) {
                 saw_equal = true;
             }
+            if at_top_level && !saw_equal && matches!(kind, TokenKind::Colon) {
+                return false;
+            }
+
             if at_top_level
                 && index > self.position
                 && matches!(kind, TokenKind::Identifier | TokenKind::Keyword(_))
@@ -1478,7 +1640,6 @@ impl Parser<'_> {
 
         false
     }
-
     fn current_binary_binding_power(&self) -> Option<(u8, u8, SyntaxKind)> {
         match self.peek_non_trivia_kind()? {
             TokenKind::Operator(Operator::Equal)
@@ -1603,6 +1764,13 @@ impl Parser<'_> {
         self.tokens.get(index).map(|token| token.kind)
     }
 
+    fn next_non_trivia_kind_after(&self, mut index: usize) -> Option<TokenKind> {
+        while index < self.tokens.len() && self.tokens[index].kind.is_trivia() {
+            index += 1;
+        }
+        self.tokens.get(index).map(|token| token.kind)
+    }
+
     fn next_significant_kind(&self, significant_offset: usize) -> Option<TokenKind> {
         let mut seen = 0usize;
         for token in self.tokens.iter().skip(self.position) {
@@ -1721,6 +1889,24 @@ fn single_or_wrapped_expression(mut children: Vec<SyntaxElement>) -> SyntaxEleme
     }
 }
 
+fn token_kind_can_start_statement_after_local(kind: TokenKind) -> bool {
+    matches!(
+        kind,
+        TokenKind::Identifier
+            | TokenKind::Keyword(Keyword::If)
+            | TokenKind::Keyword(Keyword::For)
+            | TokenKind::Keyword(Keyword::Foreach)
+            | TokenKind::Keyword(Keyword::While)
+            | TokenKind::Keyword(Keyword::Do)
+            | TokenKind::Keyword(Keyword::Switch)
+            | TokenKind::Keyword(Keyword::Return)
+            | TokenKind::Keyword(Keyword::Break)
+            | TokenKind::Keyword(Keyword::Continue)
+            | TokenKind::Keyword(Keyword::Delete)
+            | TokenKind::Keyword(Keyword::Thread)
+    )
+}
+
 fn local_decl_expression_stops(stop: &[TokenKind]) -> Vec<TokenKind> {
     let mut stops = vec![TokenKind::Comma];
     stops.extend_from_slice(stop);
@@ -1755,6 +1941,95 @@ fn is_declaration_start(kind: TokenKind) -> bool {
             | TokenKind::Keyword(Keyword::Auto)
             | TokenKind::Keyword(Keyword::Func)
     )
+}
+
+fn is_declaration_or_modifier_start(kind: TokenKind) -> bool {
+    is_declaration_start(kind)
+        || matches!(
+            kind,
+            TokenKind::Keyword(Keyword::Private)
+                | TokenKind::Keyword(Keyword::Protected)
+                | TokenKind::Keyword(Keyword::Static)
+                | TokenKind::Keyword(Keyword::Override)
+                | TokenKind::Keyword(Keyword::Proto)
+                | TokenKind::Keyword(Keyword::Native)
+                | TokenKind::Keyword(Keyword::External)
+                | TokenKind::Keyword(Keyword::Sealed)
+                | TokenKind::Keyword(Keyword::Modded)
+                | TokenKind::Keyword(Keyword::Vanilla)
+        )
+}
+
+fn is_declaration_sync_start(kind: TokenKind) -> bool {
+    matches!(
+        kind,
+        TokenKind::Keyword(Keyword::Class)
+            | TokenKind::Keyword(Keyword::Enum)
+            | TokenKind::Keyword(Keyword::Typedef)
+            | TokenKind::Keyword(Keyword::Modded)
+            | TokenKind::Keyword(Keyword::Vanilla)
+    )
+}
+
+fn is_assignment_operator(kind: TokenKind) -> bool {
+    matches!(
+        kind,
+        TokenKind::Operator(Operator::Equal)
+            | TokenKind::Operator(Operator::PlusEqual)
+            | TokenKind::Operator(Operator::MinusEqual)
+            | TokenKind::Operator(Operator::StarEqual)
+            | TokenKind::Operator(Operator::SlashEqual)
+            | TokenKind::Operator(Operator::PercentEqual)
+            | TokenKind::Operator(Operator::AmpersandEqual)
+            | TokenKind::Operator(Operator::PipeEqual)
+            | TokenKind::Operator(Operator::CaretEqual)
+            | TokenKind::Operator(Operator::LessLessEqual)
+            | TokenKind::Operator(Operator::GreaterGreaterEqual)
+    )
+}
+
+fn partial_field_has_declarator(children: &[SyntaxElement]) -> bool {
+    let tokens = significant_declarator_tokens_in_elements(children);
+    let name_like_count = tokens
+        .iter()
+        .filter(|token| matches!(token.kind, TokenKind::Identifier | TokenKind::Keyword(_)))
+        .count();
+    let last_kind = tokens.last().map(|token| token.kind);
+
+    name_like_count >= 2
+        && matches!(
+            last_kind,
+            Some(TokenKind::Identifier | TokenKind::RightBracket)
+        )
+}
+
+fn significant_declarator_tokens_in_elements(children: &[SyntaxElement]) -> Vec<Token> {
+    let mut tokens = Vec::new();
+    for child in children {
+        collect_significant_declarator_tokens(child, &mut tokens);
+    }
+    tokens
+}
+
+fn collect_significant_declarator_tokens(element: &SyntaxElement, tokens: &mut Vec<Token>) {
+    match element {
+        SyntaxElement::Token(token)
+            if !token.kind.is_trivia() && token.kind != TokenKind::Semicolon =>
+        {
+            tokens.push(*token);
+        }
+        SyntaxElement::Node(node)
+            if !matches!(
+                node.kind,
+                SyntaxKind::AttributeList | SyntaxKind::ModifierList
+            ) =>
+        {
+            for child in &node.children {
+                collect_significant_declarator_tokens(child, tokens);
+            }
+        }
+        _ => {}
+    }
 }
 
 #[cfg(test)]
@@ -1822,7 +2097,10 @@ typedef map<ref Managed, ref Managed> TManagedRefManagedRefMap;
         assert_eq!(count_kind(&parse.root, SyntaxKind::AttributeArgs), 2);
         assert_eq!(count_kind(&parse.root, SyntaxKind::MethodDecl), 1);
         assert_eq!(count_kind(&parse.root, SyntaxKind::FieldDecl), 1);
-        assert_eq!(count_kind(&parse.root, SyntaxKind::InitializerList), 1);
+        assert_eq!(
+            count_kind(&parse.root, SyntaxKind::InitializerExpression),
+            1
+        );
         assert_eq!(count_kind(&parse.root, SyntaxKind::TypedefDecl), 1);
         assert_eq!(count_kind(&parse.root, SyntaxKind::ParameterList), 1);
     }
@@ -1844,10 +2122,12 @@ typedef map<ref Managed, ref Managed> TManagedRefManagedRefMap;
         assert_eq!(count_kind(&parse.root, SyntaxKind::MethodDecl), 4);
         assert_eq!(count_kind(&parse.root, SyntaxKind::ParameterList), 4);
         assert_eq!(count_kind(&parse.root, SyntaxKind::Parameter), 8);
+        assert!(count_kind(&parse.root, SyntaxKind::CallExpression) >= 1);
+        assert!(count_kind(&parse.root, SyntaxKind::MemberAccessExpression) >= 2);
     }
 
     #[test]
-    fn separates_field_initializer_lists_from_blocks() {
+    fn separates_field_initializer_expressions_from_blocks() {
         let source = r#"class Example
 {
 	protected ref array<int> m_aValues = {};
@@ -1862,8 +2142,28 @@ typedef map<ref Managed, ref Managed> TManagedRefManagedRefMap;
 
         assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
         assert_eq!(count_kind(&parse.root, SyntaxKind::FieldDecl), 2);
-        assert_eq!(count_kind(&parse.root, SyntaxKind::InitializerList), 2);
+        assert_eq!(
+            count_kind(&parse.root, SyntaxKind::InitializerExpression),
+            2
+        );
         assert_eq!(count_kind(&parse.root, SyntaxKind::Block), 2);
+    }
+
+    #[test]
+    fn parses_field_initializer_expressions() {
+        let source = r#"class Example
+{
+	ref SCR_BTParam<bool> m_Value = new SCR_BTParam<bool>(SCR_AIActionTask.WAYPOINT_RELATED_PORT);
+	int a = Math.Clamp(1, 2, 3), b = Other.Value;
+}
+"#;
+        let parse = parse_source(source);
+
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::FieldDecl), 2);
+        assert!(count_kind(&parse.root, SyntaxKind::NewExpression) >= 1);
+        assert!(count_kind(&parse.root, SyntaxKind::CallExpression) >= 1);
+        assert!(count_kind(&parse.root, SyntaxKind::MemberAccessExpression) >= 3);
     }
 
     #[test]
@@ -1879,7 +2179,10 @@ typedef map<ref Managed, ref Managed> TManagedRefManagedRefMap;
 
         assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
         assert_eq!(count_kind(&parse.root, SyntaxKind::FieldDecl), 2);
-        assert_eq!(count_kind(&parse.root, SyntaxKind::InitializerList), 1);
+        assert_eq!(
+            count_kind(&parse.root, SyntaxKind::InitializerExpression),
+            2
+        );
     }
 
     #[test]
@@ -1947,6 +2250,38 @@ class Example
     }
 
     #[test]
+    fn unterminated_field_stops_before_following_callable_member() {
+        let source = r#"class Example
+{
+	string m_Tag
+	void Example(string tag)
+	{
+		m_Tag = tag;
+	}
+
+	protected vector m_Target[4]
+
+	//-------------------------------------------------------------------------
+	//! Calculates the position.
+	protected void GetTarget(out vector target[4])
+	{
+		target = m_Target;
+	}
+
+	protected SCR_Component m_Component
+	protected bool m_bEnabled;
+}
+"#;
+
+        let parse = parse_source(source);
+
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::ClassDecl), 1);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::FieldDecl), 4);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::MethodDecl), 2);
+    }
+
+    #[test]
     fn preprocessor_invalid_branch_text_does_not_swallow_later_declarations() {
         let source = r#"#ifdef BREAK_COMPILATION
 	THIS DEFINE BREAKS GAME SCRIPT MODULE COMPILATION
@@ -1965,6 +2300,28 @@ ArmaReforgerScripted g_ARGame;
         assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
         assert_eq!(count_kind(&parse.root, SyntaxKind::ClassDecl), 1);
         assert_eq!(count_kind(&parse.root, SyntaxKind::FieldDecl), 1);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::Error), 1);
+    }
+
+    #[test]
+    fn invalid_top_level_text_does_not_swallow_following_class() {
+        let source = r#"class BeforeInvalid
+{
+	void Run();
+}
+
+this is not a valid declaration
+
+class AfterInvalid
+{
+	void Run();
+}
+"#;
+
+        let parse = parse_source(source);
+
+        assert_eq!(parse.diagnostics.len(), 1, "{:?}", parse.diagnostics);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::ClassDecl), 2);
         assert_eq!(count_kind(&parse.root, SyntaxKind::Error), 1);
     }
 
@@ -2046,6 +2403,44 @@ ArmaReforgerScripted g_ARGame;
             direct_child_node_count(for_initializer, SyntaxKind::LocalDeclStatement),
             0
         );
+    }
+
+    #[test]
+    fn compound_assignment_statements_are_not_local_declarations() {
+        let source = r#"class Example
+{
+	void Run()
+	{
+		string absPath;
+		addonsDir += absPath;
+		flags |= Flag.Enabled;
+	}
+}
+"#;
+
+        let parse = parse_source(source);
+
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::LocalDeclStatement), 1);
+        assert!(count_kind(&parse.root, SyntaxKind::AssignmentExpression) >= 2);
+    }
+
+    #[test]
+    fn parses_attribute_arguments_as_expressions() {
+        let source = r#"class Example
+{
+	[Attribute("", UIWidgets.ComboBox, desc: "Display", enums: ParamEnumArray.FromEnum(EExample))]
+	int value;
+}
+"#;
+
+        let parse = parse_source(source);
+
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::AttributeArgs), 1);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::NamedArgument), 2);
+        assert!(count_kind(&parse.root, SyntaxKind::MemberAccessExpression) >= 2);
+        assert!(count_kind(&parse.root, SyntaxKind::CallExpression) >= 1);
     }
 
     #[test]

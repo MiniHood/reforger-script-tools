@@ -10,7 +10,7 @@ This file sits above AST extraction and below future workspace indexing, semanti
 
 ## Current Behavior
 
-The model exposes `SymbolCatalog::from_ast()` for one source file. It produces source-backed `SymbolRecord` entries for classes, enums, enum members, typedefs, functions, global fields, class fields, methods, constructors, destructors, and parameters. Each record has a stable file-local `SymbolId`, optional parent ID, symbol kind, name span, declaration span, selection span, detail spans, attribute spans, modifier spans, raw leading doc-comment spans, preprocessor conditional context, and callable declaration form where relevant. Catalogs also carry `SourceFileMetadata` for file provenance: source kind, source category, optional absolute path, optional root path, optional relative path, and source priority. `SymbolCatalog::from_ast()` uses unknown metadata, while `from_ast_with_metadata()` lets callers provide game-data, workspace, or fixture identity.
+The model exposes `SymbolCatalog::from_ast()` for one source file. It produces source-backed `SymbolRecord` entries for classes, enums, enum members, typedefs, functions, global fields, class fields, methods, constructors, destructors, parameters, local variables, and `#define` preprocessor macro names. Each record has a stable file-local `SymbolId`, optional parent ID, symbol kind, name span, declaration span, selection span, detail spans, attribute spans, modifier spans, raw leading doc-comment spans, preprocessor conditional context, and callable declaration form where relevant. Catalogs also carry `SourceFileMetadata` for file provenance: source kind, source category, optional absolute path, optional root path, optional relative path, and source priority. `SymbolCatalog::from_ast()` uses unknown metadata, while `from_ast_with_metadata()` lets callers provide game-data, workspace, or fixture identity.
 
 Typedef symbols use `SymbolDetail::type_text` for the raw aliased type text, such as `string` in `typedef string FactionKey;`. Attribute storage remains span-only, while `SymbolCatalog::attribute_name()` and `record_attribute_names()` provide source-backed name views for reports and future tooling. `SymbolCatalog::type_shape()` and `record_type_shape()` derive source-backed `TypeShape` views with qualifiers, base names, generic arguments, and array suffixes without replacing raw type text or resolving symbols.
 
@@ -20,7 +20,7 @@ One parser `FieldDecl` can emit multiple field symbols when the source uses a co
 
 Source categories classify files as workspace, Game, GameCode, GameLib, Core, generated, Workbench, docs/Doxygen, test/autotest, or unknown. The default editor-completion policy includes workspace/runtime categories and excludes docs, tests, Workbench, and unknown source categories; raw index/debug paths still keep every symbol.
 
-Conditional context is descriptive only. It stores the visible `#if`, `#ifdef`, `#ifndef`, `#elif`, and `#else` branch stack around a symbol, including macro/expression text when it can be sliced from source. The model does not evaluate macros or choose active branches.
+Conditional context is descriptive only. It stores the visible `#if`, `#ifdef`, `#ifndef`, `#elif`, and `#else` branch stack around a symbol, including macro/expression text when it can be sliced from source. The model does not evaluate macros or choose active branches. `#define NAME` is also emitted as a top-level `PreprocessorMacro` source symbol for navigation/debug/coloring, but macro expansion and active-branch selection remain out of scope.
 
 Callable form is attached to functions, methods, constructors, and destructors. A callable with a body is an implementation, a semicolon form with `proto`, `native`, or `external` is a prototype, and a semicolon form without those markers is a declaration.
 
@@ -44,6 +44,7 @@ This file depends on the AST layer, lexer spans, and standard path types for opt
 - Added source categories, source-backed preprocessor conditional context, and callable declaration form metadata for index/query policy without filtering raw source facts.
 - Added comma-separated field-list expansion so each declarator becomes a separate field symbol with shared type text and local span.
 - Added `LocalVariable` records under containing callables for local declarations, `foreach` variables, and `for` initializer declarations.
+- Added top-level `PreprocessorMacro` records for source-backed `#define NAME` directives so preprocessor macro references can color as variable-like symbols and navigate to definitions when present.
 
 ## Future Improvements
 

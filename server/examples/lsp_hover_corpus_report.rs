@@ -21,6 +21,14 @@ const MAX_ROWS: usize = 100;
 const MAX_MISS_SAMPLES: usize = 75;
 const MAX_HIT_SAMPLES: usize = 75;
 const MAX_CLASSIFICATION_SAMPLES_PER_BUCKET: usize = 3;
+const ATTRIBUTE_NAMED_ARGUMENT: &str = "attribute named argument";
+const ATTRIBUTE_ENUM_STATIC_VALUE: &str = "attribute enum/static value";
+const PREPROCESSOR_DIRECTIVE_TOKEN: &str = "preprocessor directive token";
+const PREPROCESSOR_MACRO_TOKEN: &str = "preprocessor macro token";
+const CALL_NAMED_ARGUMENT_LABEL: &str = "call named argument label";
+const EXCLUDED_SOURCE: &str = "workbench/docs/test excluded source";
+const EXTERNAL_NATIVE_UNAVAILABLE: &str = "external/native unavailable";
+const UNCONSTRAINED_GENERIC_RECEIVER: &str = "unconstrained generic receiver";
 
 fn main() {
     if let Err(error) = run() {
@@ -93,6 +101,8 @@ fn run() -> Result<(), String> {
             identifier_samples: identifiers.len(),
             hits: 0,
             misses: 0,
+            non_hover_misses: 0,
+            actionable_misses: 0,
             unresolved_misses: 0,
             parse_diagnostics: reports
                 .first()
@@ -200,6 +210,13 @@ fn run() -> Result<(), String> {
                 *miss_classification_counts
                     .entry(sample_row.miss_classification.clone())
                     .or_default() += 1;
+                if is_non_hover_miss_classification(&sample_row.miss_classification) {
+                    row.non_hover_misses += 1;
+                    totals.non_hover_misses += 1;
+                } else {
+                    row.actionable_misses += 1;
+                    totals.actionable_misses += 1;
+                }
                 let bucket = miss_classification_samples
                     .entry(sample_row.miss_classification.clone())
                     .or_default();
@@ -313,6 +330,8 @@ struct Totals {
     file_local_hits: usize,
     external_hits: usize,
     misses: usize,
+    non_hover_misses: usize,
+    actionable_misses: usize,
     unresolved_misses: usize,
     parse_diagnostics: usize,
 }
@@ -324,6 +343,8 @@ struct FileRow {
     identifier_samples: usize,
     hits: usize,
     misses: usize,
+    non_hover_misses: usize,
+    actionable_misses: usize,
     unresolved_misses: usize,
     parse_diagnostics: usize,
     elapsed_ms: u128,
@@ -371,15 +392,18 @@ impl SampleRow {
             (Some(kind), Some(label)) => format!("{} `{}`", symbol_kind_label(*kind), label),
             _ => "<none>".to_string(),
         };
-        let snippet = source_line(source, position.line);
+        let (line_text, token_index) = source_line_at_offset(source, sample.span.start);
+        let snippet = display_source_line(&line_text);
         let miss_classification = classify_miss(
+            path,
             report,
             &sample.token,
             &reason,
             &context,
             &receiver_owner,
             &receiver_failure,
-            &snippet,
+            &line_text,
+            token_index,
         );
         Self {
             path: path.to_string(),
@@ -401,51 +425,105 @@ impl SampleRow {
 }
 
 fn classify_miss(
+    path: &str,
     report: &LspHoverReport,
     token: &str,
     reason: &str,
     context: &str,
     receiver_owner: &str,
     receiver_failure: &str,
-    snippet: &str,
+    line_text: &str,
+    token_index: usize,
 ) -> String {
     if report.is_hit() {
         return "<hit>".to_string();
     }
 
-    if is_preprocessor_token(token, snippet) {
-        return "preprocessor directive token".to_string();
+    if reason == "preprocessor-directive" {
+        return PREPROCESSOR_DIRECTIVE_TOKEN.to_string();
     }
 
-    if is_attribute_named_argument(token, snippet) {
-        return "attribute named argument".to_string();
+    if reason == "preprocessor-macro" {
+        return PREPROCESSOR_MACRO_TOKEN.to_string();
     }
 
-    if is_call_named_argument_label(token, snippet) {
-        return "call named argument label".to_string();
+    if reason == "attribute-named-argument" {
+        return ATTRIBUTE_NAMED_ARGUMENT.to_string();
+    }
+
+    if reason == "named-argument-label" {
+        if is_attribute_named_argument(line_text, token_index, token) {
+            return ATTRIBUTE_NAMED_ARGUMENT.to_string();
+        }
+        return CALL_NAMED_ARGUMENT_LABEL.to_string();
+    }
+
+    if is_preprocessor_token(token, line_text) {
+        return PREPROCESSOR_DIRECTIVE_TOKEN.to_string();
+    }
+
+    if is_preprocessor_macro_token(token) {
+        return PREPROCESSOR_MACRO_TOKEN.to_string();
+    }
+
+    if is_attribute_named_argument(line_text, token_index, token) {
+        return ATTRIBUTE_NAMED_ARGUMENT.to_string();
+    }
+
+    if is_call_named_argument_label(line_text, token_index, token) {
+        return CALL_NAMED_ARGUMENT_LABEL.to_string();
+    }
+
+    if is_attribute_value_expression(line_text, token_index) {
+        return ATTRIBUTE_ENUM_STATIC_VALUE.to_string();
+    }
+
+    if is_excluded_source_path(path) {
+        return EXCLUDED_SOURCE.to_string();
+    }
+
+    if is_external_native_unavailable(token, line_text, receiver_failure) {
+        return EXTERNAL_NATIVE_UNAVAILABLE.to_string();
     }
 
     if context == "member-access" {
+        if is_unconstrained_generic_receiver(receiver_owner) {
+            return UNCONSTRAINED_GENERIC_RECEIVER.to_string();
+        }
         if is_invoker_like(receiver_owner, receiver_failure) {
             return "invoker/delegate member".to_string();
         }
-        if is_indexed_receiver(snippet, token) {
+        if is_indexed_receiver(line_text, token_index) {
             return "indexed receiver".to_string();
         }
         if is_pseudo_or_primitive_member(receiver_owner, token) {
             return "pseudo/primitive member".to_string();
         }
-        if is_field_chain_receiver(snippet, token) {
+        if is_field_chain_receiver(line_text, token_index) {
             return "field-chain receiver".to_string();
         }
         return "receiver unresolved".to_string();
     }
 
-    if reason == "unresolved" && looks_like_call(token, snippet) {
+    if reason == "unresolved" && looks_like_call(line_text, token_index, token) {
         return "unqualified inherited member".to_string();
     }
 
     "unknown unresolved".to_string()
+}
+
+fn is_non_hover_miss_classification(classification: &str) -> bool {
+    matches!(
+        classification,
+        ATTRIBUTE_NAMED_ARGUMENT
+            | ATTRIBUTE_ENUM_STATIC_VALUE
+            | PREPROCESSOR_DIRECTIVE_TOKEN
+            | PREPROCESSOR_MACRO_TOKEN
+            | CALL_NAMED_ARGUMENT_LABEL
+            | EXCLUDED_SOURCE
+            | EXTERNAL_NATIVE_UNAVAILABLE
+            | UNCONSTRAINED_GENERIC_RECEIVER
+    )
 }
 
 fn is_preprocessor_token(token: &str, snippet: &str) -> bool {
@@ -455,31 +533,98 @@ fn is_preprocessor_token(token: &str, snippet: &str) -> bool {
     ) || snippet.trim_start().starts_with('#')
 }
 
-fn is_attribute_named_argument(token: &str, snippet: &str) -> bool {
-    let Some(token_index) = snippet.find(token) else {
+fn is_preprocessor_macro_token(token: &str) -> bool {
+    matches!(
+        token,
+        "__FILE__" | "__LINE__" | "__FUNC__" | "__DATE__" | "__TIME__"
+    )
+}
+
+fn is_attribute_named_argument(line_text: &str, token_index: usize, token: &str) -> bool {
+    if token_index > line_text.len() || token_index + token.len() > line_text.len() {
         return false;
-    };
-    let before = &snippet[..token_index];
-    let after = &snippet[token_index + token.len()..];
+    }
+    let before = &line_text[..token_index];
+    let after = &line_text[token_index + token.len()..];
     before.rfind('[').is_some_and(|open| {
         before[open..].find(']').is_none() && after.trim_start().starts_with(':')
     })
 }
 
-fn is_call_named_argument_label(token: &str, snippet: &str) -> bool {
-    let Some(token_index) = snippet.find(token) else {
+fn is_call_named_argument_label(line_text: &str, token_index: usize, token: &str) -> bool {
+    if token_index > line_text.len() || token_index + token.len() > line_text.len() {
         return false;
-    };
-    let before = &snippet[..token_index];
-    let after = &snippet[token_index + token.len()..];
+    }
+    let before = &line_text[..token_index];
+    let after = &line_text[token_index + token.len()..];
     if !after.trim_start().starts_with(':') {
         return false;
     }
-    let Some(open_paren) = before.rfind('(') else {
+    if before.trim().is_empty() {
+        return true;
+    }
+    has_unclosed_paren_before(before) || before.contains(',')
+}
+
+fn has_unclosed_paren_before(text: &str) -> bool {
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for ch in text.chars() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => in_string = true,
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+
+    depth > 0
+}
+
+fn is_attribute_value_expression(line_text: &str, token_index: usize) -> bool {
+    if token_index > line_text.len() {
         return false;
-    };
-    let last_close = before.rfind(')');
-    last_close.is_none_or(|close| close < open_paren)
+    }
+    let before = &line_text[..token_index];
+    before
+        .rfind('[')
+        .is_some_and(|open| before[open..].find(']').is_none())
+}
+
+fn is_excluded_source_path(path: &str) -> bool {
+    let normalized = path.replace('\\', "/").to_ascii_lowercase();
+    normalized.contains("/workbench")
+        || normalized.starts_with("workbench")
+        || normalized.contains("/docs/")
+        || normalized.contains("/doxygen/")
+        || normalized.ends_with("rpldocs.c")
+        || normalized.contains("/autotest/")
+        || normalized.starts_with("autotest/")
+        || normalized.contains("/test/")
+        || normalized.starts_with("test/")
+}
+
+fn is_external_native_unavailable(token: &str, line_text: &str, receiver_failure: &str) -> bool {
+    token == "AddDamage"
+        || receiver_failure.contains("`AddDamage`")
+        || line_text.contains(".AddDamage(")
+}
+
+fn is_unconstrained_generic_receiver(receiver_owner: &str) -> bool {
+    matches!(receiver_owner, "OWNER_TYPE" | "T")
 }
 
 fn is_invoker_like(receiver_owner: &str, receiver_failure: &str) -> bool {
@@ -490,11 +635,11 @@ fn is_invoker_like(receiver_owner: &str, receiver_failure: &str) -> bool {
             .any(|member| receiver_failure.contains(&format!("`{member}`")))
 }
 
-fn is_indexed_receiver(snippet: &str, token: &str) -> bool {
-    snippet.find(token).is_some_and(|index| {
-        let before = &snippet[..index];
-        before.contains("].")
-    })
+fn is_indexed_receiver(line_text: &str, token_index: usize) -> bool {
+    if token_index > line_text.len() {
+        return false;
+    }
+    line_text[..token_index].contains("].")
 }
 
 fn is_pseudo_or_primitive_member(receiver_owner: &str, token: &str) -> bool {
@@ -504,17 +649,20 @@ fn is_pseudo_or_primitive_member(receiver_owner: &str, token: &str) -> bool {
     ) || matches!(token, "ToString" | "Type" | "ClassName" | "IsInherited")
 }
 
-fn is_field_chain_receiver(snippet: &str, token: &str) -> bool {
-    snippet.find(token).is_some_and(|index| {
-        let before = &snippet[..index];
-        before.matches('.').count() >= 2
-    })
+fn is_field_chain_receiver(line_text: &str, token_index: usize) -> bool {
+    if token_index > line_text.len() {
+        return false;
+    }
+    line_text[..token_index].matches('.').count() >= 2
 }
 
-fn looks_like_call(token: &str, snippet: &str) -> bool {
-    snippet
-        .find(token)
-        .is_some_and(|index| snippet[index + token.len()..].trim_start().starts_with('('))
+fn looks_like_call(line_text: &str, token_index: usize, token: &str) -> bool {
+    if token_index > line_text.len() || token_index + token.len() > line_text.len() {
+        return false;
+    }
+    line_text[token_index + token.len()..]
+        .trim_start()
+        .starts_with('(')
 }
 
 fn render_report(
@@ -579,6 +727,7 @@ fn render_report(
         selected_source_counts,
     );
     append_counts(&mut report, "Selected Kind Frequency", kind_counts);
+    append_top_actionable_files(&mut report, file_rows);
     append_top_files(&mut report, file_rows);
     append_samples(&mut report, "Miss Samples", miss_samples);
     append_samples(&mut report, "Hit Samples", hit_samples);
@@ -596,6 +745,10 @@ fn render_report(
 
 fn append_summary(report: &mut String, totals: &Totals) {
     let hit_rate = percentage(totals.hits, totals.identifier_samples);
+    let actionable_samples = totals
+        .identifier_samples
+        .saturating_sub(totals.non_hover_misses);
+    let actionable_hit_rate = percentage(totals.hits, actionable_samples);
     writeln!(report, "## Summary").unwrap();
     writeln!(report).unwrap();
     writeln!(report, "| Metric | Value |").unwrap();
@@ -617,7 +770,31 @@ fn append_summary(report: &mut String, totals: &Totals) {
     .unwrap();
     writeln!(report, "| External hover hits | {} |", totals.external_hits).unwrap();
     writeln!(report, "| Hover misses | {} |", totals.misses).unwrap();
-    writeln!(report, "| Hit rate | {:.2}% |", hit_rate).unwrap();
+    writeln!(report, "| Raw hit rate | {:.2}% |", hit_rate).unwrap();
+    writeln!(
+        report,
+        "| Non-hover/source-noise misses | {} |",
+        totals.non_hover_misses
+    )
+    .unwrap();
+    writeln!(
+        report,
+        "| Actionable hover samples | {} |",
+        actionable_samples
+    )
+    .unwrap();
+    writeln!(
+        report,
+        "| Actionable hover misses | {} |",
+        totals.actionable_misses
+    )
+    .unwrap();
+    writeln!(
+        report,
+        "| Actionable hover hit rate | {:.2}% |",
+        actionable_hit_rate
+    )
+    .unwrap();
     writeln!(
         report,
         "| Unresolved misses | {} |",
@@ -723,12 +900,12 @@ fn append_top_files(report: &mut String, rows: &[FileRow]) {
     writeln!(report).unwrap();
     writeln!(
         report,
-        "| File | Bytes | Samples | Hits | Misses | Unresolved | Parse diagnostics | Elapsed ms |"
+        "| File | Bytes | Samples | Hits | Misses | Non-hover/source-noise | Actionable misses | Unresolved | Parse diagnostics | Elapsed ms |"
     )
     .unwrap();
     writeln!(
         report,
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
     )
     .unwrap();
     for row in by_misses.into_iter().take(MAX_ROWS) {
@@ -737,13 +914,64 @@ fn append_top_files(report: &mut String, rows: &[FileRow]) {
         }
         writeln!(
             report,
-            "| `{}` | {} | {} | {} | {} | {} | {} | {} |",
+            "| `{}` | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
             escape_table(&row.path),
             row.bytes,
             row.identifier_samples,
             row.hits,
             row.misses,
+            row.non_hover_misses,
+            row.actionable_misses,
             row.unresolved_misses,
+            row.parse_diagnostics,
+            row.elapsed_ms
+        )
+        .unwrap();
+    }
+    writeln!(report).unwrap();
+}
+
+fn append_top_actionable_files(report: &mut String, rows: &[FileRow]) {
+    let mut by_actionable = rows.to_vec();
+    by_actionable.sort_by(|left, right| {
+        right
+            .actionable_misses
+            .cmp(&left.actionable_misses)
+            .then_with(|| right.misses.cmp(&left.misses))
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    writeln!(report, "## Top Files By Actionable Hover Misses").unwrap();
+    writeln!(report).unwrap();
+    writeln!(
+        report,
+        "This excludes sampled misses classified as attribute labels/values, preprocessor tokens, named call labels, Workbench/docs/test source noise, unavailable native/API declarations, or unconstrained generic receivers."
+    )
+    .unwrap();
+    writeln!(report).unwrap();
+    writeln!(
+        report,
+        "| File | Bytes | Samples | Hits | Actionable misses | Non-hover/source-noise | Raw misses | Parse diagnostics | Elapsed ms |"
+    )
+    .unwrap();
+    writeln!(
+        report,
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
+    )
+    .unwrap();
+    for row in by_actionable.into_iter().take(MAX_ROWS) {
+        if row.actionable_misses == 0 {
+            continue;
+        }
+        writeln!(
+            report,
+            "| `{}` | {} | {} | {} | {} | {} | {} | {} | {} |",
+            escape_table(&row.path),
+            row.bytes,
+            row.identifier_samples,
+            row.hits,
+            row.actionable_misses,
+            row.non_hover_misses,
+            row.misses,
             row.parse_diagnostics,
             row.elapsed_ms
         )
@@ -920,15 +1148,20 @@ fn percentage(value: usize, total: usize) -> f64 {
     }
 }
 
-fn source_line(source: &str, line: u32) -> String {
-    source
-        .lines()
-        .nth(line as usize)
-        .unwrap_or_default()
-        .trim()
-        .chars()
-        .take(180)
-        .collect()
+fn source_line_at_offset(source: &str, offset: usize) -> (String, usize) {
+    let line_start = source[..offset].rfind('\n').map_or(0, |index| index + 1);
+    let line_end = source[offset..]
+        .find('\n')
+        .map_or(source.len(), |index| offset + index);
+    let line = source[line_start..line_end]
+        .trim_end_matches('\r')
+        .to_string();
+    let token_index = offset.saturating_sub(line_start).min(line.len());
+    (line, token_index)
+}
+
+fn display_source_line(line: &str) -> String {
+    line.trim().chars().take(180).collect()
 }
 
 fn default_scripts_path() -> PathBuf {

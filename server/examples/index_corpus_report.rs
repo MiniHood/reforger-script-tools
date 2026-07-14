@@ -2273,6 +2273,7 @@ fn sorted_counts(counts: &BTreeMap<String, usize>) -> Vec<(String, usize)> {
 fn kind_name(kind: SymbolKind) -> &'static str {
     match kind {
         SymbolKind::Class => "Class",
+        SymbolKind::TypeParameter => "TypeParameter",
         SymbolKind::Enum => "Enum",
         SymbolKind::EnumMember => "EnumMember",
         SymbolKind::Typedef => "Typedef",
@@ -2284,6 +2285,7 @@ fn kind_name(kind: SymbolKind) -> &'static str {
         SymbolKind::Destructor => "Destructor",
         SymbolKind::Parameter => "Parameter",
         SymbolKind::LocalVariable => "LocalVariable",
+        SymbolKind::PreprocessorMacro => "PreprocessorMacro",
     }
 }
 

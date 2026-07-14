@@ -10,12 +10,20 @@ import {
 	languageClientIds,
 	languageClientLanguage,
 	languageClientLogs,
+	languageClientNotifications,
 	languageClientRequests,
 	languageClientServer,
 } from '../extensionConfig/languageClient';
 import { getManualScriptsFolderCandidate } from '../gameData/gameData';
 
 let client: LanguageClient | undefined;
+let clientDisposables: vscode.Disposable[] = [];
+let devServerWatcher: vscode.FileSystemWatcher | undefined;
+let watchedDevServerPath: string | undefined;
+let restartTimer: NodeJS.Timeout | undefined;
+let restartingClient = false;
+const workspaceWatcherDebounceMs = 250;
+const devServerRestartDebounceMs = 500;
 
 export function registerLanguageClientFeatures(context: vscode.ExtensionContext): void {
 	const outputChannel = vscode.window.createOutputChannel(languageClientIds.name, { log: true });
@@ -31,6 +39,13 @@ export function registerLanguageClientFeatures(context: vscode.ExtensionContext)
 }
 
 export async function deactivateLanguageClient(): Promise<void> {
+	disposeClientDisposables();
+	devServerWatcher?.dispose();
+	devServerWatcher = undefined;
+	if (restartTimer) {
+		clearTimeout(restartTimer);
+		restartTimer = undefined;
+	}
 	const activeClient = client;
 	client = undefined;
 	if (activeClient) {
@@ -47,6 +62,7 @@ async function startLanguageClient(
 		outputChannel.appendLine('Language server binary was not found. Run npm run build-server during development.');
 		return;
 	}
+	registerDevelopmentServerWatcher(context, serverPath, outputChannel);
 
 	const logsRoot = path.join(context.globalStorageUri.fsPath, languageClientLogs.rootFolder);
 	await fs.mkdir(logsRoot, { recursive: true });
@@ -63,6 +79,10 @@ async function startLanguageClient(
 	}
 	if (gameDataPaths.metadata) {
 		serverArgs.push('--game-data-metadata', gameDataPaths.metadata);
+	}
+	const workspaceScriptRoots = await discoverWorkspaceScriptRoots();
+	for (const root of workspaceScriptRoots) {
+		serverArgs.push('--workspace-scripts', root);
 	}
 
 	const serverOptions: ServerOptions = {
@@ -93,11 +113,180 @@ async function startLanguageClient(
 	try {
 		await client.start();
 		outputChannel.appendLine(`Language server started: ${serverPath}`);
+		if (workspaceScriptRoots.length > 0) {
+			outputChannel.appendLine(`Workspace script roots: ${workspaceScriptRoots.join('; ')}`);
+		}
+		clientDisposables.push(...registerWorkspaceScriptWatchers(context, client, outputChannel));
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		outputChannel.appendLine(`Language server failed to start: ${message}`);
 		vscode.window.showWarningMessage(`Reforger language server failed to start: ${message}`);
 	}
+}
+
+function registerDevelopmentServerWatcher(
+	context: vscode.ExtensionContext,
+	serverPath: string,
+	outputChannel: vscode.LogOutputChannel,
+): void {
+	if (context.extensionMode !== vscode.ExtensionMode.Development) {
+		return;
+	}
+
+	const devPath = path.join(context.extensionPath, ...languageClientServer.devBinaryRelativePath);
+	if (path.normalize(serverPath) !== path.normalize(devPath)) {
+		return;
+	}
+	if (watchedDevServerPath === devPath && devServerWatcher) {
+		return;
+	}
+
+	devServerWatcher?.dispose();
+	watchedDevServerPath = devPath;
+
+	const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(
+		path.dirname(devPath),
+		path.basename(devPath),
+	));
+	const scheduleRestart = (): void => {
+		if (restartTimer) {
+			clearTimeout(restartTimer);
+		}
+		restartTimer = setTimeout(() => {
+			restartTimer = undefined;
+			void restartLanguageClient(context, outputChannel, 'development language-server binary changed');
+		}, devServerRestartDebounceMs);
+	};
+
+	context.subscriptions.push(
+		watcher,
+		watcher.onDidCreate(scheduleRestart),
+		watcher.onDidChange(scheduleRestart),
+	);
+	devServerWatcher = watcher;
+}
+
+async function restartLanguageClient(
+	context: vscode.ExtensionContext,
+	outputChannel: vscode.LogOutputChannel,
+	reason: string,
+): Promise<void> {
+	if (restartingClient) {
+		return;
+	}
+
+	restartingClient = true;
+	outputChannel.appendLine(`Restarting language server: ${reason}`);
+	disposeClientDisposables();
+	const activeClient = client;
+	client = undefined;
+	try {
+		if (activeClient) {
+			await activeClient.stop();
+		}
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		outputChannel.appendLine(`Language server stop during restart reported: ${message}`);
+	}
+
+	try {
+		await startLanguageClient(context, outputChannel);
+	} finally {
+		restartingClient = false;
+	}
+}
+
+async function discoverWorkspaceScriptRoots(): Promise<string[]> {
+	const folders = vscode.workspace.workspaceFolders ?? [];
+	const roots = new Set<string>();
+
+	for (const folder of folders) {
+		const folderPath = folder.uri.fsPath;
+		const folderName = path.basename(folderPath).toLowerCase();
+		if (folderName === 'scripts') {
+			roots.add(folderPath);
+			continue;
+		}
+
+		for (const childName of ['Scripts', 'scripts']) {
+			const candidate = path.join(folderPath, childName);
+			if (await isDirectory(candidate)) {
+				roots.add(candidate);
+			}
+		}
+	}
+
+	return [...roots].sort();
+}
+
+function registerWorkspaceScriptWatchers(
+	context: vscode.ExtensionContext,
+	activeClient: LanguageClient,
+	outputChannel: vscode.LogOutputChannel,
+): vscode.Disposable[] {
+	const folders = vscode.workspace.workspaceFolders ?? [];
+	if (folders.length === 0) {
+		return [];
+	}
+
+	const disposables: vscode.Disposable[] = [];
+	const pending = new Map<string, 'changed' | 'deleted'>();
+	let timer: NodeJS.Timeout | undefined;
+
+	const flush = (): void => {
+		const entries = [...pending.entries()];
+		pending.clear();
+		timer = undefined;
+		void Promise.all(entries.map(async ([filePath, kind]) => {
+			if (kind === 'deleted') {
+				activeClient.sendNotification(languageClientNotifications.workspaceFileDeleted, { path: filePath });
+				return;
+			}
+
+			try {
+				const text = await fs.readFile(filePath, 'utf8');
+				activeClient.sendNotification(languageClientNotifications.workspaceFileChanged, { path: filePath, text });
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				outputChannel.debug(`Workspace script change skipped for ${filePath}: ${message}`);
+			}
+		}));
+	};
+
+	const schedule = (uri: vscode.Uri, kind: 'changed' | 'deleted'): void => {
+		if (uri.scheme !== 'file') {
+			return;
+		}
+		pending.set(uri.fsPath, kind);
+		if (timer) {
+			clearTimeout(timer);
+		}
+		timer = setTimeout(flush, workspaceWatcherDebounceMs);
+	};
+
+	for (const folder of folders) {
+		const folderName = path.basename(folder.uri.fsPath).toLowerCase();
+		const pattern = new vscode.RelativePattern(
+			folder,
+			folderName === 'scripts' ? '**/*.c' : '**/{Scripts,scripts}/**/*.c',
+		);
+		const watcher = vscode.workspace.createFileSystemWatcher(pattern);
+		disposables.push(
+			watcher,
+			watcher.onDidCreate(uri => schedule(uri, 'changed')),
+			watcher.onDidChange(uri => schedule(uri, 'changed')),
+			watcher.onDidDelete(uri => schedule(uri, 'deleted')),
+		);
+	}
+
+	return disposables;
+}
+
+function disposeClientDisposables(): void {
+	for (const disposable of clientDisposables) {
+		disposable.dispose();
+	}
+	clientDisposables = [];
 }
 
 async function resolveServerPath(context: vscode.ExtensionContext): Promise<string | undefined> {
@@ -226,6 +415,14 @@ function getGameDataPaths(context: vscode.ExtensionContext): { scripts: string |
 async function isFile(targetPath: string): Promise<boolean> {
 	try {
 		return (await fs.stat(targetPath)).isFile();
+	} catch {
+		return false;
+	}
+}
+
+async function isDirectory(targetPath: string): Promise<boolean> {
+	try {
+		return (await fs.stat(targetPath)).isDirectory();
 	} catch {
 		return false;
 	}

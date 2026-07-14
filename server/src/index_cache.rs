@@ -8,7 +8,7 @@ use std::io::{BufReader, BufWriter};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
-const CACHE_FORMAT_VERSION: u32 = 4;
+const CACHE_FORMAT_VERSION: u32 = 6;
 const CACHE_SCHEMA: &str = "reforger-symbol-index";
 
 #[derive(Debug)]
@@ -37,7 +37,7 @@ pub struct IndexCacheTimings {
     pub total: Duration,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RuntimeIndexSummary {
     pub files: usize,
     pub bytes: usize,
@@ -497,7 +497,7 @@ mod tests {
         assert!(second.timings.total > std::time::Duration::ZERO);
         assert!(second.cache_file_bytes.unwrap_or_default() > 0);
         let cache_json = fs::read_to_string(&cache).unwrap();
-        assert!(cache_json.contains("\"format_version\":4"));
+        assert!(cache_json.contains("\"format_version\":6"));
         assert!(!cache_json.contains("\"by_name\""));
         assert!(!cache_json.contains("\"methods_by_owner_name\""));
 
@@ -637,7 +637,7 @@ mod tests {
     }
 
     #[test]
-    fn v4_cache_load_rebuilds_lookup_maps_from_files_and_symbols() {
+    fn v6_cache_load_rebuilds_lookup_maps_from_files_and_symbols() {
         let root = test_root("rebuild_maps");
         let cache = root.join("cache.json");
         let scripts = root.join("scripts");
@@ -715,6 +715,72 @@ class Example : BaseExample
     }
 
     #[test]
+    fn cache_load_preserves_multi_file_symbol_ranges() {
+        let root = test_root("multi_file_ranges");
+        let cache = root.join("cache.json");
+        let scripts = root.join("scripts");
+        let metadata = root.join("metadata.json");
+        write_file(
+            &scripts.join("Game/First.c"),
+            r#"class First
+{
+	void Run()
+	{
+		int localValue;
+	}
+}
+"#,
+        );
+        write_file(
+            &scripts.join("Game/generated/GameMode/BaseGameMode.c"),
+            r#"class GenericEntityClass {}
+
+class BaseGameModeClass : GenericEntityClass
+{
+}
+"#,
+        );
+        write_file(&metadata, r#"{"commitSha":"abc123"}"#);
+
+        let _ = load_or_build_game_data_index(&GameDataIndexCacheConfig {
+            scripts_root: scripts.clone(),
+            cache_path: cache.clone(),
+            metadata_path: Some(metadata.clone()),
+        })
+        .unwrap();
+
+        let loaded = load_or_build_game_data_index(&GameDataIndexCacheConfig {
+            scripts_root: scripts,
+            cache_path: cache,
+            metadata_path: Some(metadata),
+        })
+        .unwrap();
+
+        assert_eq!(loaded.cache_status, IndexCacheStatus::Loaded);
+        assert!(loaded
+            .index
+            .symbols_for_kind(SymbolKind::LocalVariable)
+            .is_empty());
+
+        let base_class_ids = loaded.index.classes_by_name("BaseGameModeClass");
+        assert_eq!(base_class_ids.len(), 1);
+        let base_class = loaded.index.symbol(base_class_ids[0]).unwrap();
+        assert_eq!(base_class.name.as_deref(), Some("BaseGameModeClass"));
+        assert_eq!(base_class.kind, SymbolKind::Class);
+        assert_eq!(
+            base_class.detail.base_type.as_deref(),
+            Some("GenericEntityClass")
+        );
+
+        let generic_class_ids = loaded.index.classes_by_name("GenericEntityClass");
+        assert_eq!(generic_class_ids.len(), 1);
+        let generic_class = loaded.index.symbol(generic_class_ids[0]).unwrap();
+        assert_eq!(generic_class.name.as_deref(), Some("GenericEntityClass"));
+
+        cleanup(&root);
+    }
+
+    #[test]
     fn cache_rebuilds_when_format_version_is_stale() {
         let root = test_root("format_version");
         let cache = root.join("cache.json");
@@ -730,7 +796,7 @@ class Example : BaseExample
 
         let stale = fs::read_to_string(&cache)
             .unwrap()
-            .replace("\"format_version\":3", "\"format_version\":2");
+            .replace("\"format_version\":6", "\"format_version\":5");
         write_file(&cache, &stale);
 
         let rebuilt = load_or_build_game_data_index(&GameDataIndexCacheConfig {

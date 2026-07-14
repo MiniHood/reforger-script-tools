@@ -35,9 +35,14 @@ fn parse_args() -> LspServerOptions {
                     options.index_cache = Some(PathBuf::from(value));
                 }
             }
+            "--workspace-scripts" => {
+                if let Some(value) = args.next() {
+                    options.workspace_scripts.push(PathBuf::from(value));
+                }
+            }
             "--help" | "-h" => {
                 println!(
-                    "Usage: reforger_language_server [--log <path>] [--game-data-scripts <path>] [--game-data-metadata <path>] [--index-cache <path>]"
+                    "Usage: reforger_language_server [--log <path>] [--game-data-scripts <path>] [--game-data-metadata <path>] [--index-cache <path>] [--workspace-scripts <path>]..."
                 );
                 std::process::exit(0);
             }

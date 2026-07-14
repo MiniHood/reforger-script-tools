@@ -76,11 +76,13 @@ fn symbol_display_detail(index: &SymbolIndex, id: GlobalSymbolId) -> Option<Stri
         SymbolKind::EnumMember => {
             prefixed_detail("value", symbol.detail.enum_value_text.as_deref())
         }
-        SymbolKind::Typedef
+        SymbolKind::TypeParameter
+        | SymbolKind::Typedef
         | SymbolKind::GlobalField
         | SymbolKind::Field
         | SymbolKind::Parameter
-        | SymbolKind::LocalVariable => {
+        | SymbolKind::LocalVariable
+        | SymbolKind::PreprocessorMacro => {
             let mut parts = Vec::new();
             push_prefixed(&mut parts, "type", symbol.detail.type_text.as_deref());
             push_prefixed(&mut parts, "default", symbol.detail.default_text.as_deref());

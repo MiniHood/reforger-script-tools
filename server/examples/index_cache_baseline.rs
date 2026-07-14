@@ -358,20 +358,20 @@ fn append_structural_optimization(
     let v2_style_bytes = serde_json::to_vec(&v2_style)
         .map(|bytes| bytes.len() as u64)
         .unwrap_or(0);
-    let v3_bytes = existing_cache.cache_file_bytes.unwrap_or(0);
-    let v3_detail_spans = detail_span_count(&existing_cache.index);
+    let v6_bytes = existing_cache.cache_file_bytes.unwrap_or(0);
+    let v6_detail_spans = detail_span_count(&existing_cache.index);
     let full_detail_spans = detail_span_count(&direct.index);
-    let saved = v2_style_bytes.saturating_sub(v3_bytes);
+    let saved = v2_style_bytes.saturating_sub(v6_bytes);
 
     report.push_str("## Runtime Cache Structural Optimization\n\n");
-    report.push_str("V3 persists cache metadata plus files/symbols only, strips source-only detail spans, removes external local variables, and rebuilds lookup maps after load. The v2-style estimate serializes the runtime-pruned index with derived maps still present.\n\n");
+    report.push_str("V6 persists cache metadata plus files/symbols only, strips source-only detail spans, removes external local variables, and rebuilds lookup maps after load. The v2-style estimate serializes the runtime-pruned index with derived maps still present.\n\n");
     report.push_str("| Metric | Value |\n");
     report.push_str("| --- | ---: |\n");
     report.push_str(&format!(
         "| V2-style full-map runtime JSON estimate | {} |\n",
         v2_style_bytes
     ));
-    report.push_str(&format!("| V3 actual cache file bytes | {} |\n", v3_bytes));
+    report.push_str(&format!("| V6 actual cache file bytes | {} |\n", v6_bytes));
     report.push_str(&format!("| Estimated bytes saved | {} |\n", saved));
     report.push_str(&format!(
         "| Estimated size reduction | {} |\n",
@@ -382,8 +382,8 @@ fn append_structural_optimization(
         full_detail_spans
     ));
     report.push_str(&format!(
-        "| V3 cached detail span fields | {} |\n",
-        v3_detail_spans
+        "| V6 cached detail span fields | {} |\n",
+        v6_detail_spans
     ));
     report.push_str(&format!("| Lookup maps persisted | {} |\n", yes_no(false)));
     report.push_str(&format!(
@@ -590,7 +590,7 @@ fn default_metadata_path(scripts_path: &Path) -> Option<PathBuf> {
 }
 
 fn default_cache_path() -> PathBuf {
-    default_storage_root().join("index-cache/game-data-symbol-index.v3.json")
+    default_storage_root().join("index-cache/game-data-symbol-index.v6.json")
 }
 
 fn default_storage_root() -> PathBuf {

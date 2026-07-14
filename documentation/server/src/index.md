@@ -10,7 +10,7 @@ This file sits above the model layer and below future semantic resolution, diagn
 
 ## Current Behavior
 
-The index exposes `SymbolIndex::from_catalogs()` and `add_catalog()` for building an in-memory index from model catalogs. It assigns each catalog a `SourceFileId` and represents global symbols as `{ file_id, symbol_id }`, keeping `SymbolId` file-local. It stores compact copied lookup and presentation facts, including names, detail text and detail spans, modifier text, raw attribute text and names, raw doc comments, conditional context summaries, and callable form metadata, so lookup and display results remain usable without re-slicing source text.
+The index exposes `SymbolIndex::from_catalogs()` and `add_catalog()` for building an in-memory index from model catalogs. It assigns each catalog a `SourceFileId` and represents global symbols as `{ file_id, symbol_id }`, keeping `SymbolId` file-local. It stores compact copied lookup and presentation facts, including names, detail text and detail spans, modifier text, raw attribute text and names, raw doc comments, conditional context summaries, preprocessor macro names, and callable form metadata, so lookup and display results remain usable without re-slicing source text.
 
 `SymbolIndex::from_indexed_parts()` exists for cache loading and other trusted reconstruction paths. It accepts already-copied file and symbol records, then rebuilds all derived lookup maps from those records. Callers should use this instead of persisting or manually reconstructing lookup maps.
 
@@ -18,9 +18,11 @@ The index can answer all-symbol name lookup, top-level name lookup, all-symbol p
 
 Source-root scanning, file reading, metadata creation, parser/AST/model catalog construction, and index population are owned by `server/src/index_build.rs`. Runtime game-data cache loading and rebuilding are owned by `server/src/index_cache.rs`. Future tools and runtime code should use those modules instead of duplicating the pipeline around `SymbolIndex::add_catalog`.
 
-`SymbolIndex::without_local_variables()` exists for the runtime game-data cache only. It remaps file-local/global symbol IDs and rebuilds lookup maps after removing `LocalVariable` records. `SymbolIndex::compact_for_runtime_cache()` additionally strips source-only detail span fields while preserving copied detail text. These helpers must not be used for open-document analysis, corpus reports, or debug reports that need full source facts.
+`SymbolIndex::without_local_variables()` exists for the runtime game-data cache only. It remaps file-local/global symbol IDs, preserves each file's compacted symbol range, and rebuilds lookup maps after removing `LocalVariable` records. `SymbolIndex::compact_for_runtime_cache()` additionally strips source-only detail span fields while preserving copied detail text. These helpers must not be used for open-document analysis, corpus reports, or debug reports that need full source facts.
 
-Future editor/LSP features should prefer `server/src/index_query.rs` and `server/src/symbol_display.rs` over calling raw `SymbolIndex` APIs directly. `IndexQuery` exposes the intended editor-facing path for kind-specific preferred lookup, top-level conflict review, callable signatures, and preferred-class completion while keeping raw aggregate lookup available only as an explicit debug escape hatch. `SymbolDisplay` owns shared presentation formatting for labels, details, signatures, docs previews, attributes, modifiers, and provenance.
+Future editor/LSP features should prefer `server/src/index_query.rs` and `server/src/symbol_display.rs` over calling raw `SymbolIndex` APIs directly. `IndexQuery` exposes the intended editor-facing path for kind-specific preferred lookup, top-level conflict review, callable signatures, preferred-class completion, and prefix-based type/top-level completion while keeping raw aggregate lookup available only as an explicit debug escape hatch. `SymbolDisplay` owns shared presentation formatting for labels, details, signatures, docs previews, attributes, modifiers, and provenance.
+
+`server/src/type_facts.rs` is the read-only type-fact facade over copied indexed detail text. Future semantic and resolver work should ask that layer for declared type text, return type text, base types, typedef targets, defaults, and enum values instead of spreading direct `IndexedSymbolDetail` interpretation across feature modules. Preprocessor macros are indexed as top-level source facts for lookup/navigation, not as evaluated compile-time state.
 
 Dev-only overlay tooling can build an index from game data and an explicit workspace folder by assigning game-data catalogs priority `100` and workspace catalogs priority `200`. This uses existing source-priority ordering only; it does not merge declarations or interpret `modded` semantics.
 
@@ -49,9 +51,10 @@ This file depends on lexer spans and the model layer. It must not parse source, 
 - Copied source category, conditional context, and callable form facts from model catalogs into indexed symbols for debug/report/query policy. `SymbolIndex` remains raw and policy-free; filtering belongs in `IndexQuery`.
 - Copied modifiers, attributes, and doc comments into indexed symbols so future editor display does not need source text to show hover/completion/document-symbol facts.
 - Indexed local variables by name and kind while keeping them out of top-level and class-member lookup maps.
+- Indexed `#define` preprocessor macro names as top-level source facts while keeping macro evaluation out of the index.
 - Copied detail spans alongside detail text so resolver and debug layers can classify type-position identifiers without retaining full source text in the index.
 - Added a remap-based pruning helper used by the game-data runtime cache to drop external local variables while preserving parameters and callable signatures.
-- Added `from_indexed_parts()` and `compact_for_runtime_cache()` so the v4 runtime cache can persist only files/symbols, strip detail spans, and rebuild lookup maps after load.
+- Added `from_indexed_parts()` and `compact_for_runtime_cache()` so the v6 runtime cache can persist only files/symbols, strip detail spans, preserve compacted per-file symbol ranges, and rebuild lookup maps after load.
 
 ## Future Improvements
 
@@ -61,3 +64,4 @@ This file depends on lexer spans and the model layer. It must not parse source, 
 - Replace best-effort inherited member lookup with semantic class/inheritance resolution when that layer exists.
 - Keep cache invalidation and runtime cache policy in `index_cache`; do not add cache ownership here.
 - Add semantic resolution as a separate model/index layer after lookup behavior is validated.
+- Keep type/detail fact interpretation centralized in `type_facts` as resolver type inference moves out of ad hoc feature code.

@@ -304,8 +304,8 @@ fn append_structural_optimization_summary(
     ];
     let bytes_saved = v2_style_cache_bytes.saturating_sub(cache_file_bytes);
 
-    report.push_str("## V3 Structural Optimization Summary\n\n");
-    report.push_str("The v3 runtime cache persists files and symbols only, strips source-only detail spans, and rebuilds derived lookup maps after deserialization. This keeps editor-visible facts while avoiding duplicate serialized lookup data.\n\n");
+    report.push_str("## V6 Structural Optimization Summary\n\n");
+    report.push_str("The v6 runtime cache persists files and symbols only, strips source-only detail spans, removes external local variables, preserves parameters/type parameters, and rebuilds derived lookup maps after deserialization. This keeps editor-visible facts while avoiding duplicate serialized lookup data.\n\n");
     report.push_str("| Metric | Value |\n");
     report.push_str("| --- | ---: |\n");
     report.push_str(&format!(
@@ -313,7 +313,7 @@ fn append_structural_optimization_summary(
         v2_style_cache_bytes
     ));
     report.push_str(&format!(
-        "| V3 actual cache file bytes | {} |\n",
+        "| V6 actual cache file bytes | {} |\n",
         cache_file_bytes
     ));
     report.push_str(&format!("| Estimated bytes saved | {} |\n", bytes_saved));
@@ -330,7 +330,7 @@ fn append_structural_optimization_summary(
         full_detail_spans
     ));
     report.push_str(&format!(
-        "| V3 runtime detail span fields | {} |\n",
+        "| V6 runtime detail span fields | {} |\n",
         runtime_detail_spans
     ));
     report.push_str(&format!(
@@ -841,6 +841,7 @@ fn symbol_kinds() -> [SymbolKind; 12] {
 fn kind_name(kind: SymbolKind) -> &'static str {
     match kind {
         SymbolKind::Class => "Class",
+        SymbolKind::TypeParameter => "TypeParameter",
         SymbolKind::Enum => "Enum",
         SymbolKind::EnumMember => "EnumMember",
         SymbolKind::Typedef => "Typedef",
@@ -852,6 +853,7 @@ fn kind_name(kind: SymbolKind) -> &'static str {
         SymbolKind::Destructor => "Destructor",
         SymbolKind::Parameter => "Parameter",
         SymbolKind::LocalVariable => "LocalVariable",
+        SymbolKind::PreprocessorMacro => "PreprocessorMacro",
     }
 }
 
@@ -887,7 +889,7 @@ fn default_metadata_path(scripts_path: &Path) -> Option<PathBuf> {
 }
 
 fn default_cache_path() -> PathBuf {
-    default_storage_root().join("index-cache/game-data-symbol-index.v3.json")
+    default_storage_root().join("index-cache/game-data-symbol-index.v6.json")
 }
 
 fn default_storage_root() -> PathBuf {

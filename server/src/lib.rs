@@ -1,4 +1,5 @@
 pub mod ast;
+pub mod expression_type;
 pub mod index;
 pub mod index_build;
 pub mod index_cache;
@@ -7,6 +8,9 @@ pub mod lexer;
 pub mod lsp;
 pub mod model;
 pub mod parser;
+pub mod reference_finder;
 pub mod resolver;
+pub mod scope;
 pub mod symbol_display;
 pub mod syntax;
+pub mod type_facts;

@@ -2,7 +2,7 @@ use crate::index::{CompletionMemberLookup, GlobalSymbolId, IndexedConditionalBra
 use crate::lexer::TextSpan;
 use crate::model::{CallableForm, SourceCategory, SourceKind, SymbolKind};
 use crate::symbol_display::{SymbolDisplay, SymbolDisplayInfo};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy)]
@@ -35,6 +35,12 @@ pub struct EditorCompletionCandidate {
     pub conditional_context: Vec<IndexedConditionalBranch>,
     pub callable_form: Option<CallableForm>,
     pub display: SymbolDisplayInfo,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditorTopLevelCompletionMode {
+    Type,
+    Value,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,7 +92,107 @@ impl<'index> IndexQuery<'index> {
 
     pub fn completion_members_for_class(&self, name: &str) -> EditorCompletionMembers {
         let completion = self.index.completion_members_for_preferred_class(name);
-        self.editor_completion_members(name, completion)
+        let members = self.editor_completion_members(name, completion);
+        if !members.raw_candidates.is_empty() || !members.candidates.is_empty() {
+            return members;
+        }
+
+        if let Some(target) = self.typedef_target_owner(name) {
+            let completion = self.index.completion_members_for_preferred_class(&target);
+            return self.editor_completion_members(&target, completion);
+        }
+
+        members
+    }
+
+    pub fn completion_static_members_for_type(&self, name: &str) -> Vec<EditorCompletionCandidate> {
+        let mut candidates = self.enum_member_completion_candidates(name);
+        if !candidates.is_empty() {
+            return candidates;
+        }
+
+        candidates = self
+            .completion_members_for_class(name)
+            .candidates
+            .into_iter()
+            .filter(|candidate| {
+                matches!(
+                    candidate.kind,
+                    SymbolKind::Field | SymbolKind::Method | SymbolKind::Constructor
+                ) && candidate
+                    .display
+                    .modifiers
+                    .iter()
+                    .any(|modifier| modifier == "static")
+            })
+            .collect();
+
+        if self.editor_class_owner_exists(name) {
+            candidates.extend(self.engine_class_cast_completion_candidates());
+            candidates = dedupe_completion_candidates(candidates);
+        } else if let Some(target) = self.typedef_target_owner(name) {
+            return self.completion_static_members_for_type(&target);
+        }
+        candidates
+    }
+
+    pub fn completion_top_level(
+        &self,
+        prefix: &str,
+        mode: EditorTopLevelCompletionMode,
+    ) -> Vec<EditorCompletionCandidate> {
+        if prefix.is_empty() {
+            return Vec::new();
+        }
+
+        let mut ids_by_key = BTreeMap::<String, Vec<GlobalSymbolId>>::new();
+        let mut key_order = Vec::<String>::new();
+
+        for symbol in self.index.symbols() {
+            if !self.is_editor_completion_source(symbol.id) {
+                continue;
+            }
+            if !top_level_completion_kind_allowed(symbol.kind, mode) {
+                continue;
+            }
+            let Some(name) = symbol.name.as_deref() else {
+                continue;
+            };
+            if !name.starts_with(prefix) {
+                continue;
+            }
+            let key = top_level_completion_key(self.index, symbol.id, symbol.kind, name);
+            if !ids_by_key.contains_key(&key) {
+                key_order.push(key.clone());
+            }
+            ids_by_key.entry(key).or_default().push(symbol.id);
+        }
+
+        let mut candidates = Vec::new();
+        for key in key_order {
+            let mut ids = ids_by_key.remove(&key).unwrap_or_default();
+            ids.sort_by(|left, right| self.compare_symbol_preference(*left, *right));
+            if let Some(candidate) = ids
+                .first()
+                .copied()
+                .and_then(|id| self.editor_top_level_completion_candidate(id))
+            {
+                candidates.push(candidate);
+            }
+        }
+
+        candidates.sort_by(|left, right| {
+            left.display
+                .label
+                .cmp(&right.display.label)
+                .then_with(|| {
+                    completion_kind_rank(left.kind).cmp(&completion_kind_rank(right.kind))
+                })
+                .then_with(|| right.source_priority.cmp(&left.source_priority))
+                .then_with(|| left.id.file_id.cmp(&right.id.file_id))
+                .then_with(|| left.id.symbol_id.cmp(&right.id.symbol_id))
+        });
+        candidates
     }
 
     pub fn raw_symbols_for_name(&self, name: &str) -> &[GlobalSymbolId] {
@@ -232,6 +338,27 @@ impl<'index> IndexQuery<'index> {
             .then_with(|| left.symbol_id.cmp(&right.symbol_id))
     }
 
+    fn compare_symbol_preference(
+        &self,
+        left: GlobalSymbolId,
+        right: GlobalSymbolId,
+    ) -> std::cmp::Ordering {
+        let left_priority = self
+            .index
+            .file(left.file_id)
+            .map(|file| file.metadata.priority)
+            .unwrap_or_default();
+        let right_priority = self
+            .index
+            .file(right.file_id)
+            .map(|file| file.metadata.priority)
+            .unwrap_or_default();
+        right_priority
+            .cmp(&left_priority)
+            .then_with(|| left.file_id.cmp(&right.file_id))
+            .then_with(|| left.symbol_id.cmp(&right.symbol_id))
+    }
+
     fn editor_completion_candidate(
         &self,
         owner: &str,
@@ -258,6 +385,164 @@ impl<'index> IndexQuery<'index> {
             relative_path: file.metadata.relative_path.clone(),
             absolute_path: file.metadata.absolute_path.clone(),
             origin,
+            conditional_context: symbol.conditional_context.clone(),
+            callable_form: symbol.callable_form,
+            display,
+        })
+    }
+
+    fn editor_top_level_completion_candidate(
+        &self,
+        id: GlobalSymbolId,
+    ) -> Option<EditorCompletionCandidate> {
+        let symbol = self.index.symbol(id)?;
+        let file = self.index.file(id.file_id)?;
+        let display = self.symbol_display(id)?;
+        let detail = display.detail.clone();
+
+        Some(EditorCompletionCandidate {
+            id,
+            name: symbol.name.clone(),
+            kind: symbol.kind,
+            detail,
+            signature: display.signature.clone(),
+            span: symbol.span,
+            selection_span: symbol.selection_span,
+            source_kind: file.metadata.kind,
+            source_category: file.metadata.category,
+            source_priority: file.metadata.priority,
+            relative_path: file.metadata.relative_path.clone(),
+            absolute_path: file.metadata.absolute_path.clone(),
+            origin: EditorCompletionOrigin::Unknown,
+            conditional_context: symbol.conditional_context.clone(),
+            callable_form: symbol.callable_form,
+            display,
+        })
+    }
+
+    fn enum_member_completion_candidates(&self, name: &str) -> Vec<EditorCompletionCandidate> {
+        let enum_ids = self.preferred_editor_enums(name);
+        if enum_ids.is_empty() {
+            return Vec::new();
+        }
+
+        let mut candidates = Vec::new();
+        for enum_id in enum_ids {
+            for child_id in self.index.children(enum_id) {
+                let Some(symbol) = self.index.symbol(*child_id) else {
+                    continue;
+                };
+                if symbol.kind != SymbolKind::EnumMember {
+                    continue;
+                }
+                if !self.is_editor_completion_source(*child_id) {
+                    continue;
+                }
+                if let Some(candidate) = self.editor_static_completion_candidate(*child_id) {
+                    candidates.push(candidate);
+                }
+            }
+        }
+        candidates
+    }
+
+    fn preferred_editor_enums(&self, name: &str) -> Vec<GlobalSymbolId> {
+        let mut ids = self
+            .index
+            .top_level_symbols_for_name(name)
+            .iter()
+            .copied()
+            .filter(|id| {
+                self.index
+                    .symbol(*id)
+                    .is_some_and(|symbol| symbol.kind == SymbolKind::Enum)
+                    && self.is_editor_completion_source(*id)
+            })
+            .collect::<Vec<_>>();
+
+        for typedef_id in self.index.preferred_typedefs_by_name(name) {
+            if !self.is_editor_completion_source(typedef_id) {
+                continue;
+            }
+            let Some(target) = self
+                .index
+                .symbol(typedef_id)
+                .and_then(|symbol| symbol.detail.type_text.as_deref())
+                .and_then(owner_type_from_type_text)
+            else {
+                continue;
+            };
+            ids.extend(
+                self.index
+                    .top_level_symbols_for_name(&target)
+                    .iter()
+                    .copied()
+                    .filter(|id| {
+                        self.index
+                            .symbol(*id)
+                            .is_some_and(|symbol| symbol.kind == SymbolKind::Enum)
+                            && self.is_editor_completion_source(*id)
+                    }),
+            );
+        }
+
+        self.index.preferred_from_symbols(&ids)
+    }
+
+    fn typedef_target_owner(&self, name: &str) -> Option<String> {
+        self.index
+            .preferred_typedefs_by_name(name)
+            .into_iter()
+            .find(|id| self.is_editor_completion_source(*id))
+            .and_then(|id| {
+                self.index
+                    .symbol(id)
+                    .and_then(|symbol| symbol.detail.type_text.as_deref())
+                    .and_then(owner_type_from_type_text)
+            })
+            .filter(|target| target != name)
+    }
+
+    fn editor_class_owner_exists(&self, name: &str) -> bool {
+        self.index
+            .preferred_classes_by_name(name)
+            .into_iter()
+            .any(|id| self.is_editor_completion_source(id))
+    }
+
+    fn engine_class_cast_completion_candidates(&self) -> Vec<EditorCompletionCandidate> {
+        self.completion_members_for_class("Class")
+            .candidates
+            .into_iter()
+            .filter(|candidate| {
+                candidate.kind == SymbolKind::Method && candidate.name.as_deref() == Some("Cast")
+            })
+            .collect()
+    }
+
+    fn editor_static_completion_candidate(
+        &self,
+        id: GlobalSymbolId,
+    ) -> Option<EditorCompletionCandidate> {
+        let symbol = self.index.symbol(id)?;
+        let file = self.index.file(id.file_id)?;
+        let display = self.symbol_display(id)?;
+        let detail = display.detail.clone();
+
+        Some(EditorCompletionCandidate {
+            id,
+            name: symbol.name.clone(),
+            kind: symbol.kind,
+            detail,
+            signature: display.signature.clone(),
+            span: symbol.span,
+            selection_span: symbol.selection_span,
+            source_kind: file.metadata.kind,
+            source_category: file.metadata.category,
+            source_priority: file.metadata.priority,
+            relative_path: file.metadata.relative_path.clone(),
+            absolute_path: file.metadata.absolute_path.clone(),
+            origin: EditorCompletionOrigin::Unknown,
             conditional_context: symbol.conditional_context.clone(),
             callable_form: symbol.callable_form,
             display,
@@ -292,6 +577,46 @@ impl<'index> IndexQuery<'index> {
     }
 }
 
+fn dedupe_completion_candidates(
+    candidates: Vec<EditorCompletionCandidate>,
+) -> Vec<EditorCompletionCandidate> {
+    let mut seen = BTreeSet::new();
+    let mut deduped = Vec::new();
+    for candidate in candidates {
+        let key = (
+            candidate.kind,
+            candidate.name.clone(),
+            candidate.signature.clone(),
+            candidate.detail.clone(),
+        );
+        if seen.insert(key) {
+            deduped.push(candidate);
+        }
+    }
+    deduped
+}
+
+fn owner_type_from_type_text(type_text: &str) -> Option<String> {
+    let text = type_text.trim();
+    if text.is_empty() {
+        return None;
+    }
+    let text = text
+        .strip_prefix("ref ")
+        .or_else(|| text.strip_prefix("autoptr "))
+        .or_else(|| text.strip_prefix("notnull "))
+        .unwrap_or(text)
+        .trim();
+    let end = text
+        .char_indices()
+        .find_map(|(offset, ch)| {
+            (!ch.is_ascii_alphanumeric() && ch != '_' && ch != ':').then_some(offset)
+        })
+        .unwrap_or(text.len());
+    let name = text[..end].trim();
+    (!name.is_empty()).then(|| name.to_string())
+}
+
 const fn editor_origin_rank(origin: EditorCompletionOrigin) -> u8 {
     match origin {
         EditorCompletionOrigin::Direct => 0,
@@ -308,6 +633,53 @@ const fn callable_form_rank(form: Option<CallableForm>) -> u8 {
         Some(CallableForm::Prototype) => 2,
         None => 3,
     }
+}
+
+const fn completion_kind_rank(kind: SymbolKind) -> u8 {
+    match kind {
+        SymbolKind::Class => 0,
+        SymbolKind::Enum => 1,
+        SymbolKind::Typedef => 2,
+        SymbolKind::Function => 3,
+        SymbolKind::GlobalField => 4,
+        SymbolKind::EnumMember => 5,
+        _ => 9,
+    }
+}
+
+const fn top_level_completion_kind_allowed(
+    kind: SymbolKind,
+    mode: EditorTopLevelCompletionMode,
+) -> bool {
+    match mode {
+        EditorTopLevelCompletionMode::Type => {
+            matches!(
+                kind,
+                SymbolKind::Class | SymbolKind::Enum | SymbolKind::Typedef
+            )
+        }
+        EditorTopLevelCompletionMode::Value => {
+            matches!(
+                kind,
+                SymbolKind::Class
+                    | SymbolKind::Enum
+                    | SymbolKind::Typedef
+                    | SymbolKind::Function
+                    | SymbolKind::GlobalField
+                    | SymbolKind::EnumMember
+            )
+        }
+    }
+}
+
+fn top_level_completion_key(
+    index: &SymbolIndex,
+    id: GlobalSymbolId,
+    kind: SymbolKind,
+    name: &str,
+) -> String {
+    let signature = index.callable_signature(id).unwrap_or_default();
+    format!("{kind:?}:{name}:{signature}")
 }
 
 #[cfg(test)]
@@ -377,6 +749,80 @@ void FactionKey(int value);
         assert!(conflicts
             .iter()
             .any(|id| index.symbol(*id).unwrap().kind == SymbolKind::Function));
+    }
+
+    #[test]
+    fn top_level_type_completion_returns_only_type_like_symbols() {
+        let catalog = catalog(
+            r#"class SCR_Type {}
+enum SCR_Mode
+{
+	SCR_Value
+}
+typedef int SCR_Alias;
+void SCR_Function();
+int SCR_Global;
+"#,
+            workspace_metadata("Types.c"),
+        );
+        let index = SymbolIndex::from_catalogs([&catalog]);
+        let query = IndexQuery::new(&index);
+
+        let completion = query.completion_top_level("SCR_", EditorTopLevelCompletionMode::Type);
+
+        assert_eq!(
+            completion
+                .iter()
+                .map(|candidate| (candidate.name.as_deref().unwrap(), candidate.kind))
+                .collect::<Vec<_>>(),
+            vec![
+                ("SCR_Alias", SymbolKind::Typedef),
+                ("SCR_Mode", SymbolKind::Enum),
+                ("SCR_Type", SymbolKind::Class)
+            ]
+        );
+    }
+
+    #[test]
+    fn top_level_value_completion_includes_runtime_values_and_prefers_workspace() {
+        let game = catalog(
+            r#"class SCR_Shared {}
+void SCR_Function();
+int SCR_Global;
+enum SCR_Mode
+{
+	SCR_Value
+}
+"#,
+            game_metadata("Game.c"),
+        );
+        let workspace = catalog(
+            r#"class SCR_Shared {}
+void SCR_WorkspaceOnly();
+"#,
+            workspace_metadata("Workspace.c"),
+        );
+        let index = SymbolIndex::from_catalogs([&game, &workspace]);
+        let query = IndexQuery::new(&index);
+
+        let completion = query.completion_top_level("SCR_", EditorTopLevelCompletionMode::Value);
+
+        assert!(completion.iter().any(|candidate| candidate.name.as_deref()
+            == Some("SCR_Function")
+            && candidate.kind == SymbolKind::Function));
+        assert!(completion
+            .iter()
+            .any(|candidate| candidate.name.as_deref() == Some("SCR_Global")
+                && candidate.kind == SymbolKind::GlobalField));
+        assert!(completion
+            .iter()
+            .any(|candidate| candidate.name.as_deref() == Some("SCR_Value")
+                && candidate.kind == SymbolKind::EnumMember));
+        let shared = completion
+            .iter()
+            .find(|candidate| candidate.name.as_deref() == Some("SCR_Shared"))
+            .unwrap();
+        assert_eq!(shared.source_kind, SourceKind::Workspace);
     }
 
     #[test]
@@ -661,6 +1107,130 @@ class Example
             .unwrap();
         assert_eq!(shadow_group.kept, run.id);
         assert_eq!(shadow_group.shadowed.len(), 1);
+    }
+
+    #[test]
+    fn static_completion_returns_enum_members() {
+        let catalog = catalog(
+            r#"enum LogLevel
+{
+	DEBUG,
+	NORMAL
+}
+
+typedef LogLevel ELogLevel;
+"#,
+            game_metadata("Game/LogLevel.c"),
+        );
+        let index = SymbolIndex::from_catalogs([&catalog]);
+        let query = IndexQuery::new(&index);
+
+        let direct = query.completion_static_members_for_type("LogLevel");
+        assert_eq!(
+            direct
+                .iter()
+                .map(|candidate| (candidate.name.as_deref().unwrap(), candidate.kind))
+                .collect::<Vec<_>>(),
+            vec![
+                ("DEBUG", SymbolKind::EnumMember),
+                ("NORMAL", SymbolKind::EnumMember)
+            ]
+        );
+
+        let alias = query.completion_static_members_for_type("ELogLevel");
+        assert_eq!(
+            alias
+                .iter()
+                .map(|candidate| candidate.name.as_deref().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["DEBUG", "NORMAL"]
+        );
+    }
+
+    #[test]
+    fn static_completion_returns_static_class_members_only() {
+        let catalog = catalog(
+            r#"class Example
+{
+	static int s_Value;
+	static void StaticRun();
+	void InstanceRun();
+	int m_Value;
+}
+"#,
+            game_metadata("Game/Example.c"),
+        );
+        let index = SymbolIndex::from_catalogs([&catalog]);
+        let query = IndexQuery::new(&index);
+
+        let completion = query.completion_static_members_for_type("Example");
+
+        assert_eq!(
+            completion
+                .iter()
+                .map(|candidate| (candidate.name.as_deref().unwrap(), candidate.kind))
+                .collect::<Vec<_>>(),
+            vec![
+                ("s_Value", SymbolKind::Field),
+                ("StaticRun", SymbolKind::Method)
+            ]
+        );
+    }
+
+    #[test]
+    fn static_completion_includes_source_backed_engine_class_cast_rule() {
+        let catalog = catalog(
+            r#"class Class
+{
+	static Class Cast(Class from);
+}
+
+class Example
+{
+}
+"#,
+            game_metadata("Game/Class.c"),
+        );
+        let index = SymbolIndex::from_catalogs([&catalog]);
+        let query = IndexQuery::new(&index);
+
+        let completion = query.completion_static_members_for_type("Example");
+
+        assert_eq!(
+            completion
+                .iter()
+                .map(|candidate| (candidate.name.as_deref().unwrap(), candidate.kind))
+                .collect::<Vec<_>>(),
+            vec![("Cast", SymbolKind::Method)]
+        );
+    }
+
+    #[test]
+    fn member_completion_expands_typedef_owner_to_target_members() {
+        let catalog = catalog(
+            r#"class array<Class T>
+{
+	void Insert(T value);
+	void Remove(T value);
+}
+
+typedef array<int> TIntArray;
+"#,
+            game_metadata("Game/Arrays.c"),
+        );
+        let index = SymbolIndex::from_catalogs([&catalog]);
+        let query = IndexQuery::new(&index);
+
+        let completion = query.completion_members_for_class("TIntArray");
+
+        assert_eq!(
+            completion
+                .candidates
+                .iter()
+                .map(|candidate| candidate.name.as_deref().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["Insert", "Remove"]
+        );
     }
 
     #[test]

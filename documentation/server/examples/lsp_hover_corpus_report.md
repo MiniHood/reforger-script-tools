@@ -21,13 +21,15 @@ The report defaults to the downloaded game-data scripts folder under VS Code glo
 
 The companion wrapper is `tools/lsp-hover-corpus-report.mjs`. It accepts `--release` and runs `cargo run --release` while passing `--profile-label release` to the Rust example. Debug mode remains the default.
 
-The report includes hover hit/miss totals, file-local hit counts, external hit counts, resolver reason frequency, identifier context frequency, receiver owner/failure frequency, receiver expression-kind samples, selected source frequency, selected symbol kind frequency, top files by hover misses, bounded miss samples, bounded hit samples, and timing. It intentionally samples identifiers instead of dumping every possible hover token.
+The report includes hover hit/miss totals, file-local hit counts, external hit counts, raw hit rate, actionable hover hit rate, resolver reason frequency, identifier context frequency, receiver owner/failure frequency, receiver expression-kind samples, selected source frequency, selected symbol kind frequency, remaining miss classification, top files by actionable hover misses, top files by raw hover misses, bounded miss samples, bounded hit samples, and timing. It intentionally samples identifiers instead of dumping every possible hover token.
 
 ## Dependencies and Boundaries
 
 Uses only Rust standard library APIs and existing crate LSP helpers. It must not register VS Code commands, package scripts, or runtime extension behavior.
 
-The report uses the game-data index as external context. Remaining misses are unresolved after file-local and external top-level/member lookup. Receiver/member-call resolution is syntax-backed through AST expression views but remains shallow and source-backed; it is not full expression typing, overload resolution, Workbench validation, or workspace indexing. Named argument labels are suppressed by resolver and classified separately as call or attribute labels so they do not look like actionable unresolved symbol failures.
+The report uses the game-data index as external context. Remaining misses are unresolved after file-local and external top-level/member lookup. Receiver/member-call resolution is syntax-backed through AST expression views but remains shallow and source-backed; it is not full expression typing, overload resolution, Workbench validation, or workspace indexing. Named argument labels are suppressed by resolver and classified separately as call or attribute labels so they do not look like actionable unresolved symbol failures. Miss classification uses the sampled token offset in the original source line instead of searching for the first matching token text in a truncated snippet.
+
+The raw hit rate keeps every sampled identifier in the denominator for continuity. The actionable hover hit rate excludes sampled misses classified as attribute named arguments, attribute enum/static values, preprocessor directive or macro tokens, named call argument labels, and Workbench/docs/test source noise. Attribute named arguments, preprocessor directives, preprocessor macro names, and named argument labels are classified from resolver-owned non-symbol reasons first; report-local source-line heuristics remain only for attribute value and source-policy buckets. This makes the corpus report better reflect resolver/editor quality without hiding the raw counts.
 
 ## Change Notes
 
@@ -36,6 +38,9 @@ The report uses the game-data index as external context. Remaining misses are un
 - Added external game-data index context, selected-source frequency, and file-local/external hit counts.
 - Added receiver owner/failure frequencies and receiver details in hit/miss samples for member-access review.
 - Added receiver expression kind in hit/miss samples after member-access resolution moved to AST expression views.
+- Added offset-aware remaining-miss classification buckets for attribute named arguments, attribute enum/static values, preprocessor directive or macro tokens, named call arguments, and Workbench/docs/test source.
+- Added actionable hover hit-rate scoring and top files by actionable hover misses so known non-hover/source-noise tokens do not dominate review.
+- Updated obvious non-symbol buckets to prefer resolver-owned reasons for attribute named arguments, preprocessor directive tokens, preprocessor macro names, and named argument labels.
 
 ## Future Improvements
 

@@ -1,11 +1,16 @@
 use crate::ast::{
     member_access_for_member_name_at_offset, named_argument_label_at_offset, Expression,
 };
+use crate::expression_type::{
+    base_owner_type_from_symbol, member_lookup_owners, owner_type_from_type_text, ExpressionType,
+    ExpressionTypeEnvironment,
+};
 use crate::index::{GlobalSymbolId, IndexedFile, IndexedSymbol, SymbolIndex};
-use crate::lexer::{lex, TextSpan, TokenKind};
+use crate::lexer::{lex, Keyword, TextSpan, TokenKind};
 use crate::model::{SourceCategory, SourceKind, SymbolKind};
 use crate::parser::parse_source;
-use crate::syntax::Parse;
+use crate::scope::LexicalScopeModel;
+use crate::syntax::{Parse, SyntaxElement, SyntaxNode};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
@@ -15,7 +20,9 @@ pub struct ReferenceResolver<'source, 'index> {
     file_index: &'index SymbolIndex,
     external_index: Option<&'index SymbolIndex>,
     parse: Option<&'index Parse>,
+    scope: Option<&'index LexicalScopeModel>,
     owned_parse: Option<Parse>,
+    owned_scope: Option<LexicalScopeModel>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,6 +76,20 @@ pub struct ReceiverResolution {
     pub failure_reason: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemberCompletionContext {
+    pub receiver: ReceiverResolution,
+    pub prefix: String,
+    pub prefix_span: TextSpan,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TopLevelCompletionContext {
+    pub prefix: String,
+    pub prefix_span: TextSpan,
+    pub identifier_context: IdentifierContext,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CandidateSource {
     FileLocal,
@@ -90,12 +111,17 @@ pub enum ResolutionReason {
     LocalInCallable,
     ParameterInCallable,
     ClassMember,
+    TypeParameter,
     ReceiverMember,
     StaticMember,
     EngineClassCast,
     PseudoClassMember,
     SyntaxSpan,
     ReceiverUnresolved,
+    AttributeNamedArgument,
+    NamedArgumentLabel,
+    PreprocessorDirective,
+    PreprocessorMacro,
     TopLevel,
     ExternalPreferred,
     Unresolved,
@@ -108,12 +134,17 @@ impl ResolutionReason {
             Self::LocalInCallable => "local-in-callable",
             Self::ParameterInCallable => "parameter-in-callable",
             Self::ClassMember => "class-member",
+            Self::TypeParameter => "type-parameter",
             Self::ReceiverMember => "receiver-member",
             Self::StaticMember => "static-member",
             Self::EngineClassCast => "engine-class-cast",
             Self::PseudoClassMember => "pseudo-class-member",
             Self::SyntaxSpan => "syntax-span",
             Self::ReceiverUnresolved => "receiver-unresolved",
+            Self::AttributeNamedArgument => "attribute-named-argument",
+            Self::NamedArgumentLabel => "named-argument-label",
+            Self::PreprocessorDirective => "preprocessor-directive",
+            Self::PreprocessorMacro => "preprocessor-macro",
             Self::TopLevel => "top-level",
             Self::ExternalPreferred => "external-preferred",
             Self::Unresolved => "unresolved",
@@ -146,19 +177,42 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
         file_index: &'index SymbolIndex,
         external_index: Option<&'index SymbolIndex>,
     ) -> Self {
+        let parse = parse_source(source);
+        let scope = LexicalScopeModel::from_parse_and_index(&parse, file_index);
         Self {
             source,
             file_index,
             external_index,
             parse: None,
-            owned_parse: Some(parse_source(source)),
+            scope: None,
+            owned_parse: Some(parse),
+            owned_scope: Some(scope),
         }
     }
 
-    pub const fn new_with_parse(
+    pub fn new_with_parse(
         source: &'source str,
         file_index: &'index SymbolIndex,
         parse: &'index Parse,
+        external_index: Option<&'index SymbolIndex>,
+    ) -> Self {
+        let scope = LexicalScopeModel::from_parse_and_index(parse, file_index);
+        Self {
+            source,
+            file_index,
+            external_index,
+            parse: Some(parse),
+            scope: None,
+            owned_parse: None,
+            owned_scope: Some(scope),
+        }
+    }
+
+    pub const fn new_with_parse_and_scope(
+        source: &'source str,
+        file_index: &'index SymbolIndex,
+        parse: &'index Parse,
+        scope: &'index LexicalScopeModel,
         external_index: Option<&'index SymbolIndex>,
     ) -> Self {
         Self {
@@ -166,67 +220,127 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
             file_index,
             external_index,
             parse: Some(parse),
+            scope: Some(scope),
             owned_parse: None,
+            owned_scope: None,
         }
     }
 
     pub fn resolve_at_offset(&self, offset: usize) -> Option<ReferenceResolution> {
         let token = token_at_offset(self.source, offset)?;
-        if token.kind != TokenKind::Identifier {
+        match token.kind {
+            TokenKind::Identifier => self.resolve_identifier_token(token.span),
+            TokenKind::Keyword(keyword) if is_resolvable_type_keyword(keyword) => {
+                self.resolve_type_keyword_token(token.span)
+            }
+            _ => None,
+        }
+    }
+
+    pub fn resolve_identifier_token(&self, token_span: TextSpan) -> Option<ReferenceResolution> {
+        if token_span.start >= token_span.end
+            || token_span.end > self.source.len()
+            || !self.source.is_char_boundary(token_span.start)
+            || !self.source.is_char_boundary(token_span.end)
+        {
             return None;
         }
 
-        let token_text = self.source[token.span.start..token.span.end].to_string();
-        if named_argument_label_at_offset(self.source, &self.parse().root, token.span).is_some() {
+        let token_text = self.source[token_span.start..token_span.end].to_string();
+        if let Some(reason) = preprocessor_reason_for_token(self.source, token_span, &token_text) {
+            if reason == ResolutionReason::PreprocessorMacro {
+                return Some(self.resolve_preprocessor_macro_token(token_text, token_span));
+            }
             return Some(ReferenceResolution {
                 token_text,
-                token_span: token.span,
+                token_span,
                 identifier_context: IdentifierContext::ValueOrCallable,
                 candidates: Vec::new(),
                 selected: None,
-                reason: ResolutionReason::Unresolved,
+                reason,
                 receiver: None,
             });
         }
-        let member_access = self.member_access_context(token.span);
+        if is_attribute_named_argument_token(self.source, token_span) {
+            return Some(ReferenceResolution {
+                token_text,
+                token_span,
+                identifier_context: IdentifierContext::ValueOrCallable,
+                candidates: Vec::new(),
+                selected: None,
+                reason: ResolutionReason::AttributeNamedArgument,
+                receiver: None,
+            });
+        }
+        if next_significant_char_after_span(self.source, token_span) == Some(':')
+            && named_argument_label_at_offset(self.source, &self.parse().root, token_span).is_some()
+        {
+            return Some(ReferenceResolution {
+                token_text,
+                token_span,
+                identifier_context: IdentifierContext::ValueOrCallable,
+                candidates: Vec::new(),
+                selected: None,
+                reason: ResolutionReason::NamedArgumentLabel,
+                receiver: None,
+            });
+        }
+        let member_access =
+            if previous_significant_char_before_span(self.source, token_span) == Some('.') {
+                self.member_access_context(token_span)
+            } else {
+                None
+            };
         let identifier_context = if member_access.is_some() {
             IdentifierContext::MemberAccess
         } else {
-            self.identifier_context(token.span)
+            self.identifier_context(token_span)
         };
         let mut candidates = Vec::new();
         let mut seen = BTreeSet::new();
 
-        self.push_declaration_hits(&token_text, token.span, &mut candidates, &mut seen);
+        self.push_declaration_hits(&token_text, token_span, &mut candidates, &mut seen);
 
         let receiver = if let Some(member_access) = member_access {
             Some(self.push_receiver_member_candidates(
                 &member_access,
                 &token_text,
-                offset,
+                token_span.start,
                 &mut candidates,
                 &mut seen,
             ))
         } else if identifier_context == IdentifierContext::TypePosition {
+            self.push_class_type_parameters(
+                &token_text,
+                token_span.start,
+                &mut candidates,
+                &mut seen,
+            );
             self.push_type_like_top_level(&token_text, &mut candidates, &mut seen);
             self.push_external_type_like(&token_text, &mut candidates, &mut seen);
             self.push_callable_locals_and_parameters(
                 &token_text,
-                offset,
+                token_span.start,
                 &mut candidates,
                 &mut seen,
             );
-            self.push_class_members(&token_text, offset, &mut candidates, &mut seen);
+            self.push_class_members(&token_text, token_span.start, &mut candidates, &mut seen);
             self.push_top_level(&token_text, &mut candidates, &mut seen);
             None
         } else {
             self.push_callable_locals_and_parameters(
                 &token_text,
-                offset,
+                token_span.start,
                 &mut candidates,
                 &mut seen,
             );
-            self.push_class_members(&token_text, offset, &mut candidates, &mut seen);
+            self.push_class_type_parameters(
+                &token_text,
+                token_span.start,
+                &mut candidates,
+                &mut seen,
+            );
+            self.push_class_members(&token_text, token_span.start, &mut candidates, &mut seen);
             self.push_top_level(&token_text, &mut candidates, &mut seen);
             self.push_external(&token_text, &mut candidates, &mut seen);
             None
@@ -245,12 +359,64 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
 
         Some(ReferenceResolution {
             token_text,
-            token_span: token.span,
+            token_span,
             identifier_context,
             candidates,
             selected,
             reason,
             receiver,
+        })
+    }
+
+    fn resolve_preprocessor_macro_token(
+        &self,
+        token_text: String,
+        token_span: TextSpan,
+    ) -> ReferenceResolution {
+        let mut candidates = Vec::new();
+        let mut seen = BTreeSet::new();
+        self.push_preprocessor_macros(&token_text, &mut candidates, &mut seen);
+        let selected = candidates.first().cloned();
+        let reason = selected
+            .as_ref()
+            .map(|candidate| candidate.reason)
+            .unwrap_or(ResolutionReason::PreprocessorMacro);
+
+        ReferenceResolution {
+            token_text,
+            token_span,
+            identifier_context: IdentifierContext::ValueOrCallable,
+            candidates,
+            selected,
+            reason,
+            receiver: None,
+        }
+    }
+
+    fn resolve_type_keyword_token(&self, token_span: TextSpan) -> Option<ReferenceResolution> {
+        if self.identifier_context(token_span) != IdentifierContext::TypePosition {
+            return None;
+        }
+
+        let token_text = self.source[token_span.start..token_span.end].to_string();
+        let mut candidates = Vec::new();
+        let mut seen = BTreeSet::new();
+        self.push_type_like_top_level(&token_text, &mut candidates, &mut seen);
+        self.push_external_type_like(&token_text, &mut candidates, &mut seen);
+        let selected = candidates.first().cloned();
+        let reason = selected
+            .as_ref()
+            .map(|candidate| candidate.reason)
+            .unwrap_or(ResolutionReason::Unresolved);
+
+        Some(ReferenceResolution {
+            token_text,
+            token_span,
+            identifier_context: IdentifierContext::TypePosition,
+            candidates,
+            selected,
+            reason,
+            receiver: None,
         })
     }
 
@@ -260,13 +426,117 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
             .expect("resolver should always have parse context")
     }
 
+    fn scope(&self) -> &LexicalScopeModel {
+        self.scope
+            .or(self.owned_scope.as_ref())
+            .expect("resolver should always have scope context")
+    }
+
+    fn type_environment(&self) -> ExpressionTypeEnvironment<'source, '_> {
+        ExpressionTypeEnvironment::new(
+            self.source,
+            self.file_index,
+            self.parse(),
+            self.scope(),
+            self.external_index,
+        )
+    }
+
     pub fn resolve_hover_at_offset(&self, offset: usize) -> Option<HoverResolution> {
         if let Some(reference) = self.resolve_at_offset(offset) {
             return Some(HoverResolution::Identifier(reference));
         }
 
+        let token = token_at_offset(self.source, offset)?;
+        if !is_syntax_span_hover_token(token.kind) {
+            return None;
+        }
+
         let span_resolution = self.resolve_syntax_span_hover_at_offset(offset)?;
         Some(HoverResolution::SyntaxSpan(span_resolution))
+    }
+
+    pub fn member_completion_context_at_offset(
+        &self,
+        offset: usize,
+    ) -> Option<MemberCompletionContext> {
+        if offset > self.source.len() || !self.source.is_char_boundary(offset) {
+            return None;
+        }
+
+        let tokens = lex(self.source);
+        let (dot, prefix, prefix_span) = completion_dot_and_prefix(self.source, &tokens, offset)?;
+        if dot.span.start == 0 {
+            return None;
+        }
+
+        let receiver = receiver_expression_before_dot(self.source, &self.parse().root, dot.span)?;
+
+        let mut lookup_path = Vec::new();
+        let inferred =
+            self.type_environment()
+                .infer_expression_type(receiver, offset, &mut lookup_path);
+        let Some(inferred) = inferred else {
+            return Some(MemberCompletionContext {
+                receiver: ReceiverResolution {
+                    receiver_text: receiver.source_text().trim().to_string(),
+                    receiver_span: receiver.span(),
+                    receiver_expression_kind: format!("{:?}", receiver.kind()),
+                    owner_type: None,
+                    is_static: false,
+                    lookup_path,
+                    failure_reason: Some("receiver type was not inferred".to_string()),
+                },
+                prefix,
+                prefix_span,
+            });
+        };
+
+        Some(MemberCompletionContext {
+            receiver: ReceiverResolution {
+                receiver_text: receiver.source_text().trim().to_string(),
+                receiver_span: receiver.span(),
+                receiver_expression_kind: format!("{:?}", receiver.kind()),
+                owner_type: Some(inferred.owner_type),
+                is_static: inferred.is_static,
+                lookup_path,
+                failure_reason: None,
+            },
+            prefix,
+            prefix_span,
+        })
+    }
+
+    pub fn top_level_completion_context_at_offset(
+        &self,
+        offset: usize,
+    ) -> Option<TopLevelCompletionContext> {
+        if offset > self.source.len() || !self.source.is_char_boundary(offset) {
+            return None;
+        }
+
+        let tokens = lex(self.source);
+        let (prefix, prefix_span) = completion_identifier_prefix(self.source, &tokens, offset)?;
+        if prefix.is_empty() {
+            return None;
+        }
+        if completion_dot_and_prefix(self.source, &tokens, offset).is_some() {
+            return None;
+        }
+        if previous_significant_token_before_span(&tokens, prefix_span)
+            .is_some_and(|token| token.kind == TokenKind::Dot)
+        {
+            return None;
+        }
+        if named_argument_label_at_offset(self.source, &self.parse().root, prefix_span).is_some() {
+            return None;
+        }
+
+        Some(TopLevelCompletionContext {
+            prefix,
+            prefix_span,
+            identifier_context: self.identifier_context(prefix_span),
+        })
     }
 
     pub fn syntax_span_candidates_at_offset(&self, offset: usize) -> Vec<ReferenceCandidate> {
@@ -275,6 +545,9 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
             .symbols()
             .iter()
             .filter_map(|symbol| {
+                if !symbol_detail_span_contains_offset(symbol, offset) {
+                    return None;
+                }
                 let selection_hit = span_contains(symbol.selection_span, offset);
                 let span_hit = span_contains(symbol.span, offset);
                 if !selection_hit && !span_hit {
@@ -375,28 +648,19 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
         candidates: &mut Vec<ReferenceCandidate>,
         seen: &mut BTreeSet<CandidateKey>,
     ) {
-        let Some(callable) = self.containing_callable(offset) else {
-            return;
-        };
-
-        for kind in [SymbolKind::LocalVariable, SymbolKind::Parameter] {
-            for child in self.file_index.children(callable) {
-                let Some(symbol) = self.file_index.symbol(*child) else {
-                    continue;
-                };
-                if symbol.kind != kind || symbol.name.as_deref() != Some(token_text) {
-                    continue;
-                }
-                if kind == SymbolKind::LocalVariable && symbol.selection_span.start > offset {
-                    continue;
-                }
-                let reason = match kind {
-                    SymbolKind::LocalVariable => ResolutionReason::LocalInCallable,
-                    SymbolKind::Parameter => ResolutionReason::ParameterInCallable,
-                    _ => unreachable!(),
-                };
-                self.push_candidate(candidates, seen, CandidateSource::FileLocal, *child, reason);
-            }
+        for id in self
+            .scope()
+            .visible_symbols_named(self.file_index, token_text, offset)
+        {
+            let Some(symbol) = self.file_index.symbol(id) else {
+                continue;
+            };
+            let reason = match symbol.kind {
+                SymbolKind::LocalVariable => ResolutionReason::LocalInCallable,
+                SymbolKind::Parameter => ResolutionReason::ParameterInCallable,
+                _ => continue,
+            };
+            self.push_candidate(candidates, seen, CandidateSource::FileLocal, id, reason);
         }
     }
 
@@ -436,12 +700,7 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
                 candidates,
                 seen,
             );
-            if let Some(base_type) = self
-                .file_index
-                .symbol(class)
-                .and_then(|symbol| symbol.detail.base_type.as_deref())
-                .and_then(owner_type_from_type_text)
-            {
+            if let Some(base_type) = base_owner_type_from_symbol(self.file_index, class) {
                 push_class_member_candidates_from_index(
                     external_index,
                     CandidateSource::External,
@@ -455,6 +714,34 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
 
         if candidates.len() == before && is_pseudo_class_member_name(token_text) {
             self.push_pseudo_class_member_rule(token_text, candidates, seen);
+        }
+    }
+
+    fn push_class_type_parameters(
+        &self,
+        token_text: &str,
+        offset: usize,
+        candidates: &mut Vec<ReferenceCandidate>,
+        seen: &mut BTreeSet<CandidateKey>,
+    ) {
+        let Some(class_id) = self.containing_class(offset) else {
+            return;
+        };
+        for child in self.file_index.children(class_id) {
+            let Some(symbol) = self.file_index.symbol(*child) else {
+                continue;
+            };
+            if symbol.kind == SymbolKind::TypeParameter
+                && symbol.name.as_deref() == Some(token_text)
+            {
+                self.push_candidate(
+                    candidates,
+                    seen,
+                    CandidateSource::FileLocal,
+                    *child,
+                    ResolutionReason::TypeParameter,
+                );
+            }
         }
     }
 
@@ -566,6 +853,53 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
         }
     }
 
+    fn push_preprocessor_macros(
+        &self,
+        token_text: &str,
+        candidates: &mut Vec<ReferenceCandidate>,
+        seen: &mut BTreeSet<CandidateKey>,
+    ) {
+        for id in self.file_index.symbols_for_name(token_text) {
+            if self
+                .file_index
+                .symbol(*id)
+                .is_some_and(|symbol| symbol.kind == SymbolKind::PreprocessorMacro)
+            {
+                self.push_candidate(
+                    candidates,
+                    seen,
+                    CandidateSource::FileLocal,
+                    *id,
+                    ResolutionReason::PreprocessorMacro,
+                );
+            }
+        }
+
+        let Some(external_index) = self.external_index else {
+            return;
+        };
+        let external = external_index
+            .symbols_for_name(token_text)
+            .iter()
+            .copied()
+            .filter(|id| {
+                external_index
+                    .symbol(*id)
+                    .is_some_and(|symbol| symbol.kind == SymbolKind::PreprocessorMacro)
+            })
+            .collect::<Vec<_>>();
+        for id in external_index.preferred_from_symbols(&external) {
+            push_index_candidate(
+                external_index,
+                candidates,
+                seen,
+                CandidateSource::External,
+                id,
+                ResolutionReason::PreprocessorMacro,
+            );
+        }
+    }
+
     fn push_receiver_member_candidates(
         &self,
         member_access: &MemberAccessContext<'source, '_>,
@@ -575,9 +909,10 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
         seen: &mut BTreeSet<CandidateKey>,
     ) -> ReceiverResolution {
         let mut lookup_path = Vec::new();
+        let environment = self.type_environment();
         let inferred =
-            self.infer_receiver_expression_type(member_access.receiver, offset, &mut lookup_path);
-        let Some(inferred) = inferred else {
+            environment.infer_expression_type(member_access.receiver, offset, &mut lookup_path);
+        let Some(mut inferred) = inferred else {
             return ReceiverResolution {
                 receiver_text: member_access.receiver.source_text().trim().to_string(),
                 receiver_span: member_access.receiver_span,
@@ -588,6 +923,13 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
                 failure_reason: Some("receiver type was not inferred".to_string()),
             };
         };
+        if member_name == "Cast" {
+            if let Some(static_owner) =
+                environment.static_type_name_from_expression(member_access.receiver, offset)
+            {
+                inferred = InferredReceiverType::static_type(static_owner);
+            }
+        }
 
         let reason = if inferred.is_static {
             ResolutionReason::StaticMember
@@ -774,333 +1116,6 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
         }
     }
 
-    fn infer_receiver_expression_type(
-        &self,
-        expression: Expression<'source, '_>,
-        offset: usize,
-        lookup_path: &mut Vec<String>,
-    ) -> Option<InferredReceiverType> {
-        match expression {
-            Expression::Call(node) => {
-                let callee = node.callee()?;
-                if let Some(member_access) = member_access_parts(callee) {
-                    let receiver_type = self.infer_receiver_expression_type(
-                        member_access.receiver,
-                        offset,
-                        lookup_path,
-                    )?;
-                    let member = member_access.member_name.text();
-                    let callee_text = callee.source_text().trim();
-                    if member == "Cast" && receiver_type.is_static {
-                        lookup_path.push(format!(
-                            "`{callee_text}` treated as cast returning `{}`",
-                            receiver_type.owner_type
-                        ));
-                        return Some(InferredReceiverType::instance(receiver_type.owner_type));
-                    }
-                    lookup_path.push(format!(
-                        "`{callee_text}` call receiver inferred as `{}`",
-                        receiver_type.owner_type
-                    ));
-                    return self.member_result_type(
-                        &receiver_type.owner_type,
-                        member,
-                        receiver_type.is_static,
-                        lookup_path,
-                    );
-                }
-
-                let callee_name = callee.name_text()?.text();
-                lookup_path.push(format!("call `{callee_name}`"));
-                self.callable_result_type(callee_name, offset, lookup_path)
-            }
-            Expression::Index(node) => {
-                let base = node.receiver()?;
-                let base_type = self.infer_receiver_expression_type(base, offset, lookup_path)?;
-                if let Some(raw_type_text) = base_type.raw_type_text.as_deref() {
-                    if let Some(element_type) = collection_index_result_type(raw_type_text) {
-                        lookup_path.push(format!(
-                            "`{}` indexed receiver inferred as `{}`",
-                            expression.source_text().trim(),
-                            element_type.owner_type
-                        ));
-                        return Some(element_type);
-                    }
-                }
-                lookup_path.push(format!(
-                    "`{}` indexed receiver base inferred as `{}` without element type",
-                    expression.source_text().trim(),
-                    base_type.owner_type
-                ));
-                None
-            }
-            Expression::MemberAccess(_) => {
-                let member_access = member_access_parts(expression)?;
-                let receiver_type = self.infer_receiver_expression_type(
-                    member_access.receiver,
-                    offset,
-                    lookup_path,
-                )?;
-                let member = member_access.member_name.text();
-                lookup_path.push(format!(
-                    "`{}` member receiver inferred as `{}`",
-                    expression.source_text().trim(),
-                    receiver_type.owner_type
-                ));
-                self.member_result_type(
-                    &receiver_type.owner_type,
-                    member,
-                    receiver_type.is_static,
-                    lookup_path,
-                )
-            }
-            Expression::Parenthesized(node) | Expression::Unknown(node) => {
-                first_expression_child(self.source, node.syntax_node()).and_then(|child| {
-                    self.infer_receiver_expression_type(child, offset, lookup_path)
-                })
-            }
-            _ => {
-                let name = expression.name_text()?.text();
-                if name == "this" {
-                    let class_name = self
-                        .containing_class(offset)
-                        .and_then(|id| self.file_index.symbol(id))
-                        .and_then(|symbol| symbol.name.clone());
-                    if let Some(class_name) = class_name {
-                        lookup_path.push(format!("`this` inferred as `{class_name}`"));
-                        return Some(InferredReceiverType::instance(class_name));
-                    }
-                }
-
-                if name == "super" {
-                    let base_type = self
-                        .containing_class(offset)
-                        .and_then(|id| self.file_index.symbol(id))
-                        .and_then(|symbol| symbol.detail.base_type.as_deref())
-                        .and_then(owner_type_from_type_text);
-                    if let Some(base_type) = base_type {
-                        lookup_path.push(format!("`super` inferred as base `{base_type}`"));
-                        return Some(InferredReceiverType::instance(base_type));
-                    }
-                }
-
-                self.identifier_result_type(name, offset, lookup_path)
-            }
-        }
-    }
-
-    fn identifier_result_type(
-        &self,
-        name: &str,
-        offset: usize,
-        lookup_path: &mut Vec<String>,
-    ) -> Option<InferredReceiverType> {
-        if let Some(callable) = self.containing_callable(offset) {
-            for kind in [SymbolKind::LocalVariable, SymbolKind::Parameter] {
-                for child in self.file_index.children(callable) {
-                    let Some(symbol) = self.file_index.symbol(*child) else {
-                        continue;
-                    };
-                    if symbol.kind != kind || symbol.name.as_deref() != Some(name) {
-                        continue;
-                    }
-                    if kind == SymbolKind::LocalVariable && symbol.selection_span.start > offset {
-                        continue;
-                    }
-                    if let Some(result) = inferred_instance_type_from_symbol(symbol) {
-                        lookup_path.push(format!(
-                            "`{name}` inferred from `{}` `{}`",
-                            symbol_kind_label_for_path(kind),
-                            result.owner_type
-                        ));
-                        return Some(result);
-                    }
-                }
-            }
-        }
-
-        if let Some(class) = self.containing_class(offset) {
-            let class_name = self
-                .file_index
-                .symbol(class)
-                .and_then(|symbol| symbol.name.as_deref());
-            if let Some(class_name) = class_name {
-                if let Some(result) =
-                    member_type_from_owner_for_name(self.file_index, class_name, name)
-                {
-                    lookup_path.push(format!(
-                        "`{name}` inferred from class member `{}`",
-                        result.owner_type
-                    ));
-                    return Some(result);
-                }
-                if let Some(external_index) = self.external_index {
-                    if let Some(result) =
-                        member_type_from_owner_for_name(external_index, class_name, name)
-                    {
-                        lookup_path.push(format!(
-                            "`{name}` inferred from external class member `{}`",
-                            result.owner_type
-                        ));
-                        return Some(result);
-                    }
-                    if let Some(base_type) = self
-                        .file_index
-                        .symbol(class)
-                        .and_then(|symbol| symbol.detail.base_type.as_deref())
-                        .and_then(owner_type_from_type_text)
-                    {
-                        if let Some(result) =
-                            member_type_from_owner_for_name(external_index, &base_type, name)
-                        {
-                            lookup_path.push(format!(
-                                "`{name}` inferred from external base member `{}`",
-                                result.owner_type
-                            ));
-                            return Some(result);
-                        }
-                    }
-                }
-            }
-        }
-
-        for id in self.file_index.top_level_symbols_for_name(name) {
-            let Some(symbol) = self.file_index.symbol(*id) else {
-                continue;
-            };
-            if let Some(result) = inferred_type_from_top_level_symbol(symbol) {
-                lookup_path.push(format!("`{name}` inferred from file-local top-level"));
-                return Some(result);
-            }
-        }
-
-        let Some(external_index) = self.external_index else {
-            return None;
-        };
-        let mut external = Vec::new();
-        for id in external_index.preferred_classes_by_name(name) {
-            push_unique_id(&mut external, id);
-        }
-        for id in external_index.preferred_typedefs_by_name(name) {
-            push_unique_id(&mut external, id);
-        }
-        for id in external_index.preferred_functions_by_name(name) {
-            push_unique_id(&mut external, id);
-        }
-        for id in external_index.preferred_top_level_symbols_for_name(name) {
-            push_unique_id(&mut external, id);
-        }
-        for id in external {
-            let Some(symbol) = external_index.symbol(id) else {
-                continue;
-            };
-            if let Some(result) = inferred_type_from_top_level_symbol(symbol) {
-                lookup_path.push(format!("`{name}` inferred from external top-level"));
-                return Some(result);
-            }
-        }
-
-        None
-    }
-
-    fn callable_result_type(
-        &self,
-        name: &str,
-        offset: usize,
-        lookup_path: &mut Vec<String>,
-    ) -> Option<InferredReceiverType> {
-        if let Some(callable) = self.containing_callable(offset) {
-            for child in self.file_index.children(callable) {
-                let Some(symbol) = self.file_index.symbol(*child) else {
-                    continue;
-                };
-                if symbol.kind == SymbolKind::LocalVariable && symbol.name.as_deref() == Some(name)
-                {
-                    if let Some(result) = inferred_instance_type_from_symbol(symbol) {
-                        lookup_path
-                            .push(format!("call `{name}` matched local callable-like value"));
-                        return Some(result);
-                    }
-                }
-            }
-        }
-
-        if let Some(class) = self.containing_class(offset) {
-            let class_name = self
-                .file_index
-                .symbol(class)
-                .and_then(|symbol| symbol.name.as_deref());
-            if let Some(class_name) = class_name {
-                if let Some(result) = self.member_result_type(class_name, name, false, lookup_path)
-                {
-                    lookup_path.push(format!("call `{name}` matched containing class member"));
-                    return Some(result);
-                }
-                if let Some(base_type) = self
-                    .file_index
-                    .symbol(class)
-                    .and_then(|symbol| symbol.detail.base_type.as_deref())
-                    .and_then(owner_type_from_type_text)
-                {
-                    if let Some(result) =
-                        self.member_result_type(&base_type, name, false, lookup_path)
-                    {
-                        lookup_path.push(format!("call `{name}` matched containing base member"));
-                        return Some(result);
-                    }
-                }
-            }
-        }
-
-        for id in self.file_index.functions_by_name(name) {
-            let Some(symbol) = self.file_index.symbol(*id) else {
-                continue;
-            };
-            if let Some(result) = inferred_instance_type_from_symbol(symbol) {
-                lookup_path.push(format!("call `{name}` matched file-local function"));
-                return Some(result);
-            }
-        }
-
-        if let Some(external_index) = self.external_index {
-            for id in external_index.preferred_functions_by_name(name) {
-                let Some(symbol) = external_index.symbol(id) else {
-                    continue;
-                };
-                if let Some(result) = inferred_instance_type_from_symbol(symbol) {
-                    lookup_path.push(format!("call `{name}` matched external function"));
-                    return Some(result);
-                }
-            }
-        }
-
-        None
-    }
-
-    fn member_result_type(
-        &self,
-        owner: &str,
-        member: &str,
-        static_only: bool,
-        lookup_path: &mut Vec<String>,
-    ) -> Option<InferredReceiverType> {
-        if let Some(result) =
-            member_result_type_from_index(self.file_index, owner, member, static_only)
-        {
-            lookup_path.push(format!("member `{owner}.{member}` matched file-local"));
-            return Some(result);
-        }
-        if let Some(external_index) = self.external_index {
-            if let Some(result) =
-                member_result_type_from_index(external_index, owner, member, static_only)
-            {
-                lookup_path.push(format!("member `{owner}.{member}` matched external"));
-                return Some(result);
-            }
-        }
-        None
-    }
-
     fn member_access_context(
         &self,
         token_span: TextSpan,
@@ -1124,15 +1139,6 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
         push_index_candidate(self.file_index, candidates, seen, source, id, reason);
     }
 
-    fn containing_callable(&self, offset: usize) -> Option<GlobalSymbolId> {
-        self.file_index
-            .symbols()
-            .iter()
-            .filter(|symbol| is_callable_kind(symbol.kind) && span_contains(symbol.span, offset))
-            .min_by_key(|symbol| symbol.span.len())
-            .map(|symbol| symbol.id)
-    }
-
     fn containing_class(&self, offset: usize) -> Option<GlobalSymbolId> {
         self.file_index
             .symbols()
@@ -1149,38 +1155,7 @@ struct MemberAccessContext<'source, 'tree> {
     receiver_span: TextSpan,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct InferredReceiverType {
-    owner_type: String,
-    is_static: bool,
-    raw_type_text: Option<String>,
-}
-
-impl InferredReceiverType {
-    fn instance(owner_type: String) -> Self {
-        Self {
-            owner_type,
-            is_static: false,
-            raw_type_text: None,
-        }
-    }
-
-    fn instance_with_raw(owner_type: String, raw_type_text: String) -> Self {
-        Self {
-            owner_type,
-            is_static: false,
-            raw_type_text: Some(raw_type_text),
-        }
-    }
-
-    fn static_type(owner_type: String) -> Self {
-        Self {
-            owner_type,
-            is_static: true,
-            raw_type_text: None,
-        }
-    }
-}
+type InferredReceiverType = ExpressionType;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct CandidateKey {
@@ -1289,162 +1264,194 @@ fn token_at_offset(source: &str, offset: usize) -> Option<crate::lexer::Token> {
         .find(|token| token.span.start <= offset && offset < token.span.end)
 }
 
-fn member_access_parts<'source, 'tree>(
-    expression: Expression<'source, 'tree>,
-) -> Option<crate::ast::MemberAccessExpression<'source, 'tree>> {
-    match expression {
-        Expression::MemberAccess(_) => {
-            let receiver = expression.receiver()?;
-            let member_name = expression.member_name()?;
-            Some(crate::ast::MemberAccessExpression {
-                expression,
-                receiver,
-                member_name,
-            })
-        }
-        _ => None,
+fn is_syntax_span_hover_token(kind: TokenKind) -> bool {
+    matches!(kind, TokenKind::Keyword(_))
+}
+
+fn is_resolvable_type_keyword(keyword: Keyword) -> bool {
+    matches!(
+        keyword,
+        Keyword::Bool
+            | Keyword::Int
+            | Keyword::Float
+            | Keyword::String
+            | Keyword::Vector
+            | Keyword::Typename
+    )
+}
+
+fn symbol_detail_span_contains_offset(symbol: &IndexedSymbol, offset: usize) -> bool {
+    [
+        symbol.detail.type_text_span,
+        symbol.detail.return_type_text_span,
+        symbol.detail.base_type_span,
+    ]
+    .into_iter()
+    .flatten()
+    .any(|span| span_contains(span, offset))
+}
+
+fn preprocessor_reason_for_token(
+    source: &str,
+    token_span: TextSpan,
+    token_text: &str,
+) -> Option<ResolutionReason> {
+    let line_start = source[..token_span.start]
+        .rfind('\n')
+        .map_or(0, |index| index + 1);
+    let before = &source[line_start..token_span.start];
+    if !before.trim_start().starts_with('#') {
+        return None;
+    }
+
+    if matches!(
+        token_text,
+        "if" | "ifdef" | "ifndef" | "elif" | "else" | "endif" | "define" | "undef" | "include"
+    ) {
+        Some(ResolutionReason::PreprocessorDirective)
+    } else {
+        Some(ResolutionReason::PreprocessorMacro)
     }
 }
 
-fn first_expression_child<'source, 'tree>(
-    source: &'source str,
-    node: &'tree crate::syntax::SyntaxNode,
-) -> Option<Expression<'source, 'tree>> {
-    node.children.iter().find_map(|child| match child {
-        crate::syntax::SyntaxElement::Node(node) => Expression::from_node(source, node),
-        crate::syntax::SyntaxElement::Token(_) => None,
+fn is_attribute_named_argument_token(source: &str, token_span: TextSpan) -> bool {
+    let line_start = source[..token_span.start]
+        .rfind('\n')
+        .map_or(0, |index| index + 1);
+    let line_end = source[token_span.end..]
+        .find('\n')
+        .map_or(source.len(), |index| token_span.end + index);
+    let before = &source[line_start..token_span.start];
+    let after = &source[token_span.end..line_end];
+    before.rfind('[').is_some_and(|open| {
+        before[open..].find(']').is_none() && after.trim_start().starts_with(':')
     })
 }
 
-fn collection_index_result_type(type_text: &str) -> Option<InferredReceiverType> {
-    let text = strip_all_type_prefixes(type_text);
-    let (owner, args) = generic_owner_and_args(text)?;
-    let target = match owner {
-        "array" | "set" => args.first()?,
-        "map" => args.get(1)?,
-        _ => return None,
-    };
-    let owner_type = owner_type_from_type_text(target)?;
-    Some(InferredReceiverType::instance_with_raw(
-        owner_type,
-        target.trim().to_string(),
-    ))
+fn completion_dot_and_prefix(
+    source: &str,
+    tokens: &[crate::lexer::Token],
+    offset: usize,
+) -> Option<(crate::lexer::Token, String, TextSpan)> {
+    let mut token_index = completion_token_index(tokens, offset)?;
+    let mut prefix = String::new();
+    let mut prefix_span = TextSpan::new(offset, offset);
+
+    let token = tokens[token_index];
+    if token.kind == TokenKind::Identifier && token.span.start < offset && offset <= token.span.end
+    {
+        prefix = source[token.span.start..offset].to_string();
+        prefix_span = TextSpan::new(token.span.start, offset);
+        token_index = previous_non_trivia_token_index(tokens, token.span.start)?;
+    }
+
+    let dot = tokens[token_index];
+    if dot.kind != TokenKind::Dot {
+        return None;
+    }
+
+    Some((dot, prefix, prefix_span))
 }
 
-fn generic_owner_and_args(type_text: &str) -> Option<(&str, Vec<String>)> {
-    let type_text = type_text.trim();
-    let less = type_text.find('<')?;
-    let owner = type_text[..less].trim();
-    let mut depth = 0usize;
-    let mut close = None;
-    for (index, ch) in type_text.char_indices().skip(less) {
-        match ch {
-            '<' => depth += 1,
-            '>' => {
-                depth = depth.saturating_sub(1);
-                if depth == 0 {
-                    close = Some(index);
-                    break;
-                }
+fn completion_identifier_prefix(
+    source: &str,
+    tokens: &[crate::lexer::Token],
+    offset: usize,
+) -> Option<(String, TextSpan)> {
+    let token_index = completion_token_index(tokens, offset)?;
+    let token = tokens[token_index];
+    if token.kind != TokenKind::Identifier || token.span.start > offset || offset > token.span.end {
+        return None;
+    }
+    let prefix = source[token.span.start..offset].to_string();
+    Some((prefix, TextSpan::new(token.span.start, offset)))
+}
+
+fn completion_token_index(tokens: &[crate::lexer::Token], offset: usize) -> Option<usize> {
+    tokens
+        .iter()
+        .enumerate()
+        .find(|(_, token)| {
+            token.span.start < offset
+                && offset <= token.span.end
+                && !token.kind.is_trivia()
+                && token.kind != TokenKind::Eof
+        })
+        .map(|(index, _)| index)
+        .or_else(|| previous_non_trivia_token_index(tokens, offset))
+}
+
+fn previous_non_trivia_token_index(tokens: &[crate::lexer::Token], offset: usize) -> Option<usize> {
+    tokens
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, token)| {
+            token.span.end <= offset && !token.kind.is_trivia() && token.kind != TokenKind::Eof
+        })
+        .map(|(index, _)| index)
+}
+
+fn previous_significant_token_before_span(
+    tokens: &[crate::lexer::Token],
+    span: TextSpan,
+) -> Option<crate::lexer::Token> {
+    previous_non_trivia_token_index(tokens, span.start).map(|index| tokens[index])
+}
+
+fn previous_significant_char_before_span(source: &str, span: TextSpan) -> Option<char> {
+    source
+        .get(..span.start)?
+        .chars()
+        .rev()
+        .find(|character| !character.is_whitespace())
+}
+
+fn next_significant_char_after_span(source: &str, span: TextSpan) -> Option<char> {
+    source
+        .get(span.end..)?
+        .chars()
+        .find(|character| !character.is_whitespace())
+}
+
+fn receiver_expression_before_dot<'source, 'tree>(
+    source: &'source str,
+    root: &'tree SyntaxNode,
+    dot_span: TextSpan,
+) -> Option<Expression<'source, 'tree>> {
+    let mut best = None;
+    collect_receiver_expression_before_dot(source, root, dot_span.start, &mut best);
+    best
+}
+
+fn collect_receiver_expression_before_dot<'source, 'tree>(
+    source: &'source str,
+    node: &'tree SyntaxNode,
+    dot_start: usize,
+    best: &mut Option<Expression<'source, 'tree>>,
+) {
+    if node.span.start > dot_start || node.span.end < dot_start {
+        return;
+    }
+
+    if let Some(expression) = Expression::from_node(source, node) {
+        let span = expression.span();
+        if span.end <= dot_start && source[span.end..dot_start].trim().is_empty() {
+            let replace = best
+                .as_ref()
+                .map(|best| expression.span().len() > best.span().len())
+                .unwrap_or(true);
+            if replace {
+                *best = Some(expression);
             }
-            _ => {}
-        }
-    }
-    let close = close?;
-    let args = split_top_level_commas(&type_text[less + 1..close]);
-    (!owner.is_empty()).then_some((owner, args))
-}
-
-fn split_top_level_commas(text: &str) -> Vec<String> {
-    let mut args = Vec::new();
-    let mut start = 0usize;
-    let mut angle_depth = 0usize;
-    let mut paren_depth = 0usize;
-    let mut bracket_depth = 0usize;
-
-    for (index, ch) in text.char_indices() {
-        match ch {
-            '<' => angle_depth += 1,
-            '>' => angle_depth = angle_depth.saturating_sub(1),
-            '(' => paren_depth += 1,
-            ')' => paren_depth = paren_depth.saturating_sub(1),
-            '[' => bracket_depth += 1,
-            ']' => bracket_depth = bracket_depth.saturating_sub(1),
-            ',' if angle_depth == 0 && paren_depth == 0 && bracket_depth == 0 => {
-                args.push(text[start..index].trim().to_string());
-                start = index + 1;
-            }
-            _ => {}
-        }
-    }
-    args.push(text[start..].trim().to_string());
-    args.retain(|arg| !arg.is_empty());
-    args
-}
-
-fn owner_type_from_symbol(symbol: &IndexedSymbol) -> Option<String> {
-    match symbol.kind {
-        SymbolKind::LocalVariable
-        | SymbolKind::Parameter
-        | SymbolKind::Field
-        | SymbolKind::GlobalField
-        | SymbolKind::Typedef => symbol
-            .detail
-            .type_text
-            .as_deref()
-            .and_then(owner_type_from_type_text),
-        SymbolKind::Function | SymbolKind::Method => symbol
-            .detail
-            .return_type_text
-            .as_deref()
-            .and_then(owner_type_from_type_text),
-        SymbolKind::Constructor | SymbolKind::Class | SymbolKind::Enum => symbol.name.clone(),
-        _ => None,
-    }
-}
-
-fn inferred_type_from_top_level_symbol(symbol: &IndexedSymbol) -> Option<InferredReceiverType> {
-    match symbol.kind {
-        SymbolKind::Class | SymbolKind::Enum | SymbolKind::Typedef => {
-            let owner_type = symbol
-                .name
-                .clone()
-                .or_else(|| owner_type_from_symbol(symbol))?;
-            Some(InferredReceiverType::static_type(owner_type))
-        }
-        SymbolKind::Function | SymbolKind::GlobalField => {
-            inferred_instance_type_from_symbol(symbol)
-        }
-        _ => None,
-    }
-}
-
-fn member_result_type_from_index(
-    index: &SymbolIndex,
-    owner: &str,
-    member: &str,
-    static_only: bool,
-) -> Option<InferredReceiverType> {
-    if static_only && enum_member_exists(index, owner, member) {
-        return Some(InferredReceiverType::instance(owner.to_string()));
-    }
-
-    for owner in member_lookup_owners(index, owner) {
-        if let Some(result) = member_result_type_for_exact_owner(index, &owner, member, static_only)
-        {
-            return Some(result);
         }
     }
 
-    if !static_only && is_pseudo_class_member_name(member) && owner != "Class" {
-        return member_result_type_for_exact_owner(index, "Class", member, false);
+    for child in &node.children {
+        if let SyntaxElement::Node(child) = child {
+            collect_receiver_expression_before_dot(source, child, dot_start, best);
+        }
     }
-
-    None
-}
-
-fn enum_member_exists(index: &SymbolIndex, owner: &str, member: &str) -> bool {
-    !enum_member_ids_for_owner(index, owner, member).is_empty()
 }
 
 fn enum_member_ids_for_owner(
@@ -1466,6 +1473,13 @@ fn collect_enum_member_ids_for_owner(
 ) {
     if !visited.insert(owner.to_string()) {
         return;
+    }
+
+    for expanded_owner in member_lookup_owners(index, owner) {
+        if expanded_owner == owner {
+            continue;
+        }
+        collect_enum_member_ids_for_owner(index, &expanded_owner, member, visited, ids);
     }
 
     for enum_id in index.top_level_symbols_for_name(owner) {
@@ -1494,64 +1508,6 @@ fn collect_enum_member_ids_for_owner(
     }
 }
 
-fn member_result_type_for_exact_owner(
-    index: &SymbolIndex,
-    owner: &str,
-    member: &str,
-    static_only: bool,
-) -> Option<InferredReceiverType> {
-    let mut matching = matching_members_for_exact_owner(index, owner, member);
-
-    if static_only {
-        let static_matching = matching
-            .iter()
-            .copied()
-            .filter(|id| {
-                index
-                    .symbol(*id)
-                    .is_some_and(|symbol| has_modifier(symbol, "static"))
-            })
-            .collect::<Vec<_>>();
-        if !static_matching.is_empty() {
-            matching = static_matching;
-        }
-    }
-
-    for id in index.preferred_from_symbols(&matching) {
-        let Some(symbol) = index.symbol(id) else {
-            continue;
-        };
-        if let Some(result) = inferred_instance_type_from_symbol(symbol) {
-            return Some(result);
-        }
-        if symbol.kind == SymbolKind::EnumMember {
-            return Some(InferredReceiverType::instance(owner.to_string()));
-        }
-    }
-
-    None
-}
-
-fn member_type_from_owner_for_name(
-    index: &SymbolIndex,
-    owner: &str,
-    name: &str,
-) -> Option<InferredReceiverType> {
-    for owner in member_lookup_owners(index, owner) {
-        let lookup = index.completion_members_for_preferred_class(&owner);
-        let matching = matching_members_from_ids(index, lookup.members.iter().copied(), name);
-        for id in index.preferred_from_symbols(&matching) {
-            let Some(symbol) = index.symbol(id) else {
-                continue;
-            };
-            if let Some(result) = inferred_instance_type_from_symbol(symbol) {
-                return Some(result);
-            }
-        }
-    }
-    None
-}
-
 fn matching_members_for_exact_owner(
     index: &SymbolIndex,
     owner: &str,
@@ -1574,101 +1530,6 @@ fn matching_members_from_ids(
     .collect()
 }
 
-fn inferred_instance_type_from_symbol(symbol: &IndexedSymbol) -> Option<InferredReceiverType> {
-    let raw_type_text = match symbol.kind {
-        SymbolKind::LocalVariable
-        | SymbolKind::Parameter
-        | SymbolKind::Field
-        | SymbolKind::GlobalField
-        | SymbolKind::Typedef => symbol.detail.type_text.as_deref(),
-        SymbolKind::Function | SymbolKind::Method => symbol.detail.return_type_text.as_deref(),
-        SymbolKind::Constructor | SymbolKind::Class | SymbolKind::Enum => {
-            return symbol.name.clone().map(InferredReceiverType::instance)
-        }
-        _ => None,
-    }?;
-    let owner_type = owner_type_from_type_text(raw_type_text)?;
-    Some(InferredReceiverType::instance_with_raw(
-        owner_type,
-        raw_type_text.to_string(),
-    ))
-}
-
-fn member_lookup_owners(index: &SymbolIndex, owner: &str) -> Vec<String> {
-    let mut owners = Vec::new();
-    push_unique_string(&mut owners, owner.to_string());
-
-    for id in index.preferred_typedefs_by_name(owner) {
-        let Some(symbol) = index.symbol(id) else {
-            continue;
-        };
-        let Some(type_text) = symbol.detail.type_text.as_deref() else {
-            continue;
-        };
-        if let Some(target_owner) = owner_type_from_type_text(type_text) {
-            push_unique_string(&mut owners, target_owner);
-        }
-    }
-
-    owners
-}
-
-fn push_unique_string(values: &mut Vec<String>, value: String) {
-    if !values.contains(&value) {
-        values.push(value);
-    }
-}
-
-fn owner_type_from_type_text(type_text: &str) -> Option<String> {
-    let text = strip_all_type_prefixes(type_text);
-
-    if text.is_empty() {
-        return None;
-    }
-
-    for collection in ["array", "set", "map"] {
-        if text.starts_with(collection) && text[collection.len()..].trim_start().starts_with('<') {
-            return Some(collection.to_string());
-        }
-    }
-
-    let owner = text
-        .split(|ch: char| ch == '<' || ch == '[' || ch.is_whitespace() || ch == '&' || ch == '*')
-        .next()
-        .unwrap_or_default()
-        .trim();
-
-    (!owner.is_empty()).then(|| owner.to_string())
-}
-
-fn strip_all_type_prefixes(type_text: &str) -> &str {
-    let mut text = type_text.trim();
-    loop {
-        let stripped = strip_type_prefix(text).trim_start();
-        if stripped == text {
-            return text;
-        }
-        text = stripped;
-    }
-}
-
-fn strip_type_prefix(text: &str) -> &str {
-    for prefix in [
-        "ref", "notnull", "autoptr", "owned", "const", "out", "inout",
-    ] {
-        if let Some(rest) = text.strip_prefix(prefix) {
-            if rest
-                .chars()
-                .next()
-                .is_some_and(|ch| ch.is_whitespace() || ch == '<')
-            {
-                return rest;
-            }
-        }
-    }
-    text
-}
-
 fn is_member_lookup_kind(kind: SymbolKind) -> bool {
     matches!(
         kind,
@@ -1684,37 +1545,12 @@ fn has_modifier(symbol: &IndexedSymbol, modifier: &str) -> bool {
     symbol.modifiers.iter().any(|value| value == modifier)
 }
 
-fn symbol_kind_label_for_path(kind: SymbolKind) -> &'static str {
-    match kind {
-        SymbolKind::LocalVariable => "local",
-        SymbolKind::Parameter => "parameter",
-        SymbolKind::Field => "field",
-        SymbolKind::GlobalField => "global",
-        SymbolKind::Function => "function",
-        SymbolKind::Method => "method",
-        SymbolKind::Class => "class",
-        SymbolKind::Enum => "enum",
-        SymbolKind::Typedef => "typedef",
-        _ => "symbol",
-    }
-}
-
 fn span_contains(span: TextSpan, offset: usize) -> bool {
     span.start <= offset && offset < span.end
 }
 
 fn span_contains_span(outer: TextSpan, inner: TextSpan) -> bool {
     outer.start <= inner.start && inner.end <= outer.end
-}
-
-fn is_callable_kind(kind: SymbolKind) -> bool {
-    matches!(
-        kind,
-        SymbolKind::Function
-            | SymbolKind::Method
-            | SymbolKind::Constructor
-            | SymbolKind::Destructor
-    )
 }
 
 fn is_type_like_kind(kind: SymbolKind) -> bool {
@@ -1783,6 +1619,45 @@ class Example
     }
 
     #[test]
+    fn nearest_preceding_local_shadows_earlier_local_with_same_name() {
+        let source = r#"class FirstTarget
+{
+	int FirstOnly();
+}
+
+class SecondTarget
+{
+	int SecondOnly();
+}
+
+class Example
+{
+	void Run()
+	{
+		FirstTarget target;
+		target.FirstOnly();
+
+		SecondTarget target;
+		target.SecondOnly();
+	}
+}
+"#;
+        let index = index_for_source(source, workspace_metadata("Example.c"));
+
+        let resolution = resolve_at_needle(&index, source, "target.SecondOnly", "SecondOnly");
+
+        assert_eq!(resolution.reason, ResolutionReason::ReceiverMember);
+        assert_eq!(
+            resolution.receiver.as_ref().unwrap().owner_type.as_deref(),
+            Some("SecondTarget")
+        );
+        assert_eq!(
+            resolution.selected.as_ref().unwrap().name.as_deref(),
+            Some("SecondOnly")
+        );
+    }
+
+    #[test]
     fn parameter_use_resolves_before_member_and_top_level_when_no_local_exists() {
         let source = r#"int value;
 class Example
@@ -1823,6 +1698,97 @@ class Example
         assert_eq!(field.selected.unwrap().kind, SymbolKind::Field);
         assert_eq!(method.reason, ResolutionReason::ClassMember);
         assert_eq!(method.selected.unwrap().kind, SymbolKind::Method);
+    }
+
+    #[test]
+    fn class_member_use_resolves_field_without_semicolon_before_constructor() {
+        let source = r#"class Example
+{
+	string m_Tag
+	void Example(string tag)
+	{
+		m_Tag = tag;
+	}
+}
+"#;
+        let index = index_for_source(source, workspace_metadata("Example.c"));
+
+        let field = resolve_at_needle(&index, source, "m_Tag = tag", "m_Tag");
+
+        assert_eq!(field.reason, ResolutionReason::ClassMember);
+        assert_eq!(field.selected.unwrap().kind, SymbolKind::Field);
+    }
+
+    #[test]
+    fn class_member_use_resolves_static_array_field_without_semicolon_before_method() {
+        let source = r#"class Example
+{
+	protected vector m_Target[4]
+
+	//-------------------------------------------------------------------------
+	//! Calculates the position.
+	protected void Run()
+	{
+		m_Target[0].ToString();
+	}
+}
+"#;
+        let file_index = index_for_source(source, workspace_metadata("Example.c"));
+        let external_index = index_for_source(
+            "class vector { string ToString(); }",
+            game_metadata("Core/generated/Types/vector.c"),
+        );
+
+        let field = resolve_at_needle(&file_index, source, "m_Target[0]", "m_Target");
+        assert_eq!(field.reason, ResolutionReason::ClassMember);
+        assert_eq!(field.selected.unwrap().kind, SymbolKind::Field);
+
+        let member = resolve_at_needle_with_external(
+            &file_index,
+            &external_index,
+            source,
+            "m_Target[0].ToString",
+            "ToString",
+        );
+        assert_eq!(member.reason, ResolutionReason::ReceiverMember);
+        assert_eq!(
+            member.receiver.as_ref().unwrap().owner_type.as_deref(),
+            Some("vector")
+        );
+    }
+
+    #[test]
+    fn class_member_use_resolves_field_without_semicolon_before_another_field() {
+        let source = r#"class Provider
+{
+}
+
+class Example
+{
+	protected Provider m_ProviderComponent
+	protected bool m_bEnabled;
+
+	void Run()
+	{
+		if (m_ProviderComponent)
+			m_bEnabled = true;
+	}
+}
+"#;
+        let index = index_for_source(source, workspace_metadata("Example.c"));
+
+        let provider = resolve_at_needle(
+            &index,
+            source,
+            "if (m_ProviderComponent)",
+            "m_ProviderComponent",
+        );
+        let enabled = resolve_at_needle(&index, source, "m_bEnabled = true", "m_bEnabled");
+
+        assert_eq!(provider.reason, ResolutionReason::ClassMember);
+        assert_eq!(provider.selected.unwrap().kind, SymbolKind::Field);
+        assert_eq!(enabled.reason, ResolutionReason::ClassMember);
+        assert_eq!(enabled.selected.unwrap().kind, SymbolKind::Field);
     }
 
     #[test]
@@ -2018,6 +1984,102 @@ class Child : Base {}
         assert_eq!(
             resolution.receiver.as_ref().unwrap().owner_type.as_deref(),
             Some("IEntity")
+        );
+    }
+
+    #[test]
+    fn auto_local_call_default_infers_receiver_type_from_method_return() {
+        let source = r#"class Physics
+{
+	float GetMass();
+}
+
+class IEntity
+{
+	Physics GetPhysics();
+}
+
+class Example
+{
+	void Run(IEntity owner)
+	{
+		auto physics = owner.GetPhysics();
+		physics.GetMass();
+	}
+}
+"#;
+        let index = index_for_source(source, workspace_metadata("Physics.c"));
+
+        let resolution = resolve_at_needle(&index, source, "physics.GetMass", "GetMass");
+
+        assert_eq!(resolution.reason, ResolutionReason::ReceiverMember);
+        assert_eq!(
+            resolution.receiver.as_ref().unwrap().owner_type.as_deref(),
+            Some("Physics")
+        );
+        assert_eq!(
+            resolution.selected.as_ref().unwrap().kind,
+            SymbolKind::Method
+        );
+    }
+
+    #[test]
+    fn auto_local_external_function_chain_infers_receiver_type() {
+        let source = r#"class Example
+{
+	void Run()
+	{
+		auto game = GetGame();
+		auto menuManager = game.GetMenuManager();
+		menuManager.OpenMenu();
+	}
+}
+"#;
+        let file_index = index_for_source(source, workspace_metadata("Menu.c"));
+        let external_index = index_for_source(
+            r#"class MenuManager
+{
+	void OpenMenu();
+}
+
+class Game
+{
+	MenuManager GetMenuManager();
+}
+
+class ArmaReforgerScripted : Game
+{
+}
+
+ArmaReforgerScripted GetGame();
+"#,
+            game_metadata("Game/generated/Game.c"),
+        );
+
+        let game_member = resolve_at_needle_with_external(
+            &file_index,
+            &external_index,
+            source,
+            "game.GetMenuManager",
+            "GetMenuManager",
+        );
+        assert_eq!(game_member.reason, ResolutionReason::ReceiverMember);
+        assert_eq!(
+            game_member.receiver.as_ref().unwrap().owner_type.as_deref(),
+            Some("ArmaReforgerScripted")
+        );
+
+        let menu_member = resolve_at_needle_with_external(
+            &file_index,
+            &external_index,
+            source,
+            "menuManager.OpenMenu",
+            "OpenMenu",
+        );
+        assert_eq!(menu_member.reason, ResolutionReason::ReceiverMember);
+        assert_eq!(
+            menu_member.receiver.as_ref().unwrap().owner_type.as_deref(),
+            Some("MenuManager")
         );
     }
 
@@ -2251,6 +2313,41 @@ class Example
         let selected = resolution.selected.as_ref().unwrap();
         assert_eq!(selected.kind, SymbolKind::EnumMember);
         assert_eq!(selected.name.as_deref(), Some("VIRTUAL"));
+    }
+
+    #[test]
+    fn static_enum_member_resolves_through_typedef_alias() {
+        let source = r#"enum WorldSystemPoint
+{
+	Frame,
+	FixedFrame,
+}
+
+typedef WorldSystemPoint ESystemPoint;
+
+class Example
+{
+	void Run()
+	{
+		ESystemPoint.Frame;
+		ESystemPoint.FixedFrame;
+	}
+}
+"#;
+        let index = index_for_source(source, workspace_metadata("WorldSystemPoint.c"));
+
+        let frame = resolve_at_needle(&index, source, "ESystemPoint.Frame", "Frame");
+        assert_eq!(frame.reason, ResolutionReason::StaticMember);
+        let selected = frame.selected.as_ref().unwrap();
+        assert_eq!(selected.kind, SymbolKind::EnumMember);
+        assert_eq!(selected.name.as_deref(), Some("Frame"));
+
+        let fixed_frame =
+            resolve_at_needle(&index, source, "ESystemPoint.FixedFrame", "FixedFrame");
+        assert_eq!(fixed_frame.reason, ResolutionReason::StaticMember);
+        let selected = fixed_frame.selected.as_ref().unwrap();
+        assert_eq!(selected.kind, SymbolKind::EnumMember);
+        assert_eq!(selected.name.as_deref(), Some("FixedFrame"));
     }
 
     #[test]
@@ -2546,6 +2643,156 @@ class Example
         assert_eq!(
             resolution.selected.as_ref().unwrap().kind,
             SymbolKind::Method
+        );
+    }
+
+    #[test]
+    fn external_function_call_receiver_uses_inherited_return_type_chain() {
+        let source = r#"class Example
+{
+	void Run()
+	{
+		GetGame().GetWorld().GetWorldTime();
+	}
+}
+"#;
+        let file_index = index_for_source(source, workspace_metadata("Example.c"));
+        let external_index = index_for_source(
+            r#"class BaseWorld
+{
+	float GetWorldTime();
+}
+
+class World : BaseWorld
+{
+}
+
+class Game
+{
+	World GetWorld();
+}
+
+class ChimeraGame : Game
+{
+}
+
+class ArmaReforgerScripted : ChimeraGame
+{
+}
+
+ArmaReforgerScripted GetGame();
+"#,
+            game_metadata("Game/game.c"),
+        );
+
+        let get_world = resolve_at_needle_with_external(
+            &file_index,
+            &external_index,
+            source,
+            "GetGame().GetWorld",
+            "GetWorld",
+        );
+        assert_eq!(get_world.reason, ResolutionReason::ReceiverMember);
+        assert_eq!(
+            get_world.receiver.as_ref().unwrap().owner_type.as_deref(),
+            Some("ArmaReforgerScripted")
+        );
+        assert_eq!(
+            get_world.selected.as_ref().unwrap().name.as_deref(),
+            Some("GetWorld")
+        );
+
+        let get_world_time = resolve_at_needle_with_external(
+            &file_index,
+            &external_index,
+            source,
+            "GetWorld().GetWorldTime",
+            "GetWorldTime",
+        );
+        assert_eq!(get_world_time.reason, ResolutionReason::ReceiverMember);
+        assert_eq!(
+            get_world_time
+                .receiver
+                .as_ref()
+                .unwrap()
+                .owner_type
+                .as_deref(),
+            Some("World")
+        );
+        assert_eq!(
+            get_world_time.selected.as_ref().unwrap().name.as_deref(),
+            Some("GetWorldTime")
+        );
+    }
+
+    #[test]
+    fn external_function_call_receiver_chain_works_in_local_initializer() {
+        let source = r#"class Example
+{
+	void Run()
+	{
+		float current = GetGame().GetWorld().GetWorldTime();
+	}
+}
+"#;
+        let file_index = index_for_source(source, workspace_metadata("Example.c"));
+        let external_index = index_for_source(
+            r#"class BaseWorld
+{
+	float GetWorldTime();
+}
+
+class World : BaseWorld
+{
+}
+
+class Game
+{
+	World GetWorld();
+}
+
+class ChimeraGame : Game
+{
+}
+
+class ArmaReforgerScripted : ChimeraGame
+{
+}
+
+ArmaReforgerScripted GetGame();
+"#,
+            game_metadata("Game/game.c"),
+        );
+
+        let get_world = resolve_at_needle_with_external(
+            &file_index,
+            &external_index,
+            source,
+            "GetGame().GetWorld",
+            "GetWorld",
+        );
+        assert_eq!(get_world.reason, ResolutionReason::ReceiverMember);
+        assert_eq!(
+            get_world.receiver.as_ref().unwrap().owner_type.as_deref(),
+            Some("ArmaReforgerScripted")
+        );
+
+        let get_world_time = resolve_at_needle_with_external(
+            &file_index,
+            &external_index,
+            source,
+            "GetWorld().GetWorldTime",
+            "GetWorldTime",
+        );
+        assert_eq!(get_world_time.reason, ResolutionReason::ReceiverMember);
+        assert_eq!(
+            get_world_time
+                .receiver
+                .as_ref()
+                .unwrap()
+                .owner_type
+                .as_deref(),
+            Some("World")
         );
     }
 
@@ -2864,6 +3111,45 @@ typedef ScriptInvokerBase<func> ScriptInvoker;
     }
 
     #[test]
+    fn foreach_auto_variable_uses_iterable_element_type() {
+        let source = r#"class Example
+{
+	ref array<ref FilterEntry> m_aFilters;
+	void Run()
+	{
+		foreach (auto f : m_aFilters)
+		{
+			f.GetSelected();
+		}
+	}
+}
+"#;
+        let file_index = index_for_source(source, workspace_metadata("Example.c"));
+        let external_index = index_for_source(
+            "class FilterEntry { bool GetSelected(); }",
+            game_metadata("Game/UI/Menu/Common/SCR_FilterSet.c"),
+        );
+
+        let resolution = resolve_at_needle_with_external(
+            &file_index,
+            &external_index,
+            source,
+            "f.GetSelected",
+            "GetSelected",
+        );
+
+        assert_eq!(resolution.reason, ResolutionReason::ReceiverMember);
+        assert_eq!(
+            resolution.receiver.as_ref().unwrap().owner_type.as_deref(),
+            Some("FilterEntry")
+        );
+        assert_eq!(
+            resolution.selected.as_ref().unwrap().kind,
+            SymbolKind::Method
+        );
+    }
+
+    #[test]
     fn map_index_receiver_uses_value_type() {
         let source = r#"class Example
 {
@@ -2896,6 +3182,496 @@ typedef ScriptInvokerBase<func> ScriptInvoker;
             resolution.selected.as_ref().unwrap().kind,
             SymbolKind::Method
         );
+    }
+
+    #[test]
+    fn map_get_return_substitutes_value_type_for_receiver_chain() {
+        let source = r#"class map<Class TKey, Class TValue>
+{
+	TValue Get(TKey key);
+}
+
+class TextWidget
+{
+	void SetText(string value);
+}
+
+enum EStats
+{
+	Distance
+}
+
+class Example
+{
+	void Run(map<EStats, TextWidget> widgets)
+	{
+		widgets.Get(EStats.Distance).SetText("ok");
+	}
+}
+"#;
+        let index = index_for_source(source, workspace_metadata("MapGet.c"));
+
+        let resolution =
+            resolve_at_needle(&index, source, "Get(EStats.Distance).SetText", "SetText");
+
+        assert_eq!(resolution.reason, ResolutionReason::ReceiverMember);
+        assert_eq!(
+            resolution.receiver.as_ref().unwrap().owner_type.as_deref(),
+            Some("TextWidget")
+        );
+        assert_eq!(
+            resolution.selected.as_ref().unwrap().kind,
+            SymbolKind::Method
+        );
+    }
+
+    #[test]
+    fn map_get_return_substitutes_nested_set_type_for_receiver_chain() {
+        let source = r#"class map<Class TKey, Class TValue>
+{
+	TValue Get(TKey key);
+}
+
+class set<Class T>
+{
+	void Insert(T value);
+}
+
+class Example
+{
+	void Run(map<string, ref set<string>> changes, string category, string action)
+	{
+		changes.Get(category).Insert(action);
+	}
+}
+"#;
+        let index = index_for_source(source, workspace_metadata("MapSet.c"));
+
+        let resolution = resolve_at_needle(&index, source, "Get(category).Insert", "Insert");
+
+        assert_eq!(resolution.reason, ResolutionReason::ReceiverMember);
+        assert_eq!(
+            resolution.receiver.as_ref().unwrap().owner_type.as_deref(),
+            Some("set")
+        );
+        assert_eq!(
+            resolution.selected.as_ref().unwrap().kind,
+            SymbolKind::Method
+        );
+    }
+
+    #[test]
+    fn generic_field_chain_substitutes_wrapped_field_type() {
+        let source = r#"class AIWaypoint
+{
+	string ToString();
+}
+
+class SCR_BTParam<Class T>
+{
+	T m_Value;
+}
+
+class SCR_AIDefendBehavior
+{
+	ref SCR_BTParam<AIWaypoint> m_RelatedWaypoint;
+
+	void Run()
+	{
+		m_RelatedWaypoint.m_Value.ToString();
+	}
+}
+"#;
+        let index = index_for_source(source, workspace_metadata("BtParamField.c"));
+
+        let resolution = resolve_at_needle(&index, source, "m_Value.ToString", "ToString");
+
+        assert_eq!(resolution.reason, ResolutionReason::ReceiverMember);
+        assert_eq!(
+            resolution.receiver.as_ref().unwrap().owner_type.as_deref(),
+            Some("AIWaypoint")
+        );
+        assert_eq!(
+            resolution.selected.as_ref().unwrap().kind,
+            SymbolKind::Method
+        );
+    }
+
+    #[test]
+    fn generic_static_cast_preserves_raw_type_for_field_chain_substitution() {
+        let source = r#"class Class
+{
+	static Class Cast(Class from);
+}
+
+class Tuple2<Class T1, Class T2>
+{
+	T1 param1;
+	T2 param2;
+}
+
+class UserActionEvent
+{
+	ref array<IEntity> m_aUserEntities;
+}
+
+class array<Class T>
+{
+	void Insert(T value);
+}
+
+class IEntity {}
+
+class Example
+{
+	void Run(Class context, IEntity entity)
+	{
+		auto entityContext = Tuple2<UserActionEvent, bool>.Cast(context);
+		entityContext.param1.m_aUserEntities.Insert(entity);
+	}
+}
+"#;
+        let index = index_for_source(source, workspace_metadata("TupleCast.c"));
+
+        let param1 = resolve_at_needle(&index, source, "entityContext.param1", "param1");
+        assert_eq!(param1.reason, ResolutionReason::ReceiverMember);
+        assert_eq!(
+            param1.receiver.as_ref().unwrap().owner_type.as_deref(),
+            Some("Tuple2")
+        );
+        let selected = param1.selected.as_ref().unwrap();
+        assert_eq!(selected.kind, SymbolKind::Field);
+        assert_eq!(selected.name.as_deref(), Some("param1"));
+
+        let insert = resolve_at_needle(&index, source, "m_aUserEntities.Insert", "Insert");
+        assert_eq!(insert.reason, ResolutionReason::ReceiverMember);
+        assert_eq!(
+            insert.receiver.as_ref().unwrap().owner_type.as_deref(),
+            Some("array")
+        );
+        let selected = insert.selected.as_ref().unwrap();
+        assert_eq!(selected.kind, SymbolKind::Method);
+        assert_eq!(selected.name.as_deref(), Some("Insert"));
+    }
+
+    #[test]
+    fn vector_index_receiver_uses_float_type() {
+        let source = r#"class Example
+{
+	void Run(vector matrix)
+	{
+		matrix[0].ToString();
+	}
+}
+"#;
+        let file_index = index_for_source(source, workspace_metadata("Example.c"));
+        let external_index = index_for_source(
+            "class float { string ToString(); }",
+            game_metadata("Core/generated/Types/float.c"),
+        );
+
+        let resolution = resolve_at_needle_with_external(
+            &file_index,
+            &external_index,
+            source,
+            "matrix[0].ToString",
+            "ToString",
+        );
+
+        assert_eq!(resolution.reason, ResolutionReason::ReceiverMember);
+        assert_eq!(
+            resolution.receiver.as_ref().unwrap().owner_type.as_deref(),
+            Some("float")
+        );
+        assert_eq!(
+            resolution.selected.as_ref().unwrap().kind,
+            SymbolKind::Method
+        );
+    }
+
+    #[test]
+    fn string_index_receiver_keeps_string_type() {
+        let source = r#"class Example
+{
+	void Run(string time)
+	{
+		time[0].ToInt();
+	}
+}
+"#;
+        let file_index = index_for_source(source, workspace_metadata("Example.c"));
+        let external_index = index_for_source(
+            "class string { int ToInt(); }",
+            game_metadata("Core/generated/Types/string.c"),
+        );
+
+        let resolution = resolve_at_needle_with_external(
+            &file_index,
+            &external_index,
+            source,
+            "time[0].ToInt",
+            "ToInt",
+        );
+
+        assert_eq!(resolution.reason, ResolutionReason::ReceiverMember);
+        assert_eq!(
+            resolution.receiver.as_ref().unwrap().owner_type.as_deref(),
+            Some("string")
+        );
+        assert_eq!(
+            resolution.selected.as_ref().unwrap().kind,
+            SymbolKind::Method
+        );
+    }
+
+    #[test]
+    fn static_array_parameter_index_receiver_uses_element_type() {
+        let source = r#"class Example
+{
+	void Run(float quat[4])
+	{
+		quat[2].ToString();
+	}
+}
+"#;
+        let file_index = index_for_source(source, workspace_metadata("Example.c"));
+        let external_index = index_for_source(
+            "class float { string ToString(); }",
+            game_metadata("Core/generated/Types/float.c"),
+        );
+
+        let resolution = resolve_at_needle_with_external(
+            &file_index,
+            &external_index,
+            source,
+            "quat[2].ToString",
+            "ToString",
+        );
+
+        assert_eq!(resolution.reason, ResolutionReason::ReceiverMember);
+        assert_eq!(
+            resolution.receiver.as_ref().unwrap().owner_type.as_deref(),
+            Some("float")
+        );
+        assert_eq!(
+            resolution.selected.as_ref().unwrap().kind,
+            SymbolKind::Method
+        );
+    }
+
+    #[test]
+    fn auto_local_new_expression_infers_receiver_type() {
+        let source = r#"class SCR_AICharacterStanceSetting_Range
+{
+	void Init();
+	void VerifyStanceValues();
+}
+
+class Example
+{
+	void Run()
+	{
+		auto s = new SCR_AICharacterStanceSetting_Range();
+		s.Init();
+		s.VerifyStanceValues();
+	}
+}
+"#;
+        let index = index_for_source(source, workspace_metadata("Example.c"));
+
+        for (needle, member_name) in [
+            ("s.Init", "Init"),
+            ("s.VerifyStanceValues", "VerifyStanceValues"),
+        ] {
+            let resolution = resolve_at_needle(&index, source, needle, member_name);
+            assert_eq!(resolution.reason, ResolutionReason::ReceiverMember);
+            assert_eq!(
+                resolution.receiver.as_ref().unwrap().owner_type.as_deref(),
+                Some("SCR_AICharacterStanceSetting_Range")
+            );
+            assert_eq!(
+                resolution.selected.as_ref().unwrap().kind,
+                SymbolKind::Method
+            );
+        }
+    }
+
+    #[test]
+    fn direct_new_expression_receiver_infers_receiver_type() {
+        let source = r#"class SCR_AIAnimateBehavior
+{
+	array<string> GetPortNames();
+}
+
+class Example
+{
+	void Run()
+	{
+		(new SCR_AIAnimateBehavior()).GetPortNames();
+	}
+}
+"#;
+        let index = index_for_source(source, workspace_metadata("NewReceiver.c"));
+
+        let resolution = resolve_at_needle(&index, source, ")).GetPortNames", "GetPortNames");
+
+        assert_eq!(resolution.reason, ResolutionReason::ReceiverMember);
+        assert_eq!(
+            resolution.receiver.as_ref().unwrap().owner_type.as_deref(),
+            Some("SCR_AIAnimateBehavior")
+        );
+        assert_eq!(
+            resolution.selected.as_ref().unwrap().kind,
+            SymbolKind::Method
+        );
+    }
+
+    #[test]
+    fn auto_local_cast_expression_infers_receiver_type() {
+        let source = r#"class GenericComponent {}
+
+class SCR_CharacterCameraHandlerComponent
+{
+	void SetThirdPerson(bool value);
+	static SCR_CharacterCameraHandlerComponent Cast(GenericComponent component);
+}
+
+class Example
+{
+	void Run(GenericComponent component)
+	{
+		auto cameraHandler = SCR_CharacterCameraHandlerComponent.Cast(component);
+		cameraHandler.SetThirdPerson(true);
+	}
+}
+"#;
+        let index = index_for_source(source, workspace_metadata("CameraHandler.c"));
+
+        let resolution = resolve_at_needle(
+            &index,
+            source,
+            "cameraHandler.SetThirdPerson",
+            "SetThirdPerson",
+        );
+
+        assert_eq!(resolution.reason, ResolutionReason::ReceiverMember);
+        assert_eq!(
+            resolution.receiver.as_ref().unwrap().owner_type.as_deref(),
+            Some("SCR_CharacterCameraHandlerComponent")
+        );
+        assert_eq!(
+            resolution.selected.as_ref().unwrap().kind,
+            SymbolKind::Method
+        );
+    }
+
+    #[test]
+    fn local_without_semicolon_before_expression_statement_is_extracted() {
+        let source = r#"enum ETreeSoundTypes
+{
+	Leafy
+}
+
+class Example
+{
+	string GetTreeSoundEventName(float height, ETreeSoundTypes treeType);
+	void GetTreeProperties(out ETreeSoundTypes treeType, out float height);
+
+	void Run()
+	{
+		float foliageHeight;
+		ETreeSoundTypes treeSoundType
+		GetTreeProperties(treeSoundType, foliageHeight);
+		string eventName = GetTreeSoundEventName(foliageHeight, treeSoundType);
+	}
+}
+"#;
+        let index = index_for_source(source, workspace_metadata("Example.c"));
+
+        let local = resolve_at_needle(
+            &index,
+            source,
+            "GetTreeSoundEventName(foliageHeight, treeSoundType)",
+            "treeSoundType",
+        );
+
+        assert_eq!(local.reason, ResolutionReason::LocalInCallable);
+        assert_eq!(local.selected.unwrap().kind, SymbolKind::LocalVariable);
+    }
+
+    #[test]
+    fn comma_locals_without_semicolon_before_expression_statement_are_extracted() {
+        let source = r#"class FuelManager
+{
+	void GetTotalValuesOfFuelNodes(out float totalFuel, out float totalMaxFuel, out float totalFuelPercentage);
+}
+
+class Example
+{
+	FuelManager m_FuelManager;
+
+	void Run()
+	{
+		float totalFuel, totalMaxFuel, totalFuelPercentage
+		m_FuelManager.GetTotalValuesOfFuelNodes(totalFuel, totalMaxFuel, totalFuelPercentage);
+	}
+}
+"#;
+        let index = index_for_source(source, workspace_metadata("Fuel.c"));
+
+        for name in ["totalFuel", "totalMaxFuel", "totalFuelPercentage"] {
+            let resolution = resolve_at_needle(
+                &index,
+                source,
+                "GetTotalValuesOfFuelNodes(totalFuel, totalMaxFuel, totalFuelPercentage)",
+                name,
+            );
+
+            assert_eq!(resolution.reason, ResolutionReason::LocalInCallable);
+            assert_eq!(
+                resolution.selected.as_ref().unwrap().kind,
+                SymbolKind::LocalVariable
+            );
+        }
+    }
+
+    #[test]
+    fn parenthesized_numeric_receiver_uses_primitive_type() {
+        let source = r#"class Example
+{
+	int m_iKickTimeout;
+	void Run()
+	{
+		(m_iKickTimeout / 60).ToString();
+		(10 / 2).ToString();
+	}
+}
+"#;
+        let file_index = index_for_source(source, workspace_metadata("Example.c"));
+        let external_index = index_for_source(
+            "class int { string ToString(); }",
+            game_metadata("Core/generated/Types/int.c"),
+        );
+
+        for needle in ["(m_iKickTimeout / 60).ToString", "(10 / 2).ToString"] {
+            let resolution = resolve_at_needle_with_external(
+                &file_index,
+                &external_index,
+                source,
+                needle,
+                "ToString",
+            );
+
+            assert_eq!(resolution.reason, ResolutionReason::ReceiverMember);
+            assert_eq!(
+                resolution.receiver.as_ref().unwrap().owner_type.as_deref(),
+                Some("int")
+            );
+            assert_eq!(
+                resolution.selected.as_ref().unwrap().kind,
+                SymbolKind::Method
+            );
+        }
     }
 
     #[test]
@@ -3004,18 +3780,389 @@ class Example
         let index = index_for_source(source, workspace_metadata("Example.c"));
 
         let label = resolve_at_needle(&index, source, "level: LogLevel", "level");
-        assert_eq!(label.reason, ResolutionReason::Unresolved);
+        assert_eq!(label.reason, ResolutionReason::NamedArgumentLabel);
         assert_eq!(label.selected, None);
         assert!(label.candidates.is_empty());
 
         let nested_label = resolve_at_needle(&index, source, "path, level: LogLevel", "level");
-        assert_eq!(nested_label.reason, ResolutionReason::Unresolved);
+        assert_eq!(nested_label.reason, ResolutionReason::NamedArgumentLabel);
         assert_eq!(nested_label.selected, None);
         assert!(nested_label.candidates.is_empty());
 
         let value = resolve_at_needle(&index, source, "level: LogLevel", "LogLevel");
         assert_eq!(value.reason, ResolutionReason::TopLevel);
         assert_eq!(value.selected.as_ref().unwrap().kind, SymbolKind::Class);
+    }
+
+    #[test]
+    fn preprocessor_tokens_are_classified_as_non_symbol_targets() {
+        let source = r#"#ifdef ENABLE_DIAG
+class Example
+{
+}
+#endif
+"#;
+        let index = index_for_source(source, workspace_metadata("Example.c"));
+
+        let directive = resolve_at_needle(&index, source, "#ifdef ENABLE_DIAG", "ifdef");
+        assert_eq!(directive.reason, ResolutionReason::PreprocessorDirective);
+        assert_eq!(directive.selected, None);
+        assert!(directive.candidates.is_empty());
+
+        let macro_name = resolve_at_needle(&index, source, "#ifdef ENABLE_DIAG", "ENABLE_DIAG");
+        assert_eq!(macro_name.reason, ResolutionReason::PreprocessorMacro);
+        assert_eq!(macro_name.selected, None);
+        assert!(macro_name.candidates.is_empty());
+
+        let endif = resolve_at_needle(&index, source, "#endif", "endif");
+        assert_eq!(endif.reason, ResolutionReason::PreprocessorDirective);
+        assert_eq!(endif.selected, None);
+        assert!(endif.candidates.is_empty());
+    }
+
+    #[test]
+    fn attribute_named_arguments_are_classified_as_non_symbol_targets() {
+        let source = r#"class UIWidgets
+{
+	static UIWidgets ComboBox;
+}
+
+class Example
+{
+	[Attribute("", UIWidgets.ComboBox, desc: "Display text", params: "et")]
+	int value;
+}
+"#;
+        let index = index_for_source(source, workspace_metadata("Example.c"));
+
+        let desc = resolve_at_needle(&index, source, "desc: \"Display text\"", "desc");
+        assert_eq!(desc.reason, ResolutionReason::AttributeNamedArgument);
+        assert_eq!(desc.selected, None);
+        assert!(desc.candidates.is_empty());
+
+        let params = resolve_at_needle(&index, source, "params: \"et\"", "params");
+        assert_eq!(params.reason, ResolutionReason::AttributeNamedArgument);
+        assert_eq!(params.selected, None);
+        assert!(params.candidates.is_empty());
+
+        let value = resolve_at_needle(&index, source, "UIWidgets.ComboBox", "ComboBox");
+        assert_eq!(value.reason, ResolutionReason::StaticMember);
+        assert_eq!(value.selected.as_ref().unwrap().kind, SymbolKind::Field);
+    }
+
+    #[test]
+    fn parameter_default_member_expressions_resolve() {
+        let source = r#"class Example
+{
+	void Run(string prefix = string.Empty, NamingConvention namingConvention = NamingConvention.NC_MUST_HAVE_GUID);
+}
+"#;
+        let file_index = index_for_source(source, workspace_metadata("Example.c"));
+        let external_index = index_for_source(
+            r#"sealed class string
+{
+	static const string Empty;
+}
+
+enum NamingConvention
+{
+	NC_MUST_HAVE_GUID
+}
+"#,
+            game_metadata("Core/generated/Types.c"),
+        );
+
+        let empty = resolve_at_needle_with_external(
+            &file_index,
+            &external_index,
+            source,
+            "string.Empty",
+            "Empty",
+        );
+        assert_eq!(empty.reason, ResolutionReason::StaticMember);
+        assert_eq!(empty.selected.as_ref().unwrap().kind, SymbolKind::Field);
+
+        let enum_member = resolve_at_needle_with_external(
+            &file_index,
+            &external_index,
+            source,
+            "NamingConvention.NC_MUST_HAVE_GUID",
+            "NC_MUST_HAVE_GUID",
+        );
+        assert_eq!(enum_member.reason, ResolutionReason::StaticMember);
+        assert_eq!(
+            enum_member.selected.as_ref().unwrap().kind,
+            SymbolKind::EnumMember
+        );
+    }
+
+    #[test]
+    fn field_initializer_member_expressions_resolve() {
+        let source = r#"class SCR_AIActionTask
+{
+	static const string WAYPOINT_RELATED_PORT;
+}
+
+class Example
+{
+	ref SCR_BTParam<bool> m_bIsWaypointRelated = new SCR_BTParam<bool>(SCR_AIActionTask.WAYPOINT_RELATED_PORT);
+}
+"#;
+        let index = index_for_source(source, workspace_metadata("Example.c"));
+
+        let resolution = resolve_at_needle(
+            &index,
+            source,
+            "SCR_AIActionTask.WAYPOINT_RELATED_PORT",
+            "WAYPOINT_RELATED_PORT",
+        );
+
+        assert_eq!(resolution.reason, ResolutionReason::StaticMember);
+        assert_eq!(
+            resolution.selected.as_ref().unwrap().kind,
+            SymbolKind::Field
+        );
+    }
+
+    #[test]
+    fn class_type_parameters_resolve_in_type_positions() {
+        let source = r#"class map<Class TKey,Class TValue>: Managed
+{
+	proto TValue Get(TKey key);
+}
+"#;
+        let index = index_for_source(source, workspace_metadata("Core/proto/Types.c"));
+
+        let value = resolve_at_needle(&index, source, "TValue Get", "TValue");
+        assert_eq!(value.reason, ResolutionReason::TypeParameter);
+        assert_eq!(
+            value.selected.as_ref().unwrap().kind,
+            SymbolKind::TypeParameter
+        );
+
+        let key = resolve_at_needle(&index, source, "TKey key", "TKey");
+        assert_eq!(key.reason, ResolutionReason::TypeParameter);
+        assert_eq!(
+            key.selected.as_ref().unwrap().kind,
+            SymbolKind::TypeParameter
+        );
+    }
+
+    #[test]
+    fn class_type_parameters_resolve_as_value_identifiers() {
+        let source = r#"class WeightedArray<Class TValue>
+{
+	void Run()
+	{
+		PrintFormat("%1", TValue);
+	}
+}
+"#;
+        let index = index_for_source(source, workspace_metadata("WeightedArray.c"));
+
+        let resolution = resolve_at_needle(&index, source, "TValue);", "TValue");
+
+        assert_eq!(resolution.reason, ResolutionReason::TypeParameter);
+        assert_eq!(
+            resolution.selected.as_ref().unwrap().kind,
+            SymbolKind::TypeParameter
+        );
+    }
+
+    #[test]
+    fn class_type_parameter_can_be_static_cast_receiver() {
+        let source = r#"class Class
+{
+	proto external static void Cast(Managed object);
+}
+
+class Widget: Managed {}
+
+class SCR_SpinningWidgetAnimation<Widget TWidget>
+{
+	TWidget m_wTarget;
+	void Run(Widget w)
+	{
+		m_wTarget = TWidget.Cast(w);
+	}
+}
+"#;
+        let index = index_for_source(source, workspace_metadata("GenericWidget.c"));
+
+        let resolution = resolve_at_needle(&index, source, "TWidget.Cast(w)", "Cast");
+
+        assert_eq!(resolution.reason, ResolutionReason::EngineClassCast);
+        assert_eq!(
+            resolution.receiver.as_ref().unwrap().owner_type.as_deref(),
+            Some("TWidget")
+        );
+        assert_eq!(
+            resolution.selected.as_ref().unwrap().kind,
+            SymbolKind::Method
+        );
+    }
+
+    #[test]
+    fn enum_member_value_static_member_expressions_resolve() {
+        let source = r#"enum EPlatform
+{
+	XBOX_ONE_X,
+}
+
+enum SCR_EPlatform
+{
+	XBOX_ONE_X = 1 << EPlatform.XBOX_ONE_X,
+}
+"#;
+        let index = index_for_source(source, workspace_metadata("Enums.c"));
+
+        let resolution = resolve_at_needle(&index, source, "EPlatform.XBOX_ONE_X", "XBOX_ONE_X");
+
+        assert_eq!(resolution.reason, ResolutionReason::StaticMember);
+        assert_eq!(
+            resolution.selected.as_ref().unwrap().kind,
+            SymbolKind::EnumMember
+        );
+    }
+
+    #[test]
+    fn foreach_generic_variable_preserves_type_for_tuple_member_lookup() {
+        let source = r#"class Tuple2<Class T1, Class T2>
+{
+	T1 param1;
+	T2 param2;
+}
+
+class Example
+{
+	void Run(array<ref Tuple2<vector, vector>> areas)
+	{
+		foreach (Tuple2<vector, vector> area: areas)
+		{
+			RequestNavmeshRebuild(area.param1, area.param2);
+		}
+	}
+}
+"#;
+        let index = index_for_source(source, workspace_metadata("TupleUse.c"));
+
+        let resolution = resolve_at_needle(&index, source, "area.param1", "param1");
+
+        assert_eq!(resolution.reason, ResolutionReason::ReceiverMember);
+        assert_eq!(
+            resolution.receiver.as_ref().unwrap().owner_type.as_deref(),
+            Some("Tuple2")
+        );
+        assert_eq!(
+            resolution.selected.as_ref().unwrap().kind,
+            SymbolKind::Field
+        );
+    }
+
+    #[test]
+    fn generic_base_owner_members_are_visible_for_receiver_lookup() {
+        let source = r#"class array<Class T>
+{
+	void InsertAt(T value, int index);
+}
+
+class ParamEnum {}
+class ParamEnumArray: array<ref ParamEnum> {}
+
+class Example
+{
+	void Run(ParamEnumArray params, ParamEnum value)
+	{
+		params.InsertAt(value, 0);
+	}
+}
+"#;
+        let index = index_for_source(source, workspace_metadata("ParamEnumArray.c"));
+
+        let resolution = resolve_at_needle(&index, source, "params.InsertAt", "InsertAt");
+
+        assert_eq!(resolution.reason, ResolutionReason::ReceiverMember);
+        assert_eq!(
+            resolution.receiver.as_ref().unwrap().owner_type.as_deref(),
+            Some("ParamEnumArray")
+        );
+        assert_eq!(
+            resolution.selected.as_ref().unwrap().kind,
+            SymbolKind::Method
+        );
+    }
+
+    #[test]
+    fn unconstrained_generic_receiver_does_not_guess_member_by_name() {
+        let source = r#"class Class {}
+
+class SCR_ResourcePlayerControllerInventoryComponent
+{
+	void RequestUnsubscription();
+}
+
+class Example<Class OWNER_TYPE>
+{
+	OWNER_TYPE m_Owner;
+
+	void Run()
+	{
+		m_Owner.RequestUnsubscription();
+	}
+}
+"#;
+        let index = index_for_source(source, workspace_metadata("GenericOwner.c"));
+
+        let resolution = resolve_at_needle(
+            &index,
+            source,
+            "m_Owner.RequestUnsubscription",
+            "RequestUnsubscription",
+        );
+
+        assert_eq!(resolution.reason, ResolutionReason::ReceiverUnresolved);
+        assert!(resolution.selected.is_none());
+        assert_eq!(
+            resolution.receiver.as_ref().unwrap().owner_type.as_deref(),
+            Some("OWNER_TYPE")
+        );
+    }
+
+    #[test]
+    fn unconstrained_generic_field_chain_does_not_guess_member_by_name() {
+        let source = r#"class Class {}
+
+class Wrapper<Class T>
+{
+	T m_Value;
+}
+
+class SmartActionComponent
+{
+	void ReleaseAction();
+}
+
+class Example<Class T>
+{
+	Wrapper<T> m_SmartActionComponent;
+
+	void Run()
+	{
+		m_SmartActionComponent.m_Value.ReleaseAction();
+	}
+}
+"#;
+        let index = index_for_source(source, workspace_metadata("GenericValue.c"));
+
+        let resolution =
+            resolve_at_needle(&index, source, "m_Value.ReleaseAction", "ReleaseAction");
+
+        assert_eq!(resolution.reason, ResolutionReason::ReceiverUnresolved);
+        assert!(resolution.selected.is_none());
+        assert_eq!(
+            resolution.receiver.as_ref().unwrap().owner_type.as_deref(),
+            Some("T")
+        );
     }
 
     #[test]

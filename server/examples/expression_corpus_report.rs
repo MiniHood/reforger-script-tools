@@ -1,3 +1,4 @@
+use reforger_language_server::ast::Expression;
 use reforger_language_server::lexer::TextSpan;
 use reforger_language_server::parser::parse_source;
 use reforger_language_server::syntax::{SyntaxElement, SyntaxKind, SyntaxNode};
@@ -32,6 +33,10 @@ struct FileStats {
     initializer_expressions: usize,
     statement_nodes: usize,
     expression_nodes: usize,
+    ast_expression_wrappers: usize,
+    ast_expression_unknown_wrappers: usize,
+    ast_expression_actionable_unknown_wrappers: usize,
+    ast_expression_unknown_snippet: Option<String>,
     for_initializers: usize,
     for_decl_initializers: usize,
     for_expression_initializers: usize,
@@ -121,6 +126,8 @@ fn render_report(scripts_path: &Path) -> Result<String, String> {
     let mut total_diagnostics = 0usize;
     let mut lossy_files = 0usize;
     let mut kind_counts = BTreeMap::<String, usize>::new();
+    let mut wrapper_kind_counts = BTreeMap::<String, usize>::new();
+    let mut unknown_wrapper_syntax_counts = BTreeMap::<String, usize>::new();
     let mut named_argument_labels = BTreeMap::<String, usize>::new();
     let mut file_stats = Vec::<FileStats>::new();
 
@@ -154,6 +161,8 @@ fn render_report(scripts_path: &Path) -> Result<String, String> {
             &source,
             &parse.root,
             &mut kind_counts,
+            &mut wrapper_kind_counts,
+            &mut unknown_wrapper_syntax_counts,
             &mut named_argument_labels,
             &mut stats,
         );
@@ -185,6 +194,13 @@ fn render_report(scripts_path: &Path) -> Result<String, String> {
         &mut report,
         "Statement / Expression Kind Frequency",
         &kind_counts,
+    );
+    append_expression_wrapper_coverage(
+        &mut report,
+        scripts_path,
+        &file_stats,
+        &wrapper_kind_counts,
+        &unknown_wrapper_syntax_counts,
     );
     append_for_initializer_coverage(&mut report, &file_stats);
     append_foreach_header_coverage(&mut report, &file_stats);
@@ -249,6 +265,8 @@ fn collect_stats(
     source: &str,
     node: &SyntaxNode,
     kind_counts: &mut BTreeMap<String, usize>,
+    wrapper_kind_counts: &mut BTreeMap<String, usize>,
+    unknown_wrapper_syntax_counts: &mut BTreeMap<String, usize>,
     named_argument_labels: &mut BTreeMap<String, usize>,
     stats: &mut FileStats,
 ) {
@@ -260,6 +278,27 @@ fn collect_stats(
     }
     if is_expression_kind(node.kind) {
         stats.expression_nodes += 1;
+        if let Some(expression) = Expression::from_node(source, node) {
+            stats.ast_expression_wrappers += 1;
+            *wrapper_kind_counts
+                .entry(format!("{:?}", expression.kind()))
+                .or_default() += 1;
+            if matches!(
+                expression.kind(),
+                reforger_language_server::ast::ExpressionKind::Unknown
+            ) {
+                stats.ast_expression_unknown_wrappers += 1;
+                *unknown_wrapper_syntax_counts
+                    .entry(format!("{:?}", node.kind))
+                    .or_default() += 1;
+                if !is_expected_unknown_wrapper_syntax_kind(node.kind) {
+                    stats.ast_expression_actionable_unknown_wrappers += 1;
+                    stats
+                        .ast_expression_unknown_snippet
+                        .get_or_insert_with(|| snippet_for_span(source, node.span, 1));
+                }
+            }
+        }
     }
     match node.kind {
         SyntaxKind::Error => stats.error_nodes += 1,
@@ -290,9 +329,115 @@ fn collect_stats(
     }
     for child in &node.children {
         if let SyntaxElement::Node(child) = child {
-            collect_stats(source, child, kind_counts, named_argument_labels, stats);
+            collect_stats(
+                source,
+                child,
+                kind_counts,
+                wrapper_kind_counts,
+                unknown_wrapper_syntax_counts,
+                named_argument_labels,
+                stats,
+            );
         }
     }
+}
+
+fn append_expression_wrapper_coverage(
+    report: &mut String,
+    root: &Path,
+    file_stats: &[FileStats],
+    wrapper_kind_counts: &BTreeMap<String, usize>,
+    unknown_wrapper_syntax_counts: &BTreeMap<String, usize>,
+) {
+    let parser_expression_nodes = file_stats
+        .iter()
+        .map(|stats| stats.expression_nodes)
+        .sum::<usize>();
+    let ast_wrappers = file_stats
+        .iter()
+        .map(|stats| stats.ast_expression_wrappers)
+        .sum::<usize>();
+    let unknown_wrappers = file_stats
+        .iter()
+        .map(|stats| stats.ast_expression_unknown_wrappers)
+        .sum::<usize>();
+    let actionable_unknown_wrappers = file_stats
+        .iter()
+        .map(|stats| stats.ast_expression_actionable_unknown_wrappers)
+        .sum::<usize>();
+    let non_wrapper_nodes = parser_expression_nodes.saturating_sub(ast_wrappers);
+    let expected_unknown_wrappers = unknown_wrappers.saturating_sub(actionable_unknown_wrappers);
+
+    report.push_str("## Expression AST Wrapper Coverage\n\n");
+    report.push_str("This section compares parser expression syntax nodes with source-backed AST `Expression` wrappers. Non-wrapper nodes are parser containers such as `ArgumentList`. Expected `Unknown` wrappers are generic expression/named-argument containers; actionable unknown wrappers would indicate syntax accepted by the wrapper API but not mapped to a specific expression variant.\n\n");
+    report.push_str("| Metric | Count |\n");
+    report.push_str("| --- | ---: |\n");
+    report.push_str(&format!(
+        "| Parser expression syntax nodes | {parser_expression_nodes} |\n"
+    ));
+    report.push_str(&format!("| AST expression wrappers | {ast_wrappers} |\n"));
+    report.push_str(&format!(
+        "| Parser expression nodes without wrappers | {non_wrapper_nodes} |\n"
+    ));
+    report.push_str(&format!(
+        "| `Unknown` AST wrappers | {unknown_wrappers} |\n\n"
+    ));
+    report.push_str(&format!(
+        "| Expected container `Unknown` wrappers | {expected_unknown_wrappers} |\n"
+    ));
+    report.push_str(&format!(
+        "| Actionable `Unknown` wrapper gaps | {actionable_unknown_wrappers} |\n\n"
+    ));
+
+    append_counts(
+        report,
+        "Expression AST Wrapper Variant Frequency",
+        wrapper_kind_counts,
+    );
+    append_counts(
+        report,
+        "Unknown Expression Wrapper Syntax Kinds",
+        unknown_wrapper_syntax_counts,
+    );
+
+    let mut rows = file_stats
+        .iter()
+        .filter(|stats| stats.ast_expression_actionable_unknown_wrappers > 0)
+        .collect::<Vec<_>>();
+    rows.sort_by(|left, right| {
+        right
+            .ast_expression_actionable_unknown_wrappers
+            .cmp(&left.ast_expression_actionable_unknown_wrappers)
+            .then_with(|| left.path.cmp(&right.path))
+    });
+
+    report.push_str("## Actionable Unknown Expression Wrapper Samples\n\n");
+    if rows.is_empty() {
+        report.push_str("None.\n\n");
+        return;
+    }
+
+    report.push_str("| File | Unknown wrappers | Snippet |\n");
+    report.push_str("| --- | ---: | --- |\n");
+    for stats in rows.into_iter().take(25) {
+        report.push_str(&format!(
+            "| `{}` | {} | `{}` |\n",
+            relative_path(root, &stats.path),
+            stats.ast_expression_actionable_unknown_wrappers,
+            escape_table(
+                &stats
+                    .ast_expression_unknown_snippet
+                    .as_deref()
+                    .unwrap_or("")
+                    .replace('`', "\\`")
+            )
+        ));
+    }
+    report.push('\n');
+}
+
+fn is_expected_unknown_wrapper_syntax_kind(kind: SyntaxKind) -> bool {
+    matches!(kind, SyntaxKind::Expression | SyntaxKind::NamedArgument)
 }
 
 fn append_for_initializer_coverage(report: &mut String, file_stats: &[FileStats]) {

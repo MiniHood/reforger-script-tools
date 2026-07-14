@@ -236,6 +236,50 @@ impl SymbolIndex {
         index
     }
 
+    pub fn merged<'a>(indexes: impl IntoIterator<Item = &'a SymbolIndex>) -> Self {
+        let mut merged = Self::default();
+        for index in indexes {
+            for file in &index.files {
+                let mut remapped_ids = BTreeMap::<GlobalSymbolId, GlobalSymbolId>::new();
+                let new_file_id = SourceFileId(merged.files.len());
+                let symbol_start = merged.symbols.len();
+
+                for symbol in index.symbols_for_file(file) {
+                    remapped_ids.insert(
+                        symbol.id,
+                        GlobalSymbolId {
+                            file_id: new_file_id,
+                            symbol_id: symbol.id.symbol_id,
+                        },
+                    );
+                }
+
+                merged.files.push(IndexedFile {
+                    id: new_file_id,
+                    metadata: file.metadata.clone(),
+                    symbol_start,
+                    symbol_count: file.symbol_count,
+                    non_declaration_callable_fragments: file.non_declaration_callable_fragments,
+                });
+
+                for symbol in index.symbols_for_file(file) {
+                    let mut remapped = symbol.clone();
+                    remapped.id = remapped_ids
+                        .get(&symbol.id)
+                        .copied()
+                        .expect("merged symbol id should be remapped");
+                    remapped.parent = symbol
+                        .parent
+                        .and_then(|parent| remapped_ids.get(&parent).copied());
+                    merged.symbols.push(remapped);
+                }
+            }
+        }
+
+        merged.rebuild_lookup_maps();
+        merged
+    }
+
     pub fn add_catalog<'source>(&mut self, catalog: &SymbolCatalog<'source>) -> SourceFileId {
         let file_id = SourceFileId(self.files.len());
         let symbol_start = self.symbols.len();
@@ -350,10 +394,11 @@ impl SymbolIndex {
     fn without_symbol_kind(&self, excluded_kind: SymbolKind) -> Self {
         let mut filtered = Self::default();
         let mut remapped_ids = BTreeMap::<GlobalSymbolId, GlobalSymbolId>::new();
+        let mut next_symbol_start = 0;
 
         for file in &self.files {
             let new_file_id = SourceFileId(filtered.files.len());
-            let symbol_start = filtered.symbols.len();
+            let symbol_start = next_symbol_start;
             let mut symbol_count = 0;
 
             for symbol in self.symbols_for_file(file) {
@@ -368,6 +413,7 @@ impl SymbolIndex {
                 remapped_ids.insert(symbol.id, new_id);
                 symbol_count += 1;
             }
+            next_symbol_start += symbol_count;
 
             filtered.files.push(IndexedFile {
                 id: new_file_id,
@@ -1134,6 +1180,7 @@ fn parameter_signature_text(symbol: &IndexedSymbol) -> String {
 fn symbol_kind_key(kind: SymbolKind) -> &'static str {
     match kind {
         SymbolKind::Class => "Class",
+        SymbolKind::TypeParameter => "TypeParameter",
         SymbolKind::Enum => "Enum",
         SymbolKind::EnumMember => "EnumMember",
         SymbolKind::Typedef => "Typedef",
@@ -1145,6 +1192,7 @@ fn symbol_kind_key(kind: SymbolKind) -> &'static str {
         SymbolKind::Destructor => "Destructor",
         SymbolKind::Parameter => "Parameter",
         SymbolKind::LocalVariable => "LocalVariable",
+        SymbolKind::PreprocessorMacro => "PreprocessorMacro",
     }
 }
 
@@ -2558,6 +2606,40 @@ class FactionKey : string
     }
 
     #[test]
+    fn merged_indexes_preserve_file_symbol_ranges_and_parent_links() {
+        let first = SymbolIndex::from_catalogs([&catalog(
+            "class First { void FirstMethod(); }",
+            game_metadata("Game/First.c"),
+        )]);
+        let second = SymbolIndex::from_catalogs([&catalog(
+            "class Second { void SecondMethod(); }",
+            workspace_metadata("Scripts/Second.c"),
+        )]);
+
+        let merged = SymbolIndex::merged([&first, &second]);
+
+        assert_eq!(
+            member_names(
+                &merged,
+                &merged
+                    .completion_members_for_preferred_class("First")
+                    .members
+            ),
+            vec!["FirstMethod"]
+        );
+        assert_eq!(
+            member_names(
+                &merged,
+                &merged
+                    .completion_members_for_preferred_class("Second")
+                    .members
+            ),
+            vec!["SecondMethod"]
+        );
+        assert_no_dangling_symbol_references(&merged);
+    }
+
+    #[test]
     fn pruned_index_removes_local_variables_and_preserves_parameters() {
         let catalog = catalog(
             r#"class Example
@@ -2649,6 +2731,57 @@ class FactionKey : string
         assert!(parameter.detail.type_text_span.is_none());
         assert!(parameter.detail.default_text_span.is_none());
 
+        assert_no_dangling_symbol_references(&compact);
+    }
+
+    #[test]
+    fn runtime_cache_compaction_preserves_multi_file_symbol_ranges() {
+        let first = catalog(
+            r#"class First
+{
+	void Run()
+	{
+		int localValue;
+	}
+}
+"#,
+            game_metadata("Game/First.c"),
+        );
+        let second = catalog(
+            r#"class SecondBase {}
+class Second : SecondBase
+{
+	int m_Value;
+}
+"#,
+            game_metadata("Game/Second.c"),
+        );
+        let compact = SymbolIndex::from_catalogs([&first, &second]).compact_for_runtime_cache();
+
+        assert!(compact
+            .symbols_for_kind(SymbolKind::LocalVariable)
+            .is_empty());
+
+        let second_id = compact.classes_by_name("Second")[0];
+        let second_symbol = compact.symbol(second_id).unwrap();
+        assert_eq!(second_symbol.name.as_deref(), Some("Second"));
+        assert_eq!(second_symbol.kind, SymbolKind::Class);
+        assert_eq!(
+            second_symbol.detail.base_type.as_deref(),
+            Some("SecondBase")
+        );
+
+        let field_id = compact.fields_by_owner_name("Second", "m_Value")[0];
+        let field = compact.symbol(field_id).unwrap();
+        assert_eq!(field.name.as_deref(), Some("m_Value"));
+        assert_eq!(field.kind, SymbolKind::Field);
+
+        let first_file = compact.file(SourceFileId(0)).unwrap();
+        let second_file = compact.file(SourceFileId(1)).unwrap();
+        assert_eq!(
+            first_file.symbol_start + first_file.symbol_count,
+            second_file.symbol_start
+        );
         assert_no_dangling_symbol_references(&compact);
     }
 

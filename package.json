@@ -28,13 +28,6 @@
         "configuration": "./language-configuration.json"
       }
     ],
-    "grammars": [
-      {
-        "language": "enforce",
-        "scopeName": "source.enforce",
-        "path": "./syntaxes/enforce.tmLanguage.json"
-      }
-    ],
     "themes": [
       {
         "label": "Reforger Enforce Dark",
