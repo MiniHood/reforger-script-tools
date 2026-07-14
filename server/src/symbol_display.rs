@@ -12,6 +12,7 @@ pub struct SymbolDisplayInfo {
     pub id: GlobalSymbolId,
     pub label: String,
     pub kind: SymbolKind,
+    pub container_name: Option<String>,
     pub detail: Option<String>,
     pub signature: Option<String>,
     pub doc_comments: Vec<IndexedDocComment>,
@@ -62,6 +63,10 @@ impl SymbolDisplay {
                 .clone()
                 .unwrap_or_else(|| "<unknown>".to_string()),
             kind: symbol.kind,
+            container_name: symbol
+                .parent
+                .and_then(|parent| index.symbol(parent))
+                .and_then(|parent| parent.name.clone()),
             detail,
             signature,
             doc_comments: symbol.doc_comments.clone(),
@@ -355,6 +360,7 @@ modded class Example : Base
 
         assert_eq!(display.label, "Example");
         assert_eq!(display.kind, SymbolKind::Class);
+        assert_eq!(display.container_name, None);
         assert_eq!(display.detail.as_deref(), Some("base Base"));
         assert_eq!(
             display.documentation_preview.as_deref(),
@@ -404,6 +410,7 @@ class Holder
             SymbolDisplay::for_symbol(&index, find(&index, SymbolKind::EnumMember, "Value"))
                 .unwrap();
         assert_eq!(enum_member.detail.as_deref(), Some("value 4"));
+        assert_eq!(enum_member.container_name.as_deref(), Some("Example"));
 
         let global =
             SymbolDisplay::for_symbol(&index, find(&index, SymbolKind::GlobalField, "g_Game"))

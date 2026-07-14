@@ -16,7 +16,7 @@ pub(crate) const SEMANTIC_TOKEN_TYPES: &[&str] = &[
     "type",
     "function",
     "method",
-    "property",
+    "field",
     "variable",
     "parameter",
     "enumMember",
@@ -590,7 +590,7 @@ fn symbol_semantic_type(kind: SymbolKind) -> Option<u32> {
         SymbolKind::EnumMember => Some(semantic_type_index("enumMember")),
         SymbolKind::Typedef => Some(semantic_type_index("type")),
         SymbolKind::Function => Some(semantic_type_index("function")),
-        SymbolKind::GlobalField | SymbolKind::Field => Some(semantic_type_index("property")),
+        SymbolKind::GlobalField | SymbolKind::Field => Some(semantic_type_index("field")),
         SymbolKind::Method | SymbolKind::Constructor | SymbolKind::Destructor => {
             Some(semantic_type_index("method"))
         }
@@ -960,7 +960,7 @@ pub(crate) fn semantic_token_color_for_type(token_type: &str) -> &'static str {
     match token_type {
         "class" | "enum" | "type" | "typeParameter" => "#40b5ac",
         "function" | "method" => "#f3ad58",
-        "enumMember" | "variable" | "property" | "parameter" | "number" => "#cfcfcf",
+        "enumMember" | "variable" | "field" | "parameter" | "number" => "#cfcfcf",
         "keyword" => "#59A6E9",
         "comment" => "#59aa59",
         "string" => "#c178dd",

@@ -1540,7 +1540,7 @@ class Example
         assert!(report
             .decoded
             .iter()
-            .any(|token| token.text == "COUNT" && token.token_type == "property"));
+            .any(|token| token.text == "COUNT" && token.token_type == "field"));
         assert!(report
             .decoded
             .iter()
@@ -1906,12 +1906,7 @@ enum EGameFlags
         assert_semantic_token(&report, "ParamEnumArray", "class", Some("#40b5ac"));
         assert_semantic_token(&report, "FromEnum", "method", Some("#f3ad58"));
         assert_semantic_token(&report, "EGameFlags", "enum", Some("#40b5ac"));
-        assert_semantic_token(
-            &report,
-            "WB_GAME_MODE_CATEGORY",
-            "property",
-            Some("#cfcfcf"),
-        );
+        assert_semantic_token(&report, "WB_GAME_MODE_CATEGORY", "field", Some("#cfcfcf"));
         assert!(
             !report.decoded.iter().any(|token| {
                 matches!(
@@ -2421,6 +2416,118 @@ class Example
             report.identifier_context,
             Some(IdentifierContext::TypePosition)
         );
+    }
+
+    #[test]
+    fn hover_type_usage_renders_same_class_display_as_class_declaration() {
+        let source = r#"class Example
+{
+	void Run()
+	{
+		SCR_BaseGameModeStateComponent stateComponent;
+	}
+}
+"#;
+        let external = file_index_for_source(
+            r#"//! Base component for handling game mode states.
+class SCR_BaseGameModeStateComponent : SCR_BaseGameModeComponent
+{
+	bool GetAllowControls();
+	float GetDuration();
+}
+
+class SCR_BaseGameModeComponent
+{
+	void InheritedRun();
+}
+"#,
+        )
+        .index;
+
+        let report = hover_report_for_source_position_with_external(
+            source,
+            position_for_needle(
+                source,
+                "SCR_BaseGameModeStateComponent stateComponent",
+                "SCR_BaseGameModeStateComponent",
+            ),
+            Some(&external),
+        );
+        let markdown = report.hover.as_ref().unwrap().contents.value.as_str();
+
+        assert_eq!(report.selected_kind, Some(SymbolKind::Class));
+        assert_eq!(
+            report.selected_label.as_deref(),
+            Some("SCR_BaseGameModeStateComponent")
+        );
+        assert_eq!(report.selected_source, Some(CandidateSource::External));
+        assert_eq!(
+            report.identifier_context,
+            Some(IdentifierContext::TypePosition)
+        );
+        assert!(markdown.contains("<span style=\"color:#59A6E9;\">Class</span>"));
+        assert!(markdown.contains(
+            "data-code=\"class SCR_BaseGameModeStateComponent : SCR_BaseGameModeComponent\""
+        ));
+        assert!(markdown.contains("Base component for handling game mode states."));
+        assert!(markdown.contains("### Functions"));
+        assert!(markdown.contains("<span style=\"color:#f3ad58;\">GetAllowControls</span>"));
+        assert!(markdown.contains("<span style=\"color:#f3ad58;\">GetDuration</span>"));
+        assert!(!markdown.contains("### Inherited members"));
+        assert!(markdown.contains("<span style=\"color:#f3ad58;\">InheritedRun</span>"));
+        assert!(!markdown.contains("inherited from"));
+    }
+
+    #[test]
+    fn hover_class_declaration_uses_external_overlay_for_inherited_member_summary() {
+        let source = r#"//! Base component for handling game mode states.
+class SCR_BaseGameModeStateComponent : SCR_BaseGameModeComponent
+{
+	bool GetAllowControls();
+	float GetDuration();
+}
+"#;
+        let external = file_index_for_source(
+            r#"//! Base component for handling game mode states.
+class SCR_BaseGameModeStateComponent : SCR_BaseGameModeComponent
+{
+	bool GetAllowControls();
+	float GetDuration();
+}
+
+class SCR_BaseGameModeComponent
+{
+	void InheritedRun();
+}
+"#,
+        )
+        .index;
+
+        let report = hover_report_for_source_position_with_external(
+            source,
+            position_for_needle(
+                source,
+                "SCR_BaseGameModeStateComponent",
+                "SCR_BaseGameModeStateComponent",
+            ),
+            Some(&external),
+        );
+        let markdown = report.hover.as_ref().unwrap().contents.value.as_str();
+
+        assert_eq!(report.selected_source, Some(CandidateSource::FileLocal));
+        assert_eq!(
+            report.selected_label.as_deref(),
+            Some("SCR_BaseGameModeStateComponent")
+        );
+        assert!(markdown.contains(
+            "data-code=\"class SCR_BaseGameModeStateComponent : SCR_BaseGameModeComponent\""
+        ));
+        assert!(markdown.contains("### Functions"));
+        assert!(markdown.contains("<span style=\"color:#f3ad58;\">GetAllowControls</span>"));
+        assert!(markdown.contains("<span style=\"color:#f3ad58;\">GetDuration</span>"));
+        assert!(!markdown.contains("### Inherited members"));
+        assert!(markdown.contains("<span style=\"color:#f3ad58;\">InheritedRun</span>"));
+        assert!(!markdown.contains("inherited from"));
     }
 
     #[test]
@@ -3416,10 +3523,13 @@ class Example
         let hover = report.hover.unwrap();
         let markdown = hover.contents.value;
 
-        assert!(markdown.contains("```enforce\nExample.Run(int value = 4) -> void\n```"));
+        assert!(markdown.contains("data-code=\"protected void Run(int value = 4)\""));
+        assert!(markdown.contains("<span style=\"color:#59A6E9;\">protected</span>"));
+        assert!(markdown.contains("<span style=\"color:#59A6E9;\">void</span>"));
+        assert!(markdown.contains("<span style=\"color:#f3ad58;\">Run</span>"));
         assert!(markdown.contains("Runs the example."));
-        assert!(markdown.contains("**Modifiers:** protected"));
-        assert!(markdown.contains("**Attributes:** Attribute"));
+        assert!(!markdown.contains("Modifiers: protected"));
+        assert!(!markdown.contains("Attributes: Attribute"));
     }
 
     #[test]
@@ -3698,7 +3808,7 @@ class Example
         let output_text = String::from_utf8(output).unwrap();
         assert!(output_text.contains("\"hoverProvider\":true"));
         assert!(output_text.contains("\"completionProvider\":{\"triggerCharacters\":[\".\"]}"));
-        assert!(output_text.contains("Smoke.Run(int value) -> void"));
+        assert!(output_text.contains("void Run(int value)"));
         assert!(output_text.contains("\"kind\":\"markdown\""));
     }
 
@@ -4221,10 +4331,7 @@ class Example
         .unwrap();
 
         let output_text = String::from_utf8(output).unwrap();
-        assert_eq!(
-            output_text.matches("Smoke.Run(int value) -> void").count(),
-            2
-        );
+        assert_eq!(output_text.matches("void Run(int value)").count(), 2);
 
         let log = std::fs::read_to_string(&log_path).unwrap();
         assert_eq!(log.matches("notification didOpen").count(), 1);
@@ -4886,16 +4993,14 @@ class Example
             .iter()
             .filter(|token| {
                 token.text == text
-                    && matches!(
-                        token.token_type,
-                        "class" | "enum" | "type" | "typeParameter"
-                    )
-                    && token.color == "#40b5ac"
+                    && ((matches!(token.token_type, "class" | "type" | "typeParameter")
+                        && token.color == "#40b5ac")
+                        || (token.token_type == "enum" && token.color == "#40b5ac"))
             })
             .count();
         assert!(
             actual >= expected,
-            "expected at least {expected} green type-family semantic tokens text={text:?}, found {actual}: {:?}",
+            "expected at least {expected} type-family semantic tokens text={text:?}, found {actual}: {:?}",
             report.decoded
         );
     }

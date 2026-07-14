@@ -12,6 +12,8 @@ This module sits inside the Rust LSP layer and turns cached file-local analysis 
 
 Hover is resolver-owned. The module asks `ReferenceResolver` for identifier or syntax-span hover resolution, renders the selected symbol through `SymbolDisplay`, and returns compact Markdown. File-local candidates are preferred over external overlay candidates according to resolver policy. External symbols use the hovered token range in the current document while displaying facts from the external index.
 
+When a file-local class declaration is selected and an external workspace/game-data overlay is available, hover still displays the file-local selected symbol but passes the external query to the renderer for class member summaries. This lets inherited member sections match the richer type-usage hover without making external symbols beat open-document declarations.
+
 Syntax-span hover is intentionally limited to useful declaration syntax inside source-backed type, return-type, or base-type detail spans, such as a callable return type keyword. Comments, whitespace, strings, punctuation, modifiers such as `protected` / `private` / `static` / `const`, and other non-symbol token classes return no hover instead of selecting a containing class or method.
 
 The hover Markdown shows a colored kind label, fenced Enforce signature or label, kind-specific detail text, structured documentation sections, bounded class member summaries, modifiers, attributes, and concise source path when available. Color is best-effort Markdown presentation only; semantic tokens remain the editor coloring source.

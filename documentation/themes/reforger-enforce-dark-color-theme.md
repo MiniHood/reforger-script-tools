@@ -14,7 +14,7 @@ The theme enables semantic highlighting and uses only the provided color set thr
 
 - class/enum/type/type parameter: `#40b5ac`
 - function/method: `#f3ad58`
-- enum member/variable/property/parameter/number: `#cfcfcf`
+- enum member/variable/field/parameter/number: `#cfcfcf`
 - keyword: `#59A6E9`
 - comment: `#59aa59`
 - string: `#c178dd`
@@ -35,6 +35,7 @@ The theme depends on VS Code theme contribution support and the semantic token l
 - Connected hover-debug review expectations to the same fixed palette so color issues can be inspected from `logs/hover-debug/latest.md`.
 - Removed TextMate token colors; Enforce coloring now comes from semantic tokens only.
 - Adjusted enum-member values to use the variable color and allowed source-backed `string` / `vector` type positions to use type-family coloring while keeping `bool` / `int` / `float` / `typename` keyword-blue.
+- Switched field semantic tokens from the generic `property` name to the Enforce-facing `field` name so theme, reports, hover, and backend symbol terminology match.
 
 ## Future Improvements
 

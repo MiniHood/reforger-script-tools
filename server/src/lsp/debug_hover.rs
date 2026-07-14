@@ -127,10 +127,14 @@ pub(crate) fn debug_hover_report_for_cached_analysis_with_external(
     if let Some(id) = selected_id {
         append_display_details(&mut report, source, index, &query, id);
         if let Some(display) = query.symbol_display(id) {
+            let external_query = external_index.map(IndexQuery::new);
             report.push_str("\n### Hover Markdown\n\n```markdown\n");
             report.push_str(&escape_fence_text(&render_hover_markdown(
                 &display,
-                Some(HoverRenderContext { query: &query }),
+                Some(HoverRenderContext {
+                    query: &query,
+                    member_summary_query: external_query.as_ref(),
+                }),
             )));
             report.push_str("\n```\n");
         }
@@ -143,6 +147,7 @@ pub(crate) fn debug_hover_report_for_cached_analysis_with_external(
                 &display,
                 Some(HoverRenderContext {
                     query: &external_query,
+                    member_summary_query: None,
                 }),
             )));
             report.push_str("\n```\n");

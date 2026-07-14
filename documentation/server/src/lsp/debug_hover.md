@@ -14,7 +14,7 @@ The report includes cursor/source context, nearby lexer tokens, nearby semantic-
 
 Debug-hover selection follows the same resolver hover decision as normal hover. It may still list syntax-span candidates as debug evidence, but comments, whitespace, strings, and other non-symbol token classes should not be reported as selected symbols just because they are inside a broader declaration span.
 
-The rendered hover Markdown section uses `server/src/lsp/hover_render.rs`, so Ctrl+F1 previews the same structured documentation, colored kind label, metadata, and bounded class member summary as normal hover.
+The rendered hover Markdown section uses `server/src/lsp/hover_render.rs`, so Ctrl+F1 previews the same structured documentation, colored kind label, metadata, and class member summary as normal hover. If the selected symbol is file-local and an external overlay is available, the preview uses the same external class-summary context as normal hover so declaration-hover and type-usage-hover output can be compared directly.
 
 The module also exposes a tiny label extraction helper used by `lsp.rs` request logging after a debug-hover request.
 

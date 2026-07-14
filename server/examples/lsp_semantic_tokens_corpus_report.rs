@@ -546,7 +546,7 @@ fn is_identifier_like_semantic_type(token_type: &str) -> bool {
             | "type"
             | "function"
             | "method"
-            | "property"
+            | "field"
             | "variable"
             | "parameter"
             | "enumMember"

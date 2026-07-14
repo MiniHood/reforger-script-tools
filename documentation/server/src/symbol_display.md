@@ -10,9 +10,10 @@ This file sits above the raw symbol index and below future LSP hover, completion
 
 ## Current Behavior
 
-`SymbolDisplay::for_symbol()` returns `SymbolDisplayInfo` for one indexed symbol. The display record includes label, kind, detail text, callable signature, raw `doc_comments`, a bounded `documentation_preview`, modifiers, attributes, source provenance, spans, conditional context, and callable form.
+`SymbolDisplay::for_symbol()` returns `SymbolDisplayInfo` for one indexed symbol. The display record includes label, kind, optional container/owner name, detail text, callable signature, raw `doc_comments`, a bounded `documentation_preview`, modifiers, attributes, source provenance, spans, conditional context, and callable form.
 
 Callable symbols use `SymbolIndex::callable_signature()`, including source-backed parameter modifiers such as `out`, `inout`, and `notnull`. Non-callable symbols use existing indexed detail text such as type text, base type, enum value, default value, typedef aliased type, parameter detail, local-variable detail, or a bare preprocessor macro label. Documentation comments are preserved as raw copied comment text. `documentation_display()` derives structured display sections for summary/brief text, `\param[in]` / `\param[out]` style parameter tags, returns, warnings, and notes. `documentation_preview` remains a bounded one-line preview for reports and completion details.
+Child symbols also copy their immediate indexed container name when available. Hover uses that source-backed owner fact for display such as `Enum Value in SCR_EGameModeState` without re-resolving the symbol.
 
 ## Dependencies and Boundaries
 

@@ -134,10 +134,12 @@ fn hover_report_for_offset(
             if let Some(selected) = resolution.selected.as_ref() {
                 match selected.source {
                     CandidateSource::FileLocal => {
+                        let external_query = external_index.map(IndexQuery::new);
                         if let Some(mut report) = hover_report_for_symbol(
                             source,
                             &analysis.index,
                             &query,
+                            external_query.as_ref(),
                             selected.id,
                             None,
                             HoverSelectionSource::ResolverIdentifier,
@@ -157,6 +159,7 @@ fn hover_report_for_offset(
                                 source,
                                 external_index,
                                 &external_query,
+                                None,
                                 selected.id,
                                 Some(range_for_span(source, resolution.token_span)),
                                 HoverSelectionSource::ResolverIdentifier,
@@ -189,10 +192,12 @@ fn hover_report_for_offset(
             let Some(selected) = resolution.selected.as_ref() else {
                 return empty_hover_report(analysis.parse_diagnostics);
             };
+            let external_query = external_index.map(IndexQuery::new);
             hover_report_for_symbol(
                 source,
                 &analysis.index,
                 &query,
+                external_query.as_ref(),
                 selected.id,
                 None,
                 HoverSelectionSource::ResolverSyntaxSpan,
@@ -212,6 +217,7 @@ fn hover_report_for_symbol(
     source: &str,
     index: &SymbolIndex,
     query: &IndexQuery<'_>,
+    member_summary_query: Option<&IndexQuery<'_>>,
     id: GlobalSymbolId,
     range_override: Option<LspRange>,
     selection_source: HoverSelectionSource,
@@ -232,7 +238,10 @@ fn hover_report_for_symbol(
                 kind: "markdown".to_string(),
                 value: render_hover_markdown_with_context(
                     &display,
-                    Some(HoverRenderContext { query }),
+                    Some(HoverRenderContext {
+                        query,
+                        member_summary_query,
+                    }),
                 ),
             },
             range,
