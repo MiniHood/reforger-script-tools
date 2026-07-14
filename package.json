@@ -35,6 +35,11 @@
         "path": "./themes/reforger-enforce-dark-color-theme.json"
       }
     ],
+    "configurationDefaults": {
+      "[enforce]": {
+        "editor.bracketPairColorization.enabled": false
+      }
+    },
     "commands": [
       {
         "command": "reforger-sript-tools.debug.hoverAtCursor",

@@ -6,12 +6,14 @@ use crate::scope::LexicalScopeModel;
 use crate::syntax::{Parse, ParseDiagnostic};
 
 use super::semantic_tokens::LspSemanticTokenProjection;
+use super::LspDocumentSymbol;
 
 pub(crate) struct OpenDocument {
     pub(crate) text: String,
     pub(crate) version: Option<i32>,
     pub(crate) revision: u64,
     pub(crate) analysis: FileIndexAnalysis,
+    document_symbols: Vec<LspDocumentSymbol>,
     pub(crate) semantic_tokens: SemanticTokenCache,
 }
 
@@ -23,6 +25,7 @@ impl OpenDocument {
             version,
             revision,
             analysis,
+            document_symbols: Vec::new(),
             semantic_tokens: SemanticTokenCache::default(),
         }
     }
@@ -32,7 +35,16 @@ impl OpenDocument {
         self.version = version;
         self.revision += 1;
         self.analysis = file_index_for_source(&self.text);
+        self.document_symbols.clear();
         self.semantic_tokens = SemanticTokenCache::default();
+    }
+
+    pub(crate) fn set_document_symbols(&mut self, symbols: Vec<LspDocumentSymbol>) {
+        self.document_symbols = symbols;
+    }
+
+    pub(crate) fn document_symbols(&self) -> &[LspDocumentSymbol] {
+        &self.document_symbols
     }
 }
 

@@ -415,10 +415,11 @@ impl<W: Write> LspServer<W> {
                     let version = params.text_document.version;
                     let text = params.text_document.text;
                     let bytes = text.len();
-                    let document = OpenDocument::new(text, version, 1);
+                    let mut document = OpenDocument::new(text, version, 1);
                     let symbols =
                         document_symbols_from_cached_analysis(&document.text, &document.analysis);
                     let symbol_count = document_symbol_count(&symbols);
+                    document.set_document_symbols(symbols);
                     let parse_diagnostics = document.analysis.parse_diagnostics;
                     let revision = document.revision;
                     let diagnostics_message = publish_diagnostics_message(
@@ -429,7 +430,7 @@ impl<W: Write> LspServer<W> {
                     self.documents.insert(uri.clone(), document);
                     self.write_message(diagnostics_message)?;
                     self.log(&format!(
-                        "notification didOpen uri={} bytes={} version={} revision={} cached_analysis=true symbols={} parse_diagnostics={} analysis_elapsed_ms={}",
+                        "notification didOpen uri={} bytes={} version={} revision={} cached_analysis=true document_symbols_cached=true symbols={} parse_diagnostics={} analysis_elapsed_ms={}",
                         uri,
                         bytes,
                         format_optional_i32(version),
@@ -460,6 +461,7 @@ impl<W: Write> LspServer<W> {
                             &document.analysis,
                         );
                         let symbol_count = document_symbol_count(&symbols);
+                        document.set_document_symbols(symbols);
                         let parse_diagnostics = document.analysis.parse_diagnostics;
                         let revision = document.revision;
                         let diagnostics_message = publish_diagnostics_message(
@@ -469,7 +471,7 @@ impl<W: Write> LspServer<W> {
                         );
                         self.write_message(diagnostics_message)?;
                         self.log(&format!(
-                            "notification didChange uri={} bytes={} version={} revision={} cached_analysis=true symbols={} parse_diagnostics={} analysis_elapsed_ms={}",
+                            "notification didChange uri={} bytes={} version={} revision={} cached_analysis=true document_symbols_cached=true symbols={} parse_diagnostics={} analysis_elapsed_ms={}",
                             uri,
                             bytes,
                             format_optional_i32(version),
@@ -570,19 +572,16 @@ impl<W: Write> LspServer<W> {
                             self.documents.get(&log_uri).map(|document| {
                                 bytes = document.text.len();
                                 revision = document.revision;
-                                let symbols = document_symbols_from_cached_analysis(
-                                    &document.text,
-                                    &document.analysis,
-                                );
+                                let symbols = document.document_symbols();
                                 symbol_count = document_symbol_count(&symbols);
                                 parse_diagnostics = document.analysis.parse_diagnostics;
-                                symbols
+                                symbols.to_vec()
                             })
                         })
                         .map(|symbols| serde_json::to_value(symbols).unwrap_or(Value::Null))
                         .unwrap_or(Value::Null);
                     self.log(&format!(
-                        "request documentSymbol uri={} bytes={} revision={} cached_analysis=true symbols={} parse_diagnostics={} elapsed_ms={}",
+                        "request documentSymbol uri={} bytes={} revision={} cached_analysis=true document_symbols_cached=true symbols={} parse_diagnostics={} elapsed_ms={}",
                         log_uri,
                         bytes,
                         revision,
@@ -1712,7 +1711,7 @@ class Example { protected ref ScriptInvoker m_OnGameEnd = new ScriptInvoker(); }
             report
                 .decoded
                 .iter()
-                .any(|token| token.text == "NONE" && token.token_type == "property"),
+                .any(|token| token.text == "NONE" && token.token_type == "enumMember"),
             "{:?}",
             report.decoded
         );
@@ -2003,6 +2002,89 @@ enum EGameFlags
                         | "WB_GAME_MODE_CATEGORY"
                 ))
                 .all(|token| token.token_type != "decorator"),
+            "{:?}",
+            report.decoded
+        );
+    }
+
+    #[test]
+    fn semantic_tokens_color_call_shapes_before_rich_resolution() {
+        let source = r#"class Example
+{
+	void Run()
+	{
+		RunTimer();
+		stateComponent.GetDuration();
+	}
+}
+"#;
+
+        let report = semantic_tokens_report_for_source(source);
+
+        assert_semantic_token(&report, "RunTimer", "function", Some("#f3ad58"));
+        assert_semantic_token(&report, "GetDuration", "method", Some("#f3ad58"));
+    }
+
+    #[test]
+    fn semantic_tokens_color_static_member_shapes_before_rich_resolution() {
+        let source = r#"class Example
+{
+	void Run()
+	{
+		SCR_BaseGameModeStateComponent stateComponent = GetStateComponent(SCR_EGameModeState.GAME);
+		EHealthState.INJURED;
+		stateComponent.GetDuration();
+	}
+}
+"#;
+
+        let report = semantic_tokens_report_for_source(source);
+
+        assert_semantic_token(&report, "SCR_EGameModeState", "class", Some("#40b5ac"));
+        assert_semantic_token(&report, "GAME", "enumMember", Some("#cfcfcf"));
+        assert_semantic_token(&report, "EHealthState", "class", Some("#40b5ac"));
+        assert_semantic_token(&report, "INJURED", "enumMember", Some("#cfcfcf"));
+        assert!(
+            !report
+                .decoded
+                .iter()
+                .any(|token| token.text == "stateComponent" && token.token_type == "class"),
+            "{:?}",
+            report.decoded
+        );
+    }
+
+    #[test]
+    fn semantic_tokens_keep_comment_contents_comment_colored() {
+        let source = r#"class Example
+{
+	/*!
+		\return[] // True{} <> if the game is hosted by a player (i.e., not dedicated server)
+	*/
+	void Run();
+}
+"#;
+
+        let report = semantic_tokens_report_for_source(source);
+
+        assert!(
+            report.decoded.iter().any(|token| {
+                token.token_type == "comment"
+                    && token.text.contains("\\return[]")
+                    && token.text.contains("True{} <> if")
+            }),
+            "{:?}",
+            report.decoded
+        );
+        assert!(
+            !report.decoded.iter().any(|token| {
+                matches!(
+                    token.text.as_str(),
+                    "[" | "]" | "{" | "}" | "<" | ">" | "if"
+                ) && token.range.start.line >= 2
+                    && token.range.end.line <= 4
+                    && token.token_type != "comment"
+            }),
             "{:?}",
             report.decoded
         );
@@ -3442,6 +3524,95 @@ class Example
         assert!(output_text.contains("\"documentSymbolProvider\":true"));
         assert!(output_text.contains("\"name\":\"Smoke\""));
         assert!(output_text.contains("\"name\":\"Run\""));
+    }
+
+    #[test]
+    fn framed_lsp_reuses_cached_document_symbols_for_repeated_requests() {
+        let source = "class Smoke\n{\n\tvoid Run();\n}\n";
+        let log_path = test_log_path("cached_document_symbols");
+        let mut input = Vec::new();
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {}
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": "file:///Scripts/Smoke.c",
+                        "languageId": "enforce",
+                        "version": 1,
+                        "text": source
+                    }
+                }
+            }),
+        );
+        for id in [2, 3] {
+            write_test_message(
+                &mut input,
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "method": "textDocument/documentSymbol",
+                    "params": {
+                        "textDocument": {
+                            "uri": "file:///Scripts/Smoke.c"
+                        }
+                    }
+                }),
+            );
+        }
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "shutdown",
+                "params": null
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "exit",
+                "params": null
+            }),
+        );
+
+        let mut output = Vec::new();
+        run(
+            input.as_slice(),
+            &mut output,
+            LspServerOptions {
+                log_path: Some(log_path.clone()),
+                game_data_scripts: None,
+                game_data_metadata: None,
+                index_cache: None,
+                workspace_scripts: Vec::new(),
+            },
+        )
+        .unwrap();
+
+        let output_text = String::from_utf8(output).unwrap();
+        assert_eq!(output_text.matches("\"name\":\"Smoke\"").count(), 2);
+        assert_eq!(output_text.matches("\"name\":\"Run\"").count(), 2);
+
+        let log = std::fs::read_to_string(&log_path).unwrap();
+        assert_eq!(log.matches("notification didOpen").count(), 1);
+        assert_eq!(log.matches("analysis_elapsed_ms=").count(), 1);
+        assert_eq!(log.matches("request documentSymbol").count(), 2);
+        assert_eq!(log.matches("document_symbols_cached=true").count(), 3);
+
+        cleanup_log(&log_path);
     }
 
     #[test]

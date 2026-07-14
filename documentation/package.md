@@ -14,6 +14,8 @@ The manifest contributes the `enforce` language id for Reforger/Enfusion Script.
 
 The manifest contributes the `Reforger Enforce Dark` theme and the lightweight language configuration. It does not contribute a TextMate grammar. Enforce token coloring is owned by Rust LSP semantic tokens plus the theme's `semanticTokenColors`.
 
+The manifest sets the language-specific default `editor.bracketPairColorization.enabled = false` for `enforce`. This avoids VS Code's built-in bracket-pair color overlay coloring brackets inside comments, since Enforce deliberately has no TextMate grammar scopes and Rust semantic tokens are the single authoritative coloring path.
+
 The manifest also contributes game-data commands, the manual game-data folder setting, and the developer-facing hover debug command. `Reforger Script Tools: Debug Hover At Cursor` is bound to `Ctrl+F1` only when an Enforce editor has focus. It asks the running Rust language server for a targeted cursor-position hover report.
 
 ## Dependencies and Boundaries
@@ -25,6 +27,7 @@ Do not add global `.c` language association for Enforce. Do not add user-facing 
 - Added the `enforce` language contribution with path-scoped Reforger script file association.
 - Added the hover debug command and `Ctrl+F1` keybinding scoped to Enforce editors.
 - Removed the TextMate grammar contribution so Enforce coloring has one path: Rust semantic tokens.
+- Disabled VS Code bracket-pair colorization by default for Enforce documents so brackets inside comments remain comment-colored by semantic tokens.
 
 ## Future Improvements
 

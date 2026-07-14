@@ -223,6 +223,8 @@ fn semantic_raw_tokens(
     let lex_elapsed = lex_start.elapsed();
     let mut tokens = Vec::new();
     let attribute_roles = attribute_identifier_roles(source, &lexer_tokens);
+    let call_roles = call_identifier_roles(&lexer_tokens);
+    let static_member_roles = static_member_identifier_roles(source, &lexer_tokens);
     let declaration_spans = analysis
         .index
         .symbols()
@@ -280,8 +282,32 @@ fn semantic_raw_tokens(
                 continue;
             }
         }
+        if let Some(role) = call_roles.get(&token_index).copied() {
+            let token_type = match role {
+                CallIdentifierRole::UnqualifiedCall => semantic_type_index("function"),
+                CallIdentifierRole::MemberCall => semantic_type_index("method"),
+            };
+            tokens.push(raw_semantic(
+                *token,
+                token_type,
+                0,
+                RESOLVER_REFERENCE_PRIORITY,
+            ));
+        }
+        if let Some(role) = static_member_roles.get(&token_index).copied() {
+            let token_type = match role {
+                StaticMemberIdentifierRole::Owner => semantic_type_index("class"),
+                StaticMemberIdentifierRole::MemberValue => semantic_type_index("enumMember"),
+            };
+            tokens.push(raw_semantic(*token, token_type, 0, TYPE_SPAN_PRIORITY));
+        }
         if let Some(token_type) = lexical_semantic_type(token.kind) {
-            tokens.push(raw_semantic(*token, token_type, 0, 10));
+            let priority = if is_comment_token_kind(token.kind) {
+                200
+            } else {
+                10
+            };
+            tokens.push(raw_semantic(*token, token_type, 0, priority));
         }
         if token.kind == TokenKind::Identifier && mode == SemanticTokenMode::Rich {
             if declaration_spans.contains(&(token.span.start, token.span.end)) {
@@ -545,6 +571,17 @@ fn lexical_semantic_type(kind: TokenKind) -> Option<u32> {
     }
 }
 
+fn is_comment_token_kind(kind: TokenKind) -> bool {
+    matches!(
+        kind,
+        TokenKind::LineComment
+            | TokenKind::DocLineComment
+            | TokenKind::BlockComment
+            | TokenKind::DocBlockComment
+            | TokenKind::UnterminatedBlockComment
+    )
+}
+
 fn symbol_semantic_type(kind: SymbolKind) -> Option<u32> {
     match kind {
         SymbolKind::Class => Some(semantic_type_index("class")),
@@ -626,6 +663,106 @@ enum AttributeIdentifierRole {
     MemberValueName,
     TypeLikeUnqualifiedValue,
     UnqualifiedValue,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CallIdentifierRole {
+    UnqualifiedCall,
+    MemberCall,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StaticMemberIdentifierRole {
+    Owner,
+    MemberValue,
+}
+
+fn static_member_identifier_roles(
+    source: &str,
+    tokens: &[Token],
+) -> BTreeMap<usize, StaticMemberIdentifierRole> {
+    let mut result = BTreeMap::new();
+    for (index, token) in tokens.iter().enumerate() {
+        if token.kind != TokenKind::Identifier {
+            continue;
+        }
+        let text = &source[token.span.start..token.span.end];
+        let Some(next) = next_non_trivia(tokens, index) else {
+            continue;
+        };
+        if next.kind == TokenKind::Dot && is_type_like_static_owner(text) {
+            result.insert(index, StaticMemberIdentifierRole::Owner);
+            continue;
+        }
+        let Some(previous) = previous_non_trivia(tokens, index) else {
+            continue;
+        };
+        if previous.kind != TokenKind::Dot
+            || next.kind == TokenKind::LeftParen
+            || !previous_dot_owner_is_type_like(source, tokens, index)
+        {
+            continue;
+        }
+        result.insert(index, StaticMemberIdentifierRole::MemberValue);
+    }
+    result
+}
+
+fn previous_dot_owner_is_type_like(source: &str, tokens: &[Token], dot_right_index: usize) -> bool {
+    let Some(dot_index) = tokens[..dot_right_index]
+        .iter()
+        .rposition(|token| !token.kind.is_trivia())
+    else {
+        return false;
+    };
+    if tokens[dot_index].kind != TokenKind::Dot {
+        return false;
+    }
+    let Some(owner) = tokens[..dot_index]
+        .iter()
+        .rev()
+        .find(|token| !token.kind.is_trivia())
+    else {
+        return false;
+    };
+    owner.kind == TokenKind::Identifier
+        && is_type_like_static_owner(&source[owner.span.start..owner.span.end])
+}
+
+fn is_type_like_static_owner(text: &str) -> bool {
+    let Some(first) = text.chars().next() else {
+        return false;
+    };
+    first.is_ascii_uppercase() && text.chars().any(|character| character.is_ascii_lowercase())
+}
+
+fn call_identifier_roles(tokens: &[Token]) -> BTreeMap<usize, CallIdentifierRole> {
+    let mut result = BTreeMap::new();
+    for (index, token) in tokens.iter().enumerate() {
+        if token.kind != TokenKind::Identifier {
+            continue;
+        }
+        let Some(next) = next_non_trivia(tokens, index) else {
+            continue;
+        };
+        let previous = previous_non_trivia(tokens, index);
+        if previous.is_some_and(|previous| previous.kind == TokenKind::Dot)
+            && next.kind == TokenKind::LeftParen
+        {
+            result.insert(index, CallIdentifierRole::MemberCall);
+        } else if next.kind == TokenKind::LeftParen
+            && !previous.is_some_and(|previous| {
+                previous.kind == TokenKind::Dot
+                    || previous.kind == TokenKind::Keyword(Keyword::New)
+                    || previous.kind == TokenKind::Keyword(Keyword::Class)
+                    || previous.kind == TokenKind::Keyword(Keyword::Enum)
+                    || previous.kind == TokenKind::Keyword(Keyword::Typedef)
+            })
+        {
+            result.insert(index, CallIdentifierRole::UnqualifiedCall);
+        }
+    }
+    result
 }
 
 fn attribute_identifier_roles(
