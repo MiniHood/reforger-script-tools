@@ -2058,6 +2058,7 @@ enum EGameFlags
     fn semantic_tokens_keep_comment_contents_comment_colored() {
         let source = r#"class Example
 {
+	//! \param[in] enable{} Set() true to enable supplies, set false to disable
 	/*!
 		\return[] // True{} <> if the game is hosted by a player (i.e., not dedicated server)
 	*/
@@ -2080,9 +2081,9 @@ enum EGameFlags
             !report.decoded.iter().any(|token| {
                 matches!(
                     token.text.as_str(),
-                    "[" | "]" | "{" | "}" | "<" | ">" | "if"
+                    "[" | "]" | "{" | "}" | "(" | ")" | "<" | ">" | "if" | "Set"
                 ) && token.range.start.line >= 2
-                    && token.range.end.line <= 4
+                    && token.range.end.line <= 5
                     && token.token_type != "comment"
             }),
             "{:?}",
