@@ -1,7 +1,8 @@
 use crate::index::{GlobalSymbolId, SymbolIndex};
 use crate::index_query::IndexQuery;
 use crate::lsp::hover_render::{
-    render_hover_markdown as render_hover_markdown_with_context, HoverRenderContext,
+    render_hover_markdown as render_hover_markdown_with_context, HoverLinkContext,
+    HoverRenderContext,
 };
 use crate::lsp::{
     file_index_for_source, offset_for_position, range_for_span, FileIndexAnalysis,
@@ -13,6 +14,8 @@ use crate::resolver::{
     ResolutionReason,
 };
 use serde::Serialize;
+
+const SYNTHETIC_HOVER_URI: &str = "file:///hover-source.c";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -83,10 +86,26 @@ pub(crate) fn hover_report_for_cached_analysis_with_external(
     position: LspPosition,
     external_index: Option<&SymbolIndex>,
 ) -> LspHoverReport {
+    hover_report_for_cached_analysis_with_external_uri(
+        source,
+        analysis,
+        SYNTHETIC_HOVER_URI,
+        position,
+        external_index,
+    )
+}
+
+pub(crate) fn hover_report_for_cached_analysis_with_external_uri(
+    source: &str,
+    analysis: &FileIndexAnalysis,
+    current_uri: &str,
+    position: LspPosition,
+    external_index: Option<&SymbolIndex>,
+) -> LspHoverReport {
     let Some(offset) = offset_for_position(source, position) else {
         return empty_hover_report(analysis.parse_diagnostics);
     };
-    hover_report_for_offset(source, analysis, offset, external_index)
+    hover_report_for_offset(source, analysis, current_uri, offset, external_index)
 }
 
 pub fn hover_reports_for_source_positions(
@@ -106,7 +125,15 @@ pub fn hover_reports_for_source_positions_with_external(
         .iter()
         .map(|position| {
             offset_for_position(source, *position)
-                .map(|offset| hover_report_for_offset(source, &analysis, offset, external_index))
+                .map(|offset| {
+                    hover_report_for_offset(
+                        source,
+                        &analysis,
+                        SYNTHETIC_HOVER_URI,
+                        offset,
+                        external_index,
+                    )
+                })
                 .unwrap_or_else(|| empty_hover_report(analysis.parse_diagnostics))
         })
         .collect()
@@ -115,6 +142,7 @@ pub fn hover_reports_for_source_positions_with_external(
 fn hover_report_for_offset(
     source: &str,
     analysis: &FileIndexAnalysis,
+    current_uri: &str,
     offset: usize,
     external_index: Option<&SymbolIndex>,
 ) -> LspHoverReport {
@@ -140,6 +168,7 @@ fn hover_report_for_offset(
                             &analysis.index,
                             &query,
                             external_query.as_ref(),
+                            current_uri,
                             selected.id,
                             None,
                             HoverSelectionSource::ResolverIdentifier,
@@ -160,6 +189,7 @@ fn hover_report_for_offset(
                                 external_index,
                                 &external_query,
                                 None,
+                                current_uri,
                                 selected.id,
                                 Some(range_for_span(source, resolution.token_span)),
                                 HoverSelectionSource::ResolverIdentifier,
@@ -198,6 +228,7 @@ fn hover_report_for_offset(
                 &analysis.index,
                 &query,
                 external_query.as_ref(),
+                current_uri,
                 selected.id,
                 None,
                 HoverSelectionSource::ResolverSyntaxSpan,
@@ -218,6 +249,7 @@ fn hover_report_for_symbol(
     index: &SymbolIndex,
     query: &IndexQuery<'_>,
     member_summary_query: Option<&IndexQuery<'_>>,
+    current_uri: &str,
     id: GlobalSymbolId,
     range_override: Option<LspRange>,
     selection_source: HoverSelectionSource,
@@ -241,6 +273,10 @@ fn hover_report_for_symbol(
                     Some(HoverRenderContext {
                         query,
                         member_summary_query,
+                        links: Some(HoverLinkContext {
+                            current_uri,
+                            external_query: member_summary_query,
+                        }),
                     }),
                 ),
             },

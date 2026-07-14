@@ -39,10 +39,9 @@ pub use completion::{
     LspCompletionItemLabelDetails, LspCompletionList, LspCompletionReport, LspCompletionTimings,
     LspTextEdit,
 };
-use debug_hover::debug_hover_report_for_cached_analysis_with_external;
+use debug_hover::debug_hover_report_for_cached_analysis_with_external_uri;
 pub use debug_hover::debug_hover_report_for_source_position;
 pub(crate) use debug_hover::selected_label_from_debug_report;
-#[cfg(test)]
 pub(crate) use definition::file_uri_for_path;
 pub use definition::{
     definition_report_for_cached_analysis_with_external, definition_report_for_source_position,
@@ -53,7 +52,7 @@ use diagnostics::{clear_diagnostics_message, publish_diagnostics_message};
 pub use diagnostics::{parser_diagnostics_for_source, LspDiagnostic};
 pub(crate) use external_overlay::ExternalIndexStatusSummary;
 use external_overlay::{start_external_index, ExternalIndexHandle};
-use hover::hover_report_for_cached_analysis_with_external;
+use hover::hover_report_for_cached_analysis_with_external_uri;
 pub use hover::{
     hover_report_for_source_position, hover_report_for_source_position_with_external,
     hover_reports_for_source_positions, hover_reports_for_source_positions_with_external,
@@ -787,9 +786,10 @@ impl<W: Write> LspServer<W> {
                                 revision = document.revision;
                                 let report = self.external_index.with_index(|status, index| {
                                     external_index_status = status;
-                                    hover_report_for_cached_analysis_with_external(
+                                    hover_report_for_cached_analysis_with_external_uri(
                                         &document.text,
                                         &document.analysis,
+                                        &log_uri,
                                         params.position,
                                         index,
                                     )
@@ -950,9 +950,10 @@ impl<W: Write> LspServer<W> {
                                 revision = document.revision;
                                 let external_status = self.external_index.status_summary();
                                 let report = self.external_index.with_index(|_, index| {
-                                    debug_hover_report_for_cached_analysis_with_external(
+                                    debug_hover_report_for_cached_analysis_with_external_uri(
                                         &document.text,
                                         &document.analysis,
+                                        &log_uri,
                                         params.position,
                                         index,
                                         Some(&external_status),
@@ -1486,6 +1487,9 @@ class Example
 	: Base
 {
 	static const int COUNT = 4;
+	void Example(int initialValue)
+	{
+	}
 	void Run(int value)
 	{
 		string name = "x";
@@ -1511,6 +1515,18 @@ class Example
             .decoded
             .iter()
             .any(|token| token.text == "Run" && token.token_type == "method"));
+        assert!(report
+            .decoded
+            .iter()
+            .any(|token| token.text == "Example" && token.token_type == "class"));
+        assert!(
+            !report
+                .decoded
+                .iter()
+                .any(|token| token.text == "Example" && token.token_type == "method"),
+            "{:?}",
+            report.decoded
+        );
         assert!(
             report
                 .decoded

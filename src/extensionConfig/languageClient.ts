@@ -6,6 +6,7 @@ export const languageClientIds = {
 
 export const languageClientCommands = {
 	debugHoverAtCursor: 'reforger-sript-tools.debug.hoverAtCursor',
+	openSymbolLocation: 'reforger-sript-tools.openSymbolLocation',
 } as const;
 
 export const languageClientServer = {

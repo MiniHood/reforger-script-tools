@@ -25,6 +25,7 @@ This file has no VS Code API calls, filesystem access, mutable state, parser log
 - Added centralized constants for the first bundled Rust language-server client.
 - Added the centralized `enforce` language id used by the language-client selector.
 - Added centralized constants for the hover-debug command and `reforger/debugHover` request.
+- Added the centralized hover symbol-link command used by Rust-generated trusted Markdown links.
 - Added centralized constants for workspace overlay file-change notifications.
 - Added centralized storage names for the single-record hover-debug report under `logs/hover-debug/latest.md`.
 - Added centralized storage names for the disposable game-data symbol index cache under `index-cache/`.

@@ -20,6 +20,8 @@ The client passes `globalStorageUri/logs/language-server.log`, `globalStorageUri
 
 LSP hover content comes from Rust as Markdown. The built-in language-client hover provider is suppressed by middleware, and this module registers one explicit VS Code hover provider that sends the standard `textDocument/hover` request to the Rust server, then converts the returned Markdown into fresh `MarkdownString` objects with `supportHtml` enabled. This is a rendering bridge only: TypeScript must not create hover text, classify symbols, or duplicate Rust language analysis. It exists because VS Code hover color uses sanitized Markdown HTML spans, not semantic-token coloring inside hover code blocks.
 
+Rust hover Markdown may include trusted `command:` links for source-backed symbol targets. This module registers `reforger-sript-tools.openSymbolLocation` as a thin editor command that opens the URI supplied by Rust and converts Rust byte offsets into VS Code positions from the target document text. The command must not resolve names, inspect syntax, or guess targets; it only navigates to target metadata produced by the language server.
+
 The client discovers workspace script roots from each VS Code workspace folder. If a workspace folder itself is named `Scripts` or `scripts`, that folder is passed directly; otherwise existing `Scripts/` and `scripts/` children are passed as repeatable `--workspace-scripts` arguments. The client also registers file-system watchers for workspace `.c` files under those script folders. Create/change/delete events are debounced and sent to Rust as `reforger/workspaceFileChanged` or `reforger/workspaceFileDeleted`; TypeScript sends full file text but does not parse it.
 
 The module also registers `Reforger Script Tools: Debug Hover At Cursor`. The command sends the active Enforce editor URI and cursor position to the Rust server through the custom `reforger/debugHover` request, writes the returned report to the hover-debug output channel, and overwrites `globalStorageUri/logs/hover-debug/latest.md`. That file is a single-record debug artifact; each command run replaces it completely so Codex and humans have one stable place to inspect the latest hover/AST pipeline state. TypeScript does not inspect source text or duplicate language analysis.
@@ -43,6 +45,7 @@ Workspace file watchers and development binary watchers are client-owned process
 - Updated the runtime game-data cache path to v6 after fixing compacted multi-file symbol range remapping.
 - Added development-host binary watching so replacing `server/target/debug/reforger_language_server(.exe)` restarts the language client automatically.
 - Enabled safe/trusted HTML rendering for LSP hover Markdown so Rust-produced colored kind labels display in VS Code. The built-in language-client hover provider is suppressed and replaced by an explicit provider that sends the same Rust `textDocument/hover` request, then rebuilds returned contents as HTML-capable Markdown strings; it must not build hover text or duplicate language analysis.
+- Added the hover symbol-link command bridge for Rust-generated trusted Markdown links.
 
 ## Future Improvements
 

@@ -1,7 +1,7 @@
 use crate::index::{GlobalSymbolId, SymbolIndex};
 use crate::index_query::IndexQuery;
 use crate::lexer::{lex, TextSpan, Token};
-use crate::lsp::hover_render::{render_hover_markdown, HoverRenderContext};
+use crate::lsp::hover_render::{render_hover_markdown, HoverLinkContext, HoverRenderContext};
 use crate::lsp::semantic_tokens::semantic_tokens_report_for_cached_analysis_with_external;
 use crate::lsp::{
     file_index_for_source, offset_for_position, position_for_offset, span_text, symbol_kind_label,
@@ -40,6 +40,24 @@ fn debug_hover_report_for_source_position_with_external(
 pub(crate) fn debug_hover_report_for_cached_analysis_with_external(
     source: &str,
     analysis: &FileIndexAnalysis,
+    position: LspPosition,
+    external_index: Option<&SymbolIndex>,
+    external_status: Option<&ExternalIndexStatusSummary>,
+) -> String {
+    debug_hover_report_for_cached_analysis_with_external_uri(
+        source,
+        analysis,
+        "file:///hover-debug-source.c",
+        position,
+        external_index,
+        external_status,
+    )
+}
+
+pub(crate) fn debug_hover_report_for_cached_analysis_with_external_uri(
+    source: &str,
+    analysis: &FileIndexAnalysis,
+    current_uri: &str,
     position: LspPosition,
     external_index: Option<&SymbolIndex>,
     external_status: Option<&ExternalIndexStatusSummary>,
@@ -134,6 +152,10 @@ pub(crate) fn debug_hover_report_for_cached_analysis_with_external(
                 Some(HoverRenderContext {
                     query: &query,
                     member_summary_query: external_query.as_ref(),
+                    links: Some(HoverLinkContext {
+                        current_uri,
+                        external_query: external_query.as_ref(),
+                    }),
                 }),
             )));
             report.push_str("\n```\n");
@@ -148,6 +170,10 @@ pub(crate) fn debug_hover_report_for_cached_analysis_with_external(
                 Some(HoverRenderContext {
                     query: &external_query,
                     member_summary_query: None,
+                    links: Some(HoverLinkContext {
+                        current_uri,
+                        external_query: None,
+                    }),
                 }),
             )));
             report.push_str("\n```\n");

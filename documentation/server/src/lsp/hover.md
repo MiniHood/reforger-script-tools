@@ -18,6 +18,8 @@ Syntax-span hover is intentionally limited to useful declaration syntax inside s
 
 The hover Markdown shows a colored kind label, fenced Enforce signature or label, kind-specific detail text, structured documentation sections, bounded class member summaries, modifiers, attributes, and concise source path when available. Color is best-effort Markdown presentation only; semantic tokens remain the editor coloring source.
 
+When the renderer can map a displayed type/member label to a source-backed target, the Markdown may include trusted command links. Hover selection and target discovery remain Rust-side; the VS Code client only opens the URI/range carried by the link command.
+
 ## Dependencies and Boundaries
 
 Depends on `ReferenceResolver`, `IndexQuery`, `SymbolDisplay`, `SymbolIndex`, hover rendering, and LSP range/position helpers. It does not own debug-hover reports, protocol dispatch, document storage, workspace indexing, completion, definition, diagnostics, or semantic tokens.

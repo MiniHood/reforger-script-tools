@@ -1,10 +1,13 @@
 use crate::index_query::{EditorCompletionCandidate, EditorCompletionOrigin, IndexQuery};
+use crate::lexer::{lex, TokenKind};
+use crate::lsp::file_uri_for_path;
 use crate::lsp::semantic_tokens::semantic_token_color_for_type;
 use crate::lsp::symbol_kind_label;
 use crate::model::SymbolKind;
 use crate::symbol_display::{documentation_display, DocumentationDisplay, SymbolDisplayInfo};
+use serde_json::json;
 
-const ENUM_MEMBER_SAMPLE_LIMIT: usize = 4;
+const OPEN_SYMBOL_LOCATION_COMMAND: &str = "reforger-sript-tools.openSymbolLocation";
 const ATTRIBUTE_CONSTRUCTOR_SIGNATURE: &str = r#"void Attribute(
 	string defvalue = "",
 	string uiwidget = "auto",
@@ -20,6 +23,13 @@ const ATTRIBUTE_CONSTRUCTOR_SIGNATURE: &str = r#"void Attribute(
 pub(crate) struct HoverRenderContext<'a, 'index> {
     pub query: &'a IndexQuery<'index>,
     pub member_summary_query: Option<&'a IndexQuery<'index>>,
+    pub links: Option<HoverLinkContext<'a, 'index>>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct HoverLinkContext<'a, 'index> {
+    pub current_uri: &'a str,
+    pub external_query: Option<&'a IndexQuery<'index>>,
 }
 
 pub(crate) fn render_hover_markdown(
@@ -27,9 +37,9 @@ pub(crate) fn render_hover_markdown(
     context: Option<HoverRenderContext<'_, '_>>,
 ) -> String {
     let mut markdown = String::new();
-    markdown.push_str(&render_header(display));
+    markdown.push_str(&render_header(display, context.as_ref()));
     markdown.push('\n');
-    markdown.push_str(&render_code(display));
+    markdown.push_str(&render_code(display, context.as_ref()));
 
     let mut sections = Vec::new();
 
@@ -43,21 +53,23 @@ pub(crate) fn render_hover_markdown(
         if let Some(params) = render_attribute_params(attribute_display) {
             sections.push(params);
         }
-        sections.push(render_attribute_constructor());
+        sections.push(render_attribute_constructor(context.as_ref()));
     }
 
     if let Some(detail) = render_detail(display) {
         sections.push(detail);
     }
 
-    if let Some(context) = context {
+    if let Some(context) = context.as_ref() {
         if display.kind == SymbolKind::Class {
             let member_query = context.member_summary_query.unwrap_or(context.query);
-            if let Some(summary) = render_class_members(display, context.query, member_query) {
+            if let Some(summary) =
+                render_class_members(display, context.query, member_query, Some(context))
+            {
                 sections.push(summary);
             }
         } else if display.kind == SymbolKind::Enum {
-            if let Some(summary) = render_enum_members(display, context.query) {
+            if let Some(summary) = render_enum_members(display, context.query, Some(context)) {
                 sections.push(summary);
             }
         }
@@ -75,22 +87,31 @@ pub(crate) fn render_hover_markdown(
     markdown
 }
 
-fn render_header(display: &SymbolDisplayInfo) -> String {
+fn render_header(
+    display: &SymbolDisplayInfo,
+    context: Option<&HoverRenderContext<'_, '_>>,
+) -> String {
     let kind = hover_kind_label(display.kind);
-    let mut header = colored_text(kind, hover_header_token_type(display.kind));
     if let Some(container) = hover_container_name(display) {
-        header.push_str(" in ");
-        header.push_str(&colored_text(&container, "class"));
+        return format!(
+            "<span style=\"font-size:1.12em;\"><strong>{}</strong> in <strong>{}</strong></span>",
+            colored_text(kind, hover_header_token_type(display.kind)),
+            render_type_identifier(&container, "class", context)
+        );
     }
+    let header = colored_text(kind, hover_header_token_type(display.kind));
     format!("<strong><span style=\"font-size:1.12em;\">{header}</span></strong>")
 }
 
-fn render_code(display: &SymbolDisplayInfo) -> String {
+fn render_code(
+    display: &SymbolDisplayInfo,
+    context: Option<&HoverRenderContext<'_, '_>>,
+) -> String {
     let declaration = hover_declaration_text(display);
     format!(
         "<div data-code=\"{}\">{}</div>",
         escape_html_attr(&declaration),
-        render_colored_declaration(display, &declaration)
+        render_colored_declaration(display, &declaration, context)
     )
 }
 
@@ -134,23 +155,19 @@ fn render_documentation(
         lines.push(summary.clone());
     }
     if !docs.parameters.is_empty() {
-        lines.push(render_section_header("Parameters"));
         for parameter in &docs.parameters {
-            let tag = match parameter.direction.as_deref() {
-                Some(direction) => format!("param[{direction}]"),
-                None => "param".to_string(),
-            };
+            let tag = parameter.direction.as_deref().unwrap_or("param");
             if parameter.description.is_empty() {
                 lines.push(format!(
-                    "{} `{}`",
+                    "{} {}",
                     render_doc_tag(&tag),
-                    escape_inline_code(&parameter.name)
+                    escape_html_text(&parameter.name)
                 ));
             } else {
                 lines.push(format!(
-                    "{} `{}` {}",
+                    "{} {} {}",
                     render_doc_tag(&tag),
-                    escape_inline_code(&parameter.name),
+                    escape_html_text(&parameter.name),
                     parameter.description
                 ));
             }
@@ -173,6 +190,7 @@ fn render_class_members(
     display: &SymbolDisplayInfo,
     direct_query: &IndexQuery<'_>,
     member_query: &IndexQuery<'_>,
+    context: Option<&HoverRenderContext<'_, '_>>,
 ) -> Option<String> {
     let direct_lookup = direct_query.completion_members_for_class(&display.label);
     let member_lookup = member_query.completion_members_for_class(&display.label);
@@ -212,9 +230,9 @@ fn render_class_members(
         .collect::<Vec<_>>();
 
     let mut lines = Vec::new();
-    push_member_group(&mut lines, "Constructors", &constructors);
-    push_member_group(&mut lines, "Functions", &methods);
-    push_member_group(&mut lines, "Fields", &fields);
+    push_member_group(&mut lines, "Constructors", &constructors, context);
+    push_member_group(&mut lines, "Functions", &methods, context);
+    push_member_group(&mut lines, "Fields", &fields, context);
     if lines.is_empty() {
         None
     } else {
@@ -243,20 +261,29 @@ fn is_public_facing_class_summary_member(candidate: &EditorCompletionCandidate) 
         .any(|modifier| matches!(modifier.as_str(), "private" | "protected"))
 }
 
-fn push_member_group(lines: &mut Vec<String>, label: &str, members: &[&EditorCompletionCandidate]) {
+fn push_member_group(
+    lines: &mut Vec<String>,
+    label: &str,
+    members: &[&EditorCompletionCandidate],
+    context: Option<&HoverRenderContext<'_, '_>>,
+) {
     if members.is_empty() {
         return;
     }
     let rendered_members = members
         .iter()
-        .map(|candidate| render_member_line(candidate))
+        .map(|candidate| render_member_line(candidate, context))
         .collect::<Vec<_>>()
         .join("<br>");
     let block = format!("{}\n\n{rendered_members}", render_section_header(label));
     lines.push(block);
 }
 
-fn render_enum_members(display: &SymbolDisplayInfo, query: &IndexQuery<'_>) -> Option<String> {
+fn render_enum_members(
+    display: &SymbolDisplayInfo,
+    query: &IndexQuery<'_>,
+    context: Option<&HoverRenderContext<'_, '_>>,
+) -> Option<String> {
     let members = query
         .completion_static_members_for_type(&display.label)
         .into_iter()
@@ -267,25 +294,25 @@ fn render_enum_members(display: &SymbolDisplayInfo, query: &IndexQuery<'_>) -> O
     }
     let sample = members
         .iter()
-        .take(ENUM_MEMBER_SAMPLE_LIMIT)
         .map(|candidate| {
-            candidate.display.detail.as_ref().map_or_else(
-                || candidate.display.label.clone(),
-                |detail| format!("{} // {}", candidate.display.label, detail),
-            )
+            let mut rendered = linked_symbol_text(
+                &candidate.display.label,
+                hover_token_type(candidate.display.kind),
+                &candidate.display,
+                context,
+            );
+            if let Some(detail) = &candidate.display.detail {
+                rendered.push_str(" // ");
+                rendered.push_str(&escape_html_text(detail));
+            }
+            rendered
         })
         .collect::<Vec<_>>()
-        .join("\n");
-    let omitted = members.len().saturating_sub(ENUM_MEMBER_SAMPLE_LIMIT);
-    let mut block = format!(
-        "{}\n\n```enforce\n{sample}",
-        render_section_header("Members")
-    );
-    if omitted > 0 {
-        block.push_str(&format!("\n// +{omitted} more"));
-    }
-    block.push_str("\n```");
-    Some(block)
+        .join("<br>");
+    Some(format!(
+        "{}\n\n{sample}",
+        render_section_header("Enum Values")
+    ))
 }
 
 fn render_metadata(display: &SymbolDisplayInfo) -> Option<String> {
@@ -319,7 +346,8 @@ fn hover_token_type(kind: SymbolKind) -> &'static str {
         SymbolKind::Class | SymbolKind::Typedef | SymbolKind::TypeParameter => "class",
         SymbolKind::Enum => "enum",
         SymbolKind::Function => "function",
-        SymbolKind::Method | SymbolKind::Constructor | SymbolKind::Destructor => "method",
+        SymbolKind::Method | SymbolKind::Destructor => "method",
+        SymbolKind::Constructor => "class",
         SymbolKind::GlobalField | SymbolKind::Field => "field",
         SymbolKind::Parameter => "parameter",
         SymbolKind::EnumMember | SymbolKind::LocalVariable | SymbolKind::PreprocessorMacro => {
@@ -330,7 +358,7 @@ fn hover_token_type(kind: SymbolKind) -> &'static str {
 
 fn hover_header_token_type(kind: SymbolKind) -> &'static str {
     match kind {
-        SymbolKind::Class | SymbolKind::Enum => "keyword",
+        SymbolKind::Class | SymbolKind::Enum | SymbolKind::Constructor => "keyword",
         _ => hover_token_type(kind),
     }
 }
@@ -402,19 +430,27 @@ fn hover_declaration_text(display: &SymbolDisplayInfo) -> String {
     text.trim_end_matches(';').to_string()
 }
 
-fn render_colored_declaration(display: &SymbolDisplayInfo, declaration: &str) -> String {
+fn render_colored_declaration(
+    display: &SymbolDisplayInfo,
+    declaration: &str,
+    context: Option<&HoverRenderContext<'_, '_>>,
+) -> String {
     if display.signature.is_some() {
-        return render_colored_callable_declaration(display, declaration);
+        return render_colored_callable_declaration(display, declaration, context);
     }
-    render_colored_plain_declaration(display, declaration)
+    render_colored_plain_declaration(display, declaration, context)
 }
 
-fn render_colored_callable_declaration(display: &SymbolDisplayInfo, declaration: &str) -> String {
+fn render_colored_callable_declaration(
+    display: &SymbolDisplayInfo,
+    declaration: &str,
+    context: Option<&HoverRenderContext<'_, '_>>,
+) -> String {
     let Some(name_start) = find_identifier_start(declaration, &display.label) else {
-        return render_colored_plain_declaration(display, declaration);
+        return render_colored_plain_declaration(display, declaration, context);
     };
     let Some(open_offset) = declaration[name_start..].find('(') else {
-        return render_colored_plain_declaration(display, declaration);
+        return render_colored_plain_declaration(display, declaration, context);
     };
     let open = name_start + open_offset;
     let prefix = declaration[..name_start].trim_end();
@@ -430,18 +466,23 @@ fn render_colored_callable_declaration(display: &SymbolDisplayInfo, declaration:
         parts.push(color_words(modifiers, "keyword"));
     }
     if !return_type.is_empty() {
-        parts.push(colored_text(
-            return_type,
-            hover_type_token_type(return_type),
-        ));
+        parts.push(render_type_text(return_type, context));
     }
-    parts.push(colored_text(&display.label, hover_token_type(display.kind)));
+    parts.push(linked_symbol_text(
+        &display.label,
+        hover_token_type(display.kind),
+        display,
+        context,
+    ));
     let mut rendered = parts.join(" ");
-    rendered.push_str(&render_callable_params(params_and_suffix));
+    rendered.push_str(&render_callable_params(params_and_suffix, context));
     rendered
 }
 
-fn render_callable_params(params_and_suffix: &str) -> String {
+fn render_callable_params(
+    params_and_suffix: &str,
+    context: Option<&HoverRenderContext<'_, '_>>,
+) -> String {
     let Some(open) = params_and_suffix.find('(') else {
         return escape_html_text(params_and_suffix);
     };
@@ -455,7 +496,7 @@ fn render_callable_params(params_and_suffix: &str) -> String {
     rendered.push_str(&colored_text(before, "operator"));
     let rendered_params = split_top_level_arguments(params)
         .into_iter()
-        .map(|param| render_parameter_declaration(&param))
+        .map(|param| render_parameter_declaration(&param, context))
         .collect::<Vec<_>>()
         .join(&format!("{} ", colored_text(",", "operator")));
     rendered.push_str(&rendered_params);
@@ -463,7 +504,10 @@ fn render_callable_params(params_and_suffix: &str) -> String {
     rendered
 }
 
-fn render_parameter_declaration(param: &str) -> String {
+fn render_parameter_declaration(
+    param: &str,
+    context: Option<&HoverRenderContext<'_, '_>>,
+) -> String {
     let trimmed = param.trim();
     if trimmed.is_empty() {
         return String::new();
@@ -477,7 +521,7 @@ fn render_parameter_declaration(param: &str) -> String {
         return escape_html_text(trimmed);
     }
     if tokens.len() == 1 {
-        return colored_text(tokens[0], hover_type_token_type(tokens[0]));
+        return render_type_text(tokens[0], context);
     }
     let name = tokens[tokens.len() - 1];
     let mut rendered = Vec::new();
@@ -487,7 +531,11 @@ fn render_parameter_declaration(param: &str) -> String {
         } else {
             hover_type_token_type(token)
         };
-        rendered.push(colored_text(token, token_type));
+        if is_parameter_modifier(token) {
+            rendered.push(colored_text(token, token_type));
+        } else {
+            rendered.push(render_type_text(token, context));
+        }
     }
     rendered.push(colored_text(name, "parameter"));
     let mut value = rendered.join(" ");
@@ -500,26 +548,154 @@ fn render_parameter_declaration(param: &str) -> String {
     value
 }
 
-fn render_colored_plain_declaration(display: &SymbolDisplayInfo, declaration: &str) -> String {
+fn render_type_text(type_text: &str, context: Option<&HoverRenderContext<'_, '_>>) -> String {
+    let mut rendered = String::new();
+    let mut cursor = 0usize;
+    for token in lex(type_text) {
+        if token.kind == TokenKind::Eof {
+            continue;
+        }
+        if token.span.start > cursor {
+            rendered.push_str(&escape_html_text(&type_text[cursor..token.span.start]));
+        }
+        let text = &type_text[token.span.start..token.span.end];
+        match token.kind {
+            TokenKind::Identifier => {
+                rendered.push_str(&render_type_identifier(text, "class", context));
+            }
+            TokenKind::Keyword(_) => {
+                let token_type = hover_type_token_type(text);
+                if token_type == "class" {
+                    rendered.push_str(&render_type_identifier(text, token_type, context));
+                } else {
+                    rendered.push_str(&colored_text(text, token_type));
+                }
+            }
+            TokenKind::Operator(_) | TokenKind::LeftBracket | TokenKind::RightBracket => {
+                rendered.push_str(&colored_text(text, "operator"));
+            }
+            TokenKind::Comma | TokenKind::Colon | TokenKind::Dot => {
+                rendered.push_str(&colored_text(text, "operator"));
+            }
+            _ => rendered.push_str(&escape_html_text(text)),
+        }
+        cursor = token.span.end;
+    }
+    if cursor < type_text.len() {
+        rendered.push_str(&escape_html_text(&type_text[cursor..]));
+    }
+    rendered
+}
+
+fn render_type_identifier(
+    text: &str,
+    token_type: &str,
+    context: Option<&HoverRenderContext<'_, '_>>,
+) -> String {
+    if let Some(display) = context.and_then(|context| find_type_display(context, text)) {
+        return linked_symbol_text(text, token_type, &display, context);
+    }
+    colored_text(text, token_type)
+}
+
+fn find_type_display(
+    context: &HoverRenderContext<'_, '_>,
+    name: &str,
+) -> Option<SymbolDisplayInfo> {
+    find_type_display_in_query(context.query, name).or_else(|| {
+        context
+            .links
+            .and_then(|links| links.external_query)
+            .and_then(|query| find_type_display_in_query(query, name))
+    })
+}
+
+fn find_type_display_in_query(query: &IndexQuery<'_>, name: &str) -> Option<SymbolDisplayInfo> {
+    query
+        .top_level_conflicts(name)
+        .into_iter()
+        .filter_map(|id| query.symbol_display(id))
+        .find(|display| {
+            matches!(
+                display.kind,
+                SymbolKind::Class
+                    | SymbolKind::Enum
+                    | SymbolKind::Typedef
+                    | SymbolKind::TypeParameter
+            )
+        })
+}
+
+fn linked_symbol_text(
+    text: &str,
+    token_type: &str,
+    display: &SymbolDisplayInfo,
+    context: Option<&HoverRenderContext<'_, '_>>,
+) -> String {
+    let label = colored_text(text, token_type);
+    let Some(command_uri) = context
+        .and_then(|context| context.links)
+        .and_then(|links| hover_command_uri_for_display(display, links))
+    else {
+        return label;
+    };
+    format!("<a href=\"{}\">{label}</a>", escape_html_attr(&command_uri))
+}
+
+fn hover_command_uri_for_display(
+    display: &SymbolDisplayInfo,
+    links: HoverLinkContext<'_, '_>,
+) -> Option<String> {
+    if display.selection_span.is_empty() {
+        return None;
+    }
+    let target_uri = display
+        .absolute_path
+        .as_deref()
+        .and_then(file_uri_for_path)
+        .unwrap_or_else(|| links.current_uri.to_string());
+    let args = json!([{
+        "uri": target_uri,
+        "startByte": display.selection_span.start,
+        "endByte": display.selection_span.end,
+    }]);
+    Some(format!(
+        "command:{}?{}",
+        OPEN_SYMBOL_LOCATION_COMMAND,
+        percent_encode_command_arg(&args.to_string())
+    ))
+}
+
+fn render_colored_plain_declaration(
+    display: &SymbolDisplayInfo,
+    declaration: &str,
+    context: Option<&HoverRenderContext<'_, '_>>,
+) -> String {
     match display.kind {
-        SymbolKind::Class => render_keyword_name_declaration(declaration, "class", "class"),
-        SymbolKind::Enum => render_keyword_name_declaration(declaration, "enum", "class"),
-        SymbolKind::Typedef => render_typedef_declaration(declaration),
+        SymbolKind::Class => {
+            render_keyword_name_declaration(display, declaration, "class", "class", context)
+        }
+        SymbolKind::Enum => {
+            render_keyword_name_declaration(display, declaration, "enum", "class", context)
+        }
+        SymbolKind::Typedef => render_typedef_declaration(display, declaration, context),
         SymbolKind::Field
         | SymbolKind::GlobalField
         | SymbolKind::LocalVariable
-        | SymbolKind::Parameter => render_typed_name_declaration(display, declaration),
+        | SymbolKind::Parameter => render_typed_name_declaration(display, declaration, context),
         SymbolKind::EnumMember | SymbolKind::PreprocessorMacro => {
-            render_name_first_declaration(display, declaration)
+            render_name_first_declaration(display, declaration, context)
         }
         _ => escape_html_text(declaration),
     }
 }
 
 fn render_keyword_name_declaration(
+    display: &SymbolDisplayInfo,
     declaration: &str,
     keyword: &'static str,
     name_token_type: &'static str,
+    context: Option<&HoverRenderContext<'_, '_>>,
 ) -> String {
     let Some(rest) = declaration.strip_prefix(keyword) else {
         return escape_html_text(declaration);
@@ -534,12 +710,16 @@ fn render_keyword_name_declaration(
     let mut rendered = format!(
         "{} {}",
         colored_text(keyword, "keyword"),
-        colored_text(name, name_token_type)
+        linked_symbol_text(name, name_token_type, display, context)
     );
     if !inline_suffix.is_empty() {
         rendered.push_str(&colored_text(":", "operator"));
         rendered.push(' ');
-        rendered.push_str(&colored_text(inline_suffix.trim(), "class"));
+        rendered.push_str(&render_type_identifier(
+            inline_suffix.trim(),
+            "class",
+            context,
+        ));
     } else if name_and_suffix.ends_with(':') {
         rendered.push_str(&colored_text(":", "operator"));
     }
@@ -551,17 +731,21 @@ fn render_keyword_name_declaration(
             let base = base.trim();
             if !base.is_empty() {
                 rendered.push(' ');
-                rendered.push_str(&colored_text(base, "class"));
+                rendered.push_str(&render_type_identifier(base, "class", context));
             }
         } else {
             rendered.push(' ');
-            rendered.push_str(&colored_text(suffix, "class"));
+            rendered.push_str(&render_type_identifier(suffix, "class", context));
         }
     }
     rendered
 }
 
-fn render_typedef_declaration(declaration: &str) -> String {
+fn render_typedef_declaration(
+    display: &SymbolDisplayInfo,
+    declaration: &str,
+    context: Option<&HoverRenderContext<'_, '_>>,
+) -> String {
     let Some(rest) = declaration.strip_prefix("typedef") else {
         return escape_html_text(declaration);
     };
@@ -572,12 +756,16 @@ fn render_typedef_declaration(declaration: &str) -> String {
     format!(
         "{} {} {}",
         colored_text("typedef", "keyword"),
-        colored_text(target.trim(), hover_type_token_type(target.trim())),
-        colored_text(name.trim(), "class")
+        render_type_text(target.trim(), context),
+        linked_symbol_text(name.trim(), "class", display, context)
     )
 }
 
-fn render_typed_name_declaration(display: &SymbolDisplayInfo, declaration: &str) -> String {
+fn render_typed_name_declaration(
+    display: &SymbolDisplayInfo,
+    declaration: &str,
+    context: Option<&HoverRenderContext<'_, '_>>,
+) -> String {
     let Some(name_start) = find_identifier_start(declaration, &display.label) else {
         return escape_html_text(declaration);
     };
@@ -593,9 +781,14 @@ fn render_typed_name_declaration(display: &SymbolDisplayInfo, declaration: &str)
         parts.push(color_words(modifiers, "keyword"));
     }
     if !type_text.is_empty() {
-        parts.push(colored_text(type_text, hover_type_token_type(type_text)));
+        parts.push(render_type_text(type_text, context));
     }
-    parts.push(colored_text(&display.label, hover_token_type(display.kind)));
+    parts.push(linked_symbol_text(
+        &display.label,
+        hover_token_type(display.kind),
+        display,
+        context,
+    ));
     let mut rendered = parts.join(" ");
     if !suffix.is_empty() {
         rendered.push(' ');
@@ -604,15 +797,21 @@ fn render_typed_name_declaration(display: &SymbolDisplayInfo, declaration: &str)
     rendered
 }
 
-fn render_name_first_declaration(display: &SymbolDisplayInfo, declaration: &str) -> String {
+fn render_name_first_declaration(
+    display: &SymbolDisplayInfo,
+    declaration: &str,
+    context: Option<&HoverRenderContext<'_, '_>>,
+) -> String {
     let Some(name_start) = find_identifier_start(declaration, &display.label) else {
         return escape_html_text(declaration);
     };
     let mut rendered = String::new();
     rendered.push_str(&escape_html_text(&declaration[..name_start]));
-    rendered.push_str(&colored_text(
+    rendered.push_str(&linked_symbol_text(
         &display.label,
         hover_token_type(display.kind),
+        display,
+        context,
     ));
     rendered.push_str(&escape_html_text(
         &declaration[name_start + display.label.len()..],
@@ -637,9 +836,12 @@ fn declaration_with_type_default(display: &SymbolDisplayInfo, detail: Option<&st
     }
 }
 
-fn render_member_line(candidate: &&EditorCompletionCandidate) -> String {
+fn render_member_line(
+    candidate: &&EditorCompletionCandidate,
+    context: Option<&HoverRenderContext<'_, '_>>,
+) -> String {
     let declaration = hover_declaration_text(&candidate.display);
-    render_colored_declaration(&candidate.display, &declaration)
+    render_colored_declaration(&candidate.display, &declaration, context)
 }
 
 fn callable_declaration_text(display: &SymbolDisplayInfo) -> String {
@@ -804,11 +1006,32 @@ fn render_attribute_params(display: &AttributeDisplay) -> Option<String> {
     ))
 }
 
-fn render_attribute_constructor() -> String {
+fn render_attribute_constructor(context: Option<&HoverRenderContext<'_, '_>>) -> String {
+    let rendered = render_attribute_constructor_signature(context);
     format!(
-        "{}\n\n```enforce\n{}\n```",
-        render_section_header("Constructor"),
-        ATTRIBUTE_CONSTRUCTOR_SIGNATURE
+        "{}\n\n{}",
+        render_colored_section_header("Constructor", "keyword"),
+        rendered
+    )
+}
+
+fn render_attribute_constructor_signature(context: Option<&HoverRenderContext<'_, '_>>) -> String {
+    let Some(open) = ATTRIBUTE_CONSTRUCTOR_SIGNATURE.find('(') else {
+        return escape_html_text(ATTRIBUTE_CONSTRUCTOR_SIGNATURE);
+    };
+    let prefix = ATTRIBUTE_CONSTRUCTOR_SIGNATURE[..open].trim();
+    let params_and_suffix = &ATTRIBUTE_CONSTRUCTOR_SIGNATURE[open..];
+    let mut tokens = prefix.split_whitespace();
+    let return_type = tokens.next().unwrap_or_default();
+    let name = tokens.next().unwrap_or_default();
+    if return_type.is_empty() || name.is_empty() {
+        return escape_html_text(ATTRIBUTE_CONSTRUCTOR_SIGNATURE);
+    }
+    format!(
+        "{} {}{}",
+        render_type_text(return_type, context),
+        render_type_identifier(name, "class", context),
+        render_callable_params(params_and_suffix, context)
     )
 }
 
@@ -902,14 +1125,15 @@ fn unquote_string(value: &str) -> String {
 }
 
 fn render_doc_tag(tag: &str) -> String {
-    format!(
-        "<span style=\"background-color:var(--vscode-badge-background);color:var(--vscode-badge-foreground);border-radius:3px;padding:0 4px;\">{}</span>",
-        escape_html_text(tag)
-    )
+    format!("`{}`", escape_inline_code(tag))
 }
 
 fn render_section_header(label: &str) -> String {
     format!("### {}", escape_html_text(label))
+}
+
+fn render_colored_section_header(label: &str, token_type: &str) -> String {
+    format!("### {}", colored_text(label, token_type))
 }
 
 fn find_identifier_start(value: &str, ident: &str) -> Option<usize> {
@@ -985,6 +1209,18 @@ fn escape_html_attr(value: &str) -> String {
     escape_html_text(value).replace('"', "&quot;")
 }
 
+fn percent_encode_command_arg(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            encoded.push(byte as char);
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    encoded
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1015,6 +1251,7 @@ mod tests {
             Some(HoverRenderContext {
                 query: &query,
                 member_summary_query: None,
+                links: None,
             }),
         );
 
@@ -1025,7 +1262,9 @@ mod tests {
         assert!(markdown.contains("data-code=\"protected ref array&lt;int&gt; m_Values\""));
         assert!(markdown.contains("<span style=\"color:#59A6E9;\">protected</span>"));
         assert!(markdown.contains("<span style=\"color:#59A6E9;\">ref</span>"));
-        assert!(markdown.contains("<span style=\"color:#40b5ac;\">array&lt;int&gt;</span>"));
+        assert!(markdown.contains("<span style=\"color:#40b5ac;\">array</span>"));
+        assert!(markdown.contains("<span style=\"color:#bfbfbf;\">&lt;</span>"));
+        assert!(markdown.contains("<span style=\"color:#59A6E9;\">int</span>"));
         assert!(markdown.contains("<span style=\"color:#cfcfcf;\">m_Values</span>"));
         assert!(!markdown.contains("**Detail:** `type ref array<int>`"));
         assert!(!markdown.contains("Modifiers: protected"));
@@ -1058,25 +1297,24 @@ mod tests {
             Some(HoverRenderContext {
                 query: &query,
                 member_summary_query: None,
+                links: None,
             }),
         );
 
         assert!(markdown.contains(
-            "<span style=\"color:#f3ad58;\">Function</span> in <span style=\"color:#40b5ac;\">Example</span>"
-        ));
-        assert!(markdown.contains(
-            "<strong><span style=\"font-size:1.12em;\"><span style=\"color:#f3ad58;\">Function</span> in <span style=\"color:#40b5ac;\">Example</span></span></strong>\n<div"
+            "<span style=\"font-size:1.12em;\"><strong><span style=\"color:#f3ad58;\">Function</span></strong> in <strong><span style=\"color:#40b5ac;\">Example</span></strong></span>\n<div"
         ));
         assert!(markdown.contains("data-code=\"bool Run(int value)\""));
         assert!(markdown.contains("<span style=\"color:#59A6E9;\">bool</span>"));
         assert!(markdown.contains("<span style=\"color:#f3ad58;\">Run</span>"));
         assert!(markdown.contains("Runs the example."));
-        assert!(markdown.contains("### Parameters"));
-        assert!(markdown.contains("var(--vscode-badge-background)"));
-        assert!(markdown.contains(">param[in]</span> `value` Input value."));
-        assert!(markdown.contains(">return</span> true when accepted."));
-        assert!(markdown.contains(">warning</span> Can fail."));
-        assert!(markdown.contains(">note</span> Use from tests."));
+        assert!(!markdown.contains("### Parameters"));
+        assert!(markdown.contains("`in` value Input value."));
+        assert!(!markdown.contains("`in` `value`"));
+        assert!(!markdown.contains("`param[in]`"));
+        assert!(markdown.contains("`return` true when accepted."));
+        assert!(markdown.contains("`warning` Can fail."));
+        assert!(markdown.contains("`note` Use from tests."));
         assert!(!markdown.contains("<span style=\"color:#59A6E9;\">return</span>"));
     }
 
@@ -1110,6 +1348,7 @@ mod tests {
             Some(HoverRenderContext {
                 query: &query,
                 member_summary_query: None,
+                links: None,
             }),
         );
 
@@ -1140,6 +1379,45 @@ mod tests {
         assert!(!markdown.contains("external"));
         assert!(!markdown.contains("event"));
         assert!(!markdown.contains("+"));
+    }
+
+    #[test]
+    fn renders_source_backed_command_links_for_class_and_type_targets() {
+        let index = index(
+            r#"class Base {}
+
+class Example : Base
+{
+	Base Make(Base value);
+}
+"#,
+        );
+        let query = IndexQuery::new(&index);
+        let display = query
+            .symbol_display(find(&index, SymbolKind::Class, "Example"))
+            .unwrap();
+
+        let markdown = render_hover_markdown(
+            &display,
+            Some(HoverRenderContext {
+                query: &query,
+                member_summary_query: None,
+                links: Some(HoverLinkContext {
+                    current_uri: "file:///current.c",
+                    external_query: None,
+                }),
+            }),
+        );
+
+        assert!(markdown.contains("command:reforger-sript-tools.openSymbolLocation?"));
+        assert!(markdown.contains("<a href=\"command:reforger-sript-tools.openSymbolLocation?"));
+        assert!(!markdown.contains("[<span"));
+        assert!(!markdown.contains("](command:reforger-sript-tools.openSymbolLocation?"));
+        assert!(markdown.contains("%22uri%22"));
+        assert!(markdown.contains("%22startByte%22"));
+        assert!(markdown.contains("%22endByte%22"));
+        assert!(markdown.contains("<span style=\"color:#40b5ac;\">Base</span>"));
+        assert!(markdown.contains("<span style=\"color:#f3ad58;\">Make</span>"));
     }
 
     #[test]
@@ -1175,6 +1453,7 @@ class Child : Base
             Some(HoverRenderContext {
                 query: &query,
                 member_summary_query: None,
+                links: None,
             }),
         );
         let functions = markdown.find("### Functions").unwrap();
@@ -1220,6 +1499,7 @@ class Child : Base
             Some(HoverRenderContext {
                 query: &query,
                 member_summary_query: None,
+                links: None,
             }),
         );
 
@@ -1229,13 +1509,55 @@ class Child : Base
         assert!(markdown.contains("string uiwidget = UIWidgets.Flags"));
         assert!(markdown.contains("ParamEnumArray enums = ParamEnumArray.FromEnum(EGameFlags)"));
         assert!(markdown.contains("string category = WB_GAME_MODE_CATEGORY"));
-        assert!(markdown.contains("### Constructor"));
-        assert!(markdown.contains("void Attribute("));
+        assert!(markdown.contains("### <span style=\"color:#59A6E9;\">Constructor</span>"));
+        assert!(markdown.contains(
+            "<span style=\"color:#59A6E9;\">void</span> <span style=\"color:#40b5ac;\">Attribute</span><span style=\"color:#bfbfbf;\">(</span>"
+        ));
         assert!(!markdown.contains("string desc = \"Test flags.\""));
     }
 
     #[test]
     fn renders_enum_members_section() {
+        let index = index(
+            r#"enum ExampleEnum
+{
+	First = 1,
+	Second,
+	Third,
+	Fourth,
+	Fifth
+}
+"#,
+        );
+        let query = IndexQuery::new(&index);
+        let display = query
+            .symbol_display(find(&index, SymbolKind::Enum, "ExampleEnum"))
+            .unwrap();
+
+        let markdown = render_hover_markdown(
+            &display,
+            Some(HoverRenderContext {
+                query: &query,
+                member_summary_query: None,
+                links: None,
+            }),
+        );
+
+        assert!(markdown.contains(
+            "<strong><span style=\"font-size:1.12em;\"><span style=\"color:#59A6E9;\">Enum</span></span></strong>"
+        ));
+        assert!(markdown.contains("data-code=\"enum ExampleEnum\""));
+        assert!(markdown.contains("<span style=\"color:#59A6E9;\">enum</span>"));
+        assert!(markdown.contains("<span style=\"color:#40b5ac;\">ExampleEnum</span>"));
+        assert!(markdown.contains("### Enum Values"));
+        assert!(markdown.contains("<span style=\"color:#cfcfcf;\">First</span> // value 1"));
+        assert!(markdown.contains("<span style=\"color:#cfcfcf;\">Second</span>"));
+        assert!(markdown.contains("<span style=\"color:#cfcfcf;\">Fifth</span>"));
+        assert!(!markdown.contains("// +"));
+    }
+
+    #[test]
+    fn renders_source_backed_command_links_for_enum_values() {
         let index = index(
             r#"enum ExampleEnum
 {
@@ -1254,18 +1576,19 @@ class Child : Base
             Some(HoverRenderContext {
                 query: &query,
                 member_summary_query: None,
+                links: Some(HoverLinkContext {
+                    current_uri: "file:///current.c",
+                    external_query: None,
+                }),
             }),
         );
 
-        assert!(markdown.contains(
-            "<strong><span style=\"font-size:1.12em;\"><span style=\"color:#59A6E9;\">Enum</span></span></strong>"
-        ));
-        assert!(markdown.contains("data-code=\"enum ExampleEnum\""));
-        assert!(markdown.contains("<span style=\"color:#59A6E9;\">enum</span>"));
-        assert!(markdown.contains("<span style=\"color:#40b5ac;\">ExampleEnum</span>"));
-        assert!(markdown.contains("### Members"));
-        assert!(markdown.contains("First // value 1"));
-        assert!(markdown.contains("Second"));
+        assert!(markdown.contains("### Enum Values"));
+        assert!(markdown.contains("<a href=\"command:reforger-sript-tools.openSymbolLocation?"));
+        assert!(markdown.contains("<span style=\"color:#cfcfcf;\">First</span>"));
+        assert!(markdown.contains(" // value 1"));
+        assert!(!markdown.contains("```enforce"));
+        assert!(!markdown.contains("[<span"));
     }
 
     #[test]
@@ -1328,6 +1651,7 @@ class Example
                 Some(HoverRenderContext {
                     query: &query,
                     member_summary_query: None,
+                    links: None,
                 }),
             );
             assert!(
@@ -1358,12 +1682,11 @@ class Example
             Some(HoverRenderContext {
                 query: &query,
                 member_summary_query: None,
+                links: None,
             }),
         );
 
-        assert!(markdown.contains(
-            "<span style=\"color:#cfcfcf;\">Enum Value</span> in <span style=\"color:#40b5ac;\">SCR_EGameModeState</span>"
-        ));
+        assert!(markdown.contains("<span style=\"font-size:1.12em;\"><strong><span style=\"color:#cfcfcf;\">Enum Value</span></strong> in <strong><span style=\"color:#40b5ac;\">SCR_EGameModeState</span></strong></span>"));
         assert!(markdown.contains("data-code=\"PREGAME = 0\""));
     }
 
@@ -1389,6 +1712,7 @@ class Example
             Some(HoverRenderContext {
                 query: &query,
                 member_summary_query: None,
+                links: None,
             }),
         );
 
