@@ -108,6 +108,26 @@ impl LexicalScopeModel {
         name: &str,
         offset: usize,
     ) -> Vec<GlobalSymbolId> {
+        self.visible_symbols_matching(index, offset, |symbol_name| symbol_name == name)
+    }
+
+    pub fn visible_symbols_with_prefix(
+        &self,
+        index: &SymbolIndex,
+        prefix: &str,
+        offset: usize,
+    ) -> Vec<GlobalSymbolId> {
+        self.visible_symbols_matching(index, offset, |symbol_name| {
+            starts_with_ignore_ascii_case(symbol_name, prefix)
+        })
+    }
+
+    fn visible_symbols_matching(
+        &self,
+        index: &SymbolIndex,
+        offset: usize,
+        mut matches_name: impl FnMut(&str) -> bool,
+    ) -> Vec<GlobalSymbolId> {
         let mut result = Vec::new();
         let mut current = self.innermost_scope_at(offset);
         while let Some(scope_id) = current {
@@ -119,7 +139,8 @@ impl LexicalScopeModel {
                 .iter()
                 .filter_map(|id| {
                     let symbol = index.symbol(*id)?;
-                    (symbol.name.as_deref() == Some(name)
+                    let symbol_name = symbol.name.as_deref()?;
+                    (matches_name(symbol_name)
                         && is_visible_at_offset(symbol.kind, symbol.selection_span, offset))
                     .then_some((*id, symbol.kind, symbol.selection_span.start))
                 })
@@ -186,6 +207,12 @@ impl LexicalScopeModel {
             .min_by_key(|scope| (scope.span.len(), std::cmp::Reverse(scope.id.0)))
             .map(|scope| scope.id)
     }
+}
+
+fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
+    value
+        .get(..prefix.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
 }
 
 fn collect_block_scopes_for_callable(

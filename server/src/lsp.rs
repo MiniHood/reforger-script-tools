@@ -32,7 +32,7 @@ mod hover_render;
 mod open_documents;
 mod semantic_tokens;
 
-use completion::empty_completion_list;
+use completion::{completion_debug_markdown, empty_completion_list};
 pub use completion::{
     completion_report_for_cached_analysis_with_external,
     completion_report_for_source_position_with_external, LspCompletionItem,
@@ -73,6 +73,7 @@ pub use semantic_tokens::{
 const SERVER_NAME: &str = "reforger-language-server";
 const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 const DEBUG_HOVER_METHOD: &str = "reforger/debugHover";
+const DEBUG_COMPLETION_METHOD: &str = "reforger/debugCompletion";
 const WORKSPACE_FILE_CHANGED_METHOD: &str = "reforger/workspaceFileChanged";
 const WORKSPACE_FILE_DELETED_METHOD: &str = "reforger/workspaceFileDeleted";
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -979,6 +980,61 @@ impl<W: Write> LspServer<W> {
                         revision,
                         hit,
                         selected_label,
+                        start.elapsed().as_millis()
+                    ));
+                    self.respond(id, result)?;
+                }
+            }
+            DEBUG_COMPLETION_METHOD => {
+                if let Some(id) = message.id {
+                    let start = Instant::now();
+                    let params = parse_params::<HoverParams>(message.params, method)?;
+                    let mut log_uri = "<missing>".to_string();
+                    let mut bytes = 0usize;
+                    let mut revision = 0u64;
+                    let mut completion_context = "none".to_string();
+                    let mut candidate_count = 0usize;
+                    let mut external_index_status = self.external_index.status_summary().status;
+                    let result = params
+                        .and_then(|params| {
+                            log_uri = params.text_document.uri;
+                            self.documents.get(&log_uri).map(|document| {
+                                bytes = document.text.len();
+                                revision = document.revision;
+                                let report = self.external_index.with_index(|status, index| {
+                                    external_index_status = status;
+                                    completion_report_for_cached_analysis_with_external(
+                                        &document.text,
+                                        &document.analysis,
+                                        params.position,
+                                        index,
+                                    )
+                                });
+                                completion_context = report.completion_context.clone();
+                                candidate_count = report.candidate_count;
+                                Value::String(completion_debug_markdown(
+                                    &report,
+                                    &log_uri,
+                                    bytes,
+                                    revision,
+                                    external_index_status,
+                                ))
+                            })
+                        })
+                        .unwrap_or_else(|| {
+                            Value::String(format!(
+                                "# Reforger Completion Debug\n\nNo open document text found for `{}`.",
+                                log_uri
+                            ))
+                        });
+                    self.log(&format!(
+                        "request debugCompletion uri={} bytes={} revision={} cached_analysis=true context={} candidates={} external_index_status={} elapsed_ms={}",
+                        log_uri,
+                        bytes,
+                        revision,
+                        completion_context,
+                        candidate_count,
+                        external_index_status,
                         start.elapsed().as_millis()
                     ));
                     self.respond(id, result)?;
@@ -2811,7 +2867,176 @@ int SCR_Global;
             .collect::<Vec<_>>();
         assert!(labels.contains(&"SCR_Function"));
         assert!(labels.contains(&"SCR_Global"));
-        assert!(labels.contains(&"SCR_Value"));
+        assert!(!labels.contains(&"SCR_Value"));
+    }
+
+    #[test]
+    fn completion_returns_visible_locals_for_unqualified_value_prefix() {
+        let source = r#"class Example
+{
+	void Run(IEntity owner)
+	{
+		ow
+	}
+}
+"#;
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "ow"),
+            None,
+        );
+
+        assert_eq!(report.completion_context, "top-level");
+        assert_eq!(report.prefix, "ow");
+        assert!(report.list.items.iter().any(|item| item.label == "owner"
+            && item.kind == 6
+            && item.text_edit.new_text == "owner"));
+    }
+
+    #[test]
+    fn completion_returns_current_class_members_for_unqualified_value_prefix() {
+        let source = r#"class Example
+{
+	IEntity GetOwner();
+	void Run()
+	{
+		GetO
+	}
+}
+"#;
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "GetO"),
+            None,
+        );
+
+        assert_eq!(report.completion_context, "top-level");
+        assert_eq!(report.prefix, "GetO");
+        assert!(report.list.items.iter().any(|item| item.label == "GetOwner"
+            && item.kind == 2
+            && item.text_edit.new_text == "GetOwner()"));
+    }
+
+    #[test]
+    fn completion_matches_unqualified_prefix_case_insensitively() {
+        let source = r#"class Example
+{
+	IEntity GetOwner();
+	void Run(IEntity owner)
+	{
+		if (owner == get)
+		{
+		}
+	}
+}
+"#;
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "get"),
+            None,
+        );
+
+        assert_eq!(report.completion_context, "top-level");
+        assert_eq!(report.prefix, "get");
+        assert!(report.list.items.iter().any(|item| item.label == "GetOwner"
+            && item.kind == 2
+            && item.text_edit.new_text == "GetOwner()"));
+    }
+
+    #[test]
+    fn completion_returns_language_keywords_for_value_prefixes() {
+        let source = r#"class Example
+{
+	void Run()
+	{
+		retur
+	}
+}
+"#;
+        let external = file_index_for_source(
+            r#"enum EOrder
+{
+	RETURN_FIRE,
+	RETURN_TO_PREVIOUS_STATE
+}
+"#,
+        )
+        .index;
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "retur"),
+            Some(&external),
+        );
+
+        assert_eq!(report.completion_context, "top-level");
+        assert_eq!(report.prefix, "retur");
+        let first = report.list.items.first().unwrap();
+        assert_eq!(first.label, "return");
+        assert_eq!(first.kind, 14);
+        assert_eq!(first.text_edit.new_text, "return");
+        assert!(!report
+            .list
+            .items
+            .iter()
+            .any(|item| item.label == "RETURN_FIRE"));
+    }
+
+    #[test]
+    fn completion_ranks_closest_keyword_before_matching_source_symbols() {
+        let source = r#"class Example
+{
+	void Run()
+	{
+		stati
+	}
+}
+"#;
+        let external = file_index_for_source(
+            r#"enum EStaticKind
+{
+	STATIC,
+	STATIC_ARLAND_AIRBASE
+}
+"#,
+        )
+        .index;
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "stati"),
+            Some(&external),
+        );
+
+        assert_eq!(report.completion_context, "top-level");
+        assert_eq!(report.prefix, "stati");
+        let labels = report
+            .list
+            .items
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(labels.first().copied(), Some("static"));
+        assert!(!labels.contains(&"STATIC"));
+        assert!(!labels.contains(&"Static"));
+    }
+
+    #[test]
+    fn completion_returns_empty_inside_comments() {
+        let source = r#"class Example
+{
+	void Run()
+	{
+		// get
+	}
+}
+"#;
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "get"),
+            None,
+        );
+
+        assert_eq!(report.completion_context, "none");
+        assert!(report.list.items.is_empty());
     }
 
     #[test]
@@ -4831,6 +5056,92 @@ class Example
         assert!(output_text.contains("# Reforger Hover Debug"));
         assert!(output_text.contains("Smoke.Run(int value) -> void"));
         assert!(output_text.contains("Candidate Symbols At Cursor"));
+    }
+
+    #[test]
+    fn framed_lsp_smoke_test_handles_debug_completion_request() {
+        let source = "class Smoke\n{\n\tvoid Run()\n\t{\n\t\tSmoke value;\n\t\tvalue.\n\t}\n}\n";
+        let completion_position = position_after_needle(source, "value.");
+        let mut input = Vec::new();
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {}
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": "file:///Scripts/SmokeCompletion.c",
+                        "languageId": "enforce",
+                        "version": 1,
+                        "text": source
+                    }
+                }
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "reforger/debugCompletion",
+                "params": {
+                    "textDocument": {
+                        "uri": "file:///Scripts/SmokeCompletion.c"
+                    },
+                    "position": {
+                        "line": completion_position.line,
+                        "character": completion_position.character
+                    }
+                }
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "shutdown",
+                "params": null
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "exit",
+                "params": null
+            }),
+        );
+
+        let mut output = Vec::new();
+        run(
+            input.as_slice(),
+            &mut output,
+            LspServerOptions {
+                log_path: None,
+                game_data_scripts: None,
+                game_data_metadata: None,
+                index_cache: None,
+                workspace_scripts: Vec::new(),
+            },
+        )
+        .unwrap();
+
+        let output_text = String::from_utf8(output).unwrap();
+        assert!(output_text.contains("# Reforger Completion Debug"));
+        assert!(output_text.contains("## Completion Context"));
+        assert!(output_text.contains("value"));
+        assert!(output_text.contains("Run"));
+        assert!(!output_text.contains("Method not found"));
     }
 
     fn assert_ranges_are_sane(symbols: &[LspDocumentSymbol]) {

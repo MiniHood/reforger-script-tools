@@ -2,10 +2,18 @@ export const languageClientIds = {
 	id: 'reforgerScriptTools.languageClient',
 	name: 'Reforger Script Tools Language Server',
 	debugOutputName: 'Reforger Script Tools Hover Debug',
+	completionDebugOutputName: 'Reforger Script Tools Completion Debug',
+} as const;
+
+export const languageClientCrashHandling = {
+	maxRestartCount: 4,
+	restartWindowMs: 3 * 60 * 1000,
+	finalCrashMessage: 'Reforger Script Tools Language Server Crashed',
 } as const;
 
 export const languageClientCommands = {
 	debugHoverAtCursor: 'reforger-sript-tools.debug.hoverAtCursor',
+	debugCompletionAtCursor: 'reforger-sript-tools.debug.completionAtCursor',
 	openSymbolLocation: 'reforger-sript-tools.openSymbolLocation',
 } as const;
 
@@ -22,6 +30,8 @@ export const languageClientLogs = {
 	serverLogFile: 'language-server.log',
 	hoverDebugFolder: 'hover-debug',
 	hoverDebugLatestFile: 'latest.md',
+	completionDebugFolder: 'completion-debug',
+	completionDebugLatestFile: 'latest.md',
 } as const;
 
 export const languageClientIndexCache = {
@@ -33,8 +43,13 @@ export const languageClientLanguage = {
 	id: 'enforce',
 } as const;
 
+export const languageClientCompletion = {
+	deletionRetriggerDebounceMs: 75,
+} as const;
+
 export const languageClientRequests = {
 	debugHover: 'reforger/debugHover',
+	debugCompletion: 'reforger/debugCompletion',
 } as const;
 
 export const languageClientNotifications = {

@@ -158,7 +158,7 @@ impl<'index> IndexQuery<'index> {
             let Some(name) = symbol.name.as_deref() else {
                 continue;
             };
-            if !name.starts_with(prefix) {
+            if !starts_with_ignore_ascii_case(name, prefix) {
                 continue;
             }
             let key = top_level_completion_key(self.index, symbol.id, symbol.kind, name);
@@ -193,6 +193,17 @@ impl<'index> IndexQuery<'index> {
                 .then_with(|| left.id.symbol_id.cmp(&right.id.symbol_id))
         });
         candidates
+    }
+
+    pub fn completion_symbols(
+        &self,
+        ids: impl IntoIterator<Item = GlobalSymbolId>,
+        origin: EditorCompletionOrigin,
+    ) -> Vec<EditorCompletionCandidate> {
+        ids.into_iter()
+            .filter(|id| self.is_editor_completion_source(*id))
+            .filter_map(|id| self.editor_symbol_completion_candidate(id, origin))
+            .collect()
     }
 
     pub fn raw_symbols_for_name(&self, name: &str) -> &[GlobalSymbolId] {
@@ -395,29 +406,7 @@ impl<'index> IndexQuery<'index> {
         &self,
         id: GlobalSymbolId,
     ) -> Option<EditorCompletionCandidate> {
-        let symbol = self.index.symbol(id)?;
-        let file = self.index.file(id.file_id)?;
-        let display = self.symbol_display(id)?;
-        let detail = display.detail.clone();
-
-        Some(EditorCompletionCandidate {
-            id,
-            name: symbol.name.clone(),
-            kind: symbol.kind,
-            detail,
-            signature: display.signature.clone(),
-            span: symbol.span,
-            selection_span: symbol.selection_span,
-            source_kind: file.metadata.kind,
-            source_category: file.metadata.category,
-            source_priority: file.metadata.priority,
-            relative_path: file.metadata.relative_path.clone(),
-            absolute_path: file.metadata.absolute_path.clone(),
-            origin: EditorCompletionOrigin::Unknown,
-            conditional_context: symbol.conditional_context.clone(),
-            callable_form: symbol.callable_form,
-            display,
-        })
+        self.editor_symbol_completion_candidate(id, EditorCompletionOrigin::Unknown)
     }
 
     fn enum_member_completion_candidates(&self, name: &str) -> Vec<EditorCompletionCandidate> {
@@ -524,6 +513,14 @@ impl<'index> IndexQuery<'index> {
         &self,
         id: GlobalSymbolId,
     ) -> Option<EditorCompletionCandidate> {
+        self.editor_symbol_completion_candidate(id, EditorCompletionOrigin::Unknown)
+    }
+
+    fn editor_symbol_completion_candidate(
+        &self,
+        id: GlobalSymbolId,
+        origin: EditorCompletionOrigin,
+    ) -> Option<EditorCompletionCandidate> {
         let symbol = self.index.symbol(id)?;
         let file = self.index.file(id.file_id)?;
         let display = self.symbol_display(id)?;
@@ -542,7 +539,7 @@ impl<'index> IndexQuery<'index> {
             source_priority: file.metadata.priority,
             relative_path: file.metadata.relative_path.clone(),
             absolute_path: file.metadata.absolute_path.clone(),
-            origin: EditorCompletionOrigin::Unknown,
+            origin,
             conditional_context: symbol.conditional_context.clone(),
             callable_form: symbol.callable_form,
             display,
@@ -666,7 +663,6 @@ const fn top_level_completion_kind_allowed(
                     | SymbolKind::Typedef
                     | SymbolKind::Function
                     | SymbolKind::GlobalField
-                    | SymbolKind::EnumMember
             )
         }
     }
@@ -680,6 +676,12 @@ fn top_level_completion_key(
 ) -> String {
     let signature = index.callable_signature(id).unwrap_or_default();
     format!("{kind:?}:{name}:{signature}")
+}
+
+fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
+    value
+        .get(..prefix.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
 }
 
 #[cfg(test)]
@@ -814,10 +816,9 @@ void SCR_WorkspaceOnly();
             .iter()
             .any(|candidate| candidate.name.as_deref() == Some("SCR_Global")
                 && candidate.kind == SymbolKind::GlobalField));
-        assert!(completion
+        assert!(!completion
             .iter()
-            .any(|candidate| candidate.name.as_deref() == Some("SCR_Value")
-                && candidate.kind == SymbolKind::EnumMember));
+            .any(|candidate| candidate.name.as_deref() == Some("SCR_Value")));
         let shared = completion
             .iter()
             .find(|candidate| candidate.name.as_deref() == Some("SCR_Shared"))

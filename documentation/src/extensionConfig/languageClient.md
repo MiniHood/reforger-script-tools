@@ -10,7 +10,11 @@ This file is TypeScript extension-shell configuration. It keeps language-client 
 
 ## Current Behavior
 
-Exports constants for the language client ID/name, hover-debug output channel name, language-client command IDs, server binary name, packaged server folder, development fallback path, log locations, index-cache locations, contributed language id, custom LSP request/notification names, and language-client document selector.
+Exports constants for the language client ID/name, hover-debug and completion-debug output channel names, language-client command IDs, server binary name, packaged server folder, development fallback path, log locations, index-cache locations, contributed language id, custom LSP request/notification names, and language-client document selector.
+
+Also exports the language-client crash handling constants: the default-equivalent restart count, the restart window, and the concise final crash notification text.
+
+Also exports the deletion-completion retrigger debounce. This controls only when the VS Code shell asks the Rust LSP for completion after backspace/delete; it does not provide candidates or duplicate completion logic.
 
 The runtime game-data index cache file is `index-cache/game-data-symbol-index.v6.json`. The v6 cache is disposable and prunes external game-data local variables, strips source-only detail spans, rebuilds lookup maps after load, preserves compacted per-file symbol ranges, and preserves parameters, type parameters, and declaration facts needed by hover/signature-style display.
 
@@ -25,11 +29,15 @@ This file has no VS Code API calls, filesystem access, mutable state, parser log
 - Added centralized constants for the first bundled Rust language-server client.
 - Added the centralized `enforce` language id used by the language-client selector.
 - Added centralized constants for the hover-debug command and `reforger/debugHover` request.
+- Added centralized constants for the completion-debug command and `reforger/debugCompletion` request.
 - Added the centralized hover symbol-link command used by Rust-generated trusted Markdown links.
 - Added centralized constants for workspace overlay file-change notifications.
 - Added centralized storage names for the single-record hover-debug report under `logs/hover-debug/latest.md`.
+- Added centralized storage names for the single-record completion-debug report under `logs/completion-debug/latest.md`.
 - Added centralized storage names for the disposable game-data symbol index cache under `index-cache/`.
 - Updated the disposable game-data cache file to v6 after fixing compacted multi-file symbol range remapping.
+- Added centralized crash handling constants so repeated language-server crashes show a short user-facing notification while keeping detailed output in logs.
+- Added the deletion-completion retrigger debounce constant for Enforce editor integration.
 
 ## Future Improvements
 

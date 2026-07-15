@@ -10,7 +10,9 @@
     "Other"
   ],
   "activationEvents": [
-    "onStartupFinished"
+    "onStartupFinished",
+    "onCommand:reforger-sript-tools.debug.hoverAtCursor",
+    "onCommand:reforger-sript-tools.debug.completionAtCursor"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -37,13 +39,23 @@
     ],
     "configurationDefaults": {
       "[enforce]": {
-        "editor.bracketPairColorization.enabled": false
+        "editor.bracketPairColorization.enabled": false,
+        "editor.quickSuggestions": {
+          "other": "on",
+          "comments": "off",
+          "strings": "off"
+        },
+        "editor.wordBasedSuggestions": "off"
       }
     },
     "commands": [
       {
         "command": "reforger-sript-tools.debug.hoverAtCursor",
         "title": "Reforger Script Tools: Debug Hover At Cursor"
+      },
+      {
+        "command": "reforger-sript-tools.debug.completionAtCursor",
+        "title": "Reforger Script Tools: Debug Completion At Cursor"
       },
       {
         "command": "reforger-sript-tools.gameData.checkForUpdates",
@@ -69,6 +81,16 @@
         "command": "reforger-sript-tools.debug.hoverAtCursor",
         "key": "ctrl+f1",
         "when": "editorTextFocus && editorLangId == enforce"
+      },
+      {
+        "command": "reforger-sript-tools.debug.completionAtCursor",
+        "key": "ctrl+f2",
+        "when": "editorTextFocus && editorLangId == enforce"
+      },
+      {
+        "command": "reforger-sript-tools.debug.completionAtCursor",
+        "key": "ctrl+f2",
+        "when": "suggestWidgetVisible && editorLangId == enforce"
       }
     ]
   },

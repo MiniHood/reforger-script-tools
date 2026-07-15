@@ -1,9 +1,19 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { LanguageClient, type LanguageClientOptions, type ServerOptions, TransportKind } from 'vscode-languageclient/node';
+import {
+	CloseAction,
+	ErrorAction,
+	LanguageClient,
+	type ErrorHandler,
+	type LanguageClientOptions,
+	type ServerOptions,
+	TransportKind,
+} from 'vscode-languageclient/node';
 import { gameDataConfig, gameDataStorage } from '../extensionConfig/gameData';
 import {
+	languageClientCompletion,
+	languageClientCrashHandling,
 	languageClientCommands,
 	languageClientDocumentSelector,
 	languageClientIndexCache,
@@ -24,22 +34,74 @@ let restartTimer: NodeJS.Timeout | undefined;
 let restartingClient = false;
 const workspaceWatcherDebounceMs = 250;
 const devServerRestartDebounceMs = 500;
+let deletionCompletionTimer: NodeJS.Timeout | undefined;
 
 export function registerLanguageClientFeatures(context: vscode.ExtensionContext): void {
 	const outputChannel = vscode.window.createOutputChannel(languageClientIds.name, { log: true });
 	const debugOutputChannel = vscode.window.createOutputChannel(languageClientIds.debugOutputName);
+	const completionDebugOutputChannel = vscode.window.createOutputChannel(languageClientIds.completionDebugOutputName);
 	context.subscriptions.push(outputChannel);
 	context.subscriptions.push(debugOutputChannel);
+	context.subscriptions.push(completionDebugOutputChannel);
 	context.subscriptions.push(vscode.commands.registerCommand(
 		languageClientCommands.debugHoverAtCursor,
 		() => debugHoverAtCursor(context, debugOutputChannel),
 	));
 	context.subscriptions.push(vscode.commands.registerCommand(
+		languageClientCommands.debugCompletionAtCursor,
+		() => debugCompletionAtCursor(context, completionDebugOutputChannel),
+	));
+	context.subscriptions.push(vscode.commands.registerCommand(
 		languageClientCommands.openSymbolLocation,
 		(args: unknown) => openSymbolLocation(args),
 	));
+	context.subscriptions.push(registerCompletionRetriggerOnDeletion(outputChannel));
 
 	void startLanguageClient(context, outputChannel);
+}
+
+function registerCompletionRetriggerOnDeletion(outputChannel: vscode.LogOutputChannel): vscode.Disposable {
+	return vscode.workspace.onDidChangeTextDocument(event => {
+		if (event.document.languageId !== languageClientLanguage.id || !event.contentChanges.some(isDeletionChange)) {
+			return;
+		}
+
+		const changedDocumentUri = event.document.uri.toString();
+
+		if (deletionCompletionTimer) {
+			clearTimeout(deletionCompletionTimer);
+		}
+		deletionCompletionTimer = setTimeout(() => {
+			deletionCompletionTimer = undefined;
+			const activeEditor = vscode.window.activeTextEditor;
+			if (
+				!activeEditor
+				|| activeEditor.document.uri.toString() !== changedDocumentUri
+				|| activeEditor.document.languageId !== languageClientLanguage.id
+			) {
+				return;
+			}
+			if (!shouldRetriggerCompletionAfterDeletion(activeEditor)) {
+				return;
+			}
+			outputChannel.debug(`Triggering Enforce completion after deletion: ${changedDocumentUri}`);
+			void vscode.commands.executeCommand('editor.action.triggerSuggest');
+		}, languageClientCompletion.deletionRetriggerDebounceMs);
+	});
+}
+
+function isDeletionChange(change: vscode.TextDocumentContentChangeEvent): boolean {
+	const rangeLength = change.rangeLength ?? change.range.end.character - change.range.start.character;
+	return rangeLength > change.text.length || (change.text.length === 0 && !change.range.isEmpty);
+}
+
+function shouldRetriggerCompletionAfterDeletion(editor: vscode.TextEditor): boolean {
+	const position = editor.selection.active;
+	if (!editor.selection.isEmpty) {
+		return false;
+	}
+	const linePrefix = editor.document.lineAt(position.line).text.slice(0, position.character);
+	return /[A-Za-z0-9_\.]$/.test(linePrefix);
 }
 
 interface OpenSymbolLocationArgs {
@@ -113,6 +175,10 @@ export async function deactivateLanguageClient(): Promise<void> {
 		clearTimeout(restartTimer);
 		restartTimer = undefined;
 	}
+	if (deletionCompletionTimer) {
+		clearTimeout(deletionCompletionTimer);
+		deletionCompletionTimer = undefined;
+	}
 	const activeClient = client;
 	client = undefined;
 	if (activeClient) {
@@ -168,6 +234,7 @@ async function startLanguageClient(
 	const clientOptions: LanguageClientOptions = {
 		documentSelector: [...languageClientDocumentSelector],
 		outputChannel,
+		errorHandler: createLanguageServerErrorHandler(),
 		markdown: {
 			isTrusted: true,
 			supportHtml: true,
@@ -197,6 +264,37 @@ async function startLanguageClient(
 		outputChannel.appendLine(`Language server failed to start: ${message}`);
 		vscode.window.showWarningMessage(`Reforger language server failed to start: ${message}`);
 	}
+}
+
+function createLanguageServerErrorHandler(): ErrorHandler {
+	const restarts: number[] = [];
+	return {
+		error: (_error, _message, count) => {
+			if (count !== undefined && count <= 3) {
+				return { action: ErrorAction.Continue };
+			}
+			return { action: ErrorAction.Shutdown };
+		},
+		closed: () => {
+			restarts.push(Date.now());
+			if (restarts.length <= languageClientCrashHandling.maxRestartCount) {
+				return { action: CloseAction.Restart };
+			}
+
+			const elapsed = restarts[restarts.length - 1] - restarts[0];
+			if (elapsed <= languageClientCrashHandling.restartWindowMs) {
+				void vscode.window.showErrorMessage(languageClientCrashHandling.finalCrashMessage);
+				return {
+					action: CloseAction.DoNotRestart,
+					message: languageClientCrashHandling.finalCrashMessage,
+					handled: true,
+				};
+			}
+
+			restarts.shift();
+			return { action: CloseAction.Restart };
+		},
+	};
 }
 
 function registerHtmlHoverProvider(
@@ -512,6 +610,53 @@ async function debugHoverAtCursor(
 	}
 }
 
+async function debugCompletionAtCursor(
+	context: vscode.ExtensionContext,
+	outputChannel: vscode.OutputChannel,
+): Promise<void> {
+	const editor = vscode.window.activeTextEditor;
+	if (!editor) {
+		vscode.window.showWarningMessage('Open an Enforce script file before running completion debug.');
+		return;
+	}
+	if (editor.document.languageId !== languageClientLanguage.id) {
+		vscode.window.showWarningMessage('Completion debug is only available for Enforce language files.');
+		return;
+	}
+
+	const activeClient = client;
+	if (!activeClient) {
+		vscode.window.showWarningMessage('Reforger language server is not running.');
+		return;
+	}
+
+	const position = editor.selection.active;
+	const params = {
+		textDocument: {
+			uri: editor.document.uri.toString(),
+		},
+		position: {
+			line: position.line,
+			character: position.character,
+		},
+	};
+
+	try {
+		const report = await activeClient.sendRequest<string>(languageClientRequests.debugCompletion, params);
+		const reportPath = await writeCompletionDebugReport(context, editor, position, report);
+		outputChannel.clear();
+		outputChannel.appendLine(`Completion debug report written to: ${reportPath}`);
+		outputChannel.appendLine('');
+		outputChannel.appendLine(report);
+		outputChannel.show(true);
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		outputChannel.appendLine(`Completion debug request failed: ${message}`);
+		outputChannel.show(true);
+		vscode.window.showWarningMessage(`Completion debug request failed: ${message}`);
+	}
+}
+
 async function writeHoverDebugReport(
 	context: vscode.ExtensionContext,
 	editor: vscode.TextEditor,
@@ -537,6 +682,40 @@ async function writeHoverDebugReport(
 		`- Source: VS Code command ${languageClientCommands.debugHoverAtCursor}`,
 		'',
 		'This file is overwritten by each hover-debug command run and is intentionally separate from the normal language-server runtime log.',
+		'',
+		'---',
+		'',
+	].join('\n');
+
+	await fs.writeFile(reportPath, `${prefix}${report}\n`, 'utf8');
+	return reportPath;
+}
+
+async function writeCompletionDebugReport(
+	context: vscode.ExtensionContext,
+	editor: vscode.TextEditor,
+	position: vscode.Position,
+	report: string,
+): Promise<string> {
+	const folderPath = path.join(
+		context.globalStorageUri.fsPath,
+		languageClientLogs.rootFolder,
+		languageClientLogs.completionDebugFolder,
+	);
+	await fs.mkdir(folderPath, { recursive: true });
+
+	const reportPath = path.join(folderPath, languageClientLogs.completionDebugLatestFile);
+	const prefix = [
+		'# Reforger Completion Debug Log',
+		'',
+		`- Generated: ${new Date().toISOString()}`,
+		`- Document URI: ${editor.document.uri.toString()}`,
+		`- Document path: ${editor.document.uri.fsPath}`,
+		`- Language ID: ${editor.document.languageId}`,
+		`- Cursor: line ${position.line} character ${position.character} (UTF-16, zero-based)`,
+		`- Source: VS Code command ${languageClientCommands.debugCompletionAtCursor}`,
+		'',
+		'This file is overwritten by each completion-debug command run and is intentionally separate from the normal language-server runtime log.',
 		'',
 		'---',
 		'',

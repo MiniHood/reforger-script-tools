@@ -101,6 +101,145 @@ pub fn completion_report_for_cached_analysis_with_external(
     completion_report_for_offset(source, analysis, offset, external_index)
 }
 
+pub(crate) fn completion_debug_markdown(
+    report: &LspCompletionReport,
+    uri: &str,
+    bytes: usize,
+    revision: u64,
+    external_index_status: &str,
+) -> String {
+    let mut output = String::new();
+    output.push_str("# Reforger Completion Debug\n\n");
+    output.push_str("## Request\n\n");
+    output.push_str(&format!("- URI: `{}`\n", escape_markdown_cell(uri)));
+    output.push_str(&format!("- Bytes: `{bytes}`\n"));
+    output.push_str(&format!("- Revision: `{revision}`\n"));
+    output.push_str("- Cached Analysis: `true`\n");
+    output.push_str(&format!(
+        "- External Index Status: `{}`\n",
+        escape_markdown_cell(external_index_status)
+    ));
+    output.push_str(&format!(
+        "- Parse Diagnostics: `{}`\n\n",
+        report.parse_diagnostics
+    ));
+
+    output.push_str("## Completion Context\n\n");
+    output.push_str(&format!(
+        "- Context: `{}`\n",
+        escape_markdown_cell(&report.completion_context)
+    ));
+    output.push_str(&format!(
+        "- Receiver: `{}`\n",
+        escape_markdown_cell(report.receiver_text.as_deref().unwrap_or("<none>"))
+    ));
+    output.push_str(&format!(
+        "- Owner Type: `{}`\n",
+        escape_markdown_cell(report.owner_type.as_deref().unwrap_or("<none>"))
+    ));
+    output.push_str(&format!(
+        "- Prefix: `{}`\n",
+        escape_markdown_cell(&report.prefix)
+    ));
+    output.push_str(&format!(
+        "- Candidate Count: `{}`\n",
+        report.candidate_count
+    ));
+    output.push_str(&format!(
+        "- Failure Reason: `{}`\n\n",
+        escape_markdown_cell(report.failure_reason.as_deref().unwrap_or("<none>"))
+    ));
+
+    output.push_str("## Candidate Sources\n\n");
+    if report.source_kind_counts.is_empty() {
+        output.push_str("None.\n\n");
+    } else {
+        output.push_str("| Source Kind | Count |\n");
+        output.push_str("| --- | ---: |\n");
+        for (kind, count) in &report.source_kind_counts {
+            output.push_str(&format!("| `{:?}` | {} |\n", kind, count));
+        }
+        output.push('\n');
+    }
+
+    output.push_str("## Candidate Origins\n\n");
+    if report.origin_counts.is_empty() {
+        output.push_str("None.\n\n");
+    } else {
+        output.push_str("| Origin | Count |\n");
+        output.push_str("| --- | ---: |\n");
+        for (origin, count) in &report.origin_counts {
+            output.push_str(&format!(
+                "| `{}` | {} |\n",
+                escape_markdown_cell(origin),
+                count
+            ));
+        }
+        output.push('\n');
+    }
+
+    output.push_str("## Timings\n\n");
+    output.push_str("| Phase | Milliseconds |\n");
+    output.push_str("| --- | ---: |\n");
+    output.push_str(&format!(
+        "| Context detection | {} |\n",
+        report.timings.context_detection.as_millis()
+    ));
+    output.push_str(&format!(
+        "| Receiver inference | {} |\n",
+        report.timings.receiver_inference.as_millis()
+    ));
+    output.push_str(&format!(
+        "| Candidate lookup | {} |\n",
+        report.timings.candidate_lookup.as_millis()
+    ));
+    output.push_str(&format!(
+        "| Item rendering | {} |\n",
+        report.timings.item_rendering.as_millis()
+    ));
+    output.push_str(&format!(
+        "| Total | {} |\n\n",
+        report.timings.total.as_millis()
+    ));
+
+    output.push_str("## Completion Items\n\n");
+    if report.list.items.is_empty() {
+        output.push_str("None.\n");
+        return output;
+    }
+
+    output.push_str(
+        "| # | Label | Kind | Detail | Label Details | Insert Text | Sort Text | Docs Preview |\n",
+    );
+    output.push_str("| ---: | --- | --- | --- | --- | --- | --- | --- |\n");
+    for (index, item) in report.list.items.iter().take(50).enumerate() {
+        output.push_str(&format!(
+            "| {} | `{}` | `{}` | `{}` | `{}` | `{}` | `{}` | {} |\n",
+            index + 1,
+            escape_markdown_cell(&item.label),
+            completion_lsp_kind_label(item.kind),
+            escape_markdown_cell(item.detail.as_deref().unwrap_or("")),
+            escape_markdown_cell(&format_label_details(item.label_details.as_ref())),
+            escape_markdown_cell(&item.text_edit.new_text),
+            escape_markdown_cell(item.sort_text.as_deref().unwrap_or("")),
+            markdown_table_text(
+                item.documentation
+                    .as_ref()
+                    .map(|documentation| documentation.value.as_str())
+                    .unwrap_or("")
+            )
+        ));
+    }
+    if report.list.items.len() > 50 {
+        output.push_str(&format!(
+            "|  |  |  |  |  |  |  | +{} more |\n",
+            report.list.items.len() - 50
+        ));
+    }
+
+    output
+}
+
 fn completion_report_for_offset(
     source: &str,
     analysis: &FileIndexAnalysis,
@@ -189,7 +328,9 @@ fn completion_report_for_offset(
         completion_context,
         context.prefix,
         context.prefix_span,
+        offset,
         mode,
+        analysis,
         &analysis.index,
         external_index,
         LspCompletionTimings {
@@ -299,14 +440,35 @@ fn top_level_completion_report_for_indexes(
     completion_context: &str,
     prefix: String,
     prefix_span: TextSpan,
+    offset: usize,
     mode: EditorTopLevelCompletionMode,
+    analysis: &FileIndexAnalysis,
     local_index: &SymbolIndex,
     external_index: Option<&SymbolIndex>,
     mut timings: LspCompletionTimings,
     total_start: Instant,
 ) -> LspCompletionReport {
     let lookup_start = Instant::now();
-    let mut candidates = IndexQuery::new(local_index).completion_top_level(&prefix, mode);
+    let mut candidates = Vec::new();
+    if mode == EditorTopLevelCompletionMode::Value {
+        candidates.extend(scoped_value_completion_candidates(
+            analysis, &prefix, offset,
+        ));
+        if let Some(class_name) = containing_class_name(local_index, offset) {
+            candidates.extend(prefixed_candidates(
+                completion_candidates_for_owner(local_index, &class_name, false),
+                &prefix,
+            ));
+            if let Some(external_index) = external_index {
+                candidates.extend(prefixed_candidates(
+                    completion_candidates_for_owner(external_index, &class_name, false),
+                    &prefix,
+                ));
+            }
+        }
+    }
+
+    candidates.extend(IndexQuery::new(local_index).completion_top_level(&prefix, mode));
     if let Some(external_index) = external_index {
         candidates.extend(IndexQuery::new(external_index).completion_top_level(&prefix, mode));
     }
@@ -315,8 +477,14 @@ fn top_level_completion_report_for_indexes(
 
     let edit_range = range_for_span(source, prefix_span);
     let render_start = Instant::now();
-    let (items, source_kind_counts, origin_counts) =
+    let (mut items, source_kind_counts, mut origin_counts) =
         completion_items_for_candidates(&candidates, edit_range, Some("TopLevel"));
+    let mut keyword_items = keyword_completion_items(&prefix, edit_range, mode);
+    if !keyword_items.is_empty() {
+        *origin_counts.entry("Keyword".to_string()).or_default() += keyword_items.len();
+        keyword_items.extend(items);
+        items = keyword_items;
+    }
     timings.item_rendering = render_start.elapsed();
     timings.total = total_start.elapsed();
 
@@ -336,6 +504,129 @@ fn top_level_completion_report_for_indexes(
         failure_reason: None,
         timings,
     }
+}
+
+fn scoped_value_completion_candidates(
+    analysis: &FileIndexAnalysis,
+    prefix: &str,
+    offset: usize,
+) -> Vec<EditorCompletionCandidate> {
+    let ids = analysis
+        .scope
+        .visible_symbols_with_prefix(&analysis.index, prefix, offset);
+    IndexQuery::new(&analysis.index).completion_symbols(ids, EditorCompletionOrigin::Direct)
+}
+
+fn keyword_completion_items(
+    prefix: &str,
+    edit_range: LspRange,
+    mode: EditorTopLevelCompletionMode,
+) -> Vec<LspCompletionItem> {
+    let keywords = match mode {
+        EditorTopLevelCompletionMode::Type => TYPE_COMPLETION_KEYWORDS,
+        EditorTopLevelCompletionMode::Value => VALUE_COMPLETION_KEYWORDS,
+    };
+    keywords
+        .iter()
+        .copied()
+        .filter(|keyword| starts_with_ignore_ascii_case(keyword, prefix))
+        .map(|keyword| LspCompletionItem {
+            label: keyword.to_string(),
+            label_details: None,
+            kind: 14,
+            detail: Some("keyword".to_string()),
+            documentation: None,
+            sort_text: Some(format!("00:00:000:{keyword}")),
+            filter_text: Some(keyword.to_string()),
+            insert_text_format: None,
+            text_edit: LspTextEdit {
+                range: edit_range,
+                new_text: keyword.to_string(),
+            },
+        })
+        .collect()
+}
+
+const VALUE_COMPLETION_KEYWORDS: &[&str] = &[
+    "return",
+    "if",
+    "else",
+    "for",
+    "foreach",
+    "while",
+    "do",
+    "switch",
+    "case",
+    "default",
+    "break",
+    "continue",
+    "true",
+    "false",
+    "null",
+    "new",
+    "delete",
+    "thread",
+    "this",
+    "super",
+    "static",
+    "protected",
+    "private",
+    "const",
+    "ref",
+    "out",
+    "inout",
+    "notnull",
+    "override",
+    "event",
+    "proto",
+    "external",
+    "native",
+    "class",
+    "modded",
+    "sealed",
+    "enum",
+    "typedef",
+];
+
+const TYPE_COMPLETION_KEYWORDS: &[&str] = &[
+    "void", "int", "float", "bool", "string", "vector", "typename", "auto",
+];
+
+fn containing_class_name(index: &SymbolIndex, offset: usize) -> Option<String> {
+    index
+        .symbols()
+        .iter()
+        .filter(|symbol| symbol.kind == SymbolKind::Class && span_contains(symbol.span, offset))
+        .min_by_key(|symbol| symbol.span.len())
+        .and_then(|symbol| symbol.name.clone())
+}
+
+fn prefixed_candidates(
+    candidates: Vec<EditorCompletionCandidate>,
+    prefix: &str,
+) -> Vec<EditorCompletionCandidate> {
+    candidates
+        .into_iter()
+        .filter(|candidate| candidate_matches_prefix(candidate, prefix))
+        .collect()
+}
+
+fn candidate_matches_prefix(candidate: &EditorCompletionCandidate, prefix: &str) -> bool {
+    let name = candidate
+        .name
+        .as_deref()
+        .unwrap_or(candidate.display.label.as_str());
+    starts_with_ignore_ascii_case(name, prefix)
+}
+
+fn span_contains(span: TextSpan, offset: usize) -> bool {
+    offset >= span.start && offset <= span.end
+}
+
+fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
+    value
+        .get(..prefix.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
 }
 
 fn combine_completion_candidates(
@@ -412,7 +703,7 @@ fn completion_item_for_candidate(
     Some(LspCompletionItem {
         label: label.clone(),
         label_details,
-        kind: completion_item_kind(candidate.kind),
+        kind: completion_item_kind(candidate),
         detail,
         documentation,
         sort_text: Some(completion_sort_text(candidate, &label)),
@@ -603,20 +894,69 @@ fn completion_item_kind_rank(kind: SymbolKind) -> u8 {
     }
 }
 
-fn completion_item_kind(kind: SymbolKind) -> u32 {
-    match kind {
+fn completion_item_kind(candidate: &EditorCompletionCandidate) -> u32 {
+    match candidate.kind {
         SymbolKind::Method | SymbolKind::Destructor => 2,
         SymbolKind::Function => 3,
         SymbolKind::Constructor => 4,
+        SymbolKind::Field if is_constant_completion_candidate(candidate) => 21,
         SymbolKind::Field => 5,
-        SymbolKind::GlobalField
-        | SymbolKind::LocalVariable
-        | SymbolKind::Parameter
-        | SymbolKind::PreprocessorMacro => 6,
+        SymbolKind::GlobalField if is_constant_completion_candidate(candidate) => 21,
+        SymbolKind::GlobalField | SymbolKind::LocalVariable | SymbolKind::Parameter => 6,
         SymbolKind::Class => 7,
         SymbolKind::Enum => 13,
         SymbolKind::EnumMember => 20,
-        SymbolKind::Typedef => 25,
-        _ => 10,
+        SymbolKind::PreprocessorMacro => 21,
+        SymbolKind::Typedef | SymbolKind::TypeParameter => 25,
     }
+}
+
+fn is_constant_completion_candidate(candidate: &EditorCompletionCandidate) -> bool {
+    candidate
+        .display
+        .modifiers
+        .iter()
+        .any(|modifier| matches!(modifier.as_str(), "const"))
+}
+
+fn completion_lsp_kind_label(kind: u32) -> &'static str {
+    match kind {
+        2 => "Method",
+        3 => "Function",
+        4 => "Constructor",
+        5 => "Field",
+        6 => "Variable",
+        7 => "Class",
+        13 => "Enum",
+        14 => "Keyword",
+        20 => "EnumMember",
+        21 => "Constant",
+        25 => "TypeParameter",
+        _ => "Property",
+    }
+}
+
+fn format_label_details(details: Option<&LspCompletionItemLabelDetails>) -> String {
+    let Some(details) = details else {
+        return String::new();
+    };
+    match (details.detail.as_deref(), details.description.as_deref()) {
+        (Some(detail), Some(description)) => format!("{detail} {description}"),
+        (Some(detail), None) => detail.to_string(),
+        (None, Some(description)) => description.to_string(),
+        (None, None) => String::new(),
+    }
+}
+
+fn escape_markdown_cell(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('`', "\\`")
+        .replace('|', "\\|")
+        .replace('\r', "")
+        .replace('\n', " ")
+}
+
+fn markdown_table_text(value: &str) -> String {
+    escape_markdown_cell(value.trim())
 }
