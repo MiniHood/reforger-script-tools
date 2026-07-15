@@ -28,7 +28,7 @@ The builder is source-root explicit. VS Code workspace discovery and game-data s
 
 Runtime cache loading and invalidation belong in `server/src/index_cache.rs`. This builder remains the source-to-index construction path used when a cache is missing, stale, corrupt, or incompatible.
 
-`server/examples/index_cache_baseline.rs` compares this direct build path against JSON cache load and cache miss rebuild/write. Use that report before changing cache strategy.
+`server/examples/index_cache_baseline.rs` compares this direct build path against binary cache load and cache miss rebuild/write. Use that report before changing cache strategy.
 
 ## Change Notes
 

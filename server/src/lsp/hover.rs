@@ -8,7 +8,7 @@ use crate::lsp::{
     file_index_for_source, offset_for_position, range_for_span, FileIndexAnalysis,
     LspMarkupContent, LspPosition, LspRange,
 };
-use crate::model::SymbolKind;
+use crate::model::{SourceKind, SymbolKind};
 use crate::resolver::{
     CandidateSource, HoverResolution, IdentifierContext, ReceiverResolution, ReferenceResolver,
     ResolutionReason,
@@ -16,6 +16,27 @@ use crate::resolver::{
 use serde::Serialize;
 
 const SYNTHETIC_HOVER_URI: &str = "file:///hover-source.c";
+
+fn layered_external_indexes<'a>(
+    workspace_index: Option<&'a SymbolIndex>,
+    game_data_index: Option<&'a SymbolIndex>,
+) -> Vec<&'a SymbolIndex> {
+    workspace_index.into_iter().chain(game_data_index).collect()
+}
+
+fn external_index_for_candidate<'a>(
+    candidate: &crate::resolver::ReferenceCandidate,
+    workspace_index: Option<&'a SymbolIndex>,
+    game_data_index: Option<&'a SymbolIndex>,
+) -> Option<&'a SymbolIndex> {
+    match candidate.source_kind {
+        SourceKind::Workspace => workspace_index,
+        SourceKind::GameData => game_data_index,
+        SourceKind::Unknown | SourceKind::Fixture => None,
+    }
+    .or(workspace_index)
+    .or(game_data_index)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -86,26 +107,53 @@ pub(crate) fn hover_report_for_cached_analysis_with_external(
     position: LspPosition,
     external_index: Option<&SymbolIndex>,
 ) -> LspHoverReport {
-    hover_report_for_cached_analysis_with_external_uri(
+    hover_report_for_cached_analysis_with_external_indexes(
         source,
         analysis,
         SYNTHETIC_HOVER_URI,
         position,
+        None,
         external_index,
     )
 }
 
-pub(crate) fn hover_report_for_cached_analysis_with_external_uri(
+pub(crate) fn hover_report_for_cached_analysis_with_external_indexes(
     source: &str,
     analysis: &FileIndexAnalysis,
     current_uri: &str,
     position: LspPosition,
-    external_index: Option<&SymbolIndex>,
+    workspace_index: Option<&SymbolIndex>,
+    game_data_index: Option<&SymbolIndex>,
+) -> LspHoverReport {
+    hover_report_for_cached_analysis_with_external_layers(
+        source,
+        analysis,
+        current_uri,
+        position,
+        workspace_index,
+        game_data_index,
+    )
+}
+
+fn hover_report_for_cached_analysis_with_external_layers(
+    source: &str,
+    analysis: &FileIndexAnalysis,
+    current_uri: &str,
+    position: LspPosition,
+    workspace_index: Option<&SymbolIndex>,
+    game_data_index: Option<&SymbolIndex>,
 ) -> LspHoverReport {
     let Some(offset) = offset_for_position(source, position) else {
         return empty_hover_report(analysis.parse_diagnostics);
     };
-    hover_report_for_offset(source, analysis, current_uri, offset, external_index)
+    hover_report_for_offset(
+        source,
+        analysis,
+        current_uri,
+        offset,
+        workspace_index,
+        game_data_index,
+    )
 }
 
 pub fn hover_reports_for_source_positions(
@@ -131,6 +179,7 @@ pub fn hover_reports_for_source_positions_with_external(
                         &analysis,
                         SYNTHETIC_HOVER_URI,
                         offset,
+                        None,
                         external_index,
                     )
                 })
@@ -144,15 +193,16 @@ fn hover_report_for_offset(
     analysis: &FileIndexAnalysis,
     current_uri: &str,
     offset: usize,
-    external_index: Option<&SymbolIndex>,
+    workspace_index: Option<&SymbolIndex>,
+    game_data_index: Option<&SymbolIndex>,
 ) -> LspHoverReport {
     let query = IndexQuery::new(&analysis.index);
-    let resolver = ReferenceResolver::new_with_parse_and_scope(
+    let resolver = ReferenceResolver::new_with_parse_scope_and_external_indexes(
         source,
         &analysis.index,
         &analysis.parse,
         &analysis.scope,
-        external_index,
+        layered_external_indexes(workspace_index, game_data_index),
     );
     match resolver.resolve_hover_at_offset(offset) {
         Some(HoverResolution::Identifier(resolution)) => {
@@ -162,12 +212,13 @@ fn hover_report_for_offset(
             if let Some(selected) = resolution.selected.as_ref() {
                 match selected.source {
                     CandidateSource::FileLocal => {
-                        let external_query = external_index.map(IndexQuery::new);
+                        let member_summary_query =
+                            workspace_index.or(game_data_index).map(IndexQuery::new);
                         if let Some(mut report) = hover_report_for_symbol(
                             source,
                             &analysis.index,
                             &query,
-                            external_query.as_ref(),
+                            member_summary_query.as_ref(),
                             current_uri,
                             selected.id,
                             None,
@@ -182,7 +233,9 @@ fn hover_report_for_offset(
                         }
                     }
                     CandidateSource::External => {
-                        if let Some(external_index) = external_index {
+                        if let Some(external_index) =
+                            external_index_for_candidate(selected, workspace_index, game_data_index)
+                        {
                             let external_query = IndexQuery::new(external_index);
                             if let Some(mut report) = hover_report_for_symbol(
                                 source,
@@ -222,12 +275,12 @@ fn hover_report_for_offset(
             let Some(selected) = resolution.selected.as_ref() else {
                 return empty_hover_report(analysis.parse_diagnostics);
             };
-            let external_query = external_index.map(IndexQuery::new);
+            let member_summary_query = workspace_index.or(game_data_index).map(IndexQuery::new);
             hover_report_for_symbol(
                 source,
                 &analysis.index,
                 &query,
-                external_query.as_ref(),
+                member_summary_query.as_ref(),
                 current_uri,
                 selected.id,
                 None,

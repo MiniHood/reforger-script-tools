@@ -2,7 +2,7 @@ use crate::index::SymbolIndex;
 use crate::index_query::{
     EditorCompletionCandidate, EditorCompletionOrigin, EditorTopLevelCompletionMode, IndexQuery,
 };
-use crate::lexer::TextSpan;
+use crate::lexer::{lex, TextSpan, TokenKind};
 use crate::lsp::{
     file_index_for_source, offset_for_position, range_for_span, FileIndexAnalysis,
     LspMarkupContent, LspPosition, LspRange,
@@ -10,8 +10,10 @@ use crate::lsp::{
 use crate::model::{SourceKind, SymbolKind};
 use crate::resolver::{IdentifierContext, ReferenceResolver};
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
+
+const MAX_COMPLETION_ITEMS: usize = 250;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -80,6 +82,13 @@ pub struct LspCompletionTimings {
     pub total: Duration,
 }
 
+fn layered_external_indexes<'a>(
+    workspace_index: Option<&'a SymbolIndex>,
+    game_data_index: Option<&'a SymbolIndex>,
+) -> Vec<&'a SymbolIndex> {
+    workspace_index.into_iter().chain(game_data_index).collect()
+}
+
 pub fn completion_report_for_source_position_with_external(
     source: &str,
     position: LspPosition,
@@ -95,10 +104,26 @@ pub fn completion_report_for_cached_analysis_with_external(
     position: LspPosition,
     external_index: Option<&SymbolIndex>,
 ) -> LspCompletionReport {
+    completion_report_for_cached_analysis_with_external_indexes(
+        source,
+        analysis,
+        position,
+        None,
+        external_index,
+    )
+}
+
+pub(crate) fn completion_report_for_cached_analysis_with_external_indexes(
+    source: &str,
+    analysis: &FileIndexAnalysis,
+    position: LspPosition,
+    workspace_index: Option<&SymbolIndex>,
+    game_data_index: Option<&SymbolIndex>,
+) -> LspCompletionReport {
     let Some(offset) = offset_for_position(source, position) else {
         return empty_completion_report(analysis.parse_diagnostics);
     };
-    completion_report_for_offset(source, analysis, offset, external_index)
+    completion_report_for_offset(source, analysis, offset, workspace_index, game_data_index)
 }
 
 pub(crate) fn completion_debug_markdown(
@@ -244,16 +269,17 @@ fn completion_report_for_offset(
     source: &str,
     analysis: &FileIndexAnalysis,
     offset: usize,
-    external_index: Option<&SymbolIndex>,
+    workspace_index: Option<&SymbolIndex>,
+    game_data_index: Option<&SymbolIndex>,
 ) -> LspCompletionReport {
     let total_start = Instant::now();
     let context_start = Instant::now();
-    let resolver = ReferenceResolver::new_with_parse_and_scope(
+    let resolver = ReferenceResolver::new_with_parse_scope_and_external_indexes(
         source,
         &analysis.index,
         &analysis.parse,
         &analysis.scope,
-        external_index,
+        layered_external_indexes(workspace_index, game_data_index),
     );
     if let Some(context) = resolver.member_completion_context_at_offset(offset) {
         let context_elapsed = context_start.elapsed();
@@ -282,6 +308,11 @@ fn completion_report_for_offset(
                 },
             };
         };
+        let visibility = member_visibility_context(
+            receiver_text.as_deref(),
+            &owner,
+            containing_class_name(&analysis.index, offset).as_deref(),
+        );
 
         return member_completion_report_for_indexes(
             source,
@@ -293,8 +324,10 @@ fn completion_report_for_offset(
             context.prefix_span,
             failure_reason,
             receiver_is_static,
+            visibility,
             &analysis.index,
-            external_index,
+            workspace_index,
+            game_data_index,
             LspCompletionTimings {
                 context_detection: context_elapsed,
                 receiver_inference: context_elapsed,
@@ -332,7 +365,8 @@ fn completion_report_for_offset(
         mode,
         analysis,
         &analysis.index,
-        external_index,
+        workspace_index,
+        game_data_index,
         LspCompletionTimings {
             context_detection: context_elapsed,
             ..LspCompletionTimings::default()
@@ -352,20 +386,30 @@ fn member_completion_report_for_indexes(
     prefix_span: TextSpan,
     failure_reason: Option<String>,
     receiver_is_static: bool,
+    visibility: MemberVisibilityContext,
     local_index: &SymbolIndex,
-    external_index: Option<&SymbolIndex>,
+    workspace_index: Option<&SymbolIndex>,
+    game_data_index: Option<&SymbolIndex>,
     mut timings: LspCompletionTimings,
     total_start: Instant,
 ) -> LspCompletionReport {
     let lookup_start = Instant::now();
     let mut candidates = completion_candidates_for_owner(local_index, owner, receiver_is_static);
-    if let Some(external_index) = external_index {
+    if let Some(external_index) = workspace_index {
         candidates.extend(completion_candidates_for_owner(
             external_index,
             owner,
             receiver_is_static,
         ));
     }
+    if let Some(external_index) = game_data_index {
+        candidates.extend(completion_candidates_for_owner(
+            external_index,
+            owner,
+            receiver_is_static,
+        ));
+    }
+    let candidates = filter_member_candidates_by_visibility(candidates, visibility);
     let candidates = combine_completion_candidates(candidates);
     timings.candidate_lookup = lookup_start.elapsed();
 
@@ -373,6 +417,7 @@ fn member_completion_report_for_indexes(
     let render_start = Instant::now();
     let (items, source_kind_counts, origin_counts) =
         completion_items_for_candidates(&candidates, edit_range, None);
+    let items = cap_completion_items(items);
     timings.item_rendering = render_start.elapsed();
     timings.total = total_start.elapsed();
 
@@ -405,6 +450,48 @@ fn completion_candidates_for_owner(
     } else {
         query.completion_members_for_class(owner).candidates
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MemberVisibilityContext {
+    UnqualifiedOrSelf,
+    ExternalReceiver,
+}
+
+fn member_visibility_context(
+    receiver_text: Option<&str>,
+    owner: &str,
+    containing_class: Option<&str>,
+) -> MemberVisibilityContext {
+    let Some(receiver) = receiver_text.map(str::trim) else {
+        return MemberVisibilityContext::UnqualifiedOrSelf;
+    };
+    if matches!(receiver, "this" | "super") || containing_class == Some(owner) {
+        MemberVisibilityContext::UnqualifiedOrSelf
+    } else {
+        MemberVisibilityContext::ExternalReceiver
+    }
+}
+
+fn filter_member_candidates_by_visibility(
+    candidates: Vec<EditorCompletionCandidate>,
+    visibility: MemberVisibilityContext,
+) -> Vec<EditorCompletionCandidate> {
+    if visibility == MemberVisibilityContext::UnqualifiedOrSelf {
+        return candidates;
+    }
+    candidates
+        .into_iter()
+        .filter(|candidate| !is_restricted_member_candidate(candidate))
+        .collect()
+}
+
+fn is_restricted_member_candidate(candidate: &EditorCompletionCandidate) -> bool {
+    candidate
+        .display
+        .modifiers
+        .iter()
+        .any(|modifier| matches!(modifier.as_str(), "private" | "protected"))
 }
 
 fn completion_items_for_candidates(
@@ -444,7 +531,8 @@ fn top_level_completion_report_for_indexes(
     mode: EditorTopLevelCompletionMode,
     analysis: &FileIndexAnalysis,
     local_index: &SymbolIndex,
-    external_index: Option<&SymbolIndex>,
+    workspace_index: Option<&SymbolIndex>,
+    game_data_index: Option<&SymbolIndex>,
     mut timings: LspCompletionTimings,
     total_start: Instant,
 ) -> LspCompletionReport {
@@ -455,22 +543,54 @@ fn top_level_completion_report_for_indexes(
             analysis, &prefix, offset,
         ));
         if let Some(class_name) = containing_class_name(local_index, offset) {
-            candidates.extend(prefixed_candidates(
-                completion_candidates_for_owner(local_index, &class_name, false),
-                &prefix,
-            ));
-            if let Some(external_index) = external_index {
+            for owner in containing_class_completion_owners(
+                local_index,
+                workspace_index,
+                game_data_index,
+                &class_name,
+            ) {
                 candidates.extend(prefixed_candidates(
-                    completion_candidates_for_owner(external_index, &class_name, false),
+                    completion_candidates_for_owner(local_index, &owner, false),
                     &prefix,
                 ));
+                if let Some(external_index) = workspace_index {
+                    candidates.extend(prefixed_candidates(
+                        completion_candidates_for_owner(external_index, &owner, false),
+                        &prefix,
+                    ));
+                }
+                if let Some(external_index) = game_data_index {
+                    candidates.extend(prefixed_candidates(
+                        completion_candidates_for_owner(external_index, &owner, false),
+                        &prefix,
+                    ));
+                }
             }
         }
     }
 
-    candidates.extend(IndexQuery::new(local_index).completion_top_level(&prefix, mode));
-    if let Some(external_index) = external_index {
-        candidates.extend(IndexQuery::new(external_index).completion_top_level(&prefix, mode));
+    candidates.extend(IndexQuery::new(local_index).completion_top_level_limited(
+        &prefix,
+        mode,
+        remaining_completion_slots(candidates.len()),
+    ));
+    if let Some(external_index) = workspace_index {
+        candidates.extend(
+            IndexQuery::new(external_index).completion_top_level_limited(
+                &prefix,
+                mode,
+                remaining_completion_slots(candidates.len()),
+            ),
+        );
+    }
+    if let Some(external_index) = game_data_index {
+        candidates.extend(
+            IndexQuery::new(external_index).completion_top_level_limited(
+                &prefix,
+                mode,
+                remaining_completion_slots(candidates.len()),
+            ),
+        );
     }
     let candidates = combine_completion_candidates(candidates);
     timings.candidate_lookup = lookup_start.elapsed();
@@ -479,12 +599,18 @@ fn top_level_completion_report_for_indexes(
     let render_start = Instant::now();
     let (mut items, source_kind_counts, mut origin_counts) =
         completion_items_for_candidates(&candidates, edit_range, Some("TopLevel"));
-    let mut keyword_items = keyword_completion_items(&prefix, edit_range, mode);
+    let mut keyword_items = keyword_completion_items(
+        &prefix,
+        edit_range,
+        mode,
+        declaration_keyword_context(source, prefix_span.start),
+    );
     if !keyword_items.is_empty() {
         *origin_counts.entry("Keyword".to_string()).or_default() += keyword_items.len();
         keyword_items.extend(items);
         items = keyword_items;
     }
+    let items = cap_completion_items(items);
     timings.item_rendering = render_start.elapsed();
     timings.total = total_start.elapsed();
 
@@ -521,11 +647,15 @@ fn keyword_completion_items(
     prefix: &str,
     edit_range: LspRange,
     mode: EditorTopLevelCompletionMode,
+    declaration_context: bool,
 ) -> Vec<LspCompletionItem> {
-    let keywords = match mode {
-        EditorTopLevelCompletionMode::Type => TYPE_COMPLETION_KEYWORDS,
-        EditorTopLevelCompletionMode::Value => VALUE_COMPLETION_KEYWORDS,
+    let mut keywords = match mode {
+        EditorTopLevelCompletionMode::Type => TYPE_COMPLETION_KEYWORDS.to_vec(),
+        EditorTopLevelCompletionMode::Value => STATEMENT_COMPLETION_KEYWORDS.to_vec(),
     };
+    if declaration_context {
+        keywords.extend(DECLARATION_COMPLETION_KEYWORDS);
+    }
     keywords
         .iter()
         .copied()
@@ -547,27 +677,12 @@ fn keyword_completion_items(
         .collect()
 }
 
-const VALUE_COMPLETION_KEYWORDS: &[&str] = &[
-    "return",
-    "if",
-    "else",
-    "for",
-    "foreach",
-    "while",
-    "do",
-    "switch",
-    "case",
-    "default",
-    "break",
-    "continue",
-    "true",
-    "false",
-    "null",
-    "new",
-    "delete",
-    "thread",
-    "this",
-    "super",
+const STATEMENT_COMPLETION_KEYWORDS: &[&str] = &[
+    "return", "if", "else", "for", "foreach", "while", "do", "switch", "case", "default", "break",
+    "continue", "true", "false", "null", "new", "delete", "thread", "this", "super",
+];
+
+const DECLARATION_COMPLETION_KEYWORDS: &[&str] = &[
     "static",
     "protected",
     "private",
@@ -592,6 +707,44 @@ const TYPE_COMPLETION_KEYWORDS: &[&str] = &[
     "void", "int", "float", "bool", "string", "vector", "typename", "auto",
 ];
 
+fn declaration_keyword_context(source: &str, offset: usize) -> bool {
+    previous_significant_token_kind(source, offset).is_none_or(|kind| match kind {
+        TokenKind::LeftBrace | TokenKind::RightBrace | TokenKind::Semicolon => true,
+        TokenKind::Keyword(keyword) => matches!(
+            keyword,
+            crate::lexer::Keyword::Class
+                | crate::lexer::Keyword::Modded
+                | crate::lexer::Keyword::Sealed
+                | crate::lexer::Keyword::Typedef
+                | crate::lexer::Keyword::Proto
+                | crate::lexer::Keyword::External
+                | crate::lexer::Keyword::Native
+                | crate::lexer::Keyword::Private
+                | crate::lexer::Keyword::Protected
+                | crate::lexer::Keyword::Static
+                | crate::lexer::Keyword::Override
+                | crate::lexer::Keyword::Const
+                | crate::lexer::Keyword::Ref
+                | crate::lexer::Keyword::Out
+                | crate::lexer::Keyword::Inout
+                | crate::lexer::Keyword::Notnull
+                | crate::lexer::Keyword::Autoptr
+                | crate::lexer::Keyword::Owned
+                | crate::lexer::Keyword::Event
+        ),
+        _ => false,
+    })
+}
+
+fn previous_significant_token_kind(source: &str, offset: usize) -> Option<TokenKind> {
+    lex(source)
+        .into_iter()
+        .take_while(|token| token.span.end <= offset)
+        .filter(|token| !token.kind.is_trivia())
+        .last()
+        .map(|token| token.kind)
+}
+
 fn containing_class_name(index: &SymbolIndex, offset: usize) -> Option<String> {
     index
         .symbols()
@@ -599,6 +752,51 @@ fn containing_class_name(index: &SymbolIndex, offset: usize) -> Option<String> {
         .filter(|symbol| symbol.kind == SymbolKind::Class && span_contains(symbol.span, offset))
         .min_by_key(|symbol| symbol.span.len())
         .and_then(|symbol| symbol.name.clone())
+}
+
+fn containing_class_completion_owners(
+    local_index: &SymbolIndex,
+    workspace_index: Option<&SymbolIndex>,
+    game_data_index: Option<&SymbolIndex>,
+    class_name: &str,
+) -> Vec<String> {
+    let indexes = layered_external_indexes(workspace_index, game_data_index);
+    let mut owners = Vec::new();
+    let mut pending = vec![class_name.to_string()];
+    let mut seen = BTreeSet::new();
+
+    while let Some(owner) = pending.pop() {
+        if owners.len() >= 32 || !seen.insert(owner.clone()) {
+            continue;
+        }
+
+        let base = class_base_type(local_index, &owner).or_else(|| {
+            indexes
+                .iter()
+                .find_map(|external_index| class_base_type(external_index, &owner))
+        });
+        owners.push(owner);
+
+        if let Some(base) = base {
+            pending.push(base);
+        }
+    }
+
+    owners
+}
+
+fn class_base_type(index: &SymbolIndex, class_name: &str) -> Option<String> {
+    index
+        .preferred_classes_by_name(class_name)
+        .into_iter()
+        .find_map(|id| {
+            index
+                .symbol(id)
+                .and_then(|symbol| symbol.detail.base_type.as_deref())
+                .map(str::trim)
+                .filter(|base| !base.is_empty())
+                .map(str::to_string)
+        })
 }
 
 fn prefixed_candidates(
@@ -645,6 +843,17 @@ fn combine_completion_candidates(
         .into_iter()
         .filter_map(|key| by_key.remove(&key))
         .collect()
+}
+
+fn cap_completion_items(mut items: Vec<LspCompletionItem>) -> Vec<LspCompletionItem> {
+    if items.len() > MAX_COMPLETION_ITEMS {
+        items.truncate(MAX_COMPLETION_ITEMS);
+    }
+    items
+}
+
+fn remaining_completion_slots(current_len: usize) -> usize {
+    MAX_COMPLETION_ITEMS.saturating_sub(current_len)
 }
 
 fn completion_candidate_key(candidate: &EditorCompletionCandidate) -> String {
@@ -959,4 +1168,49 @@ fn escape_markdown_cell(value: &str) -> String {
 
 fn markdown_table_text(value: &str) -> String {
     escape_markdown_cell(value.trim())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_range() -> LspRange {
+        LspRange {
+            start: LspPosition {
+                line: 0,
+                character: 0,
+            },
+            end: LspPosition {
+                line: 0,
+                character: 5,
+            },
+        }
+    }
+
+    #[test]
+    fn declaration_keywords_are_available_in_type_mode_at_declaration_boundaries() {
+        let items = keyword_completion_items(
+            "overr",
+            test_range(),
+            EditorTopLevelCompletionMode::Type,
+            true,
+        );
+
+        let first = items.first().unwrap();
+        assert_eq!(first.label, "override");
+        assert_eq!(first.kind, 14);
+        assert_eq!(first.text_edit.new_text, "override");
+    }
+
+    #[test]
+    fn declaration_keywords_stay_out_of_type_mode_without_declaration_boundary() {
+        let items = keyword_completion_items(
+            "overr",
+            test_range(),
+            EditorTopLevelCompletionMode::Type,
+            false,
+        );
+
+        assert!(items.is_empty());
+    }
 }

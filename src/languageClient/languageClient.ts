@@ -35,8 +35,47 @@ let restartingClient = false;
 const workspaceWatcherDebounceMs = 250;
 const devServerRestartDebounceMs = 500;
 let deletionCompletionTimer: NodeJS.Timeout | undefined;
+const startupTimingSessionStartMs = Date.now();
+const startupTimingSessionId = `${startupTimingSessionStartMs}-${process.pid}`;
+let startupTimingWriteQueue: Promise<void> = Promise.resolve();
+let startupTimingLogPath: string | undefined;
+let startupTimingLogDirectoryReady: Promise<void> | undefined;
+let firstDocumentOpenTimingLogged = false;
+let firstSemanticTokenTimingLogged = false;
+
+export function logLanguageClientStartupTiming(
+	context: vscode.ExtensionContext,
+	event: string,
+	fields: Record<string, string | number | boolean | undefined> = {},
+): void {
+	const elapsedMs = Date.now() - startupTimingSessionStartMs;
+	const record = {
+		timestamp: new Date().toISOString(),
+		session: startupTimingSessionId,
+		elapsedMs,
+		event,
+		...fields,
+	};
+	startupTimingLogPath ??= path.join(
+		context.globalStorageUri.fsPath,
+		languageClientLogs.rootFolder,
+		languageClientLogs.startupTimingLogFile,
+	);
+	const logPath = startupTimingLogPath;
+	startupTimingLogDirectoryReady ??= fs
+		.mkdir(path.dirname(logPath), { recursive: true })
+		.then(() => undefined);
+
+	startupTimingWriteQueue = startupTimingWriteQueue
+		.then(async () => {
+			await startupTimingLogDirectoryReady;
+			await fs.appendFile(logPath, `${JSON.stringify(record)}\n`, 'utf8');
+		})
+		.catch(() => undefined);
+}
 
 export function registerLanguageClientFeatures(context: vscode.ExtensionContext): void {
+	logLanguageClientStartupTiming(context, 'languageClientRegistrationStart');
 	const outputChannel = vscode.window.createOutputChannel(languageClientIds.name, { log: true });
 	const debugOutputChannel = vscode.window.createOutputChannel(languageClientIds.debugOutputName);
 	const completionDebugOutputChannel = vscode.window.createOutputChannel(languageClientIds.completionDebugOutputName);
@@ -56,8 +95,43 @@ export function registerLanguageClientFeatures(context: vscode.ExtensionContext)
 		(args: unknown) => openSymbolLocation(args),
 	));
 	context.subscriptions.push(registerCompletionRetriggerOnDeletion(outputChannel));
+	context.subscriptions.push(registerFirstDocumentOpenTiming(context));
 
 	void startLanguageClient(context, outputChannel);
+	logLanguageClientStartupTiming(context, 'languageClientRegistrationEnd');
+}
+
+function registerFirstDocumentOpenTiming(context: vscode.ExtensionContext): vscode.Disposable {
+	for (const document of vscode.workspace.textDocuments) {
+		if (document.languageId === languageClientLanguage.id) {
+			logFirstDocumentOpened(context, document, 'alreadyOpen');
+			break;
+		}
+	}
+
+	return vscode.workspace.onDidOpenTextDocument(document => {
+		if (document.languageId === languageClientLanguage.id) {
+			logFirstDocumentOpened(context, document, 'didOpenEvent');
+		}
+	});
+}
+
+function logFirstDocumentOpened(
+	context: vscode.ExtensionContext,
+	document: vscode.TextDocument,
+	source: string,
+): void {
+	if (firstDocumentOpenTimingLogged) {
+		return;
+	}
+	firstDocumentOpenTimingLogged = true;
+	logLanguageClientStartupTiming(context, 'firstDocumentOpened', {
+		source,
+		uri: document.uri.toString(),
+		languageId: document.languageId,
+		lineCount: document.lineCount,
+		byteLength: Buffer.byteLength(document.getText(), 'utf8'),
+	});
 }
 
 function registerCompletionRetriggerOnDeletion(outputChannel: vscode.LogOutputChannel): vscode.Disposable {
@@ -190,11 +264,19 @@ async function startLanguageClient(
 	context: vscode.ExtensionContext,
 	outputChannel: vscode.LogOutputChannel,
 ): Promise<void> {
+	logLanguageClientStartupTiming(context, 'languageClientStartBegin');
 	const serverPath = await resolveServerPath(context);
 	if (!serverPath) {
 		outputChannel.appendLine('Language server binary was not found. Run npm run build-server during development.');
+		logLanguageClientStartupTiming(context, 'languageClientStartAborted', {
+			reason: 'serverBinaryNotFound',
+		});
 		return;
 	}
+	logLanguageClientStartupTiming(context, 'languageServerPathResolved', {
+		serverPath,
+		extensionMode: extensionModeName(context.extensionMode),
+	});
 	registerDevelopmentServerWatcher(context, serverPath, outputChannel);
 
 	const logsRoot = path.join(context.globalStorageUri.fsPath, languageClientLogs.rootFolder);
@@ -217,6 +299,12 @@ async function startLanguageClient(
 	for (const root of workspaceScriptRoots) {
 		serverArgs.push('--workspace-scripts', root);
 	}
+	logLanguageClientStartupTiming(context, 'languageServerArgumentsReady', {
+		hasGameDataScripts: Boolean(gameDataPaths.scripts),
+		hasGameDataMetadata: Boolean(gameDataPaths.metadata),
+		workspaceScriptRoots: workspaceScriptRoots.length,
+		serverArgs: serverArgs.length,
+	});
 
 	const serverOptions: ServerOptions = {
 		run: {
@@ -241,18 +329,38 @@ async function startLanguageClient(
 		},
 		middleware: {
 			provideHover: () => null,
+			provideDocumentSemanticTokens: async (document, token, next) => {
+				const startedAt = Date.now();
+				try {
+					const result = await next(document, token);
+					logFirstSemanticTokenResponse(context, document, startedAt, 'ok');
+					return result;
+				} catch (error) {
+					logFirstSemanticTokenResponse(context, document, startedAt, 'error', error);
+					throw error;
+				}
+			},
 		},
 	};
 
+	logLanguageClientStartupTiming(context, 'languageClientCreateStart');
 	client = new LanguageClient(
 		languageClientIds.id,
 		languageClientIds.name,
 		serverOptions,
 		clientOptions,
 	);
+	logLanguageClientStartupTiming(context, 'languageClientCreated');
 
 	try {
+		logLanguageClientStartupTiming(context, 'languageServerProcessSpawnRequested', {
+			serverPath,
+			transport: 'stdio',
+		});
 		await client.start();
+		logLanguageClientStartupTiming(context, 'languageServerInitializeResponse', {
+			serverPath,
+		});
 		outputChannel.appendLine(`Language server started: ${serverPath}`);
 		if (workspaceScriptRoots.length > 0) {
 			outputChannel.appendLine(`Workspace script roots: ${workspaceScriptRoots.join('; ')}`);
@@ -262,8 +370,31 @@ async function startLanguageClient(
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		outputChannel.appendLine(`Language server failed to start: ${message}`);
+		logLanguageClientStartupTiming(context, 'languageClientStartFailed', {
+			message,
+		});
 		vscode.window.showWarningMessage(`Reforger language server failed to start: ${message}`);
 	}
+}
+
+function logFirstSemanticTokenResponse(
+	context: vscode.ExtensionContext,
+	document: vscode.TextDocument,
+	startedAt: number,
+	status: string,
+	error?: unknown,
+): void {
+	if (firstSemanticTokenTimingLogged) {
+		return;
+	}
+	firstSemanticTokenTimingLogged = true;
+	logLanguageClientStartupTiming(context, 'firstSemanticTokenResponse', {
+		status,
+		uri: document.uri.toString(),
+		languageId: document.languageId,
+		elapsedMsForRequest: Date.now() - startedAt,
+		message: error instanceof Error ? error.message : undefined,
+	});
 }
 
 function createLanguageServerErrorHandler(): ErrorHandler {
@@ -756,5 +887,18 @@ async function isDirectory(targetPath: string): Promise<boolean> {
 		return (await fs.stat(targetPath)).isDirectory();
 	} catch {
 		return false;
+	}
+}
+
+function extensionModeName(mode: vscode.ExtensionMode): string {
+	switch (mode) {
+		case vscode.ExtensionMode.Development:
+			return 'development';
+		case vscode.ExtensionMode.Production:
+			return 'production';
+		case vscode.ExtensionMode.Test:
+			return 'test';
+		default:
+			return 'unknown';
 	}
 }

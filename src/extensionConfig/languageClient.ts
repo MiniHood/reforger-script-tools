@@ -28,6 +28,7 @@ export const languageClientServer = {
 export const languageClientLogs = {
 	rootFolder: 'logs',
 	serverLogFile: 'language-server.log',
+	startupTimingLogFile: 'language-client-startup.log',
 	hoverDebugFolder: 'hover-debug',
 	hoverDebugLatestFile: 'latest.md',
 	completionDebugFolder: 'completion-debug',
@@ -36,7 +37,7 @@ export const languageClientLogs = {
 
 export const languageClientIndexCache = {
 	rootFolder: 'index-cache',
-	gameDataIndexFile: 'game-data-symbol-index.v6.json',
+	gameDataIndexFile: 'game-data-symbol-index.v9.bin',
 } as const;
 
 export const languageClientLanguage = {

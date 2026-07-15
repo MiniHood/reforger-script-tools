@@ -141,33 +141,48 @@ impl<'index> IndexQuery<'index> {
         prefix: &str,
         mode: EditorTopLevelCompletionMode,
     ) -> Vec<EditorCompletionCandidate> {
+        self.completion_top_level_limited(prefix, mode, usize::MAX)
+    }
+
+    pub fn completion_top_level_limited(
+        &self,
+        prefix: &str,
+        mode: EditorTopLevelCompletionMode,
+        limit: usize,
+    ) -> Vec<EditorCompletionCandidate> {
         if prefix.is_empty() {
+            return Vec::new();
+        }
+        if limit == 0 {
             return Vec::new();
         }
 
         let mut ids_by_key = BTreeMap::<String, Vec<GlobalSymbolId>>::new();
         let mut key_order = Vec::<String>::new();
 
-        for symbol in self.index.symbols() {
-            if !self.is_editor_completion_source(symbol.id) {
-                continue;
-            }
-            if !top_level_completion_kind_allowed(symbol.kind, mode) {
-                continue;
-            }
-            let Some(name) = symbol.name.as_deref() else {
-                continue;
-            };
+        for (name, ids) in self.index.top_level_names() {
             if !starts_with_ignore_ascii_case(name, prefix) {
                 continue;
             }
-            let key = top_level_completion_key(self.index, symbol.id, symbol.kind, name);
-            if !ids_by_key.contains_key(&key) {
-                key_order.push(key.clone());
+            for id in ids {
+                let Some(symbol) = self.index.symbol(*id) else {
+                    continue;
+                };
+                if !self.is_editor_completion_source(symbol.id) {
+                    continue;
+                }
+                if !top_level_completion_kind_allowed(symbol.kind, mode) {
+                    continue;
+                }
+                let key = top_level_completion_key(self.index, symbol.id, symbol.kind, name);
+                if !ids_by_key.contains_key(&key) {
+                    key_order.push(key.clone());
+                }
+                ids_by_key.entry(key).or_default().push(symbol.id);
             }
-            ids_by_key.entry(key).or_default().push(symbol.id);
         }
 
+        let soft_limit = limit.saturating_mul(4).max(limit);
         let mut candidates = Vec::new();
         for key in key_order {
             let mut ids = ids_by_key.remove(&key).unwrap_or_default();
@@ -178,6 +193,9 @@ impl<'index> IndexQuery<'index> {
                 .and_then(|id| self.editor_top_level_completion_candidate(id))
             {
                 candidates.push(candidate);
+                if candidates.len() >= soft_limit {
+                    break;
+                }
             }
         }
 
@@ -192,6 +210,7 @@ impl<'index> IndexQuery<'index> {
                 .then_with(|| left.id.file_id.cmp(&right.id.file_id))
                 .then_with(|| left.id.symbol_id.cmp(&right.id.symbol_id))
         });
+        candidates.truncate(limit);
         candidates
     }
 

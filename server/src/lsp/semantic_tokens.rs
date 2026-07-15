@@ -3,12 +3,33 @@ use crate::lexer::{lex, Keyword, TextSpan, Token, TokenKind};
 use crate::lsp::{
     file_index_for_source, range_for_span, span_text, FileIndexAnalysis, LspPosition, LspRange,
 };
-use crate::model::SymbolKind;
+use crate::model::{SourceKind, SymbolKind};
 use crate::resolver::{CandidateSource, ReferenceCandidate, ReferenceResolver, ResolutionReason};
 use crate::syntax::{SyntaxElement, SyntaxKind, SyntaxNode};
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
+
+fn layered_external_indexes<'a>(
+    workspace_index: Option<&'a SymbolIndex>,
+    game_data_index: Option<&'a SymbolIndex>,
+) -> Vec<&'a SymbolIndex> {
+    workspace_index.into_iter().chain(game_data_index).collect()
+}
+
+fn external_index_for_candidate<'a>(
+    candidate: &ReferenceCandidate,
+    workspace_index: Option<&'a SymbolIndex>,
+    game_data_index: Option<&'a SymbolIndex>,
+) -> Option<&'a SymbolIndex> {
+    match candidate.source_kind {
+        SourceKind::Workspace => workspace_index,
+        SourceKind::GameData => game_data_index,
+        SourceKind::Unknown | SourceKind::Fixture => None,
+    }
+    .or(workspace_index)
+    .or(game_data_index)
+}
 
 pub(crate) const SEMANTIC_TOKEN_TYPES: &[&str] = &[
     "class",
@@ -128,8 +149,27 @@ pub(crate) fn semantic_tokens_report_for_cached_analysis_with_external(
     analysis: &FileIndexAnalysis,
     external_index: Option<&SymbolIndex>,
 ) -> LspSemanticTokenReport {
-    let raw_projection =
-        semantic_raw_tokens(source, analysis, external_index, SemanticTokenMode::Rich);
+    semantic_tokens_report_for_cached_analysis_with_external_indexes(
+        source,
+        analysis,
+        None,
+        external_index,
+    )
+}
+
+pub(crate) fn semantic_tokens_report_for_cached_analysis_with_external_indexes(
+    source: &str,
+    analysis: &FileIndexAnalysis,
+    workspace_index: Option<&SymbolIndex>,
+    game_data_index: Option<&SymbolIndex>,
+) -> LspSemanticTokenReport {
+    let raw_projection = semantic_raw_tokens(
+        source,
+        analysis,
+        workspace_index,
+        game_data_index,
+        SemanticTokenMode::Rich,
+    );
     let decode_start = Instant::now();
     let decoded = raw_projection
         .tokens
@@ -161,8 +201,27 @@ pub(crate) fn semantic_tokens_for_cached_analysis_with_external(
     analysis: &FileIndexAnalysis,
     external_index: Option<&SymbolIndex>,
 ) -> LspSemanticTokenProjection {
-    let raw_projection =
-        semantic_raw_tokens(source, analysis, external_index, SemanticTokenMode::Rich);
+    semantic_tokens_for_cached_analysis_with_external_indexes(
+        source,
+        analysis,
+        None,
+        external_index,
+    )
+}
+
+pub(crate) fn semantic_tokens_for_cached_analysis_with_external_indexes(
+    source: &str,
+    analysis: &FileIndexAnalysis,
+    workspace_index: Option<&SymbolIndex>,
+    game_data_index: Option<&SymbolIndex>,
+) -> LspSemanticTokenProjection {
+    let raw_projection = semantic_raw_tokens(
+        source,
+        analysis,
+        workspace_index,
+        game_data_index,
+        SemanticTokenMode::Rich,
+    );
     encode_projection(source, analysis, raw_projection)
 }
 
@@ -170,7 +229,7 @@ pub(crate) fn fast_semantic_tokens_for_cached_analysis(
     source: &str,
     analysis: &FileIndexAnalysis,
 ) -> LspSemanticTokenProjection {
-    let raw_projection = semantic_raw_tokens(source, analysis, None, SemanticTokenMode::Fast);
+    let raw_projection = semantic_raw_tokens(source, analysis, None, None, SemanticTokenMode::Fast);
     encode_projection(source, analysis, raw_projection)
 }
 
@@ -215,7 +274,8 @@ pub enum SemanticTokenMode {
 fn semantic_raw_tokens(
     source: &str,
     analysis: &FileIndexAnalysis,
-    external_index: Option<&SymbolIndex>,
+    workspace_index: Option<&SymbolIndex>,
+    game_data_index: Option<&SymbolIndex>,
     mode: SemanticTokenMode,
 ) -> RawSemanticTokenProjection {
     let lex_start = Instant::now();
@@ -235,12 +295,12 @@ fn semantic_raw_tokens(
         .map(|symbol| (symbol.selection_span.start, symbol.selection_span.end))
         .collect::<std::collections::BTreeSet<_>>();
     let resolver = (mode == SemanticTokenMode::Rich).then(|| {
-        ReferenceResolver::new_with_parse_and_scope(
+        ReferenceResolver::new_with_parse_scope_and_external_indexes(
             source,
             &analysis.index,
             &analysis.parse,
             &analysis.scope,
-            external_index,
+            layered_external_indexes(workspace_index, game_data_index),
         )
     });
 
@@ -321,9 +381,12 @@ fn semantic_raw_tokens(
             resolver_elapsed += resolver_start.elapsed();
             if let Some(resolution) = resolution {
                 if let Some(candidate) = resolution.selected {
-                    if let Some(token_type) =
-                        candidate_semantic_type(&candidate, &analysis.index, external_index)
-                    {
+                    if let Some(token_type) = candidate_semantic_type(
+                        &candidate,
+                        &analysis.index,
+                        workspace_index,
+                        game_data_index,
+                    ) {
                         tokens.push(RawSemanticToken {
                             span: token.span,
                             token_type,
@@ -603,14 +666,17 @@ fn symbol_semantic_type(kind: SymbolKind) -> Option<u32> {
 fn candidate_semantic_type(
     candidate: &ReferenceCandidate,
     file_index: &SymbolIndex,
-    external_index: Option<&SymbolIndex>,
+    workspace_index: Option<&SymbolIndex>,
+    game_data_index: Option<&SymbolIndex>,
 ) -> Option<u32> {
     if matches!(candidate.kind, SymbolKind::GlobalField | SymbolKind::Field)
         && candidate.reason == ResolutionReason::StaticMember
     {
         let index = match candidate.source {
             CandidateSource::FileLocal => Some(file_index),
-            CandidateSource::External => external_index,
+            CandidateSource::External => {
+                external_index_for_candidate(candidate, workspace_index, game_data_index)
+            }
         };
         if index
             .and_then(|index| index.symbol(candidate.id))

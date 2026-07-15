@@ -304,8 +304,8 @@ fn append_structural_optimization_summary(
     ];
     let bytes_saved = v2_style_cache_bytes.saturating_sub(cache_file_bytes);
 
-    report.push_str("## V6 Structural Optimization Summary\n\n");
-    report.push_str("The v6 runtime cache persists files and symbols only, strips source-only detail spans, removes external local variables, preserves parameters/type parameters, and rebuilds derived lookup maps after deserialization. This keeps editor-visible facts while avoiding duplicate serialized lookup data.\n\n");
+    report.push_str("## V9 Binary Structural Optimization Summary\n\n");
+    report.push_str("The v9 runtime cache persists files and symbols only in a dependency-free binary format, stores repeated strings through an interned string table, stores an explicit index-shape marker, strips source-only detail spans, removes external local variables, preserves parameters/type parameters, and rebuilds derived lookup maps after deserialization. This keeps editor-visible facts while avoiding duplicate serialized lookup data.\n\n");
     report.push_str("| Metric | Value |\n");
     report.push_str("| --- | ---: |\n");
     report.push_str(&format!(
@@ -313,7 +313,7 @@ fn append_structural_optimization_summary(
         v2_style_cache_bytes
     ));
     report.push_str(&format!(
-        "| V6 actual cache file bytes | {} |\n",
+        "| V9 actual cache file bytes | {} |\n",
         cache_file_bytes
     ));
     report.push_str(&format!("| Estimated bytes saved | {} |\n", bytes_saved));
@@ -330,7 +330,7 @@ fn append_structural_optimization_summary(
         full_detail_spans
     ));
     report.push_str(&format!(
-        "| V6 runtime detail span fields | {} |\n",
+        "| V9 runtime detail span fields | {} |\n",
         runtime_detail_spans
     ));
     report.push_str(&format!(
@@ -550,7 +550,7 @@ fn append_recommendation(
 
     report.push_str("## Recommendation\n\n");
     if editor_symbol_percent >= 0.85 || editor_json_percent >= 0.85 {
-        report.push_str("Keep the current single JSON cache for now. The editor-runtime slice is close to the full cache, so splitting the cache is unlikely to repay the extra complexity yet.\n\n");
+        report.push_str("Keep the current single binary cache for now. The editor-runtime slice is close to the full cache, so splitting the cache is unlikely to repay the extra complexity yet.\n\n");
     } else if editor_json_percent <= 0.65 {
         report.push_str("A future split cache may be worth designing: an editor-runtime cache plus optional debug/review cache could materially reduce startup load and disk size. Do not change runtime behavior in this slice; use this report as planning evidence.\n\n");
     } else {
@@ -889,7 +889,7 @@ fn default_metadata_path(scripts_path: &Path) -> Option<PathBuf> {
 }
 
 fn default_cache_path() -> PathBuf {
-    default_storage_root().join("index-cache/game-data-symbol-index.v6.json")
+    default_storage_root().join("index-cache/game-data-symbol-index.v9.bin")
 }
 
 fn default_storage_root() -> PathBuf {

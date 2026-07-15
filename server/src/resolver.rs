@@ -18,7 +18,7 @@ use std::path::PathBuf;
 pub struct ReferenceResolver<'source, 'index> {
     source: &'source str,
     file_index: &'index SymbolIndex,
-    external_index: Option<&'index SymbolIndex>,
+    external_indexes: Vec<&'index SymbolIndex>,
     parse: Option<&'index Parse>,
     scope: Option<&'index LexicalScopeModel>,
     owned_parse: Option<Parse>,
@@ -177,12 +177,20 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
         file_index: &'index SymbolIndex,
         external_index: Option<&'index SymbolIndex>,
     ) -> Self {
+        Self::new_with_external_indexes(source, file_index, external_index)
+    }
+
+    pub fn new_with_external_indexes(
+        source: &'source str,
+        file_index: &'index SymbolIndex,
+        external_indexes: impl IntoIterator<Item = &'index SymbolIndex>,
+    ) -> Self {
         let parse = parse_source(source);
         let scope = LexicalScopeModel::from_parse_and_index(&parse, file_index);
         Self {
             source,
             file_index,
-            external_index,
+            external_indexes: external_indexes.into_iter().collect(),
             parse: None,
             scope: None,
             owned_parse: Some(parse),
@@ -196,11 +204,20 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
         parse: &'index Parse,
         external_index: Option<&'index SymbolIndex>,
     ) -> Self {
+        Self::new_with_parse_and_external_indexes(source, file_index, parse, external_index)
+    }
+
+    pub fn new_with_parse_and_external_indexes(
+        source: &'source str,
+        file_index: &'index SymbolIndex,
+        parse: &'index Parse,
+        external_indexes: impl IntoIterator<Item = &'index SymbolIndex>,
+    ) -> Self {
         let scope = LexicalScopeModel::from_parse_and_index(parse, file_index);
         Self {
             source,
             file_index,
-            external_index,
+            external_indexes: external_indexes.into_iter().collect(),
             parse: Some(parse),
             scope: None,
             owned_parse: None,
@@ -208,17 +225,33 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
         }
     }
 
-    pub const fn new_with_parse_and_scope(
+    pub fn new_with_parse_and_scope(
         source: &'source str,
         file_index: &'index SymbolIndex,
         parse: &'index Parse,
         scope: &'index LexicalScopeModel,
         external_index: Option<&'index SymbolIndex>,
     ) -> Self {
+        Self::new_with_parse_scope_and_external_indexes(
+            source,
+            file_index,
+            parse,
+            scope,
+            external_index,
+        )
+    }
+
+    pub fn new_with_parse_scope_and_external_indexes(
+        source: &'source str,
+        file_index: &'index SymbolIndex,
+        parse: &'index Parse,
+        scope: &'index LexicalScopeModel,
+        external_indexes: impl IntoIterator<Item = &'index SymbolIndex>,
+    ) -> Self {
         Self {
             source,
             file_index,
-            external_index,
+            external_indexes: external_indexes.into_iter().collect(),
             parse: Some(parse),
             scope: Some(scope),
             owned_parse: None,
@@ -433,13 +466,17 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
     }
 
     fn type_environment(&self) -> ExpressionTypeEnvironment<'source, '_> {
-        ExpressionTypeEnvironment::new(
+        ExpressionTypeEnvironment::new_with_external_indexes(
             self.source,
             self.file_index,
             self.parse(),
             self.scope(),
-            self.external_index,
+            self.external_indexes(),
         )
+    }
+
+    fn external_indexes(&self) -> impl Iterator<Item = &'index SymbolIndex> + '_ {
+        self.external_indexes.iter().copied()
     }
 
     pub fn resolve_hover_at_offset(&self, offset: usize) -> Option<HoverResolution> {
@@ -691,7 +728,7 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
             candidates,
             seen,
         );
-        if let Some(external_index) = self.external_index {
+        for external_index in self.external_indexes() {
             push_class_member_candidates_from_index(
                 external_index,
                 CandidateSource::External,
@@ -790,33 +827,31 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
         candidates: &mut Vec<ReferenceCandidate>,
         seen: &mut BTreeSet<CandidateKey>,
     ) {
-        let Some(external_index) = self.external_index else {
-            return;
-        };
+        for external_index in self.external_indexes() {
+            let mut external = Vec::new();
+            for id in external_index.preferred_classes_by_name(token_text) {
+                push_unique_id(&mut external, id);
+            }
+            for id in external_index.preferred_typedefs_by_name(token_text) {
+                push_unique_id(&mut external, id);
+            }
+            for id in external_index.preferred_functions_by_name(token_text) {
+                push_unique_id(&mut external, id);
+            }
+            for id in external_index.preferred_top_level_symbols_for_name(token_text) {
+                push_unique_id(&mut external, id);
+            }
 
-        let mut external = Vec::new();
-        for id in external_index.preferred_classes_by_name(token_text) {
-            push_unique_id(&mut external, id);
-        }
-        for id in external_index.preferred_typedefs_by_name(token_text) {
-            push_unique_id(&mut external, id);
-        }
-        for id in external_index.preferred_functions_by_name(token_text) {
-            push_unique_id(&mut external, id);
-        }
-        for id in external_index.preferred_top_level_symbols_for_name(token_text) {
-            push_unique_id(&mut external, id);
-        }
-
-        for id in external {
-            push_index_candidate(
-                external_index,
-                candidates,
-                seen,
-                CandidateSource::External,
-                id,
-                ResolutionReason::ExternalPreferred,
-            );
+            for id in external {
+                push_index_candidate(
+                    external_index,
+                    candidates,
+                    seen,
+                    CandidateSource::External,
+                    id,
+                    ResolutionReason::ExternalPreferred,
+                );
+            }
         }
     }
 
@@ -826,30 +861,28 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
         candidates: &mut Vec<ReferenceCandidate>,
         seen: &mut BTreeSet<CandidateKey>,
     ) {
-        let Some(external_index) = self.external_index else {
-            return;
-        };
+        for external_index in self.external_indexes() {
+            let external = external_index
+                .top_level_symbols_for_name(token_text)
+                .iter()
+                .copied()
+                .filter(|id| {
+                    external_index
+                        .symbol(*id)
+                        .is_some_and(|symbol| is_type_like_kind(symbol.kind))
+                })
+                .collect::<Vec<_>>();
 
-        let external = external_index
-            .top_level_symbols_for_name(token_text)
-            .iter()
-            .copied()
-            .filter(|id| {
-                external_index
-                    .symbol(*id)
-                    .is_some_and(|symbol| is_type_like_kind(symbol.kind))
-            })
-            .collect::<Vec<_>>();
-
-        for id in external_index.preferred_from_symbols(&external) {
-            push_index_candidate(
-                external_index,
-                candidates,
-                seen,
-                CandidateSource::External,
-                id,
-                ResolutionReason::ExternalPreferred,
-            );
+            for id in external_index.preferred_from_symbols(&external) {
+                push_index_candidate(
+                    external_index,
+                    candidates,
+                    seen,
+                    CandidateSource::External,
+                    id,
+                    ResolutionReason::ExternalPreferred,
+                );
+            }
         }
     }
 
@@ -875,28 +908,27 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
             }
         }
 
-        let Some(external_index) = self.external_index else {
-            return;
-        };
-        let external = external_index
-            .symbols_for_name(token_text)
-            .iter()
-            .copied()
-            .filter(|id| {
-                external_index
-                    .symbol(*id)
-                    .is_some_and(|symbol| symbol.kind == SymbolKind::PreprocessorMacro)
-            })
-            .collect::<Vec<_>>();
-        for id in external_index.preferred_from_symbols(&external) {
-            push_index_candidate(
-                external_index,
-                candidates,
-                seen,
-                CandidateSource::External,
-                id,
-                ResolutionReason::PreprocessorMacro,
-            );
+        for external_index in self.external_indexes() {
+            let external = external_index
+                .symbols_for_name(token_text)
+                .iter()
+                .copied()
+                .filter(|id| {
+                    external_index
+                        .symbol(*id)
+                        .is_some_and(|symbol| symbol.kind == SymbolKind::PreprocessorMacro)
+                })
+                .collect::<Vec<_>>();
+            for id in external_index.preferred_from_symbols(&external) {
+                push_index_candidate(
+                    external_index,
+                    candidates,
+                    seen,
+                    CandidateSource::External,
+                    id,
+                    ResolutionReason::PreprocessorMacro,
+                );
+            }
         }
     }
 
@@ -947,7 +979,7 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
             candidates,
             seen,
         );
-        if let Some(external_index) = self.external_index {
+        for external_index in self.external_indexes() {
             self.push_members_for_owner(
                 external_index,
                 CandidateSource::External,
@@ -1074,7 +1106,7 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
             candidates,
             seen,
         );
-        if let Some(external_index) = self.external_index {
+        for external_index in self.external_indexes() {
             self.push_members_for_owner(
                 external_index,
                 CandidateSource::External,
@@ -1103,7 +1135,7 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
             candidates,
             seen,
         );
-        if let Some(external_index) = self.external_index {
+        for external_index in self.external_indexes() {
             push_class_member_candidates_from_index_with_reason(
                 external_index,
                 CandidateSource::External,

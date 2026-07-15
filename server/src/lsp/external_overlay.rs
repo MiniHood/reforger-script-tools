@@ -25,7 +25,7 @@ pub(crate) struct ExternalIndexHandle {
 struct ExternalIndexState {
     status: ExternalIndexStatus,
     generation: u64,
-    index: Option<SymbolIndex>,
+    workspace_index: Option<SymbolIndex>,
     game_data_index: Option<SymbolIndex>,
     workspace_files: BTreeMap<PathBuf, WorkspaceIndexedFile>,
     workspace_roots: Vec<PathBuf>,
@@ -85,13 +85,30 @@ pub(crate) struct ExternalIndexStatusSummary {
     pub(crate) error: Option<String>,
 }
 
+pub(crate) struct ExternalIndexBorrow<'a> {
+    pub(crate) status: &'static str,
+    pub(crate) workspace: Option<&'a SymbolIndex>,
+    pub(crate) game_data: Option<&'a SymbolIndex>,
+}
+
+impl ExternalIndexBorrow<'_> {
+    pub(crate) fn available_layers(&self) -> &'static str {
+        match (self.workspace.is_some(), self.game_data.is_some()) {
+            (true, true) => "workspace,game-data",
+            (true, false) => "workspace",
+            (false, true) => "game-data",
+            (false, false) => "none",
+        }
+    }
+}
+
 impl ExternalIndexHandle {
     fn missing() -> Self {
         Self {
             state: Arc::new(Mutex::new(ExternalIndexState {
                 status: ExternalIndexStatus::Missing,
                 generation: 0,
-                index: None,
+                workspace_index: None,
                 game_data_index: None,
                 workspace_files: BTreeMap::new(),
                 workspace_roots: Vec::new(),
@@ -135,12 +152,13 @@ impl ExternalIndexHandle {
         }
     }
 
-    pub(crate) fn with_index<T>(
-        &self,
-        action: impl FnOnce(&'static str, Option<&SymbolIndex>) -> T,
-    ) -> T {
+    pub(crate) fn with_indexes<T>(&self, action: impl FnOnce(ExternalIndexBorrow<'_>) -> T) -> T {
         let state = self.state.lock().unwrap();
-        action(state.status.as_str(), state.index.as_ref())
+        action(ExternalIndexBorrow {
+            status: state.status.as_str(),
+            workspace: state.workspace_index.as_ref(),
+            game_data: state.game_data_index.as_ref(),
+        })
     }
 
     pub(crate) fn update_workspace_file(
@@ -167,9 +185,9 @@ impl ExternalIndexHandle {
         let mut state = self.state.lock().unwrap();
         state.status = ExternalIndexStatus::Updating;
         state.workspace_files.insert(normalized_path, indexed);
-        recompute_external_overlay(&mut state);
+        recompute_layered_external_summary(&mut state);
         state.generation += 1;
-        state.status = if state.index.is_some() {
+        state.status = if state.workspace_index.is_some() || state.game_data_index.is_some() {
             ExternalIndexStatus::Ready
         } else {
             ExternalIndexStatus::Missing
@@ -184,13 +202,11 @@ impl ExternalIndexHandle {
         state.status = ExternalIndexStatus::Updating;
         let removed = state.workspace_files.remove(&normalized_path).is_some()
             || state.workspace_files.remove(path).is_some();
-        recompute_external_overlay(&mut state);
+        recompute_layered_external_summary(&mut state);
         if removed {
             state.generation += 1;
         }
-        state.status = if state.index.is_some() {
-            ExternalIndexStatus::Ready
-        } else if state.game_data_index.is_some() || !state.workspace_files.is_empty() {
+        state.status = if state.workspace_index.is_some() || state.game_data_index.is_some() {
             ExternalIndexStatus::Ready
         } else {
             ExternalIndexStatus::Missing
@@ -213,7 +229,7 @@ pub(crate) fn start_external_index(
         state: Arc::new(Mutex::new(ExternalIndexState {
             status: ExternalIndexStatus::Building,
             generation: 0,
-            index: None,
+            workspace_index: None,
             game_data_index: None,
             workspace_files: BTreeMap::new(),
             workspace_roots: options.workspace_scripts.clone(),
@@ -243,6 +259,7 @@ pub(crate) fn start_external_index(
             format_paths(&workspace_roots)
         ));
 
+        let game_data_start = Instant::now();
         let game_data_result = match (scripts_root, cache_path) {
             (Some(scripts_root), Some(cache_path)) => {
                 logger.log(&format!(
@@ -258,8 +275,11 @@ pub(crate) fn start_external_index(
             }
             _ => None,
         };
+        let game_data_ready_ms = game_data_start.elapsed().as_millis();
 
+        let workspace_start = Instant::now();
         let workspace_result = build_workspace_indexes(&workspace_roots);
+        let workspace_ready_ms = workspace_start.elapsed().as_millis();
 
         let mut state = state.lock().unwrap();
         let mut error_messages = Vec::new();
@@ -271,12 +291,17 @@ pub(crate) fn start_external_index(
                     let cache_detail = result.cache_status.detail().map(str::to_string);
                     let fingerprint = result.fingerprint.summary();
                     logger.log(&format!(
-                        "externalIndex gameData ready cache_status={} cache_detail={} files={} symbols={} parse_diagnostics={} elapsed_ms={}",
+                        "externalIndex gameData ready cache_status={} cache_detail={} files={} symbols={} parse_diagnostics={} cache_file_read_ms={} cache_decode_ms={} cache_validate_ms={} cache_map_rebuild_ms={} cache_total_ms={} elapsed_ms={}",
                         cache_status,
                         cache_detail.as_deref().unwrap_or("<none>"),
                         result.summary.files,
                         result.summary.indexed_symbols,
                         result.summary.parse_diagnostics,
+                        result.timings.cache_file_read.as_millis(),
+                        result.timings.cache_decode.as_millis(),
+                        result.timings.cache_validate.as_millis(),
+                        result.timings.map_rebuild.as_millis(),
+                        result.timings.total.as_millis(),
                         start.elapsed().as_millis()
                     ));
                     state.game_data_index = Some(result.index);
@@ -324,9 +349,9 @@ pub(crate) fn start_external_index(
             }
         }
 
-        recompute_external_overlay(&mut state);
+        recompute_layered_external_summary(&mut state);
         state.generation += 1;
-        if state.index.is_some() {
+        if state.workspace_index.is_some() || state.game_data_index.is_some() {
             state.status = ExternalIndexStatus::Ready;
             state.error = if error_messages.is_empty() {
                 None
@@ -346,7 +371,7 @@ pub(crate) fn start_external_index(
             };
         }
         logger.log(&format!(
-            "externalIndex overlay status={} files={} symbols={} workspace_files={} workspace_symbols={} game_data_files={} game_data_symbols={} elapsed_ms={}",
+            "externalIndex layered status={} files={} symbols={} workspace_files={} workspace_symbols={} game_data_files={} game_data_symbols={} game_data_ready_ms={} workspace_ready_ms={} layered_ready_ms={} elapsed_ms={}",
             state.status.as_str(),
             state.summary.as_ref().map(|summary| summary.files).unwrap_or(0),
             state
@@ -366,6 +391,9 @@ pub(crate) fn start_external_index(
                 .as_ref()
                 .map(|summary| summary.indexed_symbols)
                 .unwrap_or(0),
+            game_data_ready_ms,
+            workspace_ready_ms,
+            start.elapsed().as_millis(),
             start.elapsed().as_millis()
         ));
     });
@@ -477,33 +505,20 @@ fn workspace_summary_from_files(
     summary
 }
 
-fn recompute_external_overlay(state: &mut ExternalIndexState) {
+fn recompute_layered_external_summary(state: &mut ExternalIndexState) {
     let workspace_indexes = state
         .workspace_files
         .values()
         .map(|file| &file.index)
         .collect::<Vec<_>>();
-    let workspace_index = if workspace_indexes.is_empty() {
+    state.workspace_index = if workspace_indexes.is_empty() {
         None
     } else {
         Some(SymbolIndex::merged(workspace_indexes))
     };
 
-    let mut overlay_parts = Vec::<&SymbolIndex>::new();
-    if let Some(workspace_index) = workspace_index.as_ref() {
-        overlay_parts.push(workspace_index);
-    }
-    if let Some(game_data_index) = state.game_data_index.as_ref() {
-        overlay_parts.push(game_data_index);
-    }
-
-    state.index = if overlay_parts.is_empty() {
-        None
-    } else {
-        Some(SymbolIndex::merged(overlay_parts))
-    };
     state.workspace_summary = workspace_summary_from_files(&state.workspace_files);
-    state.summary = state.index.as_ref().map(|index| {
+    state.summary = if state.workspace_index.is_some() || state.game_data_index.is_some() {
         let mut summary = state.workspace_summary.clone();
         if let Some(game_data_summary) = state.game_data_summary.as_ref() {
             summary.files += game_data_summary.files;
@@ -511,9 +526,9 @@ fn recompute_external_overlay(state: &mut ExternalIndexState) {
             summary.indexed_symbols += game_data_summary.indexed_symbols;
             summary.parse_diagnostics += game_data_summary.parse_diagnostics;
             summary.lossy_files += game_data_summary.lossy_files;
-        } else if summary.indexed_symbols == 0 {
-            summary.indexed_symbols = index.symbols().len();
         }
-        summary
-    });
+        Some(summary)
+    } else {
+        None
+    };
 }

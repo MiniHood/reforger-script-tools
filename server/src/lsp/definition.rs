@@ -11,6 +11,13 @@ use serde::Serialize;
 use std::fs;
 use std::path::Path;
 
+fn layered_external_indexes<'a>(
+    workspace_index: Option<&'a SymbolIndex>,
+    game_data_index: Option<&'a SymbolIndex>,
+) -> Vec<&'a SymbolIndex> {
+    workspace_index.into_iter().chain(game_data_index).collect()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct LspLocation {
     pub uri: String,
@@ -77,10 +84,35 @@ pub fn definition_report_for_cached_analysis_with_external(
     position: LspPosition,
     external_index: Option<&SymbolIndex>,
 ) -> LspDefinitionReport {
+    definition_report_for_cached_analysis_with_external_indexes(
+        source,
+        analysis,
+        uri,
+        position,
+        None,
+        external_index,
+    )
+}
+
+pub(crate) fn definition_report_for_cached_analysis_with_external_indexes(
+    source: &str,
+    analysis: &FileIndexAnalysis,
+    uri: &str,
+    position: LspPosition,
+    workspace_index: Option<&SymbolIndex>,
+    game_data_index: Option<&SymbolIndex>,
+) -> LspDefinitionReport {
     let Some(offset) = offset_for_position(source, position) else {
         return empty_definition_report(analysis.parse_diagnostics);
     };
-    definition_report_for_offset(source, analysis, uri, offset, external_index)
+    definition_report_for_offset(
+        source,
+        analysis,
+        uri,
+        offset,
+        workspace_index,
+        game_data_index,
+    )
 }
 
 fn definition_report_for_offset(
@@ -88,14 +120,15 @@ fn definition_report_for_offset(
     analysis: &FileIndexAnalysis,
     uri: &str,
     offset: usize,
-    external_index: Option<&SymbolIndex>,
+    workspace_index: Option<&SymbolIndex>,
+    game_data_index: Option<&SymbolIndex>,
 ) -> LspDefinitionReport {
-    let resolver = ReferenceResolver::new_with_parse_and_scope(
+    let resolver = ReferenceResolver::new_with_parse_scope_and_external_indexes(
         source,
         &analysis.index,
         &analysis.parse,
         &analysis.scope,
-        external_index,
+        layered_external_indexes(workspace_index, game_data_index),
     );
     let Some(resolution) = resolver.resolve_at_offset(offset) else {
         return empty_definition_report(analysis.parse_diagnostics);

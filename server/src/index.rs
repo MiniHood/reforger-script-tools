@@ -710,6 +710,10 @@ impl SymbolIndex {
         &self.by_name
     }
 
+    pub fn top_level_names(&self) -> &BTreeMap<String, Vec<GlobalSymbolId>> {
+        &self.top_level_by_name
+    }
+
     pub fn duplicate_names(&self) -> Vec<(&str, &[GlobalSymbolId])> {
         self.by_name
             .iter()
@@ -729,12 +733,25 @@ impl SymbolIndex {
     pub fn map_counts(&self) -> IndexMapCounts {
         IndexMapCounts {
             names: self.by_name.len(),
+            name_entries: map_entry_count(&self.by_name),
             top_level_names: self.top_level_by_name.len(),
+            top_level_name_entries: map_entry_count(&self.top_level_by_name),
             kinds: self.by_kind.len(),
+            kind_entries: map_entry_count(&self.by_kind),
             class_names: self.classes_by_name.len(),
+            class_name_entries: map_entry_count(&self.classes_by_name),
             typedef_names: self.typedefs_by_name.len(),
+            typedef_name_entries: map_entry_count(&self.typedefs_by_name),
+            function_names: self.functions_by_name.len(),
+            function_name_entries: map_entry_count(&self.functions_by_name),
             method_owner_names: self.methods_by_owner_name.len(),
+            method_owner_name_entries: map_entry_count(&self.methods_by_owner_name),
+            field_owner_names: self.fields_by_owner_name.len(),
+            field_owner_name_entries: map_entry_count(&self.fields_by_owner_name),
+            member_owners: self.members_by_owner.len(),
+            member_owner_entries: map_entry_count(&self.members_by_owner),
             parent_symbols: self.children.len(),
+            child_entries: map_entry_count(&self.children),
         }
     }
 
@@ -751,91 +768,94 @@ impl SymbolIndex {
     }
 
     fn rebuild_lookup_maps(&mut self) {
-        self.by_name.clear();
-        self.top_level_by_name.clear();
-        self.by_kind.clear();
-        self.children.clear();
-        self.classes_by_name.clear();
-        self.typedefs_by_name.clear();
-        self.functions_by_name.clear();
-        self.methods_by_owner_name.clear();
-        self.fields_by_owner_name.clear();
-        self.members_by_owner.clear();
+        let mut by_name = BTreeMap::<String, Vec<GlobalSymbolId>>::new();
+        let mut top_level_by_name = BTreeMap::<String, Vec<GlobalSymbolId>>::new();
+        let mut by_kind = BTreeMap::<SymbolKind, Vec<GlobalSymbolId>>::new();
+        let mut children = BTreeMap::<GlobalSymbolId, Vec<GlobalSymbolId>>::new();
+        let mut classes_by_name = BTreeMap::<String, Vec<GlobalSymbolId>>::new();
+        let mut typedefs_by_name = BTreeMap::<String, Vec<GlobalSymbolId>>::new();
+        let mut functions_by_name = BTreeMap::<String, Vec<GlobalSymbolId>>::new();
+        let mut methods_by_owner_name = BTreeMap::<(String, String), Vec<GlobalSymbolId>>::new();
+        let mut fields_by_owner_name = BTreeMap::<(String, String), Vec<GlobalSymbolId>>::new();
+        let mut members_by_owner = BTreeMap::<String, Vec<GlobalSymbolId>>::new();
 
-        let symbols = self.symbols.clone();
-        for symbol in &symbols {
-            self.index_existing_symbol(symbol);
-        }
-    }
+        for symbol in &self.symbols {
+            by_kind.entry(symbol.kind).or_default().push(symbol.id);
 
-    fn index_existing_symbol(&mut self, symbol: &IndexedSymbol) {
-        self.by_kind.entry(symbol.kind).or_default().push(symbol.id);
+            if let Some(parent) = symbol.parent {
+                children.entry(parent).or_default().push(symbol.id);
+            }
 
-        if let Some(parent) = symbol.parent {
-            self.children.entry(parent).or_default().push(symbol.id);
-        }
+            let Some(name) = &symbol.name else {
+                continue;
+            };
 
-        let Some(name) = &symbol.name else {
-            return;
-        };
+            by_name.entry(name.clone()).or_default().push(symbol.id);
 
-        self.by_name
-            .entry(name.clone())
-            .or_default()
-            .push(symbol.id);
-
-        if symbol.parent.is_none() {
-            self.top_level_by_name
-                .entry(name.clone())
-                .or_default()
-                .push(symbol.id);
-        }
-
-        match symbol.kind {
-            SymbolKind::Class => {
-                self.classes_by_name
+            if symbol.parent.is_none() {
+                top_level_by_name
                     .entry(name.clone())
                     .or_default()
                     .push(symbol.id);
             }
-            SymbolKind::Typedef => {
-                self.typedefs_by_name
-                    .entry(name.clone())
-                    .or_default()
-                    .push(symbol.id);
+
+            match symbol.kind {
+                SymbolKind::Class => {
+                    classes_by_name
+                        .entry(name.clone())
+                        .or_default()
+                        .push(symbol.id);
+                }
+                SymbolKind::Typedef => {
+                    typedefs_by_name
+                        .entry(name.clone())
+                        .or_default()
+                        .push(symbol.id);
+                }
+                SymbolKind::Function => {
+                    functions_by_name
+                        .entry(name.clone())
+                        .or_default()
+                        .push(symbol.id);
+                }
+                SymbolKind::Method => {
+                    if let Some(owner) = self.parent_class_name(symbol).map(str::to_string) {
+                        methods_by_owner_name
+                            .entry((owner, name.clone()))
+                            .or_default()
+                            .push(symbol.id);
+                    }
+                }
+                _ => {}
             }
-            SymbolKind::Function => {
-                self.functions_by_name
-                    .entry(name.clone())
-                    .or_default()
-                    .push(symbol.id);
-            }
-            SymbolKind::Method => {
+
+            if is_class_member_kind(symbol.kind) {
                 if let Some(owner) = self.parent_class_name(symbol).map(str::to_string) {
-                    self.methods_by_owner_name
-                        .entry((owner, name.clone()))
+                    members_by_owner
+                        .entry(owner.clone())
                         .or_default()
                         .push(symbol.id);
-                }
-            }
-            _ => {}
-        }
 
-        if is_class_member_kind(symbol.kind) {
-            if let Some(owner) = self.parent_class_name(symbol).map(str::to_string) {
-                self.members_by_owner
-                    .entry(owner.clone())
-                    .or_default()
-                    .push(symbol.id);
-
-                if symbol.kind == SymbolKind::Field {
-                    self.fields_by_owner_name
-                        .entry((owner, name.clone()))
-                        .or_default()
-                        .push(symbol.id);
+                    if symbol.kind == SymbolKind::Field {
+                        fields_by_owner_name
+                            .entry((owner, name.clone()))
+                            .or_default()
+                            .push(symbol.id);
+                    }
                 }
             }
         }
+
+        self.by_name = by_name;
+        self.top_level_by_name = top_level_by_name;
+        self.by_kind = by_kind;
+        self.children = children;
+        self.classes_by_name = classes_by_name;
+        self.typedefs_by_name = typedefs_by_name;
+        self.functions_by_name = functions_by_name;
+        self.methods_by_owner_name = methods_by_owner_name;
+        self.fields_by_owner_name = fields_by_owner_name;
+        self.members_by_owner = members_by_owner;
     }
 
     fn parent_class_name<'a>(&'a self, symbol: &'a IndexedSymbol) -> Option<&'a str> {
@@ -1089,6 +1109,10 @@ impl SymbolIndex {
     }
 }
 
+fn map_entry_count<K>(map: &BTreeMap<K, Vec<GlobalSymbolId>>) -> usize {
+    map.values().map(Vec::len).sum()
+}
+
 fn owner_class_name<'source>(
     catalog: &'source SymbolCatalog<'source>,
     symbol: &IndexedSymbol,
@@ -1199,12 +1223,25 @@ fn symbol_kind_key(kind: SymbolKind) -> &'static str {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IndexMapCounts {
     pub names: usize,
+    pub name_entries: usize,
     pub top_level_names: usize,
+    pub top_level_name_entries: usize,
     pub kinds: usize,
+    pub kind_entries: usize,
     pub class_names: usize,
+    pub class_name_entries: usize,
     pub typedef_names: usize,
+    pub typedef_name_entries: usize,
+    pub function_names: usize,
+    pub function_name_entries: usize,
     pub method_owner_names: usize,
+    pub method_owner_name_entries: usize,
+    pub field_owner_names: usize,
+    pub field_owner_name_entries: usize,
+    pub member_owners: usize,
+    pub member_owner_entries: usize,
     pub parent_symbols: usize,
+    pub child_entries: usize,
 }
 
 #[cfg(test)]

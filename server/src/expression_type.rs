@@ -47,30 +47,44 @@ impl ExpressionType {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct ExpressionTypeEnvironment<'source, 'index> {
     source: &'source str,
     file_index: &'index SymbolIndex,
-    external_index: Option<&'index SymbolIndex>,
+    external_indexes: Vec<&'index SymbolIndex>,
     parse: &'index Parse,
     scope: &'index LexicalScopeModel,
 }
 
 impl<'source, 'index> ExpressionTypeEnvironment<'source, 'index> {
-    pub const fn new(
+    pub fn new(
         source: &'source str,
         file_index: &'index SymbolIndex,
         parse: &'index Parse,
         scope: &'index LexicalScopeModel,
         external_index: Option<&'index SymbolIndex>,
     ) -> Self {
+        Self::new_with_external_indexes(source, file_index, parse, scope, external_index)
+    }
+
+    pub fn new_with_external_indexes(
+        source: &'source str,
+        file_index: &'index SymbolIndex,
+        parse: &'index Parse,
+        scope: &'index LexicalScopeModel,
+        external_indexes: impl IntoIterator<Item = &'index SymbolIndex>,
+    ) -> Self {
         Self {
             source,
             file_index,
-            external_index,
+            external_indexes: external_indexes.into_iter().collect(),
             parse,
             scope,
         }
+    }
+
+    fn external_indexes(&self) -> impl Iterator<Item = &'index SymbolIndex> + '_ {
+        self.external_indexes.iter().copied()
     }
 
     pub fn infer_expression_type(
@@ -277,8 +291,8 @@ impl<'source, 'index> ExpressionTypeEnvironment<'source, 'index> {
         }
         self.static_type_name_from_index(self.file_index, &name)
             .or_else(|| {
-                self.external_index
-                    .and_then(|index| self.static_type_name_from_index(index, &name))
+                self.external_indexes()
+                    .find_map(|index| self.static_type_name_from_index(index, &name))
             })
     }
 
@@ -368,8 +382,8 @@ impl<'source, 'index> ExpressionTypeEnvironment<'source, 'index> {
             .static_type_name_from_index(self.file_index, &owner)
             .is_some()
             || self
-                .external_index
-                .is_some_and(|index| self.static_type_name_from_index(index, &owner).is_some())
+                .external_indexes()
+                .any(|index| self.static_type_name_from_index(index, &owner).is_some())
         {
             return Some(ExpressionType::static_type_with_raw(
                 owner,
@@ -421,7 +435,7 @@ impl<'source, 'index> ExpressionTypeEnvironment<'source, 'index> {
                     ));
                     return Some(result);
                 }
-                if let Some(external_index) = self.external_index {
+                for external_index in self.external_indexes() {
                     if let Some(result) =
                         self.member_type_from_owner_for_name(external_index, class_name, name)
                     {
@@ -456,29 +470,29 @@ impl<'source, 'index> ExpressionTypeEnvironment<'source, 'index> {
             }
         }
 
-        let Some(external_index) = self.external_index else {
-            return None;
-        };
-        let mut external = Vec::new();
-        for id in external_index.preferred_classes_by_name(name) {
-            push_unique_id(&mut external, id);
-        }
-        for id in external_index.preferred_typedefs_by_name(name) {
-            push_unique_id(&mut external, id);
-        }
-        for id in external_index.preferred_functions_by_name(name) {
-            push_unique_id(&mut external, id);
-        }
-        for id in external_index.preferred_top_level_symbols_for_name(name) {
-            push_unique_id(&mut external, id);
-        }
-        for id in external {
-            let Some(symbol) = external_index.symbol(id) else {
-                continue;
-            };
-            if let Some(result) = expression_type_from_top_level_symbol(external_index, symbol) {
-                lookup_path.push(format!("`{name}` inferred from external top-level"));
-                return Some(result);
+        for external_index in self.external_indexes() {
+            let mut external = Vec::new();
+            for id in external_index.preferred_classes_by_name(name) {
+                push_unique_id(&mut external, id);
+            }
+            for id in external_index.preferred_typedefs_by_name(name) {
+                push_unique_id(&mut external, id);
+            }
+            for id in external_index.preferred_functions_by_name(name) {
+                push_unique_id(&mut external, id);
+            }
+            for id in external_index.preferred_top_level_symbols_for_name(name) {
+                push_unique_id(&mut external, id);
+            }
+            for id in external {
+                let Some(symbol) = external_index.symbol(id) else {
+                    continue;
+                };
+                if let Some(result) = expression_type_from_top_level_symbol(external_index, symbol)
+                {
+                    lookup_path.push(format!("`{name}` inferred from external top-level"));
+                    return Some(result);
+                }
             }
         }
 
@@ -538,7 +552,7 @@ impl<'source, 'index> ExpressionTypeEnvironment<'source, 'index> {
             }
         }
 
-        if let Some(external_index) = self.external_index {
+        for external_index in self.external_indexes() {
             for id in external_index.preferred_functions_by_name(name) {
                 let Some(symbol) = external_index.symbol(id) else {
                     continue;
@@ -556,7 +570,7 @@ impl<'source, 'index> ExpressionTypeEnvironment<'source, 'index> {
             ));
             return Some(result);
         }
-        if let Some(external_index) = self.external_index {
+        for external_index in self.external_indexes() {
             if let Some(result) = constructor_call_result_type_from_index(external_index, name) {
                 lookup_path.push(format!(
                     "call `{name}` matched external constructor-style type call"
@@ -581,7 +595,7 @@ impl<'source, 'index> ExpressionTypeEnvironment<'source, 'index> {
             lookup_path.push(format!("member `{owner}.{member}` matched file-local"));
             return Some(result);
         }
-        if let Some(external_index) = self.external_index {
+        for external_index in self.external_indexes() {
             if let Some(result) =
                 member_result_type_from_index(external_index, owner, member, static_only)
             {
@@ -611,7 +625,7 @@ impl<'source, 'index> ExpressionTypeEnvironment<'source, 'index> {
             ));
             return Some(result);
         }
-        if let Some(external_index) = self.external_index {
+        for external_index in self.external_indexes() {
             if let Some(result) = member_result_type_for_receiver_from_index(
                 external_index,
                 receiver,

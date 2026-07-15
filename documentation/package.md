@@ -14,7 +14,7 @@ The manifest contributes the `enforce` language id for Reforger/Enfusion Script.
 
 The manifest contributes the `Reforger Enforce Dark` theme and the lightweight language configuration. It does not contribute a TextMate grammar. Enforce token coloring is owned by Rust LSP semantic tokens plus the theme's `semanticTokenColors`.
 
-The manifest sets language-specific defaults for `enforce`: `editor.bracketPairColorization.enabled = false`, comment/string quick suggestions disabled, normal-code quick suggestions enabled, and word-based suggestions disabled. The bracket settings prevent VS Code's built-in bracket-pair/matching overlays from coloring brackets inside comments, since Enforce deliberately has no TextMate grammar scopes and Rust semantic tokens are the single authoritative coloring path. The suggestion settings keep autocomplete owned by the Rust language server instead of mixing in plain VS Code word suggestions, especially in comments.
+The manifest sets language-specific defaults for `enforce`: `editor.bracketPairColorization.enabled = false`, comment/string quick suggestions disabled, normal-code quick suggestions enabled, and word-based suggestions disabled. The bracket settings prevent VS Code's built-in bracket-pair/matching overlays from coloring brackets inside comments, since Enforce deliberately has no TextMate grammar scopes and Rust semantic tokens are the single authoritative coloring path. Lightweight auto-closing pairs still come from `language-configuration.json`, including duplicate-closer prevention through `autoCloseBefore`. The suggestion settings keep autocomplete owned by the Rust language server instead of mixing in plain VS Code word suggestions, especially in comments.
 
 The manifest also contributes game-data commands, the manual game-data folder setting, and the developer-facing hover debug command. `Reforger Script Tools: Debug Hover At Cursor` is bound to `Ctrl+F1` only when an Enforce editor has focus. It asks the running Rust language server for a targeted cursor-position hover report.
 
@@ -28,6 +28,7 @@ Do not add global `.c` language association for Enforce. Do not add user-facing 
 - Added the hover debug command and `Ctrl+F1` keybinding scoped to Enforce editors.
 - Removed the TextMate grammar contribution so Enforce coloring has one path: Rust semantic tokens.
 - Disabled VS Code bracket-pair colorization by default for Enforce documents and stopped contributing editor bracket pairs so brackets inside comments remain comment-colored by semantic tokens.
+- Kept lightweight bracket/paren/quote auto-closing in the language configuration and narrowed duplicate-close behavior there instead of adding a separate formatter path.
 - Disabled comment/string quick suggestions and word-based suggestions by default for Enforce so autocomplete does not start in comments or display word-icon fallback items when the LSP has no candidate.
 
 ## Future Improvements

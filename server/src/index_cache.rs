@@ -1,15 +1,27 @@
-use crate::index::{IndexedFile, IndexedSymbol, SymbolIndex};
+use crate::ast::DocCommentKind;
+use crate::index::{
+    GlobalSymbolId, IndexedAttribute, IndexedConditionalBranch, IndexedDocComment, IndexedFile,
+    IndexedSymbol, IndexedSymbolDetail, SourceFileId, SymbolIndex,
+};
 use crate::index_build::{build_index, IndexBuildConfig, IndexBuildResult, IndexSourceRoot};
-use crate::model::{SourceKind, SOURCE_PRIORITY_GAME_DATA};
+use crate::lexer::TextSpan;
+use crate::model::{
+    CallableForm, PreprocessorBranchKind, SourceCategory, SourceFileMetadata, SourceKind, SymbolId,
+    SymbolKind, SOURCE_PRIORITY_GAME_DATA,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::fs;
-use std::io::{BufReader, BufWriter};
+use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
-const CACHE_FORMAT_VERSION: u32 = 6;
+const CACHE_FORMAT_VERSION: u32 = 9;
 const CACHE_SCHEMA: &str = "reforger-symbol-index";
+const CACHE_MAGIC: &[u8; 8] = b"RSTIDX09";
+const CACHE_INDEX_SHAPE: &str =
+    "runtime-pruned:no-local-variables:detail-spans-stripped:layered-external-v1:binary-v2:string-table-v1";
 
 #[derive(Debug)]
 pub struct GameDataIndexCacheConfig {
@@ -31,6 +43,10 @@ pub struct GameDataIndexCacheResult {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct IndexCacheTimings {
     pub fingerprint: Duration,
+    pub cache_file_read: Duration,
+    pub cache_decode: Duration,
+    pub cache_validate: Duration,
+    pub map_rebuild: Duration,
     pub cache_read_deserialize_validate: Duration,
     pub rebuild: Duration,
     pub cache_write: Duration,
@@ -83,17 +99,18 @@ pub enum SourceFingerprint {
     },
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug)]
 struct CachedGameDataIndex {
     schema: String,
     format_version: u32,
+    index_shape: String,
     crate_version: String,
     fingerprint: SourceFingerprint,
     summary: CachedIndexSummary,
     index: CachedSymbolIndex,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug)]
 struct CachedSymbolIndex {
     files: Vec<IndexedFile>,
     symbols: Vec<IndexedSymbol>,
@@ -114,7 +131,7 @@ impl From<CachedSymbolIndex> for SymbolIndex {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 struct CachedIndexSummary {
     files: usize,
     bytes: usize,
@@ -165,12 +182,15 @@ pub fn load_or_build_game_data_index(
     let initial_cache_file_bytes = cache_file_bytes(&config.cache_path);
 
     let cache_read_start = Instant::now();
-    match load_cached_index(&config.cache_path, &fingerprint) {
+    match load_cached_index(&config.cache_path, &fingerprint, &mut timings) {
         Ok(Some(cached)) => {
             timings.cache_read_deserialize_validate = cache_read_start.elapsed();
+            let map_rebuild_start = Instant::now();
+            let index = cached.index.into();
+            timings.map_rebuild = map_rebuild_start.elapsed();
             timings.total = total_start.elapsed();
             return Ok(GameDataIndexCacheResult {
-                index: cached.index.into(),
+                index,
                 summary: cached.summary.into(),
                 cache_status: IndexCacheStatus::Loaded,
                 fingerprint,
@@ -221,32 +241,47 @@ fn cache_file_bytes(cache_path: &Path) -> Option<u64> {
 fn load_cached_index(
     cache_path: &Path,
     expected_fingerprint: &SourceFingerprint,
+    timings: &mut IndexCacheTimings,
 ) -> Result<Option<CachedGameDataIndex>, String> {
     if !cache_path.is_file() {
         return Ok(None);
     }
 
-    let file = fs::File::open(cache_path).map_err(|error| {
+    let read_start = Instant::now();
+    let mut file = fs::File::open(cache_path).map_err(|error| {
         format!(
             "Failed to open index cache {}: {error}",
             cache_path.display()
         )
     })?;
-    let reader = BufReader::new(file);
-    let cached = serde_json::from_reader::<_, CachedGameDataIndex>(reader).map_err(|error| {
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).map_err(|error| {
         format!(
-            "Failed to deserialize index cache {}: {error}",
+            "Failed to read index cache {}: {error}",
             cache_path.display()
         )
     })?;
+    timings.cache_file_read = read_start.elapsed();
+    let decode_start = Instant::now();
+    let cached = decode_cached_index(&bytes).map_err(|error| {
+        format!(
+            "Failed to decode index cache {}: {error}",
+            cache_path.display()
+        )
+    })?;
+    timings.cache_decode = decode_start.elapsed();
 
+    let validate_start = Instant::now();
     if cached.schema != CACHE_SCHEMA
         || cached.format_version != CACHE_FORMAT_VERSION
+        || cached.index_shape != CACHE_INDEX_SHAPE
         || cached.crate_version != env!("CARGO_PKG_VERSION")
         || cached.fingerprint != *expected_fingerprint
     {
+        timings.cache_validate = validate_start.elapsed();
         return Ok(None);
     }
+    timings.cache_validate = validate_start.elapsed();
 
     Ok(Some(cached))
 }
@@ -266,25 +301,33 @@ fn write_cached_index(
         })?;
     }
 
-    let temp_path = cache_path.with_extension("tmp");
+    let temp_path = unique_cache_temp_path(cache_path);
     let file = fs::File::create(&temp_path).map_err(|error| {
         format!(
             "Failed to create temporary index cache {}: {error}",
             temp_path.display()
         )
     })?;
-    let writer = BufWriter::new(file);
     let cached = CachedGameDataIndex {
         schema: CACHE_SCHEMA.to_string(),
         format_version: CACHE_FORMAT_VERSION,
+        index_shape: CACHE_INDEX_SHAPE.to_string(),
         crate_version: env!("CARGO_PKG_VERSION").to_string(),
         fingerprint: fingerprint.clone(),
         summary: CachedIndexSummary::from(summary),
         index: CachedSymbolIndex::from(index),
     };
-    serde_json::to_writer(writer, &cached).map_err(|error| {
+    let bytes = encode_cached_index(&cached)?;
+    let mut writer = BufWriter::new(file);
+    writer.write_all(&bytes).map_err(|error| {
         format!(
-            "Failed to serialize index cache {}: {error}",
+            "Failed to write index cache {}: {error}",
+            temp_path.display()
+        )
+    })?;
+    writer.flush().map_err(|error| {
+        format!(
+            "Failed to flush index cache {}: {error}",
             temp_path.display()
         )
     })?;
@@ -303,6 +346,858 @@ fn write_cached_index(
             temp_path.display()
         )
     })
+}
+
+fn unique_cache_temp_path(cache_path: &Path) -> PathBuf {
+    let nonce = UNIX_EPOCH
+        .elapsed()
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let file_name = cache_path
+        .file_name()
+        .map(|name| name.to_string_lossy())
+        .unwrap_or_else(|| "game-data-symbol-index".into());
+    cache_path.with_file_name(format!("{file_name}.{}.{}.tmp", std::process::id(), nonce))
+}
+
+fn encode_cached_index(cached: &CachedGameDataIndex) -> Result<Vec<u8>, String> {
+    let string_table = CacheStringTable::from_cached_index(cached)?;
+    let mut writer = BinaryWriter::new(string_table);
+    writer.write_bytes(CACHE_MAGIC);
+    writer.write_string_table()?;
+    writer.write_string(&cached.schema)?;
+    writer.write_u32(cached.format_version);
+    writer.write_string(&cached.index_shape)?;
+    writer.write_string(&cached.crate_version)?;
+    writer.write_fingerprint(&cached.fingerprint)?;
+    writer.write_summary(&cached.summary);
+    writer.write_vec_len(cached.index.files.len())?;
+    for file in &cached.index.files {
+        writer.write_indexed_file(file)?;
+    }
+    writer.write_vec_len(cached.index.symbols.len())?;
+    for symbol in &cached.index.symbols {
+        writer.write_indexed_symbol(symbol)?;
+    }
+    Ok(writer.into_bytes())
+}
+
+fn decode_cached_index(bytes: &[u8]) -> Result<CachedGameDataIndex, String> {
+    let mut reader = BinaryReader::new(bytes);
+    let magic = reader.read_exact(CACHE_MAGIC.len())?;
+    if magic != &CACHE_MAGIC[..] {
+        return Err("binary cache magic mismatch".to_string());
+    }
+    reader.read_string_table()?;
+    let schema = reader.read_string()?;
+    let format_version = reader.read_u32()?;
+    let index_shape = reader.read_string()?;
+    let crate_version = reader.read_string()?;
+    let fingerprint = reader.read_fingerprint()?;
+    let summary = reader.read_summary()?;
+    let file_count = reader.read_len()?;
+    let mut files = Vec::with_capacity(file_count);
+    for _ in 0..file_count {
+        files.push(reader.read_indexed_file()?);
+    }
+    let symbol_count = reader.read_len()?;
+    let mut symbols = Vec::with_capacity(symbol_count);
+    for _ in 0..symbol_count {
+        symbols.push(reader.read_indexed_symbol()?);
+    }
+    reader.expect_eof()?;
+    Ok(CachedGameDataIndex {
+        schema,
+        format_version,
+        index_shape,
+        crate_version,
+        fingerprint,
+        summary,
+        index: CachedSymbolIndex { files, symbols },
+    })
+}
+
+struct CacheStringTable {
+    ids: BTreeMap<String, u32>,
+    values: Vec<String>,
+}
+
+impl CacheStringTable {
+    fn from_cached_index(cached: &CachedGameDataIndex) -> Result<Self, String> {
+        let mut table = Self {
+            ids: BTreeMap::new(),
+            values: Vec::new(),
+        };
+        table.insert(&cached.schema)?;
+        table.insert(&cached.index_shape)?;
+        table.insert(&cached.crate_version)?;
+        table.insert_fingerprint(&cached.fingerprint)?;
+        for file in &cached.index.files {
+            table.insert_metadata(&file.metadata)?;
+        }
+        for symbol in &cached.index.symbols {
+            table.insert_symbol(symbol)?;
+        }
+        Ok(table)
+    }
+
+    fn insert(&mut self, value: &str) -> Result<(), String> {
+        if self.ids.contains_key(value) {
+            return Ok(());
+        }
+        let id = u32::try_from(self.values.len())
+            .map_err(|_| "cache string table exceeds u32 entries".to_string())?;
+        self.values.push(value.to_string());
+        self.ids.insert(value.to_string(), id);
+        Ok(())
+    }
+
+    fn insert_option(&mut self, value: Option<&str>) -> Result<(), String> {
+        if let Some(value) = value {
+            self.insert(value)?;
+        }
+        Ok(())
+    }
+
+    fn insert_path(&mut self, value: &Path) -> Result<(), String> {
+        self.insert(&value.to_string_lossy())
+    }
+
+    fn insert_option_path(&mut self, value: Option<&Path>) -> Result<(), String> {
+        if let Some(value) = value {
+            self.insert_path(value)?;
+        }
+        Ok(())
+    }
+
+    fn insert_fingerprint(&mut self, fingerprint: &SourceFingerprint) -> Result<(), String> {
+        match fingerprint {
+            SourceFingerprint::Downloaded {
+                scripts_root,
+                commit_sha,
+            } => {
+                self.insert(scripts_root)?;
+                self.insert(commit_sha)?;
+            }
+            SourceFingerprint::Manual { scripts_root, .. } => {
+                self.insert(scripts_root)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn insert_metadata(&mut self, metadata: &SourceFileMetadata) -> Result<(), String> {
+        self.insert_option_path(metadata.absolute_path.as_deref())?;
+        self.insert_option_path(metadata.root_path.as_deref())?;
+        self.insert_option_path(metadata.relative_path.as_deref())
+    }
+
+    fn insert_symbol(&mut self, symbol: &IndexedSymbol) -> Result<(), String> {
+        self.insert_option(symbol.name.as_deref())?;
+        self.insert_detail(&symbol.detail)?;
+        for attribute in &symbol.attributes {
+            self.insert_option(attribute.name.as_deref())?;
+            self.insert(&attribute.text)?;
+        }
+        for modifier in &symbol.modifiers {
+            self.insert(modifier)?;
+        }
+        for doc_comment in &symbol.doc_comments {
+            self.insert(&doc_comment.text)?;
+        }
+        for branch in &symbol.conditional_context {
+            self.insert_option(branch.condition.as_deref())?;
+        }
+        Ok(())
+    }
+
+    fn insert_detail(&mut self, detail: &IndexedSymbolDetail) -> Result<(), String> {
+        self.insert_option(detail.type_text.as_deref())?;
+        self.insert_option(detail.return_type_text.as_deref())?;
+        self.insert_option(detail.base_type.as_deref())?;
+        self.insert_option(detail.default_text.as_deref())?;
+        self.insert_option(detail.enum_value_text.as_deref())
+    }
+
+    fn id(&self, value: &str) -> Result<u32, String> {
+        self.ids
+            .get(value)
+            .copied()
+            .ok_or_else(|| format!("cache string was not interned before write: {value:?}"))
+    }
+}
+
+struct BinaryWriter {
+    bytes: Vec<u8>,
+    string_table: CacheStringTable,
+}
+
+impl BinaryWriter {
+    fn new(string_table: CacheStringTable) -> Self {
+        Self {
+            bytes: Vec::new(),
+            string_table,
+        }
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        self.bytes
+    }
+
+    fn write_bytes(&mut self, bytes: &[u8]) {
+        self.bytes.extend_from_slice(bytes);
+    }
+
+    fn write_u8(&mut self, value: u8) {
+        self.bytes.push(value);
+    }
+
+    fn write_u16(&mut self, value: u16) {
+        self.bytes.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn write_u32(&mut self, value: u32) {
+        self.bytes.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn write_u64(&mut self, value: u64) {
+        self.bytes.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn write_u128(&mut self, value: u128) {
+        self.bytes.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn write_usize(&mut self, value: usize) -> Result<(), String> {
+        let value = u64::try_from(value).map_err(|_| "usize value exceeds u64".to_string())?;
+        self.write_u64(value);
+        Ok(())
+    }
+
+    fn write_vec_len(&mut self, len: usize) -> Result<(), String> {
+        self.write_usize(len)
+    }
+
+    fn write_raw_string(&mut self, value: &str) -> Result<(), String> {
+        self.write_vec_len(value.len())?;
+        self.write_bytes(value.as_bytes());
+        Ok(())
+    }
+
+    fn write_string_table(&mut self) -> Result<(), String> {
+        let values = self.string_table.values.clone();
+        self.write_vec_len(values.len())?;
+        for value in &values {
+            self.write_raw_string(value)?;
+        }
+        Ok(())
+    }
+
+    fn write_string(&mut self, value: &str) -> Result<(), String> {
+        let id = self.string_table.id(value)?;
+        self.write_u32(id);
+        Ok(())
+    }
+
+    fn write_path(&mut self, value: &Path) -> Result<(), String> {
+        self.write_string(&value.to_string_lossy())
+    }
+
+    fn write_option_string(&mut self, value: Option<&str>) -> Result<(), String> {
+        match value {
+            Some(value) => {
+                self.write_u8(1);
+                self.write_string(value)?;
+            }
+            None => self.write_u8(0),
+        }
+        Ok(())
+    }
+
+    fn write_option_path(&mut self, value: Option<&Path>) -> Result<(), String> {
+        match value {
+            Some(value) => {
+                self.write_u8(1);
+                self.write_path(value)?;
+            }
+            None => self.write_u8(0),
+        }
+        Ok(())
+    }
+
+    fn write_option_span(&mut self, value: Option<TextSpan>) -> Result<(), String> {
+        match value {
+            Some(value) => {
+                self.write_u8(1);
+                self.write_span(value)?;
+            }
+            None => self.write_u8(0),
+        }
+        Ok(())
+    }
+
+    fn write_span(&mut self, span: TextSpan) -> Result<(), String> {
+        self.write_usize(span.start)?;
+        self.write_usize(span.end)
+    }
+
+    fn write_global_id(&mut self, id: GlobalSymbolId) -> Result<(), String> {
+        self.write_usize(id.file_id.0)?;
+        self.write_usize(id.symbol_id.0)
+    }
+
+    fn write_option_global_id(&mut self, id: Option<GlobalSymbolId>) -> Result<(), String> {
+        match id {
+            Some(id) => {
+                self.write_u8(1);
+                self.write_global_id(id)?;
+            }
+            None => self.write_u8(0),
+        }
+        Ok(())
+    }
+
+    fn write_fingerprint(&mut self, fingerprint: &SourceFingerprint) -> Result<(), String> {
+        match fingerprint {
+            SourceFingerprint::Downloaded {
+                scripts_root,
+                commit_sha,
+            } => {
+                self.write_u8(0);
+                self.write_string(scripts_root)?;
+                self.write_string(commit_sha)?;
+            }
+            SourceFingerprint::Manual {
+                scripts_root,
+                file_count,
+                byte_count,
+                latest_modified_unix_ms,
+            } => {
+                self.write_u8(1);
+                self.write_string(scripts_root)?;
+                self.write_usize(*file_count)?;
+                self.write_u64(*byte_count);
+                self.write_u128(*latest_modified_unix_ms);
+            }
+        }
+        Ok(())
+    }
+
+    fn write_summary(&mut self, summary: &CachedIndexSummary) {
+        self.write_u64(summary.files as u64);
+        self.write_u64(summary.bytes as u64);
+        self.write_u64(summary.indexed_symbols as u64);
+        self.write_u64(summary.parse_diagnostics as u64);
+        self.write_u64(summary.lossy_files as u64);
+    }
+
+    fn write_metadata(&mut self, metadata: &SourceFileMetadata) -> Result<(), String> {
+        self.write_u8(source_kind_tag(metadata.kind));
+        self.write_u8(source_category_tag(metadata.category));
+        self.write_option_path(metadata.absolute_path.as_deref())?;
+        self.write_option_path(metadata.root_path.as_deref())?;
+        self.write_option_path(metadata.relative_path.as_deref())?;
+        self.write_u16(metadata.priority);
+        Ok(())
+    }
+
+    fn write_indexed_file(&mut self, file: &IndexedFile) -> Result<(), String> {
+        self.write_usize(file.id.0)?;
+        self.write_metadata(&file.metadata)?;
+        self.write_usize(file.symbol_start)?;
+        self.write_usize(file.symbol_count)?;
+        self.write_usize(file.non_declaration_callable_fragments)
+    }
+
+    fn write_detail(&mut self, detail: &IndexedSymbolDetail) -> Result<(), String> {
+        self.write_option_string(detail.type_text.as_deref())?;
+        self.write_option_span(detail.type_text_span)?;
+        self.write_option_string(detail.return_type_text.as_deref())?;
+        self.write_option_span(detail.return_type_text_span)?;
+        self.write_option_string(detail.base_type.as_deref())?;
+        self.write_option_span(detail.base_type_span)?;
+        self.write_option_string(detail.default_text.as_deref())?;
+        self.write_option_span(detail.default_text_span)?;
+        self.write_option_string(detail.enum_value_text.as_deref())?;
+        self.write_option_span(detail.enum_value_text_span)
+    }
+
+    fn write_indexed_symbol(&mut self, symbol: &IndexedSymbol) -> Result<(), String> {
+        self.write_global_id(symbol.id)?;
+        self.write_option_global_id(symbol.parent)?;
+        self.write_u8(symbol_kind_tag(symbol.kind));
+        self.write_option_string(symbol.name.as_deref())?;
+        self.write_span(symbol.span)?;
+        self.write_span(symbol.selection_span)?;
+        self.write_detail(&symbol.detail)?;
+        self.write_vec_len(symbol.attributes.len())?;
+        for attribute in &symbol.attributes {
+            self.write_attribute(attribute)?;
+        }
+        self.write_vec_len(symbol.modifiers.len())?;
+        for modifier in &symbol.modifiers {
+            self.write_string(modifier)?;
+        }
+        self.write_vec_len(symbol.doc_comments.len())?;
+        for doc_comment in &symbol.doc_comments {
+            self.write_doc_comment(doc_comment)?;
+        }
+        self.write_vec_len(symbol.conditional_context.len())?;
+        for branch in &symbol.conditional_context {
+            self.write_conditional_branch(branch)?;
+        }
+        match symbol.callable_form {
+            Some(form) => {
+                self.write_u8(1);
+                self.write_u8(callable_form_tag(form));
+            }
+            None => self.write_u8(0),
+        }
+        Ok(())
+    }
+
+    fn write_attribute(&mut self, attribute: &IndexedAttribute) -> Result<(), String> {
+        self.write_option_string(attribute.name.as_deref())?;
+        self.write_string(&attribute.text)
+    }
+
+    fn write_doc_comment(&mut self, comment: &IndexedDocComment) -> Result<(), String> {
+        self.write_u8(doc_comment_kind_tag(comment.kind));
+        self.write_string(&comment.text)
+    }
+
+    fn write_conditional_branch(
+        &mut self,
+        branch: &IndexedConditionalBranch,
+    ) -> Result<(), String> {
+        self.write_u8(preprocessor_branch_kind_tag(branch.kind));
+        self.write_option_string(branch.condition.as_deref())
+    }
+}
+
+struct BinaryReader<'a> {
+    bytes: &'a [u8],
+    offset: usize,
+    string_table: Vec<String>,
+}
+
+impl<'a> BinaryReader<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        Self {
+            bytes,
+            offset: 0,
+            string_table: Vec::new(),
+        }
+    }
+
+    fn read_exact(&mut self, len: usize) -> Result<&'a [u8], String> {
+        let end = self
+            .offset
+            .checked_add(len)
+            .ok_or_else(|| "cache offset overflow".to_string())?;
+        if end > self.bytes.len() {
+            return Err("unexpected end of cache file".to_string());
+        }
+        let bytes = &self.bytes[self.offset..end];
+        self.offset = end;
+        Ok(bytes)
+    }
+
+    fn read_u8(&mut self) -> Result<u8, String> {
+        Ok(self.read_exact(1)?[0])
+    }
+
+    fn read_u16(&mut self) -> Result<u16, String> {
+        let bytes: [u8; 2] = self
+            .read_exact(2)?
+            .try_into()
+            .map_err(|_| "invalid u16 bytes".to_string())?;
+        Ok(u16::from_le_bytes(bytes))
+    }
+
+    fn read_u32(&mut self) -> Result<u32, String> {
+        let bytes: [u8; 4] = self
+            .read_exact(4)?
+            .try_into()
+            .map_err(|_| "invalid u32 bytes".to_string())?;
+        Ok(u32::from_le_bytes(bytes))
+    }
+
+    fn read_u64(&mut self) -> Result<u64, String> {
+        let bytes: [u8; 8] = self
+            .read_exact(8)?
+            .try_into()
+            .map_err(|_| "invalid u64 bytes".to_string())?;
+        Ok(u64::from_le_bytes(bytes))
+    }
+
+    fn read_u128(&mut self) -> Result<u128, String> {
+        let bytes: [u8; 16] = self
+            .read_exact(16)?
+            .try_into()
+            .map_err(|_| "invalid u128 bytes".to_string())?;
+        Ok(u128::from_le_bytes(bytes))
+    }
+
+    fn read_usize(&mut self) -> Result<usize, String> {
+        usize::try_from(self.read_u64()?).map_err(|_| "u64 value exceeds usize".to_string())
+    }
+
+    fn read_len(&mut self) -> Result<usize, String> {
+        self.read_usize()
+    }
+
+    fn read_raw_string(&mut self) -> Result<String, String> {
+        let len = self.read_len()?;
+        let bytes = self.read_exact(len)?;
+        String::from_utf8(bytes.to_vec()).map_err(|error| format!("invalid utf-8 string: {error}"))
+    }
+
+    fn read_string_table(&mut self) -> Result<(), String> {
+        let len = self.read_len()?;
+        let mut values = Vec::with_capacity(len);
+        for _ in 0..len {
+            values.push(self.read_raw_string()?);
+        }
+        self.string_table = values;
+        Ok(())
+    }
+
+    fn read_string(&mut self) -> Result<String, String> {
+        let id = usize::try_from(self.read_u32()?)
+            .map_err(|_| "string table id exceeds usize".to_string())?;
+        self.string_table
+            .get(id)
+            .cloned()
+            .ok_or_else(|| format!("invalid string table id {id}"))
+    }
+
+    fn read_option_string(&mut self) -> Result<Option<String>, String> {
+        match self.read_u8()? {
+            0 => Ok(None),
+            1 => self.read_string().map(Some),
+            tag => Err(format!("invalid option string tag {tag}")),
+        }
+    }
+
+    fn read_option_path(&mut self) -> Result<Option<PathBuf>, String> {
+        Ok(self.read_option_string()?.map(PathBuf::from))
+    }
+
+    fn read_span(&mut self) -> Result<TextSpan, String> {
+        let start = self.read_usize()?;
+        let end = self.read_usize()?;
+        Ok(TextSpan { start, end })
+    }
+
+    fn read_option_span(&mut self) -> Result<Option<TextSpan>, String> {
+        match self.read_u8()? {
+            0 => Ok(None),
+            1 => self.read_span().map(Some),
+            tag => Err(format!("invalid option span tag {tag}")),
+        }
+    }
+
+    fn read_global_id(&mut self) -> Result<GlobalSymbolId, String> {
+        Ok(GlobalSymbolId {
+            file_id: SourceFileId(self.read_usize()?),
+            symbol_id: SymbolId(self.read_usize()?),
+        })
+    }
+
+    fn read_option_global_id(&mut self) -> Result<Option<GlobalSymbolId>, String> {
+        match self.read_u8()? {
+            0 => Ok(None),
+            1 => self.read_global_id().map(Some),
+            tag => Err(format!("invalid option global id tag {tag}")),
+        }
+    }
+
+    fn read_fingerprint(&mut self) -> Result<SourceFingerprint, String> {
+        match self.read_u8()? {
+            0 => Ok(SourceFingerprint::Downloaded {
+                scripts_root: self.read_string()?,
+                commit_sha: self.read_string()?,
+            }),
+            1 => Ok(SourceFingerprint::Manual {
+                scripts_root: self.read_string()?,
+                file_count: self.read_usize()?,
+                byte_count: self.read_u64()?,
+                latest_modified_unix_ms: self.read_u128()?,
+            }),
+            tag => Err(format!("invalid fingerprint tag {tag}")),
+        }
+    }
+
+    fn read_summary(&mut self) -> Result<CachedIndexSummary, String> {
+        Ok(CachedIndexSummary {
+            files: usize::try_from(self.read_u64()?)
+                .map_err(|_| "summary files exceeds usize".to_string())?,
+            bytes: usize::try_from(self.read_u64()?)
+                .map_err(|_| "summary bytes exceeds usize".to_string())?,
+            indexed_symbols: usize::try_from(self.read_u64()?)
+                .map_err(|_| "summary symbols exceeds usize".to_string())?,
+            parse_diagnostics: usize::try_from(self.read_u64()?)
+                .map_err(|_| "summary diagnostics exceeds usize".to_string())?,
+            lossy_files: usize::try_from(self.read_u64()?)
+                .map_err(|_| "summary lossy files exceeds usize".to_string())?,
+        })
+    }
+
+    fn read_metadata(&mut self) -> Result<SourceFileMetadata, String> {
+        Ok(SourceFileMetadata {
+            kind: source_kind_from_tag(self.read_u8()?)?,
+            category: source_category_from_tag(self.read_u8()?)?,
+            absolute_path: self.read_option_path()?,
+            root_path: self.read_option_path()?,
+            relative_path: self.read_option_path()?,
+            priority: self.read_u16()?,
+        })
+    }
+
+    fn read_indexed_file(&mut self) -> Result<IndexedFile, String> {
+        Ok(IndexedFile {
+            id: SourceFileId(self.read_usize()?),
+            metadata: self.read_metadata()?,
+            symbol_start: self.read_usize()?,
+            symbol_count: self.read_usize()?,
+            non_declaration_callable_fragments: self.read_usize()?,
+        })
+    }
+
+    fn read_detail(&mut self) -> Result<IndexedSymbolDetail, String> {
+        Ok(IndexedSymbolDetail {
+            type_text: self.read_option_string()?,
+            type_text_span: self.read_option_span()?,
+            return_type_text: self.read_option_string()?,
+            return_type_text_span: self.read_option_span()?,
+            base_type: self.read_option_string()?,
+            base_type_span: self.read_option_span()?,
+            default_text: self.read_option_string()?,
+            default_text_span: self.read_option_span()?,
+            enum_value_text: self.read_option_string()?,
+            enum_value_text_span: self.read_option_span()?,
+        })
+    }
+
+    fn read_indexed_symbol(&mut self) -> Result<IndexedSymbol, String> {
+        let id = self.read_global_id()?;
+        let parent = self.read_option_global_id()?;
+        let kind = symbol_kind_from_tag(self.read_u8()?)?;
+        let name = self.read_option_string()?;
+        let span = self.read_span()?;
+        let selection_span = self.read_span()?;
+        let detail = self.read_detail()?;
+        let attributes = self.read_list(Self::read_attribute)?;
+        let modifiers = self.read_list(Self::read_string)?;
+        let doc_comments = self.read_list(Self::read_doc_comment)?;
+        let conditional_context = self.read_list(Self::read_conditional_branch)?;
+        let callable_form = match self.read_u8()? {
+            0 => None,
+            1 => Some(callable_form_from_tag(self.read_u8()?)?),
+            tag => return Err(format!("invalid callable form option tag {tag}")),
+        };
+        Ok(IndexedSymbol {
+            id,
+            parent,
+            kind,
+            name,
+            span,
+            selection_span,
+            detail,
+            attributes,
+            modifiers,
+            doc_comments,
+            conditional_context,
+            callable_form,
+        })
+    }
+
+    fn read_list<T>(
+        &mut self,
+        mut read_item: impl FnMut(&mut Self) -> Result<T, String>,
+    ) -> Result<Vec<T>, String> {
+        let len = self.read_len()?;
+        let mut items = Vec::with_capacity(len);
+        for _ in 0..len {
+            items.push(read_item(self)?);
+        }
+        Ok(items)
+    }
+
+    fn read_attribute(&mut self) -> Result<IndexedAttribute, String> {
+        Ok(IndexedAttribute {
+            name: self.read_option_string()?,
+            text: self.read_string()?,
+        })
+    }
+
+    fn read_doc_comment(&mut self) -> Result<IndexedDocComment, String> {
+        Ok(IndexedDocComment {
+            kind: doc_comment_kind_from_tag(self.read_u8()?)?,
+            text: self.read_string()?,
+        })
+    }
+
+    fn read_conditional_branch(&mut self) -> Result<IndexedConditionalBranch, String> {
+        Ok(IndexedConditionalBranch {
+            kind: preprocessor_branch_kind_from_tag(self.read_u8()?)?,
+            condition: self.read_option_string()?,
+        })
+    }
+
+    fn expect_eof(&self) -> Result<(), String> {
+        if self.offset == self.bytes.len() {
+            Ok(())
+        } else {
+            Err(format!(
+                "cache has {} trailing bytes",
+                self.bytes.len().saturating_sub(self.offset)
+            ))
+        }
+    }
+}
+
+fn source_kind_tag(kind: SourceKind) -> u8 {
+    match kind {
+        SourceKind::Unknown => 0,
+        SourceKind::GameData => 1,
+        SourceKind::Workspace => 2,
+        SourceKind::Fixture => 3,
+    }
+}
+
+fn source_kind_from_tag(tag: u8) -> Result<SourceKind, String> {
+    match tag {
+        0 => Ok(SourceKind::Unknown),
+        1 => Ok(SourceKind::GameData),
+        2 => Ok(SourceKind::Workspace),
+        3 => Ok(SourceKind::Fixture),
+        _ => Err(format!("invalid source kind tag {tag}")),
+    }
+}
+
+fn source_category_tag(category: SourceCategory) -> u8 {
+    match category {
+        SourceCategory::Workspace => 0,
+        SourceCategory::Game => 1,
+        SourceCategory::GameCode => 2,
+        SourceCategory::GameLib => 3,
+        SourceCategory::Core => 4,
+        SourceCategory::Generated => 5,
+        SourceCategory::Workbench => 6,
+        SourceCategory::DocsDoxygen => 7,
+        SourceCategory::TestAutotest => 8,
+        SourceCategory::Unknown => 9,
+    }
+}
+
+fn source_category_from_tag(tag: u8) -> Result<SourceCategory, String> {
+    match tag {
+        0 => Ok(SourceCategory::Workspace),
+        1 => Ok(SourceCategory::Game),
+        2 => Ok(SourceCategory::GameCode),
+        3 => Ok(SourceCategory::GameLib),
+        4 => Ok(SourceCategory::Core),
+        5 => Ok(SourceCategory::Generated),
+        6 => Ok(SourceCategory::Workbench),
+        7 => Ok(SourceCategory::DocsDoxygen),
+        8 => Ok(SourceCategory::TestAutotest),
+        9 => Ok(SourceCategory::Unknown),
+        _ => Err(format!("invalid source category tag {tag}")),
+    }
+}
+
+fn symbol_kind_tag(kind: SymbolKind) -> u8 {
+    match kind {
+        SymbolKind::Class => 0,
+        SymbolKind::TypeParameter => 1,
+        SymbolKind::Enum => 2,
+        SymbolKind::EnumMember => 3,
+        SymbolKind::Typedef => 4,
+        SymbolKind::Function => 5,
+        SymbolKind::GlobalField => 6,
+        SymbolKind::Field => 7,
+        SymbolKind::Method => 8,
+        SymbolKind::Constructor => 9,
+        SymbolKind::Destructor => 10,
+        SymbolKind::Parameter => 11,
+        SymbolKind::LocalVariable => 12,
+        SymbolKind::PreprocessorMacro => 13,
+    }
+}
+
+fn symbol_kind_from_tag(tag: u8) -> Result<SymbolKind, String> {
+    match tag {
+        0 => Ok(SymbolKind::Class),
+        1 => Ok(SymbolKind::TypeParameter),
+        2 => Ok(SymbolKind::Enum),
+        3 => Ok(SymbolKind::EnumMember),
+        4 => Ok(SymbolKind::Typedef),
+        5 => Ok(SymbolKind::Function),
+        6 => Ok(SymbolKind::GlobalField),
+        7 => Ok(SymbolKind::Field),
+        8 => Ok(SymbolKind::Method),
+        9 => Ok(SymbolKind::Constructor),
+        10 => Ok(SymbolKind::Destructor),
+        11 => Ok(SymbolKind::Parameter),
+        12 => Ok(SymbolKind::LocalVariable),
+        13 => Ok(SymbolKind::PreprocessorMacro),
+        _ => Err(format!("invalid symbol kind tag {tag}")),
+    }
+}
+
+fn doc_comment_kind_tag(kind: DocCommentKind) -> u8 {
+    match kind {
+        DocCommentKind::Line => 0,
+        DocCommentKind::Block => 1,
+    }
+}
+
+fn doc_comment_kind_from_tag(tag: u8) -> Result<DocCommentKind, String> {
+    match tag {
+        0 => Ok(DocCommentKind::Line),
+        1 => Ok(DocCommentKind::Block),
+        _ => Err(format!("invalid doc comment kind tag {tag}")),
+    }
+}
+
+fn preprocessor_branch_kind_tag(kind: PreprocessorBranchKind) -> u8 {
+    match kind {
+        PreprocessorBranchKind::If => 0,
+        PreprocessorBranchKind::Ifdef => 1,
+        PreprocessorBranchKind::Ifndef => 2,
+        PreprocessorBranchKind::Elif => 3,
+        PreprocessorBranchKind::Else => 4,
+    }
+}
+
+fn preprocessor_branch_kind_from_tag(tag: u8) -> Result<PreprocessorBranchKind, String> {
+    match tag {
+        0 => Ok(PreprocessorBranchKind::If),
+        1 => Ok(PreprocessorBranchKind::Ifdef),
+        2 => Ok(PreprocessorBranchKind::Ifndef),
+        3 => Ok(PreprocessorBranchKind::Elif),
+        4 => Ok(PreprocessorBranchKind::Else),
+        _ => Err(format!("invalid preprocessor branch kind tag {tag}")),
+    }
+}
+
+fn callable_form_tag(form: CallableForm) -> u8 {
+    match form {
+        CallableForm::Implementation => 0,
+        CallableForm::Declaration => 1,
+        CallableForm::Prototype => 2,
+    }
+}
+
+fn callable_form_from_tag(tag: u8) -> Result<CallableForm, String> {
+    match tag {
+        0 => Ok(CallableForm::Implementation),
+        1 => Ok(CallableForm::Declaration),
+        2 => Ok(CallableForm::Prototype),
+        _ => Err(format!("invalid callable form tag {tag}")),
+    }
 }
 
 fn cache_rebuild_reason(cache_path: &Path, fingerprint: &SourceFingerprint) -> String {
@@ -496,10 +1391,11 @@ mod tests {
         assert!(second.timings.cache_read_deserialize_validate > std::time::Duration::ZERO);
         assert!(second.timings.total > std::time::Duration::ZERO);
         assert!(second.cache_file_bytes.unwrap_or_default() > 0);
-        let cache_json = fs::read_to_string(&cache).unwrap();
-        assert!(cache_json.contains("\"format_version\":6"));
-        assert!(!cache_json.contains("\"by_name\""));
-        assert!(!cache_json.contains("\"methods_by_owner_name\""));
+        let cache_bytes = fs::read(&cache).unwrap();
+        assert!(cache_bytes.starts_with(CACHE_MAGIC));
+        let decoded = decode_cached_index(&cache_bytes).unwrap();
+        assert_eq!(decoded.format_version, CACHE_FORMAT_VERSION);
+        assert_eq!(decoded.index_shape, CACHE_INDEX_SHAPE);
 
         cleanup(&root);
     }
@@ -637,7 +1533,7 @@ mod tests {
     }
 
     #[test]
-    fn v6_cache_load_rebuilds_lookup_maps_from_files_and_symbols() {
+    fn v9_binary_cache_load_rebuilds_lookup_maps_from_files_and_symbols() {
         let root = test_root("rebuild_maps");
         let cache = root.join("cache.json");
         let scripts = root.join("scripts");
@@ -794,10 +1690,41 @@ class BaseGameModeClass : GenericEntityClass
         })
         .unwrap();
 
-        let stale = fs::read_to_string(&cache)
-            .unwrap()
-            .replace("\"format_version\":6", "\"format_version\":5");
-        write_file(&cache, &stale);
+        let mut decoded = decode_cached_index(&fs::read(&cache).unwrap()).unwrap();
+        decoded.format_version = CACHE_FORMAT_VERSION - 1;
+        fs::write(&cache, encode_cached_index(&decoded).unwrap()).unwrap();
+
+        let rebuilt = load_or_build_game_data_index(&GameDataIndexCacheConfig {
+            scripts_root: scripts,
+            cache_path: cache,
+            metadata_path: None,
+        })
+        .unwrap();
+        assert!(matches!(
+            rebuilt.cache_status,
+            IndexCacheStatus::Rebuilt { .. }
+        ));
+
+        cleanup(&root);
+    }
+
+    #[test]
+    fn cache_rebuilds_when_index_shape_is_stale() {
+        let root = test_root("index_shape");
+        let cache = root.join("cache.json");
+        let scripts = root.join("scripts");
+        write_file(&scripts.join("Example.c"), "class Example {}");
+
+        let _ = load_or_build_game_data_index(&GameDataIndexCacheConfig {
+            scripts_root: scripts.clone(),
+            cache_path: cache.clone(),
+            metadata_path: None,
+        })
+        .unwrap();
+
+        let mut decoded = decode_cached_index(&fs::read(&cache).unwrap()).unwrap();
+        decoded.index_shape = "old-index-shape".to_string();
+        fs::write(&cache, encode_cached_index(&decoded).unwrap()).unwrap();
 
         let rebuilt = load_or_build_game_data_index(&GameDataIndexCacheConfig {
             scripts_root: scripts,
@@ -819,7 +1746,7 @@ class BaseGameModeClass : GenericEntityClass
         let cache = root.join("cache.json");
         let scripts = root.join("scripts");
         write_file(&scripts.join("Example.c"), "class Example {}");
-        write_file(&cache, "{ bad json");
+        fs::write(&cache, b"bad binary cache").unwrap();
 
         let result = load_or_build_game_data_index(&GameDataIndexCacheConfig {
             scripts_root: scripts,

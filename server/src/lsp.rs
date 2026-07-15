@@ -32,16 +32,20 @@ mod hover_render;
 mod open_documents;
 mod semantic_tokens;
 
-use completion::{completion_debug_markdown, empty_completion_list};
+use completion::{
+    completion_debug_markdown, completion_report_for_cached_analysis_with_external_indexes,
+    empty_completion_list,
+};
 pub use completion::{
     completion_report_for_cached_analysis_with_external,
     completion_report_for_source_position_with_external, LspCompletionItem,
     LspCompletionItemLabelDetails, LspCompletionList, LspCompletionReport, LspCompletionTimings,
     LspTextEdit,
 };
-use debug_hover::debug_hover_report_for_cached_analysis_with_external_uri;
+use debug_hover::debug_hover_report_for_cached_analysis_with_external_indexes;
 pub use debug_hover::debug_hover_report_for_source_position;
 pub(crate) use debug_hover::selected_label_from_debug_report;
+use definition::definition_report_for_cached_analysis_with_external_indexes;
 pub(crate) use definition::file_uri_for_path;
 pub use definition::{
     definition_report_for_cached_analysis_with_external, definition_report_for_source_position,
@@ -52,7 +56,7 @@ use diagnostics::{clear_diagnostics_message, publish_diagnostics_message};
 pub use diagnostics::{parser_diagnostics_for_source, LspDiagnostic};
 pub(crate) use external_overlay::ExternalIndexStatusSummary;
 use external_overlay::{start_external_index, ExternalIndexHandle};
-use hover::hover_report_for_cached_analysis_with_external_uri;
+use hover::hover_report_for_cached_analysis_with_external_indexes;
 pub use hover::{
     hover_report_for_source_position, hover_report_for_source_position_with_external,
     hover_reports_for_source_positions, hover_reports_for_source_positions_with_external,
@@ -61,8 +65,9 @@ pub use hover::{
 pub(crate) use open_documents::OpenDocument;
 pub use open_documents::{file_index_for_source, FileIndexAnalysis};
 use semantic_tokens::{
-    fast_semantic_tokens_for_cached_analysis, semantic_tokens_for_cached_analysis_with_external,
-    LspSemanticTokenProjection, LspSemanticTokens, SEMANTIC_TOKEN_MODIFIERS, SEMANTIC_TOKEN_TYPES,
+    fast_semantic_tokens_for_cached_analysis,
+    semantic_tokens_for_cached_analysis_with_external_indexes, LspSemanticTokenProjection,
+    LspSemanticTokens, SEMANTIC_TOKEN_MODIFIERS, SEMANTIC_TOKEN_TYPES,
 };
 pub use semantic_tokens::{
     fast_semantic_tokens_for_source, semantic_tokens_for_source_with_external,
@@ -180,6 +185,11 @@ struct LspLogger {
 
 impl LspLogger {
     fn new(path: Option<PathBuf>) -> Self {
+        if let Some(log_path) = path.as_ref() {
+            if let Some(parent) = log_path.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+        }
         Self {
             path,
             lock: Arc::new(Mutex::new(())),
@@ -193,9 +203,6 @@ impl LspLogger {
         let Ok(_guard) = self.lock.lock() else {
             return;
         };
-        if let Some(parent) = log_path.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
         if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(log_path) {
             let _ = writeln!(file, "[{}] {message}", timestamp_millis());
         }
@@ -374,7 +381,7 @@ impl<W: Write> LspServer<W> {
                                 "hoverProvider": true,
                                 "definitionProvider": true,
                                 "completionProvider": {
-                                    "triggerCharacters": ["."]
+                                    "triggerCharacters": [".", "["]
                                 },
                                 "semanticTokensProvider": {
                                     "legend": {
@@ -611,19 +618,22 @@ impl<W: Write> LspServer<W> {
                     let mut lookup_ms = 0u128;
                     let mut render_ms = 0u128;
                     let mut external_index_status = self.external_index.status_summary().status;
+                    let mut external_index_layers = "none";
                     let result = params
                         .and_then(|params| {
                             log_uri = params.text_document.uri;
                             self.documents.get(&log_uri).map(|document| {
                                 bytes = document.text.len();
                                 revision = document.revision;
-                                let report = self.external_index.with_index(|status, index| {
-                                    external_index_status = status;
-                                    completion_report_for_cached_analysis_with_external(
+                                let report = self.external_index.with_indexes(|indexes| {
+                                    external_index_status = indexes.status;
+                                    external_index_layers = indexes.available_layers();
+                                    completion_report_for_cached_analysis_with_external_indexes(
                                         &document.text,
                                         &document.analysis,
                                         params.position,
-                                        index,
+                                        indexes.workspace,
+                                        indexes.game_data,
                                     )
                                 });
                                 parse_diagnostics = report.parse_diagnostics;
@@ -653,7 +663,7 @@ impl<W: Write> LspServer<W> {
                             serde_json::to_value(empty_completion_list()).unwrap_or(Value::Null)
                         });
                     self.log(&format!(
-                        "request completion uri={} bytes={} revision={} cached_analysis=true context={} receiver={} owner_type={} prefix={} candidates={} failure_reason={} external_index_status={} parse_diagnostics={} context_ms={} lookup_ms={} render_ms={} elapsed_ms={}",
+                        "request completion uri={} bytes={} revision={} cached_analysis=true context={} receiver={} owner_type={} prefix={} candidates={} failure_reason={} external_index_status={} external_index_layers={} parse_diagnostics={} context_ms={} lookup_ms={} render_ms={} elapsed_ms={}",
                         log_uri,
                         bytes,
                         revision,
@@ -664,6 +674,7 @@ impl<W: Write> LspServer<W> {
                         candidate_count,
                         failure_reason,
                         external_index_status,
+                        external_index_layers,
                         parse_diagnostics,
                         context_ms,
                         lookup_ms,
@@ -777,6 +788,7 @@ impl<W: Write> LspServer<W> {
                     let mut receiver_owner = "<none>".to_string();
                     let mut receiver_failure = "<none>".to_string();
                     let mut external_index_status = self.external_index.status_summary().status;
+                    let mut external_index_layers = "none";
                     let mut revision = 0u64;
                     let mut hit = false;
                     let result = params
@@ -785,14 +797,16 @@ impl<W: Write> LspServer<W> {
                             self.documents.get(&log_uri).map(|document| {
                                 bytes = document.text.len();
                                 revision = document.revision;
-                                let report = self.external_index.with_index(|status, index| {
-                                    external_index_status = status;
-                                    hover_report_for_cached_analysis_with_external_uri(
+                                let report = self.external_index.with_indexes(|indexes| {
+                                    external_index_status = indexes.status;
+                                    external_index_layers = indexes.available_layers();
+                                    hover_report_for_cached_analysis_with_external_indexes(
                                         &document.text,
                                         &document.analysis,
                                         &log_uri,
                                         params.position,
-                                        index,
+                                        indexes.workspace,
+                                        indexes.game_data,
                                     )
                                 });
                                 parse_diagnostics = report.parse_diagnostics;
@@ -836,7 +850,7 @@ impl<W: Write> LspServer<W> {
                         .map(|hover| serde_json::to_value(hover).unwrap_or(Value::Null))
                         .unwrap_or(Value::Null);
                     self.log(&format!(
-                        "request hover uri={} bytes={} revision={} cached_analysis=true hit={} selection_source={} selected_source={} resolver_reason={} identifier_context={} resolver_candidates={} receiver_owner={} receiver_failure={} external_index_status={} label={} kind={} parse_diagnostics={} elapsed_ms={}",
+                        "request hover uri={} bytes={} revision={} cached_analysis=true hit={} selection_source={} selected_source={} resolver_reason={} identifier_context={} resolver_candidates={} receiver_owner={} receiver_failure={} external_index_status={} external_index_layers={} label={} kind={} parse_diagnostics={} elapsed_ms={}",
                         log_uri,
                         bytes,
                         revision,
@@ -849,6 +863,7 @@ impl<W: Write> LspServer<W> {
                         receiver_owner,
                         receiver_failure,
                         external_index_status,
+                        external_index_layers,
                         selected_label,
                         selected_kind,
                         parse_diagnostics,
@@ -871,6 +886,7 @@ impl<W: Write> LspServer<W> {
                     let mut identifier_context = "<none>";
                     let mut resolver_candidate_count = 0usize;
                     let mut external_index_status = self.external_index.status_summary().status;
+                    let mut external_index_layers = "none";
                     let mut revision = 0u64;
                     let mut hit = false;
                     let result = params
@@ -879,14 +895,16 @@ impl<W: Write> LspServer<W> {
                             self.documents.get(&log_uri).map(|document| {
                                 bytes = document.text.len();
                                 revision = document.revision;
-                                let report = self.external_index.with_index(|status, index| {
-                                    external_index_status = status;
-                                    definition_report_for_cached_analysis_with_external(
+                                let report = self.external_index.with_indexes(|indexes| {
+                                    external_index_status = indexes.status;
+                                    external_index_layers = indexes.available_layers();
+                                    definition_report_for_cached_analysis_with_external_indexes(
                                         &document.text,
                                         &document.analysis,
                                         &log_uri,
                                         params.position,
-                                        index,
+                                        indexes.workspace,
+                                        indexes.game_data,
                                     )
                                 });
                                 parse_diagnostics = report.parse_diagnostics;
@@ -916,7 +934,7 @@ impl<W: Write> LspServer<W> {
                         .map(|links| serde_json::to_value(links).unwrap_or(Value::Null))
                         .unwrap_or(Value::Null);
                     self.log(&format!(
-                        "request definition uri={} bytes={} revision={} cached_analysis=true hit={} selected_source={} resolver_reason={} identifier_context={} resolver_candidates={} external_index_status={} label={} kind={} parse_diagnostics={} elapsed_ms={}",
+                        "request definition uri={} bytes={} revision={} cached_analysis=true hit={} selected_source={} resolver_reason={} identifier_context={} resolver_candidates={} external_index_status={} external_index_layers={} label={} kind={} parse_diagnostics={} elapsed_ms={}",
                         log_uri,
                         bytes,
                         revision,
@@ -926,6 +944,7 @@ impl<W: Write> LspServer<W> {
                         identifier_context,
                         resolver_candidate_count,
                         external_index_status,
+                        external_index_layers,
                         selected_label,
                         selected_kind,
                         parse_diagnostics,
@@ -950,13 +969,14 @@ impl<W: Write> LspServer<W> {
                                 bytes = document.text.len();
                                 revision = document.revision;
                                 let external_status = self.external_index.status_summary();
-                                let report = self.external_index.with_index(|_, index| {
-                                    debug_hover_report_for_cached_analysis_with_external_uri(
+                                let report = self.external_index.with_indexes(|indexes| {
+                                    debug_hover_report_for_cached_analysis_with_external_indexes(
                                         &document.text,
                                         &document.analysis,
                                         &log_uri,
                                         params.position,
-                                        index,
+                                        indexes.workspace,
+                                        indexes.game_data,
                                         Some(&external_status),
                                     )
                                 });
@@ -995,19 +1015,22 @@ impl<W: Write> LspServer<W> {
                     let mut completion_context = "none".to_string();
                     let mut candidate_count = 0usize;
                     let mut external_index_status = self.external_index.status_summary().status;
+                    let mut external_index_layers = "none";
                     let result = params
                         .and_then(|params| {
                             log_uri = params.text_document.uri;
                             self.documents.get(&log_uri).map(|document| {
                                 bytes = document.text.len();
                                 revision = document.revision;
-                                let report = self.external_index.with_index(|status, index| {
-                                    external_index_status = status;
-                                    completion_report_for_cached_analysis_with_external(
+                                let report = self.external_index.with_indexes(|indexes| {
+                                    external_index_status = indexes.status;
+                                    external_index_layers = indexes.available_layers();
+                                    completion_report_for_cached_analysis_with_external_indexes(
                                         &document.text,
                                         &document.analysis,
                                         params.position,
-                                        index,
+                                        indexes.workspace,
+                                        indexes.game_data,
                                     )
                                 });
                                 completion_context = report.completion_context.clone();
@@ -1028,13 +1051,14 @@ impl<W: Write> LspServer<W> {
                             ))
                         });
                     self.log(&format!(
-                        "request debugCompletion uri={} bytes={} revision={} cached_analysis=true context={} candidates={} external_index_status={} elapsed_ms={}",
+                        "request debugCompletion uri={} bytes={} revision={} cached_analysis=true context={} candidates={} external_index_status={} external_index_layers={} elapsed_ms={}",
                         log_uri,
                         bytes,
                         revision,
                         completion_context,
                         candidate_count,
                         external_index_status,
+                        external_index_layers,
                         start.elapsed().as_millis()
                     ));
                     self.respond(id, result)?;
@@ -1143,12 +1167,13 @@ impl<W: Write> LspServer<W> {
         if document.revision != revision {
             return None;
         }
-        Some(self.external_index.with_index(|status, index| {
-            *external_index_status = status;
-            semantic_tokens_for_cached_analysis_with_external(
+        Some(self.external_index.with_indexes(|indexes| {
+            *external_index_status = indexes.status;
+            semantic_tokens_for_cached_analysis_with_external_indexes(
                 &document.text,
                 &document.analysis,
-                index,
+                indexes.workspace,
+                indexes.game_data,
             )
         }))
     }
@@ -2679,6 +2704,69 @@ class Example
     }
 
     #[test]
+    fn completion_hides_restricted_members_for_external_receivers() {
+        let source = r#"class GRAY_TEST2
+{
+	protected void proTestnum();
+	private void proPrivate();
+	void proPublic();
+}
+
+class Other
+{
+	void Run()
+	{
+		GRAY_TEST2 test33;
+		test33.pro
+	}
+}
+"#;
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "test33.pro"),
+            None,
+        );
+
+        let labels = report
+            .list
+            .items
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>();
+        assert!(labels.contains(&"proPublic"));
+        assert!(!labels.contains(&"proTestnum"));
+        assert!(!labels.contains(&"proPrivate"));
+    }
+
+    #[test]
+    fn completion_keeps_restricted_members_for_self_receivers() {
+        let source = r#"class GRAY_TEST2
+{
+	protected void proTestnum();
+	private void proPrivate();
+	void Run()
+	{
+		this.pro
+	}
+}
+"#;
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "this.pro"),
+            None,
+        );
+
+        let labels = report
+            .list
+            .items
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>();
+        assert!(labels.contains(&"proTestnum"));
+        assert!(labels.contains(&"proPrivate"));
+    }
+
+    #[test]
     fn completion_labels_overloads_and_sorts_workspace_before_game_data() {
         let source = r#"class Widget
 {
@@ -2836,6 +2924,40 @@ void SCR_Function();
     }
 
     #[test]
+    fn completion_returns_attribute_classes_in_attribute_name_position() {
+        let source = r#"class Example
+{
+	[Attribu]
+	int m_Value;
+}
+"#;
+        let external = file_index_for_source(
+            r#"class Attribute
+{
+	void Attribute(string defvalue = "");
+}
+"#,
+        )
+        .index;
+
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "Attribu"),
+            Some(&external),
+        );
+
+        assert_eq!(report.completion_context, "top-level");
+        assert_eq!(report.prefix, "Attribu");
+        assert!(report
+            .list
+            .items
+            .iter()
+            .any(|item| item.label == "Attribute"
+                && item.kind == 7
+                && item.text_edit.new_text == "Attribute"));
+    }
+
+    #[test]
     fn completion_returns_top_level_value_candidates_for_prefix() {
         let source = "class Example { void Run() { SCR_ } }";
         let external = file_index_for_source(
@@ -2868,6 +2990,27 @@ int SCR_Global;
         assert!(labels.contains(&"SCR_Function"));
         assert!(labels.contains(&"SCR_Global"));
         assert!(!labels.contains(&"SCR_Value"));
+    }
+
+    #[test]
+    fn completion_caps_broad_top_level_prefixes() {
+        let source = "class Example { void Run() { s } }";
+        let mut external_source = String::new();
+        for index in 0..400 {
+            external_source.push_str(&format!("class sGenerated{index} {{}}\n"));
+        }
+        let external = file_index_for_source(&external_source).index;
+
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "{ s"),
+            Some(&external),
+        );
+
+        assert_eq!(report.completion_context, "top-level");
+        assert_eq!(report.prefix, "s");
+        assert_eq!(report.list.items.len(), 250);
+        assert_eq!(report.candidate_count, 250);
     }
 
     #[test]
@@ -2938,6 +3081,39 @@ int SCR_Global;
 
         assert_eq!(report.completion_context, "top-level");
         assert_eq!(report.prefix, "get");
+        assert!(report.list.items.iter().any(|item| item.label == "GetOwner"
+            && item.kind == 2
+            && item.text_edit.new_text == "GetOwner()"));
+    }
+
+    #[test]
+    fn completion_returns_cross_layer_inherited_members_for_unqualified_prefix() {
+        let source = r#"class Example : ScriptComponent
+{
+	void Run(IEntity owner)
+	{
+		if (owner == getow)
+		{
+		}
+	}
+}
+"#;
+        let external = file_index_for_source(
+            r#"class ScriptComponent
+{
+	IEntity GetOwner();
+}
+"#,
+        )
+        .index;
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "getow"),
+            Some(&external),
+        );
+
+        assert_eq!(report.completion_context, "top-level");
+        assert_eq!(report.prefix, "getow");
         assert!(report.list.items.iter().any(|item| item.label == "GetOwner"
             && item.kind == 2
             && item.text_edit.new_text == "GetOwner()"));
@@ -3017,6 +3193,84 @@ int SCR_Global;
         assert_eq!(labels.first().copied(), Some("static"));
         assert!(!labels.contains(&"STATIC"));
         assert!(!labels.contains(&"Static"));
+    }
+
+    #[test]
+    fn completion_keeps_declaration_keywords_out_of_expression_contexts() {
+        let source = r#"class Example
+{
+	void Run(bool enabled)
+	{
+		if (enabled == stati)
+		{
+		}
+	}
+}
+"#;
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "stati"),
+            None,
+        );
+
+        let labels = report
+            .list
+            .items
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>();
+        assert!(!labels.contains(&"static"));
+    }
+
+    #[test]
+    fn completion_returns_declaration_keywords_at_declaration_boundaries() {
+        let source = r#"class Example
+{
+	sta
+}
+"#;
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "sta"),
+            None,
+        );
+
+        let first = report.list.items.first().unwrap();
+        assert_eq!(first.label, "static");
+        assert_eq!(first.kind, 14);
+    }
+
+    #[test]
+    fn completion_returns_modifier_keywords_when_prefix_is_type_context() {
+        let boundary_source = r#"class Example
+{
+	overr
+}
+"#;
+        let boundary_report = completion_report_for_source_position_with_external(
+            boundary_source,
+            position_after_needle(boundary_source, "overr"),
+            None,
+        );
+        let first = boundary_report.list.items.first().unwrap();
+        assert_eq!(first.label, "override");
+        assert_eq!(first.kind, 14);
+        assert_eq!(first.text_edit.new_text, "override");
+
+        let type_context_source = r#"class Example
+{
+	override overr
+}
+"#;
+        let report = completion_report_for_source_position_with_external(
+            type_context_source,
+            position_after_needle(type_context_source, "override overr"),
+            None,
+        );
+        let first = report.list.items.first().unwrap();
+        assert_eq!(first.label, "override");
+        assert_eq!(first.kind, 14);
+        assert_eq!(first.text_edit.new_text, "override");
     }
 
     #[test]
@@ -4048,7 +4302,9 @@ class Example
 
         let output_text = String::from_utf8(output).unwrap();
         assert!(output_text.contains("\"hoverProvider\":true"));
-        assert!(output_text.contains("\"completionProvider\":{\"triggerCharacters\":[\".\"]}"));
+        assert!(
+            output_text.contains("\"completionProvider\":{\"triggerCharacters\":[\".\",\"[\"]}")
+        );
         assert!(output_text.contains("void Run(int value)"));
         assert!(output_text.contains("\"kind\":\"markdown\""));
     }
@@ -4209,7 +4465,9 @@ class Example
         run(input.as_slice(), &mut output, LspServerOptions::default()).unwrap();
 
         let output_text = String::from_utf8(output).unwrap();
-        assert!(output_text.contains("\"completionProvider\":{\"triggerCharacters\":[\".\"]}"));
+        assert!(
+            output_text.contains("\"completionProvider\":{\"triggerCharacters\":[\".\",\"[\"]}")
+        );
         assert!(output_text.contains("\"isIncomplete\":false"));
         assert!(output_text.contains("\"label\":\"SetVisible\""));
         assert!(output_text.contains("\"newText\":\"SetVisible(visible)\""));

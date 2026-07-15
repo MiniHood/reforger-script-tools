@@ -28,6 +28,7 @@
       ]
     }
   ],
+  "autoCloseBefore": ";:.,=+-*/%&|^!~? \t\n",
   "surroundingPairs": [
     [
       "{",

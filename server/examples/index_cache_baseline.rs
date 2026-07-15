@@ -138,7 +138,7 @@ fn render_report(args: &Args) -> Result<String, String> {
     let mut report = String::new();
     report.push_str("# Index Cache Baseline Report\n\n");
     report.push_str(
-        "> Dev-only benchmark comparing JSON cache load, cache miss rebuild/write, and direct rebuild.\n\n",
+        "> Dev-only benchmark comparing binary cache load, cache miss rebuild/write, and direct rebuild.\n\n",
     );
     report.push_str("This report measures cache usefulness only. Timings are local wall-clock diagnostics, not benchmark-grade results.\n\n");
     report.push_str(&format!("## Profile: {}\n\n", args.profile_label));
@@ -269,6 +269,22 @@ fn append_cache_timings(report: &mut String, timings: &IndexCacheTimings) {
         duration_millis(timings.cache_read_deserialize_validate)
     ));
     report.push_str(&format!(
+        "| Cache file read ms | {} |\n",
+        duration_millis(timings.cache_file_read)
+    ));
+    report.push_str(&format!(
+        "| Binary decode ms | {} |\n",
+        duration_millis(timings.cache_decode)
+    ));
+    report.push_str(&format!(
+        "| Cache validate ms | {} |\n",
+        duration_millis(timings.cache_validate)
+    ));
+    report.push_str(&format!(
+        "| Lookup map rebuild ms | {} |\n",
+        duration_millis(timings.map_rebuild)
+    ));
+    report.push_str(&format!(
         "| Rebuild ms | {} |\n",
         duration_millis(timings.rebuild)
     ));
@@ -358,20 +374,20 @@ fn append_structural_optimization(
     let v2_style_bytes = serde_json::to_vec(&v2_style)
         .map(|bytes| bytes.len() as u64)
         .unwrap_or(0);
-    let v6_bytes = existing_cache.cache_file_bytes.unwrap_or(0);
-    let v6_detail_spans = detail_span_count(&existing_cache.index);
+    let v9_bytes = existing_cache.cache_file_bytes.unwrap_or(0);
+    let v9_detail_spans = detail_span_count(&existing_cache.index);
     let full_detail_spans = detail_span_count(&direct.index);
-    let saved = v2_style_bytes.saturating_sub(v6_bytes);
+    let saved = v2_style_bytes.saturating_sub(v9_bytes);
 
     report.push_str("## Runtime Cache Structural Optimization\n\n");
-    report.push_str("V6 persists cache metadata plus files/symbols only, strips source-only detail spans, removes external local variables, and rebuilds lookup maps after load. The v2-style estimate serializes the runtime-pruned index with derived maps still present.\n\n");
+    report.push_str("V9 persists cache metadata plus files/symbols only in a dependency-free binary format, stores repeated strings through an interned string table, stores an explicit index-shape marker, strips source-only detail spans, removes external local variables, and rebuilds lookup maps after load. The v2-style estimate serializes the runtime-pruned index with derived maps still present.\n\n");
     report.push_str("| Metric | Value |\n");
     report.push_str("| --- | ---: |\n");
     report.push_str(&format!(
         "| V2-style full-map runtime JSON estimate | {} |\n",
         v2_style_bytes
     ));
-    report.push_str(&format!("| V6 actual cache file bytes | {} |\n", v6_bytes));
+    report.push_str(&format!("| V9 actual cache file bytes | {} |\n", v9_bytes));
     report.push_str(&format!("| Estimated bytes saved | {} |\n", saved));
     report.push_str(&format!(
         "| Estimated size reduction | {} |\n",
@@ -382,13 +398,77 @@ fn append_structural_optimization(
         full_detail_spans
     ));
     report.push_str(&format!(
-        "| V6 cached detail span fields | {} |\n",
-        v6_detail_spans
+        "| V9 cached detail span fields | {} |\n",
+        v9_detail_spans
     ));
     report.push_str(&format!("| Lookup maps persisted | {} |\n", yes_no(false)));
     report.push_str(&format!(
         "| Lookup maps rebuilt on load | {} |\n\n",
         yes_no(!existing_cache.index.symbols().is_empty())
+    ));
+    append_lookup_map_shape(report, existing_cache);
+}
+
+fn append_lookup_map_shape(report: &mut String, existing_cache: &GameDataIndexCacheResult) {
+    let maps = existing_cache.index.map_counts();
+    let total_entries = maps.name_entries
+        + maps.top_level_name_entries
+        + maps.kind_entries
+        + maps.class_name_entries
+        + maps.typedef_name_entries
+        + maps.function_name_entries
+        + maps.method_owner_name_entries
+        + maps.field_owner_name_entries
+        + maps.member_owner_entries
+        + maps.child_entries;
+
+    report.push_str("### Lookup Map Rebuild Shape\n\n");
+    report.push_str("The binary cache persists files and symbols only. These lookup maps are rebuilt after decode so the runtime can answer name, kind, class, typedef, function, member, owner/name, and parent/child queries without scanning all symbols per request.\n\n");
+    report.push_str("| Map | Keys | Symbol ID entries |\n");
+    report.push_str("| --- | ---: | ---: |\n");
+    report.push_str(&format!(
+        "| All names | {} | {} |\n",
+        maps.names, maps.name_entries
+    ));
+    report.push_str(&format!(
+        "| Top-level names | {} | {} |\n",
+        maps.top_level_names, maps.top_level_name_entries
+    ));
+    report.push_str(&format!(
+        "| Kinds | {} | {} |\n",
+        maps.kinds, maps.kind_entries
+    ));
+    report.push_str(&format!(
+        "| Classes by name | {} | {} |\n",
+        maps.class_names, maps.class_name_entries
+    ));
+    report.push_str(&format!(
+        "| Typedefs by name | {} | {} |\n",
+        maps.typedef_names, maps.typedef_name_entries
+    ));
+    report.push_str(&format!(
+        "| Functions by name | {} | {} |\n",
+        maps.function_names, maps.function_name_entries
+    ));
+    report.push_str(&format!(
+        "| Methods by owner/name | {} | {} |\n",
+        maps.method_owner_names, maps.method_owner_name_entries
+    ));
+    report.push_str(&format!(
+        "| Fields by owner/name | {} | {} |\n",
+        maps.field_owner_names, maps.field_owner_name_entries
+    ));
+    report.push_str(&format!(
+        "| Members by owner | {} | {} |\n",
+        maps.member_owners, maps.member_owner_entries
+    ));
+    report.push_str(&format!(
+        "| Children by parent | {} | {} |\n",
+        maps.parent_symbols, maps.child_entries
+    ));
+    report.push_str(&format!(
+        "| Total rebuilt symbol ID entries |  | {} |\n\n",
+        total_entries
     ));
 }
 
@@ -403,11 +483,11 @@ fn append_memory_and_cache_size(
     report.push_str("| Item | Value |\n");
     report.push_str("| --- | ---: |\n");
     report.push_str(&format!(
-        "| JSON cache file bytes | {} |\n",
+        "| Binary cache file bytes | {} |\n",
         cache_result.cache_file_bytes.unwrap_or(0)
     ));
     report.push_str(&format!(
-        "| JSON cache file MiB | {:.2} |\n",
+        "| Binary cache file MiB | {:.2} |\n",
         cache_result.cache_file_bytes.unwrap_or(0) as f64 / (1024.0 * 1024.0)
     ));
     report.push_str(&format!(
@@ -435,7 +515,7 @@ fn append_decision(
     }
 
     if existing_cache.cache_status != IndexCacheStatus::Loaded {
-        report.push_str("The existing cache path did not produce a cache hit in this release run, so JSON cache-hit usefulness is not proven. Re-run after a valid cache exists before expanding runtime cache policy.\n\n");
+        report.push_str("The existing cache path did not produce a cache hit in this release run, so binary cache-hit usefulness is not proven. Re-run after a valid cache exists before expanding runtime cache policy.\n\n");
         return;
     }
 
@@ -450,15 +530,15 @@ fn append_decision(
     let direct = direct_ms as f64;
     if cache_hit <= direct * 0.75 {
         report.push_str(&format!(
-            "JSON cache is useful in this run: release cache hit `{cache_hit_ms}` ms is at least 25% faster than direct rebuild `{direct_ms}` ms.\n\n"
+            "Binary cache is useful in this run: release cache hit `{cache_hit_ms}` ms is at least 25% faster than direct rebuild `{direct_ms}` ms.\n\n"
         ));
     } else if cache_hit <= direct * 1.25 {
         report.push_str(&format!(
-            "JSON cache is not proven useful in this run: release cache hit `{cache_hit_ms}` ms is within ±25% of direct rebuild `{direct_ms}` ms.\n\n"
+            "Binary cache is not proven useful in this run: release cache hit `{cache_hit_ms}` ms is within ±25% of direct rebuild `{direct_ms}` ms.\n\n"
         ));
     } else {
         report.push_str(&format!(
-            "JSON cache appears harmful in this run: release cache hit `{cache_hit_ms}` ms is slower than direct rebuild `{direct_ms}` ms. Consider disabling or replacing JSON cache before expanding runtime indexing.\n\n"
+            "Binary cache appears harmful in this run: release cache hit `{cache_hit_ms}` ms is slower than direct rebuild `{direct_ms}` ms. Consider disabling or replacing the cache before expanding runtime indexing.\n\n"
         ));
     }
 }
@@ -571,7 +651,7 @@ fn temp_cache_path(profile_label: &str) -> PathBuf {
         .map(|duration| duration.as_nanos())
         .unwrap_or(0);
     env::temp_dir().join(format!(
-        "reforger_index_cache_baseline_{}_{}_{}.json",
+        "reforger_index_cache_baseline_{}_{}_{}.bin",
         profile_label,
         std::process::id(),
         nonce
@@ -590,7 +670,7 @@ fn default_metadata_path(scripts_path: &Path) -> Option<PathBuf> {
 }
 
 fn default_cache_path() -> PathBuf {
-    default_storage_root().join("index-cache/game-data-symbol-index.v6.json")
+    default_storage_root().join("index-cache/game-data-symbol-index.v9.bin")
 }
 
 fn default_storage_root() -> PathBuf {

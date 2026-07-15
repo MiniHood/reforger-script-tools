@@ -238,7 +238,7 @@ fn append_path_review(report: &mut String, index: &SymbolIndex, stats: &StringSt
         .saturating_sub(relative.occurrence_bytes);
 
     report.push_str("## Path String Review\n\n");
-    report.push_str("The v6 cache currently stores absolute path, root path, and relative path per file. Absolute paths are useful for debug/report output, but the repeated root prefix is a clear candidate for future path-table storage if cache size becomes a problem.\n\n");
+    report.push_str("The v9 binary cache stores repeated strings through an interned string table. The decoded index still carries absolute path, root path, and relative path per file for debug and navigation output, so this section remains useful for judging future path-table or decoded-memory work.\n\n");
     report.push_str("| Path string group | Occurrences | Unique strings | Occurrence bytes | Duplicate bytes |\n");
     report.push_str("| --- | ---: | ---: | ---: | ---: |\n");
     report.push_str(&format!(
@@ -562,7 +562,7 @@ fn default_metadata_path(scripts_path: &Path) -> Option<PathBuf> {
 }
 
 fn default_cache_path() -> PathBuf {
-    default_storage_root().join("index-cache/game-data-symbol-index.v6.json")
+    default_storage_root().join("index-cache/game-data-symbol-index.v9.bin")
 }
 
 fn default_storage_root() -> PathBuf {

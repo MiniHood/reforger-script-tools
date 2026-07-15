@@ -2,12 +2,12 @@ use crate::index::{GlobalSymbolId, SymbolIndex};
 use crate::index_query::IndexQuery;
 use crate::lexer::{lex, TextSpan, Token};
 use crate::lsp::hover_render::{render_hover_markdown, HoverLinkContext, HoverRenderContext};
-use crate::lsp::semantic_tokens::semantic_tokens_report_for_cached_analysis_with_external;
+use crate::lsp::semantic_tokens::semantic_tokens_report_for_cached_analysis_with_external_indexes;
 use crate::lsp::{
     file_index_for_source, offset_for_position, position_for_offset, span_text, symbol_kind_label,
     ExternalIndexStatusSummary, FileIndexAnalysis, LspPosition, LspRange,
 };
-use crate::model::SymbolKind;
+use crate::model::{SourceKind, SymbolKind};
 use crate::resolver::{CandidateSource, HoverResolution, ReferenceResolver};
 use crate::syntax::ParseDiagnostic;
 use std::collections::BTreeMap;
@@ -16,6 +16,27 @@ use std::time::Instant;
 const DEBUG_TOKEN_CONTEXT: usize = 8;
 const DEBUG_CANDIDATE_LIMIT: usize = 20;
 const DEBUG_CHILD_LIMIT: usize = 20;
+
+fn layered_external_indexes<'a>(
+    workspace_index: Option<&'a SymbolIndex>,
+    game_data_index: Option<&'a SymbolIndex>,
+) -> Vec<&'a SymbolIndex> {
+    workspace_index.into_iter().chain(game_data_index).collect()
+}
+
+fn external_index_for_candidate<'a>(
+    candidate: &crate::resolver::ReferenceCandidate,
+    workspace_index: Option<&'a SymbolIndex>,
+    game_data_index: Option<&'a SymbolIndex>,
+) -> Option<&'a SymbolIndex> {
+    match candidate.source_kind {
+        SourceKind::Workspace => workspace_index,
+        SourceKind::GameData => game_data_index,
+        SourceKind::Unknown | SourceKind::Fixture => None,
+    }
+    .or(workspace_index)
+    .or(game_data_index)
+}
 
 pub fn debug_hover_report_for_source_position(source: &str, position: LspPosition) -> String {
     debug_hover_report_for_source_position_with_external(source, position, None, None)
@@ -44,22 +65,44 @@ pub(crate) fn debug_hover_report_for_cached_analysis_with_external(
     external_index: Option<&SymbolIndex>,
     external_status: Option<&ExternalIndexStatusSummary>,
 ) -> String {
-    debug_hover_report_for_cached_analysis_with_external_uri(
+    debug_hover_report_for_cached_analysis_with_external_indexes(
         source,
         analysis,
         "file:///hover-debug-source.c",
         position,
+        None,
         external_index,
         external_status,
     )
 }
 
-pub(crate) fn debug_hover_report_for_cached_analysis_with_external_uri(
+pub(crate) fn debug_hover_report_for_cached_analysis_with_external_indexes(
     source: &str,
     analysis: &FileIndexAnalysis,
     current_uri: &str,
     position: LspPosition,
-    external_index: Option<&SymbolIndex>,
+    workspace_index: Option<&SymbolIndex>,
+    game_data_index: Option<&SymbolIndex>,
+    external_status: Option<&ExternalIndexStatusSummary>,
+) -> String {
+    debug_hover_report_for_cached_analysis_with_external_layers(
+        source,
+        analysis,
+        current_uri,
+        position,
+        workspace_index,
+        game_data_index,
+        external_status,
+    )
+}
+
+fn debug_hover_report_for_cached_analysis_with_external_layers(
+    source: &str,
+    analysis: &FileIndexAnalysis,
+    current_uri: &str,
+    position: LspPosition,
+    workspace_index: Option<&SymbolIndex>,
+    game_data_index: Option<&SymbolIndex>,
     external_status: Option<&ExternalIndexStatusSummary>,
 ) -> String {
     let start = Instant::now();
@@ -67,12 +110,12 @@ pub(crate) fn debug_hover_report_for_cached_analysis_with_external_uri(
     let query = IndexQuery::new(index);
     let offset = offset_for_position(source, position);
     let tokens = lex(source);
-    let resolver = ReferenceResolver::new_with_parse_and_scope(
+    let resolver = ReferenceResolver::new_with_parse_scope_and_external_indexes(
         source,
         index,
         &analysis.parse,
         &analysis.scope,
-        external_index,
+        layered_external_indexes(workspace_index, game_data_index),
     );
     let resolver_resolution = offset.and_then(|offset| resolver.resolve_at_offset(offset));
     let hover_resolution = offset.and_then(|offset| resolver.resolve_hover_at_offset(offset));
@@ -125,7 +168,14 @@ pub(crate) fn debug_hover_report_for_cached_analysis_with_external_uri(
     append_token_context(&mut report, source, &tokens, offset);
 
     report.push_str("\n## Semantic Token Coloring Context\n\n");
-    append_semantic_token_context(&mut report, source, analysis, external_index, offset);
+    append_semantic_token_context(
+        &mut report,
+        source,
+        analysis,
+        workspace_index,
+        game_data_index,
+        offset,
+    );
 
     report.push_str("\n## Parse Diagnostics\n\n");
     append_parse_diagnostics(&mut report, source, &analysis.diagnostics);
@@ -134,7 +184,8 @@ pub(crate) fn debug_hover_report_for_cached_analysis_with_external_uri(
     append_resolver_resolution(
         &mut report,
         &query,
-        external_index,
+        workspace_index,
+        game_data_index,
         resolver_resolution.as_ref(),
     );
 
@@ -145,7 +196,7 @@ pub(crate) fn debug_hover_report_for_cached_analysis_with_external_uri(
     if let Some(id) = selected_id {
         append_display_details(&mut report, source, index, &query, id);
         if let Some(display) = query.symbol_display(id) {
-            let external_query = external_index.map(IndexQuery::new);
+            let external_query = workspace_index.or(game_data_index).map(IndexQuery::new);
             report.push_str("\n### Hover Markdown\n\n```markdown\n");
             report.push_str(&escape_fence_text(&render_hover_markdown(
                 &display,
@@ -160,23 +211,28 @@ pub(crate) fn debug_hover_report_for_cached_analysis_with_external_uri(
             )));
             report.push_str("\n```\n");
         }
-    } else if let (Some(id), Some(external_index)) = (selected_external_id, external_index) {
-        let external_query = IndexQuery::new(external_index);
-        append_external_display_details(&mut report, external_index, &external_query, id);
-        if let Some(display) = external_query.symbol_display(id) {
-            report.push_str("\n### Hover Markdown\n\n```markdown\n");
-            report.push_str(&escape_fence_text(&render_hover_markdown(
-                &display,
-                Some(HoverRenderContext {
-                    query: &external_query,
-                    member_summary_query: None,
-                    links: Some(HoverLinkContext {
-                        current_uri,
-                        external_query: None,
+    } else if let Some(selected_candidate) = selected_candidate {
+        if let Some(external_index) =
+            external_index_for_candidate(selected_candidate, workspace_index, game_data_index)
+        {
+            let id = selected_candidate.id;
+            let external_query = IndexQuery::new(external_index);
+            append_external_display_details(&mut report, external_index, &external_query, id);
+            if let Some(display) = external_query.symbol_display(id) {
+                report.push_str("\n### Hover Markdown\n\n```markdown\n");
+                report.push_str(&escape_fence_text(&render_hover_markdown(
+                    &display,
+                    Some(HoverRenderContext {
+                        query: &external_query,
+                        member_summary_query: None,
+                        links: Some(HoverLinkContext {
+                            current_uri,
+                            external_query: None,
+                        }),
                     }),
-                }),
-            )));
-            report.push_str("\n```\n");
+                )));
+                report.push_str("\n```\n");
+            }
         }
     } else {
         report.push_str("No symbol matched the cursor position.\n");
@@ -191,13 +247,18 @@ pub(crate) fn debug_hover_report_for_cached_analysis_with_external_uri(
 
         report.push_str("\n## Immediate Children\n\n");
         append_children(&mut report, source, index, &query, id);
-    } else if let (Some(id), Some(external_index)) = (selected_external_id, external_index) {
-        let external_query = IndexQuery::new(external_index);
-        report.push_str("\n## Parent Chain\n\n");
-        append_external_parent_chain(&mut report, external_index, &external_query, id);
+    } else if let Some(selected_candidate) = selected_candidate {
+        if let Some(external_index) =
+            external_index_for_candidate(selected_candidate, workspace_index, game_data_index)
+        {
+            let id = selected_candidate.id;
+            let external_query = IndexQuery::new(external_index);
+            report.push_str("\n## Parent Chain\n\n");
+            append_external_parent_chain(&mut report, external_index, &external_query, id);
 
-        report.push_str("\n## Immediate Children\n\n");
-        append_external_children(&mut report, external_index, &external_query, id);
+            report.push_str("\n## Immediate Children\n\n");
+            append_external_children(&mut report, external_index, &external_query, id);
+        }
     }
 
     report.push_str("\n## Symbol Kind Counts\n\n");
@@ -257,12 +318,17 @@ fn append_semantic_token_context(
     report: &mut String,
     source: &str,
     analysis: &FileIndexAnalysis,
-    external_index: Option<&SymbolIndex>,
+    workspace_index: Option<&SymbolIndex>,
+    game_data_index: Option<&SymbolIndex>,
     offset: Option<usize>,
 ) {
     report.push_str("Semantic token types/colors are produced by the Rust language server and the bundled semantic-token theme palette. TextMate scopes are not used for Enforce coloring.\n\n");
-    let semantic =
-        semantic_tokens_report_for_cached_analysis_with_external(source, analysis, external_index);
+    let semantic = semantic_tokens_report_for_cached_analysis_with_external_indexes(
+        source,
+        analysis,
+        workspace_index,
+        game_data_index,
+    );
     if semantic.decoded.is_empty() {
         report.push_str("No semantic tokens.\n");
         return;
@@ -548,7 +614,8 @@ fn append_hover_candidates(
 fn append_resolver_resolution(
     report: &mut String,
     query: &IndexQuery<'_>,
-    external_index: Option<&SymbolIndex>,
+    workspace_index: Option<&SymbolIndex>,
+    game_data_index: Option<&SymbolIndex>,
     resolution: Option<&crate::resolver::ReferenceResolution>,
 ) {
     let Some(resolution) = resolution else {
@@ -631,9 +698,11 @@ fn append_resolver_resolution(
     {
         let display = match candidate.source {
             CandidateSource::FileLocal => query.symbol_display(candidate.id),
-            CandidateSource::External => external_index
-                .map(IndexQuery::new)
-                .and_then(|query| query.symbol_display(candidate.id)),
+            CandidateSource::External => {
+                external_index_for_candidate(candidate, workspace_index, game_data_index)
+                    .map(IndexQuery::new)
+                    .and_then(|query| query.symbol_display(candidate.id))
+            }
         };
         report.push_str(&format!(
             "| {} | `{}` | `{}` | `{}` | `{}` | `{}` | `{}` |\n",
