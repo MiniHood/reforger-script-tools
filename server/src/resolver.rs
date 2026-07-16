@@ -1400,6 +1400,12 @@ fn completion_identifier_prefix(
 }
 
 fn completion_token_index(tokens: &[crate::lexer::Token], offset: usize) -> Option<usize> {
+    if tokens.iter().any(|token| {
+        token.span.start < offset && offset <= token.span.end && token_blocks_completion(token.kind)
+    }) {
+        return None;
+    }
+
     tokens
         .iter()
         .enumerate()
@@ -1411,6 +1417,19 @@ fn completion_token_index(tokens: &[crate::lexer::Token], offset: usize) -> Opti
         })
         .map(|(index, _)| index)
         .or_else(|| previous_non_trivia_token_index(tokens, offset))
+}
+
+fn token_blocks_completion(kind: TokenKind) -> bool {
+    matches!(
+        kind,
+        TokenKind::LineComment
+            | TokenKind::DocLineComment
+            | TokenKind::BlockComment
+            | TokenKind::DocBlockComment
+            | TokenKind::UnterminatedBlockComment
+            | TokenKind::String
+            | TokenKind::UnterminatedString
+    )
 }
 
 fn previous_non_trivia_token_index(tokens: &[crate::lexer::Token], offset: usize) -> Option<usize> {

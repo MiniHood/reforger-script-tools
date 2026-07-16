@@ -537,7 +537,57 @@ fn top_level_completion_report_for_indexes(
     total_start: Instant,
 ) -> LspCompletionReport {
     let lookup_start = Instant::now();
+    let declaration_context = declaration_keyword_context(source, prefix_span.start);
     let mut candidates = Vec::new();
+    let override_candidates = override_completion_candidates_for_context(
+        &prefix,
+        offset,
+        declaration_context,
+        local_index,
+        workspace_index,
+        game_data_index,
+    );
+    if !override_candidates.is_empty() {
+        timings.candidate_lookup = lookup_start.elapsed();
+        let edit_range = range_for_span(source, prefix_span);
+        let typed_modifiers = typed_declaration_modifiers_before(source, prefix_span.start);
+        let render_start = Instant::now();
+        let (mut items, source_kind_counts, mut origin_counts) =
+            completion_items_for_override_candidates(
+                &override_candidates,
+                edit_range,
+                &typed_modifiers,
+            );
+        let mut keyword_items =
+            keyword_completion_items(&prefix, edit_range, mode, declaration_context);
+        if !keyword_items.is_empty() {
+            *origin_counts.entry("Keyword".to_string()).or_default() += keyword_items.len();
+            prioritize_keyword_item(&mut keyword_items, "override");
+            keyword_items.extend(items);
+            items = keyword_items;
+        }
+        let items = cap_completion_items(items);
+        timings.item_rendering = render_start.elapsed();
+        timings.total = total_start.elapsed();
+
+        return LspCompletionReport {
+            candidate_count: items.len(),
+            list: LspCompletionList {
+                is_incomplete: false,
+                items,
+            },
+            parse_diagnostics,
+            completion_context: "override".to_string(),
+            receiver_text: None,
+            owner_type: None,
+            prefix,
+            source_kind_counts,
+            origin_counts,
+            failure_reason: None,
+            timings,
+        };
+    }
+
     if mode == EditorTopLevelCompletionMode::Value {
         candidates.extend(scoped_value_completion_candidates(
             analysis, &prefix, offset,
@@ -599,12 +649,8 @@ fn top_level_completion_report_for_indexes(
     let render_start = Instant::now();
     let (mut items, source_kind_counts, mut origin_counts) =
         completion_items_for_candidates(&candidates, edit_range, Some("TopLevel"));
-    let mut keyword_items = keyword_completion_items(
-        &prefix,
-        edit_range,
-        mode,
-        declaration_keyword_context(source, prefix_span.start),
-    );
+    let mut keyword_items =
+        keyword_completion_items(&prefix, edit_range, mode, declaration_context);
     if !keyword_items.is_empty() {
         *origin_counts.entry("Keyword".to_string()).or_default() += keyword_items.len();
         keyword_items.extend(items);
@@ -632,6 +678,14 @@ fn top_level_completion_report_for_indexes(
     }
 }
 
+fn prioritize_keyword_item(items: &mut Vec<LspCompletionItem>, keyword: &str) {
+    if let Some(position) = items.iter().position(|item| item.label == keyword) {
+        let mut item = items.remove(position);
+        item.sort_text = Some(format!("00:00:000:00:{keyword}"));
+        items.insert(0, item);
+    }
+}
+
 fn scoped_value_completion_candidates(
     analysis: &FileIndexAnalysis,
     prefix: &str,
@@ -641,6 +695,191 @@ fn scoped_value_completion_candidates(
         .scope
         .visible_symbols_with_prefix(&analysis.index, prefix, offset);
     IndexQuery::new(&analysis.index).completion_symbols(ids, EditorCompletionOrigin::Direct)
+}
+
+fn override_completion_candidates_for_context(
+    prefix: &str,
+    offset: usize,
+    declaration_context: bool,
+    local_index: &SymbolIndex,
+    workspace_index: Option<&SymbolIndex>,
+    game_data_index: Option<&SymbolIndex>,
+) -> Vec<EditorCompletionCandidate> {
+    if prefix.is_empty() || !declaration_context || inside_callable_after_name(local_index, offset)
+    {
+        return Vec::new();
+    }
+    let Some(class_name) = containing_class_name(local_index, offset) else {
+        return Vec::new();
+    };
+
+    let owners = containing_class_completion_owners(
+        local_index,
+        workspace_index,
+        game_data_index,
+        &class_name,
+    );
+    let mut candidates = Vec::new();
+    for owner in owners.into_iter().skip(1) {
+        candidates.extend(prefixed_candidates(
+            override_candidates_for_owner(local_index, &owner),
+            prefix,
+        ));
+        if let Some(external_index) = workspace_index {
+            candidates.extend(prefixed_candidates(
+                override_candidates_for_owner(external_index, &owner),
+                prefix,
+            ));
+        }
+        if let Some(external_index) = game_data_index {
+            candidates.extend(prefixed_candidates(
+                override_candidates_for_owner(external_index, &owner),
+                prefix,
+            ));
+        }
+    }
+
+    combine_completion_candidates(candidates)
+}
+
+fn override_candidates_for_owner(
+    index: &SymbolIndex,
+    owner: &str,
+) -> Vec<EditorCompletionCandidate> {
+    IndexQuery::new(index)
+        .completion_members_for_class(owner)
+        .candidates
+        .into_iter()
+        .filter(is_overridable_method_candidate)
+        .collect()
+}
+
+fn is_overridable_method_candidate(candidate: &EditorCompletionCandidate) -> bool {
+    candidate.kind == SymbolKind::Method
+        && !candidate.display.modifiers.iter().any(|modifier| {
+            matches!(
+                modifier.as_str(),
+                "private" | "static" | "sealed" | "proto" | "external" | "native"
+            )
+        })
+}
+
+fn completion_items_for_override_candidates(
+    candidates: &[EditorCompletionCandidate],
+    edit_range: LspRange,
+    typed_modifiers: &BTreeSet<String>,
+) -> (
+    Vec<LspCompletionItem>,
+    BTreeMap<SourceKind, usize>,
+    BTreeMap<String, usize>,
+) {
+    let mut source_kind_counts = BTreeMap::new();
+    let mut origin_counts = BTreeMap::new();
+    let items = candidates
+        .iter()
+        .filter_map(|candidate| {
+            *source_kind_counts.entry(candidate.source_kind).or_default() += 1;
+            *origin_counts.entry("Override".to_string()).or_default() += 1;
+            completion_item_for_override_candidate(candidate, edit_range, typed_modifiers)
+        })
+        .collect::<Vec<_>>();
+
+    (items, source_kind_counts, origin_counts)
+}
+
+fn completion_item_for_override_candidate(
+    candidate: &EditorCompletionCandidate,
+    edit_range: LspRange,
+    typed_modifiers: &BTreeSet<String>,
+) -> Option<LspCompletionItem> {
+    let label = candidate
+        .name
+        .clone()
+        .or_else(|| Some(candidate.display.label.clone()))?;
+    let signature = candidate.signature.as_deref()?;
+    let call = callable_signature_parts(&label, signature)?;
+    let return_type = call
+        .result
+        .as_deref()
+        .and_then(|result| result.strip_prefix("->"))
+        .map(str::trim)
+        .filter(|result| !result.is_empty())
+        .unwrap_or("void");
+    let modifiers = override_completion_modifiers(candidate, typed_modifiers);
+    let declaration_prefix = if modifiers.is_empty() {
+        return_type.to_string()
+    } else {
+        format!("{} {return_type}", modifiers.join(" "))
+    };
+    let declaration = format!("{declaration_prefix} {label}{}", call.parameters);
+    let new_text = format!("{declaration}\n{{\n\t$0\n}}");
+
+    Some(LspCompletionItem {
+        label: label.clone(),
+        label_details: Some(LspCompletionItemLabelDetails {
+            detail: Some(call.parameters),
+            description: call.result,
+        }),
+        kind: 2,
+        detail: Some(declaration_prefix),
+        documentation: candidate
+            .display
+            .documentation_preview
+            .as_ref()
+            .map(|preview| LspMarkupContent {
+                kind: "markdown".to_string(),
+                value: preview.clone(),
+            }),
+        sort_text: Some(format!("00:00:004:{label}")),
+        filter_text: Some(label),
+        insert_text_format: Some(2),
+        text_edit: LspTextEdit {
+            range: edit_range,
+            new_text,
+        },
+    })
+}
+
+fn override_completion_modifiers(
+    candidate: &EditorCompletionCandidate,
+    typed_modifiers: &BTreeSet<String>,
+) -> Vec<String> {
+    let mut modifiers = vec!["override".to_string()];
+    for modifier in &candidate.display.modifiers {
+        if matches!(modifier.as_str(), "protected" | "const" | "notnull") {
+            modifiers.push(modifier.clone());
+        }
+    }
+    modifiers.retain(|modifier| !typed_modifiers.contains(modifier.as_str()));
+    modifiers
+}
+
+fn typed_declaration_modifiers_before(source: &str, offset: usize) -> BTreeSet<String> {
+    let mut modifiers = BTreeSet::new();
+    for token in lex(source)
+        .into_iter()
+        .take_while(|token| token.span.end <= offset)
+        .filter(|token| !token.kind.is_trivia())
+    {
+        match token.kind {
+            TokenKind::LeftBrace | TokenKind::RightBrace | TokenKind::Semicolon => {
+                modifiers.clear();
+            }
+            TokenKind::Keyword(_) => {
+                if let Some(text) = source.get(token.span.start..token.span.end) {
+                    if is_override_completion_modifier_text(text) {
+                        modifiers.insert(text.to_ascii_lowercase());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    modifiers
+}
+
+fn is_override_completion_modifier_text(text: &str) -> bool {
+    matches!(text, "override" | "protected" | "const" | "notnull")
 }
 
 fn keyword_completion_items(
@@ -752,6 +991,19 @@ fn containing_class_name(index: &SymbolIndex, offset: usize) -> Option<String> {
         .filter(|symbol| symbol.kind == SymbolKind::Class && span_contains(symbol.span, offset))
         .min_by_key(|symbol| symbol.span.len())
         .and_then(|symbol| symbol.name.clone())
+}
+
+fn inside_callable_after_name(index: &SymbolIndex, offset: usize) -> bool {
+    index.symbols().iter().any(|symbol| {
+        matches!(
+            symbol.kind,
+            SymbolKind::Function
+                | SymbolKind::Method
+                | SymbolKind::Constructor
+                | SymbolKind::Destructor
+        ) && span_contains(symbol.span, offset)
+            && offset > symbol.selection_span.end
+    })
 }
 
 fn containing_class_completion_owners(

@@ -14,6 +14,7 @@ The report includes completion context, receiver text, inferred owner type, type
 - call-result receiver completion
 - callable insertion text
 - overload label details
+- inherited override method skeleton completion
 - type-position prefix completion
 - top-level value/callable prefix completion
 - committed game-derived fixture completion samples
@@ -30,4 +31,4 @@ node tools/lsp-completion-report.mjs
 
 ## Boundaries
 
-This report covers source-backed member, type-prefix, and top-level-prefix completion, including simple callable insertion text, callable label details, and source-aware sort text. It does not cover placeholder snippets, `completionItem/resolve`, full overload UI, fuzzy matching, diagnostics, Workbench validation, or TypeScript-side language analysis.
+This report covers source-backed member, type-prefix, top-level-prefix, and inherited override skeleton completion, including simple callable insertion text, callable label details, and source-aware sort text. It does not cover placeholder snippets, `completionItem/resolve`, full overload UI, fuzzy matching, diagnostics, Workbench validation, or TypeScript-side language analysis.

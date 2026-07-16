@@ -69,6 +69,13 @@ class OverloadType
 	void Run();
 	void Run(int value);
 }
+
+class ParentType
+{
+	protected void OnPostInit(IEntity owner);
+	private void OnHidden();
+	static void OnStatic();
+}
 "#;
     let workspace_source = r#"class OverlayType
 {
@@ -175,6 +182,14 @@ class OverloadType
             completion_check(
                 "OverloadType overload;\n\t\toverload.R",
                 "overload.R",
+                &overlay,
+            ),
+        ),
+        (
+            "inherited override skeleton",
+            completion_source_check(
+                "class ChildType : ParentType\n{\n\tOnPostIn\n}\n",
+                "OnPostIn",
                 &overlay,
             ),
         ),

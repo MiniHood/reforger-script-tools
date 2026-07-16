@@ -92,21 +92,22 @@ pub struct LspServerOptions {
 
 pub fn run_stdio(options: LspServerOptions) -> Result<(), String> {
     let stdout = io::stdout();
-    let mut server = LspServer::new(stdout.lock(), options);
     let (sender, receiver) = mpsc::channel();
+    let mut server =
+        LspServer::new_with_internal_sender(stdout.lock(), options, Some(sender.clone()));
     thread::spawn(move || {
         let stdin = io::stdin();
         let mut reader = BufReader::new(stdin.lock());
         loop {
             match read_message(&mut reader) {
                 Ok(Some(message)) => {
-                    if sender.send(Ok(message)).is_err() {
+                    if sender.send(ServerEvent::Incoming(Ok(message))).is_err() {
                         break;
                     }
                 }
                 Ok(None) => break,
                 Err(error) => {
-                    let _ = sender.send(Err(error));
+                    let _ = sender.send(ServerEvent::Incoming(Err(error)));
                     break;
                 }
             }
@@ -172,9 +173,28 @@ struct LspServer<W: Write> {
     documents: BTreeMap<String, OpenDocument>,
     logger: LspLogger,
     external_index: ExternalIndexHandle,
+    internal_sender: Option<mpsc::Sender<ServerEvent>>,
     next_server_request_id: u64,
     last_semantic_external_generation: u64,
     shutdown_requested: bool,
+}
+
+enum ServerEvent {
+    Incoming(Result<Value, String>),
+    RichSemanticTokensReady {
+        uri: String,
+        revision: u64,
+        external_generation: u64,
+        external_status: &'static str,
+        projection: LspSemanticTokenProjection,
+        elapsed_ms: u128,
+    },
+    RichSemanticTokensSkipped {
+        uri: String,
+        revision: u64,
+        reason: String,
+        elapsed_ms: u128,
+    },
 }
 
 #[derive(Clone)]
@@ -297,6 +317,14 @@ struct TextDocumentIdentifier {
 
 impl<W: Write> LspServer<W> {
     fn new(writer: W, options: LspServerOptions) -> Self {
+        Self::new_with_internal_sender(writer, options, None)
+    }
+
+    fn new_with_internal_sender(
+        writer: W,
+        options: LspServerOptions,
+        internal_sender: Option<mpsc::Sender<ServerEvent>>,
+    ) -> Self {
         let logger = LspLogger::new(options.log_path.clone());
         let external_index = start_external_index(&options, logger.clone());
         let server = Self {
@@ -304,6 +332,7 @@ impl<W: Write> LspServer<W> {
             documents: BTreeMap::new(),
             logger,
             external_index,
+            internal_sender,
             next_server_request_id: 1,
             last_semantic_external_generation: 0,
             shutdown_requested: false,
@@ -338,19 +367,17 @@ impl<W: Write> LspServer<W> {
         Ok(())
     }
 
-    fn run_message_channel(
-        &mut self,
-        receiver: mpsc::Receiver<Result<Value, String>>,
-    ) -> Result<(), String> {
+    fn run_message_channel(&mut self, receiver: mpsc::Receiver<ServerEvent>) -> Result<(), String> {
         loop {
             match receiver.recv_timeout(Duration::from_millis(100)) {
-                Ok(Ok(message)) => {
+                Ok(ServerEvent::Incoming(Ok(message))) => {
                     let should_exit = self.handle_message(message)?;
                     if should_exit {
                         break;
                     }
                 }
-                Ok(Err(error)) => return Err(error),
+                Ok(ServerEvent::Incoming(Err(error))) => return Err(error),
+                Ok(event) => self.handle_internal_event(event)?,
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     self.request_semantic_tokens_refresh_if_external_generation_changed()?;
                 }
@@ -376,7 +403,10 @@ impl<W: Write> LspServer<W> {
                         id,
                         json!({
                             "capabilities": {
-                                "textDocumentSync": 1,
+                                "textDocumentSync": {
+                                    "openClose": true,
+                                    "change": 1
+                                },
                                 "documentSymbolProvider": true,
                                 "hoverProvider": true,
                                 "definitionProvider": true,
@@ -706,7 +736,7 @@ impl<W: Write> LspServer<W> {
                     let result = params
                         .and_then(|params| {
                             log_uri = params.text_document.uri;
-                            self.documents.get(&log_uri).map(|document| {
+                            self.documents.get_mut(&log_uri).map(|document| {
                                 bytes = document.text.len();
                                 revision = document.revision;
                                 let projection = if let Some(projection) = document
@@ -719,11 +749,22 @@ impl<W: Write> LspServer<W> {
                                     projection.clone()
                                 } else {
                                     projection_mode = "fast-compute";
-                                    rich_work = Some((
-                                        log_uri.clone(),
-                                        document.revision,
-                                        external_generation,
-                                    ));
+                                    if !document
+                                        .semantic_tokens
+                                        .pending_for_revision_and_external_generation(
+                                            document.revision,
+                                            external_generation,
+                                        )
+                                    {
+                                        document
+                                            .semantic_tokens
+                                            .mark_pending(document.revision, external_generation);
+                                        rich_work = Some((
+                                            log_uri.clone(),
+                                            document.revision,
+                                            external_generation,
+                                        ));
+                                    }
                                     fast_semantic_tokens_for_cached_analysis(
                                         &document.text,
                                         &document.analysis,
@@ -763,7 +804,7 @@ impl<W: Write> LspServer<W> {
                     ));
                     self.respond(id, result)?;
                     if let Some((uri, rich_revision, rich_external_generation)) = rich_work {
-                        self.prepare_rich_semantic_tokens(
+                        self.schedule_rich_semantic_tokens(
                             &uri,
                             rich_revision,
                             rich_external_generation,
@@ -1076,12 +1117,153 @@ impl<W: Write> LspServer<W> {
         Ok(self.shutdown_requested && method == "exit")
     }
 
-    fn prepare_rich_semantic_tokens(
+    fn handle_internal_event(&mut self, event: ServerEvent) -> Result<(), String> {
+        match event {
+            ServerEvent::Incoming(_) => Ok(()),
+            ServerEvent::RichSemanticTokensReady {
+                uri,
+                revision,
+                external_generation,
+                external_status,
+                projection,
+                elapsed_ms,
+            } => {
+                let token_count = projection.token_count;
+                let parse_diagnostics = projection.parse_diagnostics;
+                let lex_ms = projection.timings.lex_ms;
+                let token_loop_ms = projection.timings.token_loop_ms;
+                let resolver_ms = projection.timings.resolver_ms;
+                let resolver_calls = projection.timings.identifier_resolver_calls;
+                let encode_ms = projection.timings.encode_ms;
+                let Some(current_revision) =
+                    self.documents.get(&uri).map(|document| document.revision)
+                else {
+                    self.log(&format!(
+                        "semanticTokensRich discarded uri={} revision={} reason=missing-document elapsed_ms={}",
+                        uri,
+                        revision,
+                        elapsed_ms
+                    ));
+                    return Ok(());
+                };
+                if current_revision != revision {
+                    self.log(&format!(
+                        "semanticTokensRich discarded uri={} revision={} current_revision={} reason=stale-revision elapsed_ms={}",
+                        uri,
+                        revision,
+                        current_revision,
+                        elapsed_ms
+                    ));
+                    return Ok(());
+                }
+                let current_external_generation = self.external_index.status_summary().generation;
+                if current_external_generation != external_generation {
+                    self.log(&format!(
+                        "semanticTokensRich discarded uri={} revision={} external_generation={} current_external_generation={} reason=stale-external-index elapsed_ms={}",
+                        uri,
+                        revision,
+                        external_generation,
+                        current_external_generation,
+                        elapsed_ms
+                    ));
+                    return Ok(());
+                }
+                if let Some(document) = self.documents.get_mut(&uri) {
+                    document
+                        .semantic_tokens
+                        .set_rich(revision, external_generation, projection);
+                }
+                self.log(&format!(
+                    "semanticTokensRich ready uri={} revision={} external_generation={} tokens={} external_index_status={} parse_diagnostics={} lex_ms={} token_loop_ms={} resolver_ms={} resolver_calls={} encode_ms={} elapsed_ms={}",
+                    uri,
+                    revision,
+                    external_generation,
+                    token_count,
+                    external_status,
+                    parse_diagnostics,
+                    lex_ms,
+                    token_loop_ms,
+                    resolver_ms,
+                    resolver_calls,
+                    encode_ms,
+                    elapsed_ms
+                ));
+                self.request_semantic_tokens_refresh()
+            }
+            ServerEvent::RichSemanticTokensSkipped {
+                uri,
+                revision,
+                reason,
+                elapsed_ms,
+            } => {
+                self.log(&format!(
+                    "semanticTokensRich skipped uri={} revision={} reason={} elapsed_ms={}",
+                    uri, revision, reason, elapsed_ms
+                ));
+                Ok(())
+            }
+        }
+    }
+
+    fn schedule_rich_semantic_tokens(
         &mut self,
         uri: &str,
         revision: u64,
         external_generation: u64,
     ) -> Result<(), String> {
+        if let Some(sender) = self.internal_sender.clone() {
+            let start = Instant::now();
+            let Some(document) = self.documents.get(uri) else {
+                let _ = sender.send(ServerEvent::RichSemanticTokensSkipped {
+                    uri: uri.to_string(),
+                    revision,
+                    reason: "missing-document".to_string(),
+                    elapsed_ms: start.elapsed().as_millis(),
+                });
+                return Ok(());
+            };
+            if document.revision != revision {
+                let _ = sender.send(ServerEvent::RichSemanticTokensSkipped {
+                    uri: uri.to_string(),
+                    revision,
+                    reason: "stale-revision".to_string(),
+                    elapsed_ms: start.elapsed().as_millis(),
+                });
+                return Ok(());
+            }
+            let uri = uri.to_string();
+            let source = document.text.clone();
+            let analysis = document.analysis.clone();
+            let external_snapshot = self.external_index.snapshot();
+            thread::spawn(move || {
+                let start = Instant::now();
+                if external_snapshot.generation != external_generation {
+                    let _ = sender.send(ServerEvent::RichSemanticTokensSkipped {
+                        uri,
+                        revision,
+                        reason: "stale-external-index".to_string(),
+                        elapsed_ms: start.elapsed().as_millis(),
+                    });
+                    return;
+                }
+                let projection = semantic_tokens_for_cached_analysis_with_external_indexes(
+                    &source,
+                    &analysis,
+                    external_snapshot.workspace.as_deref(),
+                    external_snapshot.game_data.as_deref(),
+                );
+                let _ = sender.send(ServerEvent::RichSemanticTokensReady {
+                    uri,
+                    revision,
+                    external_generation,
+                    external_status: external_snapshot.status,
+                    projection,
+                    elapsed_ms: start.elapsed().as_millis(),
+                });
+            });
+            return Ok(());
+        }
+
         let start = Instant::now();
         let mut external_index_status = self.external_index.status_summary().status;
         let Some(projection) =
@@ -2155,6 +2337,7 @@ enum EGameFlags
 	/*!
 		\return[] // True{} <> if the game is hosted by a player (i.e., not dedicated server)
 	*/
+	int testnnn = 1; /* testnnn {} Set() */
 	void Run();
 }
 "#;
@@ -2178,6 +2361,15 @@ enum EGameFlags
                 ) && token.range.start.line >= 2
                     && token.range.end.line <= 5
                     && token.token_type != "comment"
+            }),
+            "{:?}",
+            report.decoded
+        );
+        assert!(
+            report.decoded.iter().any(|token| {
+                token.token_type == "comment"
+                    && token.text == "/* testnnn {} Set() */"
+                    && token.range.start.line == 6
             }),
             "{:?}",
             report.decoded
@@ -3274,6 +3466,285 @@ int SCR_Global;
     }
 
     #[test]
+    fn completion_returns_inherited_override_method_skeletons() {
+        let source = r#"class Child : Parent
+{
+	OnPostIn
+}
+"#;
+        let external = file_index_for_source(
+            r#"class Parent
+{
+	protected void OnPostInit(IEntity owner);
+}
+"#,
+        )
+        .index;
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "OnPostIn"),
+            Some(&external),
+        );
+
+        assert_eq!(report.completion_context, "override");
+        assert_eq!(report.prefix, "OnPostIn");
+        let item = report
+            .list
+            .items
+            .iter()
+            .find(|item| item.label == "OnPostInit")
+            .expect("expected inherited override completion");
+        assert_eq!(item.kind, 2);
+        assert_eq!(item.detail.as_deref(), Some("override protected void"));
+        assert_eq!(item.insert_text_format, Some(2));
+        assert_eq!(
+            item.text_edit.new_text,
+            "override protected void OnPostInit(IEntity owner)\n{\n\t$0\n}"
+        );
+    }
+
+    #[test]
+    fn completion_returns_override_skeletons_for_event_base_methods() {
+        let source = r#"class Child : ScriptComponent
+{
+	onpostin
+}
+"#;
+        let external = file_index_for_source(
+            r#"class ScriptComponent
+{
+	event protected void OnPostInit(IEntity owner);
+}
+"#,
+        )
+        .index;
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "onpostin"),
+            Some(&external),
+        );
+
+        assert_eq!(report.completion_context, "override");
+        let item = report
+            .list
+            .items
+            .iter()
+            .find(|item| item.label == "OnPostInit")
+            .expect("expected event base method override completion");
+        assert_eq!(
+            item.text_edit.new_text,
+            "override protected void OnPostInit(IEntity owner)\n{\n\t$0\n}"
+        );
+    }
+
+    #[test]
+    fn completion_keeps_override_keyword_when_override_skeletons_are_available() {
+        let source = r#"class Child : ScriptComponent
+{
+	o
+}
+"#;
+        let external = file_index_for_source(
+            r#"class ScriptComponent
+{
+	event protected void OnPostInit(IEntity owner);
+}
+"#,
+        )
+        .index;
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "\to"),
+            Some(&external),
+        );
+
+        assert_eq!(report.completion_context, "override");
+        let labels = report
+            .list
+            .items
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(labels.first().copied(), Some("override"));
+        assert!(labels.contains(&"OnPostInit"));
+    }
+
+    #[test]
+    fn completion_override_skeleton_omits_already_typed_modifiers() {
+        let source = r#"class Child : ScriptComponent
+{
+	override protected onpostin
+}
+"#;
+        let external = file_index_for_source(
+            r#"class ScriptComponent
+{
+	event protected void OnPostInit(IEntity owner);
+}
+"#,
+        )
+        .index;
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "onpostin"),
+            Some(&external),
+        );
+
+        assert_eq!(report.completion_context, "override");
+        let item = report
+            .list
+            .items
+            .iter()
+            .find(|item| item.label == "OnPostInit")
+            .expect("expected inherited override completion");
+        assert_eq!(item.detail.as_deref(), Some("void"));
+        assert_eq!(
+            item.text_edit.new_text,
+            "void OnPostInit(IEntity owner)\n{\n\t$0\n}"
+        );
+    }
+
+    #[test]
+    fn completion_returns_override_skeletons_before_inline_comment_at_class_scope() {
+        let source = r#"class GRAY_TEST : ScriptComponent
+{
+	int testnnn;
+	onpostin//Nothing appearing
+
+	override protected void OnPostInit(IEntity owner)
+	{
+	}
+}
+"#;
+        let external = file_index_for_source(
+            r#"class ScriptComponent
+{
+	event protected void OnPostInit(IEntity owner);
+}
+"#,
+        )
+        .index;
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "onpostin"),
+            Some(&external),
+        );
+
+        assert_eq!(report.completion_context, "override");
+        assert!(report
+            .list
+            .items
+            .iter()
+            .any(|item| item.label == "OnPostInit"));
+    }
+
+    #[test]
+    fn completion_returns_override_skeletons_before_following_method_without_comment() {
+        let source = r#"class GRAY_TEST : ScriptComponent
+{
+	int testnnn;
+	onpostin
+
+	override protected void OnPostInit(IEntity owner)
+	{
+	}
+}
+"#;
+        let external = file_index_for_source(
+            r#"class ScriptComponent
+{
+	event protected void OnPostInit(IEntity owner);
+}
+"#,
+        )
+        .index;
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "onpostin"),
+            Some(&external),
+        );
+
+        assert_eq!(report.completion_context, "override");
+        assert!(report
+            .list
+            .items
+            .iter()
+            .any(|item| item.label == "OnPostInit"));
+    }
+
+    #[test]
+    fn completion_excludes_private_and_static_methods_from_override_skeletons() {
+        let source = r#"class Child : Parent
+{
+	On
+}
+"#;
+        let external = file_index_for_source(
+            r#"class Parent
+{
+	private void OnPrivate();
+	static void OnStatic();
+	protected void OnAllowed();
+}
+"#,
+        )
+        .index;
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "On"),
+            Some(&external),
+        );
+        let labels = report
+            .list
+            .items
+            .iter()
+            .filter(|item| item.text_edit.new_text.starts_with("override "))
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(labels.contains(&"OnAllowed"));
+        assert!(!labels.contains(&"OnPrivate"));
+        assert!(!labels.contains(&"OnStatic"));
+        assert!(!report
+            .list
+            .items
+            .iter()
+            .any(|item| item.text_edit.new_text.starts_with("override static")));
+    }
+
+    #[test]
+    fn completion_does_not_return_override_skeletons_inside_method_bodies() {
+        let source = r#"class Child : Parent
+{
+	void Run()
+	{
+		OnPostIn
+	}
+}
+"#;
+        let external = file_index_for_source(
+            r#"class Parent
+{
+	protected void OnPostInit(IEntity owner);
+}
+"#,
+        )
+        .index;
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "OnPostIn"),
+            Some(&external),
+        );
+
+        assert_ne!(report.completion_context, "override");
+        assert!(!report
+            .list
+            .items
+            .iter()
+            .any(|item| item.text_edit.new_text.contains("override protected void")));
+    }
+
+    #[test]
     fn completion_returns_empty_inside_comments() {
         let source = r#"class Example
 {
@@ -3286,6 +3757,26 @@ int SCR_Global;
         let report = completion_report_for_source_position_with_external(
             source,
             position_after_needle(source, "get"),
+            None,
+        );
+
+        assert_eq!(report.completion_context, "none");
+        assert!(report.list.items.is_empty());
+    }
+
+    #[test]
+    fn completion_returns_empty_inside_block_comments_after_code() {
+        let source = r#"class Example
+{
+	void Run()
+	{
+		int testnnn = 1; /* testnnn */
+	}
+}
+"#;
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_for_needle(source, "/* testnnn", "test"),
             None,
         );
 

@@ -53,6 +53,8 @@ pub(crate) struct SemanticTokenCache {
     rich_revision: Option<u64>,
     rich_external_generation: Option<u64>,
     rich_projection: Option<LspSemanticTokenProjection>,
+    pending_revision: Option<u64>,
+    pending_external_generation: Option<u64>,
 }
 
 impl SemanticTokenCache {
@@ -76,9 +78,26 @@ impl SemanticTokenCache {
         self.rich_revision = Some(revision);
         self.rich_external_generation = Some(external_generation);
         self.rich_projection = Some(projection);
+        self.pending_revision = None;
+        self.pending_external_generation = None;
+    }
+
+    pub(crate) fn pending_for_revision_and_external_generation(
+        &self,
+        revision: u64,
+        external_generation: u64,
+    ) -> bool {
+        self.pending_revision == Some(revision)
+            && self.pending_external_generation == Some(external_generation)
+    }
+
+    pub(crate) fn mark_pending(&mut self, revision: u64, external_generation: u64) {
+        self.pending_revision = Some(revision);
+        self.pending_external_generation = Some(external_generation);
     }
 }
 
+#[derive(Clone)]
 pub struct FileIndexAnalysis {
     pub(crate) parse: Parse,
     pub(crate) index: SymbolIndex,

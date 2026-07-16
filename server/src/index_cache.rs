@@ -22,6 +22,11 @@ const CACHE_SCHEMA: &str = "reforger-symbol-index";
 const CACHE_MAGIC: &[u8; 8] = b"RSTIDX09";
 const CACHE_INDEX_SHAPE: &str =
     "runtime-pruned:no-local-variables:detail-spans-stripped:layered-external-v1:binary-v2:string-table-v1";
+const MAX_CACHE_STRING_TABLE_ENTRIES: usize = 1_000_000;
+const MAX_CACHE_RAW_STRING_BYTES: usize = 16 * 1024 * 1024;
+const MAX_CACHE_FILE_RECORDS: usize = 1_000_000;
+const MAX_CACHE_SYMBOL_RECORDS: usize = 5_000_000;
+const MAX_CACHE_SYMBOL_LIST_ITEMS: usize = 1_000_000;
 
 #[derive(Debug)]
 pub struct GameDataIndexCacheConfig {
@@ -167,27 +172,42 @@ impl From<CachedIndexSummary> for RuntimeIndexSummary {
 pub fn load_or_build_game_data_index(
     config: &GameDataIndexCacheConfig,
 ) -> Result<GameDataIndexCacheResult, String> {
+    load_or_build_game_data_index_with_progress(config, |_| {})
+}
+
+pub fn load_or_build_game_data_index_with_progress(
+    config: &GameDataIndexCacheConfig,
+    mut progress: impl FnMut(&str),
+) -> Result<GameDataIndexCacheResult, String> {
     let total_start = Instant::now();
     let mut timings = IndexCacheTimings::default();
+    progress("validate-scripts-root-start");
     if !config.scripts_root.is_dir() {
         return Err(format!(
             "Game-data scripts folder does not exist: {}",
             config.scripts_root.display()
         ));
     }
+    progress("validate-scripts-root-end");
 
+    progress("fingerprint-start");
     let fingerprint_start = Instant::now();
     let fingerprint = source_fingerprint(&config.scripts_root, config.metadata_path.as_deref())?;
     timings.fingerprint = fingerprint_start.elapsed();
+    progress("fingerprint-end");
     let initial_cache_file_bytes = cache_file_bytes(&config.cache_path);
 
+    progress("cache-load-start");
     let cache_read_start = Instant::now();
     match load_cached_index(&config.cache_path, &fingerprint, &mut timings) {
         Ok(Some(cached)) => {
             timings.cache_read_deserialize_validate = cache_read_start.elapsed();
+            progress("cache-load-hit");
+            progress("map-rebuild-start");
             let map_rebuild_start = Instant::now();
             let index = cached.index.into();
             timings.map_rebuild = map_rebuild_start.elapsed();
+            progress("map-rebuild-end");
             timings.total = total_start.elapsed();
             return Ok(GameDataIndexCacheResult {
                 index,
@@ -200,10 +220,12 @@ pub fn load_or_build_game_data_index(
         }
         Ok(None) | Err(_) => {
             timings.cache_read_deserialize_validate = cache_read_start.elapsed();
+            progress("cache-load-miss");
         }
     }
 
     let rebuild_reason = cache_rebuild_reason(&config.cache_path, &fingerprint);
+    progress("source-rebuild-start");
     let rebuild_start = Instant::now();
     let built = build_index(&IndexBuildConfig {
         roots: vec![IndexSourceRoot::new(
@@ -213,12 +235,15 @@ pub fn load_or_build_game_data_index(
         )],
     })?;
     timings.rebuild = rebuild_start.elapsed();
+    progress("source-rebuild-end");
     let cached_index = built.index.compact_for_runtime_cache();
     let summary = summary_from_build_with_cached_index(&built, &cached_index);
 
+    progress("cache-write-start");
     let cache_write_start = Instant::now();
     write_cached_index(&config.cache_path, &fingerprint, &summary, &cached_index)?;
     timings.cache_write = cache_write_start.elapsed();
+    progress("cache-write-end");
     timings.total = total_start.elapsed();
     let cache_file_bytes = cache_file_bytes(&config.cache_path);
 
@@ -395,12 +420,12 @@ fn decode_cached_index(bytes: &[u8]) -> Result<CachedGameDataIndex, String> {
     let crate_version = reader.read_string()?;
     let fingerprint = reader.read_fingerprint()?;
     let summary = reader.read_summary()?;
-    let file_count = reader.read_len()?;
+    let file_count = reader.read_bounded_len("file records", MAX_CACHE_FILE_RECORDS)?;
     let mut files = Vec::with_capacity(file_count);
     for _ in 0..file_count {
         files.push(reader.read_indexed_file()?);
     }
-    let symbol_count = reader.read_len()?;
+    let symbol_count = reader.read_bounded_len("symbol records", MAX_CACHE_SYMBOL_RECORDS)?;
     let mut symbols = Vec::with_capacity(symbol_count);
     for _ in 0..symbol_count {
         symbols.push(reader.read_indexed_symbol()?);
@@ -847,14 +872,24 @@ impl<'a> BinaryReader<'a> {
         self.read_usize()
     }
 
-    fn read_raw_string(&mut self) -> Result<String, String> {
+    fn read_bounded_len(&mut self, label: &str, max: usize) -> Result<usize, String> {
         let len = self.read_len()?;
+        if len > max {
+            return Err(format!(
+                "cache {label} length {len} exceeds safety limit {max}"
+            ));
+        }
+        Ok(len)
+    }
+
+    fn read_raw_string(&mut self) -> Result<String, String> {
+        let len = self.read_bounded_len("raw string byte", MAX_CACHE_RAW_STRING_BYTES)?;
         let bytes = self.read_exact(len)?;
         String::from_utf8(bytes.to_vec()).map_err(|error| format!("invalid utf-8 string: {error}"))
     }
 
     fn read_string_table(&mut self) -> Result<(), String> {
-        let len = self.read_len()?;
+        let len = self.read_bounded_len("string table entry", MAX_CACHE_STRING_TABLE_ENTRIES)?;
         let mut values = Vec::with_capacity(len);
         for _ in 0..len {
             values.push(self.read_raw_string()?);
@@ -1017,7 +1052,7 @@ impl<'a> BinaryReader<'a> {
         &mut self,
         mut read_item: impl FnMut(&mut Self) -> Result<T, String>,
     ) -> Result<Vec<T>, String> {
-        let len = self.read_len()?;
+        let len = self.read_bounded_len("symbol child list", MAX_CACHE_SYMBOL_LIST_ITEMS)?;
         let mut items = Vec::with_capacity(len);
         for _ in 0..len {
             items.push(read_item(self)?);
@@ -1765,6 +1800,17 @@ class BaseGameModeClass : GenericEntityClass
         assert!(result.timings.total > std::time::Duration::ZERO);
 
         cleanup(&root);
+    }
+
+    #[test]
+    fn corrupt_binary_cache_lengths_do_not_allocate_unbounded_memory() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(CACHE_MAGIC);
+        bytes.extend_from_slice(&(MAX_CACHE_STRING_TABLE_ENTRIES as u64 + 1).to_le_bytes());
+
+        let error = decode_cached_index(&bytes).unwrap_err();
+        assert!(error.contains("string table entry length"));
+        assert!(error.contains("exceeds safety limit"));
     }
 
     #[test]

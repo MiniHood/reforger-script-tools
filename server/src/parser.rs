@@ -44,7 +44,9 @@ impl Parser<'_> {
             } else if self.at(TokenKind::Hash) {
                 children.push(self.parse_preprocessor_directive());
             } else {
+                let start = self.position;
                 children.push(self.parse_declaration_or_error(false));
+                self.assert_progress(start, "source-file declaration");
             }
         }
 
@@ -361,7 +363,9 @@ impl Parser<'_> {
             } else if self.at(TokenKind::Hash) {
                 children.push(self.parse_preprocessor_directive());
             } else {
+                let start = self.position;
                 children.push(self.parse_declaration_or_error(true));
+                self.assert_progress(start, "class-body declaration");
             }
         }
 
@@ -378,7 +382,9 @@ impl Parser<'_> {
         children.push(self.bump_token());
 
         while !self.at(TokenKind::RightBrace) && !self.at(TokenKind::Eof) {
+            let start = self.position;
             children.push(self.parse_statement());
+            self.assert_progress(start, "statement block item");
         }
 
         self.expect(
@@ -541,11 +547,17 @@ impl Parser<'_> {
                 if self.current().kind.is_trivia() {
                     children.push(self.bump_token());
                 } else if self.at_keyword(Keyword::Case) {
+                    let start = self.position;
                     children.push(self.parse_switch_section());
+                    self.assert_progress(start, "switch section");
                 } else if self.at_keyword(Keyword::Default) {
+                    let start = self.position;
                     children.push(self.parse_switch_section());
+                    self.assert_progress(start, "switch section");
                 } else {
+                    let start = self.position;
                     children.push(self.parse_statement());
+                    self.assert_progress(start, "switch statement item");
                 }
             }
             self.expect(
@@ -564,9 +576,13 @@ impl Parser<'_> {
 
         while self.at_keyword(Keyword::Case) || self.at_keyword(Keyword::Default) {
             if self.at_keyword(Keyword::Case) {
+                let start = self.position;
                 children.push(self.parse_case_clause());
+                self.assert_progress(start, "switch case clause");
             } else {
+                let start = self.position;
                 children.push(self.parse_default_clause());
+                self.assert_progress(start, "switch default clause");
             }
             self.collect_trivia(&mut children);
         }
@@ -579,7 +595,9 @@ impl Parser<'_> {
             if self.current().kind.is_trivia() {
                 children.push(self.bump_token());
             } else {
+                let start = self.position;
                 children.push(self.parse_statement());
+                self.assert_progress(start, "switch section statement");
             }
         }
 
@@ -782,7 +800,9 @@ impl Parser<'_> {
             } else {
                 let mut expression_stops = vec![TokenKind::Comma];
                 expression_stops.extend_from_slice(stop);
+                let start = self.position;
                 children.push(self.parse_expression_until(&expression_stops, 0));
+                self.assert_progress(start, "for expression list item");
             }
         }
     }
@@ -820,7 +840,9 @@ impl Parser<'_> {
             if self.current().kind.is_trivia() || self.at(TokenKind::Comma) {
                 children.push(self.bump_token());
             } else {
+                let start = self.position;
                 children.push(self.parse_foreach_variable());
+                self.assert_progress(start, "foreach variable");
             }
         }
         node(SyntaxKind::ForeachVariableList, children)
@@ -1073,7 +1095,9 @@ impl Parser<'_> {
             if self.current().kind.is_trivia() || self.at(TokenKind::Comma) {
                 children.push(self.bump_token());
             } else {
+                let start = self.position;
                 children.push(self.parse_argument());
+                self.assert_progress(start, "argument-list item");
             }
         }
 
@@ -1107,8 +1131,10 @@ impl Parser<'_> {
             } else if self.at(TokenKind::LeftBrace) {
                 children.push(self.parse_initializer_expression());
             } else {
+                let start = self.position;
                 children
                     .push(self.parse_expression_bp(&[TokenKind::Comma, TokenKind::RightBrace], 0));
+                self.assert_progress(start, "initializer expression item");
             }
         }
         self.expect(
@@ -1127,7 +1153,9 @@ impl Parser<'_> {
             if self.current().kind.is_trivia() || self.at(TokenKind::Comma) {
                 children.push(self.bump_token());
             } else {
+                let start = self.position;
                 children.push(self.parse_parameter());
+                self.assert_progress(start, "parameter-list item");
             }
         }
 
@@ -1281,6 +1309,10 @@ impl Parser<'_> {
 
     fn parse_error_until_sync(&mut self, mut children: Vec<SyntaxElement>) -> SyntaxElement {
         self.error_here("Unexpected token in declaration context");
+        if self.at(TokenKind::LeftBrace) {
+            children.push(self.parse_statement_block());
+            return node(SyntaxKind::Error, children);
+        }
         while !matches!(
             self.current().kind,
             TokenKind::Semicolon | TokenKind::LeftBrace | TokenKind::RightBrace | TokenKind::Eof
@@ -1847,6 +1879,17 @@ impl Parser<'_> {
         self.tokens[self.position]
     }
 
+    fn assert_progress(&self, start: usize, context: &'static str) {
+        if self.position <= start {
+            eprintln!(
+                "fatal parser invariant violation: made no progress while parsing {context} at token {:?} span {:?}",
+                self.current().kind,
+                self.current().span
+            );
+            std::process::abort();
+        }
+    }
+
     fn bump_token(&mut self) -> SyntaxElement {
         let token = self.current();
         self.position += 1;
@@ -2322,6 +2365,29 @@ class AfterInvalid
 
         assert_eq!(parse.diagnostics.len(), 1, "{:?}", parse.diagnostics);
         assert_eq!(count_kind(&parse.root, SyntaxKind::ClassDecl), 2);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::Error), 1);
+    }
+
+    #[test]
+    fn naked_block_in_class_body_recovers_without_looping() {
+        let source = r#"class Example
+{
+	int m_Value;
+
+	{
+		int invalidBlockLocal;
+	}
+
+	void Run();
+}
+"#;
+
+        let parse = parse_source(source);
+
+        assert_eq!(parse.diagnostics.len(), 1, "{:?}", parse.diagnostics);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::ClassDecl), 1);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::FieldDecl), 1);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::MethodDecl), 1);
         assert_eq!(count_kind(&parse.root, SyntaxKind::Error), 1);
     }
 

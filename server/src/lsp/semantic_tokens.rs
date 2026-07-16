@@ -68,6 +68,7 @@ const SEMANTIC_MOD_MODIFICATION: u32 = 1 << 5;
 const TYPE_SPAN_PRIORITY: u8 = 70;
 const RESOLVER_REFERENCE_PRIORITY: u8 = 60;
 const RESOLVER_TYPE_REFERENCE_PRIORITY: u8 = 80;
+const MAX_RAW_SEMANTIC_TOKENS: usize = 200_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct LspSemanticTokens {
@@ -313,7 +314,7 @@ fn semantic_raw_tokens(
         }
         if is_preprocessor_line_token(source, *token) {
             if let Some(token_type) = preprocessor_line_semantic_type(source, *token) {
-                tokens.push(raw_semantic(*token, token_type, 0, 20));
+                push_raw_semantic_token(&mut tokens, raw_semantic(*token, token_type, 0, 20));
             }
             continue;
         }
@@ -332,7 +333,7 @@ fn semantic_raw_tokens(
                 AttributeIdentifierRole::TypeLikeUnqualifiedValue => TYPE_SPAN_PRIORITY,
                 _ => TYPE_SPAN_PRIORITY,
             };
-            tokens.push(raw_semantic(*token, token_type, 0, priority));
+            push_raw_semantic_token(&mut tokens, raw_semantic(*token, token_type, 0, priority));
             if !matches!(
                 role,
                 AttributeIdentifierRole::UnqualifiedValue
@@ -347,19 +348,20 @@ fn semantic_raw_tokens(
                 CallIdentifierRole::UnqualifiedCall => semantic_type_index("function"),
                 CallIdentifierRole::MemberCall => semantic_type_index("method"),
             };
-            tokens.push(raw_semantic(
-                *token,
-                token_type,
-                0,
-                RESOLVER_REFERENCE_PRIORITY,
-            ));
+            push_raw_semantic_token(
+                &mut tokens,
+                raw_semantic(*token, token_type, 0, RESOLVER_REFERENCE_PRIORITY),
+            );
         }
         if let Some(role) = static_member_roles.get(&token_index).copied() {
             let token_type = match role {
                 StaticMemberIdentifierRole::Owner => semantic_type_index("class"),
                 StaticMemberIdentifierRole::MemberValue => semantic_type_index("enumMember"),
             };
-            tokens.push(raw_semantic(*token, token_type, 0, TYPE_SPAN_PRIORITY));
+            push_raw_semantic_token(
+                &mut tokens,
+                raw_semantic(*token, token_type, 0, TYPE_SPAN_PRIORITY),
+            );
         }
         if let Some(token_type) = lexical_semantic_type(token.kind) {
             let priority = if is_comment_token_kind(token.kind) {
@@ -367,7 +369,7 @@ fn semantic_raw_tokens(
             } else {
                 10
             };
-            tokens.push(raw_semantic(*token, token_type, 0, priority));
+            push_raw_semantic_token(&mut tokens, raw_semantic(*token, token_type, 0, priority));
         }
         if token.kind == TokenKind::Identifier && mode == SemanticTokenMode::Rich {
             if declaration_spans.contains(&(token.span.start, token.span.end)) {
@@ -387,12 +389,15 @@ fn semantic_raw_tokens(
                         workspace_index,
                         game_data_index,
                     ) {
-                        tokens.push(RawSemanticToken {
-                            span: token.span,
-                            token_type,
-                            modifiers: 0,
-                            priority: resolver_reference_priority(candidate.kind),
-                        });
+                        push_raw_semantic_token(
+                            &mut tokens,
+                            RawSemanticToken {
+                                span: token.span,
+                                token_type,
+                                modifiers: 0,
+                                priority: resolver_reference_priority(candidate.kind),
+                            },
+                        );
                     }
                 }
             }
@@ -413,12 +418,15 @@ fn semantic_raw_tokens(
         let Some(token_type) = symbol_semantic_type(symbol.kind) else {
             continue;
         };
-        tokens.push(RawSemanticToken {
-            span: symbol.selection_span,
-            token_type,
-            modifiers: symbol_semantic_modifiers(symbol),
-            priority: 100,
-        });
+        push_raw_semantic_token(
+            &mut tokens,
+            RawSemanticToken {
+                span: symbol.selection_span,
+                token_type,
+                modifiers: symbol_semantic_modifiers(symbol),
+                priority: 100,
+            },
+        );
     }
     let declaration_overlay_elapsed = declaration_overlay_start.elapsed();
 
@@ -551,12 +559,15 @@ fn push_identifier_tokens_in_span(
         if token.kind != TokenKind::Identifier {
             continue;
         }
-        tokens.push(RawSemanticToken {
-            span: TextSpan::new(span.start + token.span.start, span.start + token.span.end),
-            token_type,
-            modifiers: 0,
-            priority,
-        });
+        push_raw_semantic_token(
+            tokens,
+            RawSemanticToken {
+                span: TextSpan::new(span.start + token.span.start, span.start + token.span.end),
+                token_type,
+                modifiers: 0,
+                priority,
+            },
+        );
     }
 }
 
@@ -579,12 +590,15 @@ fn push_type_tokens_in_span(
         let Some(semantic_type) = semantic_type else {
             continue;
         };
-        tokens.push(RawSemanticToken {
-            span: TextSpan::new(span.start + token.span.start, span.start + token.span.end),
-            token_type: semantic_type,
-            modifiers: 0,
-            priority,
-        });
+        push_raw_semantic_token(
+            tokens,
+            RawSemanticToken {
+                span: TextSpan::new(span.start + token.span.start, span.start + token.span.end),
+                token_type: semantic_type,
+                modifiers: 0,
+                priority,
+            },
+        );
     }
 }
 
@@ -604,6 +618,12 @@ fn raw_semantic(token: Token, token_type: u32, modifiers: u32, priority: u8) -> 
         token_type,
         modifiers,
         priority,
+    }
+}
+
+fn push_raw_semantic_token(tokens: &mut Vec<RawSemanticToken>, token: RawSemanticToken) {
+    if tokens.len() < MAX_RAW_SEMANTIC_TOKENS {
+        tokens.push(token);
     }
 }
 
@@ -920,10 +940,13 @@ fn split_multiline_semantic_tokens(
                 .map(|offset| segment_start + offset)
                 .unwrap_or(token.span.end);
             if segment_start < line_end {
-                result.push(RawSemanticToken {
-                    span: TextSpan::new(segment_start, line_end),
-                    ..token
-                });
+                push_raw_semantic_token(
+                    &mut result,
+                    RawSemanticToken {
+                        span: TextSpan::new(segment_start, line_end),
+                        ..token
+                    },
+                );
             }
             if line_end == token.span.end {
                 break;
@@ -935,7 +958,8 @@ fn split_multiline_semantic_tokens(
 }
 
 fn encode_semantic_tokens(source: &str, tokens: &[RawSemanticToken]) -> Vec<u32> {
-    let mut data = Vec::with_capacity(tokens.len() * 5);
+    let encoded_capacity = tokens.len().min(MAX_RAW_SEMANTIC_TOKENS).saturating_mul(5);
+    let mut data = Vec::with_capacity(encoded_capacity);
     let mut previous_line = 0u32;
     let mut previous_start = 0u32;
     let line_index = SemanticLineIndex::new(source);

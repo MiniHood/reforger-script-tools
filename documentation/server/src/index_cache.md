@@ -16,7 +16,11 @@ The persisted game-data cache is runtime-pruned in format v9: it removes only ex
 
 The v9 cache is written as a dependency-free binary file with only metadata, files, symbols, summary counts, and an interned string table. Derived lookup maps are not persisted; they are rebuilt after decoding from the stored file and symbol records. Source-only detail span fields are stripped from persisted game-data symbols because the external cache does not retain source text, but copied detail text remains available for hover, signatures, and debug display. Any magic, schema, format, index-shape, crate-version, fingerprint, or decode mismatch falls back to rebuilding and replacing the cache.
 
+The binary decoder must treat cache bytes as untrusted. Every length-prefixed allocation is bounded before `Vec::with_capacity` or string materialization. A stale, corrupt, truncated, or partially-written cache must return a decode error and rebuild from source; it must never request unbounded memory.
+
 Cache operations now return timing data for fingerprinting, cache file read, binary decode, validation, lookup-map rebuild after decode, rebuild, write, and total load-or-build time. These timings are review data only; they do not change cache behavior.
+
+The LSP startup path may pass a progress callback into cache loading so `language-server.log` can show which startup phase is active when diagnosing slow or stuck extension startup. These phase records are startup-only diagnostics around fingerprinting, cache read/decode, map rebuild, source rebuild, and cache write. They must not become per-request logging or serialize cache contents.
 
 `server/examples/index_cache_baseline.rs` measures whether loading JSON is faster than rebuilding. `server/examples/index_cache_composition_report.rs` measures what the cache contains and how much appears needed for editor runtime features. `server/examples/index_cache_strings_report.rs` measures duplicated copied string values so possible string interning or path-table work can be judged from data.
 
@@ -38,6 +42,8 @@ Depends on `serde`, `serde_json` for metadata parsing only, `server/src/index_bu
 - Added split binary cache timings so reports and runtime startup logs can distinguish file read, decode, validation, and lookup-map rebuild cost.
 - Added the cache string duplication report as the review path for deciding whether string interning or path-table cache work is worthwhile.
 - Bumped the runtime game-data cache to format v9 and added an interned string table to reduce duplicate string bytes without removing cached docs, attributes, paths, or detail text.
+- Added startup-only progress logging hooks so bad extension startup sessions can be narrowed to fingerprint, cache load, map rebuild, source rebuild, or cache write without adding hot-path request overhead.
+- Hardened binary cache length decoding so corrupt length prefixes rebuild safely instead of attempting huge allocations.
 
 ## Future Improvements
 

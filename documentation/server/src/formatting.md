@@ -66,6 +66,24 @@ The core safety rule is:
 
 Only auto-apply an edit when the context leaves no realistic alternate user action. If multiple reasonable actions exist, prefer a completion snippet, explicit command, or no automatic edit.
 
+## Autocomplete vs Auto Format Boundary
+
+Autocomplete and formatting must stay separate.
+
+Autocomplete owns source-backed intent selection. If the user is choosing a symbol, API, inherited method, attribute, type, callable, or template that depends on language facts, it belongs in AC. Formatting may clean the resulting text, but it must not independently decide which symbol or declaration the user meant.
+
+Auto Format owns source layout. It may adjust whitespace, indentation, brace placement, semicolons, comment alignment, and safe punctuation only when the syntax context leaves no realistic alternate user intent.
+
+Examples:
+
+- Typing `OnPostIn` inside a class body and accepting `OnPostInit(IEntity owner)` as an inherited override is AC. The completion item chooses a parent method and may insert an `override ... { }` skeleton.
+- Reindenting the inserted override skeleton, placing braces on the configured lines, and trimming trailing whitespace is AF.
+- Offering `array<T>` or `map<TKey, TValue>` in a type position is AC/type assist. AF must not globally turn `<` into `<>`.
+- Inserting a missing semicolon when pressing Enter after a complete declaration or statement can be an on-type formatting assist only when the parser can prove no other action is plausible.
+- Formatting `/** */` or `//!` documentation shape is AF/comment assist. Generating source-backed param/return docs for a selected method is AC or an explicit documentation assist, because it depends on the selected declaration.
+
+Do not implement the same behavior in both systems. If a feature needs symbol choice, call signature knowledge, inherited member lookup, or type context, route it through completion or an explicit assist. If a feature only changes presentation of already-chosen source text, route it through formatting.
+
 ## Comment and Doxygen Assist
 
 Comment generation should produce documentation that the hover renderer can display cleanly. The formatter must preserve raw user comments, but generated or maintained comments should follow a stable Doxygen-compatible shape.

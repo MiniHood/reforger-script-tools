@@ -45,6 +45,7 @@
           "comments": "off",
           "strings": "off"
         },
+        "editor.suggest.showKeywords": true,
         "editor.wordBasedSuggestions": "off"
       }
     },

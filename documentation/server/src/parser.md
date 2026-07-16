@@ -26,6 +26,10 @@ Lexer error tokens are forwarded as parse diagnostics. Parser recovery records d
 
 Malformed declaration-context text is recovered as a bounded `Error` node. Recovery stops at semicolons, braces, EOF, or the next clear declaration-start keyword such as `class`, `enum`, `typedef`, `modded`, or `vanilla`, so invalid top-level text does not swallow later real declarations.
 
+If malformed declaration-context text starts with a `{`, the parser consumes that balanced block as an error payload. This prevents naked statement blocks inside class bodies from returning an empty error node without advancing.
+
+Parser loops that repeatedly consume declarations, statements, parameters, arguments, switch sections, or expression-list items assert that each parsed child advances the token cursor. This is a fail-fast safety invariant: a future non-consuming recovery bug aborts the LSP process with the parser context and token span instead of hanging the LSP or indexer indefinitely.
+
 Corpus reports classify the known `Game\game.c` `#ifdef BREAK_COMPILATION` invalid branch as expected preprocessor-test recovery when the preserved source matches that pattern. This is review evidence only and does not evaluate macros.
 
 ## Dependencies and Boundaries
@@ -48,6 +52,8 @@ The parser depends on the lexer and syntax modules only. It must not resolve sym
 - Tightened declaration-context error recovery so invalid top-level text stops before the next real declaration.
 - Tightened local-declaration detection so compound assignment expression statements such as `addonsDir += absPath;` are not parsed as `LocalDeclStatement`.
 - Replaced token-preserved field `InitializerList` nodes with the same structured `InitializerExpression` shape used by body/local initializer expressions so resolver-backed tooling can consume enum/static values inside field defaults.
+- Fixed declaration-context recovery for naked `{ ... }` blocks inside class bodies so malformed workspace edits cannot loop parser recovery during LSP startup indexing.
+- Added parser progress assertions around recovery-sensitive loops so future non-consuming parser bugs abort the LSP process with context instead of silently hanging.
 
 ## Future Improvements
 

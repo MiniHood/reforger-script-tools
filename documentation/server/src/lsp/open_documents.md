@@ -14,7 +14,7 @@ This child module sits under `server/src/lsp.rs`. It keeps document text, option
 
 Each open document stores the projected `LspDocumentSymbol` tree for the current revision. `lsp.rs` refreshes that projection immediately after `didOpen` and full-sync `didChange`, then live `textDocument/documentSymbol` requests serialize the cached tree instead of rebuilding it from the index.
 
-Each open document also owns a `SemanticTokenCache` for rich semantic tokens computed for the current revision and external overlay generation. Live semantic-token requests may return a fast lexical/declaration projection first, then cache a resolver-backed rich projection for the same revision/generation pair and request a semantic-token refresh. The cache is invalidated by `OpenDocument::replace` and naturally bypassed when the workspace/game-data overlay generation changes.
+Each open document also owns a `SemanticTokenCache` for rich semantic tokens computed for the current revision and external overlay generation. Live semantic-token requests may return a fast lexical/declaration projection first, then schedule a resolver-backed rich projection on a worker thread. A pending marker prevents duplicate rich workers for the same revision/generation while the first worker is still running. The worker result is cached only when it still matches the open document revision and external generation, then the server requests a semantic-token refresh. The cache is invalidated by `OpenDocument::replace` and naturally bypassed when the workspace/game-data overlay generation changes.
 
 ## Dependencies and Boundaries
 
@@ -26,6 +26,8 @@ This module depends on parser, AST, model, index, and scope layers. It must not 
 - Added current-revision document-symbol projection storage so repeated Outline/document-symbol requests reuse one projected symbol tree.
 - Added revision-bound rich semantic-token cache storage so large-file coloring can return a fast first projection and reuse one resolver-backed projection for follow-up refreshes.
 - Rich semantic-token cache entries are also keyed by external overlay generation so type coloring computed before game-data/workspace indexes are ready cannot survive after those indexes become available.
+- Live stdio rich semantic-token projection is worker-scheduled so large-file rich coloring does not block hover, completion, definition, or later protocol messages on the main request loop.
+- Added a pending rich-projection marker so repeated semantic-token requests cannot spawn duplicate rich workers for the same open-document revision and external generation.
 
 ## Future Improvements
 
