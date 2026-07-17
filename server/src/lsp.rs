@@ -86,6 +86,13 @@ pub use signature_help::{
 
 const SERVER_NAME: &str = "reforger-language-server";
 const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
+const SIGNATURE_HELP_TRIGGER_CHARACTERS: &[&str] = &[
+    "(", ",", ".", ":", "_", "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n",
+    "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z", "A", "B", "C", "D", "E", "F", "G",
+    "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z",
+    "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
+];
+const SIGNATURE_HELP_RETRIGGER_CHARACTERS: &[&str] = SIGNATURE_HELP_TRIGGER_CHARACTERS;
 const DEBUG_HOVER_METHOD: &str = "reforger/debugHover";
 const DEBUG_COMPLETION_METHOD: &str = "reforger/debugCompletion";
 const WORKSPACE_FILE_CHANGED_METHOD: &str = "reforger/workspaceFileChanged";
@@ -423,8 +430,8 @@ impl<W: Write> LspServer<W> {
                                     "triggerCharacters": [".", "["]
                                 },
                                 "signatureHelpProvider": {
-                                    "triggerCharacters": ["(", ","],
-                                    "retriggerCharacters": [","]
+                                    "triggerCharacters": SIGNATURE_HELP_TRIGGER_CHARACTERS,
+                                    "retriggerCharacters": SIGNATURE_HELP_RETRIGGER_CHARACTERS
                                 },
                                 "semanticTokensProvider": {
                                     "legend": {
@@ -3382,7 +3389,7 @@ class Attribute : UniqueAttribute
             .find(|item| item.label == "defvalue")
             .expect("expected defvalue parameter-label completion");
         assert_eq!(item.kind, 10);
-        assert_eq!(item.text_edit.new_text, "defvalue: $0");
+        assert_eq!(item.text_edit.new_text, "defvalue");
         assert_eq!(item.insert_text_format, Some(2));
         assert_eq!(item.optional_parameter_count, 1);
         assert_eq!(
@@ -3420,7 +3427,7 @@ class Example
             .iter()
             .find(|item| item.label == "notificationID")
             .expect("expected function parameter-label completion");
-        assert_eq!(item.text_edit.new_text, "notificationID: $0");
+        assert_eq!(item.text_edit.new_text, "notificationID");
         assert_eq!(item.required_parameter_count, 1);
         assert_eq!(
             item.command
@@ -3428,6 +3435,82 @@ class Example
                 .map(|command| command.command.as_str()),
             Some("editor.action.triggerParameterHints")
         );
+    }
+
+    #[test]
+    fn completion_prefers_positional_value_when_prefix_matches_active_parameter_name() {
+        let source = r#"class GRAY_TEST2
+{
+	int TestNumFun2(int input, float num, string test = "eeeeee");
+}
+
+class Example
+{
+	void Run(int input, float num)
+	{
+		GRAY_TEST2 test44;
+		test44.TestNumFun2(input)
+	}
+}
+"#;
+
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "TestNumFun2(input"),
+            None,
+        );
+
+        assert_eq!(report.completion_context, "top-level");
+        assert_eq!(report.prefix, "input");
+        let item = report
+            .list
+            .items
+            .iter()
+            .find(|item| item.label == "input")
+            .expect("expected positional input value completion");
+        assert_eq!(item.text_edit.new_text, "input");
+        assert!(!report
+            .list
+            .items
+            .iter()
+            .any(|item| item.text_edit.new_text == "input: $0"));
+    }
+
+    #[test]
+    fn completion_does_not_offer_active_parameter_label_for_positional_slot_prefix() {
+        let source = r#"class GRAY_TEST2
+{
+	int TestNumFun2(int input, float num, string test = "eeeeee");
+}
+
+class Example
+{
+	void Run(int input, float num)
+	{
+		GRAY_TEST2 test44;
+		test44.TestNumFun2(inp)
+	}
+}
+"#;
+
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "TestNumFun2(inp"),
+            None,
+        );
+
+        assert_eq!(report.completion_context, "top-level");
+        assert_eq!(report.prefix, "inp");
+        assert!(report
+            .list
+            .items
+            .iter()
+            .any(|item| item.label == "input" && item.text_edit.new_text == "input"));
+        assert!(!report
+            .list
+            .items
+            .iter()
+            .any(|item| item.text_edit.new_text == "input: $0"));
     }
 
     #[test]
@@ -3462,10 +3545,7 @@ class Example
             .iter()
             .find(|item| item.label == "notificationID")
             .expect("expected enum-backed function parameter-label completion");
-        assert_eq!(
-            item.text_edit.new_text,
-            "notificationID: ${0:ENotification.}"
-        );
+        assert_eq!(item.text_edit.new_text, "${0:ENotification.}");
         assert_eq!(
             item.command
                 .as_ref()
@@ -3473,6 +3553,74 @@ class Example
             Some("reforger-sript-tools.completion.triggerSuggestAtSnippetPlaceholderEnd")
         );
         assert_eq!(item.required_parameter_count, 1);
+    }
+
+    #[test]
+    fn completion_uses_named_parameter_when_parameter_is_out_of_order() {
+        let source = r#"class GRAY_TEST2
+{
+	int TestNumFun2(int input, float num, string test = "eeeeee");
+}
+
+class Example
+{
+	void Run(float num)
+	{
+		GRAY_TEST2 test44;
+		test44.TestNumFun2(num, inp)
+	}
+}
+"#;
+
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "TestNumFun2(num, inp"),
+            None,
+        );
+
+        assert_eq!(report.completion_context, "argument-label");
+        assert_eq!(report.prefix, "inp");
+        let item = report
+            .list
+            .items
+            .iter()
+            .find(|item| item.label == "input")
+            .expect("expected out-of-order input named-parameter completion");
+        assert_eq!(item.text_edit.new_text, "input: $0");
+    }
+
+    #[test]
+    fn completion_offers_active_parameter_for_empty_trailing_argument_slot() {
+        let source = r#"class GRAY_TEST2
+{
+	int TestNumFun2(int input, float num, string test = "eeeeee");
+}
+
+class Example
+{
+	void Run(int input, float num)
+	{
+		GRAY_TEST2 test44;
+		test44.TestNumFun2(input, num,)
+	}
+}
+"#;
+
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "TestNumFun2(input, num,"),
+            None,
+        );
+
+        assert_eq!(report.completion_context, "argument-label");
+        assert_eq!(report.prefix, "");
+        let first = report
+            .list
+            .items
+            .first()
+            .expect("expected parameter completions for trailing argument slot");
+        assert_eq!(first.label, "test");
+        assert_eq!(first.text_edit.new_text, "test");
     }
 
     #[test]
@@ -3675,7 +3823,7 @@ class Example
             .iter()
             .find(|item| item.label == "name")
             .expect("expected constructor parameter-label completion");
-        assert_eq!(item.text_edit.new_text, "name: $0");
+        assert_eq!(item.text_edit.new_text, "name");
         assert_eq!(
             item.command
                 .as_ref()
@@ -5692,8 +5840,9 @@ class Example
 
     #[test]
     fn framed_lsp_smoke_test_handles_signature_help() {
-        let source = "class Smoke\n{\n\tvoid Run(int value, string label = \"ok\");\n\tvoid Test()\n\t{\n\t\tRun(1, );\n\t}\n}\n";
-        let signature_position = position_after_needle(source, "Run(1, ");
+        let source = "class Smoke\n{\n\tvoid Run(int value, string label = \"ok\");\n\tvoid Test(int input)\n\t{\n\t\tRun(1, );\n\t\tRun(inp);\n\t}\n}\n";
+        let second_parameter_position = position_after_needle(source, "Run(1, ");
+        let typed_argument_position = position_after_needle(source, "Run(inp");
         let mut input = Vec::new();
         write_test_message(
             &mut input,
@@ -5730,8 +5879,8 @@ class Example
                         "uri": "file:///Scripts/Smoke.c"
                     },
                     "position": {
-                        "line": signature_position.line,
-                        "character": signature_position.character
+                        "line": second_parameter_position.line,
+                        "character": second_parameter_position.character
                     }
                 }
             }),
@@ -5741,6 +5890,23 @@ class Example
             json!({
                 "jsonrpc": "2.0",
                 "id": 3,
+                "method": "textDocument/signatureHelp",
+                "params": {
+                    "textDocument": {
+                        "uri": "file:///Scripts/Smoke.c"
+                    },
+                    "position": {
+                        "line": typed_argument_position.line,
+                        "character": typed_argument_position.character
+                    }
+                }
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 4,
                 "method": "shutdown",
                 "params": null
             }),
@@ -5759,9 +5925,15 @@ class Example
 
         let output_text = String::from_utf8(output).unwrap();
         assert!(output_text.contains("\"signatureHelpProvider\""));
+        assert!(output_text.contains("\"triggerCharacters\":[\"(\",\",\",\".\",\":\",\"_\",\"a\""));
+        assert!(
+            output_text.contains("\"retriggerCharacters\":[\"(\",\",\",\".\",\":\",\"_\",\"a\"")
+        );
         assert!(output_text.contains("\"activeParameter\":1"));
+        assert!(output_text.contains("\"activeParameter\":0"));
         assert!(output_text
             .contains("\"label\":\"Smoke.Run(int value, string label = \\\"ok\\\") -> void\""));
+        assert!(output_text.contains("\"label\":\"int value\""));
         assert!(output_text.contains("\"label\":\"string label = \\\"ok\\\"\""));
     }
 

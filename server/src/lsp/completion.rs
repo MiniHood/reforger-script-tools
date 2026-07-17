@@ -352,8 +352,16 @@ fn completion_report_for_offset(
         &analysis.scope,
         layered_external_indexes(workspace_index, game_data_index),
     );
+    let mut argument_label_fallback = None;
     if let Some(context) = argument_label_completion_context(source, &analysis.parse.root, offset) {
         let context_elapsed = context_start.elapsed();
+        let should_try_value_completion = argument_label_prefix_matches_active_parameter(
+            &context,
+            &resolver,
+            &analysis.index,
+            workspace_index,
+            game_data_index,
+        );
         let argument_label_report = argument_label_completion_report_for_indexes(
             source,
             analysis.parse_diagnostics,
@@ -369,7 +377,11 @@ fn completion_report_for_offset(
             total_start,
         );
         if !argument_label_report.list.items.is_empty() {
-            return argument_label_report;
+            if should_try_value_completion {
+                argument_label_fallback = Some(argument_label_report);
+            } else {
+                return argument_label_report;
+            }
         }
     }
 
@@ -382,7 +394,7 @@ fn completion_report_for_offset(
         let prefix = context.prefix.clone();
         let failure_reason = context.receiver.failure_reason.clone();
         let Some(owner) = owner_type.clone() else {
-            return LspCompletionReport {
+            return argument_label_fallback.unwrap_or_else(|| LspCompletionReport {
                 list: empty_completion_list(),
                 parse_diagnostics: analysis.parse_diagnostics,
                 completion_context: "member".to_string(),
@@ -399,7 +411,7 @@ fn completion_report_for_offset(
                     total: total_start.elapsed(),
                     ..LspCompletionTimings::default()
                 },
-            };
+            });
         };
         let visibility = member_visibility_context(
             receiver_text.as_deref(),
@@ -425,7 +437,7 @@ fn completion_report_for_offset(
             None
         };
 
-        return member_completion_report_for_indexes(
+        let member_report = member_completion_report_for_indexes(
             source,
             analysis.parse_diagnostics,
             &owner,
@@ -448,11 +460,21 @@ fn completion_report_for_offset(
             },
             total_start,
         );
+        if !member_report.list.items.is_empty() {
+            return member_report;
+        }
+        if let Some(fallback) = argument_label_fallback {
+            return fallback;
+        }
+        return member_report;
     }
 
     let top_level_context = resolver.top_level_completion_context_at_offset(offset);
     let context_elapsed = context_start.elapsed();
     let Some(context) = top_level_context else {
+        if let Some(fallback) = argument_label_fallback {
+            return fallback;
+        }
         let mut report = empty_completion_report(analysis.parse_diagnostics);
         report.timings.context_detection = context_elapsed;
         report.timings.total = total_start.elapsed();
@@ -468,7 +490,7 @@ fn completion_report_for_offset(
         EditorTopLevelCompletionMode::Value => "top-level",
     };
 
-    top_level_completion_report_for_indexes(
+    let top_level_report = top_level_completion_report_for_indexes(
         source,
         analysis.parse_diagnostics,
         completion_context,
@@ -485,7 +507,64 @@ fn completion_report_for_offset(
             ..LspCompletionTimings::default()
         },
         total_start,
-    )
+    );
+    if !top_level_report.list.items.is_empty()
+        && (argument_label_fallback.is_none()
+            || completion_report_has_argument_value_item(&top_level_report))
+    {
+        return top_level_report;
+    }
+    if let Some(fallback) = argument_label_fallback {
+        return fallback;
+    }
+    top_level_report
+}
+
+fn completion_report_has_argument_value_item(report: &LspCompletionReport) -> bool {
+    report
+        .list
+        .items
+        .iter()
+        .any(|item| matches!(item.kind, 2 | 3 | 5 | 6 | 12 | 14 | 21 | 22))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn argument_label_prefix_matches_active_parameter(
+    context: &ArgumentLabelCompletionContext,
+    resolver: &ReferenceResolver<'_, '_>,
+    local_index: &SymbolIndex,
+    workspace_index: Option<&SymbolIndex>,
+    game_data_index: Option<&SymbolIndex>,
+) -> bool {
+    let callable_candidates = callable_candidates_for_argument_label_context(
+        context,
+        resolver,
+        local_index,
+        workspace_index,
+        game_data_index,
+    );
+    callable_candidates.iter().any(|callable| {
+        let label = callable
+            .name
+            .as_deref()
+            .unwrap_or(callable.display.label.as_str());
+        let signature = callable
+            .signature
+            .as_deref()
+            .or(callable.constructor_signature.as_deref());
+        let Some(signature) = signature else {
+            return false;
+        };
+        let Some(parts) = callable_signature_parts(label, signature) else {
+            return false;
+        };
+        parts
+            .parameters_info
+            .get(context.argument_index)
+            .is_some_and(|parameter| {
+                starts_with_ignore_ascii_case(&parameter.name, &context.prefix)
+            })
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -741,6 +820,7 @@ fn completion_candidate_for_reference(
 struct ParameterLabelCandidate {
     parameter: CallableParameter,
     required: bool,
+    active_positional: bool,
     source_kind: SourceKind,
     origin: EditorCompletionOrigin,
     sort_index: usize,
@@ -768,7 +848,7 @@ fn parameter_label_candidates_for_callables(
         let Some(parts) = callable_signature_parts(label, signature) else {
             continue;
         };
-        for parameter in parts.parameters_info {
+        for (parameter_index, parameter) in parts.parameters_info.into_iter().enumerate() {
             if !starts_with_ignore_ascii_case(&parameter.name, &context.prefix) {
                 continue;
             }
@@ -781,6 +861,7 @@ fn parameter_label_candidates_for_callables(
                 let candidate = ParameterLabelCandidate {
                     parameter,
                     required,
+                    active_positional: parameter_index == context.argument_index,
                     source_kind: callable.source_kind,
                     origin: callable.origin,
                     sort_index: order,
@@ -793,8 +874,9 @@ fn parameter_label_candidates_for_callables(
 
     let mut candidates = by_name.into_values().collect::<Vec<_>>();
     candidates.sort_by(|left, right| {
-        (!left.required)
-            .cmp(&(!right.required))
+        (!left.active_positional)
+            .cmp(&(!right.active_positional))
+            .then_with(|| (!left.required).cmp(&(!right.required)))
             .then_with(|| left.sort_index.cmp(&right.sort_index))
             .then_with(|| left.parameter.name.cmp(&right.parameter.name))
     });
@@ -849,6 +931,13 @@ fn completion_item_for_parameter_label(
     } else {
         Some(trigger_parameter_hints_command())
     };
+    let new_text = if candidate.active_positional && insert_value.contains('.') {
+        insert_value.clone()
+    } else if candidate.active_positional {
+        parameter.name.clone()
+    } else {
+        format!("{}: {}", parameter.name, insert_value)
+    };
 
     LspCompletionItem {
         label: parameter.name.clone(),
@@ -864,7 +953,8 @@ fn completion_item_for_parameter_label(
         detail: Some(detail),
         documentation,
         sort_text: Some(format!(
-            "00:00:{:03}:{:03}:{}",
+            "00:00:{:03}:{:03}:{:03}:{}",
+            if candidate.active_positional { 0 } else { 1 },
             if candidate.required { 0 } else { 1 },
             index,
             parameter.name
@@ -874,7 +964,7 @@ fn completion_item_for_parameter_label(
         command,
         text_edit: LspTextEdit {
             range: edit_range,
-            new_text: format!("{}: {}", parameter.name, insert_value),
+            new_text,
         },
         required_parameter_count: usize::from(candidate.required),
         optional_parameter_count: usize::from(!candidate.required),
@@ -929,6 +1019,7 @@ struct ArgumentLabelCompletionContext {
     prefix: String,
     prefix_span: TextSpan,
     target: CallableTarget,
+    argument_index: usize,
     supplied_labels: BTreeSet<String>,
 }
 
@@ -1750,9 +1841,6 @@ fn argument_label_completion_context(
     let tokens = lex(source);
     let (prefix, prefix_span) =
         completion_identifier_prefix_for_argument_label(source, &tokens, offset)?;
-    if prefix.is_empty() {
-        return None;
-    }
     if previous_significant_completion_token_before_span(&tokens, prefix_span)
         .is_some_and(|token| token.kind == TokenKind::Dot)
     {
@@ -1767,6 +1855,7 @@ fn argument_label_completion_context(
         prefix,
         prefix_span,
         target: context.target,
+        argument_index: context.argument_index,
         supplied_labels: context.supplied_labels,
     })
 }
@@ -1787,6 +1876,7 @@ fn next_required_enum_owner_after_argument(
         prefix: String::new(),
         prefix_span: TextSpan::new(offset, offset),
         target: context.target,
+        argument_index: context.argument_index,
         supplied_labels: context.supplied_labels,
     };
     let callable_candidates = callable_candidates_for_argument_label_context(
@@ -1828,15 +1918,20 @@ fn completion_identifier_prefix_for_argument_label(
     }) {
         return None;
     }
-    let token = tokens.iter().find(|token| {
+    if let Some(token) = tokens.iter().find(|token| {
         token.kind == TokenKind::Identifier
             && token.span.start <= offset
             && offset <= token.span.end
-    })?;
-    Some((
-        source[token.span.start..offset].to_string(),
-        TextSpan::new(token.span.start, offset),
-    ))
+    }) {
+        return Some((
+            source[token.span.start..offset].to_string(),
+            TextSpan::new(token.span.start, offset),
+        ));
+    }
+    let prefix_span = TextSpan::new(offset, offset);
+    previous_significant_completion_token_before_span(tokens, prefix_span)
+        .is_some_and(|token| matches!(token.kind, TokenKind::LeftParen | TokenKind::Comma))
+        .then_some((String::new(), prefix_span))
 }
 
 fn is_argument_label_position(source: &str, prefix_span: TextSpan) -> bool {
