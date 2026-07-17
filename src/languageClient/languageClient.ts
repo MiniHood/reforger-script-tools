@@ -35,6 +35,7 @@ let restartingClient = false;
 const workspaceWatcherDebounceMs = 250;
 const devServerRestartDebounceMs = 500;
 let deletionCompletionTimer: NodeJS.Timeout | undefined;
+let insertionCompletionTimer: NodeJS.Timeout | undefined;
 const startupTimingSessionStartMs = Date.now();
 const startupTimingSessionId = `${startupTimingSessionStartMs}-${process.pid}`;
 let startupTimingWriteQueue: Promise<void> = Promise.resolve();
@@ -94,7 +95,7 @@ export function registerLanguageClientFeatures(context: vscode.ExtensionContext)
 		languageClientCommands.openSymbolLocation,
 		(args: unknown) => openSymbolLocation(args),
 	));
-	context.subscriptions.push(registerCompletionRetriggerOnDeletion(outputChannel));
+	context.subscriptions.push(registerCompletionRetriggerOnTextEdit(outputChannel));
 	context.subscriptions.push(registerFirstDocumentOpenTiming(context));
 
 	void startLanguageClient(context, outputChannel);
@@ -134,33 +135,43 @@ function logFirstDocumentOpened(
 	});
 }
 
-function registerCompletionRetriggerOnDeletion(outputChannel: vscode.LogOutputChannel): vscode.Disposable {
+function registerCompletionRetriggerOnTextEdit(outputChannel: vscode.LogOutputChannel): vscode.Disposable {
 	return vscode.workspace.onDidChangeTextDocument(event => {
-		if (event.document.languageId !== languageClientLanguage.id || !event.contentChanges.some(isDeletionChange)) {
+		if (event.document.languageId !== languageClientLanguage.id) {
 			return;
 		}
 
 		const changedDocumentUri = event.document.uri.toString();
 
-		if (deletionCompletionTimer) {
-			clearTimeout(deletionCompletionTimer);
+		if (event.contentChanges.some(isDeletionChange)) {
+			if (deletionCompletionTimer) {
+				clearTimeout(deletionCompletionTimer);
+			}
+			deletionCompletionTimer = setTimeout(() => {
+				deletionCompletionTimer = undefined;
+				triggerCompletionWhenActive(
+					changedDocumentUri,
+					shouldRetriggerCompletionAfterDeletion,
+					outputChannel,
+					'deletion',
+				);
+			}, languageClientCompletion.deletionRetriggerDebounceMs);
 		}
-		deletionCompletionTimer = setTimeout(() => {
-			deletionCompletionTimer = undefined;
-			const activeEditor = vscode.window.activeTextEditor;
-			if (
-				!activeEditor
-				|| activeEditor.document.uri.toString() !== changedDocumentUri
-				|| activeEditor.document.languageId !== languageClientLanguage.id
-			) {
-				return;
+
+		if (event.contentChanges.some(isIdentifierInsertionChange)) {
+			if (insertionCompletionTimer) {
+				clearTimeout(insertionCompletionTimer);
 			}
-			if (!shouldRetriggerCompletionAfterDeletion(activeEditor)) {
-				return;
-			}
-			outputChannel.debug(`Triggering Enforce completion after deletion: ${changedDocumentUri}`);
-			void vscode.commands.executeCommand('editor.action.triggerSuggest');
-		}, languageClientCompletion.deletionRetriggerDebounceMs);
+			insertionCompletionTimer = setTimeout(() => {
+				insertionCompletionTimer = undefined;
+				triggerCompletionWhenActive(
+					changedDocumentUri,
+					shouldRetriggerCompletionAfterInsertion,
+					outputChannel,
+					'identifier insertion',
+				);
+			}, languageClientCompletion.insertionRetriggerDebounceMs);
+		}
 	});
 }
 
@@ -169,13 +180,85 @@ function isDeletionChange(change: vscode.TextDocumentContentChangeEvent): boolea
 	return rangeLength > change.text.length || (change.text.length === 0 && !change.range.isEmpty);
 }
 
+function isIdentifierInsertionChange(change: vscode.TextDocumentContentChangeEvent): boolean {
+	return change.range.isEmpty && /^[A-Za-z0-9_]$/.test(change.text);
+}
+
 function shouldRetriggerCompletionAfterDeletion(editor: vscode.TextEditor): boolean {
 	const position = editor.selection.active;
 	if (!editor.selection.isEmpty) {
 		return false;
 	}
 	const linePrefix = editor.document.lineAt(position.line).text.slice(0, position.character);
-	return /[A-Za-z0-9_\.]$/.test(linePrefix);
+	return /[A-Za-z0-9_\.]$/.test(linePrefix) && !isLikelyCommentOrStringPosition(editor.document, position);
+}
+
+function shouldRetriggerCompletionAfterInsertion(editor: vscode.TextEditor): boolean {
+	const position = editor.selection.active;
+	if (!editor.selection.isEmpty) {
+		return false;
+	}
+	const linePrefix = editor.document.lineAt(position.line).text.slice(0, position.character);
+	const wordMatch = /[A-Za-z_][A-Za-z0-9_]*$/.exec(linePrefix);
+	if (!wordMatch || wordMatch[0].length < 2) {
+		return false;
+	}
+	return !isLikelyCommentOrStringPosition(editor.document, position);
+}
+
+function triggerCompletionWhenActive(
+	documentUri: string,
+	shouldTrigger: (editor: vscode.TextEditor) => boolean,
+	outputChannel: vscode.LogOutputChannel,
+	reason: string,
+): void {
+	const activeEditor = vscode.window.activeTextEditor;
+	if (
+		!activeEditor
+		|| activeEditor.document.uri.toString() !== documentUri
+		|| activeEditor.document.languageId !== languageClientLanguage.id
+	) {
+		return;
+	}
+	if (!shouldTrigger(activeEditor)) {
+		return;
+	}
+	outputChannel.debug(`Triggering Enforce completion after ${reason}: ${documentUri}`);
+	void vscode.commands.executeCommand('editor.action.triggerSuggest');
+}
+
+function isLikelyCommentOrStringPosition(document: vscode.TextDocument, position: vscode.Position): boolean {
+	const linePrefix = document.lineAt(position.line).text.slice(0, position.character);
+	const wordStart = linePrefix.search(/[A-Za-z_][A-Za-z0-9_]*$/);
+	const beforeWord = wordStart >= 0 ? linePrefix.slice(0, wordStart) : linePrefix;
+	if (beforeWord.includes('//')) {
+		return true;
+	}
+	if (countUnescapedDoubleQuotes(linePrefix) % 2 === 1) {
+		return true;
+	}
+
+	const textBeforeCursor = document.getText(new vscode.Range(new vscode.Position(0, 0), position));
+	return textBeforeCursor.lastIndexOf('/*') > textBeforeCursor.lastIndexOf('*/');
+}
+
+function countUnescapedDoubleQuotes(value: string): number {
+	let count = 0;
+	let escaped = false;
+	for (const char of value) {
+		if (escaped) {
+			escaped = false;
+			continue;
+		}
+		if (char === '\\') {
+			escaped = true;
+			continue;
+		}
+		if (char === '"') {
+			count += 1;
+		}
+	}
+	return count;
 }
 
 interface OpenSymbolLocationArgs {
@@ -252,6 +335,10 @@ export async function deactivateLanguageClient(): Promise<void> {
 	if (deletionCompletionTimer) {
 		clearTimeout(deletionCompletionTimer);
 		deletionCompletionTimer = undefined;
+	}
+	if (insertionCompletionTimer) {
+		clearTimeout(insertionCompletionTimer);
+		insertionCompletionTimer = undefined;
 	}
 	const activeClient = client;
 	client = undefined;

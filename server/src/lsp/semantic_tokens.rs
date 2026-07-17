@@ -674,8 +674,8 @@ fn symbol_semantic_type(kind: SymbolKind) -> Option<u32> {
         SymbolKind::Typedef => Some(semantic_type_index("type")),
         SymbolKind::Function => Some(semantic_type_index("function")),
         SymbolKind::GlobalField | SymbolKind::Field => Some(semantic_type_index("field")),
-        SymbolKind::Constructor => Some(semantic_type_index("class")),
-        SymbolKind::Method | SymbolKind::Destructor => Some(semantic_type_index("method")),
+        SymbolKind::Constructor | SymbolKind::Destructor => Some(semantic_type_index("class")),
+        SymbolKind::Method => Some(semantic_type_index("method")),
         SymbolKind::Parameter => Some(semantic_type_index("parameter")),
         SymbolKind::LocalVariable | SymbolKind::PreprocessorMacro => {
             Some(semantic_type_index("variable"))

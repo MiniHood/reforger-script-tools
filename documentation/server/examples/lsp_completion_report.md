@@ -12,8 +12,11 @@ The report includes completion context, receiver text, inferred owner type, type
 
 - collection member completion
 - call-result receiver completion
-- callable insertion text
+- callable insertion snippets with required/optional parameter counts
 - overload label details
+- attribute and RPC constructor-call completion
+- bare attribute shorthand completion such as `attribut` to `[Attribute($0)]`
+- named-argument label completion inside attribute, function, and method call argument lists
 - inherited override method skeleton completion
 - type-position prefix completion
 - top-level value/callable prefix completion
@@ -31,4 +34,4 @@ node tools/lsp-completion-report.mjs
 
 ## Boundaries
 
-This report covers source-backed member, type-prefix, top-level-prefix, and inherited override skeleton completion, including simple callable insertion text, callable label details, and source-aware sort text. It does not cover placeholder snippets, `completionItem/resolve`, full overload UI, fuzzy matching, diagnostics, Workbench validation, or TypeScript-side language analysis.
+This report covers source-backed member, type-prefix, top-level-prefix, and inherited override skeleton completion, including callable snippet insert text, required/optional parameter presentation, callable label details, and source-aware sort text. It does not cover `completionItem/resolve`, full overload UI, fuzzy matching, diagnostics, Workbench validation, or TypeScript-side language analysis.

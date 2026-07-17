@@ -32,7 +32,7 @@ The module also registers `Reforger Script Tools: Debug Hover At Cursor` and `Re
 
 The package contribution activates the extension directly for the hover and completion debug commands. `Ctrl+F1` is scoped to Enforce editor text focus. `Ctrl+F2` is scoped to Enforce editor text focus and to the visible suggest widget, so completion troubleshooting can be run while autocomplete owns focus.
 
-VS Code does not always request LSP completion after text deletion. The client therefore listens for deletion edits in Enforce documents and, after a short debounce, runs VS Code's normal `editor.action.triggerSuggest` command when the changed document is still the active editor and the cursor is still after an identifier or member-access character. The debounce intentionally lets VS Code settle cursor/document state before the trigger check. This is an editor trigger bridge only: Rust completion remains the single source for candidate context, lookup, ranking, and item rendering, and it still returns no items for invalid contexts such as comments or strings.
+VS Code does not always request LSP completion after text deletion or plain identifier insertion in custom-language files. The client therefore listens for deletion edits and single identifier-character insertions in Enforce documents and, after a short debounce, runs VS Code's normal `editor.action.triggerSuggest` command when the changed document is still the active editor and the cursor is still in a likely code position. The trigger bridge avoids obvious comments and strings with lightweight editor-side checks, but it does not decide candidates. Rust completion remains the single source for candidate context, lookup, ranking, and item rendering, and it still returns no items for invalid contexts such as comments or strings.
 
 ## Dependencies and Boundaries
 
@@ -60,7 +60,7 @@ Startup timing logging must stay concise and protocol-boundary focused. It may r
 - Added a custom language-client crash handler so repeated server crashes show the concise notification `Reforger Script Tools Language Server Crashed` instead of the default long `server crashed 5 times...` message.
 - Enabled safe/trusted HTML rendering for LSP hover Markdown so Rust-produced colored kind labels display in VS Code. The built-in language-client hover provider is suppressed and replaced by an explicit provider that sends the same Rust `textDocument/hover` request, then rebuilds returned contents as HTML-capable Markdown strings; it must not build hover text or duplicate language analysis.
 - Added the hover symbol-link command bridge for Rust-generated trusted Markdown links.
-- Added a narrow completion retrigger after deletion edits in Enforce documents so erasing a prefix can reopen normal LSP autocomplete without implementing completion in TypeScript.
+- Added narrow completion retriggers after deletion edits and identifier insertions in Enforce documents so editing a prefix can reopen normal LSP autocomplete without implementing completion in TypeScript.
 - Added TypeScript-side startup timing records under `logs/language-client-startup.log` for activation, language-client construction/start, initialize completion, first document open, and first semantic-token response.
 
 ## Future Improvements

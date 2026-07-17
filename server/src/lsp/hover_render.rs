@@ -346,8 +346,8 @@ fn hover_token_type(kind: SymbolKind) -> &'static str {
         SymbolKind::Class | SymbolKind::Typedef | SymbolKind::TypeParameter => "class",
         SymbolKind::Enum => "enum",
         SymbolKind::Function => "function",
-        SymbolKind::Method | SymbolKind::Destructor => "method",
-        SymbolKind::Constructor => "class",
+        SymbolKind::Method => "method",
+        SymbolKind::Constructor | SymbolKind::Destructor => "class",
         SymbolKind::GlobalField | SymbolKind::Field => "field",
         SymbolKind::Parameter => "parameter",
         SymbolKind::EnumMember | SymbolKind::LocalVariable | SymbolKind::PreprocessorMacro => {
@@ -1658,6 +1658,16 @@ class Example
                 markdown.contains(expected),
                 "missing {expected:?} in {markdown}"
             );
+            if kind == SymbolKind::Destructor {
+                assert!(
+                    markdown.contains("<span style=\"color:#40b5ac;\">Destructor</span>"),
+                    "{markdown}"
+                );
+                assert!(
+                    markdown.contains("<span style=\"color:#40b5ac;\">Example</span>"),
+                    "{markdown}"
+                );
+            }
         }
     }
 

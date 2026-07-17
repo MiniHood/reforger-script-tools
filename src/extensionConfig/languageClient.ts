@@ -46,6 +46,7 @@ export const languageClientLanguage = {
 
 export const languageClientCompletion = {
 	deletionRetriggerDebounceMs: 75,
+	insertionRetriggerDebounceMs: 75,
 } as const;
 
 export const languageClientRequests = {

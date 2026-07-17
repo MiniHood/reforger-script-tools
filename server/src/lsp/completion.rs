@@ -1,6 +1,7 @@
 use crate::index::SymbolIndex;
 use crate::index_query::{
-    EditorCompletionCandidate, EditorCompletionOrigin, EditorTopLevelCompletionMode, IndexQuery,
+    completion_name_match_rank, EditorCompletionCandidate, EditorCompletionOrigin,
+    EditorTopLevelCompletionMode, IndexQuery,
 };
 use crate::lexer::{lex, TextSpan, TokenKind};
 use crate::lsp::{
@@ -8,7 +9,8 @@ use crate::lsp::{
     LspMarkupContent, LspPosition, LspRange,
 };
 use crate::model::{SourceKind, SymbolKind};
-use crate::resolver::{IdentifierContext, ReferenceResolver};
+use crate::resolver::{CandidateSource, IdentifierContext, ReferenceCandidate, ReferenceResolver};
+use crate::syntax::{SyntaxElement, SyntaxKind, SyntaxNode};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
@@ -40,6 +42,10 @@ pub struct LspCompletionItem {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub insert_text_format: Option<u32>,
     pub text_edit: LspTextEdit,
+    #[serde(skip)]
+    pub required_parameter_count: usize,
+    #[serde(skip)]
+    pub optional_parameter_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -234,17 +240,19 @@ pub(crate) fn completion_debug_markdown(
     }
 
     output.push_str(
-        "| # | Label | Kind | Detail | Label Details | Insert Text | Sort Text | Docs Preview |\n",
+        "| # | Label | Kind | Detail | Label Details | Required | Optional | Insert Text | Sort Text | Docs Preview |\n",
     );
-    output.push_str("| ---: | --- | --- | --- | --- | --- | --- | --- |\n");
+    output.push_str("| ---: | --- | --- | --- | --- | ---: | ---: | --- | --- | --- |\n");
     for (index, item) in report.list.items.iter().take(50).enumerate() {
         output.push_str(&format!(
-            "| {} | `{}` | `{}` | `{}` | `{}` | `{}` | `{}` | {} |\n",
+            "| {} | `{}` | `{}` | `{}` | `{}` | {} | {} | `{}` | `{}` | {} |\n",
             index + 1,
             escape_markdown_cell(&item.label),
             completion_lsp_kind_label(item.kind),
             escape_markdown_cell(item.detail.as_deref().unwrap_or("")),
             escape_markdown_cell(&format_label_details(item.label_details.as_ref())),
+            item.required_parameter_count,
+            item.optional_parameter_count,
             escape_markdown_cell(&item.text_edit.new_text),
             escape_markdown_cell(item.sort_text.as_deref().unwrap_or("")),
             markdown_table_text(
@@ -257,7 +265,7 @@ pub(crate) fn completion_debug_markdown(
     }
     if report.list.items.len() > 50 {
         output.push_str(&format!(
-            "|  |  |  |  |  |  |  | +{} more |\n",
+            "|  |  |  |  |  |  |  |  |  | +{} more |\n",
             report.list.items.len() - 50
         ));
     }
@@ -281,6 +289,24 @@ fn completion_report_for_offset(
         &analysis.scope,
         layered_external_indexes(workspace_index, game_data_index),
     );
+    if let Some(context) = argument_label_completion_context(source, &analysis.parse.root, offset) {
+        let context_elapsed = context_start.elapsed();
+        return argument_label_completion_report_for_indexes(
+            source,
+            analysis.parse_diagnostics,
+            context,
+            &resolver,
+            &analysis.index,
+            workspace_index,
+            game_data_index,
+            LspCompletionTimings {
+                context_detection: context_elapsed,
+                ..LspCompletionTimings::default()
+            },
+            total_start,
+        );
+    }
+
     if let Some(context) = resolver.member_completion_context_at_offset(offset) {
         let context_elapsed = context_start.elapsed();
         let receiver_text = Some(context.receiver.receiver_text.clone());
@@ -415,16 +441,21 @@ fn member_completion_report_for_indexes(
 
     let edit_range = range_for_span(source, prefix_span);
     let render_start = Instant::now();
-    let (items, source_kind_counts, origin_counts) =
-        completion_items_for_candidates(&candidates, edit_range, None);
-    let items = cap_completion_items(items);
+    let (items, source_kind_counts, origin_counts) = completion_items_for_candidates(
+        &candidates,
+        edit_range,
+        None,
+        CompletionInsertContext::Normal,
+        Some(&prefix),
+    );
+    let (items, is_incomplete) = cap_completion_items(items);
     timings.item_rendering = render_start.elapsed();
     timings.total = total_start.elapsed();
 
     LspCompletionReport {
         candidate_count: items.len(),
         list: LspCompletionList {
-            is_incomplete: false,
+            is_incomplete,
             items,
         },
         parse_diagnostics,
@@ -452,10 +483,345 @@ fn completion_candidates_for_owner(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn argument_label_completion_report_for_indexes(
+    source: &str,
+    parse_diagnostics: usize,
+    context: ArgumentLabelCompletionContext,
+    resolver: &ReferenceResolver<'_, '_>,
+    local_index: &SymbolIndex,
+    workspace_index: Option<&SymbolIndex>,
+    game_data_index: Option<&SymbolIndex>,
+    mut timings: LspCompletionTimings,
+    total_start: Instant,
+) -> LspCompletionReport {
+    let lookup_start = Instant::now();
+    let callable_candidates = callable_candidates_for_argument_label_context(
+        &context,
+        resolver,
+        local_index,
+        workspace_index,
+        game_data_index,
+    );
+    let parameter_candidates =
+        parameter_label_candidates_for_callables(&callable_candidates, &context);
+    timings.candidate_lookup = lookup_start.elapsed();
+
+    let render_start = Instant::now();
+    let edit_range = range_for_span(source, context.prefix_span);
+    let (items, source_kind_counts, origin_counts) =
+        completion_items_for_parameter_labels(&parameter_candidates, edit_range);
+    let (items, is_incomplete) = cap_completion_items(items);
+    timings.item_rendering = render_start.elapsed();
+    timings.total = total_start.elapsed();
+
+    LspCompletionReport {
+        candidate_count: items.len(),
+        list: LspCompletionList {
+            is_incomplete,
+            items,
+        },
+        parse_diagnostics,
+        completion_context: "argument-label".to_string(),
+        receiver_text: None,
+        owner_type: None,
+        prefix: context.prefix,
+        source_kind_counts,
+        origin_counts,
+        failure_reason: if callable_candidates.is_empty() {
+            Some("callable target was not resolved".to_string())
+        } else {
+            None
+        },
+        timings,
+    }
+}
+
+fn callable_candidates_for_argument_label_context(
+    context: &ArgumentLabelCompletionContext,
+    resolver: &ReferenceResolver<'_, '_>,
+    local_index: &SymbolIndex,
+    workspace_index: Option<&SymbolIndex>,
+    game_data_index: Option<&SymbolIndex>,
+) -> Vec<EditorCompletionCandidate> {
+    match &context.target {
+        ArgumentLabelTarget::Attribute { name } | ArgumentLabelTarget::New { type_name: name } => {
+            let mut candidates = exact_top_level_candidates(local_index, name);
+            if let Some(index) = workspace_index {
+                candidates.extend(exact_top_level_candidates(index, name));
+            }
+            if let Some(index) = game_data_index {
+                candidates.extend(exact_top_level_candidates(index, name));
+            }
+            combine_completion_candidates(candidates)
+        }
+        ArgumentLabelTarget::Call { callee_span } => resolver
+            .resolve_at_offset(callee_span.start)
+            .and_then(|resolution| resolution.selected)
+            .and_then(|selected| {
+                completion_candidate_for_reference(
+                    &selected,
+                    local_index,
+                    workspace_index,
+                    game_data_index,
+                )
+            })
+            .into_iter()
+            .collect(),
+    }
+}
+
+fn exact_top_level_candidates(index: &SymbolIndex, name: &str) -> Vec<EditorCompletionCandidate> {
+    IndexQuery::new(index)
+        .completion_top_level_limited(name, EditorTopLevelCompletionMode::Type, 32)
+        .into_iter()
+        .chain(IndexQuery::new(index).completion_top_level_limited(
+            name,
+            EditorTopLevelCompletionMode::Value,
+            32,
+        ))
+        .filter(|candidate| {
+            candidate
+                .name
+                .as_deref()
+                .unwrap_or(candidate.display.label.as_str())
+                == name
+        })
+        .collect()
+}
+
+fn completion_candidate_for_reference(
+    reference: &ReferenceCandidate,
+    local_index: &SymbolIndex,
+    workspace_index: Option<&SymbolIndex>,
+    game_data_index: Option<&SymbolIndex>,
+) -> Option<EditorCompletionCandidate> {
+    let indexes = match reference.source {
+        CandidateSource::FileLocal => vec![local_index],
+        CandidateSource::External => workspace_index.into_iter().chain(game_data_index).collect(),
+    };
+
+    for index in indexes {
+        let Some(symbol) = index.symbol(reference.id) else {
+            continue;
+        };
+        if symbol.kind != reference.kind || symbol.name != reference.name {
+            continue;
+        }
+        if let Some(expected_path) = reference.absolute_path.as_ref() {
+            let Some(actual_path) = index
+                .file(reference.id.file_id)
+                .and_then(|file| file.metadata.absolute_path.as_ref())
+            else {
+                continue;
+            };
+            if actual_path != expected_path {
+                continue;
+            }
+        }
+        return IndexQuery::new(index)
+            .completion_symbols([reference.id], EditorCompletionOrigin::Direct)
+            .into_iter()
+            .next();
+    }
+
+    None
+}
+
+#[derive(Debug, Clone)]
+struct ParameterLabelCandidate {
+    parameter: CallableCompletionParameter,
+    required: bool,
+    source_kind: SourceKind,
+    origin: EditorCompletionOrigin,
+    sort_index: usize,
+}
+
+fn parameter_label_candidates_for_callables(
+    callables: &[EditorCompletionCandidate],
+    context: &ArgumentLabelCompletionContext,
+) -> Vec<ParameterLabelCandidate> {
+    let mut by_name = BTreeMap::<String, ParameterLabelCandidate>::new();
+    let mut order = 0usize;
+
+    for callable in callables {
+        let label = callable
+            .name
+            .as_deref()
+            .unwrap_or(callable.display.label.as_str());
+        let signature = callable
+            .signature
+            .as_deref()
+            .or(callable.constructor_signature.as_deref());
+        let Some(signature) = signature else {
+            continue;
+        };
+        let Some(parts) = callable_signature_parts(label, signature) else {
+            continue;
+        };
+        for parameter in parts.parameters_info {
+            if !starts_with_ignore_ascii_case(&parameter.name, &context.prefix) {
+                continue;
+            }
+            if context.supplied_labels.contains(parameter.name.as_str()) {
+                continue;
+            }
+            let key = parameter.name.to_ascii_lowercase();
+            by_name.entry(key).or_insert_with(|| {
+                let required = parameter.default_text.is_none();
+                let candidate = ParameterLabelCandidate {
+                    parameter,
+                    required,
+                    source_kind: callable.source_kind,
+                    origin: callable.origin,
+                    sort_index: order,
+                };
+                order += 1;
+                candidate
+            });
+        }
+    }
+
+    let mut candidates = by_name.into_values().collect::<Vec<_>>();
+    candidates.sort_by(|left, right| {
+        (!left.required)
+            .cmp(&(!right.required))
+            .then_with(|| left.sort_index.cmp(&right.sort_index))
+            .then_with(|| left.parameter.name.cmp(&right.parameter.name))
+    });
+    candidates
+}
+
+fn completion_items_for_parameter_labels(
+    candidates: &[ParameterLabelCandidate],
+    edit_range: LspRange,
+) -> (
+    Vec<LspCompletionItem>,
+    BTreeMap<SourceKind, usize>,
+    BTreeMap<String, usize>,
+) {
+    let mut source_kind_counts = BTreeMap::new();
+    let mut origin_counts = BTreeMap::new();
+    let items = candidates
+        .iter()
+        .enumerate()
+        .map(|(index, candidate)| {
+            *source_kind_counts.entry(candidate.source_kind).or_default() += 1;
+            *origin_counts
+                .entry(format!("{:?}", candidate.origin))
+                .or_default() += 1;
+            completion_item_for_parameter_label(candidate, edit_range, index)
+        })
+        .collect();
+    (items, source_kind_counts, origin_counts)
+}
+
+fn completion_item_for_parameter_label(
+    candidate: &ParameterLabelCandidate,
+    edit_range: LspRange,
+    index: usize,
+) -> LspCompletionItem {
+    let parameter = &candidate.parameter;
+    let optionality = if candidate.required {
+        "required"
+    } else {
+        "optional"
+    };
+    let detail = parameter_label_detail(parameter, optionality);
+    let documentation = Some(LspMarkupContent {
+        kind: "markdown".to_string(),
+        value: parameter_label_documentation(parameter, optionality),
+    });
+
+    LspCompletionItem {
+        label: parameter.name.clone(),
+        label_details: Some(LspCompletionItemLabelDetails {
+            detail: Some(format!(": {}", parameter.type_and_modifiers)),
+            description: parameter
+                .default_text
+                .as_ref()
+                .map(|default| format!("= {default}"))
+                .or_else(|| Some(optionality.to_string())),
+        }),
+        kind: 10,
+        detail: Some(detail),
+        documentation,
+        sort_text: Some(format!(
+            "00:00:{:03}:{:03}:{}",
+            if candidate.required { 0 } else { 1 },
+            index,
+            parameter.name
+        )),
+        filter_text: Some(parameter.name.clone()),
+        insert_text_format: Some(2),
+        text_edit: LspTextEdit {
+            range: edit_range,
+            new_text: format!("{}: $0", parameter.name),
+        },
+        required_parameter_count: usize::from(candidate.required),
+        optional_parameter_count: usize::from(!candidate.required),
+    }
+}
+
+fn parameter_label_detail(parameter: &CallableCompletionParameter, optionality: &str) -> String {
+    let mut detail = optionality.to_string();
+    if !parameter.type_and_modifiers.is_empty() {
+        detail.push(' ');
+        detail.push_str(&parameter.type_and_modifiers);
+    }
+    if let Some(default) = parameter.default_text.as_ref() {
+        detail.push_str(" = ");
+        detail.push_str(default);
+    }
+    detail
+}
+
+fn parameter_label_documentation(
+    parameter: &CallableCompletionParameter,
+    optionality: &str,
+) -> String {
+    let mut output = format!("**{} parameter**", optionality);
+    if !parameter.type_and_modifiers.is_empty() {
+        output.push_str(&format!(
+            "\n\nType: `{}`",
+            escape_markdown_inline_code(&parameter.type_and_modifiers)
+        ));
+    }
+    if let Some(default) = parameter.default_text.as_ref() {
+        output.push_str(&format!(
+            "\n\nDefault: `{}`",
+            escape_markdown_inline_code(default)
+        ));
+    }
+    output
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MemberVisibilityContext {
     UnqualifiedOrSelf,
     ExternalReceiver,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CompletionInsertContext {
+    Normal,
+    ConstructorCall,
+    AttributeShorthand,
+}
+
+#[derive(Debug, Clone)]
+struct ArgumentLabelCompletionContext {
+    prefix: String,
+    prefix_span: TextSpan,
+    target: ArgumentLabelTarget,
+    supplied_labels: BTreeSet<String>,
+}
+
+#[derive(Debug, Clone)]
+enum ArgumentLabelTarget {
+    Attribute { name: String },
+    Call { callee_span: TextSpan },
+    New { type_name: String },
 }
 
 fn member_visibility_context(
@@ -498,6 +864,8 @@ fn completion_items_for_candidates(
     candidates: &[EditorCompletionCandidate],
     edit_range: LspRange,
     origin_override: Option<&str>,
+    insert_context: CompletionInsertContext,
+    match_prefix: Option<&str>,
 ) -> (
     Vec<LspCompletionItem>,
     BTreeMap<SourceKind, usize>,
@@ -507,13 +875,20 @@ fn completion_items_for_candidates(
     let mut origin_counts = BTreeMap::new();
     let items = candidates
         .iter()
-        .filter_map(|candidate| {
+        .enumerate()
+        .filter_map(|(order, candidate)| {
             *source_kind_counts.entry(candidate.source_kind).or_default() += 1;
             let origin = origin_override
                 .map(str::to_string)
                 .unwrap_or_else(|| format!("{:?}", candidate.origin));
             *origin_counts.entry(origin).or_default() += 1;
-            completion_item_for_candidate(candidate, edit_range)
+            completion_item_for_candidate(
+                candidate,
+                edit_range,
+                insert_context,
+                match_prefix,
+                order,
+            )
         })
         .collect::<Vec<_>>();
 
@@ -548,16 +923,35 @@ fn top_level_completion_report_for_indexes(
         game_data_index,
     );
     if !override_candidates.is_empty() {
+        let source_candidates = top_level_source_completion_candidates(
+            &prefix,
+            mode,
+            local_index,
+            workspace_index,
+            game_data_index,
+            MAX_COMPLETION_ITEMS + 1,
+        );
         timings.candidate_lookup = lookup_start.elapsed();
         let edit_range = range_for_span(source, prefix_span);
         let typed_modifiers = typed_declaration_modifiers_before(source, prefix_span.start);
         let render_start = Instant::now();
-        let (mut items, source_kind_counts, mut origin_counts) =
+        let (mut items, mut source_kind_counts, mut origin_counts) =
             completion_items_for_override_candidates(
                 &override_candidates,
                 edit_range,
                 &typed_modifiers,
+                &prefix,
             );
+        let insert_context = completion_insert_context(source, prefix_span.start, mode);
+        let (source_items, source_counts, source_origins) = completion_items_for_candidates(
+            &source_candidates,
+            edit_range,
+            Some("TopLevel"),
+            insert_context,
+            Some(&prefix),
+        );
+        merge_count_maps(&mut source_kind_counts, source_counts);
+        merge_count_maps(&mut origin_counts, source_origins);
         let mut keyword_items =
             keyword_completion_items(&prefix, edit_range, mode, declaration_context);
         if !keyword_items.is_empty() {
@@ -566,14 +960,15 @@ fn top_level_completion_report_for_indexes(
             keyword_items.extend(items);
             items = keyword_items;
         }
-        let items = cap_completion_items(items);
+        items.extend(source_items);
+        let (items, is_incomplete) = cap_completion_items(items);
         timings.item_rendering = render_start.elapsed();
         timings.total = total_start.elapsed();
 
         return LspCompletionReport {
             candidate_count: items.len(),
             list: LspCompletionList {
-                is_incomplete: false,
+                is_incomplete,
                 items,
             },
             parse_diagnostics,
@@ -619,36 +1014,31 @@ fn top_level_completion_report_for_indexes(
         }
     }
 
-    candidates.extend(IndexQuery::new(local_index).completion_top_level_limited(
+    candidates.extend(top_level_source_completion_candidates(
         &prefix,
         mode,
-        remaining_completion_slots(candidates.len()),
+        local_index,
+        workspace_index,
+        game_data_index,
+        MAX_COMPLETION_ITEMS + 1,
     ));
-    if let Some(external_index) = workspace_index {
-        candidates.extend(
-            IndexQuery::new(external_index).completion_top_level_limited(
-                &prefix,
-                mode,
-                remaining_completion_slots(candidates.len()),
-            ),
-        );
-    }
-    if let Some(external_index) = game_data_index {
-        candidates.extend(
-            IndexQuery::new(external_index).completion_top_level_limited(
-                &prefix,
-                mode,
-                remaining_completion_slots(candidates.len()),
-            ),
-        );
-    }
+    candidates = candidates
+        .into_iter()
+        .filter(|candidate| !is_current_prefix_self_candidate(candidate, &prefix, offset))
+        .collect();
     let candidates = combine_completion_candidates(candidates);
     timings.candidate_lookup = lookup_start.elapsed();
 
     let edit_range = range_for_span(source, prefix_span);
     let render_start = Instant::now();
-    let (mut items, source_kind_counts, mut origin_counts) =
-        completion_items_for_candidates(&candidates, edit_range, Some("TopLevel"));
+    let insert_context = completion_insert_context(source, prefix_span.start, mode);
+    let (mut items, source_kind_counts, mut origin_counts) = completion_items_for_candidates(
+        &candidates,
+        edit_range,
+        Some("TopLevel"),
+        insert_context,
+        Some(&prefix),
+    );
     let mut keyword_items =
         keyword_completion_items(&prefix, edit_range, mode, declaration_context);
     if !keyword_items.is_empty() {
@@ -656,14 +1046,14 @@ fn top_level_completion_report_for_indexes(
         keyword_items.extend(items);
         items = keyword_items;
     }
-    let items = cap_completion_items(items);
+    let (items, is_incomplete) = cap_completion_items(items);
     timings.item_rendering = render_start.elapsed();
     timings.total = total_start.elapsed();
 
     LspCompletionReport {
         candidate_count: items.len(),
         list: LspCompletionList {
-            is_incomplete: false,
+            is_incomplete,
             items,
         },
         parse_diagnostics,
@@ -676,6 +1066,49 @@ fn top_level_completion_report_for_indexes(
         failure_reason: None,
         timings,
     }
+}
+
+fn top_level_source_completion_candidates(
+    prefix: &str,
+    mode: EditorTopLevelCompletionMode,
+    local_index: &SymbolIndex,
+    workspace_index: Option<&SymbolIndex>,
+    game_data_index: Option<&SymbolIndex>,
+    limit: usize,
+) -> Vec<EditorCompletionCandidate> {
+    let mut candidates = Vec::new();
+    candidates
+        .extend(IndexQuery::new(local_index).completion_top_level_limited(prefix, mode, limit));
+    if let Some(external_index) = workspace_index {
+        candidates.extend(
+            IndexQuery::new(external_index).completion_top_level_limited(prefix, mode, limit),
+        );
+    }
+    if let Some(external_index) = game_data_index {
+        candidates.extend(
+            IndexQuery::new(external_index).completion_top_level_limited(prefix, mode, limit),
+        );
+    }
+    candidates
+}
+
+fn merge_count_maps<K: Ord>(target: &mut BTreeMap<K, usize>, source: BTreeMap<K, usize>) {
+    for (key, count) in source {
+        *target.entry(key).or_default() += count;
+    }
+}
+
+fn is_current_prefix_self_candidate(
+    candidate: &EditorCompletionCandidate,
+    prefix: &str,
+    offset: usize,
+) -> bool {
+    candidate
+        .name
+        .as_deref()
+        .unwrap_or(candidate.display.label.as_str())
+        == prefix
+        && span_contains(candidate.selection_span, offset)
 }
 
 fn prioritize_keyword_item(items: &mut Vec<LspCompletionItem>, keyword: &str) {
@@ -768,6 +1201,7 @@ fn completion_items_for_override_candidates(
     candidates: &[EditorCompletionCandidate],
     edit_range: LspRange,
     typed_modifiers: &BTreeSet<String>,
+    match_prefix: &str,
 ) -> (
     Vec<LspCompletionItem>,
     BTreeMap<SourceKind, usize>,
@@ -777,10 +1211,17 @@ fn completion_items_for_override_candidates(
     let mut origin_counts = BTreeMap::new();
     let items = candidates
         .iter()
-        .filter_map(|candidate| {
+        .enumerate()
+        .filter_map(|(order, candidate)| {
             *source_kind_counts.entry(candidate.source_kind).or_default() += 1;
             *origin_counts.entry("Override".to_string()).or_default() += 1;
-            completion_item_for_override_candidate(candidate, edit_range, typed_modifiers)
+            completion_item_for_override_candidate(
+                candidate,
+                edit_range,
+                typed_modifiers,
+                match_prefix,
+                order,
+            )
         })
         .collect::<Vec<_>>();
 
@@ -791,6 +1232,8 @@ fn completion_item_for_override_candidate(
     candidate: &EditorCompletionCandidate,
     edit_range: LspRange,
     typed_modifiers: &BTreeSet<String>,
+    match_prefix: &str,
+    order: usize,
 ) -> Option<LspCompletionItem> {
     let label = candidate
         .name
@@ -817,8 +1260,8 @@ fn completion_item_for_override_candidate(
     Some(LspCompletionItem {
         label: label.clone(),
         label_details: Some(LspCompletionItemLabelDetails {
-            detail: Some(call.parameters),
-            description: call.result,
+            detail: Some(call.parameters.clone()),
+            description: call.result.clone(),
         }),
         kind: 2,
         detail: Some(declaration_prefix),
@@ -830,13 +1273,20 @@ fn completion_item_for_override_candidate(
                 kind: "markdown".to_string(),
                 value: preview.clone(),
             }),
-        sort_text: Some(format!("00:00:004:{label}")),
+        sort_text: Some(completion_sort_text(
+            candidate,
+            &label,
+            Some(match_prefix),
+            order,
+        )),
         filter_text: Some(label),
         insert_text_format: Some(2),
         text_edit: LspTextEdit {
             range: edit_range,
             new_text,
         },
+        required_parameter_count: call.required_parameter_count(),
+        optional_parameter_count: call.optional_parameter_count(),
     })
 }
 
@@ -912,6 +1362,8 @@ fn keyword_completion_items(
                 range: edit_range,
                 new_text: keyword.to_string(),
             },
+            required_parameter_count: 0,
+            optional_parameter_count: 0,
         })
         .collect()
 }
@@ -982,6 +1434,50 @@ fn previous_significant_token_kind(source: &str, offset: usize) -> Option<TokenK
         .filter(|token| !token.kind.is_trivia())
         .last()
         .map(|token| token.kind)
+}
+
+fn previous_significant_completion_token_before_span(
+    tokens: &[crate::lexer::Token],
+    span: TextSpan,
+) -> Option<crate::lexer::Token> {
+    tokens
+        .iter()
+        .rev()
+        .find(|token| {
+            token.span.end <= span.start && !token.kind.is_trivia() && token.kind != TokenKind::Eof
+        })
+        .copied()
+}
+
+fn token_blocks_argument_label_completion(kind: TokenKind) -> bool {
+    matches!(
+        kind,
+        TokenKind::LineComment
+            | TokenKind::DocLineComment
+            | TokenKind::BlockComment
+            | TokenKind::DocBlockComment
+            | TokenKind::UnterminatedBlockComment
+            | TokenKind::String
+            | TokenKind::UnterminatedString
+    )
+}
+
+fn completion_insert_context(
+    source: &str,
+    offset: usize,
+    mode: EditorTopLevelCompletionMode,
+) -> CompletionInsertContext {
+    match previous_significant_token_kind(source, offset) {
+        Some(TokenKind::LeftBracket) | Some(TokenKind::Keyword(crate::lexer::Keyword::New)) => {
+            CompletionInsertContext::ConstructorCall
+        }
+        None | Some(TokenKind::LeftBrace | TokenKind::RightBrace | TokenKind::Semicolon)
+            if mode == EditorTopLevelCompletionMode::Type =>
+        {
+            CompletionInsertContext::AttributeShorthand
+        }
+        _ => CompletionInsertContext::Normal,
+    }
 }
 
 fn containing_class_name(index: &SymbolIndex, offset: usize) -> Option<String> {
@@ -1066,17 +1562,295 @@ fn candidate_matches_prefix(candidate: &EditorCompletionCandidate, prefix: &str)
         .name
         .as_deref()
         .unwrap_or(candidate.display.label.as_str());
-    starts_with_ignore_ascii_case(name, prefix)
+    completion_name_match_rank(name, prefix).is_some()
 }
 
 fn span_contains(span: TextSpan, offset: usize) -> bool {
     offset >= span.start && offset <= span.end
 }
 
+fn span_contains_span(outer: TextSpan, inner: TextSpan) -> bool {
+    outer.start <= inner.start && inner.end <= outer.end
+}
+
 fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
     value
         .get(..prefix.len())
         .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+}
+
+fn argument_label_completion_context(
+    source: &str,
+    root: &SyntaxNode,
+    offset: usize,
+) -> Option<ArgumentLabelCompletionContext> {
+    if offset > source.len() || !source.is_char_boundary(offset) {
+        return None;
+    }
+
+    let tokens = lex(source);
+    let (prefix, prefix_span) =
+        completion_identifier_prefix_for_argument_label(source, &tokens, offset)?;
+    if prefix.is_empty() {
+        return None;
+    }
+    if previous_significant_completion_token_before_span(&tokens, prefix_span)
+        .is_some_and(|token| token.kind == TokenKind::Dot)
+    {
+        return None;
+    }
+
+    let mut best = None;
+    collect_argument_label_completion_context(source, root, prefix, prefix_span, &mut best);
+    best
+}
+
+fn completion_identifier_prefix_for_argument_label(
+    source: &str,
+    tokens: &[crate::lexer::Token],
+    offset: usize,
+) -> Option<(String, TextSpan)> {
+    if tokens.iter().any(|token| {
+        token.span.start < offset
+            && offset <= token.span.end
+            && token_blocks_argument_label_completion(token.kind)
+    }) {
+        return None;
+    }
+    let token = tokens.iter().find(|token| {
+        token.kind == TokenKind::Identifier
+            && token.span.start <= offset
+            && offset <= token.span.end
+    })?;
+    Some((
+        source[token.span.start..offset].to_string(),
+        TextSpan::new(token.span.start, offset),
+    ))
+}
+
+fn collect_argument_label_completion_context(
+    source: &str,
+    node: &SyntaxNode,
+    prefix: String,
+    prefix_span: TextSpan,
+    best: &mut Option<ArgumentLabelCompletionContext>,
+) {
+    if !span_contains_span(node.span, prefix_span) {
+        return;
+    }
+
+    if node.kind == SyntaxKind::Attribute {
+        if let Some(args) = direct_child_node(node, SyntaxKind::AttributeArgs) {
+            if span_contains_span(args.span, prefix_span)
+                && is_argument_label_position(source, args, prefix_span)
+            {
+                if let Some(name) = direct_child_name_text(source, node) {
+                    replace_argument_label_best(
+                        best,
+                        ArgumentLabelCompletionContext {
+                            prefix,
+                            prefix_span,
+                            target: ArgumentLabelTarget::Attribute { name },
+                            supplied_labels: supplied_named_argument_labels(
+                                source,
+                                args,
+                                prefix_span,
+                            ),
+                        },
+                    );
+                    return;
+                }
+            }
+        }
+    }
+
+    if node.kind == SyntaxKind::CallExpression {
+        if let Some(args) = direct_child_node(node, SyntaxKind::ArgumentList) {
+            if span_contains_span(args.span, prefix_span)
+                && is_argument_label_position(source, args, prefix_span)
+            {
+                if let Some(callee_span) = call_expression_callee_span(source, node) {
+                    replace_argument_label_best(
+                        best,
+                        ArgumentLabelCompletionContext {
+                            prefix,
+                            prefix_span,
+                            target: ArgumentLabelTarget::Call { callee_span },
+                            supplied_labels: supplied_named_argument_labels(
+                                source,
+                                args,
+                                prefix_span,
+                            ),
+                        },
+                    );
+                    return;
+                }
+            }
+        }
+    }
+
+    if node.kind == SyntaxKind::NewExpression {
+        if let Some(args) = direct_child_node(node, SyntaxKind::ArgumentList) {
+            if span_contains_span(args.span, prefix_span)
+                && is_argument_label_position(source, args, prefix_span)
+            {
+                if let Some(type_name) = direct_child_name_text(source, node) {
+                    replace_argument_label_best(
+                        best,
+                        ArgumentLabelCompletionContext {
+                            prefix,
+                            prefix_span,
+                            target: ArgumentLabelTarget::New { type_name },
+                            supplied_labels: supplied_named_argument_labels(
+                                source,
+                                args,
+                                prefix_span,
+                            ),
+                        },
+                    );
+                    return;
+                }
+            }
+        }
+    }
+
+    for child in &node.children {
+        if let SyntaxElement::Node(child) = child {
+            collect_argument_label_completion_context(
+                source,
+                child,
+                prefix.clone(),
+                prefix_span,
+                best,
+            );
+        }
+    }
+}
+
+fn replace_argument_label_best(
+    best: &mut Option<ArgumentLabelCompletionContext>,
+    candidate: ArgumentLabelCompletionContext,
+) {
+    let replace = best
+        .as_ref()
+        .map(|best| candidate.prefix_span.len() <= best.prefix_span.len())
+        .unwrap_or(true);
+    if replace {
+        *best = Some(candidate);
+    }
+}
+
+fn is_argument_label_position(source: &str, args: &SyntaxNode, prefix_span: TextSpan) -> bool {
+    let tokens = lex(source);
+    let previous = tokens
+        .into_iter()
+        .take_while(|token| token.span.end <= prefix_span.start)
+        .filter(|token| !token.kind.is_trivia() && token.span.start >= args.span.start)
+        .last();
+    matches!(
+        previous.map(|token| token.kind),
+        Some(TokenKind::LeftParen | TokenKind::Comma)
+    )
+}
+
+fn supplied_named_argument_labels(
+    source: &str,
+    args: &SyntaxNode,
+    current_prefix_span: TextSpan,
+) -> BTreeSet<String> {
+    let mut labels = BTreeSet::new();
+    collect_supplied_named_argument_labels(source, args, current_prefix_span, &mut labels);
+    labels
+}
+
+fn collect_supplied_named_argument_labels(
+    source: &str,
+    node: &SyntaxNode,
+    current_prefix_span: TextSpan,
+    labels: &mut BTreeSet<String>,
+) {
+    if node.kind == SyntaxKind::NamedArgument {
+        if let Some((name, span)) = named_argument_label_text(source, node) {
+            if span != current_prefix_span {
+                labels.insert(name);
+            }
+        }
+        return;
+    }
+
+    for child in &node.children {
+        if let SyntaxElement::Node(child) = child {
+            collect_supplied_named_argument_labels(source, child, current_prefix_span, labels);
+        }
+    }
+}
+
+fn named_argument_label_text(source: &str, node: &SyntaxNode) -> Option<(String, TextSpan)> {
+    let mut name = None;
+    for child in &node.children {
+        match child {
+            SyntaxElement::Node(child) if child.kind == SyntaxKind::NameExpression => {
+                name = direct_child_name_text_with_span(source, child);
+            }
+            SyntaxElement::Token(token) if token.kind == TokenKind::Colon => return name,
+            _ => {}
+        }
+    }
+    None
+}
+
+fn call_expression_callee_span(source: &str, node: &SyntaxNode) -> Option<TextSpan> {
+    let expression = crate::ast::Expression::from_node(source, node)?;
+    expression.callee().map(|callee| {
+        callee
+            .member_name()
+            .map(|name| name.span)
+            .unwrap_or_else(|| callee.selection_span())
+    })
+}
+
+fn direct_child_node(node: &SyntaxNode, kind: SyntaxKind) -> Option<&SyntaxNode> {
+    node.children.iter().find_map(|child| match child {
+        SyntaxElement::Node(child) if child.kind == kind => Some(child.as_ref()),
+        _ => None,
+    })
+}
+
+fn direct_child_name_text(source: &str, node: &SyntaxNode) -> Option<String> {
+    direct_child_name_text_with_span(source, node).map(|(text, _)| text)
+}
+
+fn direct_child_name_text_with_span(source: &str, node: &SyntaxNode) -> Option<(String, TextSpan)> {
+    node.children.iter().find_map(|child| match child {
+        SyntaxElement::Token(token) if token.kind == TokenKind::Identifier => Some((
+            source[token.span.start..token.span.end].to_string(),
+            token.span,
+        )),
+        SyntaxElement::Node(child) if child.kind == SyntaxKind::NameExpression => {
+            first_identifier_token(source, child)
+        }
+        _ => None,
+    })
+}
+
+fn first_identifier_token(source: &str, node: &SyntaxNode) -> Option<(String, TextSpan)> {
+    for child in &node.children {
+        match child {
+            SyntaxElement::Token(token) if token.kind == TokenKind::Identifier => {
+                return Some((
+                    source[token.span.start..token.span.end].to_string(),
+                    token.span,
+                ));
+            }
+            SyntaxElement::Node(child) => {
+                if let Some(found) = first_identifier_token(source, child) {
+                    return Some(found);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn combine_completion_candidates(
@@ -1097,15 +1871,19 @@ fn combine_completion_candidates(
         .collect()
 }
 
-fn cap_completion_items(mut items: Vec<LspCompletionItem>) -> Vec<LspCompletionItem> {
-    if items.len() > MAX_COMPLETION_ITEMS {
+fn cap_completion_items(mut items: Vec<LspCompletionItem>) -> (Vec<LspCompletionItem>, bool) {
+    items.sort_by(|left, right| {
+        left.sort_text
+            .as_deref()
+            .unwrap_or(left.label.as_str())
+            .cmp(right.sort_text.as_deref().unwrap_or(right.label.as_str()))
+            .then_with(|| left.label.cmp(&right.label))
+    });
+    let is_incomplete = items.len() >= MAX_COMPLETION_ITEMS;
+    if is_incomplete {
         items.truncate(MAX_COMPLETION_ITEMS);
     }
-    items
-}
-
-fn remaining_completion_slots(current_len: usize) -> usize {
-    MAX_COMPLETION_ITEMS.saturating_sub(current_len)
+    (items, is_incomplete)
 }
 
 fn completion_candidate_key(candidate: &EditorCompletionCandidate) -> String {
@@ -1143,23 +1921,36 @@ fn empty_completion_report(parse_diagnostics: usize) -> LspCompletionReport {
 fn completion_item_for_candidate(
     candidate: &EditorCompletionCandidate,
     edit_range: LspRange,
+    insert_context: CompletionInsertContext,
+    match_prefix: Option<&str>,
+    order: usize,
 ) -> Option<LspCompletionItem> {
     let label = candidate
         .name
         .clone()
         .or_else(|| Some(candidate.display.label.clone()))?;
+    let callable = callable_completion_render(&label, candidate, insert_context);
     let detail = candidate.signature.clone().or(candidate.detail.clone());
-    let label_details = completion_label_details(&label, candidate);
-    let new_text = completion_insert_text(&label, candidate);
-    let insert_text_format = (new_text != label).then_some(2);
-    let documentation = candidate
-        .display
-        .documentation_preview
+    let label_details = callable
         .as_ref()
-        .map(|preview| LspMarkupContent {
-            kind: "markdown".to_string(),
-            value: preview.clone(),
-        });
+        .map(|render| LspCompletionItemLabelDetails {
+            detail: Some(render.call.parameters.clone()),
+            description: render.call.result.clone(),
+        })
+        .or_else(|| completion_label_details(&label, candidate));
+    let (new_text, insert_text_format) = callable
+        .as_ref()
+        .map(|render| (render.insert_text.clone(), Some(2)))
+        .unwrap_or_else(|| (label.clone(), None));
+    let documentation = completion_documentation(candidate, callable.as_ref());
+    let required_parameter_count = callable
+        .as_ref()
+        .map(|render| render.call.required_parameter_count())
+        .unwrap_or(0);
+    let optional_parameter_count = callable
+        .as_ref()
+        .map(|render| render.call.optional_parameter_count())
+        .unwrap_or(0);
 
     Some(LspCompletionItem {
         label: label.clone(),
@@ -1167,13 +1958,15 @@ fn completion_item_for_candidate(
         kind: completion_item_kind(candidate),
         detail,
         documentation,
-        sort_text: Some(completion_sort_text(candidate, &label)),
+        sort_text: Some(completion_sort_text(candidate, &label, match_prefix, order)),
         filter_text: Some(label.clone()),
         insert_text_format,
         text_edit: LspTextEdit {
             range: edit_range,
             new_text,
         },
+        required_parameter_count,
+        optional_parameter_count,
     })
 }
 
@@ -1189,36 +1982,80 @@ fn completion_label_details(
     })
 }
 
-fn completion_insert_text(label: &str, candidate: &EditorCompletionCandidate) -> String {
-    if !matches!(
-        candidate.kind,
+fn callable_completion_render(
+    label: &str,
+    candidate: &EditorCompletionCandidate,
+    insert_context: CompletionInsertContext,
+) -> Option<CallableCompletionRender> {
+    let signature = match candidate.kind {
         SymbolKind::Function
-            | SymbolKind::Method
-            | SymbolKind::Constructor
-            | SymbolKind::Destructor
-    ) {
-        return label.to_string();
-    }
-    let Some(signature) = candidate.signature.as_deref() else {
-        return label.to_string();
+        | SymbolKind::Method
+        | SymbolKind::Constructor
+        | SymbolKind::Destructor => candidate.signature.as_deref()?,
+        SymbolKind::Class if insert_context == CompletionInsertContext::ConstructorCall => {
+            candidate.constructor_signature.as_deref()?
+        }
+        SymbolKind::Class
+            if insert_context == CompletionInsertContext::AttributeShorthand
+                && is_attribute_like_completion_candidate(candidate) =>
+        {
+            let signature = candidate.constructor_signature.as_deref()?;
+            let call = callable_signature_parts(label, signature)?;
+            let insert_text = format!("[{}]", callable_insert_text(label, &call));
+            return Some(CallableCompletionRender { call, insert_text });
+        }
+        _ => return None,
     };
-    let Some(call) = callable_signature_parts(label, signature) else {
-        return label.to_string();
-    };
-    let arguments = call
-        .parameter_names
-        .into_iter()
-        .filter(|name| !name.is_empty())
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!("{label}({arguments})")
+    let call = callable_signature_parts(label, signature)?;
+    let insert_text = callable_insert_text(label, &call);
+    Some(CallableCompletionRender { call, insert_text })
+}
+
+fn is_attribute_like_completion_candidate(candidate: &EditorCompletionCandidate) -> bool {
+    candidate.kind == SymbolKind::Class && candidate.is_attribute_like
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CallableSignatureParts {
     parameters: String,
-    parameter_names: Vec<String>,
+    parameters_info: Vec<CallableCompletionParameter>,
     result: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CallableCompletionParameter {
+    raw: String,
+    name: String,
+    type_and_modifiers: String,
+    default_text: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CallableCompletionRender {
+    call: CallableSignatureParts,
+    insert_text: String,
+}
+
+impl CallableSignatureParts {
+    fn required_parameters(&self) -> impl Iterator<Item = &CallableCompletionParameter> {
+        self.parameters_info
+            .iter()
+            .filter(|parameter| parameter.default_text.is_none())
+    }
+
+    fn optional_parameters(&self) -> impl Iterator<Item = &CallableCompletionParameter> {
+        self.parameters_info
+            .iter()
+            .filter(|parameter| parameter.default_text.is_some())
+    }
+
+    fn required_parameter_count(&self) -> usize {
+        self.required_parameters().count()
+    }
+
+    fn optional_parameter_count(&self) -> usize {
+        self.optional_parameters().count()
+    }
 }
 
 fn callable_signature_parts(label: &str, signature: &str) -> Option<CallableSignatureParts> {
@@ -1236,16 +2073,40 @@ fn callable_signature_parts(label: &str, signature: &str) -> Option<CallableSign
         .filter(|text| !text.is_empty())
         .map(|text| format!("-> {text}"));
     let parameters = format!("({parameters_text})");
-    let parameter_names = split_completion_parameters(parameters_text)
+    let parameters_info = split_completion_parameters(parameters_text)
         .into_iter()
-        .filter_map(|parameter| completion_parameter_name(&parameter))
+        .filter_map(|parameter| callable_completion_parameter(&parameter))
         .collect();
 
     Some(CallableSignatureParts {
         parameters,
-        parameter_names,
+        parameters_info,
         result,
     })
+}
+
+fn callable_insert_text(label: &str, call: &CallableSignatureParts) -> String {
+    let required = call.required_parameters().collect::<Vec<_>>();
+    if call.parameters_info.is_empty() {
+        return format!("{label}()");
+    }
+    if required.is_empty() {
+        return format!("{label}($0)");
+    }
+
+    let arguments = required
+        .iter()
+        .enumerate()
+        .map(|(index, parameter)| {
+            format!(
+                "${{{}:{}}}",
+                index + 1,
+                snippet_placeholder_text(&parameter.name)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{label}({arguments})")
 }
 
 fn matching_close_paren(text: &str, open: usize) -> Option<usize> {
@@ -1296,8 +2157,8 @@ fn split_completion_parameters(text: &str) -> Vec<String> {
     parts
 }
 
-fn completion_parameter_name(parameter: &str) -> Option<String> {
-    let before_default = parameter.split('=').next().unwrap_or(parameter).trim();
+fn callable_completion_parameter(parameter: &str) -> Option<CallableCompletionParameter> {
+    let (before_default, default_text) = split_parameter_default(parameter);
     let before_array = before_default
         .split('[')
         .next()
@@ -1307,15 +2168,148 @@ fn completion_parameter_name(parameter: &str) -> Option<String> {
         .split_whitespace()
         .last()
         .unwrap_or("")
-        .trim_matches(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_');
-    (!name.is_empty()).then(|| name.to_string())
+        .trim_matches(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
+        .to_string();
+    if name.is_empty() {
+        return None;
+    }
+    let type_and_modifiers = before_array
+        .strip_suffix(&name)
+        .unwrap_or(before_array)
+        .trim()
+        .to_string();
+    Some(CallableCompletionParameter {
+        raw: parameter.trim().to_string(),
+        name,
+        type_and_modifiers,
+        default_text: default_text.map(str::to_string),
+    })
 }
 
-fn completion_sort_text(candidate: &EditorCompletionCandidate, label: &str) -> String {
+fn split_parameter_default(parameter: &str) -> (&str, Option<&str>) {
+    let mut angle = 0usize;
+    let mut paren = 0usize;
+    let mut bracket = 0usize;
+    for (offset, ch) in parameter.char_indices() {
+        match ch {
+            '<' => angle += 1,
+            '>' => angle = angle.saturating_sub(1),
+            '(' => paren += 1,
+            ')' => paren = paren.saturating_sub(1),
+            '[' => bracket += 1,
+            ']' => bracket = bracket.saturating_sub(1),
+            '=' if angle == 0 && paren == 0 && bracket == 0 => {
+                return (
+                    parameter[..offset].trim(),
+                    Some(parameter[offset + ch.len_utf8()..].trim()),
+                );
+            }
+            _ => {}
+        }
+    }
+    (parameter.trim(), None)
+}
+
+fn snippet_placeholder_text(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('$', "\\$")
+        .replace('}', "\\}")
+}
+
+fn completion_documentation(
+    candidate: &EditorCompletionCandidate,
+    callable: Option<&CallableCompletionRender>,
+) -> Option<LspMarkupContent> {
+    let mut sections = Vec::new();
+    if let Some(render) = callable {
+        let parameter_docs = callable_parameter_documentation(&render.call);
+        if !parameter_docs.is_empty() {
+            sections.push(parameter_docs);
+        }
+    }
+    if let Some(preview) = candidate.display.documentation_preview.as_ref() {
+        if !preview.trim().is_empty() {
+            sections.push(preview.clone());
+        }
+    }
+    if sections.is_empty() {
+        None
+    } else {
+        Some(LspMarkupContent {
+            kind: "markdown".to_string(),
+            value: sections.join("\n\n"),
+        })
+    }
+}
+
+fn callable_parameter_documentation(call: &CallableSignatureParts) -> String {
+    let mut output = String::new();
+    let required = call.required_parameters().collect::<Vec<_>>();
+    let optional = call.optional_parameters().collect::<Vec<_>>();
+
+    if !required.is_empty() {
+        output.push_str("**Required**\n");
+        for parameter in required {
+            output.push_str(&format!(
+                "- `{}`{}\n",
+                parameter.name,
+                parameter_type_suffix(parameter)
+            ));
+        }
+    }
+    if !optional.is_empty() {
+        if !output.is_empty() {
+            output.push('\n');
+        }
+        output.push_str("**Optional**\n");
+        for parameter in optional {
+            output.push_str(&format!(
+                "- `{}`{} = `{}`\n",
+                parameter.name,
+                parameter_type_suffix(parameter),
+                parameter
+                    .default_text
+                    .as_deref()
+                    .map(escape_markdown_inline_code)
+                    .unwrap_or_default()
+            ));
+        }
+    }
+
+    output
+}
+
+fn parameter_type_suffix(parameter: &CallableCompletionParameter) -> String {
+    if parameter.type_and_modifiers.is_empty() {
+        String::new()
+    } else {
+        format!(
+            ": `{}`",
+            escape_markdown_inline_code(&parameter.type_and_modifiers)
+        )
+    }
+}
+
+fn escape_markdown_inline_code(value: &str) -> String {
+    value.replace('`', "\\`")
+}
+
+fn completion_sort_text(
+    candidate: &EditorCompletionCandidate,
+    label: &str,
+    match_prefix: Option<&str>,
+    order: usize,
+) -> String {
+    let match_rank = match_prefix
+        .and_then(|prefix| completion_name_match_rank(label, prefix))
+        .unwrap_or(u16::MAX);
     format!(
-        "{:02}:{:02}:{:03}:{}",
+        "{:03}:{:02}:{:02}:{:05}:{:03}:{}",
+        match_rank,
         completion_source_rank(candidate),
         completion_origin_sort_rank(candidate.origin),
+        order,
         completion_item_kind_rank(candidate.kind),
         label
     )
@@ -1464,5 +2458,84 @@ mod tests {
         );
 
         assert!(items.is_empty());
+    }
+
+    #[test]
+    fn no_arg_callable_inserts_empty_call() {
+        let call = callable_signature_parts("Run", "Example.Run() -> void").unwrap();
+
+        assert_eq!(callable_insert_text("Run", &call), "Run()");
+        assert_eq!(call.required_parameter_count(), 0);
+        assert_eq!(call.optional_parameter_count(), 0);
+    }
+
+    #[test]
+    fn required_callable_parameters_insert_name_placeholders() {
+        let call = callable_signature_parts(
+            "GetComponentsByType",
+            "Example.GetComponentsByType(typename componentType, out int foundCount) -> void",
+        )
+        .unwrap();
+
+        assert_eq!(
+            callable_insert_text("GetComponentsByType", &call),
+            "GetComponentsByType(${1:componentType}, ${2:foundCount})"
+        );
+        assert_eq!(call.required_parameter_count(), 2);
+        assert_eq!(call.optional_parameter_count(), 0);
+    }
+
+    #[test]
+    fn optional_callable_parameters_are_not_inserted() {
+        let call = callable_signature_parts(
+            "SendToEveryone",
+            "SCR_NotificationsComponent.SendToEveryone(ENotification notificationID, int param1 = 0, string label = \"ok\") -> bool",
+        )
+        .unwrap();
+
+        assert_eq!(
+            callable_insert_text("SendToEveryone", &call),
+            "SendToEveryone(${1:notificationID})"
+        );
+        assert_eq!(call.required_parameter_count(), 1);
+        assert_eq!(call.optional_parameter_count(), 2);
+    }
+
+    #[test]
+    fn all_optional_callable_parameters_leave_cursor_inside_call() {
+        let call = callable_signature_parts(
+            "Attribute",
+            "Attribute(string defvalue = \"\", string uiwidget = \"auto\", int precision = 3)",
+        )
+        .unwrap();
+
+        assert_eq!(callable_insert_text("Attribute", &call), "Attribute($0)");
+        assert_eq!(call.required_parameter_count(), 0);
+        assert_eq!(call.optional_parameter_count(), 3);
+    }
+
+    #[test]
+    fn generic_parameter_types_split_at_top_level_commas_only() {
+        let call = callable_signature_parts(
+            "UseValues",
+            "Example.UseValues(map<string, ref array<IEntity>> values, inout array<int> outValues) -> void",
+        )
+        .unwrap();
+
+        assert_eq!(call.parameters_info.len(), 2);
+        assert_eq!(call.parameters_info[0].name, "values");
+        assert_eq!(
+            call.parameters_info[0].type_and_modifiers,
+            "map<string, ref array<IEntity>>"
+        );
+        assert_eq!(call.parameters_info[1].name, "outValues");
+        assert_eq!(
+            call.parameters_info[1].type_and_modifiers,
+            "inout array<int>"
+        );
+        assert_eq!(
+            callable_insert_text("UseValues", &call),
+            "UseValues(${1:values}, ${2:outValues})"
+        );
     }
 }

@@ -24,6 +24,7 @@ pub struct EditorCompletionCandidate {
     pub kind: SymbolKind,
     pub detail: Option<String>,
     pub signature: Option<String>,
+    pub constructor_signature: Option<String>,
     pub span: TextSpan,
     pub selection_span: TextSpan,
     pub source_kind: SourceKind,
@@ -31,6 +32,7 @@ pub struct EditorCompletionCandidate {
     pub source_priority: u16,
     pub relative_path: Option<PathBuf>,
     pub absolute_path: Option<PathBuf>,
+    pub is_attribute_like: bool,
     pub origin: EditorCompletionOrigin,
     pub conditional_context: Vec<IndexedConditionalBranch>,
     pub callable_form: Option<CallableForm>,
@@ -161,7 +163,7 @@ impl<'index> IndexQuery<'index> {
         let mut key_order = Vec::<String>::new();
 
         for (name, ids) in self.index.top_level_names() {
-            if !starts_with_ignore_ascii_case(name, prefix) {
+            if completion_name_match_rank(name, prefix).is_none() {
                 continue;
             }
             for id in ids {
@@ -182,7 +184,6 @@ impl<'index> IndexQuery<'index> {
             }
         }
 
-        let soft_limit = limit.saturating_mul(4).max(limit);
         let mut candidates = Vec::new();
         for key in key_order {
             let mut ids = ids_by_key.remove(&key).unwrap_or_default();
@@ -193,16 +194,14 @@ impl<'index> IndexQuery<'index> {
                 .and_then(|id| self.editor_top_level_completion_candidate(id))
             {
                 candidates.push(candidate);
-                if candidates.len() >= soft_limit {
-                    break;
-                }
             }
         }
 
         candidates.sort_by(|left, right| {
-            left.display
-                .label
-                .cmp(&right.display.label)
+            completion_name_match_rank(&left.display.label, prefix)
+                .unwrap_or(u16::MAX)
+                .cmp(&completion_name_match_rank(&right.display.label, prefix).unwrap_or(u16::MAX))
+                .then_with(|| left.display.label.cmp(&right.display.label))
                 .then_with(|| {
                     completion_kind_rank(left.kind).cmp(&completion_kind_rank(right.kind))
                 })
@@ -400,6 +399,8 @@ impl<'index> IndexQuery<'index> {
         let origin = self.completion_origin(owner, preferred_class, symbol.parent);
         let display = self.symbol_display(id)?;
         let detail = display.detail.clone();
+        let constructor_signature = self.class_constructor_signature(symbol.id, symbol.kind);
+        let is_attribute_like = self.is_attribute_like_class(symbol.id, symbol.kind);
 
         Some(EditorCompletionCandidate {
             id,
@@ -407,6 +408,7 @@ impl<'index> IndexQuery<'index> {
             kind: symbol.kind,
             detail,
             signature: display.signature.clone(),
+            constructor_signature,
             span: symbol.span,
             selection_span: symbol.selection_span,
             source_kind: file.metadata.kind,
@@ -414,6 +416,7 @@ impl<'index> IndexQuery<'index> {
             source_priority: file.metadata.priority,
             relative_path: file.metadata.relative_path.clone(),
             absolute_path: file.metadata.absolute_path.clone(),
+            is_attribute_like,
             origin,
             conditional_context: symbol.conditional_context.clone(),
             callable_form: symbol.callable_form,
@@ -544,6 +547,8 @@ impl<'index> IndexQuery<'index> {
         let file = self.index.file(id.file_id)?;
         let display = self.symbol_display(id)?;
         let detail = display.detail.clone();
+        let constructor_signature = self.class_constructor_signature(symbol.id, symbol.kind);
+        let is_attribute_like = self.is_attribute_like_class(symbol.id, symbol.kind);
 
         Some(EditorCompletionCandidate {
             id,
@@ -551,6 +556,7 @@ impl<'index> IndexQuery<'index> {
             kind: symbol.kind,
             detail,
             signature: display.signature.clone(),
+            constructor_signature,
             span: symbol.span,
             selection_span: symbol.selection_span,
             source_kind: file.metadata.kind,
@@ -558,6 +564,7 @@ impl<'index> IndexQuery<'index> {
             source_priority: file.metadata.priority,
             relative_path: file.metadata.relative_path.clone(),
             absolute_path: file.metadata.absolute_path.clone(),
+            is_attribute_like,
             origin,
             conditional_context: symbol.conditional_context.clone(),
             callable_form: symbol.callable_form,
@@ -590,6 +597,51 @@ impl<'index> IndexQuery<'index> {
         } else {
             EditorCompletionOrigin::Overlay
         }
+    }
+
+    fn class_constructor_signature(&self, id: GlobalSymbolId, kind: SymbolKind) -> Option<String> {
+        if kind != SymbolKind::Class {
+            return None;
+        }
+        self.index.children(id).iter().find_map(|child_id| {
+            self.index
+                .symbol(*child_id)
+                .filter(|symbol| symbol.kind == SymbolKind::Constructor)
+                .and_then(|symbol| self.index.callable_signature(symbol.id))
+        })
+    }
+
+    fn is_attribute_like_class(&self, id: GlobalSymbolId, kind: SymbolKind) -> bool {
+        if kind != SymbolKind::Class {
+            return false;
+        }
+
+        let mut current_base = self
+            .index
+            .symbol(id)
+            .and_then(|symbol| symbol.detail.base_type.as_deref())
+            .and_then(owner_type_from_type_text);
+        let mut seen = BTreeSet::<String>::new();
+
+        while let Some(base) = current_base {
+            if base == "UniqueAttribute" {
+                return true;
+            }
+            if !seen.insert(base.clone()) {
+                return false;
+            }
+
+            let Some(base_id) = self.preferred_editor_class(&base) else {
+                return base.ends_with("Attribute");
+            };
+            current_base = self
+                .index
+                .symbol(base_id)
+                .and_then(|symbol| symbol.detail.base_type.as_deref())
+                .and_then(owner_type_from_type_text);
+        }
+
+        false
     }
 }
 
@@ -697,10 +749,106 @@ fn top_level_completion_key(
     format!("{kind:?}:{name}:{signature}")
 }
 
+pub(crate) fn completion_name_match_rank(value: &str, prefix: &str) -> Option<u16> {
+    if prefix.is_empty() {
+        return Some(0);
+    }
+    if value == prefix {
+        return Some(0);
+    }
+    if value.eq_ignore_ascii_case(prefix) {
+        return Some(1);
+    }
+    if prefix.chars().count() >= 2 {
+        if let Some(score) = boundary_abbreviation_match_score(value, prefix) {
+            return Some(10 + score);
+        }
+    }
+    if starts_with_ignore_ascii_case(value, prefix) {
+        return Some(100 + length_delta_score(value, prefix));
+    }
+    if prefix.chars().count() >= 2 {
+        if let Some(score) = subsequence_match_score(value, prefix) {
+            return Some(200 + score);
+        }
+    }
+    None
+}
+
 fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
     value
         .get(..prefix.len())
         .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+}
+
+fn length_delta_score(value: &str, prefix: &str) -> u16 {
+    value
+        .chars()
+        .count()
+        .saturating_sub(prefix.chars().count())
+        .min(u16::MAX as usize) as u16
+}
+
+fn boundary_abbreviation_match_score(value: &str, prefix: &str) -> Option<u16> {
+    let boundaries = completion_word_boundaries(value);
+    let mut boundary_index = 0usize;
+    let mut score = 0u16;
+
+    for prefix_char in prefix.chars() {
+        let target = prefix_char.to_ascii_lowercase();
+        let mut matched = None;
+        while boundary_index < boundaries.len() {
+            let (index, ch) = boundaries[boundary_index];
+            boundary_index += 1;
+            if ch.to_ascii_lowercase() == target {
+                matched = Some(index);
+                break;
+            }
+        }
+        score = score.saturating_add(matched?.min(u16::MAX as usize) as u16);
+    }
+
+    Some(score.saturating_add(length_delta_score(value, prefix)))
+}
+
+fn completion_word_boundaries(value: &str) -> Vec<(usize, char)> {
+    let mut boundaries = Vec::new();
+    let mut previous = None;
+    for (index, ch) in value.char_indices() {
+        let is_boundary = index == 0
+            || previous.is_some_and(|prev: char| prev == '_' || !prev.is_ascii_alphanumeric())
+            || (ch.is_ascii_uppercase()
+                && previous
+                    .is_some_and(|prev: char| prev.is_ascii_lowercase() || prev.is_ascii_digit()));
+        if is_boundary && ch.is_ascii_alphanumeric() {
+            boundaries.push((index, ch));
+        }
+        previous = Some(ch);
+    }
+    boundaries
+}
+
+fn subsequence_match_score(value: &str, prefix: &str) -> Option<u16> {
+    let mut value_chars = value.char_indices();
+    let mut last_index = 0usize;
+    let mut score = 0u16;
+
+    for prefix_char in prefix.chars() {
+        let target = prefix_char.to_ascii_lowercase();
+        let mut matched = None;
+        for (index, ch) in value_chars.by_ref() {
+            if ch.to_ascii_lowercase() == target {
+                matched = Some(index);
+                break;
+            }
+        }
+        let index = matched?;
+        score =
+            score.saturating_add(index.saturating_sub(last_index).min(u16::MAX as usize) as u16);
+        last_index = index;
+    }
+
+    Some(score.saturating_add(length_delta_score(value, prefix)))
 }
 
 #[cfg(test)]
@@ -797,11 +945,61 @@ int SCR_Global;
                 .map(|candidate| (candidate.name.as_deref().unwrap(), candidate.kind))
                 .collect::<Vec<_>>(),
             vec![
-                ("SCR_Alias", SymbolKind::Typedef),
                 ("SCR_Mode", SymbolKind::Enum),
-                ("SCR_Type", SymbolKind::Class)
+                ("SCR_Type", SymbolKind::Class),
+                ("SCR_Alias", SymbolKind::Typedef)
             ]
         );
+    }
+
+    #[test]
+    fn top_level_completion_uses_match_quality_before_limit() {
+        let mut source = String::new();
+        for index in 0..400 {
+            source.push_str(&format!("class RplGenerated{index} {{}}\n"));
+        }
+        source.push_str("class RplProp {}\n");
+        let catalog = catalog(&source, game_metadata("Game.c"));
+        let index = SymbolIndex::from_catalogs([&catalog]);
+        let query = IndexQuery::new(&index);
+
+        let completion =
+            query.completion_top_level_limited("rp", EditorTopLevelCompletionMode::Type, 250);
+
+        assert_eq!(completion.len(), 250);
+        assert_eq!(completion.first().unwrap().name.as_deref(), Some("RplProp"));
+        assert!(completion
+            .iter()
+            .any(|candidate| candidate.name.as_deref() == Some("RplProp")));
+    }
+
+    #[test]
+    fn top_level_completion_marks_indirect_unique_attribute_classes() {
+        let catalog = catalog(
+            r#"class UniqueAttribute {}
+class SharedAttributeBase : UniqueAttribute {}
+class CustomGameplayFlag : SharedAttributeBase {}
+class NotAttributeBase {}
+class LooksLikeAttribute : NotAttributeBase {}
+"#,
+            game_metadata("Game/Attributes.c"),
+        );
+        let index = SymbolIndex::from_catalogs([&catalog]);
+        let query = IndexQuery::new(&index);
+
+        let completion = query.completion_top_level("Custom", EditorTopLevelCompletionMode::Type);
+        let custom = completion
+            .iter()
+            .find(|candidate| candidate.name.as_deref() == Some("CustomGameplayFlag"))
+            .expect("expected custom attribute candidate");
+        assert!(custom.is_attribute_like);
+
+        let completion = query.completion_top_level("Looks", EditorTopLevelCompletionMode::Type);
+        let looks_like = completion
+            .iter()
+            .find(|candidate| candidate.name.as_deref() == Some("LooksLikeAttribute"))
+            .expect("expected suffix-only non-attribute candidate");
+        assert!(!looks_like.is_attribute_like);
     }
 
     #[test]

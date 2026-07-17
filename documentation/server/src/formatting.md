@@ -79,6 +79,7 @@ Examples:
 - Typing `OnPostIn` inside a class body and accepting `OnPostInit(IEntity owner)` as an inherited override is AC. The completion item chooses a parent method and may insert an `override ... { }` skeleton.
 - Reindenting the inserted override skeleton, placing braces on the configured lines, and trimming trailing whitespace is AF.
 - Offering `array<T>` or `map<TKey, TValue>` in a type position is AC/type assist. AF must not globally turn `<` into `<>`.
+- Completing `defv` inside `[Attribute(defv)]`, `notif` inside `SendToEveryone(notif)`, or any similar callable argument slot to a source-backed named parameter label such as `defvalue: $0` or `notificationID: $0` is AC. The callable signature chooses the label; AF may only clean spacing around the inserted colon later.
 - Inserting a missing semicolon when pressing Enter after a complete declaration or statement can be an on-type formatting assist only when the parser can prove no other action is plausible.
 - Formatting `/** */` or `//!` documentation shape is AF/comment assist. Generating source-backed param/return docs for a selected method is AC or an explicit documentation assist, because it depends on the selected declaration.
 

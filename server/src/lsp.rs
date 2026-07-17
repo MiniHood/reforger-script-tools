@@ -1753,6 +1753,9 @@ class Example
 	void Example(int initialValue)
 	{
 	}
+	void ~Example()
+	{
+	}
 	void Run(int value)
 	{
 		string name = "x";
@@ -1804,7 +1807,7 @@ class Example
                 .iter()
                 .filter(|token| token.text == "Example" && token.token_type == "class")
                 .count()
-                >= 2
+                >= 3
         );
         assert!(
             report
@@ -2879,7 +2882,7 @@ class Example
             .iter()
             .any(|item| item.label == "SetVisible"
                 && item.kind == 2
-                && item.text_edit.new_text == "SetVisible(visible)"
+                && item.text_edit.new_text == "SetVisible(${1:visible})"
                 && item.insert_text_format == Some(2)
                 && item
                     .label_details
@@ -2959,7 +2962,7 @@ class Other
     }
 
     #[test]
-    fn completion_labels_overloads_and_sorts_workspace_before_game_data() {
+    fn completion_labels_overloads_and_uses_source_rank_as_tiebreaker() {
         let source = r#"class Widget
 {
 	void SetVisible(bool visible);
@@ -3006,8 +3009,12 @@ class Example
             vec!["(bool visible)", "(bool visible, bool animate)"]
         );
         let first = report.list.items.first().unwrap();
-        assert_eq!(first.label, "SetVisible");
-        assert!(first.sort_text.as_deref().unwrap_or("").starts_with("01:"));
+        assert_eq!(first.label, "SetText");
+        assert!(first
+            .sort_text
+            .as_deref()
+            .unwrap_or("")
+            .starts_with("104:01:"));
     }
 
     #[test]
@@ -3038,7 +3045,7 @@ int SCR_Global;
                 .iter()
                 .map(|item| (item.label.as_str(), item.kind))
                 .collect::<Vec<_>>(),
-            vec![("SCR_Alias", 25), ("SCR_Mode", 13), ("SCR_Widget", 7)]
+            vec![("SCR_Mode", 13), ("SCR_Alias", 25), ("SCR_Widget", 7)]
         );
         assert!(report
             .list
@@ -3146,7 +3153,219 @@ void SCR_Function();
             .iter()
             .any(|item| item.label == "Attribute"
                 && item.kind == 7
-                && item.text_edit.new_text == "Attribute"));
+                && item.text_edit.new_text == "Attribute($0)"
+                && item.insert_text_format == Some(2)
+                && item.optional_parameter_count == 1));
+    }
+
+    #[test]
+    fn completion_wraps_attribute_shorthand_at_declaration_boundary() {
+        let source = r#"class Example
+{
+	attribut
+	int m_Value;
+}
+"#;
+        let external = file_index_for_source(
+            r#"class UniqueAttribute {}
+class Attribute : UniqueAttribute
+{
+	void Attribute(string defvalue = "");
+}
+"#,
+        )
+        .index;
+
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "attribut"),
+            Some(&external),
+        );
+
+        assert_eq!(report.completion_context, "type");
+        assert_eq!(report.prefix, "attribut");
+        assert!(report
+            .list
+            .items
+            .iter()
+            .any(|item| item.label == "Attribute"
+                && item.kind == 7
+                && item.text_edit.new_text == "[Attribute($0)]"
+                && item.insert_text_format == Some(2)
+                && item.optional_parameter_count == 1));
+    }
+
+    #[test]
+    fn completion_wraps_indirect_unique_attribute_shorthand() {
+        let source = r#"class Example
+{
+	custom
+	int m_Value;
+}
+"#;
+        let external = file_index_for_source(
+            r#"class UniqueAttribute {}
+class SharedAttributeBase : UniqueAttribute {}
+class CustomFlag : SharedAttributeBase
+{
+	void CustomFlag(string value = "");
+}
+"#,
+        )
+        .index;
+
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "custom"),
+            Some(&external),
+        );
+
+        assert_eq!(report.completion_context, "type");
+        assert_eq!(report.prefix, "custom");
+        assert!(report
+            .list
+            .items
+            .iter()
+            .any(|item| item.label == "CustomFlag"
+                && item.kind == 7
+                && item.text_edit.new_text == "[CustomFlag($0)]"
+                && item.insert_text_format == Some(2)
+                && item.optional_parameter_count == 1));
+    }
+
+    #[test]
+    fn completion_returns_optional_parameter_labels_inside_attribute_args() {
+        let source = r#"class Example
+{
+	[Attribute(defv)]
+	int m_Value;
+}
+"#;
+        let external = file_index_for_source(
+            r#"class UniqueAttribute {}
+class Attribute : UniqueAttribute
+{
+	void Attribute(string defvalue = "", string uiwidget = "auto", string desc = "");
+}
+"#,
+        )
+        .index;
+
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "defv"),
+            Some(&external),
+        );
+
+        assert_eq!(report.completion_context, "argument-label");
+        assert_eq!(report.prefix, "defv");
+        let item = report
+            .list
+            .items
+            .iter()
+            .find(|item| item.label == "defvalue")
+            .expect("expected defvalue parameter-label completion");
+        assert_eq!(item.kind, 10);
+        assert_eq!(item.text_edit.new_text, "defvalue: $0");
+        assert_eq!(item.insert_text_format, Some(2));
+        assert_eq!(item.optional_parameter_count, 1);
+    }
+
+    #[test]
+    fn completion_returns_parameter_labels_inside_function_calls() {
+        let source = r#"void SendToEveryone(ENotification notificationID, int param1 = 0, string label = "ok");
+
+class Example
+{
+	void Run()
+	{
+		SendToEveryone(notif)
+	}
+}
+"#;
+
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "SendToEveryone(notif"),
+            None,
+        );
+
+        assert_eq!(report.completion_context, "argument-label");
+        assert_eq!(report.prefix, "notif");
+        let item = report
+            .list
+            .items
+            .iter()
+            .find(|item| item.label == "notificationID")
+            .expect("expected function parameter-label completion");
+        assert_eq!(item.text_edit.new_text, "notificationID: $0");
+        assert_eq!(item.required_parameter_count, 1);
+    }
+
+    #[test]
+    fn completion_returns_parameter_labels_inside_constructor_calls() {
+        let source = r#"class Widget
+{
+	void Widget(string name = "", int value = 0);
+}
+
+class Example
+{
+	void Run()
+	{
+		Widget widget = new Widget(na);
+	}
+}
+"#;
+
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "new Widget(na"),
+            None,
+        );
+
+        assert_eq!(report.completion_context, "argument-label");
+        assert_eq!(report.prefix, "na");
+        let item = report
+            .list
+            .items
+            .iter()
+            .find(|item| item.label == "name")
+            .expect("expected constructor parameter-label completion");
+        assert_eq!(item.text_edit.new_text, "name: $0");
+        assert_eq!(item.optional_parameter_count, 1);
+    }
+
+    #[test]
+    fn completion_hides_already_supplied_parameter_labels() {
+        let source = r#"class Example
+{
+	[Attribute(defvalue: "", defv)]
+	int m_Value;
+}
+"#;
+        let external = file_index_for_source(
+            r#"class UniqueAttribute {}
+class Attribute : UniqueAttribute
+{
+	void Attribute(string defvalue = "", string uiwidget = "auto", string desc = "");
+}
+"#,
+        )
+        .index;
+
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "defvalue: \"\", defv"),
+            Some(&external),
+        );
+
+        assert_eq!(report.completion_context, "argument-label");
+        assert!(!report
+            .list
+            .items
+            .iter()
+            .any(|item| item.label == "defvalue"));
     }
 
     #[test]
@@ -3203,6 +3422,7 @@ int SCR_Global;
         assert_eq!(report.prefix, "s");
         assert_eq!(report.list.items.len(), 250);
         assert_eq!(report.candidate_count, 250);
+        assert!(report.list.is_incomplete);
     }
 
     #[test]
@@ -3567,6 +3787,121 @@ int SCR_Global;
             .collect::<Vec<_>>();
         assert_eq!(labels.first().copied(), Some("override"));
         assert!(labels.contains(&"OnPostInit"));
+    }
+
+    #[test]
+    fn completion_keeps_source_symbols_when_override_skeletons_are_available() {
+        let source = r#"class Child : Parent
+{
+	rp
+}
+"#;
+        let external = file_index_for_source(
+            r#"class UniqueAttribute {}
+class RplProp : UniqueAttribute
+{
+}
+
+class Parent
+{
+	protected bool RplLoad(ScriptBitReader reader);
+	protected bool RplSave(ScriptBitWriter writer);
+}
+"#,
+        )
+        .index;
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "rp"),
+            Some(&external),
+        );
+
+        assert_eq!(report.completion_context, "override");
+        assert_eq!(report.prefix, "rp");
+        let labels = report
+            .list
+            .items
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(labels.first().copied(), Some("RplProp"));
+        assert!(labels.contains(&"RplLoad"));
+        assert!(labels.contains(&"RplSave"));
+        assert!(labels.contains(&"RplProp"));
+    }
+
+    #[test]
+    fn completion_ranks_closest_source_symbol_before_capping() {
+        let source = r#"class Example
+{
+	rp
+}
+"#;
+        let mut external_source = String::new();
+        for index in 0..400 {
+            external_source.push_str(&format!("class RplGenerated{index} {{}}\n"));
+        }
+        external_source.push_str("class RplProp {}\n");
+        let external = file_index_for_source(&external_source).index;
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "rp"),
+            Some(&external),
+        );
+
+        assert_eq!(report.completion_context, "top-level");
+        assert_eq!(report.prefix, "rp");
+        assert_eq!(report.list.items.len(), 250);
+        assert!(report.list.is_incomplete);
+        assert_eq!(report.list.items.first().unwrap().label, "RplProp");
+        assert!(report.list.items.iter().any(|item| item.label == "RplProp"));
+    }
+
+    #[test]
+    fn completion_match_quality_beats_source_rank_for_top_level_symbols() {
+        let source = r#"typedef func SCR_BaseGameMode_PlayerId;
+typedef func SCR_BaseGameMode_PlayerIdAndEntity;
+typedef func SCR_BaseGameMode_OnPlayerRoleChanged;
+
+class Example
+{
+	rplr
+}
+"#;
+        let external = file_index_for_source(
+            r#"enum RplRcver {}
+class UniqueAttribute {}
+class RplRpc : UniqueAttribute
+{
+	void RplRpc(RplChannel channel, RplRcver rcver, RplCondition condition = RplCondition.None);
+}
+"#,
+        )
+        .index;
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "rplr"),
+            Some(&external),
+        );
+
+        assert_eq!(report.completion_context, "top-level");
+        assert_eq!(report.prefix, "rplr");
+        let labels = report
+            .list
+            .items
+            .iter()
+            .take(5)
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(labels.first().copied(), Some("RplRpc"));
+        assert!(labels.contains(&"RplRcver"));
+        assert!(
+            labels.iter().position(|label| *label == "RplRpc").unwrap()
+                < labels
+                    .iter()
+                    .position(|label| *label == "SCR_BaseGameMode_PlayerId")
+                    .unwrap_or(usize::MAX)
+        );
     }
 
     #[test]
@@ -4961,7 +5296,7 @@ class Example
         );
         assert!(output_text.contains("\"isIncomplete\":false"));
         assert!(output_text.contains("\"label\":\"SetVisible\""));
-        assert!(output_text.contains("\"newText\":\"SetVisible(visible)\""));
+        assert!(output_text.contains("\"newText\":\"SetVisible(${1:visible})\""));
     }
 
     #[test]

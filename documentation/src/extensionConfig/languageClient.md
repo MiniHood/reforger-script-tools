@@ -14,7 +14,7 @@ Exports constants for the language client ID/name, hover-debug and completion-de
 
 Also exports the language-client crash handling constants: the default-equivalent restart count, the restart window, and the concise final crash notification text.
 
-Also exports the deletion-completion retrigger debounce. This controls only when the VS Code shell asks the Rust LSP for completion after backspace/delete; it does not provide candidates or duplicate completion logic.
+Also exports deletion and insertion completion retrigger debounces. These control only when the VS Code shell asks the Rust LSP for completion after backspace/delete or typed identifier characters; they do not provide candidates or duplicate completion logic.
 
 The runtime game-data index cache file is `index-cache/game-data-symbol-index.v9.bin`. The v9 binary cache is disposable and prunes external game-data local variables, strips source-only detail spans, rebuilds lookup maps after load, stores repeated strings through an interned string table, preserves compacted per-file symbol ranges, stores an explicit index-shape marker, and preserves parameters, type parameters, and declaration facts needed by hover/signature-style display.
 
@@ -38,7 +38,7 @@ This file has no VS Code API calls, filesystem access, mutable state, parser log
 - Updated the disposable game-data cache file to v8 after replacing the JSON payload with the binary runtime cache format.
 - Updated the disposable game-data cache file to v9 after adding binary string-table storage.
 - Added centralized crash handling constants so repeated language-server crashes show a short user-facing notification while keeping detailed output in logs.
-- Added the deletion-completion retrigger debounce constant for Enforce editor integration.
+- Added deletion and insertion completion retrigger debounce constants for Enforce editor integration.
 - Added the centralized TypeScript startup timing log filename `logs/language-client-startup.log`.
 
 ## Future Improvements

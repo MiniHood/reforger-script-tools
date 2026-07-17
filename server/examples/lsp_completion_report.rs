@@ -54,9 +54,24 @@ enum SCR_ReportEnum
 {
 	SCR_ReportValue
 }
+enum ENotification
+{
+	PLAYER_JOINED
+}
+enum RplChannel
+{
+	Reliable
+}
+enum RplRcver
+{
+	Owner
+}
 typedef int SCR_ReportAlias;
 int SCR_GlobalValue;
 Game GetGame();
+bool SendToEveryone(ENotification notificationID, int param1 = 0, string label = "ok");
+
+class UniqueAttribute {}
 
 class OverlayType
 {
@@ -68,6 +83,25 @@ class OverloadType
 {
 	void Run();
 	void Run(int value);
+}
+
+class CallableType
+{
+	void CallableType(string name = "", int value = 0);
+	void NoArgs();
+	void Required(int value, out int foundCount);
+	void Mixed(ENotification notificationID, int param1 = 0, string label = "ok");
+	void Generic(map<string, ref array<IEntity>> values);
+}
+
+class Attribute : UniqueAttribute
+{
+	void Attribute(string defvalue = "", string uiwidget = "auto", string desc = "", string params = "", ParamEnumArray enums = NULL, string category = "", int precision = 3, typename enumType = void, bool prefabbed = false);
+}
+
+class RplRpc
+{
+	void RplRpc(RplChannel channel, RplRcver receiver);
 }
 
 class ParentType
@@ -134,6 +168,62 @@ class ParentType
             completion_check("GetG", "GetG", &overlay),
         ),
         (
+            "callable no args snippet",
+            completion_check(
+                "CallableType callable;\n\t\tcallable.NoA",
+                "callable.NoA",
+                &overlay,
+            ),
+        ),
+        (
+            "callable required snippet",
+            completion_check(
+                "CallableType callable;\n\t\tcallable.Req",
+                "callable.Req",
+                &overlay,
+            ),
+        ),
+        (
+            "callable optional snippet",
+            completion_check(
+                "CallableType callable;\n\t\tcallable.Mix",
+                "callable.Mix",
+                &overlay,
+            ),
+        ),
+        (
+            "callable generic parameter split",
+            completion_check(
+                "CallableType callable;\n\t\tcallable.Gen",
+                "callable.Gen",
+                &overlay,
+            ),
+        ),
+        (
+            "attribute constructor optionals",
+            completion_source_check("[Attribu", "[Attribu", &overlay),
+        ),
+        (
+            "attribute optional argument label",
+            completion_source_check(
+                "class Example { [Attribute(defv)] int m_Value; }",
+                "defv",
+                &overlay,
+            ),
+        ),
+        (
+            "attribute shorthand",
+            completion_source_check(
+                "class Example { attribut\nint m_Value; }",
+                "attribut",
+                &overlay,
+            ),
+        ),
+        (
+            "rpc attribute required args",
+            completion_source_check("[RplRp", "[RplRp", &overlay),
+        ),
+        (
             "type prefix",
             completion_source_check(
                 "class Example { void Run(SCR_ value) {} }",
@@ -148,6 +238,26 @@ class ParentType
         (
             "function prefix",
             completion_check("GetG", "GetG", &overlay),
+        ),
+        (
+            "function argument label",
+            completion_check("SendToEveryone(notif)", "SendToEveryone(notif", &overlay),
+        ),
+        (
+            "method argument label",
+            completion_check(
+                "CallableType callable;\n\t\tcallable.Mixed(par)",
+                "callable.Mixed(par",
+                &overlay,
+            ),
+        ),
+        (
+            "constructor argument label",
+            completion_check(
+                "CallableType callable = new CallableType(na)",
+                "new CallableType(na",
+                &overlay,
+            ),
         ),
         (
             "game-derived fixture member",
@@ -213,8 +323,9 @@ class ParentType
     let mut report = String::new();
     report.push_str("# LSP Completion Fixture Report\n\n");
     report.push_str("Dev-only proof for member, type-prefix, and top-level-prefix `textDocument/completion`.\n\n");
-    report.push_str("| Check | Context | Receiver | Owner | Prefix | Items | Failure | Samples | First Edit | First Sort |\n");
-    report.push_str("| --- | --- | --- | --- | --- | ---: | --- | --- | --- | --- |\n");
+    report.push_str("| Check | Context | Receiver | Owner | Prefix | Items | Failure | Samples | First Edit | Required | Optional | First Sort |\n");
+    report
+        .push_str("| --- | --- | --- | --- | --- | ---: | --- | --- | --- | ---: | ---: | --- |\n");
     for (label, check) in checks {
         append_check(&mut report, label, &check);
     }
@@ -268,20 +379,26 @@ fn append_check(report: &mut String, label: &str, check: &LspCompletionReport) {
         })
         .collect::<Vec<_>>()
         .join(", ");
-    let first_edit = check
+    let representative = check
         .list
         .items
-        .first()
+        .iter()
+        .find(|item| {
+            !check.prefix.is_empty()
+                && item
+                    .label
+                    .get(..check.prefix.len())
+                    .is_some_and(|head| head.eq_ignore_ascii_case(&check.prefix))
+        })
+        .or_else(|| check.list.items.first());
+    let first_edit = representative
         .map(|item| item.text_edit.new_text.as_str())
         .unwrap_or("");
-    let first_sort = check
-        .list
-        .items
-        .first()
+    let first_sort = representative
         .and_then(|item| item.sort_text.as_deref())
         .unwrap_or("");
     report.push_str(&format!(
-        "| {} | `{}` | `{}` | `{}` | `{}` | {} | `{}` | `{}` | `{}` | `{}` |\n",
+        "| {} | `{}` | `{}` | `{}` | `{}` | {} | `{}` | `{}` | `{}` | {} | {} | `{}` |\n",
         label,
         check.completion_context,
         check.receiver_text.as_deref().unwrap_or("<none>"),
@@ -291,6 +408,12 @@ fn append_check(report: &mut String, label: &str, check: &LspCompletionReport) {
         check.failure_reason.as_deref().unwrap_or("<none>"),
         samples,
         first_edit,
+        representative
+            .map(|item| item.required_parameter_count)
+            .unwrap_or(0),
+        representative
+            .map(|item| item.optional_parameter_count)
+            .unwrap_or(0),
         first_sort
     ));
 }
