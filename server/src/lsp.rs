@@ -22,6 +22,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+mod callable;
 mod completion;
 mod debug_hover;
 mod definition;
@@ -31,6 +32,7 @@ mod hover;
 mod hover_render;
 mod open_documents;
 mod semantic_tokens;
+mod signature_help;
 
 use completion::{
     completion_debug_markdown, completion_report_for_cached_analysis_with_external_indexes,
@@ -73,6 +75,13 @@ pub use semantic_tokens::{
     fast_semantic_tokens_for_source, semantic_tokens_for_source_with_external,
     semantic_tokens_report_for_source, semantic_tokens_report_for_source_with_external,
     LspSemanticTokenReport, LspSemanticTokenTimings, SemanticTokenDebug,
+};
+use signature_help::{
+    signature_help_debug_markdown, signature_help_report_for_cached_analysis_with_external_indexes,
+};
+pub use signature_help::{
+    signature_help_report_for_source_position, LspParameterInformation, LspSignatureHelp,
+    LspSignatureHelpReport, LspSignatureHelpTimings, LspSignatureInformation,
 };
 
 const SERVER_NAME: &str = "reforger-language-server";
@@ -413,6 +422,10 @@ impl<W: Write> LspServer<W> {
                                 "completionProvider": {
                                     "triggerCharacters": [".", "["]
                                 },
+                                "signatureHelpProvider": {
+                                    "triggerCharacters": ["(", ","],
+                                    "retriggerCharacters": [","]
+                                },
                                 "semanticTokensProvider": {
                                     "legend": {
                                         "tokenTypes": SEMANTIC_TOKEN_TYPES,
@@ -702,6 +715,84 @@ impl<W: Write> LspServer<W> {
                         owner_type,
                         prefix,
                         candidate_count,
+                        failure_reason,
+                        external_index_status,
+                        external_index_layers,
+                        parse_diagnostics,
+                        context_ms,
+                        lookup_ms,
+                        render_ms,
+                        start.elapsed().as_millis()
+                    ));
+                    self.respond(id, result)?;
+                }
+            }
+            "textDocument/signatureHelp" => {
+                if let Some(id) = message.id {
+                    let start = Instant::now();
+                    let params = parse_params::<HoverParams>(message.params, method)?;
+                    let mut log_uri = "<missing>".to_string();
+                    let mut bytes = 0usize;
+                    let mut revision = 0u64;
+                    let mut parse_diagnostics = 0usize;
+                    let mut context = "<none>".to_string();
+                    let mut active_parameter = "<none>".to_string();
+                    let mut candidate_count = 0usize;
+                    let mut selected_label = "<none>".to_string();
+                    let mut failure_reason = "<none>".to_string();
+                    let mut context_ms = 0u128;
+                    let mut lookup_ms = 0u128;
+                    let mut render_ms = 0u128;
+                    let mut external_index_status = self.external_index.status_summary().status;
+                    let mut external_index_layers = "none";
+                    let result = params
+                        .and_then(|params| {
+                            log_uri = params.text_document.uri;
+                            self.documents.get(&log_uri).map(|document| {
+                                bytes = document.text.len();
+                                revision = document.revision;
+                                let report = self.external_index.with_indexes(|indexes| {
+                                    external_index_status = indexes.status;
+                                    external_index_layers = indexes.available_layers();
+                                    signature_help_report_for_cached_analysis_with_external_indexes(
+                                        &document.text,
+                                        &document.analysis,
+                                        params.position,
+                                        indexes.workspace,
+                                        indexes.game_data,
+                                    )
+                                });
+                                parse_diagnostics = report.parse_diagnostics;
+                                context = report.context.unwrap_or_else(|| "<none>".to_string());
+                                active_parameter = report
+                                    .active_parameter
+                                    .map(|index| index.to_string())
+                                    .unwrap_or_else(|| "<none>".to_string());
+                                candidate_count = report.candidate_count;
+                                selected_label = report
+                                    .selected_label
+                                    .unwrap_or_else(|| "<none>".to_string());
+                                failure_reason = report
+                                    .failure_reason
+                                    .unwrap_or_else(|| "<none>".to_string());
+                                context_ms = report.timings.context_detection.as_millis();
+                                lookup_ms = report.timings.candidate_lookup.as_millis();
+                                render_ms = report.timings.item_rendering.as_millis();
+                                report.help
+                            })
+                        })
+                        .flatten()
+                        .map(|help| serde_json::to_value(help).unwrap_or(Value::Null))
+                        .unwrap_or(Value::Null);
+                    self.log(&format!(
+                        "request signatureHelp uri={} bytes={} revision={} cached_analysis=true context={} active_parameter={} candidates={} selected={} failure_reason={} external_index_status={} external_index_layers={} parse_diagnostics={} context_ms={} lookup_ms={} render_ms={} elapsed_ms={}",
+                        log_uri,
+                        bytes,
+                        revision,
+                        context,
+                        active_parameter,
+                        candidate_count,
+                        selected_label,
                         failure_reason,
                         external_index_status,
                         external_index_layers,
@@ -1055,6 +1146,8 @@ impl<W: Write> LspServer<W> {
                     let mut revision = 0u64;
                     let mut completion_context = "none".to_string();
                     let mut candidate_count = 0usize;
+                    let mut signature_context = "none".to_string();
+                    let mut signature_candidate_count = 0usize;
                     let mut external_index_status = self.external_index.status_summary().status;
                     let mut external_index_layers = "none";
                     let result = params
@@ -1074,15 +1167,31 @@ impl<W: Write> LspServer<W> {
                                         indexes.game_data,
                                     )
                                 });
+                                let signature_report = self.external_index.with_indexes(|indexes| {
+                                    signature_help_report_for_cached_analysis_with_external_indexes(
+                                        &document.text,
+                                        &document.analysis,
+                                        params.position,
+                                        indexes.workspace,
+                                        indexes.game_data,
+                                    )
+                                });
                                 completion_context = report.completion_context.clone();
                                 candidate_count = report.candidate_count;
-                                Value::String(completion_debug_markdown(
+                                signature_context = signature_report
+                                    .context
+                                    .clone()
+                                    .unwrap_or_else(|| "none".to_string());
+                                signature_candidate_count = signature_report.candidate_count;
+                                let mut markdown = completion_debug_markdown(
                                     &report,
                                     &log_uri,
                                     bytes,
                                     revision,
                                     external_index_status,
-                                ))
+                                );
+                                markdown.push_str(&signature_help_debug_markdown(&signature_report));
+                                Value::String(markdown)
                             })
                         })
                         .unwrap_or_else(|| {
@@ -1092,12 +1201,14 @@ impl<W: Write> LspServer<W> {
                             ))
                         });
                     self.log(&format!(
-                        "request debugCompletion uri={} bytes={} revision={} cached_analysis=true context={} candidates={} external_index_status={} external_index_layers={} elapsed_ms={}",
+                        "request debugCompletion uri={} bytes={} revision={} cached_analysis=true context={} candidates={} signature_context={} signature_candidates={} external_index_status={} external_index_layers={} elapsed_ms={}",
                         log_uri,
                         bytes,
                         revision,
                         completion_context,
                         candidate_count,
+                        signature_context,
+                        signature_candidate_count,
                         external_index_status,
                         external_index_layers,
                         start.elapsed().as_millis()
@@ -3155,7 +3266,12 @@ void SCR_Function();
                 && item.kind == 7
                 && item.text_edit.new_text == "Attribute($0)"
                 && item.insert_text_format == Some(2)
-                && item.optional_parameter_count == 1));
+                && item.optional_parameter_count == 1
+                && item
+                    .command
+                    .as_ref()
+                    .map(|command| command.command.as_str())
+                    == Some("editor.action.triggerParameterHints")));
     }
 
     #[test]
@@ -3269,6 +3385,12 @@ class Attribute : UniqueAttribute
         assert_eq!(item.text_edit.new_text, "defvalue: $0");
         assert_eq!(item.insert_text_format, Some(2));
         assert_eq!(item.optional_parameter_count, 1);
+        assert_eq!(
+            item.command
+                .as_ref()
+                .map(|command| command.command.as_str()),
+            Some("editor.action.triggerParameterHints")
+        );
     }
 
     #[test]
@@ -3300,6 +3422,12 @@ class Example
             .expect("expected function parameter-label completion");
         assert_eq!(item.text_edit.new_text, "notificationID: $0");
         assert_eq!(item.required_parameter_count, 1);
+        assert_eq!(
+            item.command
+                .as_ref()
+                .map(|command| command.command.as_str()),
+            Some("editor.action.triggerParameterHints")
+        );
     }
 
     #[test]
@@ -3548,8 +3676,54 @@ class Example
             .find(|item| item.label == "name")
             .expect("expected constructor parameter-label completion");
         assert_eq!(item.text_edit.new_text, "name: $0");
-        assert!(item.command.is_none());
+        assert_eq!(
+            item.command
+                .as_ref()
+                .map(|command| command.command.as_str()),
+            Some("editor.action.triggerParameterHints")
+        );
         assert_eq!(item.optional_parameter_count, 1);
+    }
+
+    #[test]
+    fn callable_completion_triggers_signature_help_after_insert() {
+        let source = r#"class GRAY_TEST2
+{
+	int TestNumFun2(int input, float num, string test = "eeeeee");
+}
+
+class Example
+{
+	void Run()
+	{
+		GRAY_TEST2 test44;
+		test44.TestNum
+	}
+}
+"#;
+
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "test44.TestNum"),
+            None,
+        );
+
+        assert_eq!(report.completion_context, "member");
+        let item = report
+            .list
+            .items
+            .iter()
+            .find(|item| item.label == "TestNumFun2")
+            .expect("expected callable member completion");
+        assert_eq!(item.text_edit.new_text, "TestNumFun2(${1:input}, ${2:num})");
+        assert_eq!(item.required_parameter_count, 2);
+        assert_eq!(item.optional_parameter_count, 1);
+        assert_eq!(
+            item.command
+                .as_ref()
+                .map(|command| command.command.as_str()),
+            Some("editor.action.triggerParameterHints")
+        );
     }
 
     #[test]
@@ -5344,6 +5518,7 @@ class Example
 
         let output_text = String::from_utf8(output).unwrap();
         assert!(output_text.contains("\"hoverProvider\":true"));
+        assert!(output_text.contains("\"signatureHelpProvider\""));
         assert!(
             output_text.contains("\"completionProvider\":{\"triggerCharacters\":[\".\",\"[\"]}")
         );
@@ -5513,6 +5688,81 @@ class Example
         assert!(output_text.contains("\"isIncomplete\":false"));
         assert!(output_text.contains("\"label\":\"SetVisible\""));
         assert!(output_text.contains("\"newText\":\"SetVisible(${1:visible})\""));
+    }
+
+    #[test]
+    fn framed_lsp_smoke_test_handles_signature_help() {
+        let source = "class Smoke\n{\n\tvoid Run(int value, string label = \"ok\");\n\tvoid Test()\n\t{\n\t\tRun(1, );\n\t}\n}\n";
+        let signature_position = position_after_needle(source, "Run(1, ");
+        let mut input = Vec::new();
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {}
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": "file:///Scripts/Smoke.c",
+                        "languageId": "enforce",
+                        "version": 1,
+                        "text": source
+                    }
+                }
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "textDocument/signatureHelp",
+                "params": {
+                    "textDocument": {
+                        "uri": "file:///Scripts/Smoke.c"
+                    },
+                    "position": {
+                        "line": signature_position.line,
+                        "character": signature_position.character
+                    }
+                }
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "shutdown",
+                "params": null
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "exit",
+                "params": null
+            }),
+        );
+
+        let mut output = Vec::new();
+        run(input.as_slice(), &mut output, LspServerOptions::default()).unwrap();
+
+        let output_text = String::from_utf8(output).unwrap();
+        assert!(output_text.contains("\"signatureHelpProvider\""));
+        assert!(output_text.contains("\"activeParameter\":1"));
+        assert!(output_text
+            .contains("\"label\":\"Smoke.Run(int value, string label = \\\"ok\\\") -> void\""));
+        assert!(output_text.contains("\"label\":\"string label = \\\"ok\\\"\""));
     }
 
     #[test]
@@ -6439,9 +6689,97 @@ class Example
         let output_text = String::from_utf8(output).unwrap();
         assert!(output_text.contains("# Reforger Completion Debug"));
         assert!(output_text.contains("## Completion Context"));
+        assert!(output_text.contains("## Signature Help Context"));
+        assert!(output_text.contains("not in callable argument list"));
         assert!(output_text.contains("value"));
         assert!(output_text.contains("Run"));
         assert!(!output_text.contains("Method not found"));
+    }
+
+    #[test]
+    fn framed_lsp_debug_completion_includes_signature_help_when_inside_call() {
+        let source = "class Smoke\n{\n\tvoid Run(int value, string label = \"ok\");\n\tvoid Test()\n\t{\n\t\tRun(1, );\n\t}\n}\n";
+        let completion_position = position_after_needle(source, "Run(1, ");
+        let mut input = Vec::new();
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {}
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": "file:///Scripts/SmokeSignatureDebug.c",
+                        "languageId": "enforce",
+                        "version": 1,
+                        "text": source
+                    }
+                }
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "reforger/debugCompletion",
+                "params": {
+                    "textDocument": {
+                        "uri": "file:///Scripts/SmokeSignatureDebug.c"
+                    },
+                    "position": {
+                        "line": completion_position.line,
+                        "character": completion_position.character
+                    }
+                }
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "shutdown",
+                "params": null
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "exit",
+                "params": null
+            }),
+        );
+
+        let mut output = Vec::new();
+        run(
+            input.as_slice(),
+            &mut output,
+            LspServerOptions {
+                log_path: None,
+                game_data_scripts: None,
+                game_data_metadata: None,
+                index_cache: None,
+                workspace_scripts: Vec::new(),
+            },
+        )
+        .unwrap();
+
+        let output_text = String::from_utf8(output).unwrap();
+        assert!(output_text.contains("# Reforger Completion Debug"));
+        assert!(output_text.contains("## Signature Help Context"));
+        assert!(output_text.contains("- Active Parameter: `1`"));
+        assert!(output_text.contains("Smoke.Run(int value, string label = \\\"ok\\\") -> void"));
+        assert!(output_text.contains("string label = \\\"ok\\\""));
     }
 
     fn assert_ranges_are_sane(symbols: &[LspDocumentSymbol]) {

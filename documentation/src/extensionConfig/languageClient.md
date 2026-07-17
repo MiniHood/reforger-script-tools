@@ -10,7 +10,7 @@ This file is TypeScript extension-shell configuration. It keeps language-client 
 
 ## Current Behavior
 
-Exports constants for the language client ID/name, hover-debug and completion-debug output channel names, language-client command IDs, server binary name, packaged server folder, development fallback path, log locations, startup timing log filename, index-cache locations, contributed language id, custom LSP request/notification names, and language-client document selector.
+Exports constants for the language client ID/name, hover-debug and completion-debug output channel names, language-client command IDs, server binary name, packaged server folder, development fallback path, log locations, startup timing log filename, index-cache locations, contributed language id, custom LSP request/notification names, and language-client document selector. The completion-debug command remains the single Ctrl+F2 debug entrypoint for both autocomplete and Signature Help.
 
 Also exports the language-client crash handling constants: the default-equivalent restart count, the restart window, and the concise final crash notification text.
 
@@ -29,7 +29,7 @@ This file has no VS Code API calls, filesystem access, mutable state, parser log
 - Added centralized constants for the first bundled Rust language-server client.
 - Added the centralized `enforce` language id used by the language-client selector.
 - Added centralized constants for the hover-debug command and `reforger/debugHover` request.
-- Added centralized constants for the completion-debug command and `reforger/debugCompletion` request.
+- Added centralized constants for the completion-debug command and `reforger/debugCompletion` request. The request now returns one combined autocomplete and Signature Help debug report.
 - Added the centralized hover symbol-link command used by Rust-generated trusted Markdown links.
 - Added centralized completion follow-up commands used by Rust-generated enum placeholders and enum-member completion items to trigger suggestions at the placeholder end, move to the next snippet placeholder, and reopen suggestions.
 - Added centralized constants for workspace overlay file-change notifications.

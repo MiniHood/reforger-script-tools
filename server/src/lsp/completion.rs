@@ -3,14 +3,18 @@ use crate::index_query::{
     completion_name_match_rank, EditorCompletionCandidate, EditorCompletionOrigin,
     EditorTopLevelCompletionMode, IndexQuery,
 };
-use crate::lexer::{lex, Keyword, Operator, TextSpan, TokenKind};
+use crate::lexer::{lex, Keyword, TextSpan, TokenKind};
+use crate::lsp::callable::{
+    callable_argument_context_at_offset, callable_signature_parts, callable_type_owner,
+    CallableParameter, CallableSignatureParts, CallableTarget,
+};
 use crate::lsp::{
     file_index_for_source, offset_for_position, range_for_span, FileIndexAnalysis,
     LspMarkupContent, LspPosition, LspRange,
 };
 use crate::model::{SourceKind, SymbolKind};
 use crate::resolver::{CandidateSource, IdentifierContext, ReferenceCandidate, ReferenceResolver};
-use crate::syntax::{SyntaxElement, SyntaxKind, SyntaxNode};
+use crate::syntax::SyntaxNode;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
@@ -18,6 +22,7 @@ use std::time::{Duration, Instant};
 const MAX_COMPLETION_ITEMS: usize = 250;
 const COMMAND_TRIGGER_SUGGEST_AT_SNIPPET_PLACEHOLDER_END: &str =
     "reforger-sript-tools.completion.triggerSuggestAtSnippetPlaceholderEnd";
+const COMMAND_TRIGGER_PARAMETER_HINTS: &str = "editor.action.triggerParameterHints";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LspCompletionList {
@@ -649,7 +654,7 @@ fn callable_candidates_for_argument_label_context(
     game_data_index: Option<&SymbolIndex>,
 ) -> Vec<EditorCompletionCandidate> {
     match &context.target {
-        ArgumentLabelTarget::Attribute { name } | ArgumentLabelTarget::New { type_name: name } => {
+        CallableTarget::Attribute { name } | CallableTarget::New { type_name: name } => {
             let mut candidates = exact_top_level_candidates(local_index, name);
             if let Some(index) = workspace_index {
                 candidates.extend(exact_top_level_candidates(index, name));
@@ -659,7 +664,7 @@ fn callable_candidates_for_argument_label_context(
             }
             combine_completion_candidates(candidates)
         }
-        ArgumentLabelTarget::Call { callee_span } => resolver
+        CallableTarget::Call { callee_span } => resolver
             .resolve_at_offset(callee_span.start)
             .and_then(|resolution| resolution.selected)
             .and_then(|selected| {
@@ -734,7 +739,7 @@ fn completion_candidate_for_reference(
 
 #[derive(Debug, Clone)]
 struct ParameterLabelCandidate {
-    parameter: CallableCompletionParameter,
+    parameter: CallableParameter,
     required: bool,
     source_kind: SourceKind,
     origin: EditorCompletionOrigin,
@@ -839,7 +844,11 @@ fn completion_item_for_parameter_label(
         value: parameter_label_documentation(parameter, optionality),
     });
     let insert_value = parameter_label_insert_value(parameter, Some(render_context));
-    let command = insert_value.contains('.').then(trigger_suggest_command);
+    let command = if insert_value.contains('.') {
+        Some(trigger_suggest_command())
+    } else {
+        Some(trigger_parameter_hints_command())
+    };
 
     LspCompletionItem {
         label: parameter.name.clone(),
@@ -872,7 +881,7 @@ fn completion_item_for_parameter_label(
     }
 }
 
-fn parameter_label_detail(parameter: &CallableCompletionParameter, optionality: &str) -> String {
+fn parameter_label_detail(parameter: &CallableParameter, optionality: &str) -> String {
     let mut detail = optionality.to_string();
     if !parameter.type_and_modifiers.is_empty() {
         detail.push(' ');
@@ -885,10 +894,7 @@ fn parameter_label_detail(parameter: &CallableCompletionParameter, optionality: 
     detail
 }
 
-fn parameter_label_documentation(
-    parameter: &CallableCompletionParameter,
-    optionality: &str,
-) -> String {
+fn parameter_label_documentation(parameter: &CallableParameter, optionality: &str) -> String {
     let mut output = format!("**{} parameter**", optionality);
     if !parameter.type_and_modifiers.is_empty() {
         output.push_str(&format!(
@@ -922,15 +928,8 @@ enum CompletionInsertContext {
 struct ArgumentLabelCompletionContext {
     prefix: String,
     prefix_span: TextSpan,
-    target: ArgumentLabelTarget,
+    target: CallableTarget,
     supplied_labels: BTreeSet<String>,
-}
-
-#[derive(Debug, Clone)]
-enum ArgumentLabelTarget {
-    Attribute { name: String },
-    Call { callee_span: TextSpan },
-    New { type_name: String },
 }
 
 fn member_visibility_context(
@@ -1733,10 +1732,6 @@ fn span_contains(span: TextSpan, offset: usize) -> bool {
     offset >= span.start && offset <= span.end
 }
 
-fn span_contains_span(outer: TextSpan, inner: TextSpan) -> bool {
-    outer.start <= inner.start && inner.end <= outer.end
-}
-
 fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
     value
         .get(..prefix.len())
@@ -1763,10 +1758,17 @@ fn argument_label_completion_context(
     {
         return None;
     }
+    if !is_argument_label_position(source, prefix_span) {
+        return None;
+    }
 
-    let mut best = None;
-    collect_argument_label_completion_context(source, root, prefix, prefix_span, &mut best);
-    best
+    let context = callable_argument_context_at_offset(source, root, prefix_span.start)?;
+    Some(ArgumentLabelCompletionContext {
+        prefix,
+        prefix_span,
+        target: context.target,
+        supplied_labels: context.supplied_labels,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1781,8 +1783,14 @@ fn next_required_enum_owner_after_argument(
     render_context: CompletionRenderContext<'_>,
 ) -> Option<String> {
     let context = callable_argument_context_at_offset(source, root, offset)?;
+    let label_context = ArgumentLabelCompletionContext {
+        prefix: String::new(),
+        prefix_span: TextSpan::new(offset, offset),
+        target: context.target,
+        supplied_labels: context.supplied_labels,
+    };
     let callable_candidates = callable_candidates_for_argument_label_context(
-        &context.label_context,
+        &label_context,
         resolver,
         local_index,
         workspace_index,
@@ -1808,179 +1816,6 @@ fn next_required_enum_owner_after_argument(
     })
 }
 
-struct CallableArgumentContext {
-    label_context: ArgumentLabelCompletionContext,
-    argument_index: usize,
-}
-
-fn callable_argument_context_at_offset(
-    source: &str,
-    root: &SyntaxNode,
-    offset: usize,
-) -> Option<CallableArgumentContext> {
-    if offset > source.len() || !source.is_char_boundary(offset) {
-        return None;
-    }
-    let prefix_span = TextSpan::new(offset, offset);
-    let mut best = None;
-    collect_callable_argument_context(source, root, prefix_span, &mut best);
-    best
-}
-
-fn collect_callable_argument_context(
-    source: &str,
-    node: &SyntaxNode,
-    prefix_span: TextSpan,
-    best: &mut Option<CallableArgumentContext>,
-) {
-    if !span_contains_span(node.span, prefix_span) {
-        return;
-    }
-
-    if node.kind == SyntaxKind::Attribute {
-        if let Some(args) = direct_child_node(node, SyntaxKind::AttributeArgs) {
-            if span_contains_span(args.span, prefix_span) {
-                if let Some(name) = direct_child_name_text(source, node) {
-                    replace_callable_argument_best(
-                        best,
-                        CallableArgumentContext {
-                            label_context: ArgumentLabelCompletionContext {
-                                prefix: String::new(),
-                                prefix_span,
-                                target: ArgumentLabelTarget::Attribute { name },
-                                supplied_labels: supplied_named_argument_labels(
-                                    source,
-                                    args,
-                                    prefix_span,
-                                ),
-                            },
-                            argument_index: argument_index_at_offset(
-                                source,
-                                args,
-                                prefix_span.start,
-                            ),
-                        },
-                    );
-                    return;
-                }
-            }
-        }
-    }
-
-    if node.kind == SyntaxKind::CallExpression {
-        if let Some(args) = direct_child_node(node, SyntaxKind::ArgumentList) {
-            if span_contains_span(args.span, prefix_span) {
-                if let Some(callee_span) = call_expression_callee_span(source, node) {
-                    replace_callable_argument_best(
-                        best,
-                        CallableArgumentContext {
-                            label_context: ArgumentLabelCompletionContext {
-                                prefix: String::new(),
-                                prefix_span,
-                                target: ArgumentLabelTarget::Call { callee_span },
-                                supplied_labels: supplied_named_argument_labels(
-                                    source,
-                                    args,
-                                    prefix_span,
-                                ),
-                            },
-                            argument_index: argument_index_at_offset(
-                                source,
-                                args,
-                                prefix_span.start,
-                            ),
-                        },
-                    );
-                    return;
-                }
-            }
-        }
-    }
-
-    if node.kind == SyntaxKind::NewExpression {
-        if let Some(args) = direct_child_node(node, SyntaxKind::ArgumentList) {
-            if span_contains_span(args.span, prefix_span) {
-                if let Some(type_name) = direct_child_name_text(source, node) {
-                    replace_callable_argument_best(
-                        best,
-                        CallableArgumentContext {
-                            label_context: ArgumentLabelCompletionContext {
-                                prefix: String::new(),
-                                prefix_span,
-                                target: ArgumentLabelTarget::New { type_name },
-                                supplied_labels: supplied_named_argument_labels(
-                                    source,
-                                    args,
-                                    prefix_span,
-                                ),
-                            },
-                            argument_index: argument_index_at_offset(
-                                source,
-                                args,
-                                prefix_span.start,
-                            ),
-                        },
-                    );
-                    return;
-                }
-            }
-        }
-    }
-
-    for child in &node.children {
-        if let SyntaxElement::Node(child) = child {
-            collect_callable_argument_context(source, child, prefix_span, best);
-        }
-    }
-}
-
-fn replace_callable_argument_best(
-    best: &mut Option<CallableArgumentContext>,
-    candidate: CallableArgumentContext,
-) {
-    let replace = best
-        .as_ref()
-        .map(|best| {
-            candidate.label_context.prefix_span.len() <= best.label_context.prefix_span.len()
-        })
-        .unwrap_or(true);
-    if replace {
-        *best = Some(candidate);
-    }
-}
-
-fn argument_index_at_offset(source: &str, args: &SyntaxNode, offset: usize) -> usize {
-    let tokens = lex(source);
-    let mut index = 0usize;
-    let mut paren = 0usize;
-    let mut bracket = 0usize;
-    let mut brace = 0usize;
-    let mut angle = 0usize;
-    for token in tokens {
-        if token.span.start < args.span.start || token.span.start >= offset {
-            continue;
-        }
-        if token.kind.is_trivia() {
-            continue;
-        }
-        match token.kind {
-            TokenKind::LeftParen => paren += 1,
-            TokenKind::RightParen => paren = paren.saturating_sub(1),
-            TokenKind::LeftBracket => bracket += 1,
-            TokenKind::RightBracket => bracket = bracket.saturating_sub(1),
-            TokenKind::LeftBrace => brace += 1,
-            TokenKind::RightBrace => brace = brace.saturating_sub(1),
-            TokenKind::Operator(Operator::Less) => angle += 1,
-            TokenKind::Operator(Operator::Greater) => angle = angle.saturating_sub(1),
-            TokenKind::Comma if paren <= 1 && bracket == 0 && brace == 0 && angle == 0 => {
-                index += 1;
-            }
-            _ => {}
-        }
-    }
-    index
-}
-
 fn completion_identifier_prefix_for_argument_label(
     source: &str,
     tokens: &[crate::lexer::Token],
@@ -2004,229 +1839,17 @@ fn completion_identifier_prefix_for_argument_label(
     ))
 }
 
-fn collect_argument_label_completion_context(
-    source: &str,
-    node: &SyntaxNode,
-    prefix: String,
-    prefix_span: TextSpan,
-    best: &mut Option<ArgumentLabelCompletionContext>,
-) {
-    if !span_contains_span(node.span, prefix_span) {
-        return;
-    }
-
-    if node.kind == SyntaxKind::Attribute {
-        if let Some(args) = direct_child_node(node, SyntaxKind::AttributeArgs) {
-            if span_contains_span(args.span, prefix_span)
-                && is_argument_label_position(source, args, prefix_span)
-            {
-                if let Some(name) = direct_child_name_text(source, node) {
-                    replace_argument_label_best(
-                        best,
-                        ArgumentLabelCompletionContext {
-                            prefix,
-                            prefix_span,
-                            target: ArgumentLabelTarget::Attribute { name },
-                            supplied_labels: supplied_named_argument_labels(
-                                source,
-                                args,
-                                prefix_span,
-                            ),
-                        },
-                    );
-                    return;
-                }
-            }
-        }
-    }
-
-    if node.kind == SyntaxKind::CallExpression {
-        if let Some(args) = direct_child_node(node, SyntaxKind::ArgumentList) {
-            if span_contains_span(args.span, prefix_span)
-                && is_argument_label_position(source, args, prefix_span)
-            {
-                if let Some(callee_span) = call_expression_callee_span(source, node) {
-                    replace_argument_label_best(
-                        best,
-                        ArgumentLabelCompletionContext {
-                            prefix,
-                            prefix_span,
-                            target: ArgumentLabelTarget::Call { callee_span },
-                            supplied_labels: supplied_named_argument_labels(
-                                source,
-                                args,
-                                prefix_span,
-                            ),
-                        },
-                    );
-                    return;
-                }
-            }
-        }
-    }
-
-    if node.kind == SyntaxKind::NewExpression {
-        if let Some(args) = direct_child_node(node, SyntaxKind::ArgumentList) {
-            if span_contains_span(args.span, prefix_span)
-                && is_argument_label_position(source, args, prefix_span)
-            {
-                if let Some(type_name) = direct_child_name_text(source, node) {
-                    replace_argument_label_best(
-                        best,
-                        ArgumentLabelCompletionContext {
-                            prefix,
-                            prefix_span,
-                            target: ArgumentLabelTarget::New { type_name },
-                            supplied_labels: supplied_named_argument_labels(
-                                source,
-                                args,
-                                prefix_span,
-                            ),
-                        },
-                    );
-                    return;
-                }
-            }
-        }
-    }
-
-    for child in &node.children {
-        if let SyntaxElement::Node(child) = child {
-            collect_argument_label_completion_context(
-                source,
-                child,
-                prefix.clone(),
-                prefix_span,
-                best,
-            );
-        }
-    }
-}
-
-fn replace_argument_label_best(
-    best: &mut Option<ArgumentLabelCompletionContext>,
-    candidate: ArgumentLabelCompletionContext,
-) {
-    let replace = best
-        .as_ref()
-        .map(|best| candidate.prefix_span.len() <= best.prefix_span.len())
-        .unwrap_or(true);
-    if replace {
-        *best = Some(candidate);
-    }
-}
-
-fn is_argument_label_position(source: &str, args: &SyntaxNode, prefix_span: TextSpan) -> bool {
+fn is_argument_label_position(source: &str, prefix_span: TextSpan) -> bool {
     let tokens = lex(source);
     let previous = tokens
         .into_iter()
         .take_while(|token| token.span.end <= prefix_span.start)
-        .filter(|token| !token.kind.is_trivia() && token.span.start >= args.span.start)
+        .filter(|token| !token.kind.is_trivia())
         .last();
     matches!(
         previous.map(|token| token.kind),
         Some(TokenKind::LeftParen | TokenKind::Comma)
     )
-}
-
-fn supplied_named_argument_labels(
-    source: &str,
-    args: &SyntaxNode,
-    current_prefix_span: TextSpan,
-) -> BTreeSet<String> {
-    let mut labels = BTreeSet::new();
-    collect_supplied_named_argument_labels(source, args, current_prefix_span, &mut labels);
-    labels
-}
-
-fn collect_supplied_named_argument_labels(
-    source: &str,
-    node: &SyntaxNode,
-    current_prefix_span: TextSpan,
-    labels: &mut BTreeSet<String>,
-) {
-    if node.kind == SyntaxKind::NamedArgument {
-        if let Some((name, span)) = named_argument_label_text(source, node) {
-            if span != current_prefix_span {
-                labels.insert(name);
-            }
-        }
-        return;
-    }
-
-    for child in &node.children {
-        if let SyntaxElement::Node(child) = child {
-            collect_supplied_named_argument_labels(source, child, current_prefix_span, labels);
-        }
-    }
-}
-
-fn named_argument_label_text(source: &str, node: &SyntaxNode) -> Option<(String, TextSpan)> {
-    let mut name = None;
-    for child in &node.children {
-        match child {
-            SyntaxElement::Node(child) if child.kind == SyntaxKind::NameExpression => {
-                name = direct_child_name_text_with_span(source, child);
-            }
-            SyntaxElement::Token(token) if token.kind == TokenKind::Colon => return name,
-            _ => {}
-        }
-    }
-    None
-}
-
-fn call_expression_callee_span(source: &str, node: &SyntaxNode) -> Option<TextSpan> {
-    let expression = crate::ast::Expression::from_node(source, node)?;
-    expression.callee().map(|callee| {
-        callee
-            .member_name()
-            .map(|name| name.span)
-            .unwrap_or_else(|| callee.selection_span())
-    })
-}
-
-fn direct_child_node(node: &SyntaxNode, kind: SyntaxKind) -> Option<&SyntaxNode> {
-    node.children.iter().find_map(|child| match child {
-        SyntaxElement::Node(child) if child.kind == kind => Some(child.as_ref()),
-        _ => None,
-    })
-}
-
-fn direct_child_name_text(source: &str, node: &SyntaxNode) -> Option<String> {
-    direct_child_name_text_with_span(source, node).map(|(text, _)| text)
-}
-
-fn direct_child_name_text_with_span(source: &str, node: &SyntaxNode) -> Option<(String, TextSpan)> {
-    node.children.iter().find_map(|child| match child {
-        SyntaxElement::Token(token) if token.kind == TokenKind::Identifier => Some((
-            source[token.span.start..token.span.end].to_string(),
-            token.span,
-        )),
-        SyntaxElement::Node(child) if child.kind == SyntaxKind::NameExpression => {
-            first_identifier_token(source, child)
-        }
-        _ => None,
-    })
-}
-
-fn first_identifier_token(source: &str, node: &SyntaxNode) -> Option<(String, TextSpan)> {
-    for child in &node.children {
-        match child {
-            SyntaxElement::Token(token) if token.kind == TokenKind::Identifier => {
-                return Some((
-                    source[token.span.start..token.span.end].to_string(),
-                    token.span,
-                ));
-            }
-            SyntaxElement::Node(child) => {
-                if let Some(found) = first_identifier_token(source, child) {
-                    return Some(found);
-                }
-            }
-            _ => {}
-        }
-    }
-    None
 }
 
 fn combine_completion_candidates(
@@ -2326,6 +1949,7 @@ fn completion_item_for_candidate(
             render
                 .trigger_suggest_after_insert
                 .then(trigger_suggest_command)
+                .or_else(|| Some(trigger_parameter_hints_command()))
         })
         .or_else(|| completion_followup_command(candidate, command_context.clone()));
     let documentation = completion_documentation(candidate, callable.as_ref());
@@ -2429,74 +2053,10 @@ fn is_attribute_like_completion_candidate(candidate: &EditorCompletionCandidate)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct CallableSignatureParts {
-    parameters: String,
-    parameters_info: Vec<CallableCompletionParameter>,
-    result: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct CallableCompletionParameter {
-    raw: String,
-    name: String,
-    type_and_modifiers: String,
-    default_text: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 struct CallableCompletionRender {
     call: CallableSignatureParts,
     insert_text: String,
     trigger_suggest_after_insert: bool,
-}
-
-impl CallableSignatureParts {
-    fn required_parameters(&self) -> impl Iterator<Item = &CallableCompletionParameter> {
-        self.parameters_info
-            .iter()
-            .filter(|parameter| parameter.default_text.is_none())
-    }
-
-    fn optional_parameters(&self) -> impl Iterator<Item = &CallableCompletionParameter> {
-        self.parameters_info
-            .iter()
-            .filter(|parameter| parameter.default_text.is_some())
-    }
-
-    fn required_parameter_count(&self) -> usize {
-        self.required_parameters().count()
-    }
-
-    fn optional_parameter_count(&self) -> usize {
-        self.optional_parameters().count()
-    }
-}
-
-fn callable_signature_parts(label: &str, signature: &str) -> Option<CallableSignatureParts> {
-    let open = signature.find('(')?;
-    let close = matching_close_paren(signature, open)?;
-    let prefix = signature[..open].trim();
-    if !prefix.ends_with(label) {
-        return None;
-    }
-    let parameters_text = signature[open + 1..close].trim();
-    let result = signature[close + 1..]
-        .trim()
-        .strip_prefix("->")
-        .map(str::trim)
-        .filter(|text| !text.is_empty())
-        .map(|text| format!("-> {text}"));
-    let parameters = format!("({parameters_text})");
-    let parameters_info = split_completion_parameters(parameters_text)
-        .into_iter()
-        .filter_map(|parameter| callable_completion_parameter(&parameter))
-        .collect();
-
-    Some(CallableSignatureParts {
-        parameters,
-        parameters_info,
-        result,
-    })
 }
 
 #[cfg(test)]
@@ -2569,6 +2129,13 @@ fn trigger_suggest_command() -> LspCommand {
     }
 }
 
+fn trigger_parameter_hints_command() -> LspCommand {
+    LspCommand {
+        title: "Trigger Parameter Hints".to_string(),
+        command: COMMAND_TRIGGER_PARAMETER_HINTS.to_string(),
+    }
+}
+
 fn completion_followup_command(
     candidate: &EditorCompletionCandidate,
     command_context: CompletionItemCommandContext,
@@ -2612,7 +2179,7 @@ fn completion_followup_replacement(
 }
 
 fn parameter_label_insert_value(
-    parameter: &CallableCompletionParameter,
+    parameter: &CallableParameter,
     render_context: Option<CompletionRenderContext<'_>>,
 ) -> String {
     enum_parameter_owner(parameter, render_context)
@@ -2621,10 +2188,10 @@ fn parameter_label_insert_value(
 }
 
 fn enum_parameter_owner(
-    parameter: &CallableCompletionParameter,
+    parameter: &CallableParameter,
     render_context: Option<CompletionRenderContext<'_>>,
 ) -> Option<String> {
-    let owner = completion_type_owner(&parameter.type_and_modifiers)?;
+    let owner = callable_type_owner(&parameter.type_and_modifiers)?;
     render_context?.is_enum_owner(&owner).then_some(owner)
 }
 
@@ -2634,132 +2201,6 @@ fn index_has_enum_owner(index: &SymbolIndex, owner: &str) -> bool {
             .symbol(*id)
             .is_some_and(|symbol| symbol.kind == SymbolKind::Enum)
     })
-}
-
-fn completion_type_owner(type_text: &str) -> Option<String> {
-    let mut text = type_text.trim();
-    loop {
-        let stripped = ["out", "inout", "notnull", "ref", "autoptr", "const"]
-            .iter()
-            .find_map(|modifier| match text.strip_prefix(modifier) {
-                Some(rest) if rest.chars().next().is_some_and(char::is_whitespace) => {
-                    Some(rest.trim_start())
-                }
-                _ => None,
-            });
-        let Some(stripped) = stripped else {
-            break;
-        };
-        text = stripped;
-    }
-
-    let end = text
-        .char_indices()
-        .find_map(|(offset, ch)| (!ch.is_ascii_alphanumeric() && ch != '_').then_some(offset))
-        .unwrap_or(text.len());
-    let owner = text[..end].trim();
-    (!owner.is_empty()).then(|| owner.to_string())
-}
-
-fn matching_close_paren(text: &str, open: usize) -> Option<usize> {
-    let mut depth = 0usize;
-    for (offset, ch) in text[open..].char_indices() {
-        match ch {
-            '(' => depth += 1,
-            ')' => {
-                depth = depth.saturating_sub(1);
-                if depth == 0 {
-                    return Some(open + offset);
-                }
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
-fn split_completion_parameters(text: &str) -> Vec<String> {
-    let mut parts = Vec::new();
-    let mut start = 0usize;
-    let mut angle = 0usize;
-    let mut paren = 0usize;
-    let mut bracket = 0usize;
-    for (offset, ch) in text.char_indices() {
-        match ch {
-            '<' => angle += 1,
-            '>' => angle = angle.saturating_sub(1),
-            '(' => paren += 1,
-            ')' => paren = paren.saturating_sub(1),
-            '[' => bracket += 1,
-            ']' => bracket = bracket.saturating_sub(1),
-            ',' if angle == 0 && paren == 0 && bracket == 0 => {
-                let part = text[start..offset].trim();
-                if !part.is_empty() {
-                    parts.push(part.to_string());
-                }
-                start = offset + ch.len_utf8();
-            }
-            _ => {}
-        }
-    }
-    let part = text[start..].trim();
-    if !part.is_empty() {
-        parts.push(part.to_string());
-    }
-    parts
-}
-
-fn callable_completion_parameter(parameter: &str) -> Option<CallableCompletionParameter> {
-    let (before_default, default_text) = split_parameter_default(parameter);
-    let before_array = before_default
-        .split('[')
-        .next()
-        .unwrap_or(before_default)
-        .trim();
-    let name = before_array
-        .split_whitespace()
-        .last()
-        .unwrap_or("")
-        .trim_matches(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
-        .to_string();
-    if name.is_empty() {
-        return None;
-    }
-    let type_and_modifiers = before_array
-        .strip_suffix(&name)
-        .unwrap_or(before_array)
-        .trim()
-        .to_string();
-    Some(CallableCompletionParameter {
-        raw: parameter.trim().to_string(),
-        name,
-        type_and_modifiers,
-        default_text: default_text.map(str::to_string),
-    })
-}
-
-fn split_parameter_default(parameter: &str) -> (&str, Option<&str>) {
-    let mut angle = 0usize;
-    let mut paren = 0usize;
-    let mut bracket = 0usize;
-    for (offset, ch) in parameter.char_indices() {
-        match ch {
-            '<' => angle += 1,
-            '>' => angle = angle.saturating_sub(1),
-            '(' => paren += 1,
-            ')' => paren = paren.saturating_sub(1),
-            '[' => bracket += 1,
-            ']' => bracket = bracket.saturating_sub(1),
-            '=' if angle == 0 && paren == 0 && bracket == 0 => {
-                return (
-                    parameter[..offset].trim(),
-                    Some(parameter[offset + ch.len_utf8()..].trim()),
-                );
-            }
-            _ => {}
-        }
-    }
-    (parameter.trim(), None)
 }
 
 fn snippet_placeholder_text(value: &str) -> String {
@@ -2832,7 +2273,7 @@ fn callable_parameter_documentation(call: &CallableSignatureParts) -> String {
     output
 }
 
-fn parameter_type_suffix(parameter: &CallableCompletionParameter) -> String {
+fn parameter_type_suffix(parameter: &CallableParameter) -> String {
     if parameter.type_and_modifiers.is_empty() {
         String::new()
     } else {
@@ -3094,17 +2535,17 @@ mod tests {
     #[test]
     fn completion_type_owner_strips_parameter_modifiers() {
         assert_eq!(
-            completion_type_owner("notnull SCR_InstigatorContextData").as_deref(),
+            callable_type_owner("notnull SCR_InstigatorContextData").as_deref(),
             Some("SCR_InstigatorContextData")
         );
         assert_eq!(
-            completion_type_owner("out RplChannel").as_deref(),
+            callable_type_owner("out RplChannel").as_deref(),
             Some("RplChannel")
         );
         assert_eq!(
-            completion_type_owner("ref array<IEntity>").as_deref(),
+            callable_type_owner("ref array<IEntity>").as_deref(),
             Some("array")
         );
-        assert_eq!(completion_type_owner("int").as_deref(), Some("int"));
+        assert_eq!(callable_type_owner("int").as_deref(), Some("int"));
     }
 }

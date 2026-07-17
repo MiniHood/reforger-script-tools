@@ -66,11 +66,13 @@ The core safety rule is:
 
 Only auto-apply an edit when the context leaves no realistic alternate user action. If multiple reasonable actions exist, prefer a completion snippet, explicit command, or no automatic edit.
 
-## Autocomplete vs Auto Format Boundary
+## Autocomplete vs Signature Help vs Auto Format Boundary
 
-Autocomplete and formatting must stay separate.
+Autocomplete, Signature Help, and formatting must stay separate.
 
 Autocomplete owns source-backed intent selection. If the user is choosing a symbol, API, inherited method, attribute, type, callable, or template that depends on language facts, it belongs in AC. Formatting may clean the resulting text, but it must not independently decide which symbol or declaration the user meant.
+
+Signature Help owns callable argument explanation while typing. It may show which function, method, constructor, `new Type(...)`, attribute, or static/member call is active, which argument is active, which parameters are required or optional, defaults, enum-typed parameters, named arguments, and source-backed docs. It must not insert text, choose symbols, or rewrite source.
 
 Auto Format owns source layout. It may adjust whitespace, indentation, brace placement, semicolons, comment alignment, and safe punctuation only when the syntax context leaves no realistic alternate user intent.
 
@@ -81,10 +83,13 @@ Examples:
 - Offering `array<T>` or `map<TKey, TValue>` in a type position is AC/type assist. AF must not globally turn `<` into `<>`.
 - Completing `defv` inside `[Attribute(defv)]`, `notif` inside `SendToEveryone(notif)`, or any similar callable argument slot to a source-backed named parameter label such as `defvalue: $0` or `notificationID: $0` is AC. The callable signature chooses the label; AF may only clean spacing around the inserted colon later.
 - Defaulting a required enum-typed callable parameter placeholder to a selected `EnumOwner.` expression is AC. The indexed signature and enum symbol choose that owner for functions, methods, constructors, and attributes; accepting an enum value may replace the whole `EnumOwner.<prefix>` expression, while free typing can replace the selected default. AF must not independently infer or rewrite enum argument owners.
+- Showing `RplRpc(RplChannel channel, RplRcver receiver)`, active parameter `receiver`, parameter docs, and optional/defaulted parameters while typing `[RplRpc(RplChannel.Reliable, )]` is Signature Help.
+- Showing that `Attribute(...)` has all optional/defaulted parameters while the cursor is inside `[Attribute()]` is Signature Help. Completing the bare `attribut` prefix to `[Attribute($0)]` is AC. Aligning whitespace inside a later multiline attribute is AF.
+- Showing required and optional parameters for method calls, constructors, static calls, and `new Type(...)` is Signature Help. Inserting only required arguments when accepting a callable completion is AC. Cleaning comma spacing after the text exists is AF.
 - Inserting a missing semicolon when pressing Enter after a complete declaration or statement can be an on-type formatting assist only when the parser can prove no other action is plausible.
 - Formatting `/** */` or `//!` documentation shape is AF/comment assist. Generating source-backed param/return docs for a selected method is AC or an explicit documentation assist, because it depends on the selected declaration.
 
-Do not implement the same behavior in both systems. If a feature needs symbol choice, call signature knowledge, inherited member lookup, or type context, route it through completion or an explicit assist. If a feature only changes presentation of already-chosen source text, route it through formatting.
+Do not implement the same behavior in multiple systems. If a feature chooses a symbol, callable, named argument, enum owner, inherited member, or source-backed template, route it through completion or an explicit assist. If a feature explains the current callable and active argument without changing text, route it through Signature Help. If a feature only changes presentation of already-chosen source text, route it through formatting.
 
 ## Comment and Doxygen Assist
 
