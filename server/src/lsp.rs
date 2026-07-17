@@ -3303,6 +3303,221 @@ class Example
     }
 
     #[test]
+    fn completion_parameter_labels_default_enum_arguments_to_enum_owner() {
+        let source = r#"enum ENotification
+{
+	PLAYER_JOINED
+}
+
+void SendToEveryone(ENotification notificationID, int param1 = 0);
+
+class Example
+{
+	void Run()
+	{
+		SendToEveryone(notif)
+	}
+}
+"#;
+
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "SendToEveryone(notif"),
+            None,
+        );
+
+        assert_eq!(report.completion_context, "argument-label");
+        assert_eq!(report.prefix, "notif");
+        let item = report
+            .list
+            .items
+            .iter()
+            .find(|item| item.label == "notificationID")
+            .expect("expected enum-backed function parameter-label completion");
+        assert_eq!(
+            item.text_edit.new_text,
+            "notificationID: ${0:ENotification.}"
+        );
+        assert_eq!(
+            item.command
+                .as_ref()
+                .map(|command| command.command.as_str()),
+            Some("reforger-sript-tools.completion.triggerSuggestAtSnippetPlaceholderEnd")
+        );
+        assert_eq!(item.required_parameter_count, 1);
+    }
+
+    #[test]
+    fn completion_attribute_shorthand_defaults_required_enum_parameters_to_enum_owners() {
+        let source = r#"class Example
+{
+	rplr int m_Value;
+}
+"#;
+        let external = file_index_for_source(
+            r#"enum RplChannel
+{
+	Reliable
+}
+enum RplRcver
+{
+	Server
+	Owner
+}
+enum RplCondition
+{
+	None
+}
+class UniqueAttribute {}
+class RplRpc : UniqueAttribute
+{
+	void RplRpc(RplChannel channel, RplRcver rcver, RplCondition condition = RplCondition.None);
+}
+"#,
+        )
+        .index;
+
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "rplr"),
+            Some(&external),
+        );
+
+        let item = report
+            .list
+            .items
+            .iter()
+            .find(|item| item.label == "RplRpc")
+            .expect("expected RplRpc attribute shorthand completion");
+        assert_eq!(item.text_edit.new_text, "[RplRpc(${1:RplChannel.})]");
+        assert_eq!(
+            item.command
+                .as_ref()
+                .map(|command| command.command.as_str()),
+            Some("reforger-sript-tools.completion.triggerSuggestAtSnippetPlaceholderEnd")
+        );
+        assert_eq!(item.required_parameter_count, 2);
+        assert_eq!(item.optional_parameter_count, 1);
+    }
+
+    #[test]
+    fn completion_enum_member_advances_attribute_snippet_to_next_parameter() {
+        let source = r#"class Example
+{
+	[RplRpc(RplChannel.)]
+	int m_Value;
+}
+"#;
+        let external = file_index_for_source(
+            r#"enum RplChannel
+{
+	Reliable
+}
+enum RplRcver
+{
+	Server
+	Owner
+}
+class UniqueAttribute {}
+class RplRpc : UniqueAttribute
+{
+	void RplRpc(RplChannel channel, RplRcver rcver);
+}
+"#,
+        )
+        .index;
+
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "RplChannel."),
+            Some(&external),
+        );
+
+        assert_eq!(report.completion_context, "member");
+        let item = report
+            .list
+            .items
+            .iter()
+            .find(|item| item.label == "Reliable")
+            .expect("expected enum member completion");
+        assert_eq!(
+            item.text_edit.new_text,
+            "RplChannel.Reliable, ${1:RplRcver.}"
+        );
+        assert_eq!(item.insert_text_format, Some(2));
+        assert_eq!(item.filter_text.as_deref(), Some("RplChannel.Reliable"));
+        assert_eq!(
+            item.command
+                .as_ref()
+                .map(|command| command.command.as_str()),
+            Some("reforger-sript-tools.completion.triggerSuggestAtSnippetPlaceholderEnd")
+        );
+
+        let source = r#"class Example
+{
+	[RplRpc(RplChannel.Reliable, RplRcver.)]
+	int m_Value;
+}
+"#;
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "RplRcver."),
+            Some(&external),
+        );
+        let item = report
+            .list
+            .items
+            .iter()
+            .find(|item| item.label == "Server")
+            .expect("expected final enum member completion");
+        assert_eq!(item.text_edit.new_text, "RplRcver.Server");
+        assert!(item.command.is_none());
+    }
+
+    #[test]
+    fn completion_falls_back_to_value_candidates_when_argument_label_prefix_has_no_match() {
+        let source = r#"int testChannel;
+
+class Example
+{
+	[RplRpc(tes, RplRcver.Server)]
+	int m_Value;
+}
+"#;
+        let external = file_index_for_source(
+            r#"enum RplChannel
+{
+	Reliable
+}
+enum RplRcver
+{
+	Server
+}
+class UniqueAttribute {}
+class RplRpc : UniqueAttribute
+{
+	void RplRpc(RplChannel channel, RplRcver rcver);
+}
+"#,
+        )
+        .index;
+
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "RplRpc(tes"),
+            Some(&external),
+        );
+
+        assert_eq!(report.prefix, "tes");
+        assert_ne!(report.completion_context, "argument-label");
+        assert!(report
+            .list
+            .items
+            .iter()
+            .any(|item| item.label == "testChannel"));
+    }
+
+    #[test]
     fn completion_returns_parameter_labels_inside_constructor_calls() {
         let source = r#"class Widget
 {
@@ -3333,6 +3548,7 @@ class Example
             .find(|item| item.label == "name")
             .expect("expected constructor parameter-label completion");
         assert_eq!(item.text_edit.new_text, "name: $0");
+        assert!(item.command.is_none());
         assert_eq!(item.optional_parameter_count, 1);
     }
 
@@ -3360,7 +3576,6 @@ class Attribute : UniqueAttribute
             Some(&external),
         );
 
-        assert_eq!(report.completion_context, "argument-label");
         assert!(!report
             .list
             .items
@@ -4153,6 +4368,7 @@ class Example
                 .collect::<Vec<_>>(),
             vec![("DEBUG", 20), ("NORMAL", 20)]
         );
+        assert!(report.list.items.iter().all(|item| item.command.is_none()));
     }
 
     #[test]

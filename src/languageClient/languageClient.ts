@@ -95,6 +95,14 @@ export function registerLanguageClientFeatures(context: vscode.ExtensionContext)
 		languageClientCommands.openSymbolLocation,
 		(args: unknown) => openSymbolLocation(args),
 	));
+	context.subscriptions.push(vscode.commands.registerCommand(
+		languageClientCommands.triggerSuggestAtSnippetPlaceholderEnd,
+		() => triggerSuggestAtSnippetPlaceholderEnd(context, outputChannel),
+	));
+	context.subscriptions.push(vscode.commands.registerCommand(
+		languageClientCommands.jumpToNextSnippetPlaceholderAndTriggerSuggest,
+		() => jumpToNextSnippetPlaceholderAndTriggerSuggest(context, outputChannel),
+	));
 	context.subscriptions.push(registerCompletionRetriggerOnTextEdit(outputChannel));
 	context.subscriptions.push(registerFirstDocumentOpenTiming(context));
 
@@ -259,6 +267,81 @@ function countUnescapedDoubleQuotes(value: string): number {
 		}
 	}
 	return count;
+}
+
+async function jumpToNextSnippetPlaceholderAndTriggerSuggest(
+	context: vscode.ExtensionContext,
+	outputChannel: vscode.LogOutputChannel,
+): Promise<void> {
+	try {
+		outputChannel.debug('Completion follow-up: jump to next snippet placeholder and trigger suggest.');
+		await delay(25);
+		await vscode.commands.executeCommand('jumpToNextSnippetPlaceholder');
+		await delay(25);
+		const placeholderCount = orientSelectedEnumOwnerPlaceholderToActiveEnd();
+		logLanguageClientStartupTiming(context, 'completionFollowupJumpAndSuggest', {
+			enumOwnerPlaceholders: placeholderCount,
+		});
+		await delay(50);
+		await vscode.commands.executeCommand('editor.action.triggerSuggest');
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		outputChannel.debug(`Completion follow-up failed: ${message}`);
+		logLanguageClientStartupTiming(context, 'completionFollowupJumpAndSuggestFailed', {
+			message,
+		});
+	}
+}
+
+async function triggerSuggestAtSnippetPlaceholderEnd(
+	context: vscode.ExtensionContext,
+	outputChannel: vscode.LogOutputChannel,
+): Promise<void> {
+	try {
+		outputChannel.debug('Completion follow-up: trigger suggest at snippet placeholder end.');
+		await delay(25);
+		const placeholderCount = orientSelectedEnumOwnerPlaceholderToActiveEnd();
+		logLanguageClientStartupTiming(context, 'completionFollowupTriggerSuggest', {
+			enumOwnerPlaceholders: placeholderCount,
+		});
+		await delay(50);
+		await vscode.commands.executeCommand('editor.action.triggerSuggest');
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		outputChannel.debug(`Completion follow-up failed: ${message}`);
+		logLanguageClientStartupTiming(context, 'completionFollowupTriggerSuggestFailed', {
+			message,
+		});
+	}
+}
+
+function orientSelectedEnumOwnerPlaceholderToActiveEnd(): number {
+	const editor = vscode.window.activeTextEditor;
+	if (!editor || editor.document.languageId !== languageClientLanguage.id) {
+		return 0;
+	}
+
+	let placeholderCount = 0;
+	const nextSelections = editor.selections.map(selection => {
+		if (selection.isEmpty) {
+			return selection;
+		}
+		const text = editor.document.getText(selection);
+		if (!/^[A-Za-z_][A-Za-z0-9_]*\.$/.test(text)) {
+			return selection;
+		}
+		placeholderCount += 1;
+		return new vscode.Selection(selection.start, selection.end);
+	});
+
+	if (placeholderCount > 0) {
+		editor.selections = nextSelections;
+	}
+	return placeholderCount;
+}
+
+function delay(ms: number): Promise<void> {
+	return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 interface OpenSymbolLocationArgs {

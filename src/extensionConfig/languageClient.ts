@@ -15,6 +15,8 @@ export const languageClientCommands = {
 	debugHoverAtCursor: 'reforger-sript-tools.debug.hoverAtCursor',
 	debugCompletionAtCursor: 'reforger-sript-tools.debug.completionAtCursor',
 	openSymbolLocation: 'reforger-sript-tools.openSymbolLocation',
+	triggerSuggestAtSnippetPlaceholderEnd: 'reforger-sript-tools.completion.triggerSuggestAtSnippetPlaceholderEnd',
+	jumpToNextSnippetPlaceholderAndTriggerSuggest: 'reforger-sript-tools.completion.jumpToNextSnippetPlaceholderAndTriggerSuggest',
 } as const;
 
 export const languageClientServer = {

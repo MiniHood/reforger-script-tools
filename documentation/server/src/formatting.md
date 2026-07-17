@@ -80,6 +80,7 @@ Examples:
 - Reindenting the inserted override skeleton, placing braces on the configured lines, and trimming trailing whitespace is AF.
 - Offering `array<T>` or `map<TKey, TValue>` in a type position is AC/type assist. AF must not globally turn `<` into `<>`.
 - Completing `defv` inside `[Attribute(defv)]`, `notif` inside `SendToEveryone(notif)`, or any similar callable argument slot to a source-backed named parameter label such as `defvalue: $0` or `notificationID: $0` is AC. The callable signature chooses the label; AF may only clean spacing around the inserted colon later.
+- Defaulting a required enum-typed callable parameter placeholder to a selected `EnumOwner.` expression is AC. The indexed signature and enum symbol choose that owner for functions, methods, constructors, and attributes; accepting an enum value may replace the whole `EnumOwner.<prefix>` expression, while free typing can replace the selected default. AF must not independently infer or rewrite enum argument owners.
 - Inserting a missing semicolon when pressing Enter after a complete declaration or statement can be an on-type formatting assist only when the parser can prove no other action is plausible.
 - Formatting `/** */` or `//!` documentation shape is AF/comment assist. Generating source-backed param/return docs for a selected method is AC or an explicit documentation assist, because it depends on the selected declaration.
 

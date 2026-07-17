@@ -34,6 +34,8 @@ The package contribution activates the extension directly for the hover and comp
 
 VS Code does not always request LSP completion after text deletion or plain identifier insertion in custom-language files. The client therefore listens for deletion edits and single identifier-character insertions in Enforce documents and, after a short debounce, runs VS Code's normal `editor.action.triggerSuggest` command when the changed document is still the active editor and the cursor is still in a likely code position. The trigger bridge avoids obvious comments and strings with lightweight editor-side checks, but it does not decide candidates. Rust completion remains the single source for candidate context, lookup, ranking, and item rendering, and it still returns no items for invalid contexts such as comments or strings.
 
+Rust completion items may include an extension-owned completion follow-up command for enum placeholders inside callable snippets. `reforger-sript-tools.completion.triggerSuggestAtSnippetPlaceholderEnd` preserves a selected `EnumOwner.` placeholder, orients the selection's active end after the dot, and runs normal suggest so Rust member completion sees the correct position while free typing can still replace the whole placeholder. Rust may also use the same command after accepting an enum member when that completion item appended the next required enum placeholder, such as `EnumOwner.Member, ${1:NextEnum.}`. The command only runs VS Code snippet navigation and normal suggest; it does not inspect source text, choose completion candidates, or duplicate Rust completion behavior. It waits briefly around snippet navigation because VS Code applies completion text and snippet state asynchronously. It writes one concise debug record to the language-client output channel when it runs or fails, and a small `completionFollowup...` timing record to `language-client-startup.log` so enum-placeholder command execution can be confirmed from global-storage logs.
+
 ## Dependencies and Boundaries
 
 Uses VS Code APIs, Node path/filesystem APIs, `vscode-languageclient`, and extension config constants. It must not parse Enfusion Script, build indexes, inspect symbols, or implement language features directly.
@@ -62,6 +64,7 @@ Startup timing logging must stay concise and protocol-boundary focused. It may r
 - Added the hover symbol-link command bridge for Rust-generated trusted Markdown links.
 - Added narrow completion retriggers after deletion edits and identifier insertions in Enforce documents so editing a prefix can reopen normal LSP autocomplete without implementing completion in TypeScript.
 - Added TypeScript-side startup timing records under `logs/language-client-startup.log` for activation, language-client construction/start, initialize completion, first document open, and first semantic-token response.
+- Added enum placeholder completion command bridges that keep selected enum defaults replaceable while triggering member completion at the dot, and advance callable snippets to the next enum parameter after accepting an enum member. The bridges now force matching selected `EnumOwner.` placeholders to have their active side after the dot before triggering suggest, and log command execution to the client timing log for troubleshooting.
 
 ## Future Improvements
 
