@@ -19,6 +19,7 @@ pub struct LspDiagnostic {
 
 pub(crate) fn publish_diagnostics_message(
     uri: &str,
+    version: i32,
     source: &str,
     diagnostics: &[ParseDiagnostic],
 ) -> Value {
@@ -28,6 +29,7 @@ pub(crate) fn publish_diagnostics_message(
         "method": "textDocument/publishDiagnostics",
         "params": {
             "uri": uri,
+            "version": version,
             "diagnostics": diagnostics
         }
     })

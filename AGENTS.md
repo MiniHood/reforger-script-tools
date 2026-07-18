@@ -63,7 +63,7 @@ Do not create reference pages for generated output, build artifacts, dependencie
 
 Use Compound Engineering for non-trivial or ambiguous work when available: `ce-brainstorm` settles scope, `ce-plan` creates implementation-ready slices, and the matching CE execution, debug, review, or shipping skill handles the task. Do not mutate plan progress during execution.
 
-Git operations require active user authorization. The only exception is the verified auto-commit protocol in [tools/verified-refactor-auto-commit.mjs](tools/verified-refactor-auto-commit.mjs): after its final focused check passes, the trusted Codex `Stop` hook may commit all working-tree changes on the exact `Refactor` branch. It must never push, alter remotes, or create, switch, merge, rebase, reset, delete, or rewrite branches/history. Review and trust project hooks through Codex's normal flow; never bypass hook trust.
+After completing an implementation task and its required verification, commit and push the task-scoped changes to the current branch without waiting for a separate Git instruction. Use a clear, value-communicating commit message. Before committing, inspect the working tree and stage only changes attributable to the completed task; do not absorb unrelated pre-existing edits. Do not force-push, alter remotes, or create, switch, merge, rebase, reset, delete, or rewrite branches/history unless the user explicitly requests it. If verification fails, the target branch is unclear, the push is rejected, or the working tree cannot be safely separated by task, report the blocker instead of pushing. Review and trust project hooks through Codex's normal flow; never bypass hook trust.
 
 ## Verification Policy
 

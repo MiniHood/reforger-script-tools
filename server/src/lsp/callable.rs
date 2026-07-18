@@ -21,6 +21,7 @@ pub(crate) struct CallableParameter {
 #[derive(Debug, Clone)]
 pub(crate) struct CallableArgumentContext {
     pub(crate) target: CallableTarget,
+    pub(crate) argument_span: TextSpan,
     pub(crate) argument_index: usize,
     pub(crate) active_label: Option<String>,
     pub(crate) supplied_labels: BTreeSet<String>,
@@ -142,6 +143,7 @@ fn collect_callable_argument_context(
                         best,
                         CallableArgumentContext {
                             target: CallableTarget::Attribute { name },
+                            argument_span: args.span,
                             argument_index: argument_index_at_offset(source, args, position.start),
                             active_label: active_named_argument_label_at_offset(
                                 source,
@@ -151,7 +153,6 @@ fn collect_callable_argument_context(
                             supplied_labels: supplied_named_argument_labels(source, args, position),
                         },
                     );
-                    return;
                 }
             }
         }
@@ -165,6 +166,7 @@ fn collect_callable_argument_context(
                         best,
                         CallableArgumentContext {
                             target: CallableTarget::Call { callee_span },
+                            argument_span: args.span,
                             argument_index: argument_index_at_offset(source, args, position.start),
                             active_label: active_named_argument_label_at_offset(
                                 source,
@@ -174,7 +176,6 @@ fn collect_callable_argument_context(
                             supplied_labels: supplied_named_argument_labels(source, args, position),
                         },
                     );
-                    return;
                 }
             }
         }
@@ -188,6 +189,7 @@ fn collect_callable_argument_context(
                         best,
                         CallableArgumentContext {
                             target: CallableTarget::New { type_name },
+                            argument_span: args.span,
                             argument_index: argument_index_at_offset(source, args, position.start),
                             active_label: active_named_argument_label_at_offset(
                                 source,
@@ -197,7 +199,6 @@ fn collect_callable_argument_context(
                             supplied_labels: supplied_named_argument_labels(source, args, position),
                         },
                     );
-                    return;
                 }
             }
         }
@@ -214,30 +215,23 @@ fn replace_callable_argument_best(
     best: &mut Option<CallableArgumentContext>,
     candidate: CallableArgumentContext,
 ) {
-    let replace = best.as_ref().is_none_or(|current| {
-        callable_target_span(&candidate).len() <= callable_target_span(current).len()
-    });
+    let replace = best
+        .as_ref()
+        .is_none_or(|current| candidate.argument_span.len() <= current.argument_span.len());
     if replace {
         *best = Some(candidate);
     }
 }
 
-fn callable_target_span(context: &CallableArgumentContext) -> TextSpan {
-    match &context.target {
-        CallableTarget::Attribute { .. } => TextSpan::new(0, usize::MAX),
-        CallableTarget::Call { callee_span } => *callee_span,
-        CallableTarget::New { .. } => TextSpan::new(0, usize::MAX - 1),
-    }
-}
-
 pub(crate) fn argument_index_at_offset(source: &str, args: &SyntaxNode, offset: usize) -> usize {
+    let tokens = lex(&source[args.span.start..args.span.end]);
     let mut index = 0usize;
     let mut angle = 0usize;
     let mut paren = 0usize;
     let mut bracket = 0usize;
     let mut brace = 0usize;
 
-    for token in lex(&source[args.span.start..args.span.end]) {
+    for (token_index, token) in tokens.iter().enumerate() {
         let span = TextSpan::new(
             args.span.start + token.span.start,
             args.span.start + token.span.end,
@@ -246,7 +240,11 @@ pub(crate) fn argument_index_at_offset(source: &str, args: &SyntaxNode, offset: 
             break;
         }
         match token.kind {
-            TokenKind::Operator(Operator::Less) => angle += 1,
+            TokenKind::Operator(Operator::Less)
+                if generic_angle_opens(source, args.span.start, &tokens, token_index) =>
+            {
+                angle += 1;
+            }
             TokenKind::Operator(Operator::Greater) => angle = angle.saturating_sub(1),
             TokenKind::LeftParen => paren += 1,
             TokenKind::RightParen => paren = paren.saturating_sub(1),
@@ -262,6 +260,52 @@ pub(crate) fn argument_index_at_offset(source: &str, args: &SyntaxNode, offset: 
     }
 
     index
+}
+
+fn generic_angle_opens(
+    source: &str,
+    base_offset: usize,
+    tokens: &[crate::lexer::Token],
+    open_index: usize,
+) -> bool {
+    let Some(previous) = tokens[..open_index]
+        .iter()
+        .rev()
+        .find(|token| !token.kind.is_trivia())
+    else {
+        return false;
+    };
+    if !matches!(
+        previous.kind,
+        TokenKind::Identifier | TokenKind::RightBracket
+    ) || source[base_offset + previous.span.end..base_offset + tokens[open_index].span.start]
+        .chars()
+        .any(char::is_whitespace)
+    {
+        return false;
+    }
+
+    let mut depth = 0usize;
+    for token in &tokens[open_index..] {
+        match token.kind {
+            TokenKind::Operator(Operator::Less) => depth += 1,
+            TokenKind::Operator(Operator::Greater) => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return true;
+                }
+            }
+            TokenKind::Operator(Operator::GreaterGreater) => {
+                depth = depth.saturating_sub(2);
+                if depth == 0 {
+                    return true;
+                }
+            }
+            TokenKind::RightParen if depth > 0 => return false,
+            _ => {}
+        }
+    }
+    false
 }
 
 fn active_named_argument_label_at_offset(
@@ -315,7 +359,7 @@ fn collect_supplied_named_argument_labels(
     if node.kind == SyntaxKind::NamedArgument {
         if let Some((name, span)) = named_argument_label_text(source, node) {
             if span != current_prefix_span {
-                labels.insert(name);
+                labels.insert(name.to_ascii_lowercase());
             }
         }
         return;
@@ -418,7 +462,23 @@ fn first_identifier_token(source: &str, node: &SyntaxNode) -> Option<(String, Te
 
 fn matching_close_paren(text: &str, open: usize) -> Option<usize> {
     let mut depth = 0usize;
+    let mut quote = None;
+    let mut escaped = false;
     for (offset, ch) in text[open..].char_indices() {
+        if let Some(delimiter) = quote {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == delimiter {
+                quote = None;
+            }
+            continue;
+        }
+        if matches!(ch, '\"' | '\'') {
+            quote = Some(ch);
+            continue;
+        }
         match ch {
             '(' => depth += 1,
             ')' => {
@@ -439,7 +499,24 @@ fn split_callable_parameters(text: &str) -> Vec<String> {
     let mut angle = 0usize;
     let mut paren = 0usize;
     let mut bracket = 0usize;
+    let mut brace = 0usize;
+    let mut quote = None;
+    let mut escaped = false;
     for (offset, ch) in text.char_indices() {
+        if let Some(delimiter) = quote {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == delimiter {
+                quote = None;
+            }
+            continue;
+        }
+        if matches!(ch, '\"' | '\'') {
+            quote = Some(ch);
+            continue;
+        }
         match ch {
             '<' => angle += 1,
             '>' => angle = angle.saturating_sub(1),
@@ -447,7 +524,9 @@ fn split_callable_parameters(text: &str) -> Vec<String> {
             ')' => paren = paren.saturating_sub(1),
             '[' => bracket += 1,
             ']' => bracket = bracket.saturating_sub(1),
-            ',' if angle == 0 && paren == 0 && bracket == 0 => {
+            '{' => brace += 1,
+            '}' => brace = brace.saturating_sub(1),
+            ',' if angle == 0 && paren == 0 && bracket == 0 && brace == 0 => {
                 let part = text[start..offset].trim();
                 if !part.is_empty() {
                     parts.push(part.to_string());
@@ -497,7 +576,24 @@ fn split_parameter_default(parameter: &str) -> (&str, Option<&str>) {
     let mut angle = 0usize;
     let mut paren = 0usize;
     let mut bracket = 0usize;
+    let mut brace = 0usize;
+    let mut quote = None;
+    let mut escaped = false;
     for (offset, ch) in parameter.char_indices() {
+        if let Some(delimiter) = quote {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == delimiter {
+                quote = None;
+            }
+            continue;
+        }
+        if matches!(ch, '\"' | '\'') {
+            quote = Some(ch);
+            continue;
+        }
         match ch {
             '<' => angle += 1,
             '>' => angle = angle.saturating_sub(1),
@@ -505,7 +601,9 @@ fn split_parameter_default(parameter: &str) -> (&str, Option<&str>) {
             ')' => paren = paren.saturating_sub(1),
             '[' => bracket += 1,
             ']' => bracket = bracket.saturating_sub(1),
-            '=' if angle == 0 && paren == 0 && bracket == 0 => {
+            '{' => brace += 1,
+            '}' => brace = brace.saturating_sub(1),
+            '=' if angle == 0 && paren == 0 && bracket == 0 && brace == 0 => {
                 return (
                     parameter[..offset].trim(),
                     Some(parameter[offset + ch.len_utf8()..].trim()),
@@ -564,5 +662,77 @@ mod tests {
         let offset = source.rfind(", 3").unwrap() + 3;
         let context = callable_argument_context_at_offset(source, &parse.root, offset).unwrap();
         assert_eq!(context.argument_index, 2);
+    }
+
+    #[test]
+    fn callable_argument_context_prefers_innermost_nested_call() {
+        let source = "class Example { void Run() { Outer(Inner(first, second), third); } }";
+        let parse = parse_source(source);
+        let offset = source.find("second").unwrap() + "second".len();
+        let context = callable_argument_context_at_offset(source, &parse.root, offset).unwrap();
+
+        let CallableTarget::Call { callee_span } = context.target else {
+            panic!("expected nested call context");
+        };
+        assert_eq!(&source[callee_span.start..callee_span.end], "Inner");
+        assert_eq!(context.argument_index, 1);
+    }
+
+    #[test]
+    fn argument_index_distinguishes_comparisons_from_generic_arguments() {
+        let comparison = "class Example { void Run() { Use(first < second, third); } }";
+        let comparison_parse = parse_source(comparison);
+        let comparison_args =
+            find_first_node(&comparison_parse.root, SyntaxKind::ArgumentList).unwrap();
+        let comparison_offset = comparison.find("third").unwrap() + "third".len();
+        assert_eq!(
+            argument_index_at_offset(comparison, comparison_args, comparison_offset),
+            1
+        );
+
+        let generic = "class Example { void Run() { Use(Generic<First, Second>(), third); } }";
+        let generic_parse = parse_source(generic);
+        let generic_args = find_first_node(&generic_parse.root, SyntaxKind::ArgumentList).unwrap();
+        let generic_offset = generic.find("third").unwrap() + "third".len();
+        assert_eq!(
+            argument_index_at_offset(generic, generic_args, generic_offset),
+            1
+        );
+    }
+
+    #[test]
+    fn callable_signature_preserves_quoted_defaults() {
+        let parts = callable_signature_parts(
+            "Run",
+            r#"Example.Run(string message = "comma, close ) and \"quote\"", int count = 0) -> void"#,
+        )
+        .unwrap();
+
+        assert_eq!(parts.parameters_info.len(), 2);
+        assert_eq!(
+            parts.parameters_info[0].default_text.as_deref(),
+            Some(r#""comma, close ) and \"quote\"""#)
+        );
+    }
+
+    #[test]
+    fn supplied_named_argument_labels_are_normalized() {
+        let source = "class Example { [Attribute(FIRST: 1, second: 2)] int value; }";
+        let parse = parse_source(source);
+        let args = find_first_node(&parse.root, SyntaxKind::AttributeArgs).unwrap();
+        let labels = supplied_named_argument_labels(source, args, TextSpan::new(0, 0));
+
+        assert!(labels.contains("first"));
+        assert!(labels.contains("second"));
+    }
+
+    fn find_first_node<'a>(node: &'a SyntaxNode, kind: SyntaxKind) -> Option<&'a SyntaxNode> {
+        if node.kind == kind {
+            return Some(node);
+        }
+        node.children.iter().find_map(|child| match child {
+            SyntaxElement::Node(child) => find_first_node(child, kind),
+            SyntaxElement::Token(_) => None,
+        })
     }
 }

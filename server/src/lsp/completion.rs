@@ -862,7 +862,10 @@ fn parameter_label_candidates_for_callables(
             if !starts_with_ignore_ascii_case(&parameter.name, &context.prefix) {
                 continue;
             }
-            if context.supplied_labels.contains(parameter.name.as_str()) {
+            if context
+                .supplied_labels
+                .contains(&parameter.name.to_ascii_lowercase())
+            {
                 continue;
             }
             let key = parameter.name.to_ascii_lowercase();

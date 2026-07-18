@@ -125,7 +125,7 @@ pub(crate) fn signature_help_report_for_cached_analysis_with_external_indexes(
     let render_start = Instant::now();
     let mut signatures = Vec::new();
     let mut selected_label = None;
-    let mut active_parameter = context.argument_index;
+    let mut selected_active_parameter = None;
     for candidate in &candidates {
         let label = candidate
             .name
@@ -141,17 +141,10 @@ pub(crate) fn signature_help_report_for_cached_analysis_with_external_indexes(
         let Some(parts) = callable_signature_parts(label, signature) else {
             continue;
         };
-        if let Some(label) = context.active_label.as_ref() {
-            if let Some(index) = parts
-                .parameters_info
-                .iter()
-                .position(|parameter| parameter.name.eq_ignore_ascii_case(label))
-            {
-                active_parameter = index;
-            }
-        }
+        let active_parameter = active_parameter_for_candidate(&context, &parts);
         if selected_label.is_none() {
             selected_label = Some(label.to_string());
+            selected_active_parameter = active_parameter;
         }
         signatures.push(signature_information_for_candidate(
             candidate,
@@ -177,11 +170,11 @@ pub(crate) fn signature_help_report_for_cached_analysis_with_external_indexes(
         help: Some(LspSignatureHelp {
             signatures,
             active_signature: Some(0),
-            active_parameter: Some(active_parameter as u32),
+            active_parameter: selected_active_parameter.map(|parameter| parameter as u32),
         }),
         parse_diagnostics: analysis.parse_diagnostics,
         context: Some(context_label(&context)),
-        active_parameter: Some(active_parameter),
+        active_parameter: selected_active_parameter,
         candidate_count: candidates.len(),
         selected_label,
         failure_reason: None,
@@ -331,7 +324,7 @@ fn signature_information_for_candidate(
     candidate: &EditorCompletionCandidate,
     label: &str,
     parts: &CallableSignatureParts,
-    active_parameter: usize,
+    active_parameter: Option<usize>,
 ) -> LspSignatureInformation {
     let signature = candidate
         .signature
@@ -348,8 +341,28 @@ fn signature_information_for_candidate(
         label: signature.to_string(),
         documentation,
         parameters,
-        active_parameter: Some(active_parameter as u32),
+        active_parameter: active_parameter.map(|parameter| parameter as u32),
     }
+}
+
+fn active_parameter_for_candidate(
+    context: &CallableArgumentContext,
+    parts: &CallableSignatureParts,
+) -> Option<usize> {
+    let parameter_count = parts.parameters_info.len();
+    if parameter_count == 0 {
+        return None;
+    }
+    context
+        .active_label
+        .as_ref()
+        .and_then(|label| {
+            parts
+                .parameters_info
+                .iter()
+                .position(|parameter| parameter.name.eq_ignore_ascii_case(label))
+        })
+        .or_else(|| Some(context.argument_index.min(parameter_count - 1)))
 }
 
 fn callable_documentation(
@@ -688,6 +701,32 @@ class Example
             },
         );
         assert!(report.help.is_none());
+    }
+
+    #[test]
+    fn active_parameters_are_clamped_per_signature_candidate() {
+        let context = CallableArgumentContext {
+            target: CallableTarget::New {
+                type_name: "Example".to_string(),
+            },
+            argument_span: crate::lexer::TextSpan::new(0, 0),
+            argument_index: 3,
+            active_label: None,
+            supplied_labels: Default::default(),
+        };
+        let one_parameter =
+            callable_signature_parts("Run", "Example.Run(int first) -> void").unwrap();
+        let two_parameters =
+            callable_signature_parts("Run", "Example.Run(int first, int second) -> void").unwrap();
+
+        assert_eq!(
+            active_parameter_for_candidate(&context, &one_parameter),
+            Some(0)
+        );
+        assert_eq!(
+            active_parameter_for_candidate(&context, &two_parameters),
+            Some(1)
+        );
     }
 
     fn position_after(source: &str, needle: &str) -> LspPosition {

@@ -10,7 +10,7 @@ This file is a focused submodule of the Rust LSP layer. It converts parser `Pars
 
 ## Current Behavior
 
-Diagnostics use source `Reforger Script Tools parser`, code `reforger.parser.syntax`, and severity `1` for parser/lexer errors. The projection keeps parser messages unchanged and expands zero-width parser spans to a nearby visible source range where possible. `publish_diagnostics_message` builds the standard `textDocument/publishDiagnostics` notification, while `parser_diagnostics_for_source` is shared by tests and diagnostics reports.
+Diagnostics use source `Reforger Script Tools parser`, code `reforger.parser.syntax`, and severity `1` for parser/lexer errors. The projection keeps parser messages unchanged and expands zero-width parser spans to a nearby visible source range where possible. `publish_diagnostics_message` builds the standard `textDocument/publishDiagnostics` notification with the matching document version, while `clear_diagnostics_message` retains the versionless close-notification shape. `parser_diagnostics_for_source` is shared by tests and diagnostics reports.
 
 ## Dependencies and Boundaries
 

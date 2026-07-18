@@ -16,7 +16,7 @@ use super::LspDocumentSymbol;
 
 pub(crate) struct OpenDocument {
     pub(crate) text: String,
-    pub(crate) version: Option<i32>,
+    pub(crate) version: i32,
     pub(crate) revision: u64,
     pub(crate) analysis: FileIndexAnalysis,
     pub(crate) analysis_timings: FileIndexAnalysisTimings,
@@ -26,7 +26,7 @@ pub(crate) struct OpenDocument {
 }
 
 impl OpenDocument {
-    pub(crate) fn new(text: String, version: Option<i32>, revision: u64) -> Self {
+    pub(crate) fn new(text: String, version: i32, revision: u64) -> Self {
         let (analysis, analysis_timings) = file_index_for_source_with_timings(&text);
         Self {
             text,
@@ -40,7 +40,7 @@ impl OpenDocument {
         }
     }
 
-    pub(crate) fn replace(&mut self, text: String, version: Option<i32>) {
+    pub(crate) fn replace(&mut self, text: String, version: i32) {
         self.text = text;
         self.version = version;
         self.revision += 1;

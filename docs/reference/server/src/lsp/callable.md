@@ -10,7 +10,9 @@ This module sits below LSP feature projection modules such as completion and sig
 
 ## Current Behavior
 
-The helper exposes callable signature parts, parameter names/types/defaults, required/optional classification, and callable argument context for attributes, call expressions, and `new` expressions. It also identifies the active argument index, active named argument label, and already supplied named labels.
+The helper exposes callable signature parts, parameter names/types/defaults, required/optional classification, and callable argument context for attributes, call expressions, and `new` expressions. Nested calls select the innermost enclosing argument list. Argument counting is lexer-backed, ignores quoted literals and nested expression delimiters, and recognizes generic angle brackets only when they are syntactically type-like rather than treating relational comparisons as generic nesting. Signature splitting likewise preserves commas, closing parentheses, and escaped quotes inside default literals.
+
+It identifies the active argument index, active named argument label, and already supplied named labels. Supplied-label keys are normalized to ASCII lowercase because parameter labels are matched case-insensitively throughout callable completion and signature help.
 
 ## Dependencies and Boundaries
 

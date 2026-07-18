@@ -198,7 +198,7 @@ function shouldRetriggerCompletionAfterDeletion(editor: vscode.TextEditor): bool
 		return false;
 	}
 	const linePrefix = editor.document.lineAt(position.line).text.slice(0, position.character);
-	return /[A-Za-z0-9_\.]$/.test(linePrefix) && !isLikelyCommentOrStringPosition(editor.document, position);
+	return /[A-Za-z0-9_\.]$/.test(linePrefix);
 }
 
 function shouldRetriggerCompletionAfterInsertion(editor: vscode.TextEditor): boolean {
@@ -211,7 +211,7 @@ function shouldRetriggerCompletionAfterInsertion(editor: vscode.TextEditor): boo
 	if (!wordMatch || wordMatch[0].length < 2) {
 		return false;
 	}
-	return !isLikelyCommentOrStringPosition(editor.document, position);
+	return true;
 }
 
 function triggerCompletionWhenActive(
@@ -233,40 +233,6 @@ function triggerCompletionWhenActive(
 	}
 	outputChannel.debug(`Triggering Enforce completion after ${reason}: ${documentUri}`);
 	void vscode.commands.executeCommand('editor.action.triggerSuggest');
-}
-
-function isLikelyCommentOrStringPosition(document: vscode.TextDocument, position: vscode.Position): boolean {
-	const linePrefix = document.lineAt(position.line).text.slice(0, position.character);
-	const wordStart = linePrefix.search(/[A-Za-z_][A-Za-z0-9_]*$/);
-	const beforeWord = wordStart >= 0 ? linePrefix.slice(0, wordStart) : linePrefix;
-	if (beforeWord.includes('//')) {
-		return true;
-	}
-	if (countUnescapedDoubleQuotes(linePrefix) % 2 === 1) {
-		return true;
-	}
-
-	const textBeforeCursor = document.getText(new vscode.Range(new vscode.Position(0, 0), position));
-	return textBeforeCursor.lastIndexOf('/*') > textBeforeCursor.lastIndexOf('*/');
-}
-
-function countUnescapedDoubleQuotes(value: string): number {
-	let count = 0;
-	let escaped = false;
-	for (const char of value) {
-		if (escaped) {
-			escaped = false;
-			continue;
-		}
-		if (char === '\\') {
-			escaped = true;
-			continue;
-		}
-		if (char === '"') {
-			count += 1;
-		}
-	}
-	return count;
 }
 
 async function jumpToNextSnippetPlaceholderAndTriggerSuggest(

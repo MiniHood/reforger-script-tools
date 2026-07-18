@@ -416,7 +416,7 @@ struct DidOpenTextDocumentParams {
 #[derive(Debug, Deserialize)]
 struct TextDocumentItem {
     uri: String,
-    version: Option<i32>,
+    version: i32,
     text: String,
 }
 
@@ -430,7 +430,7 @@ struct DidChangeTextDocumentParams {
 #[derive(Debug, Deserialize)]
 struct VersionedTextDocumentIdentifier {
     uri: String,
-    version: Option<i32>,
+    version: i32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -691,6 +691,7 @@ impl<W: Write> LspServer<W> {
                     let analysis_timings = document.analysis_timings;
                     let diagnostics_message = publish_diagnostics_message(
                         &uri,
+                        version,
                         &document.text,
                         &document.analysis.diagnostics,
                     );
@@ -700,7 +701,7 @@ impl<W: Write> LspServer<W> {
                         "notification didOpen uri={} bytes={} version={} revision={} cached_analysis=true document_symbols_cached=true symbols={} parse_diagnostics={} analysis_parse_ms={} analysis_catalog_ms={} analysis_index_ms={} analysis_scope_ms={} analysis_build_ms={} document_symbol_ms={} queue_ms={} analysis_elapsed_ms={}",
                         uri,
                         bytes,
-                        format_optional_i32(version),
+                        version,
                         revision,
                         symbol_count,
                         parse_diagnostics,
@@ -725,11 +726,26 @@ impl<W: Write> LspServer<W> {
                         let version = params.text_document.version;
                         let text = change.text;
                         let bytes = text.len();
-                        let existing_revision =
-                            self.document_revisions.get(&uri).copied().unwrap_or(0);
-                        let document = self.documents.entry(uri.clone()).or_insert_with(|| {
-                            OpenDocument::new(String::new(), None, existing_revision)
-                        });
+                        let Some(current_version) =
+                            self.documents.get(&uri).map(|document| document.version)
+                        else {
+                            self.log(&format!(
+                                "notification didChange ignored uri={} version={} reason=not_open",
+                                uri, version
+                            ));
+                            return Ok(false);
+                        };
+                        if version <= current_version {
+                            self.log(&format!(
+                                "notification didChange ignored uri={} version={} current_version={} reason=stale",
+                                uri, version, current_version
+                            ));
+                            return Ok(false);
+                        }
+                        let document = self
+                            .documents
+                            .get_mut(&uri)
+                            .expect("open document exists after version check");
                         document.replace(text, version);
                         let parse_diagnostics = document.analysis.parse_diagnostics;
                         let revision = document.revision;
@@ -737,6 +753,7 @@ impl<W: Write> LspServer<W> {
                         let analysis_timings = document.analysis_timings;
                         let diagnostics_message = publish_diagnostics_message(
                             &uri,
+                            version,
                             &document.text,
                             &document.analysis.diagnostics,
                         );
@@ -745,7 +762,7 @@ impl<W: Write> LspServer<W> {
                             "notification didChange uri={} bytes={} version={} revision={} cached_analysis=true document_symbols_cached=false symbols=pending parse_diagnostics={} analysis_parse_ms={} analysis_catalog_ms={} analysis_index_ms={} analysis_scope_ms={} analysis_build_ms={} queue_ms={} analysis_elapsed_ms={}",
                             uri,
                             bytes,
-                            format_optional_i32(version),
+                            version,
                             revision,
                             parse_diagnostics,
                             analysis_timings.parse_ms,
@@ -1995,12 +2012,6 @@ fn is_document_symbol_excluded_kind(kind: SymbolKind) -> bool {
             | SymbolKind::LocalVariable
             | SymbolKind::PreprocessorMacro
     )
-}
-
-fn format_optional_i32(value: Option<i32>) -> String {
-    value
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| "<none>".to_string())
 }
 
 pub(crate) fn span_text(source: &str, span: TextSpan) -> &str {
@@ -4489,7 +4500,7 @@ class Example
     fn completion_hides_already_supplied_parameter_labels() {
         let source = r#"class Example
 {
-	[Attribute(defvalue: "", defv)]
+	[Attribute(DEFVALUE: "", defv)]
 	int m_Value;
 }
 "#;
@@ -4505,7 +4516,7 @@ class Attribute : UniqueAttribute
 
         let report = completion_report_for_source_position_with_external(
             source,
-            position_after_needle(source, "defvalue: \"\", defv"),
+            position_after_needle(source, "DEFVALUE: \"\", defv"),
             Some(&external),
         );
 
@@ -7574,7 +7585,181 @@ class Example
         assert!(output_text.contains("Reforger Script Tools parser"));
         assert!(output_text.contains("reforger.parser.syntax"));
         assert!(output_text.contains("\"severity\":1"));
+        assert!(output_text.contains("\"version\":1"));
+        assert!(output_text.contains("\"version\":2"));
+        assert!(
+            clear_diagnostics_message("file:///Scripts/Diagnostics.c")["params"]
+                .get("version")
+                .is_none()
+        );
         assert!(output_text.contains("\"diagnostics\":[]"));
+    }
+
+    #[test]
+    fn framed_lsp_ignores_stale_changes_without_regressing_diagnostics_or_symbols() {
+        let initial_source = "class Initial\n{\n\tvoid InitialRun(\n}\n";
+        let current_source = "class Current\n{\n\tvoid CurrentRun();\n}\n";
+        let stale_source = "class Stale\n{\n\tvoid StaleRun(\n}\n";
+        let uri = "file:///Scripts/VersionedDiagnostics.c";
+        let log_path = test_log_path("stale_diagnostic_change");
+        let mut input = Vec::new();
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {}
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": uri,
+                        "languageId": "enforce",
+                        "version": 1,
+                        "text": initial_source
+                    }
+                }
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didChange",
+                "params": {
+                    "textDocument": { "uri": uri, "version": 3 },
+                    "contentChanges": [{ "text": current_source }]
+                }
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didChange",
+                "params": {
+                    "textDocument": { "uri": uri, "version": 2 },
+                    "contentChanges": [{ "text": stale_source }]
+                }
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "textDocument/documentSymbol",
+                "params": { "textDocument": { "uri": uri } }
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown", "params": null }),
+        );
+        write_test_message(
+            &mut input,
+            json!({ "jsonrpc": "2.0", "method": "exit", "params": null }),
+        );
+
+        let mut output = Vec::new();
+        run(
+            input.as_slice(),
+            &mut output,
+            LspServerOptions {
+                log_path: Some(log_path.clone()),
+                game_data_scripts: None,
+                game_data_metadata: None,
+                index_cache: None,
+                workspace_scripts: Vec::new(),
+            },
+        )
+        .unwrap();
+
+        let output_text = String::from_utf8(output).unwrap();
+        assert_eq!(
+            output_text
+                .matches("textDocument/publishDiagnostics")
+                .count(),
+            2
+        );
+        assert!(output_text.contains("\"version\":1"));
+        assert!(output_text.contains("\"version\":3"));
+        assert!(!output_text.contains("\"version\":2"));
+        assert!(output_text.contains("\"name\":\"Current\""));
+        assert!(output_text.contains("\"name\":\"CurrentRun\""));
+        assert!(!output_text.contains("\"name\":\"Stale\""));
+        assert!(!output_text.contains("\"name\":\"StaleRun\""));
+
+        let log = std::fs::read_to_string(&log_path).unwrap();
+        assert!(log.contains(
+            "notification didChange ignored uri=file:///Scripts/VersionedDiagnostics.c version=2 current_version=3 reason=stale"
+        ));
+        cleanup_log(&log_path);
+    }
+
+    #[test]
+    fn document_open_and_change_require_versions() {
+        let uri = "file:///Scripts/RequiredVersions.c";
+        let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
+
+        server
+            .handle_message(
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "textDocument/didOpen",
+                    "params": {
+                        "textDocument": {
+                            "uri": uri,
+                            "languageId": "enforce",
+                            "text": "class MissingOpenVersion {}"
+                        }
+                    }
+                }),
+                None,
+            )
+            .unwrap();
+        assert!(!server.documents.contains_key(uri));
+
+        server
+            .handle_message(
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "textDocument/didOpen",
+                    "params": {
+                        "textDocument": {
+                            "uri": uri,
+                            "languageId": "enforce",
+                            "version": 1,
+                            "text": "class Current {}"
+                        }
+                    }
+                }),
+                None,
+            )
+            .unwrap();
+        server
+            .handle_message(
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "textDocument/didChange",
+                    "params": {
+                        "textDocument": { "uri": uri },
+                        "contentChanges": [{ "text": "class MissingChangeVersion {}" }]
+                    }
+                }),
+                None,
+            )
+            .unwrap();
+
+        let document = &server.documents[uri];
+        assert_eq!(document.version, 1);
+        assert_eq!(document.text, "class Current {}");
     }
 
     #[test]
