@@ -48,6 +48,12 @@ skill that was invoked earlier in the session.
    pass solely to reconfirm a correction already checked against its
    authoritative source.
 
+A narrowly scoped mechanical action can follow the focused check when it has
+its own explicit evidence boundary. The verified `Refactor` auto-commit helper
+is one example: it records the result of the selected final check and the
+trusted stop hook only consumes that fresh receipt. It does not turn a passing
+command into permission for broader review, pushes, or branch operations.
+
 ## Why This Matters
 
 Overworking a simple correction burns time, model usage, and attention that
@@ -80,3 +86,4 @@ that same risk discipline to agent orchestration and verification effort.
 
 - [Agent workflow](../../agent-workflow.md)
 - [Cost-aware routing plan](../../plans/2026-07-18-004-feat-cost-aware-agent-routing-plan.md)
+- [Verified auto-commit helper](../../reference/tools/verified-refactor-auto-commit.md)

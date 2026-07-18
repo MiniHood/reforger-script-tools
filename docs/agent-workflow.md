@@ -160,8 +160,9 @@ Each review question has one owner: either the targeted project `code-reviewer` 
 Do not automatically ask both to answer the same question.
 When the surface exposes the actual route, record it; otherwise use route source `inherited`, `CE-managed`, or `unverified` as applicable rather than inferring a model.
 
-Commit and push are explicit-request-only operations.
-A plan's tail, an agent role, a CE workflow, or a model assignment does not authorize either action; the user's current request must do so.
+Commit and push are explicit-request-only operations, with one repository-local exception: the trusted verified auto-commit protocol. A task owner may arm `tools/verified-refactor-auto-commit.mjs verify --title <one-to-five-word-title> -- <focused-check>` only after its final focused verification is ready to run. A successful check records a fresh receipt; the project-local Codex `Stop` hook may then commit all current working-tree changes on the exact `Refactor` branch.
+
+This protocol never pushes, tags, changes remotes, switches or creates branches, merges, rebases, resets, or rewrites history. It skips on a missing, stale, mismatched, or invalid receipt; a non-`Refactor` branch; an active Git operation; or a clean tree. A failed commit remains visible with its receipt intact. The hook must be reviewed and trusted through Codex's normal hook flow. Direct `commit-pusher` operations, pushes, and every Git operation outside this narrow protocol still require the active user's explicit authorization.
 
 ## Routing Observations
 
