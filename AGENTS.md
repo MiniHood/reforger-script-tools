@@ -2,240 +2,229 @@
 
 ## Purpose
 
-This repository is the VS Code extension for Reforger Script Tools. The goal is to build the most useful scripting and coding tool for Arma Reforger Enfusion Script, not the easiest extension to implement.
+This repository is the VS Code extension for Reforger Script Tools.
+The goal is to build the most useful scripting and coding tool for Arma Reforger Enfusion Script, not the easiest extension to implement.
 
-Agents and contributors must optimize for correctness, performance, full-fidelity language understanding, and strong editor features. Do not choose shortcuts that make a future complete AST, semantic model, indexer, or language server worse.
+Agents and contributors must optimize for correctness, performance, full-fidelity language understanding, and strong editor features.
+Do not choose shortcuts that make a future complete AST, semantic model, indexer, or language server worse.
 
-## Architecture
-
-- The VS Code extension host is TypeScript. Keep it focused on activation, commands, configuration, UI glue, process management, and editor integration.
-- The extension host is bundled with esbuild. Keep the JavaScript output minimal and avoid runtime dependency sprawl.
-- The intended language engine is a Rust language server/parser/analyzer. It should own lexing, parsing, AST construction, semantic analysis, indexing, diagnostics, completion, go-to-definition, references, rename, formatting, and workspace intelligence.
-- The extension should communicate with the language engine through clear LSP/server boundaries. Do not mix serious language intelligence directly into VS Code command glue.
-- Workbench is the compiler truth and validation authority for Enfusion Script behavior. Workbench must not be treated as the LSP server.
-- Official Reforger documentation, extracted APIs, samples, and Workbench/compiler behavior are the source of truth for language and engine behavior.
-
-## Canonical Project Scope
+## Operating Contract
 
 - Treat the root project as canonical.
-- Do not treat generated output, dependencies, or packaged artifacts as source truth.
+- Do not treat generated output, dependencies, packaged artifacts, or downloaded data as source truth.
+- Preserve current working behavior unless the task explicitly changes it.
+- Prefer small verified slices over broad rewrites.
+- Prefer one authoritative implementation path per feature. Temporary migration paths require a removal plan.
+- Do not introduce managers, registries, wrappers, settings, or validation layers unless the current slice requires them.
+- Do not infer Enfusion Script or Reforger behavior from C#, Unity, Unreal, Arma 3, SQF, or generic scripting-language behavior.
+
+## Compound Engineering Workflow
+
+Use Compound Engineering for non-trivial or ambiguous work when available:
+
+- Use `ce-brainstorm` to settle what to build, scope boundaries, success criteria, and non-goals.
+- Use `ce-plan` to turn settled scope into implementation-ready slices with verification.
+- Use `ce-work`, `ce-debug`, `ce-code-review`, `ce-resolve-pr-feedback`, and commit/PR skills for execution and shipping when they match the task.
+- Store CE plan artifacts under `docs/plans/`. These artifacts describe scoped work; they do not replace source-mirror documentation.
+- Do not mutate CE plan progress during execution. Progress comes from git, verification results, and shipped commits.
+
+If a contributor or agent does not have CE tooling, they must provide equivalent scoped requirements, an implementation plan, and verification notes before broad, ambiguous, or architectural changes.
+
+For routing rationale, examples, and document ownership, read [docs/agent-workflow.md](docs/agent-workflow.md).
+
+## Cost-Aware Agent Routing
+
+Classify every task before delegation from observable scope and risk. Do not select a model by preference.
+
+| Risk class | Exact classification |
+|---|---|
+| Bounded | One or two files, established local pattern, clear acceptance behavior, no public contract, no uncertain API, no semantic core, and focused verification available. |
+| Normal | Behavior-bearing work with understood architecture, normal rollback, and adequate tests; may span several files but does not change a semantic or cross-subsystem contract. |
+| Consequential | Parser, AST, semantic model, index, diagnostics semantics, formatting semantics, LSP contracts, process lifecycle, packaging/runtime acquisition, security, data-loss risk, difficult rollback, weak verification, or exact Reforger behavior encoded into tooling. |
+| Critical | Explicitly identified before dispatch as unusually expensive to get wrong, or a consequential Sol High task that failed substantively after receiving exact evidence and one correction opportunity. |
+
+Use this automatic route matrix. Explicit per-run user overrides remain authoritative.
+
+| Route | Model and effort | Responsibility |
+|---|---|---|
+| Root/default, `explorer`, `worker`, `reforger-researcher` | GPT-5.6 Terra High | Normal orchestration, discovery, implementation, and Reforger evidence research. |
+| `quick-implementer`, `doc-maintainer`, `commit-pusher` | GPT-5.6 Luna High | Strictly bounded implementation/docs and explicitly authorized git work. |
+| `high-risk-implementer`, `code-reviewer`, `reforger-reviewer` | GPT-5.6 Sol High | Consequential implementation, the assigned project review, and Reforger truth review. |
+| `recovery-implementer` | GPT-5.6 Sol XHigh | Work classified as critical before dispatch or one controlled recovery after substantive Sol High failure. |
+| `code-validator` | GPT-5.4 Mini Low | Independent execution of specified checks only; no diagnosis or source edits. |
+
+Sol Max is manual-only. Ultra is never automatic. Luna Low/Medium/XHigh/Max, Terra Low/Medium/XHigh/Max, Sol Low/Medium/Max, GPT-5.5, and full GPT-5.4 have no automatic project role. Delegation is limited to one level and four concurrent threads.
+
+- Reclassify a bounded task before continuing when its scope expands. Normal work moves to Terra; consequential work moves directly to Sol High.
+- After exact evidence and one correction opportunity, a substantive Sol High failure permits one Sol XHigh recovery. Stop automatic escalation after XHigh failure.
+- Tool, environment, dependency, flaky-test, credential, and model-availability failures never raise the reasoning tier. An unavailable configured model must fail visibly and be recorded; required checks may run inline, but no agent model may be silently substituted.
+- Writers perform their own focused verification inline. Independent Mini validation is automatic after normal and consequential implementation and optional for bounded work; validation is not a second review.
+- Give each review question exactly one owner: either the project `code-reviewer` or the applicable CE review workflow. Never dispatch both automatically. CE-owned generic reviewers and semantic model tiers remain CE-managed; use named project roles only where the workflow supports them.
+- Reforger evidence work must invoke the `reforger` skill. Consequential language, API, replication, or Workbench conclusions also require independent Sol High `reforger-reviewer` review; Workbench/compiler remains final authority.
+- Commit and push actions require explicit user authorization. A plan, workflow, route, or model assignment is not authorization.
+
+The parent creates a content-free attempt observation at dispatch and finalizes it for every terminal state. It assigns one work ID, a unique attempt ID, and a positive sequence number; retries and recovery keep the work ID and increment the sequence. It records outcomes serially under ignored `tools/reports/`; workers never write shared observation files. Usage, latency, token, and reported-cost values are optional and must never be estimated.
+
+Hold the first routing review after at least 30 completed delegations and at least five samples for every high-volume role, defined as at least 10% of completed delegations at review time. Record its completed-delegation checkpoint and review again every 50 additional completed delegations or after three similar failures within ten comparable tasks. Every routing review must include a blinded, stratified classification audit and inspect every critical/recovery record regardless of sample size. Reports without trustworthy usage or cost data are quality-only and cannot support cost-efficiency routing changes. Use `ce-optimize` for ambiguous comparisons and `ce-compound` only for accepted durable lessons.
+
+## Mandatory Reforger Grounding
+
+Use the `reforger` skill before reasoning about or changing any of the following:
+
+- Arma Reforger or Workbench behavior
+- Enfusion Script syntax, semantics, APIs, attributes, callbacks, lifecycle, replication, resources, prefabs, configs, or UI
+- game data, extracted APIs, official samples, or source-backed examples
+- lexer, parser, AST, model, resolver, index, diagnostics, formatting, hover, completion, definition, references, rename, semantic tokens, or LSP behavior for Enfusion Script
+- fixtures, corpus reports, or validation data for Reforger language behavior
+
+Workbench/compiler behavior is the final authority.
+Official Reforger documentation, extracted APIs, verified game-data records, source examples, and Workbench/compiler behavior are primary evidence.
+Examples guide idioms but do not override verified symbols, signatures, or compiler behavior.
+
+## Architecture Boundaries
+
+- The VS Code extension host is TypeScript. Keep it focused on activation, commands, configuration, UI glue, process management, and editor integration.
+- The extension host is bundled with esbuild. Keep JavaScript output minimal and avoid runtime dependency sprawl.
+- Real language intelligence belongs in the Rust language server/parser/analyzer, not in VS Code command glue.
+- The Rust side owns lexing, parsing, AST construction, semantic analysis, indexing, diagnostics, completion, go-to-definition, references, rename, formatting, and workspace intelligence.
+- The extension communicates with the language engine through clear LSP/server boundaries.
+- Workbench is the compiler truth and validation authority. Workbench must not be treated as the LSP server.
 
 ## Marketplace Runtime Policy
 
-Marketplace installs MUST be self-contained. End users should install the extension from the VS Code Marketplace and need nothing else.
+Marketplace installs must be self-contained.
+End users should install the extension from the VS Code Marketplace and need nothing else.
 
-- Do not require users to install Rust, Cargo, Node.js, npm packages, external LSP servers, CLI tools, or helper binaries.
-- Any runtime binary, language server, library, grammar, schema, or tool required by the extension MUST be bundled in the packaged extension or acquired through extension-owned flows that do not require manual external setup.
-- Development and build-time tools may use Rust, Cargo, npm, esbuild, or other local tooling, but Codex MUST design features so those tools are not user prerequisites.
+- Do not require users to install Rust, Cargo, Node.js, npm packages, external LSP servers, CLI tools, helper binaries, or developer tools.
+- Any runtime binary, language server, library, grammar, schema, or tool required by the extension must be bundled in the packaged extension or acquired through extension-owned flows that do not require manual external setup.
+- Development and build-time tools may use Rust, Cargo, npm, esbuild, or other local tooling, but those tools must not become user prerequisites.
 - New runtime dependencies must be justified against package size, performance, security, update path, and offline marketplace-install behavior.
-- Prefer no new third-party runtime dependencies. If a dependency is necessary, it must be bundled and invisible to the user at install/use time.
-- Documentation, prompts, commands, and errors MUST NOT tell ordinary users to install developer tooling to make extension features work.
+- Prefer no new third-party runtime dependencies.
+- Documentation, prompts, commands, and errors must not tell ordinary users to install developer tooling to make extension features work.
 
 ## Source Organization
 
-Do not create placeholder folders for future systems. New folders MUST have a clear owner, current use, and matching documentation when non-trivial.
+Do not create placeholder folders for future systems.
+New folders must have a clear owner, current use, and matching documentation when non-trivial.
 
-- `src/extension.ts`: activation only. Register top-level services and commands here. Do not put parser, model, indexing, Workbench, download, or feature logic here.
-- `src/extensionConfig/`: centralized command IDs, setting keys, state keys, storage names, thresholds, repository constants, and extension-owned constants. Organize by subsystem, such as `gameData.ts`, future `logging.ts`, or future `languageClient.ts`.
-- `src/gameData/`: TypeScript runtime behavior for acquiring and locating Reforger game script data. Own GitHub checks, manual-folder validation, global-storage updates, metadata, and game-data source resolution. Do not parse or semantically model Enfusion Script here.
-- `src/languageClient/`: future TypeScript owner for starting, stopping, configuring, and communicating with the Rust LSP server. Own VS Code language-client glue, process lifecycle, server path resolution, and protocol wiring. Do not implement parser or analyzer logic here.
-- `server/` or `crates/`: future Rust workspace for language tooling. Use `server/` only for a single focused Rust language-server project. Use `crates/` if the Rust side becomes multi-crate.
-- `tools/fixtures/`: repo-only source examples for lexer/parser/analyzer tests and language-tooling research. Organize by behavior, such as `tools/fixtures/lexer/`, future `tools/fixtures/parser/`, `tools/fixtures/model/`, `tools/fixtures/index/`, and `tools/fixtures/diagnostics/`.
-- `tools/`: repo-only developer/Codex tooling that is not required by the runtime extension, future Rust LSP, tests, or packaged user features. Use this for game-data discovery scripts, corpus analysis, parser research scripts, one-off report generators, and investigation helpers.
-- `documentation/tools/`: documentation for non-trivial tooling under `tools/`.
+- `src/extension.ts`: activation only. Register top-level services and commands here.
+- `src/extensionConfig/`: centralized command IDs, setting keys, state keys, storage names, thresholds, repository constants, and extension-owned constants.
+- `src/gameData/`: TypeScript runtime behavior for acquiring and locating Reforger game script data. Do not parse or semantically model Enfusion Script here.
+- `src/languageClient/`: TypeScript owner for starting, stopping, configuring, and communicating with the Rust LSP server.
+- `server/`: Rust language server/parser/analyzer workspace unless the Rust side grows into a multi-crate `crates/` layout.
+- `tools/fixtures/`: repo-only source examples for lexer/parser/analyzer/model/index/diagnostics tests and language-tooling research.
+- `tools/`: repo-only developer/Codex tooling. Tooling must not become a runtime dependency.
+- `docs/reference/`: internal contributor and agent context mirroring source ownership and behavior.
+- `tools/reports/`: ignored generated output from developer report tools. It is not active reference context and must not be committed as a source-mirror page.
+- `docs/plans/`: CE planning artifacts only.
 
-Dev-only tooling MUST NOT go under `src/`. Tooling may read extension/global-storage data as input, but it MUST NOT become a runtime dependency. Do not register tool commands in `package.json` unless they are intended as real user-facing extension commands. Tool-generated reports MUST be written to global storage or ignored output paths, not `src/`.
+Dev-only tooling must not go under `src/`.
+Tool-generated reports must be written to global storage or ignored output paths, not `src/`.
 
-When Rust language tooling exists, organize by compiler-style responsibility:
+When Rust language tooling is organized by compiler responsibility:
 
-- `lexer`: tokenization only. Own trivia, comments, strings, identifiers, keywords, operators, and source spans. Do not build AST nodes or perform semantic checks.
-- `parser`: syntax parsing only. Consume tokens and produce syntax tree or AST structures. Own error recovery and parse diagnostics. Do not resolve symbols, types, inheritance, or engine APIs.
-- `syntax`: shared syntax node/kind definitions if needed. Own tree shape, node IDs, source ranges, and syntax utilities. Stay independent of VS Code and Workbench.
-- `ast`: typed AST wrappers over syntax tree nodes if using a green-tree/full-fidelity design. Own ergonomic accessors for declarations, classes, methods, attributes, and params. Do not perform workspace-wide semantic resolution.
-- `model`: semantic model for declarations, scopes, symbols, type facts, inheritance, modifiers, attributes, and script-level relationships. Own compiler-like understanding derived from parsed source. Do not depend on VS Code APIs.
-- `index`: workspace and game-data symbol indexes. Own lookup structures for definitions, references, completions, and cross-file queries. Keep user workspace data separate from downloaded game-data scripts.
-- `diagnostics`: extension-generated diagnostics from parser, model, and index behavior. Distinguish extension diagnostics from Workbench/compiler truth.
-- `lsp`: Language Server Protocol handlers. Own request/response mapping for completion, hover, definition, references, rename, diagnostics, and formatting. Call parser/model/index layers instead of embedding language logic.
-- `formatting`: formatting rules only. Use parser/AST structures where possible, not raw string manipulation.
+- `lexer` tokenizes only.
+- `parser` parses syntax only.
+- `syntax` owns shared node/kind/range definitions.
+- `ast` owns typed AST wrappers.
+- `model` owns semantic declarations, scopes, symbols, type facts, inheritance, modifiers, attributes, and relationships.
+- `index` owns workspace and game-data symbol lookup structures.
+- `diagnostics` owns extension-generated parser/model/index diagnostics.
+- `lsp` owns protocol handlers and maps requests to parser/model/index layers.
+- `formatting` owns formatting rules using parser/AST structures where possible.
 
-## Philosophy
+## Documentation Policy
 
-- Build for the best final tool, not the fastest demo.
-- Prefer full-fidelity parsing and precise semantic data over approximate text matching.
-- Prefer explicit, durable architecture over clever local shortcuts.
-- Prefer one authoritative implementation path per feature. Do not create fallback, parallel, cascading, or compatibility systems for the same feature unless the slice explicitly needs a temporary migration boundary with a removal plan. Multiple systems hide the real failure mode and usually make debugging harder; go all in on the chosen system so broken behavior is visible and fixable.
-- Prefer small, verified slices over broad rewrites.
-- Preserve current working behavior unless the task explicitly changes it.
-- Avoid abstractions until they remove real complexity or establish a necessary boundary.
-- Do not assume C#, Unity, Unreal, Arma 3, or generic scripting-language behavior applies to Enfusion Script.
+Use `docs/reference/` as the canonical folder for durable contributor and agent context: why a source file exists, what it owns, how it fits the architecture, what behavior must be preserved, and what future work is expected.
+The name of a source file does not determine its documentation tier: a page for `server/examples/*_report.rs` remains active reference context because it documents the report generator, while the generator's output belongs under ignored `tools/reports/`.
 
-## Coding Practices
+Before planning, reviewing, or editing a non-trivial or architecture-sensitive source file, read its matching active reference page in full when one exists.
+Read related active reference pages when they establish an ownership boundary needed by the change.
+Searching snippets is not a substitute for a required full read.
 
-- Keep TypeScript thin, typed, and editor-facing.
-- Keep language analysis isolated behind stable server, protocol, or service boundaries.
-- Use structured parsers and data models instead of ad hoc string manipulation when working on language features.
-- Keep extension activation fast. Expensive analysis belongs in the language server or a background process.
-- Do not introduce broad managers, registries, wrappers, settings, or validation layers unless a concrete feature requires them.
-- Follow existing repo patterns for scripts, formatting, build output, and VS Code extension conventions.
-- Use ASCII in source and documentation unless a file already requires another character set.
-- Keep user-facing behavior deterministic. Avoid hidden magic and implicit global state.
+For this policy, a source change is non-trivial when it changes executed logic, a command, a setting, a data contract, parser/LSP behavior, a process/tool flow, or a subsystem boundary.
+It is architecture-sensitive when it touches `server/`, `src/languageClient/`, `src/gameData/`, `src/extensionConfig/`, `tools/fixtures/`, or creates a non-trivial source folder.
 
-## Settings and State Organization
+Use this routing rule:
 
-- VS Code settings are only for end-user-facing configuration that users should intentionally inspect or change.
-- `context.globalState` is for small internal durable flags such as one-time approvals, dismissed warnings, and extension-owned state.
-- `context.globalStorageUri` is for downloaded or cached files such as game data, logs, metadata, and future indexes.
-- Source `.ts` files may define typed constants, defaults, and helpers, but runtime state MUST NOT be written into source files.
-- New settings, state keys, command IDs, storage names, and extension-owned constants MUST be centralized by subsystem under `src/extensionConfig/` instead of scattered as magic strings.
-- Runtime feature folders MUST import extension-facing names from `src/extensionConfig/`; do not create local constants files for settings/state/storage unless there is a concrete reason.
-- Before adding a setting to `package.json`, Codex MUST justify that it is a real user-facing control. Internal consent and bookkeeping MUST NOT become visible settings unless users need to configure them directly.
+| Work | Required documentation action |
+|---|---|
+| Non-trivial or architecture-sensitive source change | Read the matching active page under `docs/reference/` when it exists; create or update it when ownership, behavior, boundaries, or future direction changes. |
+| Change crossing a subsystem boundary | Read the matching page plus the active subsystem/folder pages needed to understand that boundary. |
+| Trivial metadata-only edit, generated output, dependency artifact, or formatting-only mechanical edit | Do not create or read a mirror page solely by ritual. Read existing active context only when deciding the source owner, a preserved behavior, or an explicit boundary. |
+| Investigating generated report output | Read the relevant tool/source-owner page under `docs/reference/`; inspect ignored `tools/reports/` output only when the investigation needs it. |
+| Missing or stale reference page | Create, rewrite, move, or delete it only through the evidence gate below. Do not preserve misleading architecture merely for legacy continuity. |
 
-## Language Tooling Boundary
+Documentation should mirror source paths:
 
-- TypeScript must stay limited to VS Code integration.
-- Parser, AST, semantic analysis, indexing, and serious language intelligence belong behind the future Rust/LSP boundary.
-- Do not add temporary TypeScript language logic that would become competing architecture.
+- `src/extension.ts` maps to `docs/reference/src/extension.md`
+- `src/test/extension.test.ts` maps to `docs/reference/src/test/extension.test.md`
+- source folders map to matching folders under `docs/reference/`
 
-## Debug and Logging Philosophy
+If a non-trivial or architecture-sensitive source change has no matching documentation file, create it in the same slice when a durable ownership page would remain useful.
+Update matching documentation whenever a file's purpose, architecture role, public behavior, boundaries, or future direction changes.
+Do not create documentation for generated output, build artifacts, `node_modules`, or trivial metadata-only edits.
 
-Debugging and logging are development and investigation aids, not permanent hot-path costs. They must be optional and centrally controlled. During active development, logging should be enabled by default, with a clear future path to disable, reduce, or scope it for release builds.
+Documentation may be rewritten or deleted when it preserves harmful legacy architecture, but only when the change is grounded in current source behavior, current accepted policy, explicit user direction, or an applicable CE artifact that is current, names the affected path or subsystem, and does not contradict current source behavior, accepted policy, or source-mirror ownership docs.
+A CE artifact is historical only when a newer artifact supersedes its scope or current source/policy contradicts it; a plan never overrides source truth merely because it exists.
+Preserve replacement context in the correct owner, or explicitly record why no replacement context is needed.
 
-Runtime logs belong in VS Code global storage, not in workspace source files or packaged extension files. Use `ExtensionContext.globalStorageUri` and write logs under a dedicated `logs/` child folder, treated as `globalStorageUri/logs/`.
+For a documentation-root migration, produce a per-file old-to-new mapping before moving files and verify every deleted source path has exactly one expected replacement before staging or committing.
+Do not commit a migration that leaves old documentation deleted while its replacement pages are merely untracked.
 
-Debug output should be useful to Codex and human maintainers. Prefer human-reviewable input vs output records:
-
-- What request, command, document, or action entered a subsystem.
-- What decision, diagnostic, transformation, or result came out.
-- What files, symbols, parser states, protocol messages, or Workbench-validation results were involved.
-
-Avoid scattered ad hoc `console.log` calls. Logging and debugging should generally be implemented through dedicated scripts, helpers, debug commands, or debug utilities with clear ownership.
-
-Logging must not create meaningful performance overhead:
-
-- Check whether logging is enabled before doing expensive formatting or serialization.
-- Avoid logging inside tight loops unless it is explicitly sampled, throttled, or scoped to a targeted debug command.
-- Do not serialize full ASTs, indexes, documents, or Workbench output unless targeted debug mode is enabled.
-- Prefer concise structured records over large unbounded text dumps.
-
-Logs should include timestamps, subsystem names, operation names, relevant source paths, and summarized input/output. Avoid secrets, machine-specific noise, and irrelevant bulk data.
-
-Logging ownership must stay clear:
-
-- The TypeScript VS Code layer logs activation, commands, settings, process startup, and protocol boundaries.
-- The future Rust/LSP layer logs parser, analyzer, indexer, and workspace operations through its own controlled debug path.
-- Workbench validation logs record command/input, summarized output, exit status, and relevant paths.
-
-Hover and AST troubleshooting has a dedicated single-record debug report. Codex MUST check `globalStorageUri/logs/hover-debug/latest.md` first when investigating hover selection, cursor position, lexer/parser/AST/model/index output, or symbol display issues. This file MUST remain separate from normal runtime logs and MUST be fully overwritten on each hover-debug command run; do not append multiple records to it.
-
-## Piece-Meal Implementation Strategy
-
-Every implementation plan must be broken into small slices. Each slice must state:
-
-- Goal
-- Files or subsystem touched
-- Expected behavior
-- Verification command or manual validation step
-
-Prefer vertical slices that create usable behavior. Avoid large infrastructure-only rewrites unless the infrastructure is the slice's explicit deliverable and has its own verification.
-
-Incomplete future systems must stay behind explicit boundaries. Do not blend placeholder parser, analyzer, or indexing logic into production paths as if it were complete.
-
-## Documentation Context
-
-Use `documentation/` as the canonical folder for internal contributor and agent context. This documentation exists to preserve durable context for Codex and human maintainers: why a file exists, what it owns, how it fits the architecture, what behavior must be preserved, and what future work is expected.
-
-Documentation should mirror the source tree. Examples:
-
-- `src/extension.ts` maps to `documentation/src/extension.md`
-- `src/test/extension.test.ts` maps to `documentation/src/test/extension.test.md`
-- Future source folders map to matching folders under `documentation/`
-
-Before thinking through, planning, reviewing, or editing a source file, Codex MUST read the matching documentation file in full if it exists. This is mandatory context, not optional background reading. Do not rely on search snippets, partial reads, summaries, or memory for related documentation. If multiple related source files are involved, Codex MUST read each matching documentation file in full before reasoning about the change.
-
-If a non-trivial source change has no matching documentation file, Codex MUST create it as part of the same slice. Codex MUST update the matching documentation whenever a file's purpose, architecture role, public behavior, boundaries, or future direction changes.
-
-Do not create documentation for generated output, build artifacts, `node_modules`, or trivial metadata-only edits. Keep docs concise and useful as context, not duplicated code commentary. Human oversight is expected: documentation must be readable, reviewable, and structured for maintainers.
-
-Every non-trivial new source folder MUST have matching folder documentation under `documentation/` explaining ownership, boundaries, and what must not be placed there. Per-file docs still mirror source files.
-
-Each per-file documentation page should use this structure:
+Per-file documentation pages should use this structure unless a file has a better established local pattern:
 
 ```markdown
 # <source path>
 
 ## Purpose
 
-What the file owns and why it exists.
-
 ## Architecture Role
-
-How it fits into the VS Code shell, future Rust/LSP engine, Workbench validation flow, or test/build system.
 
 ## Current Behavior
 
-The important behavior a future agent must preserve.
-
 ## Dependencies and Boundaries
-
-Key imports, external systems, ownership limits, and what must not leak into the file.
 
 ## Change Notes
 
-Human-readable notes for important changes, decisions, or pitfalls.
-
 ## Future Improvements
-
-Planned features, known gaps, or follow-up ideas that should not be implemented accidentally.
 ```
 
-## Verification Loop
+## Settings, State, and Logging
 
-Agents MUST follow this loop before finalizing work:
-
-1. Inspect the current repo state before changing behavior.
-2. Read every related source file in full before changing it.
-3. Read every matching related documentation file in full before thinking through, planning, reviewing, or changing the related source file. Searching documentation is not a substitute for reading the full file.
-4. Confirm the intended slice and avoid unrelated edits.
-5. Implement one small slice.
-6. Update matching documentation in the same slice when source purpose, architecture role, behavior, boundaries, or future direction changes.
-7. Run the relevant checks:
-   - `npm run check-types`
-   - `npm run lint`
-   - `npm run compile`
-   - `npm test` when tests or extension behavior are affected
-8. For Reforger-language behavior, validate assumptions against Workbench/compiler behavior whenever available.
-9. Re-check any uncertain Reforger or Enfusion APIs against official docs, extracted APIs, or samples.
-10. Record what changed, what was verified, and what remains uncertain.
-
-If a verification step cannot be run, state why and describe the remaining risk.
-
-## Reforger Language Truth
-
-Workbench is the final compiler authority. The extension may provide faster diagnostics, richer navigation, and better editing support, but it must not knowingly contradict Workbench behavior.
-
-## Reforger Skill Usage
-
-For any Arma Reforger, Enfusion Script, Workbench, game-data, API, syntax, fixture, parser, model, indexing, or language-intelligence work, Codex MUST invoke and follow the `reforger` skill before reasoning or changing files.
-
-The `reforger` skill contains Reforger-specific wiki references, local game-data knowledge, source examples, and search/query scripts. Use it as the first grounding layer for Reforger facts instead of memory or generic language assumptions.
-
-When the task involves Reforger language or engine behavior, Codex MUST use the skill's references and game-data/search tooling to verify uncertain syntax, APIs, callbacks, attributes, inheritance, lifecycle behavior, replication/RPC behavior, Workbench surfaces, and source-backed examples. Workbench/compiler behavior remains the final truth when available.
-
-When implementing language features:
-
-- Treat Workbench/compiler behavior as the final answer.
-- Treat official docs and extracted APIs as primary references.
-- Treat samples as examples, not rule authority.
-- Verify uncertain syntax, lifecycle, replication, resource, prefab, and API behavior before encoding it.
-- Do not infer engine behavior from other game engines or other Arma versions.
+- VS Code settings are only for end-user-facing configuration that users should intentionally inspect or change.
+- `context.globalState` is for small internal durable flags.
+- `context.globalStorageUri` is for downloaded or cached files such as game data, logs, metadata, and future indexes.
+- New settings, state keys, command IDs, storage names, and extension-owned constants belong under `src/extensionConfig/`.
+- Runtime feature folders must import extension-facing names from `src/extensionConfig/`.
+- Runtime logs belong under `globalStorageUri/logs/`, not workspace source files or packaged extension files.
+- Avoid scattered ad hoc `console.log` calls.
+- Check `globalStorageUri/logs/hover-debug/latest.md` first when investigating hover selection, cursor position, lexer/parser/AST/model/index output, or symbol display issues.
 
 ## Fixtures and Truth
 
-- Future parser and analyzer behavior should be backed by small Enfusion Script fixtures.
-- Fixtures belong under `tools/fixtures/` unless a future packaged runtime feature explicitly needs them elsewhere.
-- Future fixture folders should exist only when lexer/parser/analyzer tests or language-tooling research need source examples.
+- Parser and analyzer behavior should be backed by small Enfusion Script fixtures.
+- Fixtures belong under `tools/fixtures/` unless a packaged runtime feature explicitly needs them elsewhere.
 - Fixtures must state whether they are Workbench-confirmed, official-sample-derived, or speculative.
 - Speculative behavior must not be treated as compiler truth.
+
+## Verification Loop
+
+Before finalizing repository work:
+
+1. Inspect the current repo state.
+2. Read every related source file in full before changing it.
+3. Follow the Documentation Policy: read every required, relevant active reference page in full before reasoning about or changing the related source file.
+4. Confirm the intended slice and avoid unrelated edits.
+5. Implement one small slice.
+6. Update matching documentation when source purpose, architecture role, behavior, boundaries, or future direction changes.
+7. Run relevant checks.
+8. For Reforger-language behavior, validate assumptions against Workbench/compiler behavior whenever available.
+9. Re-check uncertain Reforger or Enfusion APIs against official docs, extracted APIs, or samples.
+10. Record what changed, what was verified, and what remains uncertain.
+
+Docs-only changes may use `git diff --check` plus manual link/path review when no source, package, build, or runtime behavior changes.
+This docs-only exception does not weaken the verification loop for code or behavior-bearing changes.
 
 ## Current Project Commands
 
@@ -244,4 +233,5 @@ When implementing language features:
 - `npm run compile` runs type checks, linting, and esbuild.
 - `npm test` runs the VS Code extension test flow.
 
+Run `npm test` when tests or extension behavior are affected.
 Use the VS Code Extension Development Host for targeted manual validation when extension activation, commands, editor integration, or debug behavior changes.
