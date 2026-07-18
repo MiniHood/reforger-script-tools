@@ -251,6 +251,13 @@ struct RichSemanticTokensJob {
     external_snapshot: ExternalIndexSnapshot,
 }
 
+fn oldest_pending_uri(pending: &BTreeMap<String, RichSemanticTokensJob>) -> Option<String> {
+    pending
+        .iter()
+        .min_by_key(|(_, job)| job.scheduled_at)
+        .map(|(uri, _)| uri.clone())
+}
+
 #[derive(Clone)]
 struct RichSemanticTokensScheduler {
     state: Arc<(Mutex<BTreeMap<String, RichSemanticTokensJob>>, Condvar)>,
@@ -273,7 +280,7 @@ impl RichSemanticTokensScheduler {
         let mut pending = lock.lock().unwrap();
         if !pending.contains_key(&job.uri) && pending.len() >= MAX_PENDING_RICH_SEMANTIC_TOKEN_JOBS
         {
-            let evicted_uri = pending.keys().next().cloned().unwrap();
+            let evicted_uri = oldest_pending_uri(&pending).unwrap();
             let evicted = pending.remove(&evicted_uri).unwrap();
             evicted.cancel.store(true, Ordering::Relaxed);
             let _ = self.sender.send(ServerEvent::RichSemanticTokensSkipped {
@@ -2008,6 +2015,40 @@ fn timestamp_millis() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rich_scheduler_evicts_the_oldest_pending_job() {
+        let now = Instant::now();
+        let mut pending = BTreeMap::new();
+        for (uri, scheduled_at) in [
+            ("file:///zeta.c", now - Duration::from_secs(1)),
+            ("file:///alpha.c", now - Duration::from_secs(3)),
+            ("file:///middle.c", now - Duration::from_secs(2)),
+        ] {
+            pending.insert(
+                uri.to_string(),
+                RichSemanticTokensJob {
+                    uri: uri.to_string(),
+                    revision: 1,
+                    external_generation: 0,
+                    cancel: Arc::new(AtomicBool::new(false)),
+                    scheduled_at,
+                    source: String::new(),
+                    analysis: file_index_for_source(""),
+                    external_snapshot: ExternalIndexSnapshot {
+                        status: "missing",
+                        workspace: None,
+                        game_data: None,
+                    },
+                },
+            );
+        }
+
+        assert_eq!(
+            oldest_pending_uri(&pending).as_deref(),
+            Some("file:///alpha.c")
+        );
+    }
 
     #[test]
     fn document_symbols_include_nested_declarations() {

@@ -233,7 +233,10 @@ impl ExternalIndexHandle {
             state.workspace_summary = workspace_summary;
             let game_data_summary = state.game_data_summary.clone();
             recompute_summary(&mut state, game_data_summary);
-            if replacement.is_some() || removed {
+            // During startup a deletion can be a tombstone for a file the baseline scan has not
+            // published yet. It must invalidate the startup snapshot even when this map lacks it.
+            let published_change = replacement.is_some() || removed || startup_pending;
+            if published_change {
                 state.workspace_generation += 1;
                 state.generation += 1;
             }
@@ -242,7 +245,7 @@ impl ExternalIndexHandle {
             } else {
                 ExternalIndexStatus::Missing
             };
-            return replacement.is_some() || removed;
+            return published_change;
         }
     }
 }
@@ -721,4 +724,31 @@ fn recompute_summary(
     } else {
         None
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn startup_deletion_tombstone_advances_workspace_generation() {
+        let handle = ExternalIndexHandle::missing();
+        {
+            let mut state = handle.state.lock().unwrap();
+            state.workspace_startup_pending = true;
+            state.status = ExternalIndexStatus::Building;
+        }
+
+        assert!(handle.delete_workspace_file(Path::new("startup-deleted.c")));
+
+        let state = handle.state.lock().unwrap();
+        assert_eq!(state.workspace_generation, 1);
+        assert_eq!(state.generation, 1);
+        assert!(matches!(
+            state
+                .workspace_live_changes
+                .get(&PathBuf::from("startup-deleted.c")),
+            Some(None)
+        ));
+    }
 }
