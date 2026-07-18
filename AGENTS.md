@@ -73,7 +73,7 @@ Before finalizing work:
 
 1. Inspect the current repository state and read related source/reference documentation.
 2. Confirm the smallest intended slice and avoid unrelated edits.
-3. Run focused checks for changed behavior. Run `npm run check-types`, `npm run lint`, `npm run compile`, and `npm test` when their affected surface requires them.
+3. Define the smallest non-overlapping verification set before editing, then run it once after the final change. Do not run commands that a selected final command already includes: `npm test` includes its type, lint, compile, and extension-test prerequisites. Run Rust checks from `server/`.
 4. Validate Reforger-language claims with Workbench/compiler behavior whenever available.
 5. For Rust language-server, server-binary, or language-client lifecycle changes, force a fresh language-server process when required so validation cannot use stale code. After completed extension work, reload the active extension/development host so it picks up the packaged build.
 6. Update matching documentation where required and record verification plus remaining uncertainty.

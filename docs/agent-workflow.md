@@ -137,9 +137,26 @@ If a configured model is unavailable, the dispatch fails visibly and the parent 
 Required checks may run inline so verification can continue, but an inline check is not a replacement agent route.
 
 Every writer performs its own focused verification inline and reports the evidence.
-After normal and consequential implementation, the parent automatically dispatches the Mini `code-validator` for independent command execution; bounded work may use Mini when independence adds value.
+Dispatch the Mini `code-validator` only when independent execution answers a distinct question or validates evidence the writer cannot directly establish. Do not run it merely to repeat an already-passing command.
 The validator reports exact command outcomes, does not diagnose failures, and does not edit source.
 Independent validation is evidence, not a second review owner.
+
+## Evidence Discipline
+
+Rigor comes from distinct evidence, not from repeating tools, reviewers, or the same conclusion at a higher reasoning tier. Before editing, state the smallest intended slice, the exact behavior or invariant to prove, the verification set, and the stop condition. Re-open scope only when a check fails, the implementation exposes a new uncertainty, or the user changes the task.
+
+Every command must answer a question not already answered by earlier evidence. Select the smallest non-overlapping project commands:
+
+- `npm test` is the final extension workflow when extension behavior requires it; its pretest path already runs type checking, linting, and compilation, so those commands must not be run separately first.
+- Rust behavior is verified from `server/` with the relevant `cargo test` invocation. Do not invoke Cargo from the repository root.
+- Docs-only work uses `git diff --check` plus manual link/path review.
+- The verified auto-commit helper owns one final selected check. Arm it with that check instead of manually running the same command and then running it again through the helper.
+
+Each review question has one owner. Use a CE review or the project reviewer, not both. When a review produces an exact finding and the corrective scope is understood, inspect the changed lines and the regression test after the fix; restart a broad review only when the correction changes architecture, expands the contract, fails focused verification, or introduces a separate concern.
+
+Subagents answer independent questions: unfamiliar evidence collection, competing architecture options, broad review, or independent validation. Do not delegate an already-scoped mechanical correction solely for ceremony. Process lifecycle work is also single-purpose: the final extension build replaces any repo-owned language-server binary, and the active extension/development host reload happens once after that final build.
+
+Stop when the declared invariant and final verification set pass. A passing command, completed review, or successful reload does not justify another confidence pass without a new signal. Final reports record the verification set, retries, and any uncertainty; elapsed time, token usage, and cost are recorded only when the active surface exposes trustworthy values.
 
 ## CE Integration Boundaries
 
@@ -246,7 +263,7 @@ This checkpoint prevents a partial commit from dropping durable project context.
 ## Verification Philosophy
 
 The verification loop in `AGENTS.md` is the default for repository work.
-Code and behavior-bearing changes should run the relevant project commands and any targeted manual validation needed for the touched subsystem.
+Code and behavior-bearing changes should run the relevant project commands and targeted manual validation needed for the touched subsystem, once each and only when they add evidence not supplied by another selected command.
 
 Docs-only changes can be verified with `git diff --check` and manual link/path review when no source, package, build, or runtime behavior changed.
 That exception is narrow.
