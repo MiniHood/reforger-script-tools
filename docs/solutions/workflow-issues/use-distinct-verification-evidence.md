@@ -10,7 +10,7 @@ applies_when:
   - "Selecting checks for a bounded implementation or documentation change"
   - "Deciding whether a validator, review, rebuild, or reload adds new evidence"
   - "Using the verified Refactor auto-commit protocol"
-tags: [verification, workflow, code-review, lsp, agent-routing]
+tags: [verification, workflow, code-review, lsp]
 ---
 
 # Use Distinct Verification Evidence
@@ -45,10 +45,8 @@ Use these command boundaries:
 4. Arm the verified auto-commit helper with the final selected check instead of
    manually running that same command and then repeating it through the helper.
 
-Use subagents and validators only when they provide independent evidence, such
-as an unfamiliar source-of-truth investigation, a competing architectural
-option, a broad review, or an independently executed check that tests a
-different concern. One review question has one owner.
+Use an independently executed check only when it tests a different concern.
+One review question has one owner.
 
 ## Why This Matters
 

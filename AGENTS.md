@@ -53,7 +53,7 @@ Do not infer Enfusion behavior from C#, Unity, Unreal, Arma 3, SQF, or generic s
 
 ## Documentation Policy
 
-`AGENTS.md` is strict policy. [docs/reference/architecture.md](docs/reference/architecture.md) is the architecture overview. [docs/agent-workflow.md](docs/agent-workflow.md) owns workflow and routing rationale. `docs/reference/` owns source and subsystem context; `docs/plans/` owns CE planning artifacts.
+`AGENTS.md` is strict policy. [docs/reference/architecture.md](docs/reference/architecture.md) is the architecture overview. [docs/agent-workflow.md](docs/agent-workflow.md) owns workflow rationale. `docs/reference/` owns source and subsystem context; `docs/plans/` owns CE planning artifacts.
 
 Before changing a non-trivial or architecture-sensitive source file, read its matching active reference page in full when it exists. Read related reference pages when they define a boundary involved in the change. Create or update the matching page when ownership, behavior, boundaries, or future direction changes.
 
@@ -62,8 +62,6 @@ Do not create reference pages for generated output, build artifacts, dependencie
 ## Workflow And Git Policy
 
 Use Compound Engineering for non-trivial or ambiguous work when available: `ce-brainstorm` settles scope, `ce-plan` creates implementation-ready slices, and the matching CE execution, debug, review, or shipping skill handles the task. Do not mutate plan progress during execution.
-
-Classify delegated work before dispatch: bounded, normal, consequential, or critical. `.codex/config.toml` is the executable source of truth for configured roles and model effort; [docs/agent-workflow.md](docs/agent-workflow.md) explains classification and escalation. Do not silently substitute unavailable configured models. Limit delegation to one level and four concurrent threads.
 
 Git operations require active user authorization. The only exception is the verified auto-commit protocol in [tools/verified-refactor-auto-commit.mjs](tools/verified-refactor-auto-commit.mjs): after its final focused check passes, the trusted Codex `Stop` hook may commit all working-tree changes on the exact `Refactor` branch. It must never push, alter remotes, or create, switch, merge, rebase, reset, delete, or rewrite branches/history. Review and trust project hooks through Codex's normal flow; never bypass hook trust.
 
