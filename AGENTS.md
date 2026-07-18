@@ -53,7 +53,9 @@ Do not infer Enfusion behavior from C#, Unity, Unreal, Arma 3, SQF, or generic s
 
 ## Documentation Policy
 
-`AGENTS.md` is strict policy. [docs/reference/architecture.md](docs/reference/architecture.md) is the architecture overview. [docs/agent-workflow.md](docs/agent-workflow.md) owns workflow rationale. `docs/reference/` owns source and subsystem context; `docs/plans/` owns CE planning artifacts.
+`AGENTS.md` is strict policy. Follow the authoritative [documentation procedure](docs/documentation.md) for creating, updating, retiring, and verifying documentation. [docs/reference/architecture.md](docs/reference/architecture.md) is the architecture overview; [docs/agent-workflow.md](docs/agent-workflow.md) explains the rationale behind this workflow.
+
+Use [source references](docs/reference/) for current source and subsystem context, [plans](docs/plans/) for historical CE planning artifacts, and the [solution store](docs/solutions/) for reusable resolved-problem learnings. Search relevant solutions before revisiting a documented design or implementation problem.
 
 Before changing a non-trivial or architecture-sensitive source file, read its matching active reference page in full when it exists. Read related reference pages when they define a boundary involved in the change. Create or update the matching page when ownership, behavior, boundaries, or future direction changes.
 
@@ -62,6 +64,23 @@ Do not create reference pages for generated output, build artifacts, dependencie
 ## Workflow And Git Policy
 
 Use Compound Engineering for non-trivial or ambiguous work when available: `ce-brainstorm` settles scope, `ce-plan` creates implementation-ready slices, and the matching CE execution, debug, review, or shipping skill handles the task. Do not mutate plan progress during execution.
+
+## Execution Completion Policy
+
+When the user asks to execute a plan, continue through every implementation
+unit, verification step, required documentation update, and shipping step. Do
+not send a final answer, status handoff, or progress summary while planned work
+remains unless the user asks for status, a genuine blocker requires user
+authority or a material design decision, or continuing would violate a safety
+constraint.
+
+Before finalizing, reconcile the plan against the working tree: every unit is
+completed, explicitly deferred with user approval, or blocked with concrete
+evidence; required verification has passed or has a recorded exception;
+required documentation is complete; and the task-scoped diff is reviewed and
+committed. Attempt the authorized push after the commit; report authentication
+failure only after the commit exists. A completed batch is not completion.
+Keep working rather than offering next steps or summarizing unfinished work.
 
 After completing an implementation task and its required verification, commit and push the task-scoped changes to the current branch without waiting for a separate Git instruction. Use a clear, value-communicating commit message. Before committing, inspect the working tree and stage only changes attributable to the completed task; do not absorb unrelated pre-existing edits. Do not force-push, alter remotes, or create, switch, merge, rebase, reset, delete, or rewrite branches/history unless the user explicitly requests it. If verification fails, the target branch is unclear, the push is rejected, or the working tree cannot be safely separated by task, report the blocker instead of pushing. Review and trust project hooks through Codex's normal flow; never bypass hook trust.
 
