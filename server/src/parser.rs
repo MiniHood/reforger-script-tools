@@ -292,6 +292,14 @@ impl Parser<'_> {
                 break;
             }
 
+            if allow_implicit_member_boundary
+                && at_top_level
+                && self.starts_attribute_member_after_unterminated_field(&children)
+            {
+                hit_implicit_member_boundary = true;
+                break;
+            }
+
             if at_top_level && self.at(TokenKind::Hash) {
                 hit_preprocessor_boundary = true;
                 break;
@@ -1317,7 +1325,7 @@ impl Parser<'_> {
             self.current().kind,
             TokenKind::Semicolon | TokenKind::LeftBrace | TokenKind::RightBrace | TokenKind::Eof
         ) {
-            if !children.is_empty() && is_declaration_sync_start(self.current().kind) {
+            if !children.is_empty() && self.at_declaration_recovery_sync_start() {
                 break;
             }
             children.push(self.bump_token());
@@ -1326,6 +1334,17 @@ impl Parser<'_> {
             children.push(self.bump_token());
         }
         node(SyntaxKind::Error, children)
+    }
+
+    fn at_declaration_recovery_sync_start(&self) -> bool {
+        if self.at(TokenKind::LeftBracket) {
+            return true;
+        }
+
+        match self.current().kind {
+            TokenKind::Keyword(keyword) => is_declaration_recovery_sync_keyword(keyword),
+            _ => is_declaration_sync_start(self.current().kind),
+        }
     }
 
     fn collect_attributes(&mut self, children: &mut Vec<SyntaxElement>) {
@@ -1446,6 +1465,8 @@ impl Parser<'_> {
                 TokenKind::Operator(Operator::Equal) => return false,
                 TokenKind::Semicolon
                 | TokenKind::LeftBrace
+                | TokenKind::LeftBracket
+                | TokenKind::RightBracket
                 | TokenKind::RightBrace
                 | TokenKind::Eof => return false,
                 TokenKind::Identifier | TokenKind::Keyword(_) => {
@@ -1464,6 +1485,35 @@ impl Parser<'_> {
         }
 
         if !partial_field_has_declarator(children) {
+            return false;
+        }
+
+        let mut saw_trailing_newline = false;
+        for child in children.iter().rev() {
+            match child {
+                SyntaxElement::Token(token) if token.kind.is_trivia() => {
+                    saw_trailing_newline |= self.token_text(*token).contains('\n');
+                }
+                SyntaxElement::Token(_) | SyntaxElement::Node(_) => return saw_trailing_newline,
+            }
+        }
+
+        false
+    }
+
+    fn starts_attribute_member_after_unterminated_field(&self, children: &[SyntaxElement]) -> bool {
+        if children.is_empty() || !self.at(TokenKind::LeftBracket) {
+            return false;
+        }
+
+        if !partial_field_has_declarator(children) {
+            return false;
+        }
+
+        if !self
+            .next_non_trivia_kind_after(self.position + 1)
+            .is_some_and(|kind| matches!(kind, TokenKind::Identifier | TokenKind::Keyword(_)))
+        {
             return false;
         }
 
@@ -2014,6 +2064,38 @@ fn is_declaration_sync_start(kind: TokenKind) -> bool {
     )
 }
 
+fn is_declaration_recovery_sync_keyword(keyword: Keyword) -> bool {
+    matches!(
+        keyword,
+        Keyword::Class
+            | Keyword::Enum
+            | Keyword::Typedef
+            | Keyword::Modded
+            | Keyword::Vanilla
+            | Keyword::Private
+            | Keyword::Protected
+            | Keyword::Static
+            | Keyword::Override
+            | Keyword::Proto
+            | Keyword::Native
+            | Keyword::External
+            | Keyword::Sealed
+            | Keyword::Event
+            | Keyword::Const
+            | Keyword::Ref
+            | Keyword::Notnull
+            | Keyword::Auto
+            | Keyword::Func
+            | Keyword::Void
+            | Keyword::Int
+            | Keyword::Float
+            | Keyword::Bool
+            | Keyword::String
+            | Keyword::Vector
+            | Keyword::Typename
+    )
+}
+
 fn is_assignment_operator(kind: TokenKind) -> bool {
     matches!(
         kind,
@@ -2389,6 +2471,69 @@ class AfterInvalid
         assert_eq!(count_kind(&parse.root, SyntaxKind::FieldDecl), 1);
         assert_eq!(count_kind(&parse.root, SyntaxKind::MethodDecl), 1);
         assert_eq!(count_kind(&parse.root, SyntaxKind::Error), 1);
+    }
+
+    #[test]
+    fn invalid_class_body_text_does_not_swallow_following_attribute_member() {
+        let source = r#"class Example
+{
+	this
+
+	[RplRpc(RplChannel.Reliable, RplRcver.Server)]
+	protected void RpcDo()
+	{
+	}
+}
+"#;
+
+        let parse = parse_source(source);
+
+        assert_eq!(parse.diagnostics.len(), 1, "{:?}", parse.diagnostics);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::ClassDecl), 1);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::AttributeList), 1);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::MethodDecl), 1);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::Error), 1);
+    }
+
+    #[test]
+    fn unterminated_field_does_not_swallow_following_attribute_member() {
+        let source = r#"class Example
+{
+	int garbage
+
+	[RplRpc(RplChannel.Reliable, RplRcver.Server)]
+	protected void RpcDo()
+	{
+	}
+}
+"#;
+
+        let parse = parse_source(source);
+
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::ClassDecl), 1);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::AttributeList), 1);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::MethodDecl), 1);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::FieldDecl), 1);
+    }
+
+    #[test]
+    fn static_array_field_suffix_is_not_treated_as_attribute_recovery_boundary() {
+        let source = r#"class Example
+{
+	int values[COUNT];
+
+	[Attribute()]
+	int next;
+}
+"#;
+
+        let parse = parse_source(source);
+
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::AttributeList), 1);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::FieldDecl), 2);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::Error), 0);
     }
 
     #[test]

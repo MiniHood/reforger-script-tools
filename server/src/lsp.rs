@@ -18,7 +18,10 @@ use std::io::{self, BufRead, BufReader, Read, Write};
 #[cfg(test)]
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    mpsc, Arc, Mutex,
+};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -68,13 +71,15 @@ pub(crate) use open_documents::OpenDocument;
 pub use open_documents::{file_index_for_source, FileIndexAnalysis};
 use semantic_tokens::{
     fast_semantic_tokens_for_cached_analysis,
-    semantic_tokens_for_cached_analysis_with_external_indexes, LspSemanticTokenProjection,
-    LspSemanticTokens, SEMANTIC_TOKEN_MODIFIERS, SEMANTIC_TOKEN_TYPES,
+    semantic_tokens_for_cached_analysis_with_external_indexes,
+    semantic_tokens_for_cached_analysis_with_external_indexes_cancelled,
+    LspSemanticTokenProjection, LspSemanticTokens, SEMANTIC_TOKEN_MODIFIERS, SEMANTIC_TOKEN_TYPES,
 };
 pub use semantic_tokens::{
-    fast_semantic_tokens_for_source, semantic_tokens_for_source_with_external,
-    semantic_tokens_report_for_source, semantic_tokens_report_for_source_with_external,
-    LspSemanticTokenReport, LspSemanticTokenTimings, SemanticTokenDebug,
+    fast_semantic_tokens_for_source, fast_semantic_tokens_report_for_source,
+    semantic_tokens_for_source_with_external, semantic_tokens_report_for_source,
+    semantic_tokens_report_for_source_with_external, LspSemanticTokenReport,
+    LspSemanticTokenTimings, SemanticTokenDebug,
 };
 use signature_help::{
     signature_help_debug_markdown, signature_help_report_for_cached_analysis_with_external_indexes,
@@ -117,13 +122,22 @@ pub fn run_stdio(options: LspServerOptions) -> Result<(), String> {
         loop {
             match read_message(&mut reader) {
                 Ok(Some(message)) => {
-                    if sender.send(ServerEvent::Incoming(Ok(message))).is_err() {
+                    if sender
+                        .send(ServerEvent::Incoming {
+                            received_at: Instant::now(),
+                            result: Ok(message),
+                        })
+                        .is_err()
+                    {
                         break;
                     }
                 }
                 Ok(None) => break,
                 Err(error) => {
-                    let _ = sender.send(ServerEvent::Incoming(Err(error)));
+                    let _ = sender.send(ServerEvent::Incoming {
+                        received_at: Instant::now(),
+                        result: Err(error),
+                    });
                     break;
                 }
             }
@@ -195,8 +209,20 @@ struct LspServer<W: Write> {
     shutdown_requested: bool,
 }
 
+const RICH_SEMANTIC_TOKENS_IDLE_DELAY_MS: u64 = 250;
+
 enum ServerEvent {
-    Incoming(Result<Value, String>),
+    Incoming {
+        received_at: Instant,
+        result: Result<Value, String>,
+    },
+    RichSemanticTokensDue {
+        uri: String,
+        revision: u64,
+        external_generation: u64,
+        cancel: Arc<AtomicBool>,
+        elapsed_ms: u128,
+    },
     RichSemanticTokensReady {
         uri: String,
         revision: u64,
@@ -374,7 +400,7 @@ impl<W: Write> LspServer<W> {
     fn run<R: Read>(&mut self, reader: R) -> Result<(), String> {
         let mut reader = BufReader::new(reader);
         while let Some(message) = read_message(&mut reader)? {
-            let should_exit = self.handle_message(message)?;
+            let should_exit = self.handle_message(message, None)?;
             if should_exit {
                 break;
             }
@@ -386,13 +412,19 @@ impl<W: Write> LspServer<W> {
     fn run_message_channel(&mut self, receiver: mpsc::Receiver<ServerEvent>) -> Result<(), String> {
         loop {
             match receiver.recv_timeout(Duration::from_millis(100)) {
-                Ok(ServerEvent::Incoming(Ok(message))) => {
-                    let should_exit = self.handle_message(message)?;
+                Ok(ServerEvent::Incoming {
+                    received_at,
+                    result: Ok(message),
+                }) => {
+                    let should_exit =
+                        self.handle_message(message, Some(received_at.elapsed().as_millis()))?;
                     if should_exit {
                         break;
                     }
                 }
-                Ok(ServerEvent::Incoming(Err(error))) => return Err(error),
+                Ok(ServerEvent::Incoming {
+                    result: Err(error), ..
+                }) => return Err(error),
                 Ok(event) => self.handle_internal_event(event)?,
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     self.request_semantic_tokens_refresh_if_external_generation_changed()?;
@@ -404,9 +436,10 @@ impl<W: Write> LspServer<W> {
         Ok(())
     }
 
-    fn handle_message(&mut self, value: Value) -> Result<bool, String> {
+    fn handle_message(&mut self, value: Value, queue_ms: Option<u128>) -> Result<bool, String> {
         let message = serde_json::from_value::<RpcMessage>(value.clone())
             .map_err(|error| format!("Invalid JSON-RPC message: {error}"))?;
+        let queue_ms = queue_ms.unwrap_or(0);
         let Some(method) = message.method.as_deref() else {
             return Ok(false);
         };
@@ -474,12 +507,15 @@ impl<W: Write> LspServer<W> {
                     let text = params.text_document.text;
                     let bytes = text.len();
                     let mut document = OpenDocument::new(text, version, 1);
+                    let symbol_start = Instant::now();
                     let symbols =
                         document_symbols_from_cached_analysis(&document.text, &document.analysis);
+                    let document_symbol_ms = symbol_start.elapsed().as_millis();
                     let symbol_count = document_symbol_count(&symbols);
                     document.set_document_symbols(symbols);
                     let parse_diagnostics = document.analysis.parse_diagnostics;
                     let revision = document.revision;
+                    let analysis_timings = document.analysis_timings;
                     let diagnostics_message = publish_diagnostics_message(
                         &uri,
                         &document.text,
@@ -488,13 +524,20 @@ impl<W: Write> LspServer<W> {
                     self.documents.insert(uri.clone(), document);
                     self.write_message(diagnostics_message)?;
                     self.log(&format!(
-                        "notification didOpen uri={} bytes={} version={} revision={} cached_analysis=true document_symbols_cached=true symbols={} parse_diagnostics={} analysis_elapsed_ms={}",
+                        "notification didOpen uri={} bytes={} version={} revision={} cached_analysis=true document_symbols_cached=true symbols={} parse_diagnostics={} analysis_parse_ms={} analysis_catalog_ms={} analysis_index_ms={} analysis_scope_ms={} analysis_build_ms={} document_symbol_ms={} queue_ms={} analysis_elapsed_ms={}",
                         uri,
                         bytes,
                         format_optional_i32(version),
                         revision,
                         symbol_count,
                         parse_diagnostics,
+                        analysis_timings.parse_ms,
+                        analysis_timings.catalog_ms,
+                        analysis_timings.index_ms,
+                        analysis_timings.scope_ms,
+                        analysis_timings.total_ms,
+                        document_symbol_ms,
+                        queue_ms,
                         start.elapsed().as_millis()
                     ));
                 }
@@ -514,14 +557,9 @@ impl<W: Write> LspServer<W> {
                             .entry(uri.clone())
                             .or_insert_with(|| OpenDocument::new(String::new(), None, 0));
                         document.replace(text, version);
-                        let symbols = document_symbols_from_cached_analysis(
-                            &document.text,
-                            &document.analysis,
-                        );
-                        let symbol_count = document_symbol_count(&symbols);
-                        document.set_document_symbols(symbols);
                         let parse_diagnostics = document.analysis.parse_diagnostics;
                         let revision = document.revision;
+                        let analysis_timings = document.analysis_timings;
                         let diagnostics_message = publish_diagnostics_message(
                             &uri,
                             &document.text,
@@ -529,13 +567,18 @@ impl<W: Write> LspServer<W> {
                         );
                         self.write_message(diagnostics_message)?;
                         self.log(&format!(
-                            "notification didChange uri={} bytes={} version={} revision={} cached_analysis=true document_symbols_cached=true symbols={} parse_diagnostics={} analysis_elapsed_ms={}",
+                            "notification didChange uri={} bytes={} version={} revision={} cached_analysis=true document_symbols_cached=false symbols=pending parse_diagnostics={} analysis_parse_ms={} analysis_catalog_ms={} analysis_index_ms={} analysis_scope_ms={} analysis_build_ms={} queue_ms={} analysis_elapsed_ms={}",
                             uri,
                             bytes,
                             format_optional_i32(version),
                             revision,
-                            symbol_count,
                             parse_diagnostics,
+                            analysis_timings.parse_ms,
+                            analysis_timings.catalog_ms,
+                            analysis_timings.index_ms,
+                            analysis_timings.scope_ms,
+                            analysis_timings.total_ms,
+                            queue_ms,
                             start.elapsed().as_millis()
                         ));
                     }
@@ -549,7 +592,9 @@ impl<W: Write> LspServer<W> {
                         "notification didClose uri={}",
                         params.text_document.uri
                     ));
-                    self.documents.remove(&params.text_document.uri);
+                    if let Some(mut document) = self.documents.remove(&params.text_document.uri) {
+                        document.semantic_tokens.cancel_pending();
+                    }
                     self.write_message(clear_diagnostics_message(&params.text_document.uri))?;
                 }
             }
@@ -624,12 +669,24 @@ impl<W: Write> LspServer<W> {
                     let mut symbol_count = 0usize;
                     let mut parse_diagnostics = 0usize;
                     let mut revision = 0u64;
+                    let mut cached_projection = false;
+                    let mut projection_ms = 0u128;
                     let result = params
                         .and_then(|params| {
                             log_uri = params.text_document.uri;
-                            self.documents.get(&log_uri).map(|document| {
+                            self.documents.get_mut(&log_uri).map(|document| {
                                 bytes = document.text.len();
                                 revision = document.revision;
+                                cached_projection = document.document_symbols_ready();
+                                if !cached_projection {
+                                    let projection_start = Instant::now();
+                                    let symbols = document_symbols_from_cached_analysis(
+                                        &document.text,
+                                        &document.analysis,
+                                    );
+                                    projection_ms = projection_start.elapsed().as_millis();
+                                    document.set_document_symbols(symbols);
+                                }
                                 let symbols = document.document_symbols();
                                 symbol_count = document_symbol_count(&symbols);
                                 parse_diagnostics = document.analysis.parse_diagnostics;
@@ -639,12 +696,15 @@ impl<W: Write> LspServer<W> {
                         .map(|symbols| serde_json::to_value(symbols).unwrap_or(Value::Null))
                         .unwrap_or(Value::Null);
                     self.log(&format!(
-                        "request documentSymbol uri={} bytes={} revision={} cached_analysis=true document_symbols_cached=true symbols={} parse_diagnostics={} elapsed_ms={}",
+                        "request documentSymbol uri={} bytes={} revision={} cached_analysis=true document_symbols_cached={} document_symbol_ms={} symbols={} parse_diagnostics={} queue_ms={} elapsed_ms={}",
                         log_uri,
                         bytes,
                         revision,
+                        cached_projection,
+                        projection_ms,
                         symbol_count,
                         parse_diagnostics,
+                        queue_ms,
                         start.elapsed().as_millis()
                     ));
                     self.respond(id, result)?;
@@ -713,7 +773,7 @@ impl<W: Write> LspServer<W> {
                             serde_json::to_value(empty_completion_list()).unwrap_or(Value::Null)
                         });
                     self.log(&format!(
-                        "request completion uri={} bytes={} revision={} cached_analysis=true context={} receiver={} owner_type={} prefix={} candidates={} failure_reason={} external_index_status={} external_index_layers={} parse_diagnostics={} context_ms={} lookup_ms={} render_ms={} elapsed_ms={}",
+                        "request completion uri={} bytes={} revision={} cached_analysis=true context={} receiver={} owner_type={} prefix={} candidates={} failure_reason={} external_index_status={} external_index_layers={} parse_diagnostics={} context_ms={} lookup_ms={} render_ms={} queue_ms={} elapsed_ms={}",
                         log_uri,
                         bytes,
                         revision,
@@ -729,6 +789,7 @@ impl<W: Write> LspServer<W> {
                         context_ms,
                         lookup_ms,
                         render_ms,
+                        queue_ms,
                         start.elapsed().as_millis()
                     ));
                     self.respond(id, result)?;
@@ -792,7 +853,7 @@ impl<W: Write> LspServer<W> {
                         .map(|help| serde_json::to_value(help).unwrap_or(Value::Null))
                         .unwrap_or(Value::Null);
                     self.log(&format!(
-                        "request signatureHelp uri={} bytes={} revision={} cached_analysis=true context={} active_parameter={} candidates={} selected={} failure_reason={} external_index_status={} external_index_layers={} parse_diagnostics={} context_ms={} lookup_ms={} render_ms={} elapsed_ms={}",
+                        "request signatureHelp uri={} bytes={} revision={} cached_analysis=true context={} active_parameter={} candidates={} selected={} failure_reason={} external_index_status={} external_index_layers={} parse_diagnostics={} context_ms={} lookup_ms={} render_ms={} queue_ms={} elapsed_ms={}",
                         log_uri,
                         bytes,
                         revision,
@@ -807,6 +868,7 @@ impl<W: Write> LspServer<W> {
                         context_ms,
                         lookup_ms,
                         render_ms,
+                        queue_ms,
                         start.elapsed().as_millis()
                     ));
                     self.respond(id, result)?;
@@ -830,7 +892,7 @@ impl<W: Write> LspServer<W> {
                     let mut resolver_calls = 0usize;
                     let mut token_loop_ms = 0u128;
                     let mut encode_ms = 0u128;
-                    let mut rich_work: Option<(String, u64, u64)> = None;
+                    let mut rich_work: Option<(String, u64, u64, Arc<AtomicBool>)> = None;
                     let result = params
                         .and_then(|params| {
                             log_uri = params.text_document.uri;
@@ -854,13 +916,14 @@ impl<W: Write> LspServer<W> {
                                             external_generation,
                                         )
                                     {
-                                        document
+                                        let cancel = document
                                             .semantic_tokens
                                             .mark_pending(document.revision, external_generation);
                                         rich_work = Some((
                                             log_uri.clone(),
                                             document.revision,
                                             external_generation,
+                                            cancel,
                                         ));
                                     }
                                     fast_semantic_tokens_for_cached_analysis(
@@ -884,7 +947,7 @@ impl<W: Write> LspServer<W> {
                                 .unwrap_or(Value::Null)
                         });
                     self.log(&format!(
-                        "request semanticTokens uri={} bytes={} revision={} cached_analysis=true mode={} tokens={} external_index_status={} external_generation={} parse_diagnostics={} lex_ms={} token_loop_ms={} resolver_ms={} resolver_calls={} encode_ms={} elapsed_ms={}",
+                        "request semanticTokens uri={} bytes={} revision={} cached_analysis=true mode={} tokens={} external_index_status={} external_generation={} parse_diagnostics={} lex_ms={} token_loop_ms={} resolver_ms={} resolver_calls={} encode_ms={} queue_ms={} elapsed_ms={}",
                         log_uri,
                         bytes,
                         revision,
@@ -898,14 +961,17 @@ impl<W: Write> LspServer<W> {
                         resolver_ms,
                         resolver_calls,
                         encode_ms,
+                        queue_ms,
                         start.elapsed().as_millis()
                     ));
                     self.respond(id, result)?;
-                    if let Some((uri, rich_revision, rich_external_generation)) = rich_work {
+                    if let Some((uri, rich_revision, rich_external_generation, cancel)) = rich_work
+                    {
                         self.schedule_rich_semantic_tokens(
                             &uri,
                             rich_revision,
                             rich_external_generation,
+                            cancel,
                         )?;
                     }
                 }
@@ -989,7 +1055,7 @@ impl<W: Write> LspServer<W> {
                         .map(|hover| serde_json::to_value(hover).unwrap_or(Value::Null))
                         .unwrap_or(Value::Null);
                     self.log(&format!(
-                        "request hover uri={} bytes={} revision={} cached_analysis=true hit={} selection_source={} selected_source={} resolver_reason={} identifier_context={} resolver_candidates={} receiver_owner={} receiver_failure={} external_index_status={} external_index_layers={} label={} kind={} parse_diagnostics={} elapsed_ms={}",
+                        "request hover uri={} bytes={} revision={} cached_analysis=true hit={} selection_source={} selected_source={} resolver_reason={} identifier_context={} resolver_candidates={} receiver_owner={} receiver_failure={} external_index_status={} external_index_layers={} label={} kind={} parse_diagnostics={} queue_ms={} elapsed_ms={}",
                         log_uri,
                         bytes,
                         revision,
@@ -1006,6 +1072,7 @@ impl<W: Write> LspServer<W> {
                         selected_label,
                         selected_kind,
                         parse_diagnostics,
+                        queue_ms,
                         start.elapsed().as_millis()
                     ));
                     self.respond(id, result)?;
@@ -1073,7 +1140,7 @@ impl<W: Write> LspServer<W> {
                         .map(|links| serde_json::to_value(links).unwrap_or(Value::Null))
                         .unwrap_or(Value::Null);
                     self.log(&format!(
-                        "request definition uri={} bytes={} revision={} cached_analysis=true hit={} selected_source={} resolver_reason={} identifier_context={} resolver_candidates={} external_index_status={} external_index_layers={} label={} kind={} parse_diagnostics={} elapsed_ms={}",
+                        "request definition uri={} bytes={} revision={} cached_analysis=true hit={} selected_source={} resolver_reason={} identifier_context={} resolver_candidates={} external_index_status={} external_index_layers={} label={} kind={} parse_diagnostics={} queue_ms={} elapsed_ms={}",
                         log_uri,
                         bytes,
                         revision,
@@ -1087,6 +1154,7 @@ impl<W: Write> LspServer<W> {
                         selected_label,
                         selected_kind,
                         parse_diagnostics,
+                        queue_ms,
                         start.elapsed().as_millis()
                     ));
                     self.respond(id, result)?;
@@ -1208,7 +1276,7 @@ impl<W: Write> LspServer<W> {
                             ))
                         });
                     self.log(&format!(
-                        "request debugCompletion uri={} bytes={} revision={} cached_analysis=true context={} candidates={} signature_context={} signature_candidates={} external_index_status={} external_index_layers={} elapsed_ms={}",
+                        "request debugCompletion uri={} bytes={} revision={} cached_analysis=true context={} candidates={} signature_context={} signature_candidates={} external_index_status={} external_index_layers={} queue_ms={} elapsed_ms={}",
                         log_uri,
                         bytes,
                         revision,
@@ -1218,6 +1286,7 @@ impl<W: Write> LspServer<W> {
                         signature_candidate_count,
                         external_index_status,
                         external_index_layers,
+                        queue_ms,
                         start.elapsed().as_millis()
                     ));
                     self.respond(id, result)?;
@@ -1237,7 +1306,54 @@ impl<W: Write> LspServer<W> {
 
     fn handle_internal_event(&mut self, event: ServerEvent) -> Result<(), String> {
         match event {
-            ServerEvent::Incoming(_) => Ok(()),
+            ServerEvent::Incoming { .. } => Ok(()),
+            ServerEvent::RichSemanticTokensDue {
+                uri,
+                revision,
+                external_generation,
+                cancel,
+                elapsed_ms,
+            } => {
+                if cancel.load(Ordering::Relaxed) {
+                    self.log(&format!(
+                        "semanticTokensRich skipped uri={} revision={} reason=cancelled-before-work elapsed_ms={}",
+                        uri, revision, elapsed_ms
+                    ));
+                    return Ok(());
+                }
+                let Some(current_revision) =
+                    self.documents.get(&uri).map(|document| document.revision)
+                else {
+                    cancel.store(true, Ordering::Relaxed);
+                    self.log(&format!(
+                        "semanticTokensRich skipped uri={} revision={} reason=missing-document-before-idle elapsed_ms={}",
+                        uri, revision, elapsed_ms
+                    ));
+                    return Ok(());
+                };
+                if current_revision != revision {
+                    cancel.store(true, Ordering::Relaxed);
+                    self.log(&format!(
+                        "semanticTokensRich skipped uri={} revision={} current_revision={} reason=stale-revision-before-idle elapsed_ms={}",
+                        uri, revision, current_revision, elapsed_ms
+                    ));
+                    return Ok(());
+                }
+                let current_external_generation = self.external_index.status_summary().generation;
+                if current_external_generation != external_generation {
+                    cancel.store(true, Ordering::Relaxed);
+                    self.log(&format!(
+                        "semanticTokensRich skipped uri={} revision={} external_generation={} current_external_generation={} reason=stale-external-index-before-idle elapsed_ms={}",
+                        uri,
+                        revision,
+                        external_generation,
+                        current_external_generation,
+                        elapsed_ms
+                    ));
+                    return Ok(());
+                }
+                self.start_rich_semantic_tokens_worker(&uri, revision, external_generation, cancel)
+            }
             ServerEvent::RichSemanticTokensReady {
                 uri,
                 revision,
@@ -1328,6 +1444,7 @@ impl<W: Write> LspServer<W> {
         uri: &str,
         revision: u64,
         external_generation: u64,
+        cancel: Arc<AtomicBool>,
     ) -> Result<(), String> {
         if let Some(sender) = self.internal_sender.clone() {
             let start = Instant::now();
@@ -1350,32 +1467,13 @@ impl<W: Write> LspServer<W> {
                 return Ok(());
             }
             let uri = uri.to_string();
-            let source = document.text.clone();
-            let analysis = document.analysis.clone();
-            let external_snapshot = self.external_index.snapshot();
             thread::spawn(move || {
-                let start = Instant::now();
-                if external_snapshot.generation != external_generation {
-                    let _ = sender.send(ServerEvent::RichSemanticTokensSkipped {
-                        uri,
-                        revision,
-                        reason: "stale-external-index".to_string(),
-                        elapsed_ms: start.elapsed().as_millis(),
-                    });
-                    return;
-                }
-                let projection = semantic_tokens_for_cached_analysis_with_external_indexes(
-                    &source,
-                    &analysis,
-                    external_snapshot.workspace.as_deref(),
-                    external_snapshot.game_data.as_deref(),
-                );
-                let _ = sender.send(ServerEvent::RichSemanticTokensReady {
+                thread::sleep(Duration::from_millis(RICH_SEMANTIC_TOKENS_IDLE_DELAY_MS));
+                let _ = sender.send(ServerEvent::RichSemanticTokensDue {
                     uri,
                     revision,
                     external_generation,
-                    external_status: external_snapshot.status,
-                    projection,
+                    cancel,
                     elapsed_ms: start.elapsed().as_millis(),
                 });
             });
@@ -1457,6 +1555,91 @@ impl<W: Write> LspServer<W> {
         self.request_semantic_tokens_refresh()
     }
 
+    fn start_rich_semantic_tokens_worker(
+        &mut self,
+        uri: &str,
+        revision: u64,
+        external_generation: u64,
+        cancel: Arc<AtomicBool>,
+    ) -> Result<(), String> {
+        if let Some(sender) = self.internal_sender.clone() {
+            let start = Instant::now();
+            let Some(document) = self.documents.get(uri) else {
+                cancel.store(true, Ordering::Relaxed);
+                let _ = sender.send(ServerEvent::RichSemanticTokensSkipped {
+                    uri: uri.to_string(),
+                    revision,
+                    reason: "missing-document".to_string(),
+                    elapsed_ms: start.elapsed().as_millis(),
+                });
+                return Ok(());
+            };
+            if document.revision != revision {
+                cancel.store(true, Ordering::Relaxed);
+                let _ = sender.send(ServerEvent::RichSemanticTokensSkipped {
+                    uri: uri.to_string(),
+                    revision,
+                    reason: "stale-revision".to_string(),
+                    elapsed_ms: start.elapsed().as_millis(),
+                });
+                return Ok(());
+            }
+            let uri = uri.to_string();
+            let source = document.text.clone();
+            let analysis = document.analysis.clone();
+            let external_snapshot = self.external_index.snapshot();
+            thread::spawn(move || {
+                let start = Instant::now();
+                if cancel.load(Ordering::Relaxed) {
+                    let _ = sender.send(ServerEvent::RichSemanticTokensSkipped {
+                        uri,
+                        revision,
+                        reason: "cancelled-before-work".to_string(),
+                        elapsed_ms: start.elapsed().as_millis(),
+                    });
+                    return;
+                }
+                if external_snapshot.generation != external_generation {
+                    cancel.store(true, Ordering::Relaxed);
+                    let _ = sender.send(ServerEvent::RichSemanticTokensSkipped {
+                        uri,
+                        revision,
+                        reason: "stale-external-index".to_string(),
+                        elapsed_ms: start.elapsed().as_millis(),
+                    });
+                    return;
+                }
+                let projection =
+                    semantic_tokens_for_cached_analysis_with_external_indexes_cancelled(
+                        &source,
+                        &analysis,
+                        external_snapshot.workspace.as_deref(),
+                        external_snapshot.game_data.as_deref(),
+                        &|| cancel.load(Ordering::Relaxed),
+                    );
+                let Some(projection) = projection else {
+                    let _ = sender.send(ServerEvent::RichSemanticTokensSkipped {
+                        uri,
+                        revision,
+                        reason: "cancelled-during-work".to_string(),
+                        elapsed_ms: start.elapsed().as_millis(),
+                    });
+                    return;
+                };
+                let _ = sender.send(ServerEvent::RichSemanticTokensReady {
+                    uri,
+                    revision,
+                    external_generation,
+                    external_status: external_snapshot.status,
+                    projection,
+                    elapsed_ms: start.elapsed().as_millis(),
+                });
+            });
+            return Ok(());
+        }
+        self.schedule_rich_semantic_tokens(uri, revision, external_generation, cancel)
+    }
+
     fn rich_semantic_tokens_for_revision(
         &self,
         uri: &str,
@@ -1505,6 +1688,11 @@ impl<W: Write> LspServer<W> {
             return Ok(());
         }
         self.last_semantic_external_generation = status.generation;
+        for document in self.documents.values_mut() {
+            document
+                .semantic_tokens
+                .cancel_pending_for_other_external_generation(status.generation);
+        }
         self.log(&format!(
             "semanticTokens external overlay changed generation={} status={} documents={} requesting_refresh=true",
             status.generation,
@@ -1886,7 +2074,7 @@ class Example
 #endif
 "#;
 
-        let report = semantic_tokens_report_for_source(source);
+        let report = fast_semantic_tokens_report_for_source(source);
 
         assert_eq!(report.parse_diagnostics, 0);
         assert!(!report.tokens.data.is_empty());
@@ -2130,7 +2318,7 @@ typedef ScriptInvokerBase<OnPreloadFinished> OnPreloadFinishedInvoker;
 class Example { protected ref ScriptInvoker m_OnGameEnd = new ScriptInvoker(); }
 ";
 
-        let report = semantic_tokens_report_for_source(source);
+        let report = fast_semantic_tokens_report_for_source(source);
 
         assert_semantic_token(&report, "void", "keyword", Some("#59A6E9"));
         assert_semantic_token(&report, "int", "keyword", Some("#59A6E9"));
@@ -2404,6 +2592,30 @@ enum EGameFlags
     }
 
     #[test]
+    fn semantic_tokens_keep_attribute_shape_after_invalid_previous_line() {
+        let source = r#"class Example
+{
+	this
+
+	[RplRpc(RplChannel.Reliable, RplRcver.Server)]
+	protected void RpcDo();
+}
+"#;
+
+        let report = semantic_tokens_report_for_source(source);
+
+        assert_semantic_token(&report, "RplRpc", "class", Some("#40b5ac"));
+        assert!(
+            !report
+                .decoded
+                .iter()
+                .any(|token| token.text == "RplRpc" && token.token_type == "function"),
+            "{:?}",
+            report.decoded
+        );
+    }
+
+    #[test]
     fn semantic_tokens_color_call_shapes_before_rich_resolution() {
         let source = r#"class Example
 {
@@ -2429,6 +2641,7 @@ enum EGameFlags
 	{
 		SCR_BaseGameModeStateComponent stateComponent = GetStateComponent(SCR_EGameModeState.GAME);
 		EHealthState.INJURED;
+		int testnnn = GRAY_TEST2.testnum;
 		stateComponent.GetDuration();
 	}
 }
@@ -2440,6 +2653,8 @@ enum EGameFlags
         assert_semantic_token(&report, "GAME", "enumMember", Some("#cfcfcf"));
         assert_semantic_token(&report, "EHealthState", "class", Some("#40b5ac"));
         assert_semantic_token(&report, "INJURED", "enumMember", Some("#cfcfcf"));
+        assert_semantic_token(&report, "GRAY_TEST2", "class", Some("#40b5ac"));
+        assert_semantic_token(&report, "testnum", "enumMember", Some("#cfcfcf"));
         assert!(
             !report
                 .decoded
@@ -2448,6 +2663,42 @@ enum EGameFlags
             "{:?}",
             report.decoded
         );
+    }
+
+    #[test]
+    fn semantic_tokens_color_scope_references_before_rich_resolution() {
+        let source = r#"class OwnerType
+{
+	void Run()
+	{
+	}
+}
+
+class Example
+{
+	OwnerType GetOwner();
+	void Run(OwnerType owner)
+	{
+		OwnerType localOwner = GetOwner();
+		if (owner == GetOwner())
+			return owner;
+		if (localOwner == owner)
+		{
+			OwnerType owner = localOwner;
+			owner.Run();
+		}
+		int testnnn = GRAY_TEST2.testnum;
+	}
+}
+"#;
+
+        let report = fast_semantic_tokens_report_for_source(source);
+
+        assert_semantic_token(&report, "owner", "parameter", Some("#cfcfcf"));
+        assert_semantic_token(&report, "localOwner", "variable", Some("#cfcfcf"));
+        assert_semantic_token_count_at_least(&report, "owner", "variable", 2);
+        assert_semantic_token(&report, "GRAY_TEST2", "class", Some("#40b5ac"));
+        assert_semantic_token(&report, "testnum", "enumMember", Some("#cfcfcf"));
     }
 
     #[test]
@@ -3460,7 +3711,7 @@ class Example
             None,
         );
 
-        assert_eq!(report.completion_context, "top-level");
+        assert_eq!(report.completion_context, "argument-label");
         assert_eq!(report.prefix, "input");
         let item = report
             .list
@@ -3499,7 +3750,7 @@ class Example
             None,
         );
 
-        assert_eq!(report.completion_context, "top-level");
+        assert_eq!(report.completion_context, "argument-label");
         assert_eq!(report.prefix, "inp");
         assert!(report
             .list
@@ -3511,6 +3762,79 @@ class Example
             .items
             .iter()
             .any(|item| item.text_edit.new_text == "input: $0"));
+    }
+
+    #[test]
+    fn completion_keeps_value_candidates_after_parameter_labels() {
+        let source = r#"class GRAY_TEST2
+{
+	int TestNumFun2(int input, float num, string test = "eeeeee");
+}
+
+class Example
+{
+	void Run(int input, float num, string testValue)
+	{
+		GRAY_TEST2 test44;
+		test44.TestNumFun2(input, tes)
+	}
+}
+"#;
+
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "TestNumFun2(input, tes"),
+            None,
+        );
+
+        assert_eq!(report.completion_context, "argument-label");
+        assert_eq!(report.prefix, "tes");
+        let first = report
+            .list
+            .items
+            .first()
+            .expect("expected parameter label completion");
+        assert_eq!(first.label, "test");
+        assert_eq!(first.text_edit.new_text, "test: $0");
+        assert!(report
+            .list
+            .items
+            .iter()
+            .any(|item| item.label == "testValue" && item.text_edit.new_text == "testValue"));
+    }
+
+    #[test]
+    fn completion_uses_active_parameter_when_no_matching_value_exists() {
+        let source = r#"class GRAY_TEST2
+{
+	int TestNumFun2(int input, float num, string test = "eeeeee");
+}
+
+class Example
+{
+	void Run(float num)
+	{
+		GRAY_TEST2 test44;
+		test44.TestNumFun2(inpu, num,)
+	}
+}
+"#;
+
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "TestNumFun2(inpu"),
+            None,
+        );
+
+        assert_eq!(report.completion_context, "argument-label");
+        assert_eq!(report.prefix, "inpu");
+        let first = report
+            .list
+            .items
+            .first()
+            .expect("expected active parameter completion");
+        assert_eq!(first.label, "input");
+        assert_eq!(first.text_edit.new_text, "input");
     }
 
     #[test]
@@ -4069,6 +4393,40 @@ int SCR_Global;
     }
 
     #[test]
+    fn completion_keeps_value_context_for_incomplete_statement_before_declaration() {
+        let source = r#"class Game
+{
+}
+
+Game GetGame();
+
+class Example
+{
+	void Run()
+	{
+		getgam
+
+		int testnum = 44;
+
+		GetGame().GetPlayerController().GetControlledEntity();
+	}
+}
+"#;
+
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "getgam"),
+            None,
+        );
+
+        assert_eq!(report.completion_context, "top-level");
+        assert_eq!(report.prefix, "getgam");
+        assert!(report.list.items.iter().any(|item| item.label == "GetGame"
+            && item.kind == 3
+            && item.text_edit.new_text == "GetGame()"));
+    }
+
+    #[test]
     fn completion_returns_language_keywords_for_value_prefixes() {
         let source = r#"class Example
 {
@@ -4142,6 +4500,45 @@ int SCR_Global;
         assert_eq!(labels.first().copied(), Some("static"));
         assert!(!labels.contains(&"STATIC"));
         assert!(!labels.contains(&"Static"));
+    }
+
+    #[test]
+    fn completion_ranks_primitive_type_keyword_before_modifier_prefix() {
+        let source = r#"class Example
+{
+	void Run()
+	{
+		in
+	}
+}
+"#;
+        let external = file_index_for_source(
+            r#"class int
+{
+}
+"#,
+        )
+        .index;
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "\t\tin"),
+            Some(&external),
+        );
+
+        assert_eq!(report.completion_context, "top-level");
+        assert_eq!(report.prefix, "in");
+        let labels = report
+            .list
+            .items
+            .iter()
+            .map(|item| (item.label.as_str(), item.kind))
+            .collect::<Vec<_>>();
+        assert_eq!(labels.first().copied(), Some(("int", 14)));
+        assert!(labels.contains(&("inout", 14)));
+        assert_eq!(
+            labels.iter().filter(|(label, _)| *label == "int").count(),
+            1
+        );
     }
 
     #[test]
@@ -5582,6 +5979,115 @@ class Example
         assert_eq!(log.matches("analysis_elapsed_ms=").count(), 1);
         assert_eq!(log.matches("request documentSymbol").count(), 2);
         assert_eq!(log.matches("document_symbols_cached=true").count(), 3);
+
+        cleanup_log(&log_path);
+    }
+
+    #[test]
+    fn framed_lsp_did_change_defers_document_symbol_projection_until_requested() {
+        let old_source = "class Old\n{\n\tvoid OldRun();\n}\n";
+        let new_source = "class New\n{\n\tvoid NewRun();\n}\n";
+        let log_path = test_log_path("lazy_document_symbols_after_change");
+        let mut input = Vec::new();
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {}
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": "file:///Scripts/LazySymbols.c",
+                        "languageId": "enforce",
+                        "version": 1,
+                        "text": old_source
+                    }
+                }
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didChange",
+                "params": {
+                    "textDocument": {
+                        "uri": "file:///Scripts/LazySymbols.c",
+                        "version": 2
+                    },
+                    "contentChanges": [
+                        {
+                            "text": new_source
+                        }
+                    ]
+                }
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "textDocument/documentSymbol",
+                "params": {
+                    "textDocument": {
+                        "uri": "file:///Scripts/LazySymbols.c"
+                    }
+                }
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "shutdown",
+                "params": null
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "exit",
+                "params": null
+            }),
+        );
+
+        let mut output = Vec::new();
+        run(
+            input.as_slice(),
+            &mut output,
+            LspServerOptions {
+                log_path: Some(log_path.clone()),
+                game_data_scripts: None,
+                game_data_metadata: None,
+                index_cache: None,
+                workspace_scripts: Vec::new(),
+            },
+        )
+        .unwrap();
+
+        let output_text = String::from_utf8(output).unwrap();
+        assert!(output_text.contains("\"name\":\"New\""));
+        assert!(output_text.contains("\"name\":\"NewRun\""));
+        assert!(!output_text.contains("\"name\":\"Old\""));
+        assert!(!output_text.contains("\"name\":\"OldRun\""));
+
+        let log = std::fs::read_to_string(&log_path).unwrap();
+        assert!(log.contains("notification didChange"));
+        assert!(log.contains("notification didChange uri=file:///Scripts/LazySymbols.c"));
+        assert!(log.contains("document_symbols_cached=false symbols=pending"));
+        assert!(log.contains("request documentSymbol uri=file:///Scripts/LazySymbols.c"));
+        assert!(log.contains("document_symbols_cached=false document_symbol_ms="));
 
         cleanup_log(&log_path);
     }

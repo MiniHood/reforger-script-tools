@@ -647,7 +647,10 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
             ]
             .into_iter()
             .flatten()
-            .any(|span| span_contains_span(span, token_span))
+            .any(|span| {
+                span_contains_span(span, token_span)
+                    && type_position_span_is_reliable(self.source, symbol, span, token_span)
+            })
         }) {
             return IdentifierContext::TypePosition;
         }
@@ -1602,6 +1605,65 @@ fn span_contains(span: TextSpan, offset: usize) -> bool {
 
 fn span_contains_span(outer: TextSpan, inner: TextSpan) -> bool {
     outer.start <= inner.start && inner.end <= outer.end
+}
+
+fn type_position_span_is_reliable(
+    source: &str,
+    symbol: &IndexedSymbol,
+    detail_span: TextSpan,
+    token_span: TextSpan,
+) -> bool {
+    if symbol.kind != SymbolKind::LocalVariable {
+        return true;
+    }
+
+    let boundary_end = symbol.selection_span.start.min(detail_span.end);
+    if token_span.end >= boundary_end || boundary_end > source.len() {
+        return true;
+    }
+
+    let between = &source[token_span.end..boundary_end];
+    let crosses_line = between.contains('\n');
+    if !crosses_line {
+        return true;
+    }
+
+    !lex(between).into_iter().any(|token| {
+        matches!(
+            token.kind,
+            TokenKind::Semicolon
+                | TokenKind::LeftBrace
+                | TokenKind::RightBrace
+                | TokenKind::Keyword(
+                    Keyword::Void
+                        | Keyword::Int
+                        | Keyword::Float
+                        | Keyword::Bool
+                        | Keyword::String
+                        | Keyword::Vector
+                        | Keyword::Typename
+                        | Keyword::Auto
+                        | Keyword::Class
+                        | Keyword::Enum
+                        | Keyword::Typedef
+                        | Keyword::Modded
+                        | Keyword::Sealed
+                        | Keyword::Static
+                        | Keyword::Private
+                        | Keyword::Protected
+                        | Keyword::Override
+                        | Keyword::Const
+                        | Keyword::Ref
+                        | Keyword::Out
+                        | Keyword::Inout
+                        | Keyword::Notnull
+                        | Keyword::Event
+                        | Keyword::Proto
+                        | Keyword::External
+                        | Keyword::Native
+                )
+        )
+    })
 }
 
 fn is_type_like_kind(kind: SymbolKind) -> bool {

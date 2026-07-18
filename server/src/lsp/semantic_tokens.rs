@@ -67,6 +67,7 @@ const SEMANTIC_MOD_READONLY: u32 = 1 << 2;
 const SEMANTIC_MOD_MODIFICATION: u32 = 1 << 5;
 const TYPE_SPAN_PRIORITY: u8 = 70;
 const RESOLVER_REFERENCE_PRIORITY: u8 = 60;
+const SCOPE_REFERENCE_PRIORITY: u8 = 75;
 const RESOLVER_TYPE_REFERENCE_PRIORITY: u8 = 80;
 const MAX_RAW_SEMANTIC_TOKENS: usize = 200_000;
 
@@ -117,6 +118,17 @@ pub fn semantic_tokens_report_for_source(source: &str) -> LspSemanticTokenReport
     semantic_tokens_report_for_cached_analysis(source, &analysis)
 }
 
+pub fn fast_semantic_tokens_report_for_source(source: &str) -> LspSemanticTokenReport {
+    let analysis = file_index_for_source(source);
+    semantic_tokens_report_for_cached_analysis_mode(
+        source,
+        &analysis,
+        None,
+        None,
+        SemanticTokenMode::Fast,
+    )
+}
+
 pub fn semantic_tokens_report_for_source_with_external(
     source: &str,
     external_index: Option<&SymbolIndex>,
@@ -164,13 +176,31 @@ pub(crate) fn semantic_tokens_report_for_cached_analysis_with_external_indexes(
     workspace_index: Option<&SymbolIndex>,
     game_data_index: Option<&SymbolIndex>,
 ) -> LspSemanticTokenReport {
-    let raw_projection = semantic_raw_tokens(
+    semantic_tokens_report_for_cached_analysis_mode(
         source,
         analysis,
         workspace_index,
         game_data_index,
         SemanticTokenMode::Rich,
-    );
+    )
+}
+
+fn semantic_tokens_report_for_cached_analysis_mode(
+    source: &str,
+    analysis: &FileIndexAnalysis,
+    workspace_index: Option<&SymbolIndex>,
+    game_data_index: Option<&SymbolIndex>,
+    mode: SemanticTokenMode,
+) -> LspSemanticTokenReport {
+    let raw_projection = semantic_raw_tokens(
+        source,
+        analysis,
+        workspace_index,
+        game_data_index,
+        mode,
+        None,
+    )
+    .expect("semantic token reports are not cancellable");
     let decode_start = Instant::now();
     let decoded = raw_projection
         .tokens
@@ -222,15 +252,37 @@ pub(crate) fn semantic_tokens_for_cached_analysis_with_external_indexes(
         workspace_index,
         game_data_index,
         SemanticTokenMode::Rich,
-    );
+        None,
+    )
+    .expect("rich semantic token projection is not cancellable through this entrypoint");
     encode_projection(source, analysis, raw_projection)
+}
+
+pub(crate) fn semantic_tokens_for_cached_analysis_with_external_indexes_cancelled(
+    source: &str,
+    analysis: &FileIndexAnalysis,
+    workspace_index: Option<&SymbolIndex>,
+    game_data_index: Option<&SymbolIndex>,
+    should_cancel: &dyn Fn() -> bool,
+) -> Option<LspSemanticTokenProjection> {
+    let raw_projection = semantic_raw_tokens(
+        source,
+        analysis,
+        workspace_index,
+        game_data_index,
+        SemanticTokenMode::Rich,
+        Some(should_cancel),
+    )?;
+    (!should_cancel()).then(|| encode_projection(source, analysis, raw_projection))
 }
 
 pub(crate) fn fast_semantic_tokens_for_cached_analysis(
     source: &str,
     analysis: &FileIndexAnalysis,
 ) -> LspSemanticTokenProjection {
-    let raw_projection = semantic_raw_tokens(source, analysis, None, None, SemanticTokenMode::Fast);
+    let raw_projection =
+        semantic_raw_tokens(source, analysis, None, None, SemanticTokenMode::Fast, None)
+            .expect("fast semantic token projection is not cancellable");
     encode_projection(source, analysis, raw_projection)
 }
 
@@ -278,10 +330,14 @@ fn semantic_raw_tokens(
     workspace_index: Option<&SymbolIndex>,
     game_data_index: Option<&SymbolIndex>,
     mode: SemanticTokenMode,
-) -> RawSemanticTokenProjection {
+    should_cancel: Option<&dyn Fn() -> bool>,
+) -> Option<RawSemanticTokenProjection> {
     let lex_start = Instant::now();
     let lexer_tokens = lex(source);
     let lex_elapsed = lex_start.elapsed();
+    if should_cancel.is_some_and(|should_cancel| should_cancel()) {
+        return None;
+    }
     let mut tokens = Vec::new();
     let attribute_roles = attribute_identifier_roles(source, &lexer_tokens);
     let call_roles = call_identifier_roles(&lexer_tokens);
@@ -309,6 +365,9 @@ fn semantic_raw_tokens(
     let mut identifier_resolver_calls = 0usize;
     let token_loop_start = Instant::now();
     for (token_index, token) in lexer_tokens.iter().enumerate() {
+        if token_index % 64 == 0 && should_cancel.is_some_and(|should_cancel| should_cancel()) {
+            return None;
+        }
         if token.kind == TokenKind::Whitespace || token.kind == TokenKind::Eof {
             continue;
         }
@@ -371,6 +430,17 @@ fn semantic_raw_tokens(
             };
             push_raw_semantic_token(&mut tokens, raw_semantic(*token, token_type, 0, priority));
         }
+        if token.kind == TokenKind::Identifier
+            && !declaration_spans.contains(&(token.span.start, token.span.end))
+        {
+            if let Some(token_type) = scope_reference_semantic_type(source, analysis, *token) {
+                push_raw_semantic_token(
+                    &mut tokens,
+                    raw_semantic(*token, token_type, 0, SCOPE_REFERENCE_PRIORITY),
+                );
+                continue;
+            }
+        }
         if token.kind == TokenKind::Identifier && mode == SemanticTokenMode::Rich {
             if declaration_spans.contains(&(token.span.start, token.span.end)) {
                 continue;
@@ -403,15 +473,24 @@ fn semantic_raw_tokens(
             }
         }
     }
+    if should_cancel.is_some_and(|should_cancel| should_cancel()) {
+        return None;
+    }
     let token_loop_elapsed = token_loop_start.elapsed();
 
     let type_detail_overlay_start = Instant::now();
     overlay_source_backed_type_details(source, &analysis.index, &mut tokens);
     overlay_source_backed_new_expression_types(source, &analysis.parse.root, &mut tokens);
+    if should_cancel.is_some_and(|should_cancel| should_cancel()) {
+        return None;
+    }
     let type_detail_overlay_elapsed = type_detail_overlay_start.elapsed();
 
     let declaration_overlay_start = Instant::now();
     for symbol in analysis.index.symbols() {
+        if should_cancel.is_some_and(|should_cancel| should_cancel()) {
+            return None;
+        }
         if symbol.selection_span.is_empty() || symbol.selection_span.end > source.len() {
             continue;
         }
@@ -441,6 +520,10 @@ fn semantic_raw_tokens(
 
     let mut filtered = Vec::new();
     for token in tokens {
+        if filtered.len() % 1024 == 0 && should_cancel.is_some_and(|should_cancel| should_cancel())
+        {
+            return None;
+        }
         if filtered
             .last()
             .is_some_and(|last: &RawSemanticToken| token.span.start < last.span.end)
@@ -451,7 +534,7 @@ fn semantic_raw_tokens(
     }
     filtered.sort_by_key(|token| (token.span.start, token.span.end));
     let tokens = split_multiline_semantic_tokens(source, filtered);
-    RawSemanticTokenProjection {
+    Some(RawSemanticTokenProjection {
         tokens,
         timings: LspSemanticTokenTimings {
             lex_ms: lex_elapsed.as_millis(),
@@ -464,6 +547,27 @@ fn semantic_raw_tokens(
             decode_debug_ms: 0,
             identifier_resolver_calls,
         },
+    })
+}
+
+fn scope_reference_semantic_type(
+    source: &str,
+    analysis: &FileIndexAnalysis,
+    token: Token,
+) -> Option<u32> {
+    if token.span.end > source.len() || token.span.start >= token.span.end {
+        return None;
+    }
+    let name = &source[token.span.start..token.span.end];
+    let symbol_id = analysis
+        .scope
+        .visible_symbols_named(&analysis.index, name, token.span.start)
+        .into_iter()
+        .next()?;
+    let symbol = analysis.index.symbol(symbol_id)?;
+    match symbol.kind {
+        SymbolKind::Parameter | SymbolKind::LocalVariable => symbol_semantic_type(symbol.kind),
+        _ => None,
     }
 }
 
@@ -818,7 +922,10 @@ fn is_type_like_static_owner(text: &str) -> bool {
     let Some(first) = text.chars().next() else {
         return false;
     };
-    first.is_ascii_uppercase() && text.chars().any(|character| character.is_ascii_lowercase())
+    first.is_ascii_uppercase()
+        && text
+            .chars()
+            .any(|character| character.is_ascii_alphanumeric())
 }
 
 fn call_identifier_roles(tokens: &[Token]) -> BTreeMap<usize, CallIdentifierRole> {
@@ -897,7 +1004,7 @@ fn attribute_identifier_roles(
             continue;
         }
 
-        if token.kind == TokenKind::LeftBracket && starts_attribute_context(tokens, index) {
+        if token.kind == TokenKind::LeftBracket && starts_attribute_context(source, tokens, index) {
             attribute_depth = 1;
             expect_attribute_name = true;
         }
@@ -915,8 +1022,8 @@ fn is_type_like_attribute_value(text: &str) -> bool {
     text.chars().any(|character| character.is_ascii_lowercase())
 }
 
-fn starts_attribute_context(tokens: &[Token], index: usize) -> bool {
-    previous_non_trivia(tokens, index).is_none_or(|token| {
+fn starts_attribute_context(source: &str, tokens: &[Token], index: usize) -> bool {
+    if previous_non_trivia(tokens, index).is_none_or(|token| {
         matches!(
             token.kind,
             TokenKind::LeftBrace
@@ -924,7 +1031,23 @@ fn starts_attribute_context(tokens: &[Token], index: usize) -> bool {
                 | TokenKind::RightBracket
                 | TokenKind::Semicolon
         )
-    })
+    }) {
+        return true;
+    }
+
+    let Some(previous_index) = tokens[..index]
+        .iter()
+        .rposition(|token| !token.kind.is_trivia())
+    else {
+        return true;
+    };
+    let has_line_break = tokens[previous_index + 1..index].iter().any(|token| {
+        token.kind.is_trivia() && source[token.span.start..token.span.end].contains('\n')
+    });
+    has_line_break
+        && next_non_trivia(tokens, index).is_some_and(|token| {
+            matches!(token.kind, TokenKind::Identifier | TokenKind::Keyword(_))
+        })
 }
 
 fn split_multiline_semantic_tokens(

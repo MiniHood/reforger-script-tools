@@ -1,0 +1,478 @@
+#!/usr/bin/env node
+
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { homedir } from "node:os";
+
+const args = parseArgs(process.argv.slice(2));
+const globalStorage = args.globalStorage ?? defaultGlobalStorage();
+const logPath = args.log ?? join(globalStorage, "logs", "language-server.log");
+const out = args.out ?? join("tools", "reports", "lsp-runtime-performance.report.md");
+const sinceMinutes = args.sinceMinutes;
+const records = readLogRecords(logPath);
+const filteredRecords = filterByTime(records, sinceMinutes);
+const report = renderReport({
+  generatedAt: new Date(),
+  globalStorage,
+  logPath,
+  sinceMinutes,
+  records: filteredRecords,
+  totalRecords: records.length,
+});
+
+mkdirSync(dirname(out), { recursive: true });
+writeFileSync(out, report, "utf8");
+console.log(`Wrote ${out}`);
+
+function parseArgs(rawArgs) {
+  const parsed = {};
+  for (let index = 0; index < rawArgs.length; index += 1) {
+    const arg = rawArgs[index];
+    if (arg === "--global-storage") {
+      parsed.globalStorage = rawArgs[++index];
+    } else if (arg === "--log") {
+      parsed.log = rawArgs[++index];
+    } else if (arg === "--out") {
+      parsed.out = rawArgs[++index];
+    } else if (arg === "--since-minutes") {
+      parsed.sinceMinutes = Number(rawArgs[++index]);
+      if (!Number.isFinite(parsed.sinceMinutes) || parsed.sinceMinutes < 0) {
+        throw new Error("--since-minutes must be a positive number");
+      }
+    } else if (arg === "--help" || arg === "-h") {
+      console.log("Usage: node tools/lsp-runtime-performance-report.mjs [--global-storage <path>] [--log <path>] [--out <path>] [--since-minutes <n>]");
+      process.exit(0);
+    } else {
+      throw new Error(`Unknown argument: ${arg}`);
+    }
+  }
+  return parsed;
+}
+
+function defaultGlobalStorage() {
+  if (process.platform === "win32") {
+    return join(process.env.APPDATA ?? join(homedir(), "AppData", "Roaming"), "Code", "User", "globalStorage", "undefined_publisher.reforger-sript-tools");
+  }
+  return join(homedir(), ".config", "Code", "User", "globalStorage", "undefined_publisher.reforger-sript-tools");
+}
+
+function readLogRecords(path) {
+  if (!existsSync(path)) {
+    return [];
+  }
+  const lines = readFileSync(path, "utf8").split(/\r?\n/).filter((line) => line.length > 0);
+  const records = [];
+  let current;
+  for (const line of lines) {
+    const match = line.match(/^\[(\d+)]\s+(.*)$/);
+    if (match) {
+      if (current) {
+        records.push(finalizeRecord(current));
+      }
+      current = {
+        timestamp: Number(match[1]),
+        text: match[2],
+      };
+    } else if (current) {
+      current.text += ` ${line.trim()}`;
+    }
+  }
+  if (current) {
+    records.push(finalizeRecord(current));
+  }
+  return records;
+}
+
+function finalizeRecord(record) {
+  record.text = record.text.replace(/\s+/g, " ").trim();
+  record.operation = operationName(record.text);
+  record.fields = parseFields(record.text);
+  record.elapsedMs = numberField(record.fields, "elapsed_ms")
+    ?? numberField(record.fields, "analysis_elapsed_ms")
+    ?? numberField(record.fields, "cache_total_ms")
+    ?? numberField(record.fields, "document_symbol_ms")
+    ?? 0;
+  record.uri = record.fields.uri ?? record.fields.path ?? record.fields.scripts ?? "";
+  record.fileName = basenameFromUri(record.uri);
+  return record;
+}
+
+function operationName(text) {
+  const keyIndex = text.search(/\s[a-zA-Z_][a-zA-Z0-9_]*=/);
+  return (keyIndex >= 0 ? text.slice(0, keyIndex) : text).trim();
+}
+
+function parseFields(text) {
+  const fields = {};
+  const matches = text.matchAll(/(^|\s)([a-zA-Z_][a-zA-Z0-9_]*)=(.*?)(?=\s[a-zA-Z_][a-zA-Z0-9_]*=|$)/g);
+  for (const match of matches) {
+    fields[match[2]] = match[3].trim();
+  }
+  return fields;
+}
+
+function numberField(fields, key) {
+  const raw = fields[key];
+  if (raw === undefined) {
+    return undefined;
+  }
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : undefined;
+}
+
+function basenameFromUri(uri) {
+  if (!uri) {
+    return "";
+  }
+  const normalized = uri.replaceAll("\\", "/");
+  const decoded = safeDecodeURIComponent(normalized);
+  return decoded.split("/").filter(Boolean).at(-1) ?? decoded;
+}
+
+function safeDecodeURIComponent(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function filterByTime(records, sinceMinutes) {
+  if (!sinceMinutes || records.length === 0) {
+    return records;
+  }
+  const latest = records.at(-1).timestamp;
+  const cutoff = latest - sinceMinutes * 60_000;
+  return records.filter((record) => record.timestamp >= cutoff);
+}
+
+function renderReport(input) {
+  const records = input.records;
+  const summary = summarize(records);
+  const slowRecords = records
+    .filter((record) => record.elapsedMs > 0)
+    .sort((left, right) => right.elapsedMs - left.elapsedMs)
+    .slice(0, 30);
+  const operationRows = Array.from(summary.byOperation.values())
+    .sort((left, right) => right.totalMs - left.totalMs)
+    .slice(0, 30);
+  const fileRows = Array.from(summary.byFile.values())
+    .sort((left, right) => right.totalMs - left.totalMs)
+    .slice(0, 30);
+  const windows = summarizeWindows(records, 1000)
+    .sort((left, right) => right.totalMs - left.totalMs)
+    .slice(0, 20);
+
+  const lines = [];
+  lines.push("# LSP Runtime Performance Report");
+  lines.push("");
+  lines.push("This report parses the Rust language-server runtime log and estimates where foreground latency and background CPU-like work are coming from. It does not sample OS CPU directly; it uses logged elapsed timings, request counts, stale worker records, and per-operation phase fields.");
+  lines.push("");
+  lines.push("## Summary");
+  lines.push("");
+  lines.push(`- Generated: ${input.generatedAt.toISOString()}`);
+  lines.push(`- Log: \`${input.logPath}\`${existsSync(input.logPath) ? "" : " (missing)"}`);
+  lines.push(`- Scope: ${input.sinceMinutes ? `last ${input.sinceMinutes} minutes` : "entire log"}`);
+  lines.push(`- Records analyzed: ${records.length} / ${input.totalRecords}`);
+  lines.push(`- Timed work total: ${formatMs(summary.totalMs)}`);
+  lines.push(`- Foreground request/notification time: ${formatMs(summary.foregroundMs)}`);
+  lines.push(`- Background rich semantic-token time: ${formatMs(summary.richSemanticMs)}`);
+  lines.push(`- Stale/skipped rich semantic-token records: ${summary.staleRichCount}`);
+  lines.push(`- Cancelled rich semantic-token records: ${summary.cancelledRichCount}`);
+  lines.push(`- Slowest operation: ${slowRecords[0] ? `${slowRecords[0].operation} (${formatMs(slowRecords[0].elapsedMs)})` : "None"}`);
+  lines.push("");
+  lines.push("## Interpretation");
+  lines.push("");
+  for (const note of interpretation(summary, slowRecords)) {
+    lines.push(`- ${note}`);
+  }
+  lines.push("");
+  lines.push("## Work By Operation");
+  lines.push("");
+  table(lines, ["Operation", "Count", "Total ms", "Avg", "P95", "Max"], operationRows.map((row) => [
+    row.name,
+    row.count,
+    formatMs(row.totalMs),
+    formatMs(row.totalMs / row.count),
+    formatMs(percentile(row.elapsed, 0.95)),
+    formatMs(Math.max(...row.elapsed)),
+  ]));
+  lines.push("");
+  lines.push("## Top Files / URIs By Timed Work");
+  lines.push("");
+  table(lines, ["File", "Count", "Total ms", "Avg", "Max"], fileRows.map((row) => [
+    row.name || "<none>",
+    row.count,
+    formatMs(row.totalMs),
+    formatMs(row.totalMs / row.count),
+    formatMs(Math.max(...row.elapsed)),
+  ]));
+  lines.push("");
+  lines.push("## Slowest Records");
+  lines.push("");
+  table(lines, ["Timestamp", "Operation", "File", "Elapsed", "Detail"], slowRecords.map((record) => [
+    String(record.timestamp),
+    record.operation,
+    record.fileName || "",
+    formatMs(record.elapsedMs),
+    compactDetail(record),
+  ]));
+  lines.push("");
+  lines.push("## Hottest One-Second Windows");
+  lines.push("");
+  table(lines, ["Window Start", "Records", "Total ms", "Top Operation", "Top File"], windows.map((window) => [
+    String(window.start),
+    window.count,
+    formatMs(window.totalMs),
+    window.topOperation,
+    window.topFile,
+  ]));
+  lines.push("");
+  lines.push("## Semantic Token Worker Health");
+  lines.push("");
+  lines.push(`- Rich ready records: ${summary.richReadyCount}`);
+  lines.push(`- Rich stale/skipped records: ${summary.staleRichCount}`);
+  lines.push(`- Rich cancelled records: ${summary.cancelledRichCount}`);
+  lines.push(`- Rich ready total: ${formatMs(summary.richReadyMs)}`);
+  lines.push(`- Rich stale/skipped total: ${formatMs(summary.staleRichMs)}`);
+  lines.push(`- Rich cancelled total: ${formatMs(summary.cancelledRichMs)}`);
+  lines.push(`- Fast semantic-token request total: ${formatMs(summary.fastSemanticMs)}`);
+  lines.push("");
+  lines.push("## Completion Latency");
+  lines.push("");
+  lines.push(`- Completion requests: ${summary.completion.count}`);
+  lines.push(`- Completion total: ${formatMs(summary.completion.totalMs)}`);
+  lines.push(`- Completion queue total: ${formatMs(summary.completion.queueMs)}`);
+  lines.push(`- Completion p95: ${formatMs(percentile(summary.completion.elapsed, 0.95))}`);
+  lines.push(`- Completion queue p95: ${formatMs(percentile(summary.completion.queueElapsed, 0.95))}`);
+  lines.push(`- Completion perceived p95: ${formatMs(percentile(summary.completion.perceivedElapsed, 0.95))}`);
+  lines.push(`- Completion max: ${formatMs(summary.completion.elapsed.length ? Math.max(...summary.completion.elapsed) : 0)}`);
+  lines.push(`- Completion candidate lookup total: ${formatMs(summary.completion.lookupMs)}`);
+  lines.push("");
+  lines.push("## Edit Analysis Latency");
+  lines.push("");
+  lines.push(`- didChange count: ${summary.didChange.count}`);
+  lines.push(`- didChange total: ${formatMs(summary.didChange.totalMs)}`);
+  lines.push(`- didChange queue total: ${formatMs(summary.didChange.queueMs)}`);
+  lines.push(`- didChange p95: ${formatMs(percentile(summary.didChange.elapsed, 0.95))}`);
+  lines.push(`- didChange queue p95: ${formatMs(percentile(summary.didChange.queueElapsed, 0.95))}`);
+  lines.push(`- Analysis catalog total: ${formatMs(summary.didChange.catalogMs)}`);
+  lines.push(`- Analysis parse total: ${formatMs(summary.didChange.parseMs)}`);
+  lines.push(`- Analysis scope total: ${formatMs(summary.didChange.scopeMs)}`);
+  lines.push("");
+  return `${lines.join("\n")}\n`;
+}
+
+function summarize(records) {
+  const summary = {
+    totalMs: 0,
+    foregroundMs: 0,
+    richSemanticMs: 0,
+    richReadyCount: 0,
+    richReadyMs: 0,
+    staleRichCount: 0,
+    staleRichMs: 0,
+    cancelledRichCount: 0,
+    cancelledRichMs: 0,
+    fastSemanticMs: 0,
+    completion: {
+      count: 0,
+      totalMs: 0,
+      queueMs: 0,
+      elapsed: [],
+      queueElapsed: [],
+      perceivedElapsed: [],
+      lookupMs: 0,
+    },
+    didChange: {
+      count: 0,
+      totalMs: 0,
+      queueMs: 0,
+      elapsed: [],
+      queueElapsed: [],
+      catalogMs: 0,
+      parseMs: 0,
+      scopeMs: 0,
+    },
+    byOperation: new Map(),
+    byFile: new Map(),
+  };
+  for (const record of records) {
+    const elapsed = record.elapsedMs;
+    summary.totalMs += elapsed;
+    addRow(summary.byOperation, record.operation, elapsed);
+    addRow(summary.byFile, record.fileName || record.uri || "<none>", elapsed);
+
+    if (record.operation.startsWith("request ") || record.operation.startsWith("notification ")) {
+      summary.foregroundMs += elapsed;
+    }
+    if (record.operation === "request completion") {
+      const queue = numberField(record.fields, "queue_ms") ?? 0;
+      summary.completion.count += 1;
+      summary.completion.totalMs += elapsed;
+      summary.completion.queueMs += queue;
+      summary.completion.elapsed.push(elapsed);
+      summary.completion.queueElapsed.push(queue);
+      summary.completion.perceivedElapsed.push(queue + elapsed);
+      summary.completion.lookupMs += numberField(record.fields, "lookup_ms") ?? 0;
+    }
+    if (record.operation === "notification didChange") {
+      const queue = numberField(record.fields, "queue_ms") ?? 0;
+      summary.didChange.count += 1;
+      summary.didChange.totalMs += elapsed;
+      summary.didChange.queueMs += queue;
+      summary.didChange.elapsed.push(elapsed);
+      summary.didChange.queueElapsed.push(queue);
+      summary.didChange.catalogMs += numberField(record.fields, "analysis_catalog_ms") ?? 0;
+      summary.didChange.parseMs += numberField(record.fields, "analysis_parse_ms") ?? 0;
+      summary.didChange.scopeMs += numberField(record.fields, "analysis_scope_ms") ?? 0;
+    }
+    if (record.operation === "request semanticTokens" && record.fields.mode === "fast-compute") {
+      summary.fastSemanticMs += elapsed;
+    }
+    if (record.operation === "semanticTokensRich ready") {
+      summary.richReadyCount += 1;
+      summary.richReadyMs += elapsed;
+      summary.richSemanticMs += elapsed;
+    } else if (record.operation === "semanticTokensRich discarded" || record.operation === "semanticTokensRich skipped") {
+      const reason = record.fields.reason ?? "";
+      if (reason.startsWith("cancelled-")) {
+        summary.cancelledRichCount += 1;
+        summary.cancelledRichMs += elapsed;
+      } else {
+        summary.staleRichCount += 1;
+        summary.staleRichMs += elapsed;
+      }
+      summary.richSemanticMs += elapsed;
+    }
+  }
+  return summary;
+}
+
+function addRow(map, name, elapsed) {
+  if (!map.has(name)) {
+    map.set(name, { name, count: 0, totalMs: 0, elapsed: [] });
+  }
+  const row = map.get(name);
+  row.count += 1;
+  row.totalMs += elapsed;
+  row.elapsed.push(elapsed);
+}
+
+function summarizeWindows(records, windowMs) {
+  const windows = new Map();
+  for (const record of records) {
+    const start = Math.floor(record.timestamp / windowMs) * windowMs;
+    if (!windows.has(start)) {
+      windows.set(start, { start, count: 0, totalMs: 0, operations: new Map(), files: new Map() });
+    }
+    const window = windows.get(start);
+    window.count += 1;
+    window.totalMs += record.elapsedMs;
+    addCounter(window.operations, record.operation, record.elapsedMs);
+    addCounter(window.files, record.fileName || record.uri || "<none>", record.elapsedMs);
+  }
+  return Array.from(windows.values()).map((window) => ({
+    start: window.start,
+    count: window.count,
+    totalMs: window.totalMs,
+    topOperation: topCounter(window.operations),
+    topFile: topCounter(window.files),
+  }));
+}
+
+function addCounter(map, name, elapsed) {
+  map.set(name, (map.get(name) ?? 0) + elapsed);
+}
+
+function topCounter(map) {
+  let bestName = "";
+  let bestValue = -1;
+  for (const [name, value] of map) {
+    if (value > bestValue) {
+      bestName = name;
+      bestValue = value;
+    }
+  }
+  return bestName ? `${bestName} (${formatMs(bestValue)})` : "";
+}
+
+function interpretation(summary, slowRecords) {
+  const notes = [];
+  if (summary.richSemanticMs > summary.foregroundMs) {
+    notes.push("Background rich semantic-token work dominates logged elapsed time. If CPU remains high while typing, tune rich-token scheduling/cancellation before optimizing completion.");
+  }
+  if (summary.staleRichMs > summary.richReadyMs) {
+    notes.push("More rich semantic-token time is stale/skipped than useful. This points to edit churn creating obsolete rich work.");
+  }
+  if (summary.cancelledRichCount > 0 && summary.cancelledRichMs < summary.staleRichMs) {
+    notes.push("Rich semantic-token cancellation is active. If discarded stale work remains high, add more cancellation checks inside the expensive projection path.");
+  }
+  if (summary.didChange.elapsed.length && percentile(summary.didChange.elapsed, 0.95) > 150) {
+    notes.push("didChange p95 is above 150 ms. Open-document catalog/model rebuild is a likely typing-latency source for large files.");
+  }
+  if (summary.completion.elapsed.length && percentile(summary.completion.elapsed, 0.95) > 150) {
+    notes.push("completion p95 is above 150 ms. Candidate lookup/ranking should be inspected for broad prefixes.");
+  }
+  if (slowRecords.some((record) => record.operation === "request documentSymbol" && record.elapsedMs > 150)) {
+    notes.push("Document-symbol projection still has slow lazy rebuilds. That should not block every keystroke, but Outline requests can still create short CPU spikes.");
+  }
+  if (notes.length === 0) {
+    notes.push("No dominant runtime offender was obvious in the analyzed log window.");
+  }
+  return notes;
+}
+
+function percentile(values, fraction) {
+  if (values.length === 0) {
+    return 0;
+  }
+  const sorted = [...values].sort((left, right) => left - right);
+  const index = Math.min(sorted.length - 1, Math.ceil(sorted.length * fraction) - 1);
+  return sorted[index];
+}
+
+function table(lines, headers, rows) {
+  if (rows.length === 0) {
+    lines.push("None.");
+    return;
+  }
+  lines.push(`| ${headers.join(" |")} |`);
+  lines.push(`| ${headers.map((header) => header.match(/^(Count|Total|Avg|P95|Max|Elapsed|Records)/) ? "---:" : "---").join(" | ")} |`);
+  for (const row of rows) {
+    lines.push(`| ${row.map((value) => escapeMd(value)).join(" | ")} |`);
+  }
+}
+
+function compactDetail(record) {
+  const details = [];
+  for (const key of [
+    "mode",
+    "context",
+    "prefix",
+    "candidates",
+    "analysis_build_ms",
+    "analysis_catalog_ms",
+    "document_symbol_ms",
+    "queue_ms",
+    "resolver_ms",
+    "resolver_calls",
+    "reason",
+  ]) {
+    if (record.fields[key] !== undefined) {
+      details.push(`${key}=${record.fields[key]}`);
+    }
+  }
+  return details.join(" ");
+}
+
+function formatMs(value) {
+  if (!Number.isFinite(value)) {
+    return "";
+  }
+  return `${Math.round(value)} ms`;
+}
+
+function escapeMd(value) {
+  return String(value).replaceAll("|", "\\|").replaceAll("\n", " ");
+}

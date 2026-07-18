@@ -355,13 +355,6 @@ fn completion_report_for_offset(
     let mut argument_label_fallback = None;
     if let Some(context) = argument_label_completion_context(source, &analysis.parse.root, offset) {
         let context_elapsed = context_start.elapsed();
-        let should_try_value_completion = argument_label_prefix_matches_active_parameter(
-            &context,
-            &resolver,
-            &analysis.index,
-            workspace_index,
-            game_data_index,
-        );
         let argument_label_report = argument_label_completion_report_for_indexes(
             source,
             analysis.parse_diagnostics,
@@ -377,11 +370,7 @@ fn completion_report_for_offset(
             total_start,
         );
         if !argument_label_report.list.items.is_empty() {
-            if should_try_value_completion {
-                argument_label_fallback = Some(argument_label_report);
-            } else {
-                return argument_label_report;
-            }
+            argument_label_fallback = Some(argument_label_report);
         }
     }
 
@@ -508,63 +497,81 @@ fn completion_report_for_offset(
         },
         total_start,
     );
-    if !top_level_report.list.items.is_empty()
-        && (argument_label_fallback.is_none()
-            || completion_report_has_argument_value_item(&top_level_report))
-    {
-        return top_level_report;
-    }
     if let Some(fallback) = argument_label_fallback {
-        return fallback;
+        return merge_argument_label_and_value_reports(fallback, top_level_report, total_start);
+    }
+    if !top_level_report.list.items.is_empty() {
+        return top_level_report;
     }
     top_level_report
 }
 
-fn completion_report_has_argument_value_item(report: &LspCompletionReport) -> bool {
-    report
-        .list
-        .items
-        .iter()
-        .any(|item| matches!(item.kind, 2 | 3 | 5 | 6 | 12 | 14 | 21 | 22))
+fn merge_argument_label_and_value_reports(
+    mut argument_report: LspCompletionReport,
+    value_report: LspCompletionReport,
+    total_start: Instant,
+) -> LspCompletionReport {
+    if value_report.list.items.is_empty() {
+        argument_report.timings.total = total_start.elapsed();
+        return argument_report;
+    }
+
+    let has_exact_value = value_report.list.items.iter().any(|item| {
+        completion_item_is_argument_value(item)
+            && item.label.eq_ignore_ascii_case(&value_report.prefix)
+    });
+    let argument_sort_prefix = if has_exact_value { "001" } else { "000" };
+    for (index, item) in argument_report.list.items.iter_mut().enumerate() {
+        item.sort_text = Some(format!(
+            "{argument_sort_prefix}:argument:{index:03}:{}",
+            item.label
+        ));
+    }
+
+    let value_is_incomplete = value_report.list.is_incomplete;
+    let argument_items = argument_report.list.items;
+    let value_items = value_report.list.items;
+    let combined_items: Box<dyn Iterator<Item = LspCompletionItem>> = if has_exact_value {
+        Box::new(value_items.into_iter().chain(argument_items))
+    } else {
+        Box::new(argument_items.into_iter().chain(value_items))
+    };
+
+    let mut seen = BTreeSet::new();
+    let mut items = Vec::new();
+    for item in combined_items {
+        let key = format!(
+            "{}:{}",
+            item.label.to_ascii_lowercase(),
+            item.text_edit.new_text
+        );
+        if seen.insert(key) {
+            items.push(item);
+        }
+    }
+    let (items, is_incomplete) = cap_completion_items(items);
+
+    merge_count_maps(
+        &mut argument_report.source_kind_counts,
+        value_report.source_kind_counts,
+    );
+    merge_count_maps(
+        &mut argument_report.origin_counts,
+        value_report.origin_counts,
+    );
+    argument_report.candidate_count = items.len();
+    argument_report.list = LspCompletionList {
+        is_incomplete: is_incomplete || value_is_incomplete,
+        items,
+    };
+    argument_report.timings.candidate_lookup += value_report.timings.candidate_lookup;
+    argument_report.timings.item_rendering += value_report.timings.item_rendering;
+    argument_report.timings.total = total_start.elapsed();
+    argument_report
 }
 
-#[allow(clippy::too_many_arguments)]
-fn argument_label_prefix_matches_active_parameter(
-    context: &ArgumentLabelCompletionContext,
-    resolver: &ReferenceResolver<'_, '_>,
-    local_index: &SymbolIndex,
-    workspace_index: Option<&SymbolIndex>,
-    game_data_index: Option<&SymbolIndex>,
-) -> bool {
-    let callable_candidates = callable_candidates_for_argument_label_context(
-        context,
-        resolver,
-        local_index,
-        workspace_index,
-        game_data_index,
-    );
-    callable_candidates.iter().any(|callable| {
-        let label = callable
-            .name
-            .as_deref()
-            .unwrap_or(callable.display.label.as_str());
-        let signature = callable
-            .signature
-            .as_deref()
-            .or(callable.constructor_signature.as_deref());
-        let Some(signature) = signature else {
-            return false;
-        };
-        let Some(parts) = callable_signature_parts(label, signature) else {
-            return false;
-        };
-        parts
-            .parameters_info
-            .get(context.argument_index)
-            .is_some_and(|parameter| {
-                starts_with_ignore_ascii_case(&parameter.name, &context.prefix)
-            })
-    })
+fn completion_item_is_argument_value(item: &LspCompletionItem) -> bool {
+    matches!(item.kind, 2 | 3 | 5 | 6 | 12 | 14 | 21 | 22)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1205,6 +1212,7 @@ fn top_level_completion_report_for_indexes(
         if !keyword_items.is_empty() {
             *origin_counts.entry("Keyword".to_string()).or_default() += keyword_items.len();
             prioritize_keyword_item(&mut keyword_items, "override");
+            remove_items_shadowed_by_keywords(&mut items, &keyword_items);
             keyword_items.extend(items);
             items = keyword_items;
         }
@@ -1295,6 +1303,7 @@ fn top_level_completion_report_for_indexes(
         keyword_completion_items(&prefix, edit_range, mode, declaration_context);
     if !keyword_items.is_empty() {
         *origin_counts.entry("Keyword".to_string()).or_default() += keyword_items.len();
+        remove_items_shadowed_by_keywords(&mut items, &keyword_items);
         keyword_items.extend(items);
         items = keyword_items;
     }
@@ -1369,6 +1378,17 @@ fn prioritize_keyword_item(items: &mut Vec<LspCompletionItem>, keyword: &str) {
         item.sort_text = Some(format!("00:00:000:00:{keyword}"));
         items.insert(0, item);
     }
+}
+
+fn remove_items_shadowed_by_keywords(
+    items: &mut Vec<LspCompletionItem>,
+    keyword_items: &[LspCompletionItem],
+) {
+    let keyword_labels = keyword_items
+        .iter()
+        .map(|item| item.label.to_ascii_lowercase())
+        .collect::<BTreeSet<_>>();
+    items.retain(|item| !keyword_labels.contains(&item.label.to_ascii_lowercase()));
 }
 
 fn scoped_value_completion_candidates(
@@ -1597,10 +1617,16 @@ fn keyword_completion_items(
     };
     if declaration_context {
         keywords.extend(DECLARATION_COMPLETION_KEYWORDS);
+        if mode == EditorTopLevelCompletionMode::Value {
+            keywords.extend(TYPE_COMPLETION_KEYWORDS);
+        }
     }
+    keywords.sort_by(|left, right| {
+        keyword_completion_sort_key(left, prefix).cmp(&keyword_completion_sort_key(right, prefix))
+    });
+    keywords.dedup();
     keywords
-        .iter()
-        .copied()
+        .into_iter()
         .filter(|keyword| starts_with_ignore_ascii_case(keyword, prefix))
         .map(|keyword| LspCompletionItem {
             label: keyword.to_string(),
@@ -1608,7 +1634,12 @@ fn keyword_completion_items(
             kind: 14,
             detail: Some("keyword".to_string()),
             documentation: None,
-            sort_text: Some(format!("00:00:000:{keyword}")),
+            sort_text: Some(format!(
+                "00:00:{:03}:{:03}:{}",
+                keyword_completion_match_rank(keyword, prefix),
+                keyword.chars().count(),
+                keyword
+            )),
             filter_text: Some(keyword.to_string()),
             insert_text_format: None,
             command: None,
@@ -1620,6 +1651,21 @@ fn keyword_completion_items(
             optional_parameter_count: 0,
         })
         .collect()
+}
+
+fn keyword_completion_sort_key<'keyword>(
+    keyword: &'keyword str,
+    prefix: &str,
+) -> (u16, usize, &'keyword str) {
+    (
+        keyword_completion_match_rank(keyword, prefix),
+        keyword.chars().count(),
+        keyword,
+    )
+}
+
+fn keyword_completion_match_rank(keyword: &str, prefix: &str) -> u16 {
+    completion_name_match_rank(keyword, prefix).unwrap_or(u16::MAX)
 }
 
 const STATEMENT_COMPLETION_KEYWORDS: &[&str] = &[

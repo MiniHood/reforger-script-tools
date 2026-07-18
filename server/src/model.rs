@@ -1587,6 +1587,41 @@ class Other {}
     }
 
     #[test]
+    fn invalid_class_body_text_does_not_turn_following_attribute_into_method() {
+        let source = r#"class Example
+{
+	this
+
+	[RplRpc(RplChannel.Reliable, RplRcver.Server)]
+	protected void RpcDo()
+	{
+	}
+}
+"#;
+        let parse = parse_source(source);
+        assert_eq!(parse.diagnostics.len(), 1, "{:?}", parse.diagnostics);
+        let ast = AstSourceFile::new(source, &parse);
+        let catalog = SymbolCatalog::from_ast(source, &ast);
+
+        assert!(
+            catalog.records().iter().any(|record| {
+                record.kind == SymbolKind::Method
+                    && record.name.map(|span| catalog.text(span)) == Some("RpcDo")
+                    && record.attributes.len() == 1
+                    && catalog.attribute_name(record.attributes[0]) == Some("RplRpc")
+            }),
+            "expected RpcDo method with RplRpc attribute"
+        );
+        assert!(
+            !catalog.records().iter().any(|record| {
+                record.kind == SymbolKind::Method
+                    && record.name.map(|span| catalog.text(span)) == Some("RplRpc")
+            }),
+            "stray class-body text must not create a bogus RplRpc method"
+        );
+    }
+
+    #[test]
     fn committed_parser_fixtures_catalog_without_missing_names() {
         let fixtures = [
             include_str!("../../tools/fixtures/parser/core_types_declarations.c"),

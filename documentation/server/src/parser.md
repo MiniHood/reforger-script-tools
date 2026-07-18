@@ -24,7 +24,7 @@ Optional semicolons after method bodies and between attribute lists and decorate
 
 Lexer error tokens are forwarded as parse diagnostics. Parser recovery records diagnostics for malformed constructs and keeps returning a source-file tree instead of panicking.
 
-Malformed declaration-context text is recovered as a bounded `Error` node. Recovery stops at semicolons, braces, EOF, or the next clear declaration-start keyword such as `class`, `enum`, `typedef`, `modded`, or `vanilla`, so invalid top-level text does not swallow later real declarations.
+Malformed declaration-context text is recovered as a bounded `Error` node. Recovery stops at semicolons, braces, EOF, following attribute lists, or clear declaration-start keywords/modifiers such as `class`, `enum`, `typedef`, `modded`, `vanilla`, `protected`, or `void`, so invalid top-level/class-body text does not swallow later real declarations.
 
 If malformed declaration-context text starts with a `{`, the parser consumes that balanced block as an error payload. This prevents naked statement blocks inside class bodies from returning an empty error node without advancing.
 
@@ -50,6 +50,7 @@ The parser depends on the lexer and syntax modules only. It must not resolve sym
 - Structured declaration-form `for` initializers, `foreach` headers, and switch sections.
 - Structured attribute argument lists with expression and named-argument children instead of preserving them as token-only balanced parens.
 - Tightened declaration-context error recovery so invalid top-level text stops before the next real declaration.
+- Tightened callable-declaration lookahead and unterminated-field recovery so invalid class-body text cannot scan through a following attribute list and create bogus method or field facts from the attribute call.
 - Tightened local-declaration detection so compound assignment expression statements such as `addonsDir += absPath;` are not parsed as `LocalDeclStatement`.
 - Replaced token-preserved field `InitializerList` nodes with the same structured `InitializerExpression` shape used by body/local initializer expressions so resolver-backed tooling can consume enum/static values inside field defaults.
 - Fixed declaration-context recovery for naked `{ ... }` blocks inside class bodies so malformed workspace edits cannot loop parser recovery during LSP startup indexing.
