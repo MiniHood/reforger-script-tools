@@ -2,51 +2,28 @@
 
 ## Purpose
 
-Owns disposable runtime caching for the game-data symbol index.
+Owns the disposable runtime cache for the game-data symbol index.
 
-## Architecture Role
+## Ownership
 
-This file sits beside `server/src/index_build.rs`. It does not build language facts itself; it validates cache identity, loads a serialized `SymbolIndex` when safe, or rebuilds through the existing index builder when the cache is missing, stale, corrupt, or incompatible.
+This module validates cache identity, safely loads a serialized `SymbolIndex`, or rebuilds through `index_build`. It owns cache format, invalidation, safe decoding, and load/build timing; source construction remains with `index_build`.
 
 ## Current Behavior
 
-The cache is keyed by scripts-root identity and source fingerprint. Downloaded game data uses `metadata.json` `commitSha` as the primary invalidation key. Manual folders use a recursive `.c` file fingerprint made from file count, byte count, and latest modified timestamp. Cache payloads include a schema name, format version, index-shape marker, crate version, fingerprint, summary counts, and a compact index snapshot.
+Cache identity combines scripts-root identity with a source fingerprint: downloaded data uses `metadata.json` `commitSha`; manual folders use recursive `.c` count, byte count, and latest timestamp. The v9 binary payload stores metadata, files, symbols, summary counts, and an interned string table. Derived lookup maps are rebuilt after decode.
 
-The persisted game-data cache is runtime-pruned in format v9: it removes only external `LocalVariable` symbols before serialization. Parameters, callable signatures, docs, attributes, modifiers, classes, fields, methods, constructors, destructors, typedefs, enum values, type parameters, conditional context, private/protected/static members, global fields, and source provenance remain cached. Open-document analysis and dev corpus/debug builds still use full indexes with locals.
+Persisted game-data indexes omit external `LocalVariable` symbols and source-only detail spans, but retain parameters, callable signatures, docs, attributes, modifiers, declarations, conditional context, provenance, and copied detail text. Any magic/schema/version/index-shape/crate-version/fingerprint/decode mismatch rebuilds and replaces the cache. All length-prefixed decoding is bounded before allocation; corrupt or partial data is a rebuild trigger, never source truth.
 
-The v9 cache is written as a dependency-free binary file with only metadata, files, symbols, summary counts, and an interned string table. Derived lookup maps are not persisted; they are rebuilt after decoding from the stored file and symbol records. Source-only detail span fields are stripped from persisted game-data symbols because the external cache does not retain source text, but copied detail text remains available for hover, signatures, and debug display. Any magic, schema, format, index-shape, crate-version, fingerprint, or decode mismatch falls back to rebuilding and replacing the cache.
-
-The binary decoder must treat cache bytes as untrusted. Every length-prefixed allocation is bounded before `Vec::with_capacity` or string materialization. A stale, corrupt, truncated, or partially-written cache must return a decode error and rebuild from source; it must never request unbounded memory.
-
-Cache operations now return timing data for fingerprinting, cache file read, binary decode, validation, lookup-map rebuild after decode, rebuild, write, and total load-or-build time. These timings are review data only; they do not change cache behavior.
-
-The LSP startup path may pass a progress callback into cache loading so `language-server.log` can show which startup phase is active when diagnosing slow or stuck extension startup. These phase records are startup-only diagnostics around fingerprinting, cache read/decode, map rebuild, source rebuild, and cache write. They must not become per-request logging or serialize cache contents.
-
-`server/examples/index_cache_baseline.rs` measures whether loading JSON is faster than rebuilding. `server/examples/index_cache_composition_report.rs` measures what the cache contains and how much appears needed for editor runtime features. `server/examples/index_cache_strings_report.rs` measures duplicated copied string values so possible string interning or path-table work can be judged from data.
+Operations expose phase timings and may emit startup-only progress through an LSP callback. Cache reports measure baseline, composition, and duplicate-string evidence.
 
 ## Dependencies and Boundaries
 
-Depends on `serde`, `serde_json` for metadata parsing only, `server/src/index_build.rs`, and the copied index data model. It must not parse source directly, call Workbench, download game data, own VS Code paths, or become source truth. The cache is always disposable.
+Depends on copied index records, `index_build`, `serde`, and JSON only for metadata. It does not parse sources directly, download game data, own VS Code paths, call Workbench, or become authoritative language data.
 
-## Change Notes
+## Verification
 
-- Added the first runtime game-data index cache for LSP hover external lookup.
-- Cache invalidation uses downloaded commit SHA when available and manual-folder file metadata otherwise.
-- Corrupt or incompatible cache files rebuild instead of failing the language server.
-- Added cache timing fields for `server/examples/index_cache_baseline.rs` so cache usefulness can be compared against release rebuild time.
-- Added the cache composition report as the review path for deciding whether a future split or filtered runtime cache is worthwhile.
-- Bumped the runtime game-data cache to format v2 and pruned external `LocalVariable` symbols from persisted cache writes while preserving parameters.
-- Bumped the runtime game-data cache to format v5 after adding type-parameter symbols. The cache persists files/symbols only, strips detail spans, rebuilds lookup maps on load, and rejects stale older cache files.
-- Bumped the runtime game-data cache to format v7 and added an explicit index-shape marker so stale cache data is rejected even when source fingerprints still match.
-- Bumped the runtime game-data cache to format v8 and replaced the JSON payload with a dependency-free binary payload while preserving the same runtime-pruned feature facts.
-- Added split binary cache timings so reports and runtime startup logs can distinguish file read, decode, validation, and lookup-map rebuild cost.
-- Added the cache string duplication report as the review path for deciding whether string interning or path-table cache work is worthwhile.
-- Bumped the runtime game-data cache to format v9 and added an interned string table to reduce duplicate string bytes without removing cached docs, attributes, paths, or detail text.
-- Added startup-only progress logging hooks so bad extension startup sessions can be narrowed to fingerprint, cache load, map rebuild, source rebuild, or cache write without adding hot-path request overhead.
-- Hardened binary cache length decoding so corrupt length prefixes rebuild safely instead of attempting huge allocations.
+Cache tests cover invalidation, compatibility rejection, corrupt/truncated payload recovery, bounded decoding, lookup-map rebuild, and runtime compaction. Cache reports provide runtime trade-off evidence.
 
-## Future Improvements
+## Future Direction
 
-- Split cache files by source root if workspace indexing later needs independent cache invalidation.
-- Add a more precise manual-folder fingerprint only if file metadata proves too coarse.
-- Replace, split, disable, or keep the current binary cache only after the cache baseline and cache composition reports show a concrete benefit.
+Split roots or refine manual fingerprints only when reports show a concrete need. The cache may be replaced, split, disabled, or retained based on measured benefit.

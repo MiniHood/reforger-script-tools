@@ -1,26 +1,38 @@
-# server/src/lsp/diagnostics.rs
+# `server/src/lsp/diagnostics.rs`
 
 ## Purpose
 
-Owns LSP projection for parser diagnostics.
+Projects parser diagnostics into LSP diagnostics and publish/clear
+notifications.
 
-## Architecture Role
+## Ownership
 
-This file is a focused submodule of the Rust LSP layer. It converts parser `ParseDiagnostic` records into protocol-shaped diagnostic notifications and reusable diagnostic records for reports.
+Owns stable parser diagnostic source/code values, visible UTF-16 range
+projection, and JSON-RPC notification payloads. `lsp.rs` owns when a document
+revision is accepted and when notifications are sent.
 
 ## Current Behavior
 
-Diagnostics use source `Reforger Script Tools parser`, code `reforger.parser.syntax`, and severity `1` for parser/lexer errors. The projection keeps parser messages unchanged and expands zero-width parser spans to a nearby visible source range where possible. `publish_diagnostics_message` builds the standard `textDocument/publishDiagnostics` notification with the matching document version, while `clear_diagnostics_message` retains the versionless close-notification shape. `parser_diagnostics_for_source` is shared by tests and diagnostics reports.
+Parser diagnostics retain their message and span while receiving the stable
+`reforger.parser.syntax` code and parser source label. Zero-width or
+end-of-file spans are projected to a visible nearby character where possible,
+so editor diagnostics remain selectable. Publish notifications include the
+accepted document version; close emits an empty diagnostic list to clear stale
+editor state.
 
 ## Dependencies and Boundaries
 
-This module depends on lexer spans, syntax diagnostics, and shared LSP range helpers. It must not parse source, evaluate semantics, call Workbench, inspect indexes, decide whether diagnostics are compiler truth, or handle LSP request dispatch.
+Depends on parser `ParseDiagnostic`, `TextSpan`, and shared LSP range helpers.
+It does not add semantic diagnostics, decide document revision ordering, parse
+source, or own editor rendering.
 
-## Change Notes
+## Verification
 
-- Extracted parser-diagnostic projection out of the monolithic `server/src/lsp.rs`.
+Run focused diagnostics tests and `cargo test` from `server/`. Cover malformed
+source, zero-width/end-of-file spans, CRLF and Unicode ranges, versioned publish
+payloads, and close clearing.
 
-## Future Improvements
+## Future Direction
 
-- Add semantic diagnostic projection only as a separate diagnostics layer, not by expanding parser diagnostics in place.
-- Add richer diagnostic codes only when parser diagnostics become structured enough to support them.
+Add semantic diagnostics in a separate owner and preserve parser diagnostics as
+a distinct source/code family.

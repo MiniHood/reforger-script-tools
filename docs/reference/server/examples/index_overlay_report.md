@@ -4,7 +4,7 @@
 
 Generates a dev-only Markdown report for indexing game-data scripts together with an explicit workspace script folder.
 
-## Architecture Role
+## Ownership
 
 This is developer review tooling for the future workspace/game-data overlay path. It is not VS Code runtime behavior, not an LSP entrypoint, not semantic resolution, not Workbench validation, and not compiler truth.
 
@@ -18,22 +18,6 @@ The report shows source counts, parse diagnostics by source kind, indexed symbol
 
 Uses only Rust standard library APIs plus the crate parser, AST, model, and index modules. It must not resolve symbols semantically, merge `modded` declarations, evaluate compiler validity, watch files, write caches, call Workbench, become VS Code runtime code, or become a package command.
 
-## Change Notes
+## Verification
 
-- Added the first explicit workspace plus game-data overlay report path.
-- Kept overlay priority as source metadata and existing index preference behavior rather than adding semantic override logic.
-- Overlay declaration details now use the general callable signature API for source-backed callable display.
-- Added a `Workspace Preferred Failures` section so overlay reports show if any workspace-involved duplicate or method overlay fails to prefer a workspace symbol.
-- Added kind-specific preferred top-level reporting and failure auditing for classes, typedefs, and functions. Generic top-level preferred ordering remains visible only as cross-kind conflict/debug review because names can legitimately contain unrelated declaration kinds.
-- Switched overlay indexing to the shared `index_build` module.
-- Added workspace duplicate classification buckets so overlay duplicates are explicitly labeled as workspace overlays instead of relying on readers to infer that from source kind.
-- Refined duplicate classification so workspace-local typedef/function duplicates can still be labeled by pattern, while true workspace/game-data collisions remain workspace overlays.
-- Added workspace-only top-level and workspace method-group sections so stronger overlay fixtures are visible in the report, not only through targeted debug output.
-- Added parse diagnostic snippet rendering from builder-owned details so malformed workspace files are actionable in overlay reports.
-- Switched declaration detail rows to shared `SymbolDisplay` output so overlay presentation matches query/debug display.
-
-## Future Improvements
-
-- Add workspace-root discovery through the future language server or VS Code integration.
-- Add persisted cache only after real startup measurements justify it.
-- Add semantic overlay/merge behavior only after Workbench-backed language behavior is validated.
+Run `cargo run --example index_overlay_report` from `server/` and inspect the generated report for the documented fixture or corpus checks.

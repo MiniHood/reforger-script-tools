@@ -22,15 +22,12 @@ The manifest also contributes game-data commands, the manual game-data folder se
 
 Do not add global `.c` language association for Enforce. Do not add user-facing settings unless they are real end-user controls. Runtime dependencies must remain bundled and invisible to marketplace users.
 
-## Change Notes
+## Verification
 
-- Added the `enforce` language contribution with path-scoped Reforger script file association.
-- Added the hover debug command and `Ctrl+F1` keybinding scoped to Enforce editors.
-- Removed the TextMate grammar contribution so Enforce coloring has one path: Rust semantic tokens.
-- Disabled VS Code bracket-pair colorization by default for Enforce documents and stopped contributing editor bracket pairs so brackets inside comments remain comment-colored by semantic tokens.
-- Kept lightweight bracket/paren/quote auto-closing in the language configuration and narrowed duplicate-close behavior there instead of adding a separate formatter path.
-- Disabled comment/string quick suggestions and word-based suggestions by default for Enforce so autocomplete does not start in comments or display word-icon fallback items when the LSP has no candidate.
-- Enabled keyword suggestion display by default for Enforce so LSP-owned keyword completions remain visible even when a user has broader VS Code keyword suggestions disabled.
+Run `npm test` after changing contributions, commands, settings, dependencies,
+or scripts. In an Extension Development Host, confirm that only `Scripts/*.c`
+files select the Enforce language mode and that each changed contribution is
+available through VS Code.
 
 ## Future Improvements
 

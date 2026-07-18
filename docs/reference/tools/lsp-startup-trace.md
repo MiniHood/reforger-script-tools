@@ -4,7 +4,7 @@
 
 Creates a single human-reviewable startup trace for the Rust LSP server by merging the TypeScript startup log, Rust runtime log, and VS Code language-client output.
 
-## Architecture Role
+## Ownership
 
 This is repo-only diagnostic tooling. It does not start the extension, change runtime behavior, parse source, or register a VS Code command. It exists to make startup stalls and crashes easier to reason about from one report.
 
@@ -20,11 +20,6 @@ Uses only Node built-in modules. It must remain dev-only and must not become run
 
 The report is diagnostic evidence only. It does not replace targeted Rust logs, hover debug output, semantic-token reports, cache baselines, or manual Extension Development Host validation.
 
-## Change Notes
+## Verification
 
-- Added after startup issues became hard to diagnose from separate TypeScript, Rust, and VS Code output logs.
-
-## Future Improvements
-
-- Add optional process memory sampling around a launched Extension Development Host if we need to catch memory growth live.
-- Add structured Rust session IDs if the server log starts emitting them directly.
+Run the script against representative global-storage and VS Code logs; confirm it produces a trace without mutating any input log, cache, or workspace file.

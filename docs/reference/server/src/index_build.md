@@ -2,48 +2,26 @@
 
 ## Purpose
 
-Owns reusable construction of in-memory symbol indexes from explicit script source roots.
+Builds in-memory symbol indexes from explicit script source roots.
 
-## Architecture Role
+## Ownership
 
-This file sits above parser, AST, model, and raw index layers. It is the shared pipeline for scanning `.c` files, reading and decoding source, parsing, building file-local symbol catalogs, and adding those catalogs into `SymbolIndex`.
-
-Future dev tools, runtime startup, and LSP indexing code should use this module instead of duplicating scan/read/parse/catalog/index logic.
+This module owns deterministic `.c` discovery, read/decode, parse, file-local catalog construction, and index aggregation. Tools, runtime startup, and future LSP indexing reuse this pipeline instead of duplicating it.
 
 ## Current Behavior
 
-`IndexSourceRoot` describes one source root with an explicit path, `SourceKind`, and priority. `IndexBuildConfig` accepts one or more roots. `build_index` validates each root, recursively discovers `.c` files, sorts them deterministically, creates `SourceFileMetadata` with path-derived source category, parses each file, builds a `SymbolCatalog`, and immediately adds it to `SymbolIndex`.
+`IndexSourceRoot` supplies path, `SourceKind`, and priority; `IndexBuildConfig` combines roots. `build_index` validates roots, recursively discovers and sorts `.c` files, creates path-derived metadata/categories, parses each source, builds a `SymbolCatalog`, and adds it to `SymbolIndex`.
 
-Source category assignment is path-based and best-effort. Workspace roots are always `Workspace`. Game-data paths are classified into runtime and review categories such as Game, GameCode, GameLib, Core, generated, Workbench, docs/Doxygen, test/autotest, or unknown. These categories are provenance for query/report policy, not compiler truth.
-
-`IndexBuildSummary` records total and per-source-kind counts for files, bytes, lossy UTF-8 files, parse diagnostics, diagnostic files, indexed files, indexed symbols, and non-declaration callable fragments. It also stores bounded human-review details for lossy decoding and parse diagnostics, including location data and short source snippets. Snippets render UTF-8 replacement characters as the ASCII label `<U+FFFD>` so report output is readable across terminals and editors.
-
-`IndexBuildTimings` records file discovery, read/decode, parse, AST/model catalog creation, aggregate catalog build, index aggregation, and total wall-clock durations for human review. The aggregate catalog build timing remains available for existing corpus reports, while the finer phases support runtime startup baseline reports.
+`IndexBuildSummary` reports file/byte/decode/diagnostic/catalog counts and bounded review details for lossy decode and parse diagnostics. `IndexBuildTimings` separates discovery, read/decode, parse, catalog construction, aggregation, and total time. Categories are provenance for query/report policy, not compiler truth.
 
 ## Dependencies and Boundaries
 
-This file depends on parser, AST, model, and index modules. It must not resolve symbols semantically, merge `modded` classes, watch files, persist caches, call Workbench, know VS Code workspace state, or handle LSP requests.
+Depends on parser, AST, model, and index. It does not resolve symbols, merge `modded` classes, watch files, persist caches, discover VS Code workspaces, call Workbench, or handle LSP.
 
-The builder is source-root explicit. VS Code workspace discovery and game-data source resolution belong in future TypeScript/LSP integration layers, not here.
+## Verification
 
-Runtime cache loading and invalidation belong in `server/src/index_cache.rs`. This builder remains the source-to-index construction path used when a cache is missing, stale, corrupt, or incompatible.
+Builder tests and corpus/overlay/cache-baseline reports exercise deterministic scanning, diagnostics, categories, summaries, and timings.
 
-`server/examples/index_cache_baseline.rs` compares this direct build path against binary cache load and cache miss rebuild/write. Use that report before changing cache strategy.
+## Future Direction
 
-## Change Notes
-
-- Added the shared index-building pipeline for corpus report, overlay report, and index debug tooling.
-- Removed the need for report/debug examples to keep borrowed source strings alive because `SymbolIndex::add_catalog` copies indexed lookup facts.
-- Added per-source summaries and build timings so reports can keep human-review diagnostics without owning indexing logic.
-- Added bounded lossy decode details and parse diagnostic details so corpus, overlay, and debug tooling can show actionable source snippets without duplicating parser/report logic.
-- Render replacement characters in snippets as `<U+FFFD>` so lossy decode reports remain ASCII-stable and do not display mojibake in PowerShell or other terminals.
-- Added source-category assignment from source-root relative paths so editor-facing queries can include runtime/workspace sources while raw debug keeps docs/tests/Workbench sources visible.
-- Split build timings into read/decode, parse, AST/model catalog, and index aggregation phases while preserving the older aggregate catalog timing for compatibility.
-- Used by the runtime index cache to rebuild disposable game-data indexes when cache validation fails.
-- Cross-linked the cache baseline report so direct rebuild timing stays comparable to cache-hit timing.
-
-## Future Improvements
-
-- Add incremental rebuild inputs after workspace file watching exists.
-- Keep persisted cache policy in `index_cache`; this module should continue to only build indexes from explicit source roots.
-- Improve memory-size estimates if future language-server startup needs more than the current lower-bound index-shape report.
+Incremental rebuild inputs belong with a future watcher. Cache validation and persistence remain in `index_cache`.

@@ -4,7 +4,7 @@
 
 Generates a human-readable Markdown report showing lexer input vs token output for committed fixtures.
 
-## Architecture Role
+## Ownership
 
 This is developer review tooling for the Rust lexer. It is not VS Code runtime behavior and is not a language server entrypoint.
 
@@ -18,15 +18,6 @@ The command also accepts `--out <path>` for an alternate report path.
 
 The report generator uses only Rust standard library APIs and the crate lexer. It must not implement parser, model, index, or LSP behavior. Generated reports belong under ignored output paths such as `tools/reports/`.
 
-## Change Notes
+## Verification
 
-- Added the first lexer fixture report generator for human/Codex review.
-- Updated fixture coverage to include the renamed Core array class fixture and newer Core/game-mode fixtures.
-- Added documentation comment counts and switched error counting to the lexer token classification helper.
-- Updated fixture paths after moving lexer fixtures under `tools/fixtures/`.
-- Added editor preview and Workbench formatter fixtures to the report input set.
-
-## Future Improvements
-
-- Add corpus-scale summaries after the lexer has a stable fixture baseline.
-- Add focused sections for any Workbench-confirmed tokenization edge cases.
+Run `cargo run --example lexer_report` from `server/` and inspect the generated report for the documented fixture or corpus checks.

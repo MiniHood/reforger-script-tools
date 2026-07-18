@@ -4,7 +4,12 @@
 
 Generates a dev-only corpus report for statement/expression parser coverage across downloaded or manually supplied Reforger `.c` scripts.
 
-## Behavior
+
+## Ownership
+
+This dev-only Rust example owns a repeatable report or debug projection for its named language-engine subsystem. It must not become extension runtime behavior.
+
+## Current Behavior
 
 The report scans `.c` files, parses them, and summarizes statement/expression syntax kind frequencies, diagnostics, recovery/error nodes, deepest expression trees, named arguments, named-argument labels, initializer expressions, and member/call/index chain samples. It also includes body-structure quality sections for:
 
@@ -22,7 +27,7 @@ The expression wrappers are source-backed parser views; report counts are syntax
 
 This is review tooling only. Workbench remains compiler truth.
 
-## Usage
+## Verification
 
 ```powershell
 cargo run --manifest-path server/Cargo.toml --example expression_corpus_report
@@ -35,3 +40,7 @@ Optional flags:
 --scripts <path>
 --out <path>
 ```
+
+## Dependencies and Boundaries
+
+Depends on the Rust language-engine owners and repository fixtures named by the example. It may write a developer report but must not become an LSP runtime path or source of language truth.

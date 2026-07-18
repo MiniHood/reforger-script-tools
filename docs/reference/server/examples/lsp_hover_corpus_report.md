@@ -4,7 +4,7 @@
 
 Generates a dev-only corpus report for the resolver-first LSP hover path across downloaded or explicitly provided Reforger script data.
 
-## Architecture Role
+## Ownership
 
 This example sits above `server/src/lsp.rs` and exercises the same hover projection used by `textDocument/hover`. It builds the game-data index once as external resolver context, then samples identifier-token positions and runs parser, AST, model, file-local index, resolver, query, and display logic once per sampled file.
 
@@ -31,18 +31,6 @@ The report uses the game-data index as external context. Remaining misses are un
 
 The raw hit rate keeps every sampled identifier in the denominator for continuity. The actionable hover hit rate excludes sampled misses classified as attribute named arguments, attribute enum/static values, preprocessor directive or macro tokens, named call argument labels, and Workbench/docs/test source noise. Attribute named arguments, preprocessor directives, preprocessor macro names, and named argument labels are classified from resolver-owned non-symbol reasons first; report-local source-line heuristics remain only for attribute value and source-policy buckets. This makes the corpus report better reflect resolver/editor quality without hiding the raw counts.
 
-## Change Notes
+## Verification
 
-- Added the first corpus-scale hover report to review resolver-first hover behavior beyond targeted fixtures.
-- Added identifier context reporting so type-position behavior can be reviewed across sampled corpus hovers.
-- Added external game-data index context, selected-source frequency, and file-local/external hit counts.
-- Added receiver owner/failure frequencies and receiver details in hit/miss samples for member-access review.
-- Added receiver expression kind in hit/miss samples after member-access resolution moved to AST expression views.
-- Added offset-aware remaining-miss classification buckets for attribute named arguments, attribute enum/static values, preprocessor directive or macro tokens, named call arguments, and Workbench/docs/test source.
-- Added actionable hover hit-rate scoring and top files by actionable hover misses so known non-hover/source-noise tokens do not dominate review.
-- Updated obvious non-symbol buckets to prefer resolver-owned reasons for attribute named arguments, preprocessor directive tokens, preprocessor macro names, and named argument labels.
-
-## Future Improvements
-
-- Add focused miss classification if unresolved samples reveal repeated resolver gaps.
-- Add release timing comparisons when hover performance becomes a runtime concern.
+Run `cargo run --example lsp_hover_corpus_report` from `server/` and inspect the generated report for the documented fixture or corpus checks.

@@ -2,29 +2,26 @@
 
 ## Purpose
 
-Exposes source-backed type facts copied into the symbol index.
+Provides read-only source-backed type facts copied into the symbol index.
 
-## Architecture Role
+## Ownership
 
-This file sits above `index` and below future semantic/type resolution. It is the first dedicated place to ask what raw type-related facts are known for a symbol: declared type text, callable return type text, class/enum base type text, typedef target text, defaults, enum values, and containing class names.
+`TypeFacts` is the narrow fact-access boundary between indexed detail records and expression/resolver consumers. It owns no inference or storage.
 
 ## Current Behavior
 
-`TypeFacts` wraps a borrowed `SymbolIndex` and returns borrowed facts from indexed symbols. It does not allocate normalized type records, resolve aliases, instantiate generics, evaluate enum/default expressions, or merge declarations. It is usable over open-document indexes, workspace overlays, and runtime game-data caches because it only depends on copied index facts.
+The borrowed facade returns declared type text, callable returns, class/enum bases, typedef targets, defaults, enum values, container names, and compact `SymbolTypeFacts` snapshots. Narrow helpers expose value, typedef, callable, base, and enum-member views without allocation, normalization, alias resolution, generic instantiation, or expression evaluation.
 
-`SymbolTypeFacts` is a compact snapshot for one symbol. It includes symbol identity, kind, optional name, containing class name, and optional raw detail strings. Helper methods expose narrower views for value symbols, typedef targets, callable return types, class/enum bases, and enum member values. `server/src/expression_type.rs` builds on this layer for reusable receiver-owner and generic-substitution facts.
+It works over open-document indexes, workspace overlays, and cached game-data indexes because it only reads copied records. `expression_type` builds reusable receiver-owner inference on these facts.
 
 ## Dependencies and Boundaries
 
-This file depends on `index` and `model::SymbolKind`. It must not parse source, inspect AST syntax, walk files, call Workbench, implement hover/completion/definition policy, or perform semantic type inference. Resolver-owned receiver inference can migrate toward this layer in later slices, but this file should remain a fact-access layer until a richer semantic/type environment is designed.
+Depends on index and `model::SymbolKind`. It does not parse/inspect AST, walk files, handle LSP, choose feature policy, call Workbench, or perform semantic inference.
 
-## Change Notes
+## Verification
 
-- Added the first read-only type-facts facade over copied indexed detail text.
-- Kept facts borrowed from the index so the layer works with compact runtime cache data and does not introduce another storage path.
+Type-fact tests cover each detail view and indexed-symbol kind; expression-type tests exercise downstream use.
 
-## Future Improvements
+## Future Direction
 
-- Add source-backed type-shape access over indexed type text when resolver/completion need structured owner/generic facts.
-- Keep raw fact access here and put receiver/type-text inference in `expression_type`.
-- Add a real semantic type environment separately; do not turn this file into a type checker by incrementally adding ad hoc resolution rules.
+Keep raw access here. Structured type shapes and real type checking belong in dedicated semantic layers.

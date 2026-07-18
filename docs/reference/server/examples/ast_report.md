@@ -4,7 +4,7 @@
 
 Generates a human-readable report of AST declaration extraction over committed parser fixtures.
 
-## Architecture Role
+## Ownership
 
 This is developer review tooling for the Rust AST wrapper layer. It is not runtime extension behavior, not LSP wiring, not semantic indexing, and not Workbench validation.
 
@@ -18,20 +18,6 @@ It accepts `--out <path>` for an explicit report destination.
 
 Uses only Rust standard library APIs plus the crate parser and AST modules. It must not duplicate AST extraction logic, inspect workspace/game-data corpora, call Workbench, become VS Code runtime code, or become a package command.
 
-## Change Notes
+## Verification
 
-- Added the first AST fixture report for reviewing source-backed declaration extraction.
-- Added destructor rendering so `void ~Name()` appears as a destructor instead of a method returning `void ~`.
-- Added global-field rendering for top-level `Declaration::Field` values.
-- Added enum attribute counts to declaration output.
-- Added enum member value rendering for explicit source-backed values.
-- Added doc comment counts and first-line previews for declarations and class members.
-- Added constructor rendering through AST class-context method classification.
-- Added parameter detail rendering from the AST parameter accessors.
-- Added rendering for AST-classified non-declaration callable fragments.
-- Added typedef aliased type text rendering.
-
-## Future Improvements
-
-- Add corpus-scale AST extraction reporting after the file-local AST API stabilizes.
-- Add richer declaration details only when future AST/model work needs them.
+Run `cargo run --example ast_report` from `server/` and inspect the generated report for the documented fixture checks.

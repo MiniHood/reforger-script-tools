@@ -2,32 +2,24 @@
 
 ## Purpose
 
-Provides the executable entrypoint for the bundled Rust language server binary.
+Provides the bundled Rust language-server executable entrypoint.
 
-## Architecture Role
+## Ownership
 
-This binary is the runtime process launched by the VS Code TypeScript language client. It delegates protocol behavior to `server/src/lsp.rs` and keeps command-line handling minimal.
+The binary owns only command-line argument handling and stdio process startup. `server/src/lsp.rs` owns protocol runtime behavior; lower language-engine modules own language features and caching.
 
 ## Current Behavior
 
-The binary accepts:
-
-- `--log <path>` for language-server log output.
-- `--game-data-scripts <path>` for game-data source provenance.
-- `--game-data-metadata <path>` for downloaded game-data commit metadata used by cache invalidation.
-- `--index-cache <path>` for the disposable serialized game-data symbol index.
-
-It starts the stdio LSP loop and exits with a nonzero status if the server returns an error.
+It accepts `--log`, `--game-data-scripts`, `--game-data-metadata`, and `--index-cache` paths, starts the stdio LSP loop, and returns a nonzero status when the server returns an error.
 
 ## Dependencies and Boundaries
 
-This file must stay thin. Do not add parser, index, Workbench, VS Code, cache, or feature logic here. New runtime behavior belongs in `server/src/lsp.rs` or lower language-engine layers.
+This entrypoint stays thin. It does not own parser, index, Workbench, VS Code, cache, or feature logic.
 
-## Change Notes
+## Verification
 
-- Added the first binary entrypoint for packaging a self-contained language server with the VS Code extension.
-- Added game-data metadata and index-cache path flags for runtime external hover lookup.
+Server integration tests exercise the LSP runtime; packaging/startup checks verify the binary receives its extension-owned paths.
 
-## Future Improvements
+## Future Direction
 
-- Add explicit version or diagnostic command-line flags only if packaging/debug workflows require them.
+Add explicit diagnostic or version flags only for a concrete packaging or debugging requirement.

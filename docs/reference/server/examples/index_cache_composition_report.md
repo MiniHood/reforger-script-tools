@@ -4,7 +4,7 @@
 
 Explains what the disposable game-data index cache contains and how much of it is likely needed for editor hover/completion.
 
-## Architecture Role
+## Ownership
 
 This is dev-only review tooling. It loads the current game-data index through `server/src/index_cache.rs`, inspects public `SymbolIndex` data, and writes a Markdown report under `tools/reports/`.
 
@@ -20,15 +20,6 @@ Editor-runtime classification uses `SourceCategory::is_editor_completion_default
 
 Depends on `index_cache`, `SymbolIndex`, `SourceCategory`, and serde JSON serialization for temporary measurement snapshots. It must not change cache format, cache invalidation, runtime language-server behavior, index semantics, source-category policy, or LSP behavior.
 
-## Change Notes
+## Verification
 
-- Added after the cache baseline showed cache hits are faster than rebuilds but the cache is large.
-- The report is intended to decide whether a later split or filtered runtime cache is worth designing.
-- Updated for the v2 runtime-pruned game-data cache to make removed local variables and preserved parameters explicit.
-- Updated for the v8 binary runtime cache to report full-map estimate versus actual cache size, omitted maps, stripped detail spans, copied detail text preservation, and compacted per-file symbol range preservation.
-- Updated for the v9 string-table runtime cache to make repeated-string storage part of the structural cache review.
-
-## Future Improvements
-
-- Use this report before designing any binary cache or split runtime/debug cache.
-- Add additional slices only after hover/completion/definition clarify which facts are truly needed at startup.
+Run `cargo run --example index_cache_composition_report` from `server/` and inspect the generated report for the documented fixture or corpus checks.

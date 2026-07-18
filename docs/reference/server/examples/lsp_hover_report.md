@@ -4,7 +4,7 @@
 
 Provides a dev-only fixture report for the LSP hover path.
 
-## Architecture Role
+## Ownership
 
 This example sits above the Rust LSP helper API. It exercises the same file-local hover projection used by `textDocument/hover` without starting VS Code or a stdio server.
 
@@ -16,21 +16,6 @@ The report reads targeted committed parser fixtures, downloaded game-data checks
 
 The report uses only Rust standard library code and the existing LSP/index helper functions. It accepts `--scripts <path>` to override the downloaded game-data scripts folder. It must remain dev-only review tooling. It must not perform semantic lookup, Workbench validation, runtime logging, VS Code command registration, or source mutation.
 
-## Change Notes
+## Verification
 
-- Added the first hover fixture report alongside the LSP hover feature.
-- Inline enum/global source is used because the current committed parser fixture set does not contain those hover shapes.
-- Added local/block symbol hover checks from `tools/fixtures/parser/local_block_symbols.c`.
-- Added resolver-first hover visibility through selection source, resolver reason, and candidate count columns.
-- Added downloaded game-data hover checks for `Game/GameMode/SCR_BaseGameMode.c`, including a deliberate external-base miss that documents the current file-local hover boundary.
-- Added identifier context and game-data checks for constructor/type-name collisions such as `SCR_AutotestResult`.
-- Added external game-data index context and selected-source reporting for hover fixture checks.
-- Added receiver/member-access hover checks and receiver owner/failure report columns.
-- Added a resolver syntax-span hover check for non-identifier positions inside declarations.
-- Added receiver expression kind reporting now that member-access hover consumes AST expression views.
-- Added receiver lookup path reporting and game-data checks for external function receiver chains such as `GetGame().GetWorld().GetWorldTime()`.
-
-## Future Improvements
-
-- Add larger game-data-derived hover samples when needed.
-- Add more fixture points for expression-backed receiver/member access when new resolver rules are introduced.
+Run `cargo run --example lsp_hover_report` from `server/` and inspect the generated report for the documented fixture or corpus checks.

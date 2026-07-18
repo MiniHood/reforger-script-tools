@@ -1,35 +1,39 @@
-# server/src/lsp/hover.rs
+# `server/src/lsp/hover.rs`
 
 ## Purpose
 
-Owns normal LSP hover selection and delegates Markdown rendering.
+Selects the source-backed symbol and range for normal LSP hover, then delegates
+Markdown presentation.
 
-## Architecture Role
+## Ownership
 
-This module sits inside the Rust LSP layer and turns cached file-local analysis plus an optional external workspace/game-data overlay into `textDocument/hover` responses and hover fixture/corpus report data. `server/src/lsp.rs` keeps protocol dispatch and open-document cache lifecycle. `server/src/lsp/hover_render.rs` owns Markdown presentation.
+Owns cursor-to-offset handling, resolver-driven selection across file-local and
+external layers, hover response projection, and selection-source reporting. It
+does not render Markdown, assemble debug reports, dispatch requests, or create
+a parallel span/string-scanning lookup path.
 
 ## Current Behavior
 
-Hover is resolver-owned. The module asks `ReferenceResolver` for identifier or syntax-span hover resolution, renders the selected symbol through `SymbolDisplay`, and returns compact Markdown. File-local candidates are preferred over external overlay candidates according to resolver policy. External symbols use the hovered token range in the current document while displaying facts from the external index.
-
-When a file-local class declaration is selected and an external workspace/game-data overlay is available, hover still displays the file-local selected symbol but passes the external query to the renderer for class member summaries. This lets inherited member sections match the richer type-usage hover without making external symbols beat open-document declarations.
-
-Syntax-span hover is intentionally limited to useful declaration syntax inside source-backed type, return-type, or base-type detail spans, such as a callable return type keyword. Comments, whitespace, strings, punctuation, modifiers such as `protected` / `private` / `static` / `const`, and other non-symbol token classes return no hover instead of selecting a containing class or method.
-
-The hover Markdown shows a colored kind label, fenced Enforce signature or label, kind-specific detail text, structured documentation sections, bounded class member summaries, modifiers, attributes, and concise source path when available. Color is best-effort Markdown presentation only; semantic tokens remain the editor coloring source.
-
-When the renderer can map a displayed type/member label to a source-backed target, the Markdown may include trusted command links. Hover selection and target discovery remain Rust-side; the VS Code client only opens the URI/range carried by the link command.
+Hover uses cached open-document analysis plus workspace/game-data snapshots.
+The resolver decides identifier and non-identifier syntax-span selection, while
+the projection returns the cursor token range for file-local identifiers and
+the appropriate source range for external candidates. Ambiguous and
+non-symbol positions return no hover rather than guessing. Batch helpers reuse
+the same selection path for reports.
 
 ## Dependencies and Boundaries
 
-Depends on `ReferenceResolver`, `IndexQuery`, `SymbolDisplay`, `SymbolIndex`, hover rendering, and LSP range/position helpers. It does not own debug-hover reports, protocol dispatch, document storage, workspace indexing, completion, definition, diagnostics, or semantic tokens.
+Depends on `ReferenceResolver`, `FileIndexAnalysis`, `SymbolIndex`,
+`IndexQuery`, external snapshots, and [hover_render.md](hover_render.md).
+[debug_hover.md](debug_hover.md) may reuse rendering but owns diagnostic output.
 
-Debug-hover may reuse `render_hover_markdown`, but debug report assembly belongs in its own path.
+## Verification
 
-## Change Notes
+Run focused hover tests and `cargo test` from `server/`. Cover local and
+external symbols, workspace precedence, syntax spans, comments/whitespace
+misses, Unicode ranges, and local/block scope behavior.
 
-Extracted from `server/src/lsp.rs` without behavior changes. Hover presentation later moved to `hover_render.rs` so selection and rendering have separate owners while retaining one authoritative hover path.
+## Future Direction
 
-## Future Improvements
-
-Keep future hover enhancements routed through resolver and `SymbolDisplay`. Do not add a parallel span or string-scanning hover path in the LSP dispatch layer.
+Route richer hover facts through resolver and display models. Do not add
+file-local LSP shortcuts that bypass resolver policy.

@@ -4,7 +4,7 @@
 
 Generates a dev-only corpus report for the LSP semantic-token projection that drives Enforce coloring.
 
-## Architecture Role
+## Ownership
 
 This example sits above `server/src/lsp.rs` and exercises the same semantic-token conversion used by `textDocument/semanticTokens/full`. It validates the Rust semantic-token coloring path after the TextMate grammar removal.
 
@@ -30,15 +30,6 @@ Uncolored identifiers are classified with their actual token offset and local so
 
 Uses only Rust standard library APIs, the existing index builder, lexer, and LSP semantic-token helper. It must remain dev-only review tooling. It must not register VS Code commands, mutate source, add runtime logging, or create a separate coloring implementation.
 
-## Change Notes
+## Verification
 
-- Added after removing the TextMate grammar so semantic-token coverage can be reviewed across real game data, not only fixture examples.
-- Added uncolored-identifier classification after corpus coverage became high enough that named labels and attribute/source-noise positions dominated the remaining samples.
-- Added source-context sample tables by classification so unresolved semantic-token gaps can be reviewed as member-chain/type-inference issues instead of a single broad unresolved bucket.
-- Added `--runtime-only` after large-file investigation showed that live semantic-token performance must be measured separately from decoded debug row generation.
-- Added internal semantic-token timing so large-file reports show lexing, resolver, declaration overlay, sort/filter/split, encoding, and report-only decode cost separately.
-
-## Future Improvements
-
-- Add release-mode timing comparison only if semantic-token generation becomes a visible editor performance problem.
-- Add source-kind/origin splits if workspace overlay coloring needs corpus-scale review.
+Run `cargo run --example lsp_semantic_tokens_corpus_report` from `server/` and inspect the generated report for the documented fixture or corpus checks.

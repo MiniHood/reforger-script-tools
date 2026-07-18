@@ -4,6 +4,11 @@
 
 Provides a dev-only fixture report for LSP completion.
 
+
+## Ownership
+
+This dev-only Rust example owns a repeatable report or debug projection for its named language-engine subsystem. It must not become extension runtime behavior.
+
 ## Current Behavior
 
 The report builds small source-backed game-data and workspace indexes, runs the same completion paths used by `textDocument/completion`, and writes `tools/reports/lsp-completion-fixtures.report.md`.
@@ -26,12 +31,12 @@ The report includes completion context, receiver text, inferred owner type, type
 - unresolved receivers
 - non-member cursor positions
 
-## Commands
+## Verification
 
 ```powershell
 node tools/lsp-completion-report.mjs
 ```
 
-## Boundaries
+## Dependencies and Boundaries
 
 This report covers source-backed member, type-prefix, top-level-prefix, and inherited override skeleton completion, including callable snippet insert text, required/optional parameter presentation, callable label details, and source-aware sort text. It does not cover `completionItem/resolve`, full overload UI, fuzzy matching, diagnostics, Workbench validation, or TypeScript-side language analysis.

@@ -4,7 +4,7 @@
 
 Centralizes extension-owned constants for the language-client subsystem.
 
-## Architecture Role
+## Ownership
 
 This file is TypeScript extension-shell configuration. It keeps language-client IDs, bundled binary folder names, log filenames, and document selectors out of runtime feature code.
 
@@ -24,24 +24,6 @@ The language id is `enforce`. The document selector targets that language id; pa
 
 This file has no VS Code API calls, filesystem access, mutable state, parser logic, or LSP process management. Runtime behavior belongs in `src/languageClient/languageClient.ts`.
 
-## Change Notes
+## Verification
 
-- Added centralized constants for the first bundled Rust language-server client.
-- Added the centralized `enforce` language id used by the language-client selector.
-- Added centralized constants for the hover-debug command and `reforger/debugHover` request.
-- Added centralized constants for the completion-debug command and `reforger/debugCompletion` request. The request now returns one combined autocomplete and Signature Help debug report.
-- Added the centralized hover symbol-link command used by Rust-generated trusted Markdown links.
-- Added centralized completion follow-up commands used by Rust-generated enum placeholders and enum-member completion items to trigger suggestions at the placeholder end, move to the next snippet placeholder, and reopen suggestions.
-- Added centralized constants for workspace overlay file-change notifications.
-- Added centralized storage names for the single-record hover-debug report under `logs/hover-debug/latest.md`.
-- Added centralized storage names for the single-record completion-debug report under `logs/completion-debug/latest.md`.
-- Added centralized storage names for the disposable game-data symbol index cache under `index-cache/`.
-- Updated the disposable game-data cache file to v8 after replacing the JSON payload with the binary runtime cache format.
-- Updated the disposable game-data cache file to v9 after adding binary string-table storage.
-- Added centralized crash handling constants so repeated language-server crashes show a short user-facing notification while keeping detailed output in logs.
-- Added deletion and insertion completion retrigger debounce constants for Enforce editor integration.
-- Added the centralized TypeScript startup timing log filename `logs/language-client-startup.log`.
-
-## Future Improvements
-
-- Add future language-client command IDs or storage names here before use.
+Run `npm test` after changing a constant or its consumer. Exercise the affected client lifecycle or command in a fresh Extension Development Host when the value crosses the VS Code/Rust boundary.

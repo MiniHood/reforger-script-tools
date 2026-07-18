@@ -4,7 +4,7 @@
 
 Measures whether the disposable binary game-data index cache is actually useful compared with rebuilding the index.
 
-## Architecture Role
+## Ownership
 
 This is dev-only review tooling. It exercises the runtime cache path in `server/src/index_cache.rs` and compares it with a direct `index_build` rebuild, but it does not change language-server startup behavior or cache policy.
 
@@ -20,17 +20,6 @@ Release timing is the only timing used for the cache usefulness decision. Debug 
 
 Depends on `index_cache`, `index_build`, and public `SymbolIndex` data for counts and lower-bound memory estimates. It must not add runtime extension commands, mutate source files, change cache invalidation policy, or treat the cache as source truth.
 
-## Change Notes
+## Verification
 
-- Added to compare the large cache against release rebuild time before expanding runtime indexing.
-- Temporary benchmark caches are written outside tracked source paths and removed after the run.
-- Updated for v2 runtime cache pruning so local-variable removal and parameter preservation are visible in the count comparison.
-- Updated for v8 binary cache optimization so full-map estimates, detail-span stripping, compacted per-file symbol ranges, and map rebuild behavior are visible.
-- Updated for v9 string-table cache storage so repeated string savings are measured without removing editor-visible facts.
-- Added split binary cache timing fields for file read, decode, validation, and lookup-map rebuild.
-- Added lookup-map shape reporting so cache rebuild-map cost can be tied to concrete key and symbol-id entry counts.
-
-## Future Improvements
-
-- Add process RSS measurement only if a dependency-free, platform-appropriate approach becomes necessary.
-- Use this report before changing the binary cache format or disabling cache entirely.
+Run `cargo run --example index_cache_baseline` from `server/` against a known script corpus. Confirm temporary benchmark artifacts are outside tracked paths and removed after the run.

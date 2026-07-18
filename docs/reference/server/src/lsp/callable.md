@@ -1,27 +1,38 @@
-# server/src/lsp/callable.rs
+# `server/src/lsp/callable.rs`
 
 ## Purpose
 
-Owns shared LSP-side callable helpers for source-backed signatures and callable argument context.
+Provides shared syntax-backed callable signature parsing and active-argument
+context for completion and signature help.
 
-## Architecture Role
+## Ownership
 
-This module sits below LSP feature projection modules such as completion and signature help. It parses copied callable signature strings into parameter facts and walks parser syntax nodes to find the callable argument list at a cursor offset.
+Owns callable parameter splitting, optional/default metadata, call/new target
+recognition, active argument index, and named-argument label detection. It does
+not choose candidates, rank completion items, render signature-help responses,
+or dispatch LSP requests.
 
 ## Current Behavior
 
-The helper exposes callable signature parts, parameter names/types/defaults, required/optional classification, and callable argument context for attributes, call expressions, and `new` expressions. Nested calls select the innermost enclosing argument list. Argument counting is lexer-backed, ignores quoted literals and nested expression delimiters, and recognizes generic angle brackets only when they are syntactically type-like rather than treating relational comparisons as generic nesting. Signature splitting likewise preserves commas, closing parentheses, and escaped quotes inside default literals.
-
-It identifies the active argument index, active named argument label, and already supplied named labels. Supplied-label keys are normalized to ASCII lowercase because parameter labels are matched case-insensitively throughout callable completion and signature help.
+The helper walks CST nodes and source spans rather than scanning arbitrary
+text. It distinguishes calls and `new Type(...)`, handles nesting, strings,
+escapes, and generic-angle syntax, and ignores comparison operators when
+determining argument boundaries. Named labels are recovered from the current
+argument and supplied labels are normalized for duplicate suppression.
 
 ## Dependencies and Boundaries
 
-Depends on lexer, syntax, and AST expression views. It must not own completion ranking, signature-help rendering, request dispatch, resolver policy, external index state, or formatting edits.
+Depends on lexer tokens, CST/AST expression views, and `TextSpan`. It is shared
+by [completion.md](completion.md) and [signature_help.md](signature_help.md) so
+parameter interpretation has one authoritative implementation.
 
-## Change Notes
+## Verification
 
-Extracted from completion so completion and signature help use the same source-backed signature parser and argument-list context path.
+Run focused callable/completion/signature-help tests and `cargo test` from
+`server/`. Cover nested calls, quoted/escaped commas, generic syntax,
+comparisons, named arguments, and malformed-source recovery.
 
-## Future Improvements
+## Future Direction
 
-Add generic type-argument context only if a separate type-argument help feature is implemented. Keep callable argument context syntax-backed rather than string-scanned.
+Add generic type-argument context only with a dedicated feature. Preserve the
+syntax-backed path; do not add a competing string-scanning implementation.

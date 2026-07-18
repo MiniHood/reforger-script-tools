@@ -4,7 +4,7 @@
 
 Generates a dev-only corpus report for the current LSP document-symbol projection across downloaded or explicitly provided Reforger script data.
 
-## Architecture Role
+## Ownership
 
 This example sits above `server/src/lsp.rs` and exercises the same document-symbol conversion helper used by `textDocument/documentSymbol`. It checks the VS Code-facing projection layer after parser, AST, model, index, query, and display have already produced source-backed symbols.
 
@@ -28,12 +28,6 @@ Uses only Rust standard library APIs and the crate LSP helper. It must not dump 
 
 Zero-symbol classification uses the lexer for comment/trivia classification. Unknown non-empty zero-symbol files get bounded snippets for review; known empty/comment/docs-only files do not dump source.
 
-## Change Notes
+## Verification
 
-- Added the first corpus-scale LSP report so document-symbol labels, kinds, details, ranges, and tree shape can be reviewed against real game data before adding hover, diagnostics, completion, or definition.
-- Added zero-symbol classification, projection timing statistics, release wrapper support, compact tree-depth reporting, and explicit LSP kind mapping notes.
-
-## Future Improvements
-
-- Add bounded snippets only for concrete projection failures if any appear.
-- Add feature-specific corpus reports when hover, completion, diagnostics, or definition exist.
+Run `cargo run --example lsp_corpus_report` from `server/` and inspect the generated report for the documented fixture or corpus checks.

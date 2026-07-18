@@ -4,7 +4,7 @@
 
 Provides a dev-only fixture report for the LSP definition path.
 
-## Architecture Role
+## Ownership
 
 This example sits above the Rust LSP helper API. It exercises the same resolver-first location projection used by `textDocument/definition` without starting VS Code or a stdio server.
 
@@ -20,12 +20,6 @@ Definition currently returns standard LSP `Location[]` targets using the selecte
 
 The report uses only Rust standard library code and existing LSP/index helper functions. It accepts `--scripts <path>` to override the downloaded game-data scripts folder. It must remain dev-only review tooling. It must not perform semantic lookup, Workbench validation, runtime logging, VS Code command registration, or source mutation.
 
-## Change Notes
+## Verification
 
-- Added the first definition fixture report alongside the LSP definition feature.
-- Added external game-data index context so definition can review external type targets such as `BaseGameMode`.
-- Added named-argument and unresolved miss rows to prove definition does not navigate misleadingly.
-
-## Future Improvements
-
-- Add `LocationLink` review output only when the runtime definition response moves to `LocationLink[]`.
+Run `cargo run --example lsp_definition_report` from `server/` and inspect the generated report for the documented fixture or corpus checks.

@@ -4,7 +4,7 @@
 
 Provides small Enfusion Script source trees for index and overlay-index tests, reports, and debug tooling.
 
-## Architecture Role
+## Ownership
 
 Index fixtures are repo-only language-tooling inputs under `tools/`. They help validate lookup behavior, source-kind priority, and workspace/game-data overlay reporting without making the fixtures part of the packaged VS Code extension.
 
@@ -18,12 +18,6 @@ The overlay fixture also includes workspace-only source shapes for stronger inde
 
 Each fixture file must include a truth-status comment. Use `Workbench-confirmed` only after actual Workbench/compiler validation. These fixtures must not become runtime extension dependencies or source truth for compiler behavior.
 
-## Change Notes
+## Verification
 
-- Added the initial overlay fixture root for workspace/game-data index review.
-- Expanded the overlay fixture with workspace-only classes, inheritance, overloads, field shadowing, and a typedef/function duplicate so overlay reports exercise more than the happy path.
-
-## Future Improvements
-
-- Add additional index fixtures only when a specific lookup behavior needs repeatable validation.
-- Split future semantic or diagnostics fixtures into their own folders only when those systems exist.
+Run the index and overlay report or test that uses the fixture. Preserve each file's truth-status comment when adding or changing a source shape.

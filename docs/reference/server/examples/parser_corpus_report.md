@@ -4,7 +4,7 @@
 
 Generates a corpus-scale Markdown report by running the real Rust declaration parser across a Reforger scripts folder.
 
-## Architecture Role
+## Ownership
 
 This is developer review tooling for parser coverage. It is not VS Code runtime behavior, not an LSP entrypoint, not Workbench validation, and not parser truth by itself.
 
@@ -20,13 +20,6 @@ It accepts `--scripts <path>` and `--out <path>`. If no scripts path is provided
 
 Uses only Rust standard library APIs and the crate parser/syntax modules. It must not duplicate parser behavior, add syntax rules, inspect semantics, index declarations, call Workbench, or become runtime extension code.
 
-## Change Notes
+## Verification
 
-- Added corpus-scale parser validation for real downloaded/manual Reforger script data.
-- Added bounded source snippets around representative diagnostics so parser gaps can be reviewed without dumping full source files.
-- Added expected recovery-node classification for known preserved preprocessor-test text.
-
-## Future Improvements
-
-- Add targeted sections for common parser diagnostic patterns after the first reports are reviewed.
-- Keep corpus findings as planning evidence only; Workbench remains compiler truth.
+Run `cargo run --example parser_corpus_report` from `server/` and inspect the generated report for the documented fixture or corpus checks.

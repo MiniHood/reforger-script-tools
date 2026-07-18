@@ -4,7 +4,7 @@
 
 Provides a dev-only fixture report for the reference resolver scaffold.
 
-## Architecture Role
+## Ownership
 
 This example sits above `server/src/resolver.rs` and exercises identifier resolution without starting VS Code or changing LSP runtime behavior.
 
@@ -18,12 +18,6 @@ Each check shows the cursor token, selected symbol, candidate list, reason, sour
 
 The report uses only Rust standard library code and existing parser, AST, model, index, and resolver APIs. It accepts `--scripts <path>` to override the downloaded game-data scripts folder and `--out <path>` to choose the report path. It must remain dev-only review tooling. It must not register VS Code commands, add package scripts, call Workbench, perform full semantic resolution, or mutate source files.
 
-## Change Notes
+## Verification
 
-- Added the first resolver fixture report for human/Codex review before hover or definition integration.
-- Added real game-data resolver checks and source snippets so hover/definition behavior can be reviewed against current Reforger source shapes.
-
-## Future Improvements
-
-- Add receiver/member-access cases when resolver behavior expands beyond identifier-only lookup.
-- Add a corpus-oriented resolver report only after deterministic target selection exists.
+Run `cargo run --example resolver_report` from `server/` and inspect the generated report for the documented fixture or corpus checks.

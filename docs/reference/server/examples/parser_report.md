@@ -4,7 +4,7 @@
 
 Generates a human-readable Markdown report showing parser input vs syntax-tree output for committed parser fixtures.
 
-## Architecture Role
+## Ownership
 
 This is developer review tooling for the Rust parser scaffold. It is not VS Code runtime behavior and is not a language server entrypoint.
 
@@ -18,16 +18,6 @@ The command also accepts `--out <path>` for an alternate report path.
 
 The report generator uses only Rust standard library APIs and the crate parser/syntax modules. It must not implement model, index, LSP, Workbench validation, or runtime extension behavior. Generated reports belong under ignored output paths such as `tools/reports/`.
 
-## Change Notes
+## Verification
 
-- Added the first parser fixture report generator for human/Codex review.
-- Added larger game-code parser fixtures to the report input set.
-- Added editor preview and Workbench formatter fixtures to the report input set.
-- Added optional-semicolon fixture coverage to the report input set.
-- Added nested field-initializer call fixture coverage to the report input set.
-- Added the local-block symbol fixture to the report input set so local, `foreach`, and declaration-form `for` parser structure is reviewable.
-
-## Future Improvements
-
-- Add source excerpts around diagnostics if parser fixtures intentionally cover recovery cases.
-- Add corpus-scale parser summaries after fixture-level parser behavior stabilizes.
+Run `cargo run --example parser_report` from `server/` and inspect the generated report for the documented fixture or corpus checks.

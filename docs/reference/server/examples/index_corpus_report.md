@@ -4,7 +4,7 @@
 
 Generates a corpus-scale Markdown report from the first in-memory symbol index.
 
-## Architecture Role
+## Ownership
 
 This is developer review tooling for index lookup quality. It is not VS Code runtime behavior, not an LSP entrypoint, not semantic resolution, not Workbench validation, and not compiler truth.
 
@@ -20,38 +20,6 @@ It accepts `--scripts <path>` and `--out <path>`. If no scripts path is provided
 
 Uses only Rust standard library APIs plus the crate index builder and index modules. It must not duplicate index-build behavior, resolve symbols, call Workbench, become VS Code runtime code, or become a package command.
 
-## Change Notes
+## Verification
 
-- Added corpus-scale index reporting for real downloaded/manual Reforger script data.
-- Preferred duplicate samples use top-level-only preferred lookup so member or parameter symbols cannot affect declaration conflict review.
-- Method owner/name samples render grouped owner-qualified method rows with overload counts, first path, and bounded source-backed signature examples.
-- Added report-only visibility for top-level versus child/member symbol counts and rough build timing by phase.
-- Method owner/name samples now show indexed source-backed signature examples instead of return-type-only summaries.
-- Added completion member shadow-group visibility so humans can review which inherited raw candidates are hidden from the completion-ready member lookup by kind/name/signature de-duplication.
-- Lookup sample details now use the general callable signature API when a symbol is a function, method, constructor, or destructor.
-- Lossy-decoded files are listed by bounded relative path instead of only counted.
-- Duplicate top-level rows now include callable signatures or other available type/base/detail text.
-- Completion shadow samples are sorted by hidden candidate count and include shadow counts by member kind.
-- Added a preferred-class completion shadow summary for the future editor-facing completion path while keeping the raw aggregate shadow report for debug review.
-- Switched report indexing to the shared `index_build` module.
-- Added duplicate classification buckets for typedef/function delegate pairs, typedef/class wrapper patterns, generated/non-generated duplicates, workspace overlays, suspicious same-kind duplicates, and mixed-kind leftovers.
-- Added lossy decode location/snippet rendering from builder-owned details.
-- Added parse diagnostic snippet rendering from builder-owned details.
-- Added shadow-review summaries for top shadowed method names, top classes with shadows, source-kind kept/hidden pairs, and expected inherited/base versus suspicious same-owner shadow classifications.
-- Added a focused suspicious conflict report that pulls same-kind and mixed-kind top-level duplicates plus preferred-class same-owner completion shadow conflicts out of the broader review tables.
-- Lossy decode snippets now render replacement characters as `<U+FFFD>` instead of relying on terminal-specific replacement glyph display.
-- Reorganized completion shadow report headings so raw aggregate and preferred-class summaries each own their nested shadow review subsections.
-- Added path/context-derived source categories and provenance buckets for suspicious top-level duplicates and same-owner shadow conflicts, with bounded snippets for conflicts that remain unknown. Source categories include generated, docs/Doxygen, test/autotest, Workbench, GameCode, Game, GameLib, Core, workspace, and unknown.
-- Added an editor-completion filtering decision matrix that states which same-owner conflict classes may be collapsed in completion, which must remain debug-visible, and which future semantic/preprocessor/source-provenance work is required before stronger filtering.
-- Added editor-completion source-policy counts and conflict metadata for callable form plus preserved preprocessor branch context.
-- Added presentation metadata coverage counts for symbols with display details, callable signatures, doc comments, attributes, modifiers, and missing labels.
-- Added presentation QA sections for display detail coverage by kind, missing-detail samples, and doc-preview quality samples including Doxygen-tag-looking previews.
-- Reworded same-owner shadow output so classified cases are separated from unknown/high-risk cases.
-- Renamed display detail coverage to optional detail coverage so expected enum/class/enum-member gaps do not read as extraction failures.
-- Clarified that attribute counts in the presentation section are symbol-level attribute applications, not one-to-one source attribute counts.
-- Updated Doxygen preview QA to show raw tag source lines beside cleaned preview text.
-
-## Future Improvements
-
-- Add workspace-vs-game-data override sections after the index can ingest workspace catalogs.
-- Add memory estimates after a real language-server startup path exists.
+Run `cargo run --example index_corpus_report` from `server/` and inspect the generated report for the documented fixture or corpus checks.

@@ -4,7 +4,7 @@
 
 Provides small Enfusion Script examples for parser tests and parser-structure reports.
 
-## Architecture Role
+## Ownership
 
 Parser fixtures are repo-only language-tooling inputs under `tools/`. They ground the Rust parser scaffold in real Reforger declaration shapes without making the fixtures part of the packaged VS Code extension.
 
@@ -16,16 +16,6 @@ The fixtures cover Core type declarations, contextual keyword names, generic cla
 
 Each fixture must include a truth-status comment. Use `Workbench-confirmed` only after actual Workbench/compiler validation. These files must not become runtime extension dependencies or source truth for compiler behavior.
 
-## Change Notes
+## Verification
 
-- Added the initial parser fixture set for the declaration-level parser scaffold.
-- Added larger game-data-derived class excerpts for building network RPC, building provider budget logic, and editable group behavior.
-- Added larger game-data-derived class excerpts for editor preview transform data and the Workbench basic code formatter plugin.
-- Added a game-data-derived fixture for optional semicolon forms from generated API declarations and handwritten attributed fields.
-- Added a game-data-derived fixture for field initializers that call helper methods with nested brace-list arguments.
-- Added a game-data-derived fixture for local/block symbol extraction without full statement or expression parsing.
-
-## Future Improvements
-
-- Add Workbench-confirmed parser fixtures when specific syntax questions are validated.
-- Split future expression/statement/model fixtures into separate folders only when those systems exist.
+Run the parser tests or report that uses the changed fixture. Preserve its truth-status comment and validate a language claim with Workbench before labeling it `Workbench-confirmed`.

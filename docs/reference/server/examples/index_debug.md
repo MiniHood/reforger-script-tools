@@ -4,7 +4,7 @@
 
 Prints compact index lookup debug output for the downloaded or manually selected game-data script corpus.
 
-## Architecture Role
+## Ownership
 
 This is developer/Codex inspection tooling for the in-memory symbol index. It is not VS Code runtime behavior, not an LSP command, not semantic resolution, not a persisted cache, and not Workbench validation.
 
@@ -22,28 +22,6 @@ When `--workspace` is supplied, the debug index includes both game-data scripts 
 
 Uses only Rust standard library APIs plus the crate parser, AST, model, and index modules. It must not resolve symbols semantically, infer inheritance, evaluate typedefs/defaults/enum values, call Workbench, become VS Code runtime code, or become a package command.
 
-## Change Notes
+## Verification
 
-- Added dev-only index debugging for exact name, top-level, class, typedef, and method owner/name lookups.
-- The tool rebuilds the in-memory game-data index per invocation; persisted index cache behavior remains future work.
-- Method lookup now prints source-backed overload signatures, and class lookup shows direct member summaries from the index.
-- Class lookup now also shows inherited/base-chain member counts and bounded inherited member samples from the index's exact-name inherited member scaffold.
-- Class lookup now separates the raw all-candidates inherited member view from the completion-ready de-duplicated view, including bounded shadow groups that explain which base members were hidden by kind/name/signature keys.
-- Added optional `--workspace <path>` overlay input for debugging workspace-vs-game-data preferred lookup behavior.
-- Detail output now uses the general callable signature API, so functions, methods, constructors, and destructors can display source-backed signatures consistently.
-- Class lookup headings now clarify that direct, inherited, and completion member sections are owner-name aggregate views. In overlay mode they can include members from multiple source files/source kinds and are not limited to the preferred class declaration.
-- Completion member debug output now reflects priority-aware same-owner/depth de-duplication: workspace overlay members should be kept over matching game-data members with the same completion key, while inherited/base members still remain lower priority than direct members.
-- Added exact `--function` lookup and kind-specific preferred top-level output so class/typedef/function conflicts are not reduced to one ambiguous generic preferred declaration.
-- Class lookup now prints raw preferred-class overlay completion separately from the true `IndexQuery` editor completion view. The raw view keeps all indexed source facts, while the `IndexQuery` view applies source-category policy and included-source preferred class anchoring.
-- Switched debug indexing to the shared `index_build` module.
-- Added source-category output and likely-cause labels for shadowed member groups so targeted `--class` debugging can explain preprocessor/prototype/docs/generated/GameCode/Workbench conflict shapes without changing index behavior.
-- Added editor-completion included/excluded labels, callable form output, and preserved preprocessor conditional context output for symbols and member summaries.
-- Class summary rows now separate raw aggregate completion counts from `IndexQuery` editor completion counts so excluded docs/tests/Workbench source does not look editor-visible.
-- Switched symbol detail output to `SymbolDisplay` and added modifier, attribute, and doc-preview output for matched symbols and completion candidates.
-- Added focused output filters for large debug queries: `--limit`, `--member`, `--symbol`, and `--show-docs`.
-- Kept class anchors visible under `--symbol` filters and changed member-heavy summaries to show filtered shown counts versus total counts.
-
-## Future Improvements
-
-- Add optional workspace script roots after real workspace indexing exists.
-- Add optional JSON output only if a future tool genuinely needs machine-readable index debug records.
+Run `cargo run --example index_debug` from `server/` and inspect the generated report for the documented fixture or corpus checks.

@@ -4,7 +4,7 @@
 
 Generates a dev-only corpus report for LSP completion behavior across real game-data member-access and identifier-prefix positions.
 
-## Architecture Role
+## Ownership
 
 This example sits above `server/src/lsp.rs` and exercises the same `textDocument/completion` helper used by the Rust LSP. It samples real `receiver.` positions plus real identifier-prefix positions such as `SCR_`, `GetG`, `Widget`, and generic type prefixes, then validates receiver inference, type/top-level prefix context, owner lookup, candidate counts, and completion item shape against game data.
 
@@ -36,17 +36,6 @@ Empty completion results are classified so review can distinguish expected non-i
 
 Uses only Rust standard library APIs, the lexer, reusable index builder, and existing LSP completion helper. It must stay dev-only. It must not register VS Code commands, perform Workbench validation, add diagnostics, or implement a second completion path.
 
-## Change Notes
+## Verification
 
-- Added after member/type/top-level completion existed so real game-code completion behavior can be reviewed beyond synthetic fixture checks.
-- Updated to reuse cached per-file analysis for all sampled completion positions in a file.
-- Added empty-result classification so `0`-item completions are not all treated as the same failure mode.
-- Removed per-completion full-index merging from the report/live helper path and added phase timing for completion projection.
-- Updated static/enum owner buckets after static-owner completion started returning enum members and copied static class members.
-- Added excluded-source classification so Autotest/Workbench/docs samples do not look like editor completion defects.
-- Updated after receiver-chain and direct-`new` receiver inference so the bounded corpus can distinguish source-noise empties from true completion defects.
-- Added type/top-level identifier-prefix sampling so the report covers `SCR_`, `GetG`, and generic type-argument completion paths, not only member-dot completion.
-
-## Future Improvements
-
-- Add explicit source-kind and origin-mix tables if workspace overlay completion needs corpus-scale review.
+Run `cargo run --example lsp_completion_corpus_report` from `server/` and inspect the generated report for the documented fixture or corpus checks.

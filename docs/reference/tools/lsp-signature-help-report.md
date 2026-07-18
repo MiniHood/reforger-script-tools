@@ -4,7 +4,7 @@
 
 Runs the Rust LSP signature-help fixture report from Node and writes `tools/reports/lsp-signature-help-fixtures.report.md` by default.
 
-## Architecture Role
+## Ownership
 
 This is dev-only report glue. It exists so contributors can invoke the signature-help proof path the same way other LSP reports are invoked from `tools/`.
 
@@ -16,10 +16,6 @@ The wrapper runs `cargo run --manifest-path server/Cargo.toml --example lsp_sign
 
 Depends on local development Rust/Cargo tooling. It is not a packaged extension runtime dependency, not a VS Code command, and not language logic.
 
-## Change Notes
+## Verification
 
-Added with the source-backed LSP signature-help slice.
-
-## Future Improvements
-
-Keep this wrapper thin. Add broader corpus reporting in a separate Rust example if signature-help sampling needs game-data scale.
+Run `node tools/lsp-signature-help-report.mjs` and confirm the Rust fixture report completes successfully.

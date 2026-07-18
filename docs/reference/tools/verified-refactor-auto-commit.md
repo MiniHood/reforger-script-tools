@@ -4,7 +4,7 @@
 
 Provides the project-local, verification-gated automatic commit protocol for Codex tasks on the `Refactor` branch. It is developer tooling and is never part of the VS Code extension runtime.
 
-## Architecture Role
+## Ownership
 
 The helper is the evidence boundary between a task's focused verification and the trusted Codex `Stop` hook. A hook cannot safely infer whether arbitrary transcript or shell output proves the correct check passed, so `verify` executes the selected command itself before creating a Git-owned receipt. The project-local hook then invokes `stop`.
 
@@ -34,10 +34,6 @@ Uses only Node built-ins and the local `git` executable. The Codex configuration
 
 This tool does not decide which verification a task needs. The task owner selects the final focused check using the task's verification contract.
 
-## Change Notes
+## Verification
 
-Added for the verified `Refactor` auto-commit workflow. Its tests create isolated temporary Git repositories and cover receipt creation, failed verification, branch/staleness/clean-tree guards, title limits, complete staging, and commit-failure retention.
-
-## Future Improvements
-
-Keep the protocol narrow. Any future receipt field or Git behavior must preserve the exact branch guard, explicit verification boundary, short title rule, and no-push/no-branch-operation guarantees.
+Run the helper's isolated-repository tests and manually verify that an invalid, stale, or wrong-branch receipt cannot create a commit.

@@ -4,7 +4,7 @@
 
 Builds the current-platform Rust language server binary and copies it into the extension distribution folder.
 
-## Architecture Role
+## Ownership
 
 This is repo-only developer/build tooling. It bridges Cargo output into the VS Code extension package layout so marketplace users receive a bundled binary and do not need Rust installed.
 
@@ -22,12 +22,6 @@ Uses Node built-in modules and local Cargo. It must not become runtime extension
 
 The force-stop behavior is development/build protection only. It filters Windows processes by executable path under this repo before killing them and is not a runtime extension feature.
 
-## Change Notes
+## Verification
 
-- Added the build helper for the first bundled Rust LSP server path.
-- Changed the build to use an isolated Cargo target directory and replace the live dev/package binaries only after force-stopping repo-owned language-server processes. This avoids Windows file locks during iterative development.
-- Added retry-on-lock replacement for the development binary so a fast language-client restart does not fail `npm run compile`.
-
-## Future Improvements
-
-- Add explicit cross-target packaging only when release automation needs multi-platform VSIX artifacts.
+Run `npm run compile` and confirm both the development and packaged binary locations contain the expected current-platform executable.

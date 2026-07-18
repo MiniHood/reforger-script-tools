@@ -4,7 +4,7 @@
 
 Generates a dev-only corpus report for LSP definition behavior across real game-data identifier positions.
 
-## Architecture Role
+## Ownership
 
 This example sits above `server/src/lsp.rs` and exercises the same resolver-first definition projection used by `textDocument/definition`. It gives corpus-scale evidence for Ctrl+click behavior without starting VS Code.
 
@@ -26,13 +26,6 @@ The follow-up review sections split definition targets into file-local versus ex
 
 Uses only Rust standard library APIs, the lexer, reusable index builder, and existing LSP definition helper. It must stay dev-only. It must not register VS Code commands, add runtime logging, perform Workbench validation, or implement a second definition path.
 
-## Change Notes
+## Verification
 
-- Added after resolver-backed definition existed so Ctrl+click behavior can be reviewed across real game code.
-- Updated sampling to distribute checks across files instead of exhausting `--max-checks` in the first symbol-heavy files.
-- Updated miss classification to prefer resolver-owned non-symbol reasons for attribute named arguments, preprocessor directive tokens, preprocessor macro names, and named argument labels.
-- Added definition review sections for file-local/external target mix, source-noise versus actionable misses, and receiver/member miss samples.
-
-## Future Improvements
-
-- Add workspace-overlay corpus samples once a stable workspace fixture set exists.
+Run `cargo run --example lsp_definition_corpus_report` from `server/` and inspect the generated report for the documented fixture or corpus checks.

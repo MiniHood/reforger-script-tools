@@ -4,7 +4,7 @@
 
 Centralizes game-data command IDs, VS Code setting keys, global state keys, storage names, repository identity, and thresholds.
 
-## Architecture Role
+## Ownership
 
 This file is TypeScript extension-shell configuration. It is part of the generalized extension config area, keeping extension-facing names out of runtime feature logic.
 
@@ -16,10 +16,6 @@ Exports typed constant objects for game-data repository metadata, commands, user
 
 Has no runtime dependencies. Do not put mutable state, VS Code API calls, filesystem access, network calls, or language intelligence here.
 
-## Change Notes
+## Verification
 
-Game-data runtime state remains in `context.globalState`, downloaded files remain in `context.globalStorageUri`, and the manual folder remains the only user-facing setting.
-
-## Future Improvements
-
-Add new game-data settings/state/storage keys here before use in feature code. Add sibling files under `src/extensionConfig/` for future subsystems instead of creating local constants files inside runtime feature folders.
+Run `npm test` after changing a constant or its consumer. Confirm a development host reads the expected setting, command, or storage key when the change affects editor integration.

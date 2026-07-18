@@ -1,33 +1,39 @@
-# server/src/lsp/debug_hover.rs
+# `server/src/lsp/debug_hover.rs`
 
 ## Purpose
 
-Owns the custom `reforger/debugHover` report rendering.
+Renders the bounded, developer-triggered `reforger/debugHover` report used to
+diagnose hover selection and semantic-token context.
 
-## Architecture Role
+## Ownership
 
-This module sits inside the Rust LSP layer as a targeted debug/report path. It uses the same cached file-local analysis, resolver, symbol display, and semantic-token projection as normal editor features, then renders a bounded Markdown report for human/Codex troubleshooting.
+Owns human-readable debug report assembly and bounded excerpts of lexer,
+parser, resolver, semantic-token, display, and external-index facts. It does
+not change normal hover selection, own logging policy, or provide a production
+editor feature.
 
 ## Current Behavior
 
-The report includes cursor/source context, nearby lexer tokens, nearby semantic-token coloring, parse diagnostics, resolver resolution, external-index status, selected symbol display facts, rendered hover Markdown, span candidates, parent/child context, and symbol-kind counts. It is intentionally heavier than runtime logs and should only run through the explicit debug-hover command/request.
-
-Debug-hover selection follows the same resolver hover decision as normal hover. It may still list syntax-span candidates as debug evidence, but comments, whitespace, strings, and other non-symbol token classes should not be reported as selected symbols just because they are inside a broader declaration span.
-
-The rendered hover Markdown section uses `server/src/lsp/hover_render.rs`, so Ctrl+F1 previews the same structured documentation, colored kind label, metadata, and class member summary as normal hover. If the selected symbol is file-local and an external overlay is available, the preview uses the same external class-summary context as normal hover so declaration-hover and type-usage-hover output can be compared directly.
-
-The module also exposes a tiny label extraction helper used by `lsp.rs` request logging after a debug-hover request.
+For an open-document position, the report includes source-line context, nearby
+tokens, semantic-token coloring, parser diagnostics, resolver result, selected
+display facts, bounded candidates, hierarchy context, rendered hover Markdown,
+and symbol-kind counts. The token palette is the same Rust semantic-token
+palette used by normal semantic tokens, so the report does not introduce a
+second coloring model. A small label extractor supports request logging.
 
 ## Dependencies and Boundaries
 
-Depends on lexer tokens, semantic-token projection, `ReferenceResolver`, `IndexQuery`, `SymbolDisplay`, cached `FileIndexAnalysis`, and the external-index status summary from `lsp.rs`.
+Depends on cached `FileIndexAnalysis`, resolver/index/display data,
+semantic-token projection, and external-overlay status. `lsp.rs` owns custom
+request dispatch; [hover.md](hover.md) remains the normal hover path.
 
-It does not own normal hover behavior, protocol dispatch, document storage, workspace indexing, completion, definition, or diagnostics publishing. Keep full AST/index dumps out of this path unless a future targeted debug mode explicitly bounds them.
+## Verification
 
-## Change Notes
+Run targeted debug-hover tests and `cargo test` from `server/`. Check bounded
+output for hits, misses, local/external candidates, malformed source, and
+Unicode positions.
 
-Extracted from `server/src/lsp.rs` without behavior changes so the custom debug report has one owner and request dispatch remains focused.
+## Future Direction
 
-## Future Improvements
-
-Keep this report bounded and human-readable. If new language layers are added, expose concise input/output facts here rather than duplicating the layer’s implementation logic.
+Add concise facts from new language layers only when they help a concrete
+debugging workflow. Keep the report bounded and command-triggered.

@@ -4,7 +4,7 @@
 
 Builds a dev-only Markdown report from the Rust language-server runtime log so high CPU or typing-latency sessions can be reviewed after the fact.
 
-## Architecture Role
+## Ownership
 
 This tool is outside the packaged runtime path. It reads `globalStorageUri/logs/language-server.log`, groups multi-line Rust log records, parses key timing fields, and writes `tools/reports/lsp-runtime-performance.report.md`.
 
@@ -35,11 +35,6 @@ The report does not sample OS CPU directly. It uses logged elapsed timings as th
 
 Uses only Node built-ins. It must not register a package script or VS Code command unless runtime performance reporting becomes a user-facing feature. It must not add logging overhead to the LSP server; it consumes the existing log.
 
-## Change Notes
+## Verification
 
-Added after large-file `GC_MarkerArea.c` testing showed CPU spikes from edit analysis, lazy document-symbol projection, and rich semantic-token workers. This report gives Codex a repeatable way to inspect future sessions before changing server behavior.
-Added a separate cancelled-rich-token count so stale work stopped by the live cancellation token is not confused with stale work that ran to completion and was discarded.
-
-## Future Improvements
-
-Add optional process CPU sampling only if log-derived timings are insufficient. Keep any such sampler dev-only and explicitly started by a tool or command.
+Run the script against a captured language-server log and inspect that malformed records are reported without changing the log or extension runtime.

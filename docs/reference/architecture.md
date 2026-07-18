@@ -2,7 +2,9 @@
 
 ## Purpose
 
-Defines the canonical runtime data flow and ownership boundaries for Reforger Script Tools. Use this page to orient architectural work before reading the matching source-owner pages.
+Defines the canonical runtime data flow and ownership boundaries for Reforger
+Script Tools. Read this page before making a cross-layer change; read the
+matching source-owner page for implementation details.
 
 ## Runtime Data Flow
 
@@ -42,12 +44,11 @@ flowchart TB
     Workbench[Reforger Workbench/compiler] -. validates language truth .-> Semantic
 ```
 
-The Rust server keeps request transport separate from language decisions. Open
-documents produce one cached analysis path through lexing, parsing, syntax, and
-semantic/index construction. Feature handlers combine that file-local analysis
-with a short-lived external-index snapshot, then return protocol-shaped results
-to the TypeScript client. External workspace/game-data indexing can update in
-the background, but it never moves language intelligence into the client.
+Open documents follow one cached analysis path through the Rust language engine.
+Feature handlers combine that file-local analysis with a snapshot of external
+workspace and game-data facts, then return protocol-shaped results. Background
+indexing may refresh those facts, but it never moves language intelligence into
+the TypeScript client.
 
 ## Ownership
 
@@ -56,28 +57,33 @@ the background, but it never moves language intelligence into the client.
 | VS Code extension host | Activation, commands, configuration, user-facing prompts, global-storage paths, process lifecycle, and editor integration | Parsing, semantic analysis, indexing, or feature-specific language decisions |
 | Game-data service | Resolving manual/downloaded game scripts and maintaining their global-storage metadata | Language parsing, semantic modeling, or Workbench validation |
 | TypeScript language client | Bundled-server resolution, stdio transport, document/watch notifications, and thin rendering bridges | Tokenization, symbol lookup, completion ranking, hover generation, or type reasoning |
-| Rust language server | Lexing, parsing, AST/syntax, semantic model, workspace/game-data indexes, diagnostics, formatting, and LSP handlers | VS Code commands, UI prompts, extension settings, and game-data download flows |
+| Rust language server | Lexing, parsing, syntax/AST, semantic model, workspace/game-data indexes, diagnostics, formatting, and LSP handlers | VS Code commands, UI prompts, extension settings, and game-data download flows |
 | Workbench/compiler | Ground-truth validation of uncertain Enfusion Script behavior | Runtime LSP service or extension architecture |
 
 ## Data Boundaries
 
-- Workspace scripts enter the Rust server through open-document LSP traffic and debounced file-change notifications from the TypeScript client.
-- Reforger game data is either a user-selected manual folder or downloaded under VS Code global storage. The client passes resolved paths and metadata to Rust; Rust uses them as external language facts.
-- Rust returns protocol-shaped feature results. The client renders or forwards them, but does not recreate language decisions.
-- Runtime logs, downloaded data, metadata, and indexes stay under `globalStorageUri`, not in the user workspace or packaged extension files.
-- Workbench/compiler validation changes the project’s understanding of language truth; it does not introduce a second runtime analysis path.
+- Workspace scripts enter Rust through LSP document traffic and debounced
+  file-change notifications from the TypeScript client.
+- Reforger game data is a user-selected manual folder or data downloaded under
+  VS Code global storage. The client passes resolved locations and metadata to
+  Rust, which treats them as external language facts.
+- Rust returns protocol-shaped results. The client forwards or renders them; it
+  does not recreate language decisions.
+- Logs, downloaded data, metadata, and indexes stay under `globalStorageUri`,
+  never in the user workspace or packaged extension files.
+- Workbench/compiler evidence changes the project's understanding of language
+  truth. It does not create a second runtime analysis path.
 
 ## Entry Points
 
 - [src/extension.ts](src/extension.md): activation and top-level service wiring.
-- [src/gameData/gameData.ts](src/gameData/gameData.md): game-data source resolution and update flow.
+- [src/gameData/gameData.ts](src/gameData/gameData.md): game-data acquisition and source resolution.
 - [src/languageClient/languageClient.ts](src/languageClient/languageClient.md): server process, protocol, editor-event, and rendering bridge.
-- [server/](../../server/): Rust language-engine implementation and its matching `docs/reference/server/` pages.
+- [server/](server.md): Rust language-engine subsystem map.
 
-## Change Notes
+## Maintenance Boundary
 
-Added as the single architecture overview after the project outgrew per-file documentation as the only discovery path. The diagram is intentionally runtime-focused: developer tooling and generated reports remain outside this data flow.
-
-## Future Improvements
-
-Update this page only when runtime ownership or a data boundary changes. Keep feature-specific behavior in the matching source-owner page instead of expanding this overview into an implementation log.
+Update this page only when cross-layer ownership, runtime flow, or a data
+boundary changes. Keep feature contracts and implementation mechanics in their
+matching source-owner pages. Developer tooling and generated reports are outside
+this runtime architecture.

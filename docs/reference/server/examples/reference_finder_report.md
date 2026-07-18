@@ -4,7 +4,7 @@
 
 Generates a dev-only fixture report for the file-local reference finder foundation.
 
-## Architecture Role
+## Ownership
 
 This example sits above `server/src/reference_finder.rs` and proves that reference search uses resolver-selected symbols instead of text-only matching. It is groundwork for future references and rename.
 
@@ -16,10 +16,6 @@ The report writes `tools/reports/reference-finder-fixtures.report.md` by default
 
 Uses only existing Rust lexer, parser, AST, model, index, scope, resolver, and reference finder APIs. It is dev-only and must not add LSP behavior, workspace-wide search, rename edits, Workbench validation, or a second reference matching implementation.
 
-## Change Notes
+## Verification
 
-Added with the first reference finder module so reference/rename correctness can be reviewed before editor-visible references or rename are implemented.
-
-## Future Improvements
-
-Use `server/examples/reference_finder_corpus_report.rs` for broader game-data evidence. Workspace-wide references should still be added as a separate slice.
+Run `cargo run --example reference_finder_report` from `server/` and inspect the generated report for the documented fixture or corpus checks.

@@ -4,6 +4,11 @@
 
 Provides a dev-only proof report for the runtime workspace/game-data overlay used by LSP hover and definition.
 
+
+## Ownership
+
+This dev-only Rust example owns a repeatable report or debug projection for its named language-engine subsystem. It must not become extension runtime behavior.
+
 ## Current Behavior
 
 The example builds small source-backed game-data and workspace indexes, merges them as the runtime external overlay would, and writes `tools/reports/lsp-workspace-overlay.report.md`.
@@ -18,7 +23,7 @@ The report checks:
 
 This report does not use VS Code APIs and does not persist a workspace cache.
 
-## Commands
+## Verification
 
 ```powershell
 node tools/lsp-workspace-overlay-report.mjs
@@ -32,6 +37,6 @@ cargo run --manifest-path server/Cargo.toml --example lsp_workspace_overlay_repo
 
 Stress timings are dev-machine wall-clock diagnostics, not benchmarks. They are intended to show whether the current full overlay recompute approach is still acceptable or whether a future incremental overlay-map update slice is justified.
 
-## Boundaries
+## Dependencies and Boundaries
 
 This is observability only. It does not add semantic `modded` merge rules, diagnostics, completion, references, Workbench validation, or a persisted workspace cache.

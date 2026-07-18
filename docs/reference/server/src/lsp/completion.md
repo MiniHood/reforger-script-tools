@@ -1,81 +1,47 @@
-# server/src/lsp/completion.rs
+# `server/src/lsp/completion.rs`
 
 ## Purpose
 
-Owns LSP completion projection for the Rust language server.
+Projects source-backed completion lists, insertion edits, and bounded developer
+reports for the Rust language server.
 
-## Architecture Role
+## Ownership
 
-This module sits inside the LSP layer and maps cached open-document analysis plus the optional external workspace/game-data overlay into LSP `CompletionList` responses and dev-report data. `server/src/lsp.rs` remains responsible for protocol dispatch and document/cache lifecycle.
+Owns completion context detection, file-local/external candidate combination,
+visibility filtering, ranking, keyword and override skeleton suggestions,
+callable insertion text, and LSP item rendering. It does not own protocol
+dispatch, document caching, resolver policy, or TypeScript retrigger parsing.
 
 ## Current Behavior
 
-Completion is resolver-owned. The module asks `ReferenceResolver` for member-completion context or top-level/type prefix context, then queries the file-local index, workspace external layer, and game-data external layer separately. It combines candidates without constructing a full merged index per request, preserving open-document candidates ahead of workspace candidates and workspace candidates ahead of game-data candidates. The server advertises `.` for member completion and `[` so attribute-list typing can request the same source-backed top-level/type completion path immediately.
+Completion reuses cached file analysis to recognize member, top-level, type,
+override, and callable-argument contexts. It combines local, workspace, and
+game-data candidates without rebuilding a merged index, preserves source-backed
+precedence, and caps output at 250 items. Member access uses receiver/owner
+resolution; static owners, typedefs, enum members, attributes, and `new`
+expressions have dedicated source-backed paths.
 
-Member completion supports instance and static owners. Instance members use `IndexQuery::completion_members_for_class`; static owners use `IndexQuery::completion_static_members_for_type`. Static-owner completion is the only editor-facing path that returns enum members, so values such as `DEBUG` or `STATIC` require their enum owner/container, for example `LogLevel.`. Explicit receiver member completion hides `private` and `protected` members when the receiver is an arbitrary object outside the owning class context, but keeps them for `this`/`super` and unqualified class-scope completion.
-
-Unqualified value completion uses the cached lexical scope for visible locals/parameters, current-class member completion for methods/fields available without a receiver, source-backed base-owner completion across the open-document/workspace/game-data layers for inherited unqualified calls, top-level value/callable completion for functions/globals/types, and language keyword items such as `return`. Source-symbol matching is case-insensitive and ranked by match quality: exact matches first, then camel/word-boundary abbreviations such as `rp` for `RplProp`, then literal prefix matches, then conservative subsequence matches for two or more typed characters. Inserted text remains the real source-backed symbol or keyword spelling. Keyword items stay strict prefix matches and are ranked before source-symbol matches for the same prefix, but keyword order still uses match quality and length so `int` beats `inout` for prefix `in`. Statement/expression keywords such as `return`, `true`, `false`, `null`, and `new` are available in value contexts. Declaration/modifier keywords such as `static`, `protected`, `private`, `override`, `class`, and `typedef` are available only after clear declaration boundaries such as file start, `{`, `}`, or `;`, or after another declaration/modifier keyword. Primitive/type keywords such as `int`, `float`, and `typename` are also available at declaration boundaries because the resolver can still classify an incomplete declaration prefix as value-shaped before the type is complete. They are also available when the resolver classifies the prefix as a type-position completion but the token boundary is still declaration-shaped, so modifier prefixes such as `overr` inside a class can complete to `override`. This policy only affects keyword items; source-backed class/type/function/value candidates are still queried through resolver and index context so weak declaration-keyword context does not hide real type candidates. Type-position completion stays type-only for source symbols and primitive/type keywords such as `int` and `typename`.
-
-Completion returns at most 250 LSP items after match-aware ranking to keep one-letter prefixes such as `s` useful and bounded. Each source layer can contribute its best matches before the final shared cap, and the server sorts by match quality, then source priority, origin, kind, and label before truncating. This prevents a close match such as `rplr` -> `RplRpc` from being hidden behind weaker local/workspace subsequence matches. When a result reaches that cap, the completion list is marked incomplete so VS Code asks the server again as the prefix narrows instead of only filtering the first broad result set. Completion items use `SymbolDisplay`-derived candidate data for labels, signatures/details, documentation previews, label details, source-aware sort text, prefix-replacing text edits, and VS Code standard completion item kinds. Callable completion items use snippet insert text: no-argument callables insert `Name()`, callables with required parameters insert only required parameters as placeholders, and callables whose parameters are all optional insert `Name($0)` so the cursor lands inside the call without forcing optional arguments. Non-enum required parameters are inserted as normal `${n:paramName}` placeholders. When a required parameter's source-backed type resolves to an indexed enum, the snippet inserts the first enum owner as a selected placeholder, such as `${1:EnumOwner.}`, so typing a variable or expression replaces the whole default while enum-member completion can still produce `EnumOwner.Member`. Later required enum placeholders are progressive: they are not shown up front, and the enum-member completion for the current argument appends the next required enum owner placeholder when one exists. Because VS Code does not treat an inserted dot inside a snippet as a normal typed trigger character, enum-placeholder completion items attach the extension-owned `reforger-sript-tools.completion.triggerSuggestAtSnippetPlaceholderEnd` command. The client command preserves the selected placeholder but orients its active end after the dot before invoking normal suggest, so the enum-member list opens while free typing can still replace the whole default. Callable completion items that do not need that enum-member suggest follow-up attach VS Code's standard parameter-hints command so Signature Help opens after the snippet is inserted and can show the active required/optional parameter list while the user fills arguments. Static enum-member completion items inside callable arguments replace the whole `EnumOwner.<prefix>` expression. If that callable has another required enum argument, the item inserts `EnumOwner.Member, ${1:NextEnum.}` and reopens suggestions at the new placeholder; if there is no next required enum argument, the item has no follow-up command. These enum-member items keep concise labels like `Reliable`, but use owner-qualified filter text such as `RplChannel.Reliable` so VS Code does not hide them while the selected snippet placeholder still contains `RplChannel.`. Optional/defaulted parameters remain visible in label details and Markdown documentation under an Optional section. Classes stay plain type completions except in constructor-call contexts such as `[Attribute` or `new Type`, where a source-backed constructor signature is available and can drive the same snippet behavior. At declaration boundaries, attribute-like classes whose indexed base chain reaches `UniqueAttribute` can also be accepted from a bare shorthand prefix such as `attribut`; the inserted snippet wraps the chosen constructor as `[Attribute($0)]` or, for required enum parameters, starts with the first required enum placeholder such as `[RplRpc(${1:RplChannel.})]`. Unresolved direct `*Attribute` base names remain a compatibility heuristic for incomplete external source facts, but indexed non-attribute bases are not classified by suffix alone. Methods/destructors use Method, functions use Function, constructors use Constructor, fields use Field, parameters/locals/non-const globals use Variable, const fields/globals and preprocessor macros use Constant, classes use Class, enums use Enum, enum values use EnumMember, keywords use Keyword, and typedefs/type parameters use TypeParameter because VS Code has no dedicated typedef completion icon.
-
-Callable signature splitting and callable argument-list context are shared with `server/src/lsp/signature_help.rs` through `server/src/lsp/callable.rs`. Completion uses those facts to decide inserted text and named-parameter labels; Signature Help uses the same facts to explain the active callable and parameter while the user types.
-
-Inside callable argument lists, completion can offer source-backed parameter names for any resolved callable target, not only attributes. The inserted shape depends on the active argument slot. For the current positional parameter, non-enum parameters insert the parameter name only, so `Test(inp)` can become `Test(input)` and `Test(input, num,)` can offer `test` first for the third slot. Parameter-name suggestions are preferred, but they are not exclusive: normal value/top-level candidates remain in the same list behind the parameter unless an exact in-scope value match should win. If an in-scope value with the same name is available, normal value completion can still win for that positional slot; broad top-level matches such as unrelated `Input*` classes must not hide the source-backed parameter. For enum-typed positional parameters, completion still inserts the proven enum owner placeholder, such as `${0:RplChannel.}`, because enum-member completion is the useful next action. When a parameter is selected out of order, completion inserts named-argument syntax such as `input: $0`; if that named parameter is enum-typed it inserts `channel: ${0:RplChannel.}` and attaches `reforger-sript-tools.completion.triggerSuggestAtSnippetPlaceholderEnd` so the selected enum-owner default can either be typed over or completed to an enum value. Non-enum parameter completions attach the standard parameter-hints command so accepting `input`, `input:`, or `defvalue` keeps the callable signature visible while the user fills the value. The target must resolve through the existing parser/resolver/index path; unresolved calls do not guess parameter names or enum owners. Labels already supplied by name are hidden. If an argument-list prefix does not match any available parameter label, the request continues through normal value/top-level completion so arbitrary variables or expressions such as `testChannel` are still offered inside the argument slot. Optional/default values stay visible in details/docs rather than being inserted automatically. Formatting may later normalize whitespace around the colon, but it must not decide which parameter label the user meant.
-
-Inherited override completion is source-backed autocomplete, not auto formatting. At a class-body declaration boundary, completion walks the containing class's preferred base chain across the open document, workspace index, and game-data index, then offers overridable inherited methods matching the typed prefix. These items insert conservative snippet skeletons such as `override protected void OnPostInit(IEntity owner) { $0 }` so accepting the completion places the cursor inside the new method body. Override skeleton completion keeps matching declaration keywords, especially `override`, in the same result set so parent-method skeletons do not hide normal modifier completion while the user is still typing the modifier. When the user has already typed declaration modifiers before the method prefix, such as `override protected OnPostIn`, the skeleton omits those already-present modifiers from its inserted text so accepting completion does not duplicate them. Private, static, sealed, proto, external, and native methods are not offered as override skeletons. Formatting may later clean indentation or brace placement, but it must not independently choose the parent method.
-
-Override skeleton completion must not become a separate completion mode that hides normal source-backed declarations. When inherited override candidates are present, the same response also includes matching top-level/type source symbols from the open document, workspace, and game-data indexes. This keeps declaration contexts such as `rp` able to offer attribute/type symbols like `RplProp` even when base methods such as `RplLoad` and `RplSave` also match.
-
-The module also owns the bounded autocomplete portion of the custom `reforger/debugCompletion` Markdown report. That request runs the same cached-analysis completion projection as `textDocument/completion`, then reports request context, receiver/owner inference, prefix, candidate counts, source/origin counts, phase timings, and the first completion items. The final Ctrl+F2 report also appends Signature Help context from `server/src/lsp/signature_help.rs`, so callable editing can be debugged from one command. It is command-triggered only and must not add background or per-completion logging cost.
+Keywords are LSP-owned so language suggestions do not depend on VS Code word
+suggestions. Callable completions share [callable.md](callable.md) parameter
+parsing with signature help, provide snippets/follow-up commands when safe, and
+avoid duplicate named argument labels case-insensitively.
 
 ## Dependencies and Boundaries
 
-Depends on `ReferenceResolver`, shared callable helpers from `server/src/lsp/callable.rs`, `IndexQuery`, `SymbolDisplay`-backed completion candidates, `SymbolIndex`, and basic LSP range/position helpers from `server/src/lsp.rs`.
+Depends on cached open-document analysis, `ReferenceResolver`, `IndexQuery`,
+`SymbolIndex`, display facts, and callable helpers. `lsp.rs` dispatches the
+request; the TypeScript client only decides whether to retrigger editor UI and
+must not reproduce completion context parsing.
 
-This module must not own request dispatch, open-document storage, workspace file watching, game-data cache lifecycle, TypeScript client behavior, diagnostics, hover, definition, or semantic-token projection. It must not add a second completion path through raw index APIs when `IndexQuery` has an editor-facing API for the same result.
+## Verification
 
-## Change Notes
+Run focused completion/callable tests and `cargo test` from `server/`. Cover
+member/type/top-level contexts, visibility, workspace overlay updates, keyword
+precedence, overloads, named labels, snippets, comments/strings, and the
+output cap.
 
-Extracted from the monolithic `server/src/lsp.rs` without behavior changes. This keeps completion candidate lookup, ranking, item rendering, and timing in one owner while leaving protocol dispatch in `lsp.rs`.
+## Future Direction
 
-Added the `reforger/debugCompletion` report formatter for Ctrl+F2 completion troubleshooting without adding normal request hot-path overhead. The same command now includes Signature Help context when the cursor is inside a callable argument list.
-
-Aligned completion item kind projection with the VS Code IntelliSense icon table, including Constant for const source facts and macros.
-
-Added unqualified value-prefix completion for visible locals/parameters and current-class members so symbols such as `owner` and `GetOwner` come from the LSP completion list with Variable/Method icons instead of falling through to VS Code word suggestions.
-
-Made completion prefix matching case-insensitive so typing `get` can offer the source-backed `GetOwner()` item. Comment/string autocomplete startup is controlled by Enforce language defaults in `package.json`; the LSP still returns no candidates when the resolver reports no completion context.
-
-Added LSP-owned keyword completions so disabling VS Code word suggestions does not remove language words such as `return`.
-
-Expanded keyword completion to include declaration/modifier words such as `static`, `protected`, and `private`, and verified keyword results rank before matching source symbols.
-
-Removed standalone enum-member results from unqualified top-level completion. Enum members remain available from static-owner completion when their enum owner is present.
-
-Bounded returned completion lists to 250 items and split keyword completion into statement/expression keywords versus declaration/modifier keywords. Declaration keywords now require a clear source-backed declaration boundary, while source-backed symbol/type completion remains unchanged. Capped lists are reported as incomplete so the client re-queries after additional typed characters.
-
-Added match-quality ranking for source symbols and moved the final cap after sorting so close abbreviation matches such as `rp` -> `RplProp` are not lost to broad prefix result ordering. Match quality also wins over source priority in the final LSP sort text; source priority breaks ties between similarly close candidates. The cap remains for responsiveness.
-
-Allowed declaration/modifier keywords to appear at declaration-shaped boundaries even when the resolver reports a type completion context. This fixes prefixes such as `overr` inside a class body without allowing declaration keywords in expression contexts.
-
-Unqualified value completion now walks the containing class's source-backed base owner chain across the file-local, workspace, and game-data layers. This lets inherited no-receiver calls such as `getow` offer `GetOwner()` even when the open document contains only `class Example : ScriptComponent` and `ScriptComponent` lives in the external index.
-
-Added receiver visibility filtering for member completion. `private` and `protected` members are hidden for external object receivers such as `GRAY_TEST2 test33; test33.pro`, while `this.pro` and unqualified in-class prefixes still expose restricted source-backed members.
-
-Added `[` as a completion trigger for attribute-list starts. The server-side completion path already resolves `[Attribu]` to the generated `Attribute` class through normal top-level completion; the trigger makes VS Code ask for completions in that context without manual invocation.
-
-Added inherited override method completion in class-body declaration contexts. Typing a parent method prefix such as `OnPostIn` can now offer a source-backed override skeleton while keeping method-body expression completion unchanged. Override skeleton results retain declaration keyword items so prefixes such as `o` and `overr` can still complete to the `override` keyword instead of being hidden by inherited method suggestions. Override skeleton insertion subtracts already typed modifiers from the current declaration fragment so accepting a skeleton after `override protected` does not produce `override protected override protected`.
-
-Kept normal top-level/type source symbols visible in override-skeleton result sets so inherited methods cannot suppress source-backed declaration completions such as `RplProp`.
-
-Callable completion now distinguishes required and optional/defaulted parameters from source-backed signatures. Required parameters are inserted as snippet placeholders, while optional parameters are shown in label details and documentation instead of being inserted automatically. Constructor-call contexts such as attributes and `new` expressions can use class constructor signatures without changing ordinary type-position completion. Bare attribute shorthand completion was added for declaration-boundary prefixes, using source-backed attribute inheritance rather than literal API-name hardcoding.
-
-Enum-typed required callable parameters now insert selected enum-owner defaults such as `${1:EnumOwner.}` when the owner type is proven by indexed enum symbols. The whole default is replaceable by free typing, while enum-member completion inside callable arguments replaces the full `EnumOwner.<prefix>` expression with `EnumOwner.Member`. Named parameter-label completions use the same source-backed enum-owner rule and insert `name: ${0:EnumOwner.}`. These enum-placeholder items attach the extension-owned `reforger-sript-tools.completion.triggerSuggestAtSnippetPlaceholderEnd` command because inserted snippet text does not otherwise fire the `.` trigger and the active side of a placeholder selection must be oriented to the dot for member completion. Required enum placeholders are progressive: accepting `RplChannel.Reliable` in `[RplRpc(${1:RplChannel.})]` inserts `RplChannel.Reliable, ${1:RplRcver.}` and immediately opens completion for `RplRcver.`. This is general callable behavior for functions, methods, constructors, and attributes, not an attribute-specific formatter.
-
-Argument-label completion no longer consumes a request when no parameter-label candidates match. That keeps normal value/source-symbol completion available while editing arbitrary argument expressions after accepting an enum-owner placeholder.
-
-## Future Improvements
-
-Add `completionItem/resolve`, richer overload presentation, and more polished overload grouping in separate verified slices. Keep future completion behavior routed through resolver context and `IndexQuery` rather than direct raw aggregate index access or merged external overlay construction.
-
-Live cached-analysis completion reuses `FileIndexAnalysis` lexer tokens for member and top-level context detection.
+Add ranking improvements, richer overload selection, and optional ghosting only
+when supported by resolver/model facts. Keep future completion semantics in
+Rust rather than text matching in the extension.

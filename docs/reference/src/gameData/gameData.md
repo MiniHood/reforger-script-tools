@@ -4,7 +4,7 @@
 
 Owns Reforger game-data source resolution and update checks for the VS Code extension layer.
 
-## Architecture Role
+## Ownership
 
 This is TypeScript integration code for settings, global storage, GitHub download/update checks, VS Code prompts, and commands. It does not implement language parsing or analysis.
 
@@ -20,10 +20,6 @@ Downloaded data is stored under `globalStorageUri/game-data/scripts`, with metad
 
 Uses Node filesystem/path APIs, VS Code APIs, GitHub HTTP endpoints, `fflate` for zip extraction, and `src/extensionConfig/gameData.ts` for subsystem keys. Keep Workbench out of this downloader. Keep parser/analyzer behavior out of this file.
 
-## Change Notes
+## Verification
 
-Manual folders may point either to a folder containing `scripts/` or to the `scripts/` folder itself. If fewer than 5000 `.c` files are found, the extension warns once per distinct manual folder value. Manual-folder selection from the first-run prompt updates the same setting used by normal extension configuration.
-
-## Future Improvements
-
-Expose the resolved game-data source to the future Rust/LSP layer through a narrow boundary. Add targeted debug logging once the repo has a central logger.
+Run `npm test`. For acquisition or storage changes, exercise the affected manual-folder or downloaded-data path in an Extension Development Host and inspect `globalStorageUri` rather than the workspace.

@@ -4,7 +4,7 @@
 
 Generates a corpus-scale Markdown report from the file-local declaration model and symbol catalog.
 
-## Architecture Role
+## Ownership
 
 This is developer review tooling for model/catalog quality. It is not VS Code runtime behavior, not an LSP entrypoint, not workspace indexing, not Workbench validation, and not compiler truth.
 
@@ -18,17 +18,6 @@ It accepts `--scripts <path>` and `--out <path>`. If no scripts path is provided
 
 Uses only Rust standard library APIs plus the crate parser, AST, and model modules. It must not duplicate model behavior, resolve symbols, create a workspace index, call Workbench, become VS Code runtime code, or become a package command.
 
-## Change Notes
+## Verification
 
-- Added corpus-scale symbol catalog reporting for real downloaded/manual Reforger script data.
-- Added richer human-review sections for modifiers, attributes, doc coverage, duplicate names, overload groups, sample symbols, and callable-fragment snippets.
-- Attribute name frequency now uses `SymbolCatalog::attribute_name()` instead of local parsing.
-- Duplicate top-level names now list each declaration as kind, name, path, and line.
-- Constructor and destructor overload groups are reported separately from regular methods.
-- Added corpus visibility for source-backed type-shape base names, qualifiers, generic arities, and array suffixes.
-- Corpus catalogs now carry game-data source metadata with absolute path, scripts root, relative path, and priority.
-
-## Future Improvements
-
-- Add sections for index-specific lookup quality after a real workspace/game-data index exists.
-- Keep corpus findings as planning evidence only; Workbench remains compiler truth.
+Run `cargo run --example symbol_corpus_report` from `server/` and inspect the generated report for the documented fixture or corpus checks.

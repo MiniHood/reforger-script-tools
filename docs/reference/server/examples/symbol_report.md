@@ -4,7 +4,7 @@
 
 Generates a fixture-scale Markdown report from `SymbolCatalog` records.
 
-## Architecture Role
+## Ownership
 
 This is developer review tooling for symbol tree readability. It is not VS Code runtime behavior, not an LSP entrypoint, not workspace indexing, not Workbench validation, and not compiler truth.
 
@@ -18,14 +18,6 @@ It accepts `--out <path>`.
 
 Uses only Rust standard library APIs plus the crate parser, AST, and model modules. It must not duplicate model extraction behavior, resolve symbols, create a workspace index, call Workbench, become VS Code runtime code, or become a package command.
 
-## Change Notes
+## Verification
 
-- Added fixture-scale symbol tree reporting for human review.
-- Improved report readability with line/column locations, attribute names, `<none>` list markers, and cleaned doc previews.
-- Typedef symbols now show their raw aliased type text through existing detail rendering.
-- Attribute name rendering now uses `SymbolCatalog::attribute_name()` instead of local parsing.
-- Fixture reports now pass and display catalog-level source metadata.
-
-## Future Improvements
-
-- Add focused fixture sections if future model fields become hard to inspect in the compact tree format.
+Run `cargo run --example symbol_report` from `server/` and inspect the generated report for the documented fixture or corpus checks.

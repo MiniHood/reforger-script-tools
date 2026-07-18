@@ -1,66 +1,50 @@
-# server/src/lsp/semantic_tokens.rs
+# `server/src/lsp/semantic_tokens.rs`
 
 ## Purpose
 
-Owns LSP semantic-token projection for Enforce coloring.
+Projects Enforce source facts into LSP semantic tokens for editor coloring.
 
-## Architecture Role
+## Ownership
 
-This module is part of the Rust LSP layer. It converts cached file-local parser/index analysis, optional external indexes, lexer facts, and resolver-backed symbol facts into LSP `textDocument/semanticTokens/full` data and dev-report debug rows.
+Owns lexical/declaration and resolver-backed token projection, priority
+resolution, multiline splitting, UTF-16 delta encoding, palette facts, and
+bounded debug/report data. It does not own request scheduling, cache lifecycle,
+external indexing, or any TextMate/TypeScript coloring path.
 
 ## Current Behavior
 
-The module exposes the semantic-token legend, palette helper, `LspSemanticTokens`, fast and rich runtime token-only projection helpers, `LspSemanticTokenReport`, and fixture/corpus report helpers. It colors lexical facts such as comments, strings, numbers, keywords, operators, punctuation, and preprocessor directive tokens, then overlays indexed declaration/reference symbol facts for classes, enums, typedefs, functions, methods, fields, parameters, locals, enum members, preprocessor macros, and type parameters. Field symbols use the Enforce-facing semantic token type `field`, not the generic VS Code sample name `property`, so hover, completion, reports, and semantic colors use the same terminology. Constructor and destructor names use the class/type-family token color because the identifier is the owning class name; regular methods use method coloring. Comment tokens are authoritative over their full spans, so brackets, braces, operators, keywords, and Doxygen-ish text inside comments remain comment-colored instead of receiving nested punctuation/operator colors. Language primitive/value keywords such as `void`, `int`, `float`, `bool`, `typename`, `true`, and `false` remain keyword-blue. The `enum` keyword is keyword-blue, while enum type names use the same green type-family color as class/type names. Source-backed object/container type words such as `string`, `vector`, `array<T>`, `map<K,V>`, `set<T>`, `ResourceName`, `LocalizedString`, `Curve`, and `Color` receive type-family coloring when they appear in declaration type spans. Named identifiers inside source-backed type spans, such as parameter types, return types, field/local/global types, typedef targets, generic type arguments, and class/enum base types, receive type coloring even before the external workspace/game-data index is ready. Preprocessor `#` and directive names such as `ifdef`, `define`, and `endif` use the preprocessor color, while macro identifiers such as `ENABLE_DIAG` and `GAME_MODE_DEBUG` use variable coloring. Attribute names are treated as source-backed type/class positions, attribute named-argument labels such as `uiwidget:` are colored as variable-style labels, and attribute member/static expression shapes such as `UIWidgets.Flags` and `ParamEnumArray.FromEnum(...)` receive source-backed fast-pass colors before resolver facts are available. Ordinary call shapes also receive fast-pass callable coloring: `Name(...)` is colored as a function-like callee and `receiver.Name(...)` is colored as a method-like member call, so common call-site colors do not wait for external index readiness. Static/type-owner member shapes with type-like owners, such as `SCR_EGameModeState.GAME`, `EHealthState.INJURED`, and `TraceFlags.WORLD`, receive fast-pass owner/member coloring before external enum/class facts are ready. Type-like unqualified attribute arguments with mixed-case type naming, such as `EGameFlags`, are type-family colored during the fast pass so first paint does not wait for the external index; all-caps constants such as `WB_GAME_MODE_CATEGORY` remain variable-colored. The rich resolver pass can refine those same identifiers to more specific enum/class/type/function token kinds when workspace or game-data facts identify the symbol, while keeping enum type names green.
+The fast pass returns lexical, declaration, and cached scope-reference colors
+immediately. A rich pass overlays resolver-backed references and external
+workspace/game-data facts. Both use the same cached document analysis; the
+runtime accepts rich output only when its document revision and external
+generation still match.
 
-The fast attribute detector is resilient to malformed preceding live-edit text: if an attribute list begins on a new line after invalid declaration-context text, the bracketed `AttributeName(...)` shape is still colored as an attribute rather than as a normal call or index expression.
+Token priorities preserve comments over code-like text, declarations/type
+positions over weaker references, and scope facts over generic variable
+fallbacks. Attributes, calls, static members, preprocessor directives/macros,
+base types, constructors, and enum owners receive source-backed treatment.
+Multiline spans are split before encoding. Raw tokens, post-split tokens, and
+encoded output are all capped at 200,000 tokens to bound malformed or huge
+input.
 
-Live LSP requests use a two-tier projection model. The first request for a document revision can return `fast_semantic_tokens_for_cached_analysis`, which includes lexer facts, indexed declarations, source-backed type spans, and cached lexical-scope references for visible local variables and parameters. It still intentionally skips external/resolver-backed identifier reference coloring. After that response is written, the stdio server marks rich projection pending and submits it to one bounded scheduler. The scheduler waits for editor idle, keeps only the newest queued job for each URI, caps queued URIs, evicts the oldest queued URI under pressure, and runs one cancellation-aware resolver projection at a time with cloned open-document analysis and cheap `Arc` snapshots of the external workspace/game-data indexes. `didChange` and external-overlay generation changes cancel obsolete pending work. When the worker reports back, `lsp.rs` stores the projection only if the document revision and external overlay generation still match, then sends `workspace/semanticTokens/refresh`. The next request for that unchanged revision and overlay generation returns the cached rich projection. If the workspace/game-data overlay changes, the old rich projection is bypassed so coloring computed before external symbols were ready does not remain active. Direct in-process test/report helpers may still compute rich tokens synchronously; live stdio request handling must not.
-
-Semantic token ordering is priority-based: declaration symbols win over resolver-backed type-like references, resolver-backed type-like references win over source-backed type-position spans, source-backed type-position spans win over ordinary resolver-backed identifier references, and resolver-backed references win over basic lexical token classes where spans overlap. This lets external facts refine a source-backed type position from generic class coloring to a precise enum/class/type token kind while keeping type positions stable during the fast-to-rich refresh path; a callback typedef argument such as `ScriptInvokerBase<SCR_BaseGameMode_PlayerId>` should stay type-colored even if a same-name function prototype exists elsewhere in the file. Multi-line tokens are split into single-line LSP semantic tokens before encoding.
-
-Semantic-token projection has a hard raw-token cap. The cap is a safety boundary, not a ranking policy: normal source files are far below it, but malformed spans, recursive projection bugs, or corrupt analysis state must not allocate unbounded token vectors or encoded payloads. If the cap is ever reached, reports/logs should be used to fix the projection bug rather than raising the cap blindly.
-
-Semantic-token projection reuses the lexer tokens it already has when asking the resolver about identifier references. It must not call offset-based resolver entrypoints that re-lex the whole source for every identifier; large files such as `GC_MarkerArea.c` depend on the span-based resolver path for acceptable load-time coloring.
-
-Live LSP requests use token-only projection paths and must not build decoded debug rows. The decoded row path belongs to explicit reports and debug tooling because it allocates per-token text, ranges, colors, and modifier strings for human review. Runtime logs include summarized semantic-token phase timings so large-file coloring problems can be debugged from global-storage logs without dumping token data.
+Semantic tokens are the only Enforce editor-coloring source. The palette helper
+is shared only for best-effort hover presentation; it does not create a second
+editor coloring pipeline.
 
 ## Dependencies and Boundaries
 
-Depends on the lexer, resolver, `SymbolIndex`, and cached `FileIndexAnalysis` from `server/src/lsp.rs`. It does not own request dispatch, document storage, workspace overlay lifecycle, theme contribution, TextMate grammar, or editor configuration.
+Depends on lexer/parser/model/index/resolver facts, cached `FileIndexAnalysis`,
+and external snapshots. [open_documents.md](open_documents.md) owns cache
+identity; `lsp.rs` owns workers, cancellation, and refresh coalescing.
 
-Semantic tokens are the only Enforce coloring source. Do not add a second coloring path through TextMate or TypeScript tokenization.
+## Verification
 
-## Change Notes
+Run focused semantic-token tests and `cargo test` from `server/`. Cover fast to
+rich replacement, stale revision/generation rejection, cancellation, Unicode
+and CRLF delta encoding, multiline comments, malformed source, token priority,
+and the final output cap.
 
-Extracted from the monolithic `server/src/lsp.rs` without behavior changes so request dispatch can stay small while semantic coloring logic has a clear owner.
-Added span-based resolver calls for semantic-token identifiers so full-document coloring does not re-lex the file once per identifier.
-Split live runtime projection from report projection so `textDocument/semanticTokens/full` does not pay for decoded debug rows.
-Added semantic-token phase timing for lexing, token loop, resolver calls, declaration overlay, sort/filter/split, encoding, and report-only debug decoding.
-Added a fast lexical/declaration projection for first-response coloring and kept resolver-backed reference coloring in one cached rich projection per open-document revision.
-Moved live stdio rich projection off the foreground request loop. Worker results are revision/generation checked before becoming the cached rich projection.
-Added an idle delay before live rich projection starts so large-file edit bursts return fast tokens immediately without burning CPU on resolver-backed projections for obsolete revisions.
-Added cancellation tokens for pending live rich projections so `didChange` and external generation changes can stop obsolete rich semantic-token work during the expensive resolver-backed projection instead of only discarding it after completion.
-Added duplicate-worker suppression for repeated semantic-token requests while the rich projection is still pending.
-Made comment semantic tokens authoritative over their full spans so punctuation/operator/keyword-looking text inside doc comments remains comment-colored.
-Replaced broad decorator coloring for every identifier inside attribute brackets with source-backed attribute roles: attribute names are type/class-colored, named argument labels are variable-colored, static/member expression shapes are colored from syntax, and rich attribute argument expressions resolve normally.
-Added fast-pass type-family coloring for mixed-case unqualified attribute arguments so common type/enum arguments do not appear variable-colored while waiting for the external index.
-Made fast-pass attribute detection line-boundary aware so stray live-edit text such as `this` does not prevent the following attribute name from receiving class/type coloring.
-Added fast-pass callable shape coloring for `Name(...)` and `receiver.Name(...)` so call-site function/method colors appear before the external index and rich resolver projection finish.
-Added fast-pass type-owner static member coloring for dotted expressions such as `SCR_EGameModeState.GAME` and all-caps/underscore type-like owners such as `GRAY_TEST2.testnum`, while lowercase receiver expressions such as `stateComponent.GetDuration()` remain receiver-shaped instead of type-owned.
-Added source-backed base-type detail coloring so declarations such as `class Child : Base` color `Base` as a type/class position even when game-data resolution is unavailable.
-Expanded source-backed type detail coloring from base types to parameter, return, field/local/global, typedef target, and generic type-argument spans so first-paint coloring does not depend on hover or external-index readiness for declarations such as `KickCauseCode cause`, `array<EResourceType>`, and `ScriptInvokerBase<T>`.
-Raised source-backed type-position priority above ordinary resolver reference priority so rich semantic-token refresh cannot recolor known type spans as functions or values when same-name declarations exist. Resolver-backed class/enum/typedef/type-parameter facts still outrank the generic type-position overlay so external index facts can refine the exact token kind without changing the source-backed type-position behavior.
-Kept `void`, `bool`, `int`, `float`, `typename`, `true`, and `false` classified as `keyword` so the theme can color them as language keywords while named class/enum/typedef symbols stay type-colored through index/resolver facts. Type-position `string` and `vector` are allowed to overlay as class/type-family tokens because game data exposes source-backed generated class declarations for them and the Enforce color standard treats them like object/container types.
-Moved enum-member semantic-token color to the variable color while keeping enum owner/type names in the green type-family color. The source keyword `enum` remains keyword-blue.
-Split preprocessor line coloring so directive tokens stay preprocessor-colored while macro identifiers use variable coloring and can be refined by indexed `PreprocessorMacro` symbols.
-Keyed rich semantic-token cache entries by external overlay generation so named types such as `KickCauseCode`, `IEntity`, and `SCR_InstigatorContextData` can recolor once the runtime game-data/workspace index becomes available.
-Exposed the semantic-token palette helper for hover label presentation. Semantic tokens remain the only source of editor coloring; hover color is best-effort Markdown presentation.
-Changed constructor and destructor declaration names from method coloring to class/type-family coloring so declarations such as `void Attribute(...)` and `void ~SCR_BaseGameMode()` color the owner name like the class it is.
-Added a semantic-token raw-token safety cap so large-file coloring defects fail bounded instead of exhausting process or system memory.
-Added cached lexical-scope reference coloring to the fast projection so open-file parameters, locals, `for` initializer variables, and `foreach` variables do not flicker while waiting for the rich resolver worker.
+## Future Direction
 
-## Future Improvements
-
-Add semantic-token range or delta support only if full-document token refresh becomes too costly. Keep future semantic coloring improvements source-backed through lexer/parser/model/index/resolver facts rather than ad hoc editor-side rules.
-
-Cached-analysis projection reuses the lexer tokens stored by `FileIndexAnalysis` instead of re-lexing unchanged open-document text.
+Add range or delta requests only if full-document refresh cost warrants their
+additional invalidation complexity. Keep new classifications source-backed.

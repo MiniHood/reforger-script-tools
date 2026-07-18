@@ -4,7 +4,7 @@
 
 Generates a dev-only corpus report for source-backed expression type inference.
 
-## Architecture Role
+## Ownership
 
 This report exercises `server/src/expression_type.rs` across real parser expression nodes. It sits above parser, AST expression wrappers, model/index, lexical scope, and optional game-data index context. It validates the expression type environment that resolver, hover, definition, completion, and semantic tokens rely on.
 
@@ -24,19 +24,20 @@ The summary includes both raw unresolved expressions and actionable unresolved e
 
 Supported flags:
 
-- `--scripts <path>`
-- `--out <path>`
-- `--max-files <n>`
-- `--no-external-index`
+-…2028 tokens truncated… but it does not change language-server startup behavior or cache policy.
+
+## Current Behavior
+
+The report measures an existing cache path, a temporary cache-miss rebuild/write, and a direct rebuild without cache. Cache measurements use the v9 runtime-pruned binary game-data cache, while direct rebuild measures the full source index. The report therefore checks that cache symbols equal direct rebuild symbols minus local variables and that parameter symbols remain preserved. It also compares a full-map JSON estimate against the v9 actual binary cache file, including string-table storage, detail-span stripping, and lookup-map rebuild visibility. Cache hit timing is split into file read, binary decode, validation, and lookup-map rebuild. The Node wrapper runs debug and release profiles and combines them into `tools/reports/index-cache-baseline.report.md`.
+
+The runtime cache structural section also reports lookup-map shape: key counts and symbol-id entry counts for all rebuilt maps. This makes lookup-map rebuild time reviewable without persisting the maps in the cache.
+
+Release timing is the only timing used for the cache usefulness decision. Debug timing is informational.
 
 ## Dependencies and Boundaries
 
-Uses existing Rust language-tooling layers only. It is dev-only review tooling and must not become runtime LSP behavior, mutate source, call Workbench, or create a second expression inference implementation.
+Depends on `index_cache`, `index_build`, and public `SymbolIndex` data for counts and lower-bound memory estimates. It must not add runtime extension commands, mutate source files, change cache invalidation policy, or treat the cache as source truth.
 
-## Change Notes
+## Verification
 
-Added after receiver-chain typing moved from resolver into `ExpressionTypeEnvironment`, so type inference gaps can be reviewed directly instead of inferred from hover/completion misses.
-
-## Future Improvements
-
-Keep classifications aligned with actual type-environment behavior. If a bucket grows too broad, split it in the report before changing inference behavior.
+Run `cargo run --example index_cache_baseline` from `server/` and inspect the generated report for the documented fixture or corpus checks.

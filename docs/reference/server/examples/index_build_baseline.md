@@ -4,7 +4,7 @@
 
 Generates a compact dev-only performance baseline for building the in-memory symbol index without expensive corpus-analysis Markdown rendering.
 
-## Architecture Role
+## Ownership
 
 This example sits above `server/src/index_build.rs` and uses the shared source-root indexing pipeline. It is review tooling for deciding whether runtime/LSP startup will need a persisted game-data index cache. It is not VS Code runtime behavior, not LSP wiring, not a cache implementation, and not Workbench validation.
 
@@ -20,13 +20,6 @@ Uses only Rust standard library APIs plus the crate index builder and index modu
 
 The memory estimate is intentionally conservative. It uses public index counts, copied text lengths, and Rust record sizes as a lower bound; it is not process RSS and excludes allocator overhead and private map/vector capacity.
 
-## Change Notes
+## Verification
 
-- Added the runtime index build baseline report so game-data indexing performance can be measured separately from corpus report rendering.
-- Added debug and release comparison through the dev-only Node wrapper.
-- Added a release-time threshold for recommending future disposable global-storage game-data index caching.
-
-## Future Improvements
-
-- Add persisted cache design only if release baseline and future LSP startup measurements justify it.
-- Add platform-specific RSS measurement only if lower-bound index-shape estimates are not enough for startup decisions.
+Run `cargo run --example index_build_baseline` from `server/` against a known script corpus. Compare the generated baseline with the Node wrapper only when its debug/release comparison is relevant.

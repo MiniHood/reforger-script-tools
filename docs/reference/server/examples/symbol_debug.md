@@ -4,7 +4,7 @@
 
 Prints compact per-file symbol debug output to stdout.
 
-## Architecture Role
+## Ownership
 
 This is developer/Codex inspection tooling for one source file. It is not VS Code runtime behavior, not an LSP command, not workspace indexing, not Workbench validation, and not compiler truth.
 
@@ -18,13 +18,6 @@ Without filters it prints the full file-local symbol tree. With `--symbol`, it p
 
 Uses only Rust standard library APIs plus the crate parser, AST, and model modules. It must not resolve symbols across files, normalize type text, call Workbench, become a VS Code command, or become runtime extension code.
 
-## Change Notes
+## Verification
 
-- Added targeted symbol debugging by file, symbol name, and line.
-- Improved debug readability with line/column locations, attribute names, `<none>` list markers, and cleaned doc previews.
-- Attribute name rendering now uses `SymbolCatalog::attribute_name()` instead of local parsing.
-- Debug output now displays catalog-level source metadata for the inspected file.
-
-## Future Improvements
-
-- Add optional JSON output only if a future tool genuinely needs machine-readable symbol debug records.
+Run `cargo run --example symbol_debug` from `server/` and inspect the generated report for the documented fixture or corpus checks.

@@ -4,7 +4,7 @@
 
 Generates a corpus-scale Markdown report by running the real Rust lexer across a Reforger scripts folder.
 
-## Architecture Role
+## Ownership
 
 This is developer review tooling for lexer coverage. It is not VS Code runtime behavior, not an LSP entrypoint, and not parser/model/index logic.
 
@@ -18,12 +18,6 @@ It accepts `--scripts <path>` and `--out <path>`. If no scripts path is provided
 
 Uses only Rust standard library APIs and the crate lexer. It must not duplicate lexer behavior, parse declarations, inspect semantics, or become runtime extension code.
 
-## Change Notes
+## Verification
 
-- Added corpus-scale lexer validation for real downloaded/manual Reforger script data.
-- Added lossy decoding reporting so non-UTF-8 game-data files do not stop the whole scan.
-
-## Future Improvements
-
-- Add targeted sections for newly discovered tokenization edge cases.
-- Keep corpus findings as review evidence only; Workbench remains compiler truth.
+Run `cargo run --example lexer_corpus_report` from `server/` and inspect the generated report for the documented fixture or corpus checks.

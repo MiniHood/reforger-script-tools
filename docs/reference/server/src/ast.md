@@ -2,56 +2,28 @@
 
 ## Purpose
 
-Owns typed, source-backed AST wrapper views over the parser syntax tree.
+Provides typed, source-backed AST views over the parser's syntax tree.
 
-## Architecture Role
+## Ownership
 
-This file is the first Rust AST layer. It sits above syntax parsing and below future semantic model, indexing, diagnostics, formatting, and LSP behavior. It converts parser `SyntaxNode` shapes into ergonomic declaration views without changing parser output.
+`ast.rs` is the file-local bridge between CST structure and consumers such as the model, resolver, index, and formatter. It owns ergonomic declaration and expression views, source spans, and best-effort extraction. Parser CST nodes remain the authority for structure; semantic layers own meaning.
 
 ## Current Behavior
 
-The AST layer exposes `AstSourceFile` for one parsed source file and best-effort declaration wrappers for classes, enums, typedefs, functions, top-level fields/globals, class fields, class methods, constructors, destructors, parameters, attributes, modifiers, doc comments, and empty semicolon declarations. Extracted names and text are returned as span-backed slices into the original source text through `TextValue`. `TextValue::new()` exists for adjacent source-backed layers such as the model when they select a span from parser/lexer facts without a dedicated AST wrapper. Uncertain names or type text return `Option` instead of inventing semantic facts. Class, enum, function, field, and method attributes are exposed through declaration wrappers. Leading `//!` and `/*! ... */` documentation comments are exposed as raw `DocComment` values attached from immediate leading trivia; tags and comment text are not parsed or normalized. Top-level fields are returned as `Declaration::Field`, while class fields remain `ClassMember::Field`. Field extraction ignores preserved semicolons that belong to leading attribute lists before scanning the actual declaration tokens. Typedef declarations expose the alias name and raw aliased type text, such as `typedef string FactionKey;` producing name `FactionKey` and type text `string`, without resolving the alias. Enum members expose source-backed explicit value text when present, but values are not evaluated or resolved. Destructor methods such as `void ~Example()` are detected through `MethodDecl::is_destructor()`, keep `name()` as `Example`, and return `void` from `return_type_text()` rather than `void ~`. Constructor classification is exposed through `ClassDecl::classify_method()` because it requires comparing a method name with the containing class name. Parameters expose raw text plus best-effort name, leading type text, default text, and top-level `out`/`inout`/`notnull` modifiers. `ref` remains part of parameter type text because it is strong-reference/type ownership syntax in Reforger sources. `ParameterKind` distinguishes real declaration parameters from preserved non-declaration callable fragments such as literal-only `false` inside declaration-shaped conditional source; `parameters()` returns declaration parameters and `parameter_fragments()` returns those preserved fragments.
+`AstSourceFile` exposes declarations for classes, enums, typedefs, functions, fields, members, callables, attributes, modifiers, raw leading documentation comments, and empty semicolon declarations. `TextValue` keeps extracted names, type text, defaults, and spans backed by the original source. Unknown or incomplete syntax returns `Option` rather than invented facts.
 
-Static-array field declarations keep the field identifier before the array suffix as the field name. For example, `string TAGS[COUNT];` exposes name `TAGS` and type text `string`; the `[COUNT]` suffix is preserved by source span for the model type-shape layer rather than folded into `type_text`.
+Fields and locals read parser-owned `TypeRef`, `DeclaratorList`, and `Declarator` boundaries. This preserves comma-separated fields, static-array suffixes, brace defaults, `for` initializer locals, and `foreach` variables without token re-splitting. Parameter views preserve raw text, type/default text, declaration modifiers, and the distinction between true declaration parameters and preserved non-declaration callable fragments.
 
-Comma-separated field declarations expose `FieldDeclarator` views from one parser `FieldDecl`. For example, `Widget a, b, c;` exposes three declarators with shared type text `Widget` and local declarator spans. AST reads parser-owned `TypeRef` and `DeclaratorList` children rather than splitting declaration tokens for model/index consumers.
-
-Method/function body blocks expose a narrow `LocalVariable` view for local declarations, `foreach` variables, and `for` initializer declarations. Local discovery walks parsed `LocalDeclStatement` nodes, nested `LocalDeclStatement` nodes under `ForInitializer`, and `ForeachVariable` nodes under `ForeachVariableList`; all read parser-owned `TypeRef` and `Declarator` boundaries. It preserves names, source spans, raw type text, default text, and local modifiers without semantic scope resolution. Static-array locals with brace initializer defaults, such as `vector value[4] = {...};`, keep the array-suffixed local span and expose the complete brace initializer default text, including nested initializer lists. It is intended for hover and later local completion groundwork, not semantic scope resolution.
-
-Expression syntax exposes lightweight `Expression` views for names, literals, calls, member access, indexing, casts, `new`, unary/binary/assignment/ternary expressions, initializer expressions, parenthesized expressions, and unknown expression nodes. These wrappers are source-backed views over parser syntax; they do not evaluate expressions. Callable bodies and attribute argument lists both use this expression shape, so attribute values such as `UIWidgets.ComboBox` and `ParamEnumArray.FromEnum(...)` can participate in hover/definition resolution without a second parser. AST also provides lookup helpers for the smallest expression at a byte offset, member-access context for a hovered member name, and named-argument labels. Resolver member access consumes these wrappers as the single expression-understanding path instead of reconstructing receiver text from raw token spans.
+Expression views cover names, literals, calls, member/index access, casts, `new`, unary/binary/assignment/ternary expressions, initializer expressions, and parenthesized forms. Offset lookup, member-access context, and named-argument-label helpers are the shared syntax-understanding path for resolver consumers and attribute/body expressions alike.
 
 ## Dependencies and Boundaries
 
-This file depends only on lexer span/token types and parser syntax types. It must not resolve symbols, evaluate type aliases, understand inheritance, inspect workspace files, read game data, call Workbench, emit diagnostics, or handle LSP requests. It must preserve the parser as the source of structure and keep all source text external.
+Depends only on lexer spans/tokens and parser syntax types. It does not resolve symbols, evaluate values or aliases, infer inheritance, inspect files, query game data or Workbench, emit diagnostics, or handle LSP requests.
 
-## Change Notes
+## Verification
 
-- Added the initial syntax-backed AST declaration extraction layer.
-- Added span-backed text wrappers for names, type text, attributes, modifiers, parameters, and declaration spans.
-- Added fixture-oriented tests that ensure committed parser fixtures expose extractable declarations.
-- Fixed field name/type extraction for declarations preceded by semicolon-terminated attribute lists.
-- Added destructor classification so `~` is not folded into method return type text.
-- Added top-level field/global extraction through `Declaration::Field`.
-- Added enum-level attribute extraction through `EnumDecl::attributes()`.
-- Added source-backed enum member value extraction without semantic value evaluation.
-- Added raw leading doc-comment attachment for declarations and class members without parsing documentation tags.
-- Added class-context method classification for regular methods, constructors, and destructors.
-- Added source-backed parameter name, type text, default text, and modifier extraction.
-- Added `ParameterKind` and callable-fragment extraction so future language features do not treat preserved literal fragments as declaration parameters.
-- Added source-backed typedef aliased type text extraction.
-- Fixed static-array field extraction so array bound identifiers do not replace the actual field name.
-- Added `FieldDeclarator` extraction so comma-separated field declarations expose every declared field with the correct shared type text.
-- Added local/block symbol extraction for local variables, `foreach` variables, and `for` initializer declarations.
-- Fixed local default extraction for static-array locals with brace initializer lists so hover/display details do not truncate the closing initializer braces.
-- Moved local discovery from broad block token scanning to parsed statement/header syntax nodes.
-- Guarded local extraction against compound assignment expression statements so usage expressions such as `addonsDir += absPath;` cannot produce false local variables.
-- Added typed expression wrapper views and offset/member/named-argument lookup helpers for resolver and hover use.
-- Attribute argument values now share the same expression wrapper path as body expressions.
-- Moved field/local and declaration-form `for` extraction to parser-owned declarator CST boundaries.
+Focused AST tests cover declaration extraction, attributes, callable classification, declarators, locals, defaults, and expression lookup. Parser fixtures provide broader source-shape coverage.
 
-## Future Improvements
+## Future Direction
 
-- Add lexical scope modeling in a separate verified slice.
-- Add a normalized type-shape API separately; current parameter and field type text remains source-faithful.
-- Add a semantic model layer separately when declaration extraction is stable.
-- Add workspace indexing separately; AST wrappers should remain file-local.
+Lexical scope, normalized type shapes, semantic modeling, and workspace indexing remain separate layers. AST views should stay source-faithful and file-local.

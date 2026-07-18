@@ -16,12 +16,11 @@ The configuration defines `//` line comments, `/* */` block comments, and brace/
 
 This file must stay lightweight. It must not encode parser semantics, Workbench truth, syntax highlighting, or broad formatting rules.
 
-## Change Notes
+## Verification
 
-- Added initial editor configuration for the `enforce` language contribution.
-- Clarified that coloring is owned by semantic tokens, not language configuration or TextMate grammar.
-- Removed editor `brackets` from the Enforce language configuration so VS Code's bracket-pair/matching layer does not color bracket characters inside comments.
-- Narrowed `autoCloseBefore` to avoid duplicate closing brackets when a closer is already at the cursor.
+Run `npm test` after changing this configuration. In an Extension Development
+Host, verify comment insertion, auto-closing behavior, and that bracket
+characters inside comments retain comment coloring.
 
 ## Future Improvements
 

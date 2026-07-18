@@ -2,34 +2,26 @@
 
 ## Purpose
 
-Owns editor-ready presentation views for indexed symbols.
+Converts indexed symbol facts into shared editor-ready display records.
 
-## Architecture Role
+## Ownership
 
-This file sits above the raw symbol index and below future LSP hover, completion, document-symbol, and debug output. It turns copied indexed facts into stable display records without reparsing source text.
+`SymbolDisplay` owns source-backed labels, details, signatures, documentation presentation, and provenance formatting below LSP features. Index owns stored facts; feature handlers own protocol-specific conversion.
 
 ## Current Behavior
 
-`SymbolDisplay::for_symbol()` returns `SymbolDisplayInfo` for one indexed symbol. The display record includes label, kind, optional container/owner name, detail text, callable signature, raw `doc_comments`, a bounded `documentation_preview`, modifiers, attributes, source provenance, spans, conditional context, and callable form.
+`for_symbol()` returns `SymbolDisplayInfo` with label, kind, owner, detail, callable signature, raw `doc_comments`, bounded preview, modifiers, attributes, provenance, spans, conditional context, and callable form. Callable signatures preserve parameter modifiers; other symbols use copied type/base/value/default facts. `documentation_display()` derives brief, parameter, return, warning, and note sections while raw comments remain unmodified.
 
-Callable symbols use `SymbolIndex::callable_signature()`, including source-backed parameter modifiers such as `out`, `inout`, and `notnull`. Non-callable symbols use existing indexed detail text such as type text, base type, enum value, default value, typedef aliased type, parameter detail, local-variable detail, or a bare preprocessor macro label. Documentation comments are preserved as raw copied comment text. `documentation_display()` derives structured display sections for summary/brief text, `\param[in]` / `\param[out]` style parameter tags, returns, warnings, and notes. `documentation_preview` remains a bounded one-line preview for reports and completion details.
-Child symbols also copy their immediate indexed container name when available. Hover uses that source-backed owner fact for display such as `Enum Value in SCR_EGameModeState` without re-resolving the symbol.
+Child symbols carry immediate indexed container names for display without re-resolution.
 
 ## Dependencies and Boundaries
 
-This file depends on `server/src/index.rs` and model/source metadata types. It must not parse source files, resolve symbols, evaluate types/defaults/enum values, perform full Doxygen extraction, call Workbench, persist caches, or handle LSP protocol requests.
+Depends on index and model/source metadata. It does not parse, resolve, evaluate types/values, perform complete Doxygen parsing, persist caches, call Workbench, or handle LSP.
 
-## Change Notes
+## Verification
 
-- Added the first symbol display layer so future editor features and debug tools can share one presentation shape.
-- Raw documentation storage is named `doc_comments`; `documentation_preview` is the only display-rendered documentation field.
-- Kept display source-backed through copied indexed facts because `SymbolIndex` does not retain source text.
-- Added lightweight doc-preview rendering so hover/completion previews avoid exposing raw Doxygen tags while raw comments remain unchanged.
-- Added display support for `LocalVariable` symbols using the same type/default detail shape as parameters and fields.
-- Added display support for `PreprocessorMacro` symbols as source-backed labels without macro evaluation.
-- Added structured documentation display for richer hover rendering while preserving raw `doc_comments`.
+Display tests cover symbol kinds, signatures, details, previews, raw comments, structured documentation sections, and provenance.
 
-## Future Improvements
+## Future Direction
 
-- Add LSP-specific conversion separately when hover, completion, or document-symbol handlers exist.
-- Add fuller Doxygen extraction only after tag behavior is intentionally designed.
+LSP conversion stays in LSP modules. More complete documentation parsing needs an intentional format contract.

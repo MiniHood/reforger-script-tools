@@ -4,7 +4,7 @@
 
 Scans a downloaded or manually supplied Reforger game script corpus and writes a Markdown discovery report for Codex and human planning.
 
-## Architecture Role
+## Ownership
 
 This is repo-only developer tooling. It is not part of the VS Code extension runtime, does not use VS Code APIs, and must not be registered as an extension command. The tool helps choose future parser, semantic model, indexing, and fixture priorities from real script data while keeping discovery code out of `src/`.
 
@@ -20,12 +20,6 @@ The script uses only Node built-in modules. It may read extension global-storage
 
 Do not move this tool under `src/`, do not import it from extension code, and do not add package command or VS Code command registration unless the behavior intentionally becomes user-facing.
 
-## Change Notes
+## Verification
 
-- Initial version creates a Markdown corpus report from `.c` files and keeps generated output under the ignored `tools/reports/` folder.
-
-## Future Improvements
-
-- Add optional JSON output for machine-readable trend comparisons.
-- Add fixture candidate extraction once parser test strategy exists.
-- Add Workbench-confirmed annotations only when validation data is available.
+Run the script against a known script corpus and inspect the generated ignored report for paths, counts, and clearly labeled discovery-only findings.

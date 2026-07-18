@@ -4,7 +4,7 @@
 
 Owns VS Code-side startup and shutdown of the bundled Rust language server.
 
-## Architecture Role
+## Ownership
 
 This file is TypeScript shell code. It resolves the packaged or development server binary, configures `vscode-languageclient`, passes extension-owned paths to the server, and starts the LSP process. Serious language intelligence remains in Rust.
 
@@ -44,31 +44,6 @@ Workspace file watchers and development binary watchers are client-owned process
 
 Startup timing logging must stay concise and protocol-boundary focused. It may record paths, counts, durations, and event names, but it must not serialize source text, ASTs, indexes, completion lists, or semantic-token payloads.
 
-## Change Notes
+## Verification
 
-- Added the first VS Code language-client startup path for the bundled Rust LSP server.
-- Kept document selection conservative so the extension does not claim every `.c` file globally.
-- Switched the client document selector to the contributed `enforce` language id.
-- Added the cursor-position hover debug command that delegates analysis to the Rust server.
-- Added the cursor-position completion debug command that delegates autocomplete analysis to the Rust server and writes a separate single-record completion debug report.
-- Extended the completion debug command's Rust report so Ctrl+F2 includes Signature Help context without adding another command.
-- Added command activation and suggest-widget keybinding coverage for the completion debug command so `Ctrl+F2` can run when autocomplete has focus.
-- Changed development-host server resolution to prefer `server/target/debug` before the packaged `dist` binary, avoiding stale custom-request behavior while iterating on Rust LSP code.
-- Added global-storage hover-debug report writing to `logs/hover-debug/latest.md`, overwriting the file on each command run.
-- Added game-data index cache and metadata paths to the server launch arguments so runtime hover can use a cached external game-data index.
-- Added workspace script root discovery and debounced file-watch notifications for the live Rust workspace overlay index.
-- Updated the runtime game-data cache path to v8 after replacing the JSON payload with the binary runtime cache format.
-- Updated the runtime game-data cache path to v9 after adding binary string-table storage.
-- Added development-host binary watching so replacing `server/target/debug/reforger_language_server(.exe)` restarts the language client automatically.
-- Added a custom language-client crash handler so repeated server crashes show the concise notification `Reforger Script Tools Language Server Crashed` instead of the default long `server crashed 5 times...` message.
-- Enabled safe/trusted HTML rendering for LSP hover Markdown so Rust-produced colored kind labels display in VS Code. The built-in language-client hover provider is suppressed and replaced by an explicit provider that sends the same Rust `textDocument/hover` request, then rebuilds returned contents as HTML-capable Markdown strings; it must not build hover text or duplicate language analysis.
-- Added the hover symbol-link command bridge for Rust-generated trusted Markdown links.
-- Added narrow completion retriggers after deletion edits and identifier insertions in Enforce documents so editing a prefix can reopen normal LSP autocomplete without implementing completion in TypeScript.
-- Added TypeScript-side startup timing records under `logs/language-client-startup.log` for activation, language-client construction/start, initialize completion, first document open, and first semantic-token response.
-- Added enum placeholder completion command bridges that keep selected enum defaults replaceable while triggering member completion at the dot, and advance callable snippets to the next enum parameter after accepting an enum member. The bridges now force matching selected `EnumOwner.` placeholders to have their active side after the dot before triggering suggest, and log command execution to the client timing log for troubleshooting.
-
-## Future Improvements
-
-- Add user-facing restart/status commands only after there is a concrete need.
-- Add richer runtime logging controls after the language server owns more expensive work.
-- Add user-facing workspace index status only after there is a concrete need.
+Run `npm test`. For client lifecycle, watcher, or server-launch changes, compile the Rust server, force a fresh language-server process in an Extension Development Host, and inspect the relevant global-storage log or debug report.
