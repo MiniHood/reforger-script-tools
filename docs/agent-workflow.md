@@ -11,6 +11,8 @@ This document explains how agent policy, Compound Engineering artifacts, source-
 It should stay short, direct, and enforceable.
 When a rule needs background, tradeoffs, or examples, put that explanation here or in the matching subsystem documentation instead of expanding `AGENTS.md`.
 
+[Architecture overview](reference/architecture.md) owns the canonical runtime data flow and layer boundaries. It is the starting point for cross-subsystem architecture work; matching `docs/reference/<source path>.md` pages remain the authority for file-level behavior.
+
 `docs/reference/` owns durable source and subsystem context.
 Its job is to explain why files exist, what they own, what behavior must be preserved, and what boundaries future work must respect.
 It mirrors the source tree so agents can find relevant context before editing.
