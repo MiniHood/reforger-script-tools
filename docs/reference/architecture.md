@@ -7,20 +7,47 @@ Defines the canonical runtime data flow and ownership boundaries for Reforger Sc
 ## Runtime Data Flow
 
 ```mermaid
-flowchart LR
+flowchart TB
     Editor[VS Code editor] -->|activation, settings, commands| Extension[TypeScript extension host]
     Workspace[Workspace Scripts/*.c] -->|open documents and file changes| Client[TypeScript language client]
+    Extension --> Client
     Extension --> GameData[Game-data service]
     GameData -->|manual folder or downloaded scripts| Storage[VS Code global storage]
-    Extension --> Client
     Storage -->|scripts, metadata, cache paths| Client
-    Client -->|stdio LSP| Server[Rust language server]
-    Workspace -->|document text and change notifications| Server
-    Server -->|parse, model, index, diagnostics, features| Server
-    Server -->|LSP responses and notifications| Client
+
+    Client -->|stdio LSP requests and notifications| Transport
+
+    subgraph Rust["Rust language server"]
+        direction TB
+        Transport[LSP transport and request dispatch]
+        Documents[Open-document state<br/>text, revision, cached analysis]
+        Parse[Lexer and parser]
+        Syntax[Syntax/AST and diagnostics]
+        Semantic[Semantic model, scope, and file index]
+        External[External overlay<br/>workspace and game-data indexes]
+        Features[Feature projection<br/>hover, completion, definition,<br/>semantic tokens, formatting]
+        Results[LSP responses, diagnostics,<br/>and refresh notifications]
+
+        Transport -->|didOpen, didChange, didClose| Documents
+        Documents --> Parse --> Syntax --> Semantic
+        Transport -->|workspace file notifications and startup paths| External
+        Semantic --> Features
+        External -->|snapshot of external facts| Features
+        Transport -->|feature request| Features
+        Features --> Results
+    end
+
+    Results -->|stdio LSP responses and notifications| Client
     Client -->|hover, completion, navigation, diagnostics| Editor
-    Workbench[Reforger Workbench/compiler] -. validates language truth .-> Server
+    Workbench[Reforger Workbench/compiler] -. validates language truth .-> Semantic
 ```
+
+The Rust server keeps request transport separate from language decisions. Open
+documents produce one cached analysis path through lexing, parsing, syntax, and
+semantic/index construction. Feature handlers combine that file-local analysis
+with a short-lived external-index snapshot, then return protocol-shaped results
+to the TypeScript client. External workspace/game-data indexing can update in
+the background, but it never moves language intelligence into the client.
 
 ## Ownership
 
