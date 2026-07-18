@@ -40,7 +40,7 @@ Removed the combined workspace+game-data `SymbolIndex` construction from runtime
 
 Added split cache timing to game-data startup logs so slow Extension Development Host startup can be attributed to binary read/decode, lookup-map rebuild, workspace indexing, or non-server process startup overhead.
 
-Stored external index layers behind `Arc` and added snapshot access for worker-owned projection tasks. Foreground request handlers still use borrowed `with_indexes`; snapshots are for work that must outlive the short external-overlay lock.
+Stored external index layers behind `Arc` and use short-lock snapshots for both foreground feature projection and worker-owned tasks.
 
 Added startup cache phase markers so a bad Extension Development Host session that logs only `gameData start` can be narrowed to the precise cache phase before ready/error.
 
@@ -51,3 +51,5 @@ Added workspace root normalization and per-file workspace indexing timings after
 ## Future Improvements
 
 Measure larger workspace update costs before adding workspace cache or incremental workspace aggregate structures. Keep any future optimization behind this module so feature projection code continues to consume a single external-index handle with ordered layers.
+
+Feature consumers now take owned `ExternalIndexSnapshot` values, so resolver/rendering work runs without retaining the overlay mutex. Startup workspace data is a baseline merged with recorded live updates and deletion tombstones; caught startup panics now publish `failed` state and an error.

@@ -332,16 +332,15 @@ fn semantic_raw_tokens(
     mode: SemanticTokenMode,
     should_cancel: Option<&dyn Fn() -> bool>,
 ) -> Option<RawSemanticTokenProjection> {
-    let lex_start = Instant::now();
-    let lexer_tokens = lex(source);
-    let lex_elapsed = lex_start.elapsed();
+    let lex_elapsed = Duration::default();
+    let lexer_tokens = &analysis.lexer_tokens;
     if should_cancel.is_some_and(|should_cancel| should_cancel()) {
         return None;
     }
     let mut tokens = Vec::new();
-    let attribute_roles = attribute_identifier_roles(source, &lexer_tokens);
-    let call_roles = call_identifier_roles(&lexer_tokens);
-    let static_member_roles = static_member_identifier_roles(source, &lexer_tokens);
+    let attribute_roles = attribute_identifier_roles(source, lexer_tokens);
+    let call_roles = call_identifier_roles(lexer_tokens);
+    let static_member_roles = static_member_identifier_roles(source, lexer_tokens);
     let declaration_spans = analysis
         .index
         .symbols()

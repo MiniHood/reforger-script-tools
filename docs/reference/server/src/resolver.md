@@ -61,3 +61,5 @@ The resolver depends on lexer tokens, parser syntax, AST expression views, lexic
 
 - Add deeper expression type inference and overload handling as separate semantic slices.
 - Keep moving future type inference improvements into `expression_type` or a later semantic facts layer instead of re-growing resolver-owned typing logic.
+
+Cached open-document callers can pass lexer tokens into member/top-level completion context detection; standalone callers retain the lexing convenience entrypoints.

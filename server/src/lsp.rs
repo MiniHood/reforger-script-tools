@@ -102,6 +102,10 @@ const DEBUG_HOVER_METHOD: &str = "reforger/debugHover";
 const DEBUG_COMPLETION_METHOD: &str = "reforger/debugCompletion";
 const WORKSPACE_FILE_CHANGED_METHOD: &str = "reforger/workspaceFileChanged";
 const WORKSPACE_FILE_DELETED_METHOD: &str = "reforger/workspaceFileDeleted";
+const MAX_LSP_HEADER_LINE_BYTES: usize = 8 * 1024;
+const MAX_LSP_HEADER_BYTES: usize = 32 * 1024;
+const MAX_LSP_BODY_BYTES: usize = 16 * 1024 * 1024;
+const INCOMING_EVENT_QUEUE_CAPACITY: usize = 64;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LspServerOptions {
     pub log_path: Option<PathBuf>,
@@ -113,16 +117,25 @@ pub struct LspServerOptions {
 
 pub fn run_stdio(options: LspServerOptions) -> Result<(), String> {
     let stdout = io::stdout();
-    let (sender, receiver) = mpsc::channel();
-    let mut server =
-        LspServer::new_with_internal_sender(stdout.lock(), options, Some(sender.clone()));
+    let (incoming_sender, incoming_receiver) = mpsc::sync_channel(INCOMING_EVENT_QUEUE_CAPACITY);
+    let (internal_sender, internal_receiver) = mpsc::channel();
+    let (rich_scheduler_sender, rich_scheduler_receiver) = mpsc::sync_channel(1);
+    let mut server = LspServer::new_with_runtime_senders(
+        stdout.lock(),
+        options,
+        Some(internal_sender.clone()),
+        Some(rich_scheduler_sender),
+    );
+    thread::spawn(move || {
+        run_rich_semantic_tokens_scheduler(rich_scheduler_receiver, internal_sender)
+    });
     thread::spawn(move || {
         let stdin = io::stdin();
         let mut reader = BufReader::new(stdin.lock());
         loop {
             match read_message(&mut reader) {
                 Ok(Some(message)) => {
-                    if sender
+                    if incoming_sender
                         .send(ServerEvent::Incoming {
                             received_at: Instant::now(),
                             result: Ok(message),
@@ -134,7 +147,7 @@ pub fn run_stdio(options: LspServerOptions) -> Result<(), String> {
                 }
                 Ok(None) => break,
                 Err(error) => {
-                    let _ = sender.send(ServerEvent::Incoming {
+                    let _ = incoming_sender.send(ServerEvent::Incoming {
                         received_at: Instant::now(),
                         result: Err(error),
                     });
@@ -143,7 +156,7 @@ pub fn run_stdio(options: LspServerOptions) -> Result<(), String> {
             }
         }
     });
-    server.run_message_channel(receiver)
+    server.run_message_channels(incoming_receiver, internal_receiver)
 }
 
 pub fn run<R: Read, W: Write>(
@@ -204,6 +217,7 @@ struct LspServer<W: Write> {
     logger: LspLogger,
     external_index: ExternalIndexHandle,
     internal_sender: Option<mpsc::Sender<ServerEvent>>,
+    rich_scheduler_sender: Option<mpsc::SyncSender<RichSemanticTokensJob>>,
     next_server_request_id: u64,
     last_semantic_external_generation: u64,
     shutdown_requested: bool,
@@ -237,6 +251,41 @@ enum ServerEvent {
         reason: String,
         elapsed_ms: u128,
     },
+}
+
+struct RichSemanticTokensJob {
+    uri: String,
+    revision: u64,
+    external_generation: u64,
+    cancel: Arc<AtomicBool>,
+    scheduled_at: Instant,
+}
+
+fn run_rich_semantic_tokens_scheduler(
+    receiver: mpsc::Receiver<RichSemanticTokensJob>,
+    sender: mpsc::Sender<ServerEvent>,
+) {
+    while let Ok(mut job) = receiver.recv() {
+        loop {
+            match receiver.recv_timeout(Duration::from_millis(RICH_SEMANTIC_TOKENS_IDLE_DELAY_MS)) {
+                Ok(next_job) => {
+                    job.cancel.store(true, Ordering::Relaxed);
+                    job = next_job;
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    let _ = sender.send(ServerEvent::RichSemanticTokensDue {
+                        uri: job.uri,
+                        revision: job.revision,
+                        external_generation: job.external_generation,
+                        cancel: job.cancel,
+                        elapsed_ms: job.scheduled_at.elapsed().as_millis(),
+                    });
+                    break;
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => return,
+            }
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -367,6 +416,15 @@ impl<W: Write> LspServer<W> {
         options: LspServerOptions,
         internal_sender: Option<mpsc::Sender<ServerEvent>>,
     ) -> Self {
+        Self::new_with_runtime_senders(writer, options, internal_sender, None)
+    }
+
+    fn new_with_runtime_senders(
+        writer: W,
+        options: LspServerOptions,
+        internal_sender: Option<mpsc::Sender<ServerEvent>>,
+        rich_scheduler_sender: Option<mpsc::SyncSender<RichSemanticTokensJob>>,
+    ) -> Self {
         let logger = LspLogger::new(options.log_path.clone());
         let external_index = start_external_index(&options, logger.clone());
         let server = Self {
@@ -375,6 +433,7 @@ impl<W: Write> LspServer<W> {
             logger,
             external_index,
             internal_sender,
+            rich_scheduler_sender,
             next_server_request_id: 1,
             last_semantic_external_generation: 0,
             shutdown_requested: false,
@@ -409,9 +468,20 @@ impl<W: Write> LspServer<W> {
         Ok(())
     }
 
-    fn run_message_channel(&mut self, receiver: mpsc::Receiver<ServerEvent>) -> Result<(), String> {
+    fn run_message_channels(
+        &mut self,
+        incoming_receiver: mpsc::Receiver<ServerEvent>,
+        internal_receiver: mpsc::Receiver<ServerEvent>,
+    ) -> Result<(), String> {
         loop {
-            match receiver.recv_timeout(Duration::from_millis(100)) {
+            for _ in 0..INCOMING_EVENT_QUEUE_CAPACITY {
+                match internal_receiver.try_recv() {
+                    Ok(event) => self.handle_internal_event(event)?,
+                    Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => break,
+                }
+            }
+
+            match incoming_receiver.recv_timeout(Duration::from_millis(100)) {
                 Ok(ServerEvent::Incoming {
                     received_at,
                     result: Ok(message),
@@ -735,17 +805,17 @@ impl<W: Write> LspServer<W> {
                             self.documents.get(&log_uri).map(|document| {
                                 bytes = document.text.len();
                                 revision = document.revision;
-                                let report = self.external_index.with_indexes(|indexes| {
-                                    external_index_status = indexes.status;
-                                    external_index_layers = indexes.available_layers();
+                                let indexes = self.external_index.snapshot();
+                                external_index_status = indexes.status;
+                                external_index_layers = indexes.available_layers();
+                                let report =
                                     completion_report_for_cached_analysis_with_external_indexes(
                                         &document.text,
                                         &document.analysis,
                                         params.position,
-                                        indexes.workspace,
-                                        indexes.game_data,
-                                    )
-                                });
+                                        indexes.workspace.as_deref(),
+                                        indexes.game_data.as_deref(),
+                                    );
                                 parse_diagnostics = report.parse_diagnostics;
                                 completion_context = report.completion_context.clone();
                                 receiver = report
@@ -819,17 +889,17 @@ impl<W: Write> LspServer<W> {
                             self.documents.get(&log_uri).map(|document| {
                                 bytes = document.text.len();
                                 revision = document.revision;
-                                let report = self.external_index.with_indexes(|indexes| {
-                                    external_index_status = indexes.status;
-                                    external_index_layers = indexes.available_layers();
+                                let indexes = self.external_index.snapshot();
+                                external_index_status = indexes.status;
+                                external_index_layers = indexes.available_layers();
+                                let report =
                                     signature_help_report_for_cached_analysis_with_external_indexes(
                                         &document.text,
                                         &document.analysis,
                                         params.position,
-                                        indexes.workspace,
-                                        indexes.game_data,
-                                    )
-                                });
+                                        indexes.workspace.as_deref(),
+                                        indexes.game_data.as_deref(),
+                                    );
                                 parse_diagnostics = report.parse_diagnostics;
                                 context = report.context.unwrap_or_else(|| "<none>".to_string());
                                 active_parameter = report
@@ -1002,18 +1072,17 @@ impl<W: Write> LspServer<W> {
                             self.documents.get(&log_uri).map(|document| {
                                 bytes = document.text.len();
                                 revision = document.revision;
-                                let report = self.external_index.with_indexes(|indexes| {
-                                    external_index_status = indexes.status;
-                                    external_index_layers = indexes.available_layers();
-                                    hover_report_for_cached_analysis_with_external_indexes(
-                                        &document.text,
-                                        &document.analysis,
-                                        &log_uri,
-                                        params.position,
-                                        indexes.workspace,
-                                        indexes.game_data,
-                                    )
-                                });
+                                let indexes = self.external_index.snapshot();
+                                external_index_status = indexes.status;
+                                external_index_layers = indexes.available_layers();
+                                let report = hover_report_for_cached_analysis_with_external_indexes(
+                                    &document.text,
+                                    &document.analysis,
+                                    &log_uri,
+                                    params.position,
+                                    indexes.workspace.as_deref(),
+                                    indexes.game_data.as_deref(),
+                                );
                                 parse_diagnostics = report.parse_diagnostics;
                                 hit = report.is_hit();
                                 selection_source = report.selection_source;
@@ -1101,18 +1170,18 @@ impl<W: Write> LspServer<W> {
                             self.documents.get(&log_uri).map(|document| {
                                 bytes = document.text.len();
                                 revision = document.revision;
-                                let report = self.external_index.with_indexes(|indexes| {
-                                    external_index_status = indexes.status;
-                                    external_index_layers = indexes.available_layers();
+                                let indexes = self.external_index.snapshot();
+                                external_index_status = indexes.status;
+                                external_index_layers = indexes.available_layers();
+                                let report =
                                     definition_report_for_cached_analysis_with_external_indexes(
                                         &document.text,
                                         &document.analysis,
                                         &log_uri,
                                         params.position,
-                                        indexes.workspace,
-                                        indexes.game_data,
-                                    )
-                                });
+                                        indexes.workspace.as_deref(),
+                                        indexes.game_data.as_deref(),
+                                    );
                                 parse_diagnostics = report.parse_diagnostics;
                                 hit = report.is_hit();
                                 selected_source = report
@@ -1176,17 +1245,17 @@ impl<W: Write> LspServer<W> {
                                 bytes = document.text.len();
                                 revision = document.revision;
                                 let external_status = self.external_index.status_summary();
-                                let report = self.external_index.with_indexes(|indexes| {
+                                let indexes = self.external_index.snapshot();
+                                let report =
                                     debug_hover_report_for_cached_analysis_with_external_indexes(
                                         &document.text,
                                         &document.analysis,
                                         &log_uri,
                                         params.position,
-                                        indexes.workspace,
-                                        indexes.game_data,
+                                        indexes.workspace.as_deref(),
+                                        indexes.game_data.as_deref(),
                                         Some(&external_status),
-                                    )
-                                });
+                                    );
                                 hit = report.contains("Selected Symbol: yes");
                                 if let Some(label) = selected_label_from_debug_report(&report) {
                                     selected_label = label;
@@ -1231,26 +1300,23 @@ impl<W: Write> LspServer<W> {
                             self.documents.get(&log_uri).map(|document| {
                                 bytes = document.text.len();
                                 revision = document.revision;
-                                let report = self.external_index.with_indexes(|indexes| {
-                                    external_index_status = indexes.status;
-                                    external_index_layers = indexes.available_layers();
-                                    completion_report_for_cached_analysis_with_external_indexes(
+                                let indexes = self.external_index.snapshot();
+                                external_index_status = indexes.status;
+                                external_index_layers = indexes.available_layers();
+                                let report = completion_report_for_cached_analysis_with_external_indexes(
                                         &document.text,
                                         &document.analysis,
                                         params.position,
-                                        indexes.workspace,
-                                        indexes.game_data,
-                                    )
-                                });
-                                let signature_report = self.external_index.with_indexes(|indexes| {
-                                    signature_help_report_for_cached_analysis_with_external_indexes(
+                                        indexes.workspace.as_deref(),
+                                        indexes.game_data.as_deref(),
+                                    );
+                                let signature_report = signature_help_report_for_cached_analysis_with_external_indexes(
                                         &document.text,
                                         &document.analysis,
                                         params.position,
-                                        indexes.workspace,
-                                        indexes.game_data,
-                                    )
-                                });
+                                        indexes.workspace.as_deref(),
+                                        indexes.game_data.as_deref(),
+                                    );
                                 completion_context = report.completion_context.clone();
                                 candidate_count = report.candidate_count;
                                 signature_context = signature_report
@@ -1446,37 +1512,52 @@ impl<W: Write> LspServer<W> {
         external_generation: u64,
         cancel: Arc<AtomicBool>,
     ) -> Result<(), String> {
-        if let Some(sender) = self.internal_sender.clone() {
+        if let Some(sender) = self.rich_scheduler_sender.clone() {
             let start = Instant::now();
             let Some(document) = self.documents.get(uri) else {
-                let _ = sender.send(ServerEvent::RichSemanticTokensSkipped {
-                    uri: uri.to_string(),
+                self.log(&format!(
+                    "semanticTokensRich skipped uri={} revision={} reason=missing-document-before-schedule elapsed_ms={}",
+                    uri,
                     revision,
-                    reason: "missing-document".to_string(),
-                    elapsed_ms: start.elapsed().as_millis(),
-                });
+                    start.elapsed().as_millis()
+                ));
                 return Ok(());
             };
             if document.revision != revision {
-                let _ = sender.send(ServerEvent::RichSemanticTokensSkipped {
-                    uri: uri.to_string(),
-                    revision,
-                    reason: "stale-revision".to_string(),
-                    elapsed_ms: start.elapsed().as_millis(),
-                });
-                return Ok(());
-            }
-            let uri = uri.to_string();
-            thread::spawn(move || {
-                thread::sleep(Duration::from_millis(RICH_SEMANTIC_TOKENS_IDLE_DELAY_MS));
-                let _ = sender.send(ServerEvent::RichSemanticTokensDue {
+                self.log(&format!(
+                    "semanticTokensRich skipped uri={} revision={} reason=stale-revision-before-schedule elapsed_ms={}",
                     uri,
                     revision,
-                    external_generation,
-                    cancel,
-                    elapsed_ms: start.elapsed().as_millis(),
-                });
-            });
+                    start.elapsed().as_millis()
+                ));
+                return Ok(());
+            }
+            let job = RichSemanticTokensJob {
+                uri: uri.to_string(),
+                revision,
+                external_generation,
+                cancel,
+                scheduled_at: start,
+            };
+            match sender.try_send(job) {
+                Ok(()) => {}
+                Err(mpsc::TrySendError::Full(job)) => {
+                    job.cancel.store(true, Ordering::Relaxed);
+                    if let Some(document) = self.documents.get_mut(uri) {
+                        document.semantic_tokens.cancel_pending();
+                    }
+                    self.log(&format!(
+                        "semanticTokensRich skipped uri={} revision={} reason=scheduler-busy elapsed_ms={}",
+                        uri,
+                        revision,
+                        start.elapsed().as_millis()
+                    ));
+                }
+                Err(mpsc::TrySendError::Disconnected(job)) => {
+                    job.cancel.store(true, Ordering::Relaxed);
+                    return Err("Rich semantic-token scheduler stopped unexpectedly".to_string());
+                }
+            }
             return Ok(());
         }
 
@@ -1650,15 +1731,14 @@ impl<W: Write> LspServer<W> {
         if document.revision != revision {
             return None;
         }
-        Some(self.external_index.with_indexes(|indexes| {
-            *external_index_status = indexes.status;
-            semantic_tokens_for_cached_analysis_with_external_indexes(
-                &document.text,
-                &document.analysis,
-                indexes.workspace,
-                indexes.game_data,
-            )
-        }))
+        let indexes = self.external_index.snapshot();
+        *external_index_status = indexes.status;
+        Some(semantic_tokens_for_cached_analysis_with_external_indexes(
+            &document.text,
+            &document.analysis,
+            indexes.workspace.as_deref(),
+            indexes.game_data.as_deref(),
+        ))
     }
 
     fn request_semantic_tokens_refresh(&mut self) -> Result<(), String> {
@@ -1942,14 +2022,17 @@ fn parse_params<T: for<'de> Deserialize<'de>>(
 
 fn read_message<R: BufRead>(reader: &mut R) -> Result<Option<Value>, String> {
     let mut content_length = None;
+    let mut header_bytes = 0;
     loop {
-        let mut line = String::new();
-        let bytes = reader
-            .read_line(&mut line)
-            .map_err(|error| format!("Failed to read LSP header: {error}"))?;
-        if bytes == 0 {
+        let Some(line) = read_lsp_header_line(reader)? else {
             return Ok(None);
+        };
+        header_bytes += line.len();
+        if header_bytes > MAX_LSP_HEADER_BYTES {
+            return Err("LSP headers exceed the configured limit".to_string());
         }
+        let line = std::str::from_utf8(&line)
+            .map_err(|error| format!("Invalid LSP header encoding: {error}"))?;
         let trimmed = line.trim_end_matches(['\r', '\n']);
         if trimmed.is_empty() {
             break;
@@ -1967,11 +2050,49 @@ fn read_message<R: BufRead>(reader: &mut R) -> Result<Option<Value>, String> {
     let Some(content_length) = content_length else {
         return Err("Missing Content-Length header".to_string());
     };
+    if content_length > MAX_LSP_BODY_BYTES {
+        return Err("LSP body exceeds the configured limit".to_string());
+    }
     let mut body = vec![0u8; content_length];
     reader
         .read_exact(&mut body)
         .map_err(|error| format!("Failed to read LSP body: {error}"))?;
     serde_json::from_slice(&body).map_err(|error| format!("Invalid LSP JSON body: {error}"))
+}
+
+fn read_lsp_header_line<R: BufRead>(reader: &mut R) -> Result<Option<Vec<u8>>, String> {
+    let mut line = Vec::with_capacity(128);
+    loop {
+        let (bytes_to_consume, line_complete) = {
+            let available = reader
+                .fill_buf()
+                .map_err(|error| format!("Failed to read LSP header: {error}"))?;
+            if available.is_empty() {
+                if line.is_empty() {
+                    return Ok(None);
+                }
+                return Err("LSP header ended before a line terminator".to_string());
+            }
+            let remaining = MAX_LSP_HEADER_LINE_BYTES.saturating_sub(line.len());
+            if remaining == 0 {
+                return Err("LSP header line exceeds the configured limit".to_string());
+            }
+            let available_len = available.len().min(remaining);
+            let newline_index = available[..available_len]
+                .iter()
+                .position(|byte| *byte == b'\n');
+            let bytes_to_consume = newline_index.map_or(available_len, |index| index + 1);
+            line.extend_from_slice(&available[..bytes_to_consume]);
+            (bytes_to_consume, newline_index.is_some())
+        };
+        reader.consume(bytes_to_consume);
+        if line_complete {
+            return Ok(Some(line));
+        }
+        if line.len() == MAX_LSP_HEADER_LINE_BYTES {
+            return Err("LSP header line exceeds the configured limit".to_string());
+        }
+    }
 }
 
 fn timestamp_millis() -> u128 {
@@ -7483,6 +7604,14 @@ class Example
         let body = serde_json::to_vec(&value).unwrap();
         write!(output, "Content-Length: {}\r\n\r\n", body.len()).unwrap();
         output.extend_from_slice(&body);
+    }
+
+    #[test]
+    fn read_message_rejects_an_oversized_header_before_parsing() {
+        let input = format!("X-Long: {}\r\n\r\n", "x".repeat(16 * 1024));
+        let error = read_message(&mut BufReader::new(input.as_bytes())).unwrap_err();
+
+        assert_eq!(error, "LSP header line exceeds the configured limit");
     }
 
     fn test_log_path(name: &str) -> PathBuf {

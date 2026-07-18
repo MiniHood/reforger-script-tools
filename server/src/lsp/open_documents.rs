@@ -1,5 +1,6 @@
 use crate::ast::AstSourceFile;
 use crate::index::SymbolIndex;
+use crate::lexer::{lex, Token};
 use crate::model::{SourceFileMetadata, SymbolCatalog};
 use crate::parser::parse_source;
 use crate::scope::LexicalScopeModel;
@@ -146,6 +147,7 @@ impl SemanticTokenCache {
 #[derive(Clone)]
 pub struct FileIndexAnalysis {
     pub(crate) parse: Parse,
+    pub(crate) lexer_tokens: Vec<Token>,
     pub(crate) index: SymbolIndex,
     pub(crate) scope: LexicalScopeModel,
     pub(crate) parse_diagnostics: usize,
@@ -169,6 +171,7 @@ pub(crate) fn file_index_for_source_with_timings(
     source: &str,
 ) -> (FileIndexAnalysis, FileIndexAnalysisTimings) {
     let total_start = Instant::now();
+    let lexer_tokens = lex(source);
     let parse_start = Instant::now();
     let parse = parse_source(source);
     let parse_ms = parse_start.elapsed().as_millis();
@@ -199,6 +202,7 @@ pub(crate) fn file_index_for_source_with_timings(
     (
         FileIndexAnalysis {
             parse,
+            lexer_tokens,
             index,
             scope,
             parse_diagnostics,

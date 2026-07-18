@@ -29,6 +29,8 @@ struct ExternalIndexState {
     workspace_index: Option<Arc<SymbolIndex>>,
     game_data_index: Option<Arc<SymbolIndex>>,
     workspace_files: BTreeMap<PathBuf, WorkspaceIndexedFile>,
+    workspace_live_changes: BTreeMap<PathBuf, Option<WorkspaceIndexedFile>>,
+    workspace_startup_pending: bool,
     workspace_roots: Vec<PathBuf>,
     summary: Option<RuntimeIndexSummary>,
     workspace_summary: RuntimeIndexSummary,
@@ -86,12 +88,6 @@ pub(crate) struct ExternalIndexStatusSummary {
     pub(crate) error: Option<String>,
 }
 
-pub(crate) struct ExternalIndexBorrow<'a> {
-    pub(crate) status: &'static str,
-    pub(crate) workspace: Option<&'a SymbolIndex>,
-    pub(crate) game_data: Option<&'a SymbolIndex>,
-}
-
 #[derive(Debug, Clone)]
 pub(crate) struct ExternalIndexSnapshot {
     pub(crate) status: &'static str,
@@ -100,7 +96,7 @@ pub(crate) struct ExternalIndexSnapshot {
     pub(crate) game_data: Option<Arc<SymbolIndex>>,
 }
 
-impl ExternalIndexBorrow<'_> {
+impl ExternalIndexSnapshot {
     pub(crate) fn available_layers(&self) -> &'static str {
         match (self.workspace.is_some(), self.game_data.is_some()) {
             (true, true) => "workspace,game-data",
@@ -120,6 +116,8 @@ impl ExternalIndexHandle {
                 workspace_index: None,
                 game_data_index: None,
                 workspace_files: BTreeMap::new(),
+                workspace_live_changes: BTreeMap::new(),
+                workspace_startup_pending: false,
                 workspace_roots: Vec::new(),
                 summary: None,
                 workspace_summary: RuntimeIndexSummary::default(),
@@ -161,15 +159,6 @@ impl ExternalIndexHandle {
         }
     }
 
-    pub(crate) fn with_indexes<T>(&self, action: impl FnOnce(ExternalIndexBorrow<'_>) -> T) -> T {
-        let state = self.state.lock().unwrap();
-        action(ExternalIndexBorrow {
-            status: state.status.as_str(),
-            workspace: state.workspace_index.as_deref(),
-            game_data: state.game_data_index.as_deref(),
-        })
-    }
-
     pub(crate) fn snapshot(&self) -> ExternalIndexSnapshot {
         let state = self.state.lock().unwrap();
         ExternalIndexSnapshot {
@@ -203,6 +192,11 @@ impl ExternalIndexHandle {
         let parse_diagnostics = indexed.parse_diagnostics;
         let mut state = self.state.lock().unwrap();
         state.status = ExternalIndexStatus::Updating;
+        if state.workspace_startup_pending {
+            state
+                .workspace_live_changes
+                .insert(normalized_path.clone(), Some(indexed.clone()));
+        }
         state.workspace_files.insert(normalized_path, indexed);
         recompute_layered_external_summary(&mut state);
         state.generation += 1;
@@ -219,6 +213,11 @@ impl ExternalIndexHandle {
         let mut state = self.state.lock().unwrap();
 
         state.status = ExternalIndexStatus::Updating;
+        if state.workspace_startup_pending {
+            state
+                .workspace_live_changes
+                .insert(normalized_path.clone(), None);
+        }
         let removed = state.workspace_files.remove(&normalized_path).is_some()
             || state.workspace_files.remove(path).is_some();
         recompute_layered_external_summary(&mut state);
@@ -251,6 +250,8 @@ pub(crate) fn start_external_index(
             workspace_index: None,
             game_data_index: None,
             workspace_files: BTreeMap::new(),
+            workspace_live_changes: BTreeMap::new(),
+            workspace_startup_pending: true,
             workspace_roots: options.workspace_scripts.clone(),
             summary: None,
             workspace_summary: RuntimeIndexSummary::default(),
@@ -269,6 +270,7 @@ pub(crate) fn start_external_index(
     let workspace_roots = options.workspace_scripts.clone();
     thread::spawn(move || {
         let thread_logger = logger.clone();
+        let panic_state = state.clone();
         if let Err(payload) = catch_unwind(AssertUnwindSafe(|| {
             run_external_index_thread(
                 state,
@@ -288,6 +290,11 @@ pub(crate) fn start_external_index(
                 "externalIndex thread panic error={}",
                 panic_message
             ));
+            if let Ok(mut state) = panic_state.lock() {
+                state.status = ExternalIndexStatus::Failed;
+                state.error = Some(format!("external-index startup panicked: {panic_message}"));
+                state.generation += 1;
+            }
         }
     });
 
@@ -418,8 +425,12 @@ fn run_external_index_thread(
                     workspace_summary.parse_diagnostics,
                     start.elapsed().as_millis()
                 ));
-            state.workspace_files = workspace_files;
-            state.workspace_summary = workspace_summary;
+            for (path, indexed) in workspace_files {
+                if !state.workspace_live_changes.contains_key(&path) {
+                    state.workspace_files.insert(path, indexed);
+                }
+            }
+            state.workspace_summary = workspace_summary_from_files(&state.workspace_files);
         }
         Err(error) => {
             logger.log(&format!(
@@ -431,6 +442,8 @@ fn run_external_index_thread(
             error_messages.push(error);
         }
     }
+    state.workspace_live_changes.clear();
+    state.workspace_startup_pending = false;
 
     logger.log(&format!(
         "externalIndex summary recompute start elapsed_ms={}",

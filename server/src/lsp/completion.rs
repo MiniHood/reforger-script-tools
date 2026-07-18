@@ -374,7 +374,9 @@ fn completion_report_for_offset(
         }
     }
 
-    if let Some(context) = resolver.member_completion_context_at_offset(offset) {
+    if let Some(context) =
+        resolver.member_completion_context_at_offset_with_tokens(offset, &analysis.lexer_tokens)
+    {
         let context_elapsed = context_start.elapsed();
         let receiver_text = Some(context.receiver.receiver_text.clone());
         let receiver_span = context.receiver.receiver_span;
@@ -458,7 +460,8 @@ fn completion_report_for_offset(
         return member_report;
     }
 
-    let top_level_context = resolver.top_level_completion_context_at_offset(offset);
+    let top_level_context =
+        resolver.top_level_completion_context_at_offset_with_tokens(offset, &analysis.lexer_tokens);
     let context_elapsed = context_start.elapsed();
     let Some(context) = top_level_context else {
         if let Some(fallback) = argument_label_fallback {

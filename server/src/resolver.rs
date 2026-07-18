@@ -6,7 +6,7 @@ use crate::expression_type::{
     ExpressionTypeEnvironment,
 };
 use crate::index::{GlobalSymbolId, IndexedFile, IndexedSymbol, SymbolIndex};
-use crate::lexer::{lex, Keyword, TextSpan, TokenKind};
+use crate::lexer::{lex, Keyword, TextSpan, Token, TokenKind};
 use crate::model::{SourceCategory, SourceKind, SymbolKind};
 use crate::parser::parse_source;
 use crate::scope::LexicalScopeModel;
@@ -497,12 +497,20 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
         &self,
         offset: usize,
     ) -> Option<MemberCompletionContext> {
+        let tokens = lex(self.source);
+        self.member_completion_context_at_offset_with_tokens(offset, &tokens)
+    }
+
+    pub fn member_completion_context_at_offset_with_tokens(
+        &self,
+        offset: usize,
+        tokens: &[Token],
+    ) -> Option<MemberCompletionContext> {
         if offset > self.source.len() || !self.source.is_char_boundary(offset) {
             return None;
         }
 
-        let tokens = lex(self.source);
-        let (dot, prefix, prefix_span) = completion_dot_and_prefix(self.source, &tokens, offset)?;
+        let (dot, prefix, prefix_span) = completion_dot_and_prefix(self.source, tokens, offset)?;
         if dot.span.start == 0 {
             return None;
         }
@@ -548,19 +556,27 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
         &self,
         offset: usize,
     ) -> Option<TopLevelCompletionContext> {
+        let tokens = lex(self.source);
+        self.top_level_completion_context_at_offset_with_tokens(offset, &tokens)
+    }
+
+    pub fn top_level_completion_context_at_offset_with_tokens(
+        &self,
+        offset: usize,
+        tokens: &[Token],
+    ) -> Option<TopLevelCompletionContext> {
         if offset > self.source.len() || !self.source.is_char_boundary(offset) {
             return None;
         }
 
-        let tokens = lex(self.source);
-        let (prefix, prefix_span) = completion_identifier_prefix(self.source, &tokens, offset)?;
+        let (prefix, prefix_span) = completion_identifier_prefix(self.source, tokens, offset)?;
         if prefix.is_empty() {
             return None;
         }
-        if completion_dot_and_prefix(self.source, &tokens, offset).is_some() {
+        if completion_dot_and_prefix(self.source, tokens, offset).is_some() {
             return None;
         }
-        if previous_significant_token_before_span(&tokens, prefix_span)
+        if previous_significant_token_before_span(tokens, prefix_span)
             .is_some_and(|token| token.kind == TokenKind::Dot)
         {
             return None;

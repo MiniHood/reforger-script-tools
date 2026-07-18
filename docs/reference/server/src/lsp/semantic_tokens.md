@@ -62,3 +62,5 @@ Added cached lexical-scope reference coloring to the fast projection so open-fil
 ## Future Improvements
 
 Add semantic-token range or delta support only if full-document token refresh becomes too costly. Keep future semantic coloring improvements source-backed through lexer/parser/model/index/resolver facts rather than ad hoc editor-side rules.
+
+Cached-analysis projection reuses the lexer tokens stored by `FileIndexAnalysis` instead of re-lexing unchanged open-document text.

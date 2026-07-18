@@ -153,3 +153,5 @@ This is a minimal protocol scaffold. Do not expand it into a broad framework unl
 - Add semantic `modded` merge behavior only after source-backed overlay behavior is reviewed.
 - Add incremental parse/index updates if full-sync analysis on every edit becomes too costly.
 - Replace or harden protocol plumbing only if future feature complexity justifies it.
+
+Incoming stdio frames now have explicit header and body limits before allocation. Reader ingress is bounded, while rich-token worker events use a separate internal channel. A single scheduler owns rich-token idle delays instead of one sleeping thread per revision.

@@ -77,3 +77,5 @@ Argument-label completion no longer consumes a request when no parameter-label c
 ## Future Improvements
 
 Add `completionItem/resolve`, richer overload presentation, and more polished overload grouping in separate verified slices. Keep future completion behavior routed through resolver context and `IndexQuery` rather than direct raw aggregate index access or merged external overlay construction.
+
+Live cached-analysis completion reuses `FileIndexAnalysis` lexer tokens for member and top-level context detection.
