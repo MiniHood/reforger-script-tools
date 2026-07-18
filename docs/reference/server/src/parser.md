@@ -16,6 +16,8 @@ Callable bodies and attribute argument lists now parse into full-fidelity statem
 
 `ForHeader` contains bounded `ForInitializer`, `ForCondition`, and `ForIncrement` child nodes. Declaration-shaped initializers are represented as a nested `LocalDeclStatement` inside `ForInitializer`; expression-form initializers remain expression-list syntax. Condition and increment sections parse expression syntax. AST local-variable extraction reads `for` initializer locals from the nested declaration node.
 
+Field declarations, local declarations, and declaration-form `for` initializers expose `TypeRef`, `DeclaratorList`, and `Declarator` children. The parser owns the shared type/modifier boundary, comma-separated declarators, array suffixes, and optional parsed defaults; AST consumers must read those nodes rather than re-splitting declaration tokens. Each `ForeachVariable` likewise directly owns a `TypeRef` and one `Declarator`, while retaining its distinct header role.
+
 `ForeachHeader` contains `ForeachVariableList`, one `ForeachVariable` per declared header variable, and `ForeachIterable` for the iterable expression after the top-level colon. The parser preserves typed variables, `auto`, and index/value pairs without assigning semantic meaning.
 
 `SwitchStatement` groups each run of `case`/`default` labels plus following statements into a `SwitchSection`. `CaseClause` and `DefaultClause` remain label nodes inside the section. This is syntax grouping for future folding, scope, and control-flow groundwork; it is not fallthrough or reachability analysis.
@@ -23,6 +25,10 @@ Callable bodies and attribute argument lists now parse into full-fidelity statem
 Optional semicolons after method bodies and between attribute lists and decorated declarations are preserved because both forms appear in game data. Extra standalone semicolons are preserved as `EmptyDecl` nodes so future AST and index layers can ignore them explicitly. Fields may also terminate at a class closing brace for generated-source tolerance; this is parser recovery behavior and must not be treated as Workbench/compiler proof that field semicolons are optional. Fixture coverage includes larger game-data-derived editor and Workbench class excerpts.
 
 Lexer error tokens are forwarded as parse diagnostics. Parser recovery records diagnostics for malformed constructs and keeps returning a source-file tree instead of panicking.
+
+Parser recursion is bounded by a private shared depth budget across declaration, statement/block, expression, and initializer parsing. When deeply nested editor input reaches that ceiling, the parser emits one diagnostic and one `Error` region, consumes the remaining nested region iteratively, and leaves the owning frame's delimiter for normal unwind. Semicolons remain recovery synchronization points for unterminated nesting so a following declaration is preserved. This is an availability safeguard for the language server, not an Enfusion language limit or a user-facing setting.
+
+Preprocessor directives end at either CR or LF in the token text so line-oriented recovery preserves following declarations for CR-only, LF, and CRLF source. This is parser recovery behavior only; it does not establish Workbench/compiler acceptance of CR-only Enfusion files. An unmatched top-level closing brace is preserved in an `Error` node and reported as a parse diagnostic.
 
 Malformed declaration-context text is recovered as a bounded `Error` node. Recovery stops at semicolons, braces, EOF, following attribute lists, or clear declaration-start keywords/modifiers such as `class`, `enum`, `typedef`, `modded`, `vanilla`, `protected`, or `void`, so invalid top-level/class-body text does not swallow later real declarations.
 
@@ -55,6 +61,9 @@ The parser depends on the lexer and syntax modules only. It must not resolve sym
 - Replaced token-preserved field `InitializerList` nodes with the same structured `InitializerExpression` shape used by body/local initializer expressions so resolver-backed tooling can consume enum/static values inside field defaults.
 - Fixed declaration-context recovery for naked `{ ... }` blocks inside class bodies so malformed workspace edits cannot loop parser recovery during LSP startup indexing.
 - Added parser progress assertions around recovery-sensitive loops so future non-consuming parser bugs abort the LSP process with context instead of silently hanging.
+- Made preprocessor directive recovery recognize CR and LF physical line endings, and report preserved unmatched top-level closing braces.
+- Bounded recursive declaration, statement, expression, and initializer descent with delimiter-preserving deep-input recovery.
+- Added authoritative declarator CST boundaries for fields, locals, and declaration-form `for` initializers.
 
 ## Future Improvements
 

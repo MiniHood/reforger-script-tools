@@ -1041,7 +1041,7 @@ fn starts_attribute_context(source: &str, tokens: &[Token], index: usize) -> boo
         return true;
     };
     let has_line_break = tokens[previous_index + 1..index].iter().any(|token| {
-        token.kind.is_trivia() && source[token.span.start..token.span.end].contains('\n')
+        token.kind.is_trivia() && source[token.span.start..token.span.end].contains(['\r', '\n'])
     });
     has_line_break
         && next_non_trivia(tokens, index).is_some_and(|token| {
@@ -1058,7 +1058,7 @@ fn split_multiline_semantic_tokens(
         let mut segment_start = token.span.start;
         while segment_start < token.span.end {
             let line_end = source[segment_start..token.span.end]
-                .find('\n')
+                .find(['\r', '\n'])
                 .map(|offset| segment_start + offset)
                 .unwrap_or(token.span.end);
             if segment_start < line_end {
@@ -1073,7 +1073,14 @@ fn split_multiline_semantic_tokens(
             if line_end == token.span.end {
                 break;
             }
-            segment_start = line_end + 1;
+            segment_start = line_end
+                + if source.as_bytes()[line_end] == b'\r'
+                    && source.as_bytes().get(line_end + 1) == Some(&b'\n')
+                {
+                    2
+                } else {
+                    1
+                };
         }
     }
     result
@@ -1120,7 +1127,16 @@ impl SemanticLineIndex {
     fn new(source: &str) -> Self {
         let mut line_starts = vec![0];
         for (index, character) in source.char_indices() {
-            if character == '\n' {
+            if character == '\r' {
+                line_starts.push(
+                    index
+                        + if source.as_bytes().get(index + 1) == Some(&b'\n') {
+                            2
+                        } else {
+                            1
+                        },
+                );
+            } else if character == '\n' && (index == 0 || source.as_bytes()[index - 1] != b'\r') {
                 line_starts.push(index + 1);
             }
         }
@@ -1203,7 +1219,7 @@ fn next_non_trivia(tokens: &[Token], index: usize) -> Option<Token> {
 
 fn is_preprocessor_line_token(source: &str, token: Token) -> bool {
     let line_start = source[..token.span.start]
-        .rfind('\n')
+        .rfind(['\r', '\n'])
         .map(|index| index + 1)
         .unwrap_or(0);
     let before_token = &source[line_start..token.span.start];
@@ -1227,7 +1243,7 @@ fn is_preprocessor_directive_token(source: &str, token: Token) -> bool {
         return false;
     }
     let line_start = source[..token.span.start]
-        .rfind('\n')
+        .rfind(['\r', '\n'])
         .map(|index| index + 1)
         .unwrap_or(0);
     let before_token = &source[line_start..token.span.start];

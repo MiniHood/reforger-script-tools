@@ -994,61 +994,52 @@ fn field_declarators<'source>(
     source: &'source str,
     node: &SyntaxNode,
 ) -> Vec<FieldDeclarator<'source>> {
-    let tokens = field_direct_tokens(node);
-    let Some(first_name) = first_field_declarator_name(&tokens) else {
+    let type_span = declaration_type_span(source, node);
+    declaration_declarators(source, node)
+        .into_iter()
+        .map(|(name, span, _)| FieldDeclarator {
+            source,
+            name,
+            type_span,
+            span,
+        })
+        .collect()
+}
+
+fn declaration_declarators(
+    source: &str,
+    node: &SyntaxNode,
+) -> Vec<(Token, TextSpan, Option<TextSpan>)> {
+    let Some(list) = first_child_node(node, SyntaxKind::DeclaratorList) else {
         return Vec::new();
     };
-    let type_span =
-        leading_decl_text_before(source, node, first_name.span.start).map(|value| value.span);
-    let mut declarators = Vec::new();
-    let mut segment = Vec::new();
-    let mut paren_depth = 0usize;
-    let mut bracket_depth = 0usize;
-    let mut angle_depth = 0usize;
-    let mut brace_depth = 0usize;
-
-    for token in tokens
-        .into_iter()
-        .filter(|token| token.span.start >= first_name.span.start)
-    {
-        let kind = token.kind;
-        let at_top_level =
-            paren_depth == 0 && bracket_depth == 0 && angle_depth == 0 && brace_depth == 0;
-
-        if at_top_level && matches!(kind, TokenKind::Comma | TokenKind::Semicolon) {
-            push_field_declarator(
-                source,
-                &mut declarators,
-                &segment,
-                type_span,
-                token.span.start,
-            );
-            segment.clear();
-            continue;
+    list.children.iter().filter_map(|child| match child {
+        SyntaxElement::Node(declarator) if declarator.kind == SyntaxKind::Declarator => {
+            let name = direct_tokens(declarator).find(|token| !token.kind.is_trivia() && is_name_token(token.kind))?;
+            let before_default = direct_tokens(declarator)
+                .find(|token| token.kind == TokenKind::Operator(Operator::Equal))
+                .map(|token| token.span.start)
+                .unwrap_or(declarator.span.end);
+            let span = trim_text_span(source, TextSpan::new(name.span.start, before_default));
+            let default_span = declarator.children.iter().skip_while(|child| !matches!(child, SyntaxElement::Token(token) if token.kind == TokenKind::Operator(Operator::Equal))).skip(1).find_map(|child| match child {
+                SyntaxElement::Node(expression) => Some(trim_text_span(source, expression.span)),
+                SyntaxElement::Token(token) if !token.kind.is_trivia() => Some(token.span),
+                _ => None,
+            });
+            (!span.is_empty()).then_some((name, span, default_span))
         }
+        _ => None,
+    }).collect()
+}
 
-        segment.push(token);
-        match kind {
-            TokenKind::LeftParen => paren_depth += 1,
-            TokenKind::RightParen => paren_depth = paren_depth.saturating_sub(1),
-            TokenKind::LeftBracket => bracket_depth += 1,
-            TokenKind::RightBracket => bracket_depth = bracket_depth.saturating_sub(1),
-            TokenKind::LeftBrace => brace_depth += 1,
-            TokenKind::RightBrace => brace_depth = brace_depth.saturating_sub(1),
-            TokenKind::Operator(Operator::Less) => angle_depth += 1,
-            TokenKind::Operator(Operator::Greater) => angle_depth = angle_depth.saturating_sub(1),
-            TokenKind::Operator(Operator::GreaterGreater) => {
-                angle_depth = angle_depth.saturating_sub(2)
-            }
-            _ => {}
-        }
-    }
-
-    if let Some(last) = segment.last() {
-        push_field_declarator(source, &mut declarators, &segment, type_span, last.span.end);
-    }
-
-    declarators
+fn declaration_type_span(source: &str, node: &SyntaxNode) -> Option<TextSpan> {
+    let type_ref = first_child_node(node, SyntaxKind::TypeRef)?;
+    let mut tokens = direct_tokens(type_ref)
+        .filter(|token| !token.kind.is_trivia() && !is_local_modifier_token(token.kind));
+    let first = tokens.next()?;
+    let last = tokens.last().unwrap_or(first);
+    let span = trim_text_span(source, TextSpan::new(first.span.start, last.span.end));
+    (!span.is_empty()).then_some(span)
 }
 
 fn type_parameters_from_generic_arg_list<'source>(
@@ -1097,133 +1088,6 @@ fn type_parameter_from_segment<'source>(
         constraint_span,
         span,
     })
-}
-
-fn field_direct_tokens(node: &SyntaxNode) -> Vec<Token> {
-    let mut tokens = Vec::new();
-    let mut saw_declaration_token = false;
-
-    for token in direct_tokens(node).filter(|token| !token.kind.is_trivia()) {
-        match token.kind {
-            TokenKind::Semicolon if !saw_declaration_token => continue,
-            _ => saw_declaration_token = true,
-        }
-        tokens.push(token);
-    }
-
-    tokens
-}
-
-fn first_field_declarator_name(tokens: &[Token]) -> Option<Token> {
-    let mut candidate = None;
-    let mut paren_depth = 0usize;
-    let mut bracket_depth = 0usize;
-    let mut angle_depth = 0usize;
-    let mut brace_depth = 0usize;
-
-    for token in tokens {
-        let kind = token.kind;
-        let at_top_level =
-            paren_depth == 0 && bracket_depth == 0 && angle_depth == 0 && brace_depth == 0;
-
-        if at_top_level
-            && matches!(
-                kind,
-                TokenKind::Comma | TokenKind::Semicolon | TokenKind::Operator(Operator::Equal)
-            )
-        {
-            break;
-        }
-
-        if at_top_level && is_name_token(kind) {
-            candidate = Some(*token);
-        }
-
-        match kind {
-            TokenKind::LeftParen => paren_depth += 1,
-            TokenKind::RightParen => paren_depth = paren_depth.saturating_sub(1),
-            TokenKind::LeftBracket => bracket_depth += 1,
-            TokenKind::RightBracket => bracket_depth = bracket_depth.saturating_sub(1),
-            TokenKind::LeftBrace => brace_depth += 1,
-            TokenKind::RightBrace => brace_depth = brace_depth.saturating_sub(1),
-            TokenKind::Operator(Operator::Less) => angle_depth += 1,
-            TokenKind::Operator(Operator::Greater) => angle_depth = angle_depth.saturating_sub(1),
-            TokenKind::Operator(Operator::GreaterGreater) => {
-                angle_depth = angle_depth.saturating_sub(2)
-            }
-            _ => {}
-        }
-    }
-
-    candidate
-}
-
-fn push_field_declarator<'source>(
-    source: &'source str,
-    declarators: &mut Vec<FieldDeclarator<'source>>,
-    segment: &[Token],
-    type_span: Option<TextSpan>,
-    segment_end: usize,
-) {
-    let Some(name) = field_declarator_name_in_segment(segment) else {
-        return;
-    };
-    let effective_end = segment
-        .iter()
-        .rev()
-        .find(|token| !token.kind.is_trivia())
-        .filter(|token| token.kind == TokenKind::Operator(Operator::Equal))
-        .map(|token| token.span.start)
-        .unwrap_or(segment_end);
-    let span = trim_text_span(source, TextSpan::new(name.span.start, effective_end));
-    if span.is_empty() {
-        return;
-    }
-    declarators.push(FieldDeclarator {
-        source,
-        name,
-        type_span,
-        span,
-    });
-}
-
-fn field_declarator_name_in_segment(segment: &[Token]) -> Option<Token> {
-    let mut candidate = None;
-    let mut paren_depth = 0usize;
-    let mut bracket_depth = 0usize;
-    let mut angle_depth = 0usize;
-    let mut brace_depth = 0usize;
-
-    for token in segment {
-        let kind = token.kind;
-        let at_top_level =
-            paren_depth == 0 && bracket_depth == 0 && angle_depth == 0 && brace_depth == 0;
-
-        if at_top_level && kind == TokenKind::Operator(Operator::Equal) {
-            break;
-        }
-
-        if at_top_level && is_name_token(kind) {
-            candidate = Some(*token);
-        }
-
-        match kind {
-            TokenKind::LeftParen => paren_depth += 1,
-            TokenKind::RightParen => paren_depth = paren_depth.saturating_sub(1),
-            TokenKind::LeftBracket => bracket_depth += 1,
-            TokenKind::RightBracket => bracket_depth = bracket_depth.saturating_sub(1),
-            TokenKind::LeftBrace => brace_depth += 1,
-            TokenKind::RightBrace => brace_depth = brace_depth.saturating_sub(1),
-            TokenKind::Operator(Operator::Less) => angle_depth += 1,
-            TokenKind::Operator(Operator::Greater) => angle_depth = angle_depth.saturating_sub(1),
-            TokenKind::Operator(Operator::GreaterGreater) => {
-                angle_depth = angle_depth.saturating_sub(2)
-            }
-            _ => {}
-        }
-    }
-
-    candidate
 }
 
 fn method_name_token(node: &SyntaxNode) -> Option<Token> {
@@ -1358,13 +1222,7 @@ fn collect_local_variables_from_node<'source>(
 ) {
     match node.kind {
         SyntaxKind::LocalDeclStatement => {
-            let tokens = non_trivia_tokens(node);
-            push_statement_local_variables(
-                source,
-                locals,
-                &tokens,
-                LocalVariableKind::LocalVariable,
-            );
+            push_structured_local_variables(source, locals, node, LocalVariableKind::LocalVariable);
             return;
         }
         SyntaxKind::ForInitializer => {
@@ -1372,13 +1230,9 @@ fn collect_local_variables_from_node<'source>(
             return;
         }
         SyntaxKind::ForeachVariable => {
-            let tokens = non_trivia_tokens(node);
-            push_statement_local_variables(
-                source,
-                locals,
-                &tokens,
-                LocalVariableKind::ForeachVariable,
-            );
+            // Foreach is a parser-owned header item with one structured
+            // type/declarator pair and no initializer.
+            push_foreach_variable(source, locals, node);
             return;
         }
         _ => {}
@@ -1389,12 +1243,6 @@ fn collect_local_variables_from_node<'source>(
             collect_local_variables_from_node(source, child, locals);
         }
     }
-}
-
-fn non_trivia_tokens(node: &SyntaxNode) -> Vec<Token> {
-    recursive_tokens(node)
-        .filter(|token| !token.kind.is_trivia())
-        .collect()
 }
 
 fn push_for_initializer_variables_from_node<'source>(
@@ -1409,257 +1257,62 @@ fn push_for_initializer_variables_from_node<'source>(
         if child.kind != SyntaxKind::LocalDeclStatement {
             continue;
         }
-        let tokens = non_trivia_tokens(child);
-        push_statement_local_variables(source, locals, &tokens, LocalVariableKind::ForInitializer);
+        push_structured_local_variables(source, locals, child, LocalVariableKind::ForInitializer);
     }
 }
 
-fn push_statement_local_variables<'source>(
+fn push_structured_local_variables<'source>(
     source: &'source str,
     locals: &mut Vec<LocalVariable<'source>>,
-    tokens: &[Token],
+    node: &SyntaxNode,
     kind: LocalVariableKind,
 ) {
-    let tokens = trim_token_slice(tokens);
-    if tokens.is_empty() || !is_local_declaration_candidate(tokens) {
-        return;
-    }
-
-    let Some(first_name) = first_local_declarator_name(tokens) else {
-        return;
-    };
-    let type_span = leading_local_type_text_before(source, tokens, first_name.span.start)
-        .map(|value| value.span);
-    if type_span.is_none() {
-        return;
-    }
-    let modifiers = local_modifier_tokens(tokens, first_name.span.start);
-
-    for segment in split_top_level_preserving_braces(
-        &tokens[tokens
-            .iter()
-            .position(|token| token.span.start >= first_name.span.start)
-            .unwrap_or(0)..],
-        TokenKind::Comma,
-    ) {
-        push_local_declarator(source, locals, segment, kind, type_span, &modifiers);
+    let type_span = declaration_type_span(source, node);
+    let modifiers = first_child_node(node, SyntaxKind::TypeRef)
+        .into_iter()
+        .flat_map(direct_tokens)
+        .filter(|token| is_local_modifier_token(token.kind))
+        .collect::<Vec<_>>();
+    for (name, span, default_span) in declaration_declarators(source, node) {
+        locals.push(LocalVariable {
+            source,
+            kind,
+            name,
+            type_span,
+            default_span,
+            span,
+            modifiers: modifiers.clone(),
+        });
     }
 }
 
-fn push_local_declarator<'source>(
+fn push_foreach_variable<'source>(
     source: &'source str,
     locals: &mut Vec<LocalVariable<'source>>,
-    segment: &[Token],
-    kind: LocalVariableKind,
-    type_span: Option<TextSpan>,
-    modifiers: &[Token],
+    node: &SyntaxNode,
 ) {
-    let segment = trim_semicolon_token_slice(segment);
-    let Some(name) = field_declarator_name_in_segment(segment) else {
+    let Some(declarator) = first_child_node(node, SyntaxKind::Declarator) else {
         return;
     };
-    let segment_end = segment
-        .last()
-        .map(|token| token.span.end)
-        .unwrap_or(name.span.end);
-    let default_span = local_default_span_after_equal(source, segment);
-    let effective_end = local_equal_token(segment)
-        .map(|token| token.span.start)
-        .unwrap_or(segment_end);
-    let span = trim_text_span(source, TextSpan::new(name.span.start, effective_end));
-    if span.is_empty() {
+    let Some(name) = direct_tokens(declarator)
+        .find(|token| !token.kind.is_trivia() && is_name_token(token.kind))
+    else {
         return;
-    }
-
+    };
+    let modifiers = first_child_node(node, SyntaxKind::TypeRef)
+        .into_iter()
+        .flat_map(direct_tokens)
+        .filter(|token| is_local_modifier_token(token.kind))
+        .collect();
     locals.push(LocalVariable {
         source,
-        kind,
+        kind: LocalVariableKind::ForeachVariable,
         name,
-        type_span,
-        default_span,
-        span,
-        modifiers: modifiers.to_vec(),
+        type_span: declaration_type_span(source, node),
+        default_span: None,
+        span: text_value(source, name.span).span,
+        modifiers,
     });
-}
-
-fn local_default_span_after_equal<'source>(
-    source: &'source str,
-    segment: &[Token],
-) -> Option<TextSpan> {
-    let equal_index = local_equal_index(segment)?;
-    let value = trim_semicolon_token_slice(&segment[equal_index + 1..]);
-    if let (Some(first), Some(last)) = (value.first(), value.last()) {
-        if first.kind == TokenKind::LeftBrace && last.kind != TokenKind::RightBrace {
-            return brace_initializer_span_after(source, segment[equal_index].span.end);
-        }
-        return Some(text_value(source, TextSpan::new(first.span.start, last.span.end)).span);
-    }
-
-    brace_initializer_span_after(source, segment[equal_index].span.end)
-}
-
-fn brace_initializer_span_after(source: &str, offset: usize) -> Option<TextSpan> {
-    let mut position = offset;
-    while position < source.len() {
-        let value = source[position..].chars().next()?;
-        if !value.is_whitespace() {
-            break;
-        }
-        position += value.len_utf8();
-    }
-    if source[position..].chars().next()? != '{' {
-        return None;
-    }
-
-    let start = position;
-    let mut depth = 0usize;
-    while position < source.len() {
-        let value = source[position..].chars().next()?;
-        position += value.len_utf8();
-        match value {
-            '{' => depth += 1,
-            '}' => {
-                depth = depth.saturating_sub(1);
-                if depth == 0 {
-                    return Some(TextSpan::new(start, position));
-                }
-            }
-            _ => {}
-        }
-    }
-
-    None
-}
-
-fn local_equal_token(segment: &[Token]) -> Option<Token> {
-    local_equal_index(segment).map(|index| segment[index])
-}
-
-fn local_equal_index(segment: &[Token]) -> Option<usize> {
-    let mut paren_depth = 0usize;
-    let mut bracket_depth = 0usize;
-    let mut angle_depth = 0usize;
-    let mut brace_depth = 0usize;
-
-    for (index, token) in segment.iter().enumerate() {
-        let at_top_level =
-            paren_depth == 0 && bracket_depth == 0 && angle_depth == 0 && brace_depth == 0;
-        if at_top_level && token.kind == TokenKind::Operator(Operator::Equal) {
-            return Some(index);
-        }
-        update_local_depths(
-            token.kind,
-            &mut paren_depth,
-            &mut bracket_depth,
-            &mut angle_depth,
-            &mut brace_depth,
-        );
-    }
-
-    None
-}
-
-fn first_local_declarator_name(tokens: &[Token]) -> Option<Token> {
-    let mut candidate = None;
-    let mut paren_depth = 0usize;
-    let mut bracket_depth = 0usize;
-    let mut angle_depth = 0usize;
-    let mut brace_depth = 0usize;
-
-    for token in tokens {
-        let kind = token.kind;
-        let at_top_level =
-            paren_depth == 0 && bracket_depth == 0 && angle_depth == 0 && brace_depth == 0;
-
-        if at_top_level
-            && matches!(
-                kind,
-                TokenKind::Comma
-                    | TokenKind::Semicolon
-                    | TokenKind::Colon
-                    | TokenKind::Operator(Operator::Equal)
-            )
-        {
-            break;
-        }
-
-        if at_top_level && is_name_token(kind) && !is_local_modifier_token(kind) {
-            candidate = Some(*token);
-        }
-
-        update_local_depths(
-            kind,
-            &mut paren_depth,
-            &mut bracket_depth,
-            &mut angle_depth,
-            &mut brace_depth,
-        );
-    }
-
-    candidate
-}
-
-fn leading_local_type_text_before<'source>(
-    source: &'source str,
-    tokens: &[Token],
-    before: usize,
-) -> Option<TextValue<'source>> {
-    let type_tokens = tokens
-        .iter()
-        .copied()
-        .filter(|token| token.span.end <= before)
-        .filter(|token| !is_local_modifier_token(token.kind))
-        .collect::<Vec<_>>();
-    let first = type_tokens.first()?;
-    let last = type_tokens.last()?;
-    if first.span.start >= last.span.end {
-        return None;
-    }
-    Some(text_value(
-        source,
-        trim_text_span(source, TextSpan::new(first.span.start, last.span.end)),
-    ))
-}
-
-fn local_modifier_tokens(tokens: &[Token], before: usize) -> Vec<Token> {
-    tokens
-        .iter()
-        .copied()
-        .take_while(|token| token.span.end <= before)
-        .filter(|token| is_local_modifier_token(token.kind))
-        .collect()
-}
-
-fn split_top_level_preserving_braces(tokens: &[Token], delimiter: TokenKind) -> Vec<&[Token]> {
-    let mut segments = Vec::new();
-    let mut segment_start = 0usize;
-    let mut paren_depth = 0usize;
-    let mut bracket_depth = 0usize;
-    let mut angle_depth = 0usize;
-    let mut brace_depth = 0usize;
-
-    for (index, token) in tokens.iter().enumerate() {
-        if paren_depth == 0
-            && bracket_depth == 0
-            && angle_depth == 0
-            && brace_depth == 0
-            && token.kind == delimiter
-        {
-            segments.push(trim_semicolon_token_slice(&tokens[segment_start..index]));
-            segment_start = index + 1;
-            continue;
-        }
-        update_local_depths(
-            token.kind,
-            &mut paren_depth,
-            &mut bracket_depth,
-            &mut angle_depth,
-            &mut brace_depth,
-        );
-    }
-
-    segments.push(trim_semicolon_token_slice(&tokens[segment_start..]));
-    segments
 }
 
 fn split_top_level_preserving_angles(tokens: &[Token], delimiter: TokenKind) -> Vec<&[Token]> {
@@ -1715,124 +1368,6 @@ fn trim_token_slice(tokens: &[Token]) -> &[Token] {
         .map(|index| index + 1)
         .unwrap_or(start);
     &tokens[start..end]
-}
-
-fn trim_semicolon_token_slice(tokens: &[Token]) -> &[Token] {
-    let start = tokens
-        .iter()
-        .position(|token| token.kind != TokenKind::Semicolon)
-        .unwrap_or(tokens.len());
-    let end = tokens
-        .iter()
-        .rposition(|token| token.kind != TokenKind::Semicolon)
-        .map(|index| index + 1)
-        .unwrap_or(start);
-    &tokens[start..end]
-}
-
-fn update_local_depths(
-    kind: TokenKind,
-    paren_depth: &mut usize,
-    bracket_depth: &mut usize,
-    angle_depth: &mut usize,
-    brace_depth: &mut usize,
-) {
-    match kind {
-        TokenKind::LeftParen => *paren_depth += 1,
-        TokenKind::RightParen => *paren_depth = paren_depth.saturating_sub(1),
-        TokenKind::LeftBracket => *bracket_depth += 1,
-        TokenKind::RightBracket => *bracket_depth = bracket_depth.saturating_sub(1),
-        TokenKind::LeftBrace => *brace_depth += 1,
-        TokenKind::RightBrace => *brace_depth = brace_depth.saturating_sub(1),
-        TokenKind::Operator(Operator::Less) => *angle_depth += 1,
-        TokenKind::Operator(Operator::Greater) => *angle_depth = angle_depth.saturating_sub(1),
-        TokenKind::Operator(Operator::GreaterGreater) => {
-            *angle_depth = angle_depth.saturating_sub(2)
-        }
-        _ => {}
-    }
-}
-
-fn is_local_declaration_candidate(tokens: &[Token]) -> bool {
-    let Some(first) = tokens.first() else {
-        return false;
-    };
-    if is_statement_leading_keyword(first.kind) {
-        return false;
-    }
-    if tokens
-        .iter()
-        .take_while(|token| {
-            !matches!(
-                token.kind,
-                TokenKind::Operator(Operator::Equal)
-                    | TokenKind::Operator(Operator::PlusEqual)
-                    | TokenKind::Operator(Operator::MinusEqual)
-                    | TokenKind::Operator(Operator::StarEqual)
-                    | TokenKind::Operator(Operator::SlashEqual)
-                    | TokenKind::Operator(Operator::PercentEqual)
-                    | TokenKind::Operator(Operator::AmpersandEqual)
-                    | TokenKind::Operator(Operator::PipeEqual)
-                    | TokenKind::Operator(Operator::CaretEqual)
-                    | TokenKind::Operator(Operator::LessLessEqual)
-                    | TokenKind::Operator(Operator::GreaterGreaterEqual)
-                    | TokenKind::Semicolon
-                    | TokenKind::Comma
-            )
-        })
-        .any(|token| {
-            matches!(
-                token.kind,
-                TokenKind::Dot | TokenKind::Operator(Operator::Arrow)
-            )
-        })
-    {
-        return false;
-    }
-
-    let name_count_before_boundary = tokens
-        .iter()
-        .take_while(|token| {
-            !matches!(
-                token.kind,
-                TokenKind::Operator(Operator::Equal)
-                    | TokenKind::Operator(Operator::PlusEqual)
-                    | TokenKind::Operator(Operator::MinusEqual)
-                    | TokenKind::Operator(Operator::StarEqual)
-                    | TokenKind::Operator(Operator::SlashEqual)
-                    | TokenKind::Operator(Operator::PercentEqual)
-                    | TokenKind::Operator(Operator::AmpersandEqual)
-                    | TokenKind::Operator(Operator::PipeEqual)
-                    | TokenKind::Operator(Operator::CaretEqual)
-                    | TokenKind::Operator(Operator::LessLessEqual)
-                    | TokenKind::Operator(Operator::GreaterGreaterEqual)
-                    | TokenKind::Semicolon
-                    | TokenKind::Comma
-            )
-        })
-        .filter(|token| is_name_token(token.kind) && !is_local_modifier_token(token.kind))
-        .count();
-    name_count_before_boundary >= 2
-}
-
-fn is_statement_leading_keyword(kind: TokenKind) -> bool {
-    matches!(
-        kind,
-        TokenKind::Keyword(Keyword::If)
-            | TokenKind::Keyword(Keyword::Else)
-            | TokenKind::Keyword(Keyword::For)
-            | TokenKind::Keyword(Keyword::Foreach)
-            | TokenKind::Keyword(Keyword::While)
-            | TokenKind::Keyword(Keyword::Do)
-            | TokenKind::Keyword(Keyword::Switch)
-            | TokenKind::Keyword(Keyword::Case)
-            | TokenKind::Keyword(Keyword::Default)
-            | TokenKind::Keyword(Keyword::Break)
-            | TokenKind::Keyword(Keyword::Continue)
-            | TokenKind::Keyword(Keyword::Return)
-            | TokenKind::Keyword(Keyword::Delete)
-            | TokenKind::Keyword(Keyword::Thread)
-    )
 }
 
 fn is_local_modifier_token(kind: TokenKind) -> bool {

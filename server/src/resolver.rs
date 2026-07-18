@@ -1348,7 +1348,7 @@ fn preprocessor_reason_for_token(
     token_text: &str,
 ) -> Option<ResolutionReason> {
     let line_start = source[..token_span.start]
-        .rfind('\n')
+        .rfind(['\r', '\n'])
         .map_or(0, |index| index + 1);
     let before = &source[line_start..token_span.start];
     if !before.trim_start().starts_with('#') {
@@ -1367,10 +1367,10 @@ fn preprocessor_reason_for_token(
 
 fn is_attribute_named_argument_token(source: &str, token_span: TextSpan) -> bool {
     let line_start = source[..token_span.start]
-        .rfind('\n')
+        .rfind(['\r', '\n'])
         .map_or(0, |index| index + 1);
     let line_end = source[token_span.end..]
-        .find('\n')
+        .find(['\r', '\n'])
         .map_or(source.len(), |index| token_span.end + index);
     let before = &source[line_start..token_span.start];
     let after = &source[token_span.end..line_end];
@@ -1639,7 +1639,7 @@ fn type_position_span_is_reliable(
     }
 
     let between = &source[token_span.end..boundary_end];
-    let crosses_line = between.contains('\n');
+    let crosses_line = between.contains(['\r', '\n']);
     if !crosses_line {
         return true;
     }

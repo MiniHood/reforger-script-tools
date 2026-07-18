@@ -14,6 +14,8 @@ The syntax layer exposes syntax kinds, syntax nodes, syntax elements, parse diag
 
 Callable body `Block` nodes can contain statement and expression syntax nodes. Statement kinds cover control flow, loops, switch sections and labels, flow statements, local declarations, and expression statements. `ForHeader` contains `ForInitializer`, `ForCondition`, and `ForIncrement`; declaration-shaped `ForInitializer` nodes own a nested `LocalDeclStatement`. `ForeachHeader` contains `ForeachVariableList`, `ForeachVariable`, and `ForeachIterable` nodes. `SwitchStatement` owns `SwitchSection` groups, each containing `CaseClause` / `DefaultClause` labels and the following statements until the next section. Expression kinds cover names, literals, calls, arguments, named arguments, member access, indexing, casts, unary/binary/assignment/ternary expressions, postfix operations, `new`, and initializer expressions.
 
+Fields, local declaration statements, and declaration-form `for` initializers use one parser-owned declaration shape: optional existing modifier syntax, `TypeRef`, then `DeclaratorList` containing `Declarator` nodes. A declarator owns its name/array suffix and optional equals/default expression; the list owns comma tokens and the declaration owns its terminator/trivia. `ForeachVariable` is a distinct header form with direct `TypeRef` and single `Declarator` children because it has no default initializer.
+
 ## Dependencies and Boundaries
 
 This file depends only on lexer token/span types. It must not import VS Code APIs, Workbench behavior, file-system crawling, semantic analysis, indexing, or LSP request handling.
@@ -25,6 +27,7 @@ This file depends only on lexer token/span types. It must not import VS Code API
 - Added `EmptyDecl` for standalone semicolon declarations.
 - Added statement and expression syntax kinds for callable body parsing.
 - Added structured `for` initializer declarations, `foreach` header parts, and switch sections.
+- Added parser-owned `TypeRef` / `DeclaratorList` / `Declarator` boundaries for field and local declaration consumers.
 
 ## Future Improvements
 

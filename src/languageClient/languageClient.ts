@@ -781,22 +781,24 @@ function registerWorkspaceScriptWatchers(
 	}
 
 	const disposables: vscode.Disposable[] = [];
-	const pending = new Map<string, 'changed' | 'deleted'>();
+	const pending = new Map<string, { path: string; kind: 'changed' | 'deleted'; sequence: number }>();
+	const sequences = new Map<string, number>();
 	let timer: NodeJS.Timeout | undefined;
 
 	const flush = (): void => {
 		const entries = [...pending.entries()];
 		pending.clear();
 		timer = undefined;
-		void Promise.all(entries.map(async ([filePath, kind]) => {
+		void Promise.all(entries.map(async ([, entry]) => {
+			const { path: filePath, kind, sequence } = entry;
 			if (kind === 'deleted') {
-				activeClient.sendNotification(languageClientNotifications.workspaceFileDeleted, { path: filePath });
+				activeClient.sendNotification(languageClientNotifications.workspaceFileDeleted, { path: filePath, sequence });
 				return;
 			}
 
 			try {
 				const text = await fs.readFile(filePath, 'utf8');
-				activeClient.sendNotification(languageClientNotifications.workspaceFileChanged, { path: filePath, text });
+				activeClient.sendNotification(languageClientNotifications.workspaceFileChanged, { path: filePath, text, sequence });
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				outputChannel.debug(`Workspace script change skipped for ${filePath}: ${message}`);
@@ -808,7 +810,10 @@ function registerWorkspaceScriptWatchers(
 		if (uri.scheme !== 'file') {
 			return;
 		}
-		pending.set(uri.fsPath, kind);
+		const key = workspaceWatcherPathKey(uri.fsPath);
+		const sequence = (sequences.get(key) ?? 0) + 1;
+		sequences.set(key, sequence);
+		pending.set(key, { path: uri.fsPath, kind, sequence });
 		if (timer) {
 			clearTimeout(timer);
 		}
@@ -831,6 +836,11 @@ function registerWorkspaceScriptWatchers(
 	}
 
 	return disposables;
+}
+
+function workspaceWatcherPathKey(filePath: string): string {
+	const normalized = path.resolve(filePath).replace(/\\/g, '/');
+	return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
 }
 
 function disposeClientDisposables(): void {

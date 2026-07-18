@@ -66,7 +66,7 @@ fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
-fn fixtures() -> [Fixture; 11] {
+fn fixtures() -> [Fixture; 12] {
     [
         Fixture {
             path: "tools/fixtures/parser/core_types_declarations.c",
@@ -115,6 +115,10 @@ fn fixtures() -> [Fixture; 11] {
             source: include_str!(
                 "../../tools/fixtures/parser/game_field_initializer_call_shapes.c"
             ),
+        },
+        Fixture {
+            path: "tools/fixtures/parser/local_block_symbols.c",
+            source: include_str!("../../tools/fixtures/parser/local_block_symbols.c"),
         },
     ]
 }

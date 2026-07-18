@@ -18,6 +18,8 @@ pub enum LexicalScopeKind {
     Root,
     Callable,
     Block,
+    ForLoop,
+    ForeachLoop,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,6 +36,7 @@ pub struct LexicalScope {
 pub struct LexicalScopeModel {
     scopes: Vec<LexicalScope>,
     symbol_scopes: BTreeMap<GlobalSymbolId, LexicalScopeId>,
+    declaration_scopes: Vec<(TextSpan, LexicalScopeId)>,
 }
 
 impl LexicalScopeModel {
@@ -41,6 +44,7 @@ impl LexicalScopeModel {
         let mut model = Self {
             scopes: Vec::new(),
             symbol_scopes: BTreeMap::new(),
+            declaration_scopes: Vec::new(),
         };
         let root = model.push_scope(None, LexicalScopeKind::Root, parse.root.span, None);
 
@@ -53,7 +57,7 @@ impl LexicalScopeModel {
                 callable.1,
                 Some(callable.0),
             );
-            collect_block_scopes_for_callable(&parse.root, callable.1, callable_scope, &mut model);
+            collect_scopes_for_callable(&parse.root, callable.1, callable_scope, &mut model);
         }
 
         for symbol in index.symbols() {
@@ -70,7 +74,13 @@ impl LexicalScopeModel {
                         model.scope_for_owner(symbol.parent, LexicalScopeKind::Callable)
                     {
                         let scope = model
-                            .innermost_scope_under_at(callable_scope, symbol.selection_span.start)
+                            .declaration_scope_at(symbol.selection_span)
+                            .or_else(|| {
+                                model.innermost_scope_under_at(
+                                    callable_scope,
+                                    symbol.selection_span.start,
+                                )
+                            })
                             .unwrap_or(callable_scope);
                         model.attach_symbol(scope, symbol.id);
                     }
@@ -207,6 +217,14 @@ impl LexicalScopeModel {
             .min_by_key(|scope| (scope.span.len(), std::cmp::Reverse(scope.id.0)))
             .map(|scope| scope.id)
     }
+
+    fn declaration_scope_at(&self, span: TextSpan) -> Option<LexicalScopeId> {
+        self.declaration_scopes
+            .iter()
+            .filter(|(declaration_span, _)| span_contains(*declaration_span, span))
+            .min_by_key(|(declaration_span, _)| declaration_span.len())
+            .map(|(_, scope)| *scope)
+    }
 }
 
 fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
@@ -215,7 +233,7 @@ fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
         .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
 }
 
-fn collect_block_scopes_for_callable(
+fn collect_scopes_for_callable(
     node: &SyntaxNode,
     callable_span: TextSpan,
     callable_scope: LexicalScopeId,
@@ -224,26 +242,91 @@ fn collect_block_scopes_for_callable(
     if !spans_overlap(callable_span, node.span) {
         return;
     }
-    if node.kind == SyntaxKind::Block && span_contains(callable_span, node.span) {
-        let parent = model
-            .scopes
-            .iter()
-            .filter(|scope| {
-                matches!(
-                    scope.kind,
-                    LexicalScopeKind::Callable | LexicalScopeKind::Block
-                ) && span_contains(scope.span, node.span)
-            })
-            .min_by_key(|scope| (scope.span.len(), std::cmp::Reverse(scope.id.0)))
-            .map(|scope| scope.id)
-            .unwrap_or(callable_scope);
-        model.push_scope(Some(parent), LexicalScopeKind::Block, node.span, None);
+    match node.kind {
+        SyntaxKind::ForStatement => {
+            if let Some(initializer) = direct_child(node, SyntaxKind::ForHeader)
+                .and_then(|header| direct_child(header, SyntaxKind::ForInitializer))
+                .filter(|initializer| has_direct_child(initializer, SyntaxKind::LocalDeclStatement))
+            {
+                let scope =
+                    push_nested_scope(model, callable_scope, LexicalScopeKind::ForLoop, node.span);
+                model.declaration_scopes.push((initializer.span, scope));
+            }
+        }
+        SyntaxKind::ForeachStatement => {
+            if let (Some(variables), Some(body)) = (
+                direct_child(node, SyntaxKind::ForeachHeader)
+                    .and_then(|header| direct_child(header, SyntaxKind::ForeachVariableList)),
+                statement_body(node, SyntaxKind::ForeachHeader),
+            ) {
+                let scope = push_nested_scope(
+                    model,
+                    callable_scope,
+                    LexicalScopeKind::ForeachLoop,
+                    body.span,
+                );
+                model.declaration_scopes.push((variables.span, scope));
+            }
+        }
+        SyntaxKind::Block if span_contains(callable_span, node.span) => {
+            push_nested_scope(model, callable_scope, LexicalScopeKind::Block, node.span);
+        }
+        _ => {}
     }
     for child in &node.children {
         if let SyntaxElement::Node(child) = child {
-            collect_block_scopes_for_callable(child, callable_span, callable_scope, model);
+            collect_scopes_for_callable(child, callable_span, callable_scope, model);
         }
     }
+}
+
+fn push_nested_scope(
+    model: &mut LexicalScopeModel,
+    callable_scope: LexicalScopeId,
+    kind: LexicalScopeKind,
+    span: TextSpan,
+) -> LexicalScopeId {
+    let parent = model
+        .scopes
+        .iter()
+        .filter(|scope| {
+            matches!(
+                scope.kind,
+                LexicalScopeKind::Callable
+                    | LexicalScopeKind::Block
+                    | LexicalScopeKind::ForLoop
+                    | LexicalScopeKind::ForeachLoop
+            ) && span_contains(scope.span, span)
+        })
+        .min_by_key(|scope| (scope.span.len(), std::cmp::Reverse(scope.id.0)))
+        .map(|scope| scope.id)
+        .unwrap_or(callable_scope);
+    model.push_scope(Some(parent), kind, span, None)
+}
+
+fn direct_child(node: &SyntaxNode, kind: SyntaxKind) -> Option<&SyntaxNode> {
+    node.children.iter().find_map(|child| match child {
+        SyntaxElement::Node(child) if child.kind == kind => Some(child.as_ref()),
+        _ => None,
+    })
+}
+
+fn has_direct_child(node: &SyntaxNode, kind: SyntaxKind) -> bool {
+    direct_child(node, kind).is_some()
+}
+
+fn statement_body<'a>(node: &'a SyntaxNode, header_kind: SyntaxKind) -> Option<&'a SyntaxNode> {
+    let mut after_header = false;
+    for child in &node.children {
+        let SyntaxElement::Node(child) = child else {
+            continue;
+        };
+        if after_header {
+            return Some(child);
+        }
+        after_header = child.kind == header_kind;
+    }
+    None
 }
 
 fn is_callable_symbol(kind: SymbolKind) -> bool {
@@ -378,5 +461,68 @@ mod tests {
         let first = index.symbol(visible[0]).unwrap();
         assert_eq!(first.kind, SymbolKind::LocalVariable);
         assert_eq!(first.detail.type_text.as_deref(), Some("string"));
+    }
+
+    #[test]
+    fn loop_locals_are_visible_only_in_their_loop_regions() {
+        let source = r#"class Example
+{
+	void Run(array<int> items)
+	{
+		for (int index = 0; index < items.Count(); index++)
+		{
+			index;
+		}
+		index;
+		foreach (int item : items)
+		{
+			item;
+		}
+		item;
+		foreach (int items : items)
+		{
+			items;
+		}
+	}
+}
+"#;
+        let (parse, index) = index_for(source);
+        let scopes = LexicalScopeModel::from_parse_and_index(&parse, &index);
+
+        let for_condition = source.find("index < items").expect("for condition");
+        assert_eq!(
+            index
+                .symbol(scopes.visible_symbols_named(&index, "index", for_condition)[0])
+                .unwrap()
+                .kind,
+            SymbolKind::LocalVariable
+        );
+
+        let after_for = source.rfind("\n\t\tindex;").expect("use after for") + 3;
+        assert!(scopes
+            .visible_symbols_named(&index, "index", after_for)
+            .is_empty());
+
+        let foreach_body = source.find("\n\t\t\titem;").expect("foreach body") + 4;
+        assert_eq!(
+            index
+                .symbol(scopes.visible_symbols_named(&index, "item", foreach_body)[0])
+                .unwrap()
+                .kind,
+            SymbolKind::LocalVariable
+        );
+
+        let after_foreach = source.rfind("\n\t\titem;").expect("use after foreach") + 3;
+        assert!(scopes
+            .visible_symbols_named(&index, "item", after_foreach)
+            .is_empty());
+
+        let iterable = source.rfind(": items)").expect("foreach iterable") + 2;
+        let visible = scopes.visible_symbols_named(&index, "items", iterable);
+        assert_eq!(visible.len(), 1);
+        assert_eq!(
+            index.symbol(visible[0]).unwrap().kind,
+            SymbolKind::Parameter
+        );
     }
 }

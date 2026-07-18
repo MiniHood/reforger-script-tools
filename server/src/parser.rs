@@ -1,6 +1,8 @@
 use crate::lexer::{lex, Keyword, Operator, TextSpan, Token, TokenKind};
 use crate::syntax::{Parse, ParseDiagnostic, SyntaxElement, SyntaxKind, SyntaxNode};
 
+const MAX_RECURSION_DEPTH: usize = 128;
+
 pub fn parse_source(source: &str) -> Parse {
     let tokens = lex(source);
     let mut diagnostics = lexer_diagnostics(&tokens);
@@ -9,6 +11,8 @@ pub fn parse_source(source: &str) -> Parse {
         tokens,
         position: 0,
         diagnostics: Vec::new(),
+        recursion_depth: 0,
+        recursion_limit_recovered: false,
     };
     let root = parser.parse_source_file();
     diagnostics.extend(parser.diagnostics);
@@ -32,6 +36,8 @@ struct Parser<'source> {
     tokens: Vec<Token>,
     position: usize,
     diagnostics: Vec<ParseDiagnostic>,
+    recursion_depth: usize,
+    recursion_limit_recovered: bool,
 }
 
 impl Parser<'_> {
@@ -55,6 +61,12 @@ impl Parser<'_> {
     }
 
     fn parse_declaration_or_error(&mut self, in_class: bool) -> SyntaxElement {
+        self.with_recursion_budget(&[TokenKind::RightBrace], |parser| {
+            parser.parse_declaration_or_error_inner(in_class)
+        })
+    }
+
+    fn parse_declaration_or_error_inner(&mut self, in_class: bool) -> SyntaxElement {
         let mut prefix = Vec::new();
         self.collect_trivia(&mut prefix);
         self.collect_attributes(&mut prefix);
@@ -81,6 +93,7 @@ impl Parser<'_> {
             return node(SyntaxKind::EmptyDecl, prefix);
         }
         if self.at(TokenKind::RightBrace) {
+            self.error_here("Unexpected closing brace in declaration context");
             prefix.push(self.bump_token());
             return node(SyntaxKind::Error, prefix);
         }
@@ -268,6 +281,7 @@ impl Parser<'_> {
         mut children: Vec<SyntaxElement>,
         allow_implicit_member_boundary: bool,
     ) -> SyntaxElement {
+        let declaration_start = children.len();
         let mut hit_preprocessor_boundary = false;
         let mut hit_implicit_member_boundary = false;
         let mut paren_depth = 0usize;
@@ -354,6 +368,10 @@ impl Parser<'_> {
         {
             self.error_here("Expected field semicolon");
         }
+        if !hit_preprocessor_boundary {
+            let declaration = children.split_off(declaration_start);
+            children.extend(structure_declaration(declaration));
+        }
         if hit_preprocessor_boundary {
             node(SyntaxKind::Error, children)
         } else {
@@ -404,6 +422,12 @@ impl Parser<'_> {
     }
 
     fn parse_statement(&mut self) -> SyntaxElement {
+        self.with_recursion_budget(&[TokenKind::Semicolon, TokenKind::RightBrace], |parser| {
+            parser.parse_statement_inner()
+        })
+    }
+
+    fn parse_statement_inner(&mut self) -> SyntaxElement {
         let mut prefix = Vec::new();
         self.collect_trivia(&mut prefix);
 
@@ -692,6 +716,7 @@ impl Parser<'_> {
         if self.at(TokenKind::Semicolon) {
             children.push(self.bump_token());
         }
+        children = structure_declaration(children);
         node(SyntaxKind::LocalDeclStatement, children)
     }
 
@@ -781,7 +806,10 @@ impl Parser<'_> {
                 &mut declaration_children,
                 &[TokenKind::Semicolon],
             );
-            children.push(node(SyntaxKind::LocalDeclStatement, declaration_children));
+            children.push(node(
+                SyntaxKind::LocalDeclStatement,
+                structure_declaration(declaration_children),
+            ));
         } else {
             self.parse_for_expression_list(&mut children, &[TokenKind::Semicolon]);
         }
@@ -891,7 +919,10 @@ impl Parser<'_> {
 
             children.push(self.bump_token());
         }
-        node(SyntaxKind::ForeachVariable, children)
+        node(
+            SyntaxKind::ForeachVariable,
+            structure_foreach_variable(children),
+        )
     }
 
     fn parse_foreach_iterable(&mut self) -> SyntaxElement {
@@ -920,6 +951,12 @@ impl Parser<'_> {
     }
 
     fn parse_expression_bp(&mut self, stop: &[TokenKind], min_bp: u8) -> SyntaxElement {
+        self.with_recursion_budget(stop, |parser| {
+            parser.parse_expression_bp_inner(stop, min_bp)
+        })
+    }
+
+    fn parse_expression_bp_inner(&mut self, stop: &[TokenKind], min_bp: u8) -> SyntaxElement {
         let mut lhs = self.parse_prefix_expression(stop);
 
         loop {
@@ -1131,6 +1168,12 @@ impl Parser<'_> {
     }
 
     fn parse_initializer_expression(&mut self) -> SyntaxElement {
+        self.with_recursion_budget(&[TokenKind::RightBrace], |parser| {
+            parser.parse_initializer_expression_inner()
+        })
+    }
+
+    fn parse_initializer_expression_inner(&mut self) -> SyntaxElement {
         let mut children = Vec::new();
         children.push(self.bump_token());
         while !self.at(TokenKind::RightBrace) && !self.at(TokenKind::Eof) {
@@ -1307,7 +1350,7 @@ impl Parser<'_> {
         while !self.at(TokenKind::Eof) {
             let token = self.current();
             children.push(self.bump_token());
-            if self.token_text(token).contains('\n') {
+            if self.token_ends_physical_line(token) {
                 break;
             }
         }
@@ -1946,15 +1989,61 @@ impl Parser<'_> {
         SyntaxElement::Token(token)
     }
 
+    fn with_recursion_budget(
+        &mut self,
+        stop: &[TokenKind],
+        parse: impl FnOnce(&mut Self) -> SyntaxElement,
+    ) -> SyntaxElement {
+        if self.recursion_depth == MAX_RECURSION_DEPTH {
+            self.error_here("Parser recursion limit exceeded");
+            self.recursion_limit_recovered = true;
+
+            let mut children = Vec::new();
+            let mut delimiters = Vec::new();
+            while !self.at(TokenKind::Eof) {
+                let kind = self.current().kind;
+                if kind == TokenKind::Semicolon
+                    || (delimiters.is_empty()
+                        && (stop.contains(&kind) || kind == TokenKind::RightBrace))
+                {
+                    break;
+                }
+
+                match kind {
+                    TokenKind::LeftParen => delimiters.push(TokenKind::RightParen),
+                    TokenKind::LeftBracket => delimiters.push(TokenKind::RightBracket),
+                    TokenKind::LeftBrace => delimiters.push(TokenKind::RightBrace),
+                    _ if delimiters.last().is_some_and(|expected| *expected == kind) => {
+                        delimiters.pop();
+                    }
+                    _ => {}
+                }
+                children.push(self.bump_token());
+            }
+            return node(SyntaxKind::Error, children);
+        }
+
+        self.recursion_depth += 1;
+        let result = parse(self);
+        self.recursion_depth -= 1;
+        if self.recursion_depth == 0 {
+            self.recursion_limit_recovered = false;
+        }
+        result
+    }
+
     fn expect(&mut self, kind: TokenKind, children: &mut Vec<SyntaxElement>, message: &str) {
         if self.at(kind) {
             children.push(self.bump_token());
-        } else {
+        } else if !self.recursion_limit_recovered {
             self.error_here(message);
         }
     }
 
     fn error_here(&mut self, message: &str) {
+        if self.recursion_limit_recovered {
+            return;
+        }
         self.error_at_span(message, self.current().span);
     }
 
@@ -1968,10 +2057,154 @@ impl Parser<'_> {
     fn token_text(&self, token: Token) -> &str {
         &self.source[token.span.start..token.span.end]
     }
+
+    fn token_ends_physical_line(&self, token: Token) -> bool {
+        self.token_text(token)
+            .chars()
+            .any(|character| matches!(character, '\r' | '\n'))
+    }
 }
 
 fn node(kind: SyntaxKind, children: Vec<SyntaxElement>) -> SyntaxElement {
     SyntaxElement::Node(Box::new(SyntaxNode::new(kind, children)))
+}
+
+/// Turns the token-preserving declaration tail into the one CST shape shared by
+/// fields, locals, and declaration-form `for` initializers.  The declaration
+/// recognizers above have already established that this is a declaration; this
+/// helper only assigns its syntactic boundaries and deliberately leaves an
+/// unrecognizable tail untouched for recovery.
+fn structure_declaration(mut children: Vec<SyntaxElement>) -> Vec<SyntaxElement> {
+    let Some(first_name) = first_declarator_element(&children) else {
+        return children;
+    };
+
+    let mut result = children.drain(..first_name).collect::<Vec<_>>();
+    if !result.is_empty() {
+        let type_children = std::mem::take(&mut result);
+        result.push(node(SyntaxKind::TypeRef, type_children));
+    }
+
+    let mut list = Vec::new();
+    let mut declarator = Vec::new();
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut angle_depth = 0usize;
+    let mut brace_depth = 0usize;
+    let mut terminator = Vec::new();
+
+    for element in children {
+        let kind = match &element {
+            SyntaxElement::Token(token) => Some(token.kind),
+            SyntaxElement::Node(_) => None,
+        };
+        let at_top_level =
+            paren_depth == 0 && bracket_depth == 0 && angle_depth == 0 && brace_depth == 0;
+        if at_top_level && kind == Some(TokenKind::Comma) {
+            list.push(node(
+                SyntaxKind::Declarator,
+                std::mem::take(&mut declarator),
+            ));
+            list.push(element);
+            continue;
+        }
+        if at_top_level && kind == Some(TokenKind::Semicolon) {
+            terminator.push(element);
+            continue;
+        }
+        if let Some(kind) = kind {
+            update_declarator_depths(
+                kind,
+                &mut paren_depth,
+                &mut bracket_depth,
+                &mut angle_depth,
+                &mut brace_depth,
+            );
+        }
+        declarator.push(element);
+    }
+    if !declarator.is_empty() {
+        list.push(node(SyntaxKind::Declarator, declarator));
+    }
+    if list.iter().any(|element| matches!(element, SyntaxElement::Node(node) if node.kind == SyntaxKind::Declarator)) {
+        result.push(node(SyntaxKind::DeclaratorList, list));
+        result.extend(terminator);
+        result
+    } else {
+        // This cannot happen for a recognized first name, but retaining the
+        // original tail is safer than manufacturing a declaration fact.
+        result.into_iter().flat_map(|element| match element {
+            SyntaxElement::Node(node) if node.kind == SyntaxKind::TypeRef => node.children,
+            other => vec![other],
+        }).collect()
+    }
+}
+
+fn structure_foreach_variable(mut children: Vec<SyntaxElement>) -> Vec<SyntaxElement> {
+    let Some(name_index) = first_declarator_element(&children) else {
+        return children;
+    };
+    let mut result = children.drain(..name_index).collect::<Vec<_>>();
+    if !result.is_empty() {
+        result = vec![node(SyntaxKind::TypeRef, result)];
+    }
+    result.push(node(SyntaxKind::Declarator, children));
+    result
+}
+
+fn first_declarator_element(children: &[SyntaxElement]) -> Option<usize> {
+    let mut candidate = None;
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut angle_depth = 0usize;
+    let mut brace_depth = 0usize;
+    for (index, element) in children.iter().enumerate() {
+        let SyntaxElement::Token(token) = element else {
+            continue;
+        };
+        let at_top_level =
+            paren_depth == 0 && bracket_depth == 0 && angle_depth == 0 && brace_depth == 0;
+        if at_top_level
+            && matches!(
+                token.kind,
+                TokenKind::Comma | TokenKind::Semicolon | TokenKind::Operator(Operator::Equal)
+            )
+        {
+            break;
+        }
+        if at_top_level && matches!(token.kind, TokenKind::Identifier | TokenKind::Keyword(_)) {
+            candidate = Some(index);
+        }
+        update_declarator_depths(
+            token.kind,
+            &mut paren_depth,
+            &mut bracket_depth,
+            &mut angle_depth,
+            &mut brace_depth,
+        );
+    }
+    candidate
+}
+
+fn update_declarator_depths(
+    kind: TokenKind,
+    paren: &mut usize,
+    bracket: &mut usize,
+    angle: &mut usize,
+    brace: &mut usize,
+) {
+    match kind {
+        TokenKind::LeftParen => *paren += 1,
+        TokenKind::RightParen => *paren = paren.saturating_sub(1),
+        TokenKind::LeftBracket => *bracket += 1,
+        TokenKind::RightBracket => *bracket = bracket.saturating_sub(1),
+        TokenKind::LeftBrace => *brace += 1,
+        TokenKind::RightBrace => *brace = brace.saturating_sub(1),
+        TokenKind::Operator(Operator::Less) => *angle += 1,
+        TokenKind::Operator(Operator::Greater) => *angle = angle.saturating_sub(1),
+        TokenKind::Operator(Operator::GreaterGreater) => *angle = angle.saturating_sub(2),
+        _ => {}
+    }
 }
 
 fn single_or_wrapped_expression(mut children: Vec<SyntaxElement>) -> SyntaxElement {
@@ -2160,7 +2393,10 @@ fn collect_significant_declarator_tokens(element: &SyntaxElement, tokens: &mut V
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::AstSourceFile;
+    use crate::index::SymbolIndex;
     use crate::lexer::{lex, TokenKind};
+    use crate::model::SymbolCatalog;
     use crate::syntax::SyntaxKind;
 
     fn count_kind(node: &SyntaxNode, kind: SyntaxKind) -> usize {
@@ -2184,6 +2420,27 @@ mod tests {
             SyntaxElement::Node(node) => first_node(node, kind),
             SyntaxElement::Token(_) => None,
         })
+    }
+
+    #[test]
+    fn structures_field_local_and_for_declarators_in_the_cst() {
+        let source = r#"class Example {
+            protected ref array<int> values, other = { 1, 2 };
+            void Run() {
+                vector point[2] = { 1, 2, 3 };
+                for (int index = 0, limit = 4; index < limit; index++) {}
+            }
+        }"#;
+        let parse = parse_source(source);
+
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::TypeRef), 3);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::DeclaratorList), 3);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::Declarator), 5);
+        assert_eq!(
+            count_kind(&parse.root, SyntaxKind::InitializerExpression),
+            2
+        );
     }
 
     fn direct_child_node_count(node: &SyntaxNode, kind: SyntaxKind) -> usize {
@@ -2429,6 +2686,95 @@ ArmaReforgerScripted g_ARGame;
     }
 
     #[test]
+    fn preprocessor_directives_end_at_cr_and_crlf_line_endings() {
+        for source in [
+            "#define FLAG 1\rclass CrOnly {}",
+            "#define FLAG 1\r\nclass CrLf {}",
+        ] {
+            let parse = parse_source(source);
+
+            assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
+            assert_eq!(
+                count_kind(&parse.root, SyntaxKind::PreprocessorDirective),
+                1
+            );
+            assert_eq!(count_kind(&parse.root, SyntaxKind::ClassDecl), 1);
+        }
+    }
+
+    #[test]
+    fn reports_unmatched_top_level_right_brace_without_dropping_it() {
+        let parse = parse_source("}");
+
+        assert_eq!(parse.diagnostics.len(), 1, "{:?}", parse.diagnostics);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::Error), 1);
+        assert_eq!(parse.root.token_count(), non_eof_token_count("}") + 1);
+    }
+
+    #[test]
+    fn recursion_limit_recovers_deep_editor_input_without_dropping_following_declarations() {
+        let deep = MAX_RECURSION_DEPTH + 32;
+        let expressions = [
+            format!(
+                "class Parent {{ int m_Value = {}1{}; }} class After {{}}",
+                "(".repeat(deep),
+                ")".repeat(deep)
+            ),
+            format!(
+                "class Parent {{ int m_Value = {}1; }} class After {{}}",
+                "(".repeat(deep)
+            ),
+            format!(
+                "class Parent {{ int m_Value = {}1{}; }} class After {{}}",
+                "!".repeat(deep),
+                ""
+            ),
+            format!(
+                "class Parent {{ int m_Value = {}1{}; }} class After {{}}",
+                "{".repeat(deep),
+                "}".repeat(deep)
+            ),
+        ];
+
+        for source in expressions {
+            let parse = parse_source(&source);
+
+            assert_eq!(
+                parse.diagnostics.len(),
+                1,
+                "{source}: {:?}",
+                parse.diagnostics
+            );
+            assert_eq!(count_kind(&parse.root, SyntaxKind::Error), 1, "{source}");
+            assert_eq!(
+                count_kind(&parse.root, SyntaxKind::ClassDecl),
+                2,
+                "{source}"
+            );
+            assert_eq!(
+                parse.root.token_count(),
+                non_eof_token_count(&source) + 1,
+                "{source}"
+            );
+        }
+
+        let source = format!(
+            "class Parent {{ void Run() {{ {} int m_Following; }} }} class After {{}}",
+            format!("{}{}", "{".repeat(deep), "}".repeat(deep))
+        );
+        let parse = parse_source(&source);
+        assert_eq!(parse.diagnostics.len(), 1, "{:?}", parse.diagnostics);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::Error), 1);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::ClassDecl), 2);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::LocalDeclStatement), 1);
+
+        let ast = AstSourceFile::new(&source, &parse);
+        let catalog = SymbolCatalog::from_ast(&source, &ast);
+        let index = SymbolIndex::from_catalogs([&catalog]);
+        assert!(!index.files().is_empty());
+    }
+
+    #[test]
     fn invalid_top_level_text_does_not_swallow_following_class() {
         let source = r#"class BeforeInvalid
 {
@@ -2578,6 +2924,16 @@ class AfterInvalid
         );
         assert_eq!(count_kind(&parse.root, SyntaxKind::ForeachVariableList), 1);
         assert_eq!(count_kind(&parse.root, SyntaxKind::ForeachVariable), 2);
+        let foreach_variable =
+            first_node(&parse.root, SyntaxKind::ForeachVariable).expect("foreach variable");
+        assert_eq!(
+            direct_child_node_count(foreach_variable, SyntaxKind::TypeRef),
+            1
+        );
+        assert_eq!(
+            direct_child_node_count(foreach_variable, SyntaxKind::Declarator),
+            1
+        );
         assert_eq!(count_kind(&parse.root, SyntaxKind::ForeachIterable), 1);
         assert!(count_kind(&parse.root, SyntaxKind::CallExpression) >= 5);
         assert!(count_kind(&parse.root, SyntaxKind::MemberAccessExpression) >= 4);

@@ -30,6 +30,7 @@ struct ExternalIndexState {
     game_data_index: Option<Arc<SymbolIndex>>,
     workspace_files: BTreeMap<PathBuf, Arc<WorkspaceIndexedFile>>,
     workspace_live_changes: BTreeMap<PathBuf, Option<Arc<WorkspaceIndexedFile>>>,
+    workspace_last_sequences: BTreeMap<String, u64>,
     workspace_generation: u64,
     workspace_startup_pending: bool,
     workspace_roots: Vec<PathBuf>,
@@ -117,6 +118,7 @@ impl ExternalIndexHandle {
                 game_data_index: None,
                 workspace_files: BTreeMap::new(),
                 workspace_live_changes: BTreeMap::new(),
+                workspace_last_sequences: BTreeMap::new(),
                 workspace_generation: 0,
                 workspace_startup_pending: false,
                 workspace_roots: Vec::new(),
@@ -173,7 +175,11 @@ impl ExternalIndexHandle {
         &self,
         path: PathBuf,
         text: String,
-    ) -> Result<(usize, usize), String> {
+        sequence: u64,
+    ) -> Result<Option<(usize, usize)>, String> {
+        if !self.accept_workspace_sequence(&path, sequence) {
+            return Ok(None);
+        }
         let normalized_path = normalize_workspace_path(&path);
         let root = {
             let state = self.state.lock().unwrap();
@@ -191,12 +197,29 @@ impl ExternalIndexHandle {
         let symbol_count = indexed.index.symbols().len();
         let parse_diagnostics = indexed.parse_diagnostics;
         self.publish_workspace_change(normalized_path, Some(indexed));
-        Ok((symbol_count, parse_diagnostics))
+        Ok(Some((symbol_count, parse_diagnostics)))
     }
 
-    pub(crate) fn delete_workspace_file(&self, path: &Path) -> bool {
+    pub(crate) fn delete_workspace_file(&self, path: &Path, sequence: u64) -> Option<bool> {
+        if !self.accept_workspace_sequence(path, sequence) {
+            return None;
+        }
         let normalized_path = normalize_workspace_path(path);
-        self.publish_workspace_change(normalized_path, None)
+        Some(self.publish_workspace_change(normalized_path, None))
+    }
+
+    fn accept_workspace_sequence(&self, path: &Path, sequence: u64) -> bool {
+        let mut state = self.state.lock().unwrap();
+        let key = workspace_sequence_key(path);
+        if state
+            .workspace_last_sequences
+            .get(&key)
+            .is_some_and(|last_sequence| *last_sequence >= sequence)
+        {
+            return false;
+        }
+        state.workspace_last_sequences.insert(key, sequence);
+        true
     }
 
     fn publish_workspace_change(
@@ -268,6 +291,7 @@ pub(crate) fn start_external_index(
             game_data_index: None,
             workspace_files: BTreeMap::new(),
             workspace_live_changes: BTreeMap::new(),
+            workspace_last_sequences: BTreeMap::new(),
             workspace_generation: 0,
             workspace_startup_pending: true,
             workspace_roots: options.workspace_scripts.clone(),
@@ -654,13 +678,51 @@ fn collect_workspace_script_files(folder: &Path, files: &mut Vec<PathBuf>) -> Re
         let entry = entry
             .map_err(|error| format!("Failed to read entry in {}: {error}", folder.display()))?;
         let path = entry.path();
-        if path.is_dir() {
+        if workspace_directory_entry_is_physical(&entry)? {
             collect_workspace_script_files(&path, files)?;
-        } else if path.extension().is_some_and(|extension| extension == "c") {
+        } else if entry
+            .file_type()
+            .map_err(|error| {
+                format!(
+                    "Failed to inspect workspace entry {}: {error}",
+                    path.display()
+                )
+            })?
+            .is_file()
+            && path.extension().is_some_and(|extension| extension == "c")
+        {
             files.push(path);
         }
     }
     Ok(())
+}
+
+fn workspace_directory_entry_is_physical(entry: &fs::DirEntry) -> Result<bool, String> {
+    let path = entry.path();
+    let file_type = entry.file_type().map_err(|error| {
+        format!(
+            "Failed to inspect workspace entry {}: {error}",
+            path.display()
+        )
+    })?;
+    if !file_type.is_dir() || file_type.is_symlink() {
+        return Ok(false);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        let metadata = fs::symlink_metadata(&path).map_err(|error| {
+            format!(
+                "Failed to inspect workspace directory {}: {error}",
+                path.display()
+            )
+        })?;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 fn workspace_root_for_file(roots: &[PathBuf], file: &Path) -> Option<PathBuf> {
@@ -672,7 +734,33 @@ fn workspace_root_for_file(roots: &[PathBuf], file: &Path) -> Option<PathBuf> {
 }
 
 fn normalize_workspace_path(path: &Path) -> PathBuf {
-    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+    path.canonicalize()
+        .unwrap_or_else(|_| lexically_normalized_absolute_path(path))
+}
+
+fn workspace_sequence_key(path: &Path) -> String {
+    workspace_path_key(&lexically_normalized_absolute_path(path))
+}
+
+fn lexically_normalized_absolute_path(path: &Path) -> PathBuf {
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|current_dir| current_dir.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    };
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            _ => normalized.push(component.as_os_str()),
+        }
+    }
+    normalized
 }
 
 fn workspace_path_key(path: &Path) -> String {
@@ -731,6 +819,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn workspace_updates_are_latest_wins_across_deletes_and_path_aliases() {
+        let handle = ExternalIndexHandle::missing();
+        let path = PathBuf::from("sequence-test/Tracked.c");
+        let alias = PathBuf::from("sequence-test/nested/../Tracked.c");
+
+        assert!(handle
+            .update_workspace_file(path.clone(), "class First {}".to_string(), 1)
+            .unwrap()
+            .is_some());
+        assert_eq!(handle.delete_workspace_file(&alias, 2), Some(true));
+        assert_eq!(
+            handle
+                .update_workspace_file(path.clone(), "class Stale {}".to_string(), 1)
+                .unwrap(),
+            None
+        );
+        assert_eq!(handle.delete_workspace_file(&path, 2), None);
+
+        assert!(handle
+            .update_workspace_file(alias, "class Recreated {}".to_string(), 3)
+            .unwrap()
+            .is_some());
+        let state = handle.state.lock().unwrap();
+        assert_eq!(state.workspace_last_sequences.len(), 1);
+        assert_eq!(state.workspace_last_sequences.values().next(), Some(&3));
+        assert_eq!(state.workspace_files.len(), 1);
+        assert_eq!(state.workspace_generation, 3);
+    }
+
+    #[test]
     fn startup_deletion_tombstone_advances_workspace_generation() {
         let handle = ExternalIndexHandle::missing();
         {
@@ -739,7 +857,10 @@ mod tests {
             state.status = ExternalIndexStatus::Building;
         }
 
-        assert!(handle.delete_workspace_file(Path::new("startup-deleted.c")));
+        assert_eq!(
+            handle.delete_workspace_file(Path::new("startup-deleted.c"), 1),
+            Some(true)
+        );
 
         let state = handle.state.lock().unwrap();
         assert_eq!(state.workspace_generation, 1);
@@ -747,8 +868,70 @@ mod tests {
         assert!(matches!(
             state
                 .workspace_live_changes
-                .get(&PathBuf::from("startup-deleted.c")),
+                .get(&lexically_normalized_absolute_path(Path::new(
+                    "startup-deleted.c"
+                ))),
             Some(None)
         ));
+    }
+
+    #[test]
+    fn workspace_discovery_collects_physical_files_and_skips_directory_links() {
+        let root = temporary_workspace_test_directory("discovery");
+        let nested = root.join("nested");
+        let external = root
+            .parent()
+            .expect("temporary workspace has a parent")
+            .join(format!(
+                "{}-external",
+                root.file_name().unwrap().to_string_lossy()
+            ));
+        let loop_link = root.join("loop");
+        let external_link = root.join("external-link");
+        fs::create_dir_all(&nested).unwrap();
+        fs::create_dir_all(&external).unwrap();
+        let physical_file = nested.join("Physical.c");
+        let external_file = external.join("External.c");
+        fs::write(&physical_file, "class Physical {}\n").unwrap();
+        fs::write(&external_file, "class External {}\n").unwrap();
+
+        if create_directory_link(&root, &loop_link).is_err()
+            || create_directory_link(&external, &external_link).is_err()
+        {
+            let _ = fs::remove_dir_all(&root);
+            let _ = fs::remove_dir_all(&external);
+            return;
+        }
+
+        let mut files = Vec::new();
+        collect_workspace_script_files(&root, &mut files).unwrap();
+        files.sort();
+
+        assert_eq!(files, vec![physical_file]);
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(external);
+    }
+
+    fn temporary_workspace_test_directory(name: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "reforger_external_overlay_{name}_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&path);
+        path
+    }
+
+    #[cfg(unix)]
+    fn create_directory_link(target: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(target, link)
+    }
+
+    #[cfg(windows)]
+    fn create_directory_link(target: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::windows::fs::symlink_dir(target, link)
     }
 }

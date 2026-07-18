@@ -10,7 +10,7 @@ This report sits beside the parser, AST, expression, resolver, and LSP reports. 
 
 ## Current Behavior
 
-The example scans `.c` files under a scripts folder, parses each file, builds AST/model/index data, builds `LexicalScopeModel`, and writes `tools/reports/scope-corpus.report.md` by default. It reports scope counts, scoped versus unscoped parameters and locals, local declaration kind counts, scope-depth frequency, symbols-per-scope frequency, shadow classification, declaration-before-use quality, top files by block scopes/depth/locals, and bounded snippets for shadows or visibility anomalies.
+The example scans `.c` files under a scripts folder, parses each file, builds AST/model/index data, builds `LexicalScopeModel`, and writes `tools/reports/scope-corpus.report.md` by default. It reports root, callable, block, `for`, and `foreach` scope counts; scoped versus unscoped parameters and locals; local declaration kind counts; scope-depth frequency; symbols-per-scope frequency; shadow classification; declaration-before-use quality; top files by block scopes/depth/locals; and bounded snippets for shadows or visibility anomalies.
 
 It accepts `--scripts <path>` and `--out <path>`. If no scripts path is supplied, it uses the downloaded game-data global-storage scripts folder.
 

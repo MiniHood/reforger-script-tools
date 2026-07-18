@@ -18,6 +18,8 @@ pub enum SyntaxKind {
     ParameterList,
     Parameter,
     TypeRef,
+    DeclaratorList,
+    Declarator,
     GenericArgList,
     Block,
     IfStatement,

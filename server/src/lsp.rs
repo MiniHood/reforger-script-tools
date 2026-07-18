@@ -207,6 +207,7 @@ impl LspDocumentSymbolReport {
 struct LspServer<W: Write> {
     writer: W,
     documents: BTreeMap<String, OpenDocument>,
+    document_revisions: BTreeMap<String, u64>,
     logger: LspLogger,
     external_index: ExternalIndexHandle,
     rich_scheduler: Option<RichSemanticTokensScheduler>,
@@ -258,6 +259,13 @@ fn oldest_pending_uri(pending: &BTreeMap<String, RichSemanticTokensJob>) -> Opti
         .map(|(uri, _)| uri.clone())
 }
 
+fn earliest_due_pending_uri(pending: &BTreeMap<String, RichSemanticTokensJob>) -> Option<String> {
+    pending
+        .iter()
+        .min_by_key(|(uri, job)| (job.scheduled_at, *uri))
+        .map(|(uri, _)| uri.clone())
+}
+
 #[derive(Clone)]
 struct RichSemanticTokensScheduler {
     state: Arc<(Mutex<BTreeMap<String, RichSemanticTokensJob>>, Condvar)>,
@@ -304,7 +312,7 @@ impl RichSemanticTokensScheduler {
             while pending.is_empty() {
                 pending = wake.wait(pending).unwrap();
             }
-            let key = pending.keys().next().cloned().unwrap();
+            let key = earliest_due_pending_uri(&pending).unwrap();
             let due_at = pending[&key].scheduled_at
                 + Duration::from_millis(RICH_SEMANTIC_TOKENS_IDLE_DELAY_MS);
             let now = Instant::now();
@@ -441,12 +449,14 @@ struct DidCloseTextDocumentParams {
 struct WorkspaceFileChangedParams {
     path: String,
     text: String,
+    sequence: u64,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct WorkspaceFileDeletedParams {
     path: String,
+    sequence: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -482,6 +492,7 @@ impl<W: Write> LspServer<W> {
         let server = Self {
             writer,
             documents: BTreeMap::new(),
+            document_revisions: BTreeMap::new(),
             logger,
             external_index,
             rich_scheduler,
@@ -505,6 +516,17 @@ impl<W: Write> LspServer<W> {
             server.external_index.status_summary().status
         ));
         server
+    }
+
+    fn next_document_revision(&mut self, uri: &str) -> u64 {
+        let revision = self
+            .document_revisions
+            .get(uri)
+            .copied()
+            .unwrap_or(0)
+            .saturating_add(1);
+        self.document_revisions.insert(uri.to_string(), revision);
+        revision
     }
 
     fn run<R: Read>(&mut self, reader: R) -> Result<(), String> {
@@ -565,6 +587,29 @@ impl<W: Write> LspServer<W> {
             return Ok(false);
         };
 
+        if self.shutdown_requested && method != "exit" {
+            let error = "Server has already received shutdown";
+            if let Some(id) = message.id.clone() {
+                self.respond_error(id, -32600, error)?;
+            } else {
+                self.log(&format!(
+                    "notification ignored after shutdown method={method}"
+                ));
+            }
+            return Ok(false);
+        }
+
+        if let Err(error) = validate_message_params(method, &message.params) {
+            if let Some(id) = message.id.clone() {
+                self.respond_error(id, -32602, &error)?;
+            } else {
+                self.log(&format!(
+                    "notification ignored invalid_params method={method} error={error}"
+                ));
+            }
+            return Ok(false);
+        }
+
         match method {
             "initialize" => {
                 self.log("request initialize");
@@ -616,6 +661,9 @@ impl<W: Write> LspServer<W> {
             }
             "exit" => {
                 self.log("notification exit");
+                if !self.shutdown_requested {
+                    return Err("LSP exit received before shutdown".to_string());
+                }
                 return Ok(true);
             }
             "textDocument/didOpen" => {
@@ -627,7 +675,11 @@ impl<W: Write> LspServer<W> {
                     let version = params.text_document.version;
                     let text = params.text_document.text;
                     let bytes = text.len();
-                    let mut document = OpenDocument::new(text, version, 1);
+                    let revision = self.next_document_revision(&uri);
+                    if let Some(mut previous) = self.documents.remove(&uri) {
+                        previous.semantic_tokens.cancel_pending();
+                    }
+                    let mut document = OpenDocument::new(text, version, revision);
                     let symbol_start = Instant::now();
                     let symbols =
                         document_symbols_from_cached_analysis(&document.text, &document.analysis);
@@ -673,13 +725,15 @@ impl<W: Write> LspServer<W> {
                         let version = params.text_document.version;
                         let text = change.text;
                         let bytes = text.len();
-                        let document = self
-                            .documents
-                            .entry(uri.clone())
-                            .or_insert_with(|| OpenDocument::new(String::new(), None, 0));
+                        let existing_revision =
+                            self.document_revisions.get(&uri).copied().unwrap_or(0);
+                        let document = self.documents.entry(uri.clone()).or_insert_with(|| {
+                            OpenDocument::new(String::new(), None, existing_revision)
+                        });
                         document.replace(text, version);
                         let parse_diagnostics = document.analysis.parse_diagnostics;
                         let revision = document.revision;
+                        self.document_revisions.insert(uri.clone(), revision);
                         let analysis_timings = document.analysis_timings;
                         let diagnostics_message = publish_diagnostics_message(
                             &uri,
@@ -726,15 +780,18 @@ impl<W: Write> LspServer<W> {
                     let start = Instant::now();
                     let path = PathBuf::from(params.path);
                     let bytes = params.text.len();
-                    let result = self
-                        .external_index
-                        .update_workspace_file(path.clone(), params.text);
+                    let result = self.external_index.update_workspace_file(
+                        path.clone(),
+                        params.text,
+                        params.sequence,
+                    );
                     match result {
-                        Ok((symbols, parse_diagnostics)) => {
+                        Ok(Some((symbols, parse_diagnostics))) => {
                             let status = self.external_index.status_summary();
                             self.log(&format!(
-                                "notification workspaceFileChanged path={} bytes={} symbols={} parse_diagnostics={} overlay_status={} overlay_generation={} overlay_files={} overlay_symbols={} elapsed_ms={}",
+                                "notification workspaceFileChanged path={} sequence={} bytes={} symbols={} parse_diagnostics={} overlay_status={} overlay_generation={} overlay_files={} overlay_symbols={} elapsed_ms={}",
                                 path.display(),
+                                params.sequence,
                                 bytes,
                                 symbols,
                                 parse_diagnostics,
@@ -746,10 +803,18 @@ impl<W: Write> LspServer<W> {
                             ));
                             self.request_semantic_tokens_refresh()?;
                         }
+                        Ok(None) => self.log(&format!(
+                            "notification workspaceFileChanged ignored path={} sequence={} bytes={} elapsed_ms={}",
+                            path.display(),
+                            params.sequence,
+                            bytes,
+                            start.elapsed().as_millis()
+                        )),
                         Err(error) => {
                             self.log(&format!(
-                                "notification workspaceFileChanged path={} bytes={} error={} elapsed_ms={}",
+                                "notification workspaceFileChanged path={} sequence={} bytes={} error={} elapsed_ms={}",
                                 path.display(),
+                                params.sequence,
                                 bytes,
                                 error,
                                 start.elapsed().as_millis()
@@ -764,20 +829,33 @@ impl<W: Write> LspServer<W> {
                 {
                     let start = Instant::now();
                     let path = PathBuf::from(params.path);
-                    let removed = self.external_index.delete_workspace_file(&path);
+                    let removed = self
+                        .external_index
+                        .delete_workspace_file(&path, params.sequence);
                     let status = self.external_index.status_summary();
-                    self.log(&format!(
-                        "notification workspaceFileDeleted path={} removed={} overlay_status={} overlay_generation={} overlay_files={} overlay_symbols={} elapsed_ms={}",
-                        path.display(),
-                        removed,
-                        status.status,
-                        status.generation,
-                        status.files,
-                        status.symbols,
-                        start.elapsed().as_millis()
-                    ));
-                    if removed {
-                        self.request_semantic_tokens_refresh()?;
+                    match removed {
+                        Some(removed) => {
+                            self.log(&format!(
+                                "notification workspaceFileDeleted path={} sequence={} removed={} overlay_status={} overlay_generation={} overlay_files={} overlay_symbols={} elapsed_ms={}",
+                                path.display(),
+                                params.sequence,
+                                removed,
+                                status.status,
+                                status.generation,
+                                status.files,
+                                status.symbols,
+                                start.elapsed().as_millis()
+                            ));
+                            if removed {
+                                self.request_semantic_tokens_refresh()?;
+                            }
+                        }
+                        None => self.log(&format!(
+                            "notification workspaceFileDeleted ignored path={} sequence={} elapsed_ms={}",
+                            path.display(),
+                            params.sequence,
+                            start.elapsed().as_millis()
+                        )),
                     }
                 }
             }
@@ -1819,8 +1897,13 @@ pub fn position_for_offset(source: &str, offset: usize) -> LspPosition {
         if index >= offset {
             break;
         }
-        if value == '\n' {
+        if value == '\r' {
             line += 1;
+            character = 0;
+        } else if value == '\n' {
+            if index == 0 || source.as_bytes()[index - 1] != b'\r' {
+                line += 1;
+            }
             character = 0;
         } else {
             character += value.len_utf16() as u32;
@@ -1835,11 +1918,14 @@ pub fn offset_for_position(source: &str, position: LspPosition) -> Option<usize>
     let mut character = 0u32;
 
     for (index, value) in source.char_indices() {
+        if value == '\n' && index > 0 && source.as_bytes()[index - 1] == b'\r' {
+            continue;
+        }
         if line == position.line {
             if character == position.character {
                 return Some(index);
             }
-            if value == '\n' {
+            if value == '\r' || value == '\n' {
                 return None;
             }
             let next_character = character + value.len_utf16() as u32;
@@ -1847,7 +1933,10 @@ pub fn offset_for_position(source: &str, position: LspPosition) -> Option<usize>
                 return Some(index);
             }
             character = next_character;
-        } else if value == '\n' {
+        } else if value == '\r' {
+            line += 1;
+            character = 0;
+        } else if value == '\n' && (index == 0 || source.as_bytes()[index - 1] != b'\r') {
             line += 1;
             character = 0;
         }
@@ -1927,6 +2016,42 @@ fn parse_params<T: for<'de> Deserialize<'de>>(
     };
     serde_json::from_value(params)
         .map(Some)
+        .map_err(|error| format!("Invalid params for {method}: {error}"))
+}
+
+fn validate_message_params(method: &str, params: &Option<Value>) -> Result<(), String> {
+    match method {
+        "textDocument/didOpen" => validate_params::<DidOpenTextDocumentParams>(params, method),
+        "textDocument/didChange" => validate_params::<DidChangeTextDocumentParams>(params, method),
+        "textDocument/didClose" => validate_params::<DidCloseTextDocumentParams>(params, method),
+        "reforger/workspaceFileChanged" => {
+            validate_params::<WorkspaceFileChangedParams>(params, method)
+        }
+        "reforger/workspaceFileDeleted" => {
+            validate_params::<WorkspaceFileDeletedParams>(params, method)
+        }
+        "textDocument/documentSymbol" | "textDocument/semanticTokens/full" => {
+            validate_params::<DocumentSymbolParams>(params, method)
+        }
+        "textDocument/hover"
+        | "textDocument/definition"
+        | "textDocument/completion"
+        | "textDocument/signatureHelp"
+        | DEBUG_HOVER_METHOD
+        | DEBUG_COMPLETION_METHOD => validate_params::<HoverParams>(params, method),
+        _ => Ok(()),
+    }
+}
+
+fn validate_params<T: for<'de> Deserialize<'de>>(
+    params: &Option<Value>,
+    method: &str,
+) -> Result<(), String> {
+    let Some(params) = params else {
+        return Err(format!("Invalid params for {method}: missing params"));
+    };
+    serde_json::from_value::<T>(params.clone())
+        .map(|_| ())
         .map_err(|error| format!("Invalid params for {method}: {error}"))
 }
 
@@ -2016,6 +2141,23 @@ fn timestamp_millis() -> u128 {
 mod tests {
     use super::*;
 
+    fn rich_semantic_tokens_job(uri: &str, scheduled_at: Instant) -> RichSemanticTokensJob {
+        RichSemanticTokensJob {
+            uri: uri.to_string(),
+            revision: 1,
+            external_generation: 0,
+            cancel: Arc::new(AtomicBool::new(false)),
+            scheduled_at,
+            source: String::new(),
+            analysis: file_index_for_source(""),
+            external_snapshot: ExternalIndexSnapshot {
+                status: "missing",
+                workspace: None,
+                game_data: None,
+            },
+        }
+    }
+
     #[test]
     fn rich_scheduler_evicts_the_oldest_pending_job() {
         let now = Instant::now();
@@ -2025,29 +2167,109 @@ mod tests {
             ("file:///alpha.c", now - Duration::from_secs(3)),
             ("file:///middle.c", now - Duration::from_secs(2)),
         ] {
-            pending.insert(
-                uri.to_string(),
-                RichSemanticTokensJob {
-                    uri: uri.to_string(),
-                    revision: 1,
-                    external_generation: 0,
-                    cancel: Arc::new(AtomicBool::new(false)),
-                    scheduled_at,
-                    source: String::new(),
-                    analysis: file_index_for_source(""),
-                    external_snapshot: ExternalIndexSnapshot {
-                        status: "missing",
-                        workspace: None,
-                        game_data: None,
-                    },
-                },
-            );
+            pending.insert(uri.to_string(), rich_semantic_tokens_job(uri, scheduled_at));
         }
 
         assert_eq!(
             oldest_pending_uri(&pending).as_deref(),
             Some("file:///alpha.c")
         );
+    }
+
+    #[test]
+    fn rich_scheduler_selects_the_earliest_due_job_not_the_first_uri() {
+        let now = Instant::now();
+        let mut pending = BTreeMap::new();
+        pending.insert(
+            "file:///a.c".to_string(),
+            rich_semantic_tokens_job("file:///a.c", now),
+        );
+        pending.insert(
+            "file:///z.c".to_string(),
+            rich_semantic_tokens_job(
+                "file:///z.c",
+                now - Duration::from_millis(RICH_SEMANTIC_TOKENS_IDLE_DELAY_MS + 1),
+            ),
+        );
+
+        assert_eq!(
+            earliest_due_pending_uri(&pending).as_deref(),
+            Some("file:///z.c")
+        );
+    }
+
+    #[test]
+    fn duplicate_did_open_rejects_old_rich_semantic_tokens() {
+        let uri = "file:///Scripts/Reopened.c";
+        let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
+        server
+            .handle_message(
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "textDocument/didOpen",
+                    "params": {
+                        "textDocument": {
+                            "uri": uri,
+                            "languageId": "enforce",
+                            "version": 1,
+                            "text": "class Old {}"
+                        }
+                    }
+                }),
+                None,
+            )
+            .unwrap();
+
+        let external_generation = server.external_index.status_summary().generation;
+        let (old_revision, projection, cancel) = {
+            let document = server.documents.get_mut(uri).unwrap();
+            let cancel = document
+                .semantic_tokens
+                .mark_pending(document.revision, external_generation);
+            (
+                document.revision,
+                fast_semantic_tokens_for_cached_analysis(&document.text, &document.analysis),
+                cancel,
+            )
+        };
+
+        server
+            .handle_message(
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "textDocument/didOpen",
+                    "params": {
+                        "textDocument": {
+                            "uri": uri,
+                            "languageId": "enforce",
+                            "version": 2,
+                            "text": "class New {}"
+                        }
+                    }
+                }),
+                None,
+            )
+            .unwrap();
+
+        let current_revision = server.documents[uri].revision;
+        assert!(cancel.load(Ordering::Relaxed));
+        assert_ne!(old_revision, current_revision);
+
+        server
+            .handle_internal_event(ServerEvent::RichSemanticTokensReady {
+                uri: uri.to_string(),
+                revision: old_revision,
+                external_generation,
+                external_status: "missing",
+                projection,
+                elapsed_ms: 0,
+            })
+            .unwrap();
+
+        assert!(server.documents[uri]
+            .semantic_tokens
+            .rich_for_revision_and_external_generation(current_revision, external_generation)
+            .is_none());
     }
 
     #[test]
@@ -5881,6 +6103,22 @@ class Example
     }
 
     #[test]
+    fn offset_conversion_treats_cr_and_crlf_as_single_line_endings() {
+        for source in ["class A {}\rclass B {}", "class A {}\r\nclass B {}"] {
+            let offset = source.find("class B").expect("second class");
+            let position = position_for_offset(source, offset);
+            assert_eq!(
+                position,
+                LspPosition {
+                    line: 1,
+                    character: 0
+                }
+            );
+            assert_eq!(offset_for_position(source, position), Some(offset));
+        }
+    }
+
+    #[test]
     fn framed_lsp_smoke_test_handles_open_and_document_symbol() {
         let source = "class Smoke\n{\n\tvoid Run();\n}\n";
         let mut input = Vec::new();
@@ -5957,6 +6195,121 @@ class Example
         assert!(output_text.contains("\"documentSymbolProvider\":true"));
         assert!(output_text.contains("\"name\":\"Smoke\""));
         assert!(output_text.contains("\"name\":\"Run\""));
+    }
+
+    #[test]
+    fn framed_lsp_contains_invalid_request_params_and_continues() {
+        let mut input = Vec::new();
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "textDocument/hover",
+                "params": {}
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "initialize",
+                "params": {}
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({"jsonrpc": "2.0", "id": 3, "method": "shutdown", "params": null}),
+        );
+        write_test_message(
+            &mut input,
+            json!({"jsonrpc": "2.0", "method": "exit", "params": null}),
+        );
+
+        let mut output = Vec::new();
+        run(input.as_slice(), &mut output, LspServerOptions::default()).unwrap();
+
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("\"id\":1"));
+        assert!(output.contains("\"code\":-32602"));
+        assert!(output.contains("\"id\":2"));
+        assert!(output.contains("\"serverInfo\""));
+    }
+
+    #[test]
+    fn framed_lsp_ignores_invalid_notification_params_and_continues() {
+        let mut input = Vec::new();
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {}
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {}
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({"jsonrpc": "2.0", "id": 2, "method": "shutdown", "params": null}),
+        );
+        write_test_message(
+            &mut input,
+            json!({"jsonrpc": "2.0", "method": "exit", "params": null}),
+        );
+
+        let mut output = Vec::new();
+        run(input.as_slice(), &mut output, LspServerOptions::default()).unwrap();
+
+        let output = String::from_utf8(output).unwrap();
+        assert!(!output.contains("\"error\""));
+        assert!(output.contains("\"id\":1"));
+        assert!(output.contains("\"serverInfo\""));
+    }
+
+    #[test]
+    fn framed_lsp_rejects_requests_after_shutdown() {
+        let mut input = Vec::new();
+        write_test_message(
+            &mut input,
+            json!({"jsonrpc": "2.0", "id": 1, "method": "shutdown", "params": null}),
+        );
+        write_test_message(
+            &mut input,
+            json!({"jsonrpc": "2.0", "id": 2, "method": "initialize", "params": {}}),
+        );
+        write_test_message(
+            &mut input,
+            json!({"jsonrpc": "2.0", "method": "exit", "params": null}),
+        );
+
+        let mut output = Vec::new();
+        run(input.as_slice(), &mut output, LspServerOptions::default()).unwrap();
+
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("\"id\":2"));
+        assert!(output.contains("\"code\":-32600"));
+    }
+
+    #[test]
+    fn framed_lsp_exit_before_shutdown_is_an_error() {
+        let mut input = Vec::new();
+        write_test_message(
+            &mut input,
+            json!({"jsonrpc": "2.0", "method": "exit", "params": null}),
+        );
+
+        let error = run(input.as_slice(), Vec::new(), LspServerOptions::default()).unwrap_err();
+
+        assert!(error.contains("before shutdown"));
     }
 
     #[test]
@@ -6651,7 +7004,8 @@ class Example
                 "method": WORKSPACE_FILE_CHANGED_METHOD,
                 "params": {
                     "path": workspace_file.display().to_string(),
-                    "text": workspace_source
+                    "text": workspace_source,
+                    "sequence": 1
                 }
             }),
         );
@@ -6712,7 +7066,20 @@ class Example
                 "jsonrpc": "2.0",
                 "method": WORKSPACE_FILE_DELETED_METHOD,
                 "params": {
-                    "path": workspace_file.display().to_string()
+                    "path": workspace_file.display().to_string(),
+                    "sequence": 2
+                }
+            }),
+        );
+        write_test_message(
+            &mut input,
+            json!({
+                "jsonrpc": "2.0",
+                "method": WORKSPACE_FILE_CHANGED_METHOD,
+                "params": {
+                    "path": workspace_file.display().to_string(),
+                    "text": workspace_source,
+                    "sequence": 1
                 }
             }),
         );

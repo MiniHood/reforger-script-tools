@@ -35,6 +35,8 @@ struct Totals {
     root_scopes: usize,
     callable_scopes: usize,
     block_scopes: usize,
+    for_loop_scopes: usize,
+    foreach_loop_scopes: usize,
     scoped_parameters: usize,
     scoped_locals: usize,
     unscoped_parameters: usize,
@@ -57,6 +59,8 @@ struct FileStats {
     scopes: usize,
     callable_scopes: usize,
     block_scopes: usize,
+    for_loop_scopes: usize,
+    foreach_loop_scopes: usize,
     scoped_parameters: usize,
     scoped_locals: usize,
     unscoped_parameters: usize,
@@ -231,6 +235,14 @@ fn render_report(scripts_path: &Path) -> Result<String, String> {
                 LexicalScopeKind::Block => {
                     totals.block_scopes += 1;
                     stats.block_scopes += 1;
+                }
+                LexicalScopeKind::ForLoop => {
+                    totals.for_loop_scopes += 1;
+                    stats.for_loop_scopes += 1;
+                }
+                LexicalScopeKind::ForeachLoop => {
+                    totals.foreach_loop_scopes += 1;
+                    stats.foreach_loop_scopes += 1;
                 }
             }
 
@@ -497,6 +509,14 @@ fn append_summary(report: &mut String, scripts_path: &Path, totals: &Totals) {
         totals.callable_scopes
     ));
     report.push_str(&format!("| Block scopes | {} |\n", totals.block_scopes));
+    report.push_str(&format!(
+        "| `for` loop scopes | {} |\n",
+        totals.for_loop_scopes
+    ));
+    report.push_str(&format!(
+        "| `foreach` loop scopes | {} |\n",
+        totals.foreach_loop_scopes
+    ));
     report.push_str(&format!(
         "| Scoped parameters | {} |\n",
         totals.scoped_parameters
