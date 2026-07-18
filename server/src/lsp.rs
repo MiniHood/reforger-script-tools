@@ -20,7 +20,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    mpsc, Arc, Mutex,
+    mpsc, Arc, Condvar, Mutex,
 };
 use std::thread;
 use std::time::{Duration, Instant};
@@ -60,7 +60,7 @@ pub use definition::{
 use diagnostics::{clear_diagnostics_message, publish_diagnostics_message};
 pub use diagnostics::{parser_diagnostics_for_source, LspDiagnostic};
 pub(crate) use external_overlay::ExternalIndexStatusSummary;
-use external_overlay::{start_external_index, ExternalIndexHandle};
+use external_overlay::{start_external_index, ExternalIndexHandle, ExternalIndexSnapshot};
 use hover::hover_report_for_cached_analysis_with_external_indexes;
 pub use hover::{
     hover_report_for_source_position, hover_report_for_source_position_with_external,
@@ -119,16 +119,9 @@ pub fn run_stdio(options: LspServerOptions) -> Result<(), String> {
     let stdout = io::stdout();
     let (incoming_sender, incoming_receiver) = mpsc::sync_channel(INCOMING_EVENT_QUEUE_CAPACITY);
     let (internal_sender, internal_receiver) = mpsc::channel();
-    let (rich_scheduler_sender, rich_scheduler_receiver) = mpsc::sync_channel(1);
-    let mut server = LspServer::new_with_runtime_senders(
-        stdout.lock(),
-        options,
-        Some(internal_sender.clone()),
-        Some(rich_scheduler_sender),
-    );
-    thread::spawn(move || {
-        run_rich_semantic_tokens_scheduler(rich_scheduler_receiver, internal_sender)
-    });
+    let rich_scheduler = RichSemanticTokensScheduler::start(internal_sender.clone());
+    let mut server =
+        LspServer::new_with_runtime_senders(stdout.lock(), options, Some(rich_scheduler));
     thread::spawn(move || {
         let stdin = io::stdin();
         let mut reader = BufReader::new(stdin.lock());
@@ -216,26 +209,19 @@ struct LspServer<W: Write> {
     documents: BTreeMap<String, OpenDocument>,
     logger: LspLogger,
     external_index: ExternalIndexHandle,
-    internal_sender: Option<mpsc::Sender<ServerEvent>>,
-    rich_scheduler_sender: Option<mpsc::SyncSender<RichSemanticTokensJob>>,
+    rich_scheduler: Option<RichSemanticTokensScheduler>,
     next_server_request_id: u64,
     last_semantic_external_generation: u64,
     shutdown_requested: bool,
 }
 
 const RICH_SEMANTIC_TOKENS_IDLE_DELAY_MS: u64 = 250;
+const MAX_PENDING_RICH_SEMANTIC_TOKEN_JOBS: usize = 16;
 
 enum ServerEvent {
     Incoming {
         received_at: Instant,
         result: Result<Value, String>,
-    },
-    RichSemanticTokensDue {
-        uri: String,
-        revision: u64,
-        external_generation: u64,
-        cancel: Arc<AtomicBool>,
-        elapsed_ms: u128,
     },
     RichSemanticTokensReady {
         uri: String,
@@ -248,6 +234,7 @@ enum ServerEvent {
     RichSemanticTokensSkipped {
         uri: String,
         revision: u64,
+        external_generation: u64,
         reason: String,
         elapsed_ms: u128,
     },
@@ -259,31 +246,98 @@ struct RichSemanticTokensJob {
     external_generation: u64,
     cancel: Arc<AtomicBool>,
     scheduled_at: Instant,
+    source: String,
+    analysis: FileIndexAnalysis,
+    external_snapshot: ExternalIndexSnapshot,
 }
 
-fn run_rich_semantic_tokens_scheduler(
-    receiver: mpsc::Receiver<RichSemanticTokensJob>,
+#[derive(Clone)]
+struct RichSemanticTokensScheduler {
+    state: Arc<(Mutex<BTreeMap<String, RichSemanticTokensJob>>, Condvar)>,
     sender: mpsc::Sender<ServerEvent>,
-) {
-    while let Ok(mut job) = receiver.recv() {
+}
+
+impl RichSemanticTokensScheduler {
+    fn start(sender: mpsc::Sender<ServerEvent>) -> Self {
+        let scheduler = Self {
+            state: Arc::new((Mutex::new(BTreeMap::new()), Condvar::new())),
+            sender,
+        };
+        let worker = scheduler.clone();
+        thread::spawn(move || worker.run());
+        scheduler
+    }
+
+    fn schedule(&self, job: RichSemanticTokensJob) {
+        let (lock, wake) = &*self.state;
+        let mut pending = lock.lock().unwrap();
+        if !pending.contains_key(&job.uri) && pending.len() >= MAX_PENDING_RICH_SEMANTIC_TOKEN_JOBS
+        {
+            let evicted_uri = pending.keys().next().cloned().unwrap();
+            let evicted = pending.remove(&evicted_uri).unwrap();
+            evicted.cancel.store(true, Ordering::Relaxed);
+            let _ = self.sender.send(ServerEvent::RichSemanticTokensSkipped {
+                uri: evicted.uri,
+                revision: evicted.revision,
+                external_generation: evicted.external_generation,
+                reason: "scheduler-capacity-evicted".to_string(),
+                elapsed_ms: evicted.scheduled_at.elapsed().as_millis(),
+            });
+        }
+        if let Some(previous) = pending.insert(job.uri.clone(), job) {
+            previous.cancel.store(true, Ordering::Relaxed);
+        }
+        wake.notify_one();
+    }
+
+    fn run(self) {
+        let (lock, wake) = &*self.state;
         loop {
-            match receiver.recv_timeout(Duration::from_millis(RICH_SEMANTIC_TOKENS_IDLE_DELAY_MS)) {
-                Ok(next_job) => {
-                    job.cancel.store(true, Ordering::Relaxed);
-                    job = next_job;
-                }
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    let _ = sender.send(ServerEvent::RichSemanticTokensDue {
-                        uri: job.uri,
-                        revision: job.revision,
-                        external_generation: job.external_generation,
-                        cancel: job.cancel,
-                        elapsed_ms: job.scheduled_at.elapsed().as_millis(),
-                    });
-                    break;
-                }
-                Err(mpsc::RecvTimeoutError::Disconnected) => return,
+            let mut pending = lock.lock().unwrap();
+            while pending.is_empty() {
+                pending = wake.wait(pending).unwrap();
             }
+            let key = pending.keys().next().cloned().unwrap();
+            let due_at = pending[&key].scheduled_at
+                + Duration::from_millis(RICH_SEMANTIC_TOKENS_IDLE_DELAY_MS);
+            let now = Instant::now();
+            if now < due_at {
+                let (pending_after_wait, _) = wake.wait_timeout(pending, due_at - now).unwrap();
+                pending = pending_after_wait;
+                continue;
+            }
+            let Some(job) = pending.remove(&key) else {
+                continue;
+            };
+            drop(pending);
+            if job.cancel.load(Ordering::Relaxed) {
+                continue;
+            }
+            let projection = semantic_tokens_for_cached_analysis_with_external_indexes_cancelled(
+                &job.source,
+                &job.analysis,
+                job.external_snapshot.workspace.as_deref(),
+                job.external_snapshot.game_data.as_deref(),
+                &|| job.cancel.load(Ordering::Relaxed),
+            );
+            let event = match projection {
+                Some(projection) => ServerEvent::RichSemanticTokensReady {
+                    uri: job.uri,
+                    revision: job.revision,
+                    external_generation: job.external_generation,
+                    external_status: job.external_snapshot.status,
+                    projection,
+                    elapsed_ms: job.scheduled_at.elapsed().as_millis(),
+                },
+                None => ServerEvent::RichSemanticTokensSkipped {
+                    uri: job.uri,
+                    revision: job.revision,
+                    external_generation: job.external_generation,
+                    reason: "cancelled-during-work".to_string(),
+                    elapsed_ms: job.scheduled_at.elapsed().as_millis(),
+                },
+            };
+            let _ = self.sender.send(event);
         }
     }
 }
@@ -408,22 +462,13 @@ struct TextDocumentIdentifier {
 
 impl<W: Write> LspServer<W> {
     fn new(writer: W, options: LspServerOptions) -> Self {
-        Self::new_with_internal_sender(writer, options, None)
-    }
-
-    fn new_with_internal_sender(
-        writer: W,
-        options: LspServerOptions,
-        internal_sender: Option<mpsc::Sender<ServerEvent>>,
-    ) -> Self {
-        Self::new_with_runtime_senders(writer, options, internal_sender, None)
+        Self::new_with_runtime_senders(writer, options, None)
     }
 
     fn new_with_runtime_senders(
         writer: W,
         options: LspServerOptions,
-        internal_sender: Option<mpsc::Sender<ServerEvent>>,
-        rich_scheduler_sender: Option<mpsc::SyncSender<RichSemanticTokensJob>>,
+        rich_scheduler: Option<RichSemanticTokensScheduler>,
     ) -> Self {
         let logger = LspLogger::new(options.log_path.clone());
         let external_index = start_external_index(&options, logger.clone());
@@ -432,8 +477,7 @@ impl<W: Write> LspServer<W> {
             documents: BTreeMap::new(),
             logger,
             external_index,
-            internal_sender,
-            rich_scheduler_sender,
+            rich_scheduler,
             next_server_request_id: 1,
             last_semantic_external_generation: 0,
             shutdown_requested: false,
@@ -1373,53 +1417,6 @@ impl<W: Write> LspServer<W> {
     fn handle_internal_event(&mut self, event: ServerEvent) -> Result<(), String> {
         match event {
             ServerEvent::Incoming { .. } => Ok(()),
-            ServerEvent::RichSemanticTokensDue {
-                uri,
-                revision,
-                external_generation,
-                cancel,
-                elapsed_ms,
-            } => {
-                if cancel.load(Ordering::Relaxed) {
-                    self.log(&format!(
-                        "semanticTokensRich skipped uri={} revision={} reason=cancelled-before-work elapsed_ms={}",
-                        uri, revision, elapsed_ms
-                    ));
-                    return Ok(());
-                }
-                let Some(current_revision) =
-                    self.documents.get(&uri).map(|document| document.revision)
-                else {
-                    cancel.store(true, Ordering::Relaxed);
-                    self.log(&format!(
-                        "semanticTokensRich skipped uri={} revision={} reason=missing-document-before-idle elapsed_ms={}",
-                        uri, revision, elapsed_ms
-                    ));
-                    return Ok(());
-                };
-                if current_revision != revision {
-                    cancel.store(true, Ordering::Relaxed);
-                    self.log(&format!(
-                        "semanticTokensRich skipped uri={} revision={} current_revision={} reason=stale-revision-before-idle elapsed_ms={}",
-                        uri, revision, current_revision, elapsed_ms
-                    ));
-                    return Ok(());
-                }
-                let current_external_generation = self.external_index.status_summary().generation;
-                if current_external_generation != external_generation {
-                    cancel.store(true, Ordering::Relaxed);
-                    self.log(&format!(
-                        "semanticTokensRich skipped uri={} revision={} external_generation={} current_external_generation={} reason=stale-external-index-before-idle elapsed_ms={}",
-                        uri,
-                        revision,
-                        external_generation,
-                        current_external_generation,
-                        elapsed_ms
-                    ));
-                    return Ok(());
-                }
-                self.start_rich_semantic_tokens_worker(&uri, revision, external_generation, cancel)
-            }
             ServerEvent::RichSemanticTokensReady {
                 uri,
                 revision,
@@ -1493,12 +1490,18 @@ impl<W: Write> LspServer<W> {
             ServerEvent::RichSemanticTokensSkipped {
                 uri,
                 revision,
+                external_generation,
                 reason,
                 elapsed_ms,
             } => {
+                if let Some(document) = self.documents.get_mut(&uri) {
+                    document
+                        .semantic_tokens
+                        .cancel_pending_if_matches(revision, external_generation);
+                }
                 self.log(&format!(
-                    "semanticTokensRich skipped uri={} revision={} reason={} elapsed_ms={}",
-                    uri, revision, reason, elapsed_ms
+                    "semanticTokensRich skipped uri={} revision={} external_generation={} reason={} elapsed_ms={}",
+                    uri, revision, external_generation, reason, elapsed_ms
                 ));
                 Ok(())
             }
@@ -1512,7 +1515,7 @@ impl<W: Write> LspServer<W> {
         external_generation: u64,
         cancel: Arc<AtomicBool>,
     ) -> Result<(), String> {
-        if let Some(sender) = self.rich_scheduler_sender.clone() {
+        if let Some(scheduler) = self.rich_scheduler.clone() {
             let start = Instant::now();
             let Some(document) = self.documents.get(uri) else {
                 self.log(&format!(
@@ -1538,26 +1541,11 @@ impl<W: Write> LspServer<W> {
                 external_generation,
                 cancel,
                 scheduled_at: start,
+                source: document.text.clone(),
+                analysis: document.analysis.clone(),
+                external_snapshot: self.external_index.snapshot(),
             };
-            match sender.try_send(job) {
-                Ok(()) => {}
-                Err(mpsc::TrySendError::Full(job)) => {
-                    job.cancel.store(true, Ordering::Relaxed);
-                    if let Some(document) = self.documents.get_mut(uri) {
-                        document.semantic_tokens.cancel_pending();
-                    }
-                    self.log(&format!(
-                        "semanticTokensRich skipped uri={} revision={} reason=scheduler-busy elapsed_ms={}",
-                        uri,
-                        revision,
-                        start.elapsed().as_millis()
-                    ));
-                }
-                Err(mpsc::TrySendError::Disconnected(job)) => {
-                    job.cancel.store(true, Ordering::Relaxed);
-                    return Err("Rich semantic-token scheduler stopped unexpectedly".to_string());
-                }
-            }
+            scheduler.schedule(job);
             return Ok(());
         }
 
@@ -1634,91 +1622,6 @@ impl<W: Write> LspServer<W> {
             start.elapsed().as_millis()
         ));
         self.request_semantic_tokens_refresh()
-    }
-
-    fn start_rich_semantic_tokens_worker(
-        &mut self,
-        uri: &str,
-        revision: u64,
-        external_generation: u64,
-        cancel: Arc<AtomicBool>,
-    ) -> Result<(), String> {
-        if let Some(sender) = self.internal_sender.clone() {
-            let start = Instant::now();
-            let Some(document) = self.documents.get(uri) else {
-                cancel.store(true, Ordering::Relaxed);
-                let _ = sender.send(ServerEvent::RichSemanticTokensSkipped {
-                    uri: uri.to_string(),
-                    revision,
-                    reason: "missing-document".to_string(),
-                    elapsed_ms: start.elapsed().as_millis(),
-                });
-                return Ok(());
-            };
-            if document.revision != revision {
-                cancel.store(true, Ordering::Relaxed);
-                let _ = sender.send(ServerEvent::RichSemanticTokensSkipped {
-                    uri: uri.to_string(),
-                    revision,
-                    reason: "stale-revision".to_string(),
-                    elapsed_ms: start.elapsed().as_millis(),
-                });
-                return Ok(());
-            }
-            let uri = uri.to_string();
-            let source = document.text.clone();
-            let analysis = document.analysis.clone();
-            let external_snapshot = self.external_index.snapshot();
-            thread::spawn(move || {
-                let start = Instant::now();
-                if cancel.load(Ordering::Relaxed) {
-                    let _ = sender.send(ServerEvent::RichSemanticTokensSkipped {
-                        uri,
-                        revision,
-                        reason: "cancelled-before-work".to_string(),
-                        elapsed_ms: start.elapsed().as_millis(),
-                    });
-                    return;
-                }
-                if external_snapshot.generation != external_generation {
-                    cancel.store(true, Ordering::Relaxed);
-                    let _ = sender.send(ServerEvent::RichSemanticTokensSkipped {
-                        uri,
-                        revision,
-                        reason: "stale-external-index".to_string(),
-                        elapsed_ms: start.elapsed().as_millis(),
-                    });
-                    return;
-                }
-                let projection =
-                    semantic_tokens_for_cached_analysis_with_external_indexes_cancelled(
-                        &source,
-                        &analysis,
-                        external_snapshot.workspace.as_deref(),
-                        external_snapshot.game_data.as_deref(),
-                        &|| cancel.load(Ordering::Relaxed),
-                    );
-                let Some(projection) = projection else {
-                    let _ = sender.send(ServerEvent::RichSemanticTokensSkipped {
-                        uri,
-                        revision,
-                        reason: "cancelled-during-work".to_string(),
-                        elapsed_ms: start.elapsed().as_millis(),
-                    });
-                    return;
-                };
-                let _ = sender.send(ServerEvent::RichSemanticTokensReady {
-                    uri,
-                    revision,
-                    external_generation,
-                    external_status: external_snapshot.status,
-                    projection,
-                    elapsed_ms: start.elapsed().as_millis(),
-                });
-            });
-            return Ok(());
-        }
-        self.schedule_rich_semantic_tokens(uri, revision, external_generation, cancel)
     }
 
     fn rich_semantic_tokens_for_revision(

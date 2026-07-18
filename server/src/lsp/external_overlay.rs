@@ -28,8 +28,9 @@ struct ExternalIndexState {
     generation: u64,
     workspace_index: Option<Arc<SymbolIndex>>,
     game_data_index: Option<Arc<SymbolIndex>>,
-    workspace_files: BTreeMap<PathBuf, WorkspaceIndexedFile>,
-    workspace_live_changes: BTreeMap<PathBuf, Option<WorkspaceIndexedFile>>,
+    workspace_files: BTreeMap<PathBuf, Arc<WorkspaceIndexedFile>>,
+    workspace_live_changes: BTreeMap<PathBuf, Option<Arc<WorkspaceIndexedFile>>>,
+    workspace_generation: u64,
     workspace_startup_pending: bool,
     workspace_roots: Vec<PathBuf>,
     summary: Option<RuntimeIndexSummary>,
@@ -91,7 +92,6 @@ pub(crate) struct ExternalIndexStatusSummary {
 #[derive(Debug, Clone)]
 pub(crate) struct ExternalIndexSnapshot {
     pub(crate) status: &'static str,
-    pub(crate) generation: u64,
     pub(crate) workspace: Option<Arc<SymbolIndex>>,
     pub(crate) game_data: Option<Arc<SymbolIndex>>,
 }
@@ -117,6 +117,7 @@ impl ExternalIndexHandle {
                 game_data_index: None,
                 workspace_files: BTreeMap::new(),
                 workspace_live_changes: BTreeMap::new(),
+                workspace_generation: 0,
                 workspace_startup_pending: false,
                 workspace_roots: Vec::new(),
                 summary: None,
@@ -163,7 +164,6 @@ impl ExternalIndexHandle {
         let state = self.state.lock().unwrap();
         ExternalIndexSnapshot {
             status: state.status.as_str(),
-            generation: state.generation,
             workspace: state.workspace_index.clone(),
             game_data: state.game_data_index.clone(),
         }
@@ -187,49 +187,63 @@ impl ExternalIndexHandle {
                 .unwrap_or_else(|| PathBuf::from("."))
         });
 
-        let indexed = build_workspace_file_index(&root, &normalized_path, &text);
+        let indexed = Arc::new(build_workspace_file_index(&root, &normalized_path, &text));
         let symbol_count = indexed.index.symbols().len();
         let parse_diagnostics = indexed.parse_diagnostics;
-        let mut state = self.state.lock().unwrap();
-        state.status = ExternalIndexStatus::Updating;
-        if state.workspace_startup_pending {
-            state
-                .workspace_live_changes
-                .insert(normalized_path.clone(), Some(indexed.clone()));
-        }
-        state.workspace_files.insert(normalized_path, indexed);
-        recompute_layered_external_summary(&mut state);
-        state.generation += 1;
-        state.status = if state.workspace_index.is_some() || state.game_data_index.is_some() {
-            ExternalIndexStatus::Ready
-        } else {
-            ExternalIndexStatus::Missing
-        };
+        self.publish_workspace_change(normalized_path, Some(indexed));
         Ok((symbol_count, parse_diagnostics))
     }
 
     pub(crate) fn delete_workspace_file(&self, path: &Path) -> bool {
         let normalized_path = normalize_workspace_path(path);
-        let mut state = self.state.lock().unwrap();
+        self.publish_workspace_change(normalized_path, None)
+    }
 
-        state.status = ExternalIndexStatus::Updating;
-        if state.workspace_startup_pending {
-            state
-                .workspace_live_changes
-                .insert(normalized_path.clone(), None);
+    fn publish_workspace_change(
+        &self,
+        path: PathBuf,
+        replacement: Option<Arc<WorkspaceIndexedFile>>,
+    ) -> bool {
+        loop {
+            let (mut files, workspace_generation, startup_pending) = {
+                let state = self.state.lock().unwrap();
+                (
+                    state.workspace_files.clone(),
+                    state.workspace_generation,
+                    state.workspace_startup_pending,
+                )
+            };
+            let removed = replacement.is_none() && files.remove(&path).is_some();
+            if let Some(indexed) = replacement.clone() {
+                files.insert(path.clone(), indexed);
+            }
+            let (workspace_index, workspace_summary) = workspace_aggregate(&files);
+            let mut state = self.state.lock().unwrap();
+            if state.workspace_generation != workspace_generation {
+                continue;
+            }
+            state.status = ExternalIndexStatus::Updating;
+            if startup_pending {
+                state
+                    .workspace_live_changes
+                    .insert(path.clone(), replacement.clone());
+            }
+            state.workspace_files = files;
+            state.workspace_index = workspace_index;
+            state.workspace_summary = workspace_summary;
+            let game_data_summary = state.game_data_summary.clone();
+            recompute_summary(&mut state, game_data_summary);
+            if replacement.is_some() || removed {
+                state.workspace_generation += 1;
+                state.generation += 1;
+            }
+            state.status = if state.workspace_index.is_some() || state.game_data_index.is_some() {
+                ExternalIndexStatus::Ready
+            } else {
+                ExternalIndexStatus::Missing
+            };
+            return replacement.is_some() || removed;
         }
-        let removed = state.workspace_files.remove(&normalized_path).is_some()
-            || state.workspace_files.remove(path).is_some();
-        recompute_layered_external_summary(&mut state);
-        if removed {
-            state.generation += 1;
-        }
-        state.status = if state.workspace_index.is_some() || state.game_data_index.is_some() {
-            ExternalIndexStatus::Ready
-        } else {
-            ExternalIndexStatus::Missing
-        };
-        removed
     }
 }
 
@@ -251,6 +265,7 @@ pub(crate) fn start_external_index(
             game_data_index: None,
             workspace_files: BTreeMap::new(),
             workspace_live_changes: BTreeMap::new(),
+            workspace_generation: 0,
             workspace_startup_pending: true,
             workspace_roots: options.workspace_scripts.clone(),
             summary: None,
@@ -371,66 +386,58 @@ fn run_external_index_thread(
         "externalIndex publish start elapsed_ms={}",
         start.elapsed().as_millis()
     ));
-    let mut state = state.lock().unwrap();
     let mut error_messages = Vec::new();
-
-    if let Some(result) = game_data_result {
-        match result {
-            Ok(result) => {
+    let (game_data_index, game_data_summary, cache_status, cache_detail, fingerprint) =
+        match game_data_result {
+            Some(Ok(result)) => {
                 let cache_status = result.cache_status.as_str().to_string();
                 let cache_detail = result.cache_status.detail().map(str::to_string);
                 let fingerprint = result.fingerprint.summary();
                 logger.log(&format!(
-                        "externalIndex gameData ready cache_status={} cache_detail={} files={} symbols={} parse_diagnostics={} cache_file_read_ms={} cache_decode_ms={} cache_validate_ms={} cache_map_rebuild_ms={} cache_total_ms={} elapsed_ms={}",
-                        cache_status,
-                        cache_detail.as_deref().unwrap_or("<none>"),
-                        result.summary.files,
-                        result.summary.indexed_symbols,
-                        result.summary.parse_diagnostics,
-                        result.timings.cache_file_read.as_millis(),
-                        result.timings.cache_decode.as_millis(),
-                        result.timings.cache_validate.as_millis(),
-                        result.timings.map_rebuild.as_millis(),
-                        result.timings.total.as_millis(),
-                        start.elapsed().as_millis()
-                    ));
-                state.game_data_index = Some(Arc::new(result.index));
-                state.game_data_summary = Some(result.summary);
-                state.cache_status = Some(cache_status);
-                state.cache_detail = cache_detail;
-                state.fingerprint = Some(fingerprint);
-                state.error = None;
+                "externalIndex gameData ready cache_status={} cache_detail={} files={} symbols={} parse_diagnostics={} cache_file_read_ms={} cache_decode_ms={} cache_validate_ms={} cache_map_rebuild_ms={} cache_total_ms={} elapsed_ms={}",
+                cache_status,
+                cache_detail.as_deref().unwrap_or("<none>"),
+                result.summary.files,
+                result.summary.indexed_symbols,
+                result.summary.parse_diagnostics,
+                result.timings.cache_file_read.as_millis(),
+                result.timings.cache_decode.as_millis(),
+                result.timings.cache_validate.as_millis(),
+                result.timings.map_rebuild.as_millis(),
+                result.timings.total.as_millis(),
+                start.elapsed().as_millis()
+            ));
+                (
+                    Some(Arc::new(result.index)),
+                    Some(result.summary),
+                    Some(cache_status),
+                    cache_detail,
+                    Some(fingerprint),
+                )
             }
-            Err(error) => {
+            Some(Err(error)) => {
                 logger.log(&format!(
                     "externalIndex gameData failed error={} elapsed_ms={}",
                     error,
                     start.elapsed().as_millis()
                 ));
-                state.cache_status = None;
-                state.cache_detail = None;
-                state.fingerprint = None;
                 error_messages.push(error);
+                (None, None, None, None, None)
             }
-        }
-    }
+            None => (None, None, None, None, None),
+        };
 
-    match workspace_result {
+    let baseline_workspace_files = match workspace_result {
         Ok((workspace_files, workspace_summary)) => {
             logger.log(&format!(
-                    "externalIndex workspace ready roots={} files={} symbols={} parse_diagnostics={} elapsed_ms={}",
-                    format_paths(&workspace_roots),
-                    workspace_summary.files,
-                    workspace_summary.indexed_symbols,
-                    workspace_summary.parse_diagnostics,
-                    start.elapsed().as_millis()
-                ));
-            for (path, indexed) in workspace_files {
-                if !state.workspace_live_changes.contains_key(&path) {
-                    state.workspace_files.insert(path, indexed);
-                }
-            }
-            state.workspace_summary = workspace_summary_from_files(&state.workspace_files);
+                "externalIndex workspace ready roots={} files={} symbols={} parse_diagnostics={} elapsed_ms={}",
+                format_paths(&workspace_roots),
+                workspace_summary.files,
+                workspace_summary.indexed_symbols,
+                workspace_summary.parse_diagnostics,
+                start.elapsed().as_millis()
+            ));
+            workspace_files
         }
         Err(error) => {
             logger.log(&format!(
@@ -440,75 +447,93 @@ fn run_external_index_thread(
                 start.elapsed().as_millis()
             ));
             error_messages.push(error);
+            BTreeMap::new()
         }
-    }
-    state.workspace_live_changes.clear();
-    state.workspace_startup_pending = false;
+    };
 
-    logger.log(&format!(
-        "externalIndex summary recompute start elapsed_ms={}",
-        start.elapsed().as_millis()
-    ));
-    recompute_layered_external_summary(&mut state);
-    logger.log(&format!(
-        "externalIndex summary recompute end workspace_index={} game_data_index={} elapsed_ms={}",
-        state.workspace_index.is_some(),
-        state.game_data_index.is_some(),
-        start.elapsed().as_millis()
-    ));
-    state.generation += 1;
-    if state.workspace_index.is_some() || state.game_data_index.is_some() {
-        state.status = ExternalIndexStatus::Ready;
-        state.error = if error_messages.is_empty() {
-            None
-        } else {
-            Some(error_messages.join("; "))
+    // Merge startup and live workspace files before aggregation, then publish only if no live
+    // edit raced the snapshot. SymbolIndex::merged never runs while the overlay lock is held.
+    let (status, summary, workspace_summary, published_game_data_summary) = loop {
+        let (live_changes, workspace_generation) = {
+            let state = state.lock().unwrap();
+            (
+                state.workspace_live_changes.clone(),
+                state.workspace_generation,
+            )
         };
-    } else {
-        state.status = if error_messages.is_empty() {
+        let mut workspace_files = baseline_workspace_files.clone();
+        for (path, replacement) in live_changes {
+            match replacement {
+                Some(indexed) => {
+                    workspace_files.insert(path, indexed);
+                }
+                None => {
+                    workspace_files.remove(&path);
+                }
+            }
+        }
+        let (workspace_index, workspace_summary) = workspace_aggregate(&workspace_files);
+
+        let mut state = state.lock().unwrap();
+        if state.workspace_generation != workspace_generation {
+            continue;
+        }
+        state.game_data_index = game_data_index.clone();
+        state.game_data_summary = game_data_summary.clone();
+        state.cache_status = cache_status.clone();
+        state.cache_detail = cache_detail.clone();
+        state.fingerprint = fingerprint.clone();
+        state.workspace_files = workspace_files;
+        state.workspace_index = workspace_index;
+        state.workspace_summary = workspace_summary;
+        state.workspace_live_changes.clear();
+        state.workspace_startup_pending = false;
+        let current_game_data_summary = state.game_data_summary.clone();
+        recompute_summary(&mut state, current_game_data_summary);
+        state.generation += 1;
+        state.status = if state.workspace_index.is_some() || state.game_data_index.is_some() {
+            ExternalIndexStatus::Ready
+        } else if error_messages.is_empty() {
             ExternalIndexStatus::Missing
         } else {
             ExternalIndexStatus::Failed
         };
-        state.error = if error_messages.is_empty() {
-            None
-        } else {
-            Some(error_messages.join("; "))
-        };
-    }
+        state.error = (!error_messages.is_empty()).then(|| error_messages.join("; "));
+        break (
+            state.status,
+            state.summary.clone(),
+            state.workspace_summary.clone(),
+            state.game_data_summary.clone(),
+        );
+    };
+
     logger.log(&format!(
-            "externalIndex layered status={} files={} symbols={} workspace_files={} workspace_symbols={} game_data_files={} game_data_symbols={} game_data_ready_ms={} workspace_ready_ms={} layered_ready_ms={} elapsed_ms={}",
-            state.status.as_str(),
-            state.summary.as_ref().map(|summary| summary.files).unwrap_or(0),
-            state
-                .summary
-                .as_ref()
-                .map(|summary| summary.indexed_symbols)
-                .unwrap_or(0),
-            state.workspace_summary.files,
-            state.workspace_summary.indexed_symbols,
-            state
-                .game_data_summary
-                .as_ref()
-                .map(|summary| summary.files)
-                .unwrap_or(0),
-            state
-                .game_data_summary
-                .as_ref()
-                .map(|summary| summary.indexed_symbols)
-                .unwrap_or(0),
-            game_data_ready_ms,
-            workspace_ready_ms,
-            start.elapsed().as_millis(),
-            start.elapsed().as_millis()
-        ));
+        "externalIndex layered status={} files={} symbols={} workspace_files={} workspace_symbols={} game_data_files={} game_data_symbols={} game_data_ready_ms={} workspace_ready_ms={} layered_ready_ms={} elapsed_ms={}",
+        status.as_str(),
+        summary.as_ref().map(|summary| summary.files).unwrap_or(0),
+        summary.as_ref().map(|summary| summary.indexed_symbols).unwrap_or(0),
+        workspace_summary.files,
+        workspace_summary.indexed_symbols,
+        published_game_data_summary.as_ref().map(|summary| summary.files).unwrap_or(0),
+        published_game_data_summary.as_ref().map(|summary| summary.indexed_symbols).unwrap_or(0),
+        game_data_ready_ms,
+        workspace_ready_ms,
+        start.elapsed().as_millis(),
+        start.elapsed().as_millis()
+    ));
 }
 
 fn build_workspace_indexes(
     roots: &[PathBuf],
     logger: &LspLogger,
     external_start: Instant,
-) -> Result<(BTreeMap<PathBuf, WorkspaceIndexedFile>, RuntimeIndexSummary), String> {
+) -> Result<
+    (
+        BTreeMap<PathBuf, Arc<WorkspaceIndexedFile>>,
+        RuntimeIndexSummary,
+    ),
+    String,
+> {
     let roots = normalize_workspace_roots(roots);
     logger.log(&format!(
         "externalIndex workspace roots normalized requested={} unique={} roots={} elapsed_ms={}",
@@ -563,7 +588,7 @@ fn build_workspace_indexes(
             file_start.elapsed().as_millis(),
             external_start.elapsed().as_millis()
         ));
-        indexed_files.insert(file, indexed);
+        indexed_files.insert(file, Arc::new(indexed));
     }
 
     let summary = workspace_summary_from_files(&indexed_files);
@@ -657,7 +682,7 @@ fn workspace_path_key(path: &Path) -> String {
 }
 
 fn workspace_summary_from_files(
-    files: &BTreeMap<PathBuf, WorkspaceIndexedFile>,
+    files: &BTreeMap<PathBuf, Arc<WorkspaceIndexedFile>>,
 ) -> RuntimeIndexSummary {
     let mut summary = RuntimeIndexSummary::default();
     for file in files.values() {
@@ -669,22 +694,23 @@ fn workspace_summary_from_files(
     summary
 }
 
-fn recompute_layered_external_summary(state: &mut ExternalIndexState) {
-    let workspace_indexes = state
-        .workspace_files
-        .values()
-        .map(|file| &file.index)
-        .collect::<Vec<_>>();
-    state.workspace_index = if workspace_indexes.is_empty() {
-        None
-    } else {
-        Some(Arc::new(SymbolIndex::merged(workspace_indexes)))
-    };
+fn workspace_aggregate(
+    files: &BTreeMap<PathBuf, Arc<WorkspaceIndexedFile>>,
+) -> (Option<Arc<SymbolIndex>>, RuntimeIndexSummary) {
+    let workspace_indexes = files.values().map(|file| &file.index).collect::<Vec<_>>();
+    let workspace_index =
+        (!workspace_indexes.is_empty()).then(|| Arc::new(SymbolIndex::merged(workspace_indexes)));
+    (workspace_index, workspace_summary_from_files(files))
+}
 
-    state.workspace_summary = workspace_summary_from_files(&state.workspace_files);
+fn recompute_summary(
+    state: &mut ExternalIndexState,
+    game_data_summary: Option<RuntimeIndexSummary>,
+) {
+    let game_data_summary = game_data_summary.as_ref();
     state.summary = if state.workspace_index.is_some() || state.game_data_index.is_some() {
         let mut summary = state.workspace_summary.clone();
-        if let Some(game_data_summary) = state.game_data_summary.as_ref() {
+        if let Some(game_data_summary) = game_data_summary {
             summary.files += game_data_summary.files;
             summary.bytes += game_data_summary.bytes;
             summary.indexed_symbols += game_data_summary.indexed_symbols;

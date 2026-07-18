@@ -131,6 +131,14 @@ impl SemanticTokenCache {
         self.pending_external_generation = None;
     }
 
+    pub(crate) fn cancel_pending_if_matches(&mut self, revision: u64, external_generation: u64) {
+        if self.pending_revision == Some(revision)
+            && self.pending_external_generation == Some(external_generation)
+        {
+            self.cancel_pending();
+        }
+    }
+
     pub(crate) fn cancel_pending_for_other_external_generation(
         &mut self,
         external_generation: u64,
