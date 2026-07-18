@@ -212,6 +212,8 @@ struct LspServer<W: Write> {
     external_index: ExternalIndexHandle,
     rich_scheduler: Option<RichSemanticTokensScheduler>,
     next_server_request_id: u64,
+    semantic_tokens_refresh_in_flight: Option<String>,
+    semantic_tokens_refresh_dirty: bool,
     last_semantic_external_generation: u64,
     shutdown_requested: bool,
 }
@@ -497,6 +499,8 @@ impl<W: Write> LspServer<W> {
             external_index,
             rich_scheduler,
             next_server_request_id: 1,
+            semantic_tokens_refresh_in_flight: None,
+            semantic_tokens_refresh_dirty: false,
             last_semantic_external_generation: 0,
             shutdown_requested: false,
         };
@@ -584,6 +588,7 @@ impl<W: Write> LspServer<W> {
             .map_err(|error| format!("Invalid JSON-RPC message: {error}"))?;
         let queue_ms = queue_ms.unwrap_or(0);
         let Some(method) = message.method.as_deref() else {
+            self.handle_semantic_tokens_refresh_response(&message)?;
             return Ok(false);
         };
 
@@ -818,7 +823,6 @@ impl<W: Write> LspServer<W> {
                                 status.symbols,
                                 start.elapsed().as_millis()
                             ));
-                            self.request_semantic_tokens_refresh()?;
                         }
                         Ok(None) => self.log(&format!(
                             "notification workspaceFileChanged ignored path={} sequence={} bytes={} elapsed_ms={}",
@@ -863,9 +867,6 @@ impl<W: Write> LspServer<W> {
                                 status.symbols,
                                 start.elapsed().as_millis()
                             ));
-                            if removed {
-                                self.request_semantic_tokens_refresh()?;
-                            }
                         }
                         None => self.log(&format!(
                             "notification workspaceFileDeleted ignored path={} sequence={} elapsed_ms={}",
@@ -1747,17 +1748,41 @@ impl<W: Write> LspServer<W> {
     }
 
     fn request_semantic_tokens_refresh(&mut self) -> Result<(), String> {
+        if self.semantic_tokens_refresh_in_flight.is_some() {
+            self.semantic_tokens_refresh_dirty = true;
+            return Ok(());
+        }
         let request_id = self.next_server_request_id;
         self.next_server_request_id += 1;
+        let id = format!("server-{request_id}");
+        self.semantic_tokens_refresh_in_flight = Some(id.clone());
         self.log(&format!(
             "request workspace/semanticTokens/refresh id=server-{request_id}"
         ));
         self.write_message(json!({
             "jsonrpc": "2.0",
-            "id": format!("server-{request_id}"),
+            "id": id,
             "method": "workspace/semanticTokens/refresh",
             "params": null
         }))
+    }
+
+    fn handle_semantic_tokens_refresh_response(
+        &mut self,
+        message: &RpcMessage,
+    ) -> Result<(), String> {
+        let Some(id) = message.id.as_ref().and_then(Value::as_str) else {
+            return Ok(());
+        };
+        if self.semantic_tokens_refresh_in_flight.as_deref() != Some(id) {
+            return Ok(());
+        }
+        self.semantic_tokens_refresh_in_flight = None;
+        if self.semantic_tokens_refresh_dirty {
+            self.semantic_tokens_refresh_dirty = false;
+            self.request_semantic_tokens_refresh()?;
+        }
+        Ok(())
     }
 
     fn request_semantic_tokens_refresh_if_external_generation_changed(
@@ -2206,6 +2231,44 @@ mod tests {
         assert_eq!(
             earliest_due_pending_uri(&pending).as_deref(),
             Some("file:///z.c")
+        );
+    }
+
+    #[test]
+    fn semantic_token_refresh_coalesces_until_the_client_acknowledges_it() {
+        let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
+
+        server.request_semantic_tokens_refresh().unwrap();
+        server.request_semantic_tokens_refresh().unwrap();
+        assert_eq!(
+            server.semantic_tokens_refresh_in_flight.as_deref(),
+            Some("server-1")
+        );
+        assert!(server.semantic_tokens_refresh_dirty);
+        assert_eq!(
+            String::from_utf8_lossy(&server.writer)
+                .matches("workspace/semanticTokens/refresh")
+                .count(),
+            1
+        );
+
+        server
+            .handle_message(
+                json!({ "jsonrpc": "2.0", "id": "server-1", "result": null }),
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(
+            server.semantic_tokens_refresh_in_flight.as_deref(),
+            Some("server-2")
+        );
+        assert!(!server.semantic_tokens_refresh_dirty);
+        assert_eq!(
+            String::from_utf8_lossy(&server.writer)
+                .matches("workspace/semanticTokens/refresh")
+                .count(),
+            2
         );
     }
 

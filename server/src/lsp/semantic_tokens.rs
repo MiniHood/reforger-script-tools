@@ -532,7 +532,10 @@ fn semantic_raw_tokens(
         filtered.push(token);
     }
     filtered.sort_by_key(|token| (token.span.start, token.span.end));
-    let tokens = split_multiline_semantic_tokens(source, filtered);
+    let tokens = split_multiline_semantic_tokens(source, filtered)
+        .into_iter()
+        .take(MAX_RAW_SEMANTIC_TOKENS)
+        .collect();
     Some(RawSemanticTokenProjection {
         tokens,
         timings: LspSemanticTokenTimings {
@@ -1093,7 +1096,7 @@ fn encode_semantic_tokens(source: &str, tokens: &[RawSemanticToken]) -> Vec<u32>
     let mut previous_start = 0u32;
     let line_index = SemanticLineIndex::new(source);
 
-    for token in tokens {
+    for token in tokens.iter().take(MAX_RAW_SEMANTIC_TOKENS) {
         let start = line_index.position_for_offset(source, token.span.start);
         let end = line_index.position_for_offset(source, token.span.end);
         if start.line != end.line || end.character <= start.character {
@@ -1261,4 +1264,19 @@ fn is_preprocessor_directive_token(source: &str, token: Token) -> bool {
         &source[token.span.start..token.span.end],
         "if" | "ifdef" | "ifndef" | "elif" | "else" | "endif" | "define" | "undef" | "include"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn multiline_token_expansion_respects_the_final_output_cap() {
+        let source = format!("/*\n{}", "x\n".repeat(MAX_RAW_SEMANTIC_TOKENS + 1));
+
+        let projection = fast_semantic_tokens_for_source(&source);
+
+        assert_eq!(projection.tokens.data.len() % 5, 0);
+        assert!(projection.tokens.data.len() / 5 <= MAX_RAW_SEMANTIC_TOKENS);
+    }
 }
