@@ -218,8 +218,19 @@ pub(crate) fn file_uri_for_path(path: &Path) -> Option<String> {
         return None;
     }
     let mut normalized = path.to_string_lossy().replace('\\', "/");
+    if let Some(stripped) = normalized.strip_prefix("//?/UNC/") {
+        normalized = format!("//{stripped}");
+    }
     if let Some(stripped) = normalized.strip_prefix("//?/") {
         normalized = stripped.to_string();
+    }
+    if let Some(unc) = normalized.strip_prefix("//") {
+        let (host, share_path) = unc.split_once('/')?;
+        return Some(format!(
+            "file://{}/{}",
+            percent_encode_uri_path(host),
+            percent_encode_uri_path(share_path)
+        ));
     }
     if normalized.starts_with('/') {
         Some(format!("file://{}", percent_encode_uri_path(&normalized)))

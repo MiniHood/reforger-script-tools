@@ -221,7 +221,7 @@ fn hover_report_for_offset(
                             member_summary_query.as_ref(),
                             current_uri,
                             selected.id,
-                            None,
+                            Some(range_for_span(source, resolution.token_span)),
                             HoverSelectionSource::ResolverIdentifier,
                             Some(CandidateSource::FileLocal),
                             Some(reason),

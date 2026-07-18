@@ -3336,6 +3336,56 @@ class Example : Base
     }
 
     #[test]
+    fn hover_uses_cursor_token_range_for_file_local_identifier() {
+        let source = r#"class Example
+{
+	void Run()
+	{
+		string label = "é"; int localValue = 0; localValue = 1;
+	}
+}
+"#;
+        let position = position_for_needle(source, "localValue = 1", "localValue");
+
+        let report = hover_report_for_source_position(source, position);
+        let hover = report.hover.expect("local identifier should have hover");
+
+        assert_eq!(position.character, 42, "position uses UTF-16 code units");
+        assert_eq!(
+            hover.range,
+            Some(LspRange {
+                start: position,
+                end: LspPosition {
+                    line: position.line,
+                    character: position.character + 10,
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn hover_uses_cursor_token_range_for_crlf_source() {
+        let source = "class Example\r\n{\r\n\tvoid Run()\r\n\t{\r\n\t\tstring label = \"é\"; int localValue = 0; localValue = 1;\r\n\t}\r\n}\r\n";
+        let position = position_for_needle(source, "localValue = 1", "localValue");
+
+        let report = hover_report_for_source_position(source, position);
+        let hover = report.hover.expect("local identifier should have hover");
+
+        assert_eq!(position.line, 4, "CRLF advances one LSP line per break");
+        assert_eq!(position.character, 42, "position uses UTF-16 code units");
+        assert_eq!(
+            hover.range,
+            Some(LspRange {
+                start: position,
+                end: LspPosition {
+                    line: position.line,
+                    character: position.character + 10,
+                },
+            })
+        );
+    }
+
+    #[test]
     fn hover_type_position_selects_class_instead_of_constructor() {
         let source = r#"class Example
 {
@@ -3424,16 +3474,24 @@ class Example
 }
 "#;
         let external = file_index_for_source("class Widget {}").index;
-        let report = hover_report_for_source_position_with_external(
-            source,
-            position_for_needle(source, "Widget widget", "Widget"),
-            Some(&external),
-        );
+        let position = position_for_needle(source, "Widget widget", "Widget");
+        let report =
+            hover_report_for_source_position_with_external(source, position, Some(&external));
 
         assert!(report.is_hit());
         assert_eq!(report.selected_kind, Some(SymbolKind::Class));
         assert_eq!(report.selected_label.as_deref(), Some("Widget"));
         assert_eq!(report.selected_source, Some(CandidateSource::External));
+        assert_eq!(
+            report.hover.as_ref().and_then(|hover| hover.range),
+            Some(LspRange {
+                start: position,
+                end: LspPosition {
+                    line: position.line,
+                    character: position.character + 6,
+                },
+            })
+        );
         assert_eq!(
             report.identifier_context,
             Some(IdentifierContext::TypePosition)
@@ -5713,6 +5771,19 @@ class SCR_AIDefendBehavior
         assert!(report.resolver_candidate_count > 0);
         assert_eq!(report.selected_kind, Some(SymbolKind::Method));
         assert_eq!(report.selected_label.as_deref(), Some("Run"));
+        assert_eq!(
+            report.hover.as_ref().and_then(|hover| hover.range),
+            Some(LspRange {
+                start: LspPosition {
+                    line: 2,
+                    character: 6,
+                },
+                end: LspPosition {
+                    line: 2,
+                    character: 9,
+                },
+            })
+        );
     }
 
     #[test]
@@ -6116,12 +6187,27 @@ class Example
 
     #[test]
     fn file_uri_for_path_encodes_windows_style_paths_and_spaces() {
+        assert_eq!(file_uri_for_path(Path::new("relative/File.c")), None);
         if cfg!(windows) {
             let uri = file_uri_for_path(Path::new("C:\\Game Data\\Scripts\\File Name.c")).unwrap();
             assert_eq!(uri, "file:///C:/Game%20Data/Scripts/File%20Name.c");
         } else {
             let uri = file_uri_for_path(Path::new("/tmp/Game Data/File Name.c")).unwrap();
             assert_eq!(uri, "file:///tmp/Game%20Data/File%20Name.c");
+        }
+    }
+
+    #[test]
+    fn file_uri_for_path_encodes_windows_unc_authority() {
+        if cfg!(windows) {
+            assert_eq!(
+                file_uri_for_path(Path::new(r"\\server\share\File Name.c")).unwrap(),
+                "file://server/share/File%20Name.c"
+            );
+            assert_eq!(
+                file_uri_for_path(Path::new(r"\\?\UNC\server\share\File.c")).unwrap(),
+                "file://server/share/File.c"
+            );
         }
     }
 
