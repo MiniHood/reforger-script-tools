@@ -82,6 +82,22 @@ committed. Attempt the authorized push after the commit; report authentication
 failure only after the commit exists. A completed batch is not completion.
 Keep working rather than offering next steps or summarizing unfinished work.
 
+## Compound Engineering Loop
+
+For non-trivial work, follow Plan -> Work -> Review -> Compound. Use the
+matching installed Compound Engineering skill for each stage: `ce-brainstorm`
+for unresolved product scope, `ce-plan` for implementation-ready work,
+`ce-work` for execution, `ce-code-review` for changed behavior, and
+`ce-compound` when a solved problem or durable convention would help future
+work. Do not substitute a status summary for any required stage.
+
+Use parallel agents only for independent, bounded work with disjoint file
+ownership or read-only review/research. Keep dependent edits, final synthesis,
+verification, commits, and pushes under one owner. When an agent failure or
+repeated workflow mistake reveals a missing guardrail, encode the correction in
+the appropriate policy, procedure, test, or solution rather than relying on a
+future reminder.
+
 After completing an implementation task and its required verification, commit and push the task-scoped changes to the current branch without waiting for a separate Git instruction. Use a clear, value-communicating commit message. Before committing, inspect the working tree and stage only changes attributable to the completed task; do not absorb unrelated pre-existing edits. Do not force-push, alter remotes, or create, switch, merge, rebase, reset, delete, or rewrite branches/history unless the user explicitly requests it. If verification fails, the target branch is unclear, the push is rejected, or the working tree cannot be safely separated by task, report the blocker instead of pushing. Review and trust project hooks through Codex's normal flow; never bypass hook trust.
 
 ## Verification Policy
