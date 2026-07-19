@@ -28,6 +28,10 @@ const CACHE_SCHEMA: &str = "reforger-symbol-index";
 const CACHE_MAGIC: &[u8; 8] = b"RSTIDX10";
 const CACHE_INDEX_SHAPE: &str =
     "runtime-pruned:no-local-variables:detail-spans-stripped:layered-external-v1:binary-v3:string-table-v1:validated-file-contributions-v1";
+const LEGACY_CACHE_FORMAT_VERSION: u32 = 9;
+const LEGACY_CACHE_MAGIC: &[u8; 8] = b"RSTIDX09";
+const LEGACY_CACHE_INDEX_SHAPE: &str =
+    "runtime-pruned:no-local-variables:detail-spans-stripped:layered-external-v1:binary-v2:string-table-v1";
 const MAX_CACHE_STRING_TABLE_ENTRIES: usize = 1_000_000;
 const MAX_CACHE_RAW_STRING_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CACHE_FILE_RECORDS: usize = 1_000_000;
@@ -129,6 +133,26 @@ struct CachedSymbolIndex {
     contributions: Vec<FileContribution>,
 }
 
+/// A v9 cache had the same binary records as v10 up to its indexed symbols,
+/// but no compiler-owned public contribution payload. It is read only as a
+/// one-way migration input and is never an alternate runtime representation.
+#[derive(Debug)]
+struct LegacyCachedGameDataIndex {
+    schema: String,
+    format_version: u32,
+    index_shape: String,
+    crate_version: String,
+    fingerprint: SourceFingerprint,
+    summary: CachedIndexSummary,
+    index: LegacyCachedSymbolIndex,
+}
+
+#[derive(Debug)]
+struct LegacyCachedSymbolIndex {
+    files: Vec<IndexedFile>,
+    symbols: Vec<IndexedSymbol>,
+}
+
 impl From<&SymbolIndex> for CachedSymbolIndex {
     fn from(index: &SymbolIndex) -> Self {
         let mut snapshot = Self {
@@ -175,17 +199,27 @@ impl CachedSymbolIndex {
     }
 
     fn public_contributions(&self) -> Vec<FileContribution> {
+        let names_by_id: BTreeMap<_, _> = self
+            .symbols
+            .iter()
+            .filter_map(|symbol| symbol.name.as_ref().map(|name| (symbol.id, name.clone())))
+            .collect();
         self.files
             .iter()
             .map(|file| {
+                let symbol_end = file
+                    .symbol_start
+                    .checked_add(file.symbol_count)
+                    .expect("cached file symbol range overflowed");
+                let symbols = self.symbols.get(file.symbol_start..symbol_end).expect(
+                    "cached file symbol range was validated before contribution projection",
+                );
                 FileContribution {
                     schema_version: FILE_CONTRIBUTION_SCHEMA_VERSION,
                     source_manifest_version: FILE_CONTRIBUTION_SOURCE_MANIFEST_VERSION,
                     non_declaration_callable_fragments: file.non_declaration_callable_fragments,
-                    symbols: self
-                        .symbols
+                    symbols: symbols
                         .iter()
-                        .filter(|symbol| symbol.id.file_id == file.id)
                         .filter(|symbol| symbol.name.is_some())
                         .filter_map(|symbol| {
                             let kind = public_semantic_kind(symbol.kind)?;
@@ -196,12 +230,9 @@ impl CachedSymbolIndex {
                                     .map(|parent| SemanticDeclarationId(parent.symbol_id.0 as u32)),
                                 kind,
                                 name: symbol.name.clone(),
-                                container: symbol.parent.and_then(|parent| {
-                                    self.symbols
-                                        .iter()
-                                        .find(|candidate| candidate.id == parent)
-                                        .and_then(|candidate| candidate.name.clone())
-                                }),
+                                container: symbol
+                                    .parent
+                                    .and_then(|parent| names_by_id.get(&parent).cloned()),
                                 detail: PublicSymbolDetail {
                                     type_text: cached_public_text(
                                         symbol.detail.type_text_span,
@@ -306,6 +337,145 @@ impl CachedSymbolIndex {
     }
 }
 
+impl LegacyCachedGameDataIndex {
+    /// Converts a fully validated v9 snapshot into the current compiler-owned
+    /// contribution contract. The v9 `SymbolIndex` records are source-derived
+    /// facts; they are not used as a fallback query model after migration.
+    fn into_current(self) -> CachedGameDataIndex {
+        let legacy_index = CachedSymbolIndex {
+            files: self.index.files,
+            symbols: self.index.symbols,
+            contributions: Vec::new(),
+        };
+        let contributions = legacy_index.public_contributions();
+        CachedGameDataIndex {
+            schema: CACHE_SCHEMA.to_string(),
+            format_version: CACHE_FORMAT_VERSION,
+            index_shape: CACHE_INDEX_SHAPE.to_string(),
+            crate_version: self.crate_version,
+            fingerprint: self.fingerprint,
+            summary: self.summary,
+            index: CachedSymbolIndex {
+                files: legacy_index.files,
+                symbols: legacy_index.symbols,
+                contributions,
+            },
+        }
+    }
+
+    fn validates_for_migration(&self, expected_fingerprint: &SourceFingerprint) -> bool {
+        self.schema == CACHE_SCHEMA
+            && self.format_version == LEGACY_CACHE_FORMAT_VERSION
+            && self.index_shape == LEGACY_CACHE_INDEX_SHAPE
+            && self.crate_version == env!("CARGO_PKG_VERSION")
+            && self.fingerprint == *expected_fingerprint
+            && validate_legacy_index_records(&self.index).is_ok()
+    }
+}
+
+/// Establish the structural facts the old binary format did not serialize as
+/// a versioned semantic contribution. Reject instead of attempting a partial
+/// projection: a cache is disposable, while a bad external index is visible to
+/// every language feature.
+fn validate_legacy_index_records(index: &LegacyCachedSymbolIndex) -> Result<(), String> {
+    let files_by_id: BTreeMap<_, _> = index.files.iter().map(|file| (file.id, file)).collect();
+    if files_by_id.len() != index.files.len() {
+        return Err("legacy cache contains duplicate file identifiers".to_string());
+    }
+
+    let symbols_by_id: BTreeMap<_, _> = index
+        .symbols
+        .iter()
+        .map(|symbol| (symbol.id, symbol))
+        .collect();
+    if symbols_by_id.len() != index.symbols.len() {
+        return Err("legacy cache contains duplicate symbol identifiers".to_string());
+    }
+
+    for file in &index.files {
+        let range_end = file
+            .symbol_start
+            .checked_add(file.symbol_count)
+            .ok_or_else(|| {
+                format!(
+                    "legacy cache file {:?} has an overflowing symbol range",
+                    file.id
+                )
+            })?;
+        let Some(range) = index.symbols.get(file.symbol_start..range_end) else {
+            return Err(format!(
+                "legacy cache file {:?} has an out-of-bounds symbol range",
+                file.id
+            ));
+        };
+        if range.iter().any(|symbol| symbol.id.file_id != file.id) {
+            return Err(format!(
+                "legacy cache file {:?} has a mixed-file symbol range",
+                file.id
+            ));
+        }
+        let actual_count = index
+            .symbols
+            .iter()
+            .filter(|symbol| symbol.id.file_id == file.id)
+            .count();
+        if actual_count != file.symbol_count {
+            return Err(format!(
+                "legacy cache file {:?} declares {} symbols but contains {actual_count}",
+                file.id, file.symbol_count
+            ));
+        }
+    }
+
+    let projected_ids: BTreeMap<_, _> = index
+        .symbols
+        .iter()
+        .filter(|symbol| symbol.name.is_some() && public_semantic_kind(symbol.kind).is_some())
+        .map(|symbol| (symbol.id, ()))
+        .collect();
+
+    for symbol in &index.symbols {
+        if !files_by_id.contains_key(&symbol.id.file_id) {
+            return Err(format!(
+                "legacy cache symbol {:?} references an unknown file",
+                symbol.id
+            ));
+        }
+        if let Some(parent) = symbol.parent {
+            let Some(parent_symbol) = symbols_by_id.get(&parent) else {
+                return Err(format!(
+                    "legacy cache symbol {:?} references a missing parent {:?}",
+                    symbol.id, parent
+                ));
+            };
+            if parent.file_id != symbol.id.file_id {
+                return Err(format!(
+                    "legacy cache symbol {:?} references a parent in another file",
+                    symbol.id
+                ));
+            }
+            if public_semantic_kind(symbol.kind).is_some()
+                && public_semantic_kind(parent_symbol.kind).is_none()
+            {
+                return Err(format!(
+                    "legacy cache public symbol {:?} references a non-public parent",
+                    symbol.id
+                ));
+            }
+            if public_semantic_kind(symbol.kind).is_some()
+                && symbol.name.is_some()
+                && !projected_ids.contains_key(&parent)
+            {
+                return Err(format!(
+                    "legacy cache public symbol {:?} references a parent omitted from the public projection",
+                    symbol.id
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn cached_public_text(span: Option<TextSpan>, text: Option<String>) -> Option<PublicText> {
     text.map(|text| PublicText { span, text })
 }
@@ -393,7 +563,7 @@ pub fn load_or_build_game_data_index_with_progress(
     progress("cache-load-start");
     let cache_read_start = Instant::now();
     match load_cached_index(&config.cache_path, &fingerprint, &mut timings) {
-        Ok(Some(cached)) => {
+        Ok(Some(CacheLoad::Current(cached))) => {
             timings.cache_read_deserialize_validate = cache_read_start.elapsed();
             progress("cache-load-hit");
             progress("map-rebuild-start");
@@ -409,6 +579,33 @@ pub fn load_or_build_game_data_index_with_progress(
                 fingerprint,
                 timings,
                 cache_file_bytes: initial_cache_file_bytes,
+            });
+        }
+        Ok(Some(CacheLoad::Migrated(cached))) => {
+            timings.cache_read_deserialize_validate = cache_read_start.elapsed();
+            progress("cache-load-hit");
+            progress("map-rebuild-start");
+            let map_rebuild_start = Instant::now();
+            let index = cached.index.into();
+            timings.map_rebuild = map_rebuild_start.elapsed();
+            let summary: RuntimeIndexSummary = cached.summary.clone().into();
+
+            // The v9 bytes have already passed source-identity and structural
+            // validation. Replace them with the current contribution contract
+            // before exposing the rebuilt lookup maps to the runtime.
+            progress("cache-write-start");
+            let cache_write_start = Instant::now();
+            write_cached_index(&config.cache_path, &fingerprint, &summary, &index)?;
+            timings.cache_write = cache_write_start.elapsed();
+            progress("cache-write-end");
+            timings.total = total_start.elapsed();
+            return Ok(GameDataIndexCacheResult {
+                index,
+                summary,
+                cache_status: IndexCacheStatus::Loaded,
+                fingerprint,
+                timings,
+                cache_file_bytes: cache_file_bytes(&config.cache_path),
             });
         }
         Ok(None) | Err(_) => {
@@ -456,11 +653,16 @@ fn cache_file_bytes(cache_path: &Path) -> Option<u64> {
     cache_path.metadata().ok().map(|metadata| metadata.len())
 }
 
+enum CacheLoad {
+    Current(CachedGameDataIndex),
+    Migrated(CachedGameDataIndex),
+}
+
 fn load_cached_index(
     cache_path: &Path,
     expected_fingerprint: &SourceFingerprint,
     timings: &mut IndexCacheTimings,
-) -> Result<Option<CachedGameDataIndex>, String> {
+) -> Result<Option<CacheLoad>, String> {
     if !cache_path.is_file() {
         return Ok(None);
     }
@@ -481,31 +683,51 @@ fn load_cached_index(
     })?;
     timings.cache_file_read = read_start.elapsed();
     let decode_start = Instant::now();
-    let cached = decode_cached_index(&bytes).map_err(|error| {
-        format!(
-            "Failed to decode index cache {}: {error}",
+    let load = if bytes.starts_with(CACHE_MAGIC) {
+        CacheLoad::Current(decode_cached_index(&bytes).map_err(|error| {
+            format!(
+                "Failed to decode index cache {}: {error}",
+                cache_path.display()
+            )
+        })?)
+    } else if bytes.starts_with(LEGACY_CACHE_MAGIC) {
+        let legacy = decode_legacy_cached_index(&bytes).map_err(|error| {
+            format!(
+                "Failed to decode legacy index cache {}: {error}",
+                cache_path.display()
+            )
+        })?;
+        if !legacy.validates_for_migration(expected_fingerprint) {
+            timings.cache_decode = decode_start.elapsed();
+            timings.cache_validate = timings.cache_decode;
+            return Ok(None);
+        }
+        CacheLoad::Migrated(legacy.into_current())
+    } else {
+        return Err(format!(
+            "Failed to decode index cache {}: binary cache magic mismatch",
             cache_path.display()
-        )
-    })?;
+        ));
+    };
     timings.cache_decode = decode_start.elapsed();
 
     let validate_start = Instant::now();
+    let cached = match &load {
+        CacheLoad::Current(cached) | CacheLoad::Migrated(cached) => cached,
+    };
     if cached.schema != CACHE_SCHEMA
         || cached.format_version != CACHE_FORMAT_VERSION
         || cached.index_shape != CACHE_INDEX_SHAPE
         || cached.crate_version != env!("CARGO_PKG_VERSION")
         || cached.fingerprint != *expected_fingerprint
+        || cached.index.validate_public_contributions().is_err()
     {
-        timings.cache_validate = validate_start.elapsed();
-        return Ok(None);
-    }
-    if cached.index.validate_public_contributions().is_err() {
         timings.cache_validate = validate_start.elapsed();
         return Ok(None);
     }
     timings.cache_validate = validate_start.elapsed();
 
-    Ok(Some(cached))
+    Ok(Some(load))
 }
 
 fn write_cached_index(
@@ -553,21 +775,88 @@ fn write_cached_index(
             temp_path.display()
         )
     })?;
-    if cache_path.exists() {
-        fs::remove_file(cache_path).map_err(|error| {
-            format!(
-                "Failed to remove stale index cache {}: {error}",
-                cache_path.display()
-            )
-        })?;
-    }
-    fs::rename(&temp_path, cache_path).map_err(|error| {
+    // Windows `ReplaceFileW` requires the replacement handle to be closed.
+    // Flushing alone leaves the `BufWriter` (and its file) open.
+    drop(writer);
+    replace_cache_atomically(&temp_path, cache_path)
+}
+
+#[cfg(not(windows))]
+fn replace_cache_atomically(temp_path: &Path, cache_path: &Path) -> Result<(), String> {
+    fs::rename(temp_path, cache_path).map_err(|error| {
         format!(
             "Failed to replace index cache {} with {}: {error}",
             cache_path.display(),
             temp_path.display()
         )
     })
+}
+
+#[cfg(windows)]
+fn replace_cache_atomically(temp_path: &Path, cache_path: &Path) -> Result<(), String> {
+    if !cache_path.exists() {
+        return fs::rename(temp_path, cache_path).map_err(|error| {
+            format!(
+                "Failed to install index cache {} from {}: {error}",
+                cache_path.display(),
+                temp_path.display()
+            )
+        });
+    }
+
+    use std::os::windows::ffi::OsStrExt;
+    let replaced: Vec<u16> = cache_path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let replacement: Vec<u16> = temp_path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let replaced = unsafe {
+        replace_file_w(
+            replaced.as_ptr(),
+            replacement.as_ptr(),
+            std::ptr::null(),
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    if replaced == 0 {
+        return Err(format!(
+            "Failed to atomically replace index cache {} with {}: {}",
+            cache_path.display(),
+            temp_path.display(),
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+unsafe fn replace_file_w(
+    replaced: *const u16,
+    replacement: *const u16,
+    backup: *const u16,
+    flags: u32,
+    exclude: *mut std::ffi::c_void,
+    reserved: *mut std::ffi::c_void,
+) -> i32 {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn ReplaceFileW(
+            replaced: *const u16,
+            replacement: *const u16,
+            backup: *const u16,
+            flags: u32,
+            exclude: *mut std::ffi::c_void,
+            reserved: *mut std::ffi::c_void,
+        ) -> i32;
+    }
+    unsafe { ReplaceFileW(replaced, replacement, backup, flags, exclude, reserved) }
 }
 
 fn unique_cache_temp_path(cache_path: &Path) -> PathBuf {
@@ -605,6 +894,41 @@ fn encode_cached_index(cached: &CachedGameDataIndex) -> Result<Vec<u8>, String> 
         .map_err(|error| format!("Failed to encode file contributions: {error}"))?;
     writer.write_vec_len(contribution_bytes.len())?;
     writer.write_bytes(&contribution_bytes);
+    Ok(writer.into_bytes())
+}
+
+#[cfg(test)]
+fn encode_legacy_cached_index(cached: &LegacyCachedGameDataIndex) -> Result<Vec<u8>, String> {
+    let string_table = CacheStringTable::from_cached_index(&CachedGameDataIndex {
+        schema: cached.schema.clone(),
+        format_version: cached.format_version,
+        index_shape: cached.index_shape.clone(),
+        crate_version: cached.crate_version.clone(),
+        fingerprint: cached.fingerprint.clone(),
+        summary: cached.summary.clone(),
+        index: CachedSymbolIndex {
+            files: cached.index.files.clone(),
+            symbols: cached.index.symbols.clone(),
+            contributions: Vec::new(),
+        },
+    })?;
+    let mut writer = BinaryWriter::new(string_table);
+    writer.write_bytes(LEGACY_CACHE_MAGIC);
+    writer.write_string_table()?;
+    writer.write_string(&cached.schema)?;
+    writer.write_u32(cached.format_version);
+    writer.write_string(&cached.index_shape)?;
+    writer.write_string(&cached.crate_version)?;
+    writer.write_fingerprint(&cached.fingerprint)?;
+    writer.write_summary(&cached.summary);
+    writer.write_vec_len(cached.index.files.len())?;
+    for file in &cached.index.files {
+        writer.write_indexed_file(file)?;
+    }
+    writer.write_vec_len(cached.index.symbols.len())?;
+    for symbol in &cached.index.symbols {
+        writer.write_indexed_symbol(symbol)?;
+    }
     Ok(writer.into_bytes())
 }
 
@@ -648,6 +972,41 @@ fn decode_cached_index(bytes: &[u8]) -> Result<CachedGameDataIndex, String> {
             symbols,
             contributions,
         },
+    })
+}
+
+fn decode_legacy_cached_index(bytes: &[u8]) -> Result<LegacyCachedGameDataIndex, String> {
+    let mut reader = BinaryReader::new(bytes);
+    let magic = reader.read_exact(LEGACY_CACHE_MAGIC.len())?;
+    if magic != &LEGACY_CACHE_MAGIC[..] {
+        return Err("legacy binary cache magic mismatch".to_string());
+    }
+    reader.read_string_table()?;
+    let schema = reader.read_string()?;
+    let format_version = reader.read_u32()?;
+    let index_shape = reader.read_string()?;
+    let crate_version = reader.read_string()?;
+    let fingerprint = reader.read_fingerprint()?;
+    let summary = reader.read_summary()?;
+    let file_count = reader.read_bounded_len("file records", MAX_CACHE_FILE_RECORDS)?;
+    let mut files = Vec::with_capacity(file_count);
+    for _ in 0..file_count {
+        files.push(reader.read_indexed_file()?);
+    }
+    let symbol_count = reader.read_bounded_len("symbol records", MAX_CACHE_SYMBOL_RECORDS)?;
+    let mut symbols = Vec::with_capacity(symbol_count);
+    for _ in 0..symbol_count {
+        symbols.push(reader.read_indexed_symbol()?);
+    }
+    reader.expect_eof()?;
+    Ok(LegacyCachedGameDataIndex {
+        schema,
+        format_version,
+        index_shape,
+        crate_version,
+        fingerprint,
+        summary,
+        index: LegacyCachedSymbolIndex { files, symbols },
     })
 }
 
@@ -1851,6 +2210,114 @@ mod tests {
     }
 
     #[test]
+    fn v9_cache_migrates_to_validated_v10_contributions() {
+        let root = test_root("v9_migration");
+        let cache = root.join("cache.bin");
+        let scripts = root.join("scripts");
+        let metadata = root.join("metadata.json");
+        write_file(
+            &scripts.join("Game/Example.c"),
+            "class Example { int m_Value; void Run(int value); }",
+        );
+        write_file(&metadata, r#"{"commitSha":"v9-migration"}"#);
+        let config = GameDataIndexCacheConfig {
+            scripts_root: scripts,
+            cache_path: cache.clone(),
+            metadata_path: Some(metadata),
+        };
+        load_or_build_game_data_index(&config).unwrap();
+        rewrite_cache_as_v9(&cache, |legacy| legacy).unwrap();
+        assert!(fs::read(&cache).unwrap().starts_with(LEGACY_CACHE_MAGIC));
+
+        let migrated = load_or_build_game_data_index(&config).unwrap();
+        assert_eq!(migrated.cache_status, IndexCacheStatus::Loaded);
+        assert_eq!(migrated.index.classes_by_name("Example").len(), 1);
+        assert_eq!(
+            migrated.index.methods_by_owner_name("Example", "Run").len(),
+            1
+        );
+        let migrated_bytes = fs::read(&cache).unwrap();
+        assert!(migrated_bytes.starts_with(CACHE_MAGIC));
+        let migrated_cache = decode_cached_index(&migrated_bytes).unwrap();
+        migrated_cache
+            .index
+            .validate_public_contributions()
+            .unwrap();
+
+        cleanup(&root);
+    }
+
+    #[test]
+    fn v9_cache_with_wrong_fingerprint_rebuilds_instead_of_migrating() {
+        let root = test_root("v9_wrong_fingerprint");
+        let cache = root.join("cache.bin");
+        let scripts = root.join("scripts");
+        let metadata = root.join("metadata.json");
+        write_file(&scripts.join("Example.c"), "class Example {}");
+        write_file(&metadata, r#"{"commitSha":"current"}"#);
+        let config = GameDataIndexCacheConfig {
+            scripts_root: scripts,
+            cache_path: cache.clone(),
+            metadata_path: Some(metadata),
+        };
+        load_or_build_game_data_index(&config).unwrap();
+        rewrite_cache_as_v9(&cache, |mut legacy| {
+            legacy.fingerprint = SourceFingerprint::Downloaded {
+                scripts_root: "wrong-root".to_string(),
+                commit_sha: "stale".to_string(),
+            };
+            legacy
+        })
+        .unwrap();
+
+        let rebuilt = load_or_build_game_data_index(&config).unwrap();
+        assert!(matches!(
+            rebuilt.cache_status,
+            IndexCacheStatus::Rebuilt { .. }
+        ));
+        assert!(fs::read(&cache).unwrap().starts_with(CACHE_MAGIC));
+        cleanup(&root);
+    }
+
+    #[test]
+    fn v9_cache_with_wrong_version_or_malformed_records_rebuilds() {
+        let root = test_root("v9_invalid");
+        let cache = root.join("cache.bin");
+        let scripts = root.join("scripts");
+        write_file(&scripts.join("Example.c"), "class Example { int m_Value; }");
+        let config = GameDataIndexCacheConfig {
+            scripts_root: scripts,
+            cache_path: cache.clone(),
+            metadata_path: None,
+        };
+
+        load_or_build_game_data_index(&config).unwrap();
+        rewrite_cache_as_v9(&cache, |mut legacy| {
+            legacy.format_version = LEGACY_CACHE_FORMAT_VERSION - 1;
+            legacy
+        })
+        .unwrap();
+        assert!(matches!(
+            load_or_build_game_data_index(&config).unwrap().cache_status,
+            IndexCacheStatus::Rebuilt { .. }
+        ));
+
+        rewrite_cache_as_v9(&cache, |mut legacy| {
+            legacy.index.symbols[0].parent = Some(GlobalSymbolId {
+                file_id: SourceFileId(999),
+                symbol_id: SymbolId(999),
+            });
+            legacy
+        })
+        .unwrap();
+        assert!(matches!(
+            load_or_build_game_data_index(&config).unwrap().cache_status,
+            IndexCacheStatus::Rebuilt { .. }
+        ));
+        cleanup(&root);
+    }
+
+    #[test]
     fn v10_binary_cache_load_rebuilds_lookup_maps_from_files_and_symbols() {
         let root = test_root("rebuild_maps");
         let cache = root.join("cache.json");
@@ -2150,6 +2617,28 @@ class BaseGameModeClass : GenericEntityClass
         ));
         fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    fn rewrite_cache_as_v9(
+        cache_path: &Path,
+        transform: impl FnOnce(LegacyCachedGameDataIndex) -> LegacyCachedGameDataIndex,
+    ) -> Result<(), String> {
+        let current =
+            decode_cached_index(&fs::read(cache_path).map_err(|error| error.to_string())?)?;
+        let legacy = transform(LegacyCachedGameDataIndex {
+            schema: CACHE_SCHEMA.to_string(),
+            format_version: LEGACY_CACHE_FORMAT_VERSION,
+            index_shape: LEGACY_CACHE_INDEX_SHAPE.to_string(),
+            crate_version: current.crate_version,
+            fingerprint: current.fingerprint,
+            summary: current.summary,
+            index: LegacyCachedSymbolIndex {
+                files: current.index.files,
+                symbols: current.index.symbols,
+            },
+        });
+        fs::write(cache_path, encode_legacy_cached_index(&legacy)?)
+            .map_err(|error| error.to_string())
     }
 
     fn write_file(path: &Path, source: &str) {
