@@ -93,7 +93,7 @@ accepted policy, user direction, or a CE artifact supports the replacement.
 An approved plan is standing authorization to implement its entire stated
 scope. When the user asks to execute, complete, finish, or work through a plan,
 work every implementation unit, required verification, documentation update,
-review/fix cycle, commit, and push until the plan is finished.
+review/fix cycle, and task-scoped commit until the plan is finished.
 
 Do not stop at checkpoints. Discovery, a partial implementation, a test pass,
 a review finding, an agent result, a commit, a documentation update, or a
@@ -115,7 +115,7 @@ investigated locally, failures that can be repaired, and intermediate design
 questions are not reasons to stop.
 
 Before ending plan work, perform this terminal check: every unit is implemented,
-verified, documented, reviewed, committed, and pushed; or the user explicitly
+verified, documented, reviewed, and committed; or the user explicitly
 deferred it; or a genuine blocker was reported with evidence. If any unit
 remains, continue work. Never present unfinished plan work as completed.
 
@@ -129,15 +129,15 @@ execution; derive progress from the working tree and verification evidence.
 
 Use parallel agents only for independent bounded work with disjoint file
 ownership or read-only review/research. Keep dependent edits, integration,
-verification, commits, and pushes under one owner.
+verification, and commits under one owner.
 
 After an implementation task is fully verified and the terminal check passes,
-commit and push task-scoped changes to the current branch without a separate
-Git instruction. Stage only attributable changes; do not absorb unrelated
-pre-existing work. Use a clear value-communicating commit message. Never
-force-push or alter remotes, branches, or history without explicit user
-authorization. If the branch is unclear, verification fails, the push is
-rejected, or changes cannot be separated safely, report that blocker.
+commit its task-scoped changes to the current branch without a separate Git
+instruction. Stage only attributable changes; do not absorb unrelated
+pre-existing work. Use a concise, value-focused title. Do not push, open a PR,
+modify remotes, or alter branches or history unless the user explicitly asks
+for that operation. If the branch is unclear, verification fails, or changes
+cannot be separated safely, report that blocker.
 
 ## Verification
 
