@@ -1,6 +1,6 @@
 use crate::analysis_runtime::{
-    AdmissionDisposition, AdmissionLimits, AnalysisRuntime, AnalysisTask, PositionIndex, TaskClass,
-    TaskIdentity, UpsertOutcome,
+    AdmissionDisposition, AdmissionLimits, AnalysisRuntime, AnalysisTask, PositionIndex,
+    QueryQuality, TaskClass, TaskIdentity, UpsertOutcome,
 };
 use crate::index::{GlobalSymbolId, SymbolIndex};
 use crate::index_query::IndexQuery;
@@ -1333,7 +1333,8 @@ impl<W: Write> LspServer<W> {
                     let mut prefix = String::new();
                     let mut candidate_count = 0usize;
                     let mut failure_reason = "<none>".to_string();
-                    let mut query_quality = "Exact";
+                    let mut query_quality = QueryQuality::Exact;
+                    let mut recovery_reason = "<none>".to_string();
                     let mut context_ms = 0u128;
                     let mut lookup_ms = 0u128;
                     let mut render_ms = 0u128;
@@ -1357,7 +1358,6 @@ impl<W: Write> LspServer<W> {
                                         indexes.game_data.as_deref(),
                                     )
                                 } else {
-                                    query_quality = "Unavailable";
                                     let offset = document.snapshot.positions().offset_for_position(
                                         crate::analysis_runtime::Position {
                                             line: params.position.line,
@@ -1381,6 +1381,11 @@ impl<W: Write> LspServer<W> {
                                     }
                                 };
                                 parse_diagnostics = report.parse_diagnostics;
+                                query_quality = report.query_quality;
+                                recovery_reason = report
+                                    .recovery_reason
+                                    .clone()
+                                    .unwrap_or_else(|| "<none>".to_string());
                                 completion_context = report.completion_context.clone();
                                 receiver = report
                                     .receiver_text
@@ -1407,12 +1412,13 @@ impl<W: Write> LspServer<W> {
                             serde_json::to_value(empty_completion_list()).unwrap_or(Value::Null)
                         });
                     self.log(&format!(
-                        "request completion uri={} bytes={} revision={} cached_analysis={} query_quality={} context={} receiver={} owner_type={} prefix={} candidates={} failure_reason={} external_index_status={} external_index_layers={} parse_diagnostics={} context_ms={} lookup_ms={} render_ms={} queue_ms={} elapsed_ms={}",
+                        "request completion uri={} bytes={} revision={} cached_analysis={} query_quality={:?} recovery_reason={} context={} receiver={} owner_type={} prefix={} candidates={} failure_reason={} external_index_status={} external_index_layers={} parse_diagnostics={} context_ms={} lookup_ms={} render_ms={} queue_ms={} elapsed_ms={}",
                         log_uri,
                         bytes,
                         revision,
-                        query_quality == "Exact",
+                        query_quality.permits_local_facts(),
                         query_quality,
+                        recovery_reason,
                         completion_context,
                         receiver,
                         owner_type,

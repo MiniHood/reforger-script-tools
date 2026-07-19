@@ -25,10 +25,15 @@ uses receiver/owner resolution; static owners, typedefs, enum members,
 attributes, and `new` expressions have dedicated source-backed paths once their
 current analysis is available.
 
-Request logs record `query_quality=Exact` for matching local analysis and
-`query_quality=Unavailable` for the pending lexical/top-level contract. The
-latter is a deterministic fallback for facts it can prove, not stale local
-state or a signal that the client should retrigger completion.
+Every Rust `LspCompletionReport` carries `QueryQuality` and a recovery reason.
+`Exact` is the matching-revision analyzed path. `RecoveryExact` is reserved
+until a bounded recovery query proves candidate equivalence. `Unavailable`
+records the deterministic pending contract and its reason in request/debug
+logs. Pending member and argument positions deliberately return a
+top-level/lexical fallback tagged `member-unavailable-top-level-fallback` or
+`argument-unavailable-top-level-fallback`; they never expose receiver, local,
+or argument facts from an older revision. This is not an `isIncomplete` signal
+or a request for the client to retrigger completion.
 
 Keywords are LSP-owned so language suggestions do not depend on VS Code word
 suggestions. Callable completions share [callable.md](callable.md) parameter

@@ -1,3 +1,4 @@
+use crate::analysis_runtime::QueryQuality;
 use crate::index::SymbolIndex;
 use crate::index_query::{
     completion_name_match_rank, EditorCompletionCandidate, EditorCompletionOrigin,
@@ -80,6 +81,12 @@ pub struct LspTextEdit {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LspCompletionReport {
     pub list: LspCompletionList,
+    /// The candidate guarantee for this current-revision result. This is an
+    /// internal contract/logging field, not an LSP `isIncomplete` surrogate.
+    pub query_quality: QueryQuality,
+    /// Why a non-exact result was selected. `RecoveryExact` is deliberately
+    /// unused until a recovery query can prove candidate equivalence.
+    pub recovery_reason: Option<String>,
     pub parse_diagnostics: usize,
     pub completion_context: String,
     pub receiver_text: Option<String>,
@@ -188,7 +195,7 @@ pub(crate) fn completion_report_for_lexical_source_with_external_indexes(
     game_data_index: Option<&SymbolIndex>,
 ) -> LspCompletionReport {
     let Some(offset) = offset_for_position(source, position) else {
-        return empty_completion_report(0);
+        return unavailable_completion_report(empty_completion_report(0), "invalid-position");
     };
     completion_report_for_lexical_source_at_offset_with_external_indexes(
         source,
@@ -206,13 +213,122 @@ pub(crate) fn completion_report_for_lexical_source_at_offset_with_external_index
 ) -> LspCompletionReport {
     let mut lexical_analysis = file_index_for_source("");
     lexical_analysis.lexer_tokens = lex(source);
-    completion_report_for_offset(
+    let context = unavailable_completion_context(&lexical_analysis.lexer_tokens, offset);
+    let report = completion_report_for_offset(
         source,
         &lexical_analysis,
         offset,
         workspace_index,
         game_data_index,
-    )
+    );
+    let report = match context {
+        UnavailableCompletionContext::Member | UnavailableCompletionContext::Argument => {
+            lexical_top_level_fallback_report(
+                source,
+                &lexical_analysis,
+                offset,
+                workspace_index,
+                game_data_index,
+                context,
+            )
+        }
+        UnavailableCompletionContext::TopLevel => report,
+    };
+    unavailable_completion_report(report, context.reason())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UnavailableCompletionContext {
+    TopLevel,
+    Member,
+    Argument,
+}
+
+impl UnavailableCompletionContext {
+    const fn reason(self) -> &'static str {
+        match self {
+            Self::TopLevel => "current-revision-local-facts-pending",
+            Self::Member => "current-revision-receiver-facts-pending",
+            Self::Argument => "current-revision-argument-facts-pending",
+        }
+    }
+}
+
+fn unavailable_completion_report(
+    mut report: LspCompletionReport,
+    reason: impl Into<String>,
+) -> LspCompletionReport {
+    report.query_quality = QueryQuality::Unavailable;
+    report.recovery_reason = Some(reason.into());
+    report
+}
+
+fn unavailable_completion_context(
+    tokens: &[crate::lexer::Token],
+    offset: usize,
+) -> UnavailableCompletionContext {
+    let prefix_span = lexical_completion_prefix_span(tokens, offset);
+    let previous = previous_significant_completion_token_before_span(tokens, prefix_span);
+    if previous.is_some_and(|token| token.kind == TokenKind::Dot) {
+        return UnavailableCompletionContext::Member;
+    }
+    if previous.is_some_and(|token| matches!(token.kind, TokenKind::LeftParen | TokenKind::Comma)) {
+        return UnavailableCompletionContext::Argument;
+    }
+    UnavailableCompletionContext::TopLevel
+}
+
+fn lexical_completion_prefix_span(tokens: &[crate::lexer::Token], offset: usize) -> TextSpan {
+    tokens
+        .iter()
+        .find(|token| {
+            token.kind == TokenKind::Identifier
+                && token.span.start <= offset
+                && offset <= token.span.end
+        })
+        .map(|token| TextSpan::new(token.span.start, offset))
+        .unwrap_or_else(|| TextSpan::new(offset, offset))
+}
+
+fn lexical_top_level_fallback_report(
+    source: &str,
+    analysis: &FileIndexAnalysis,
+    offset: usize,
+    workspace_index: Option<&SymbolIndex>,
+    game_data_index: Option<&SymbolIndex>,
+    context: UnavailableCompletionContext,
+) -> LspCompletionReport {
+    let total_start = Instant::now();
+    let prefix_span = lexical_completion_prefix_span(&analysis.lexer_tokens, offset);
+    let prefix = source
+        .get(prefix_span.start..prefix_span.end)
+        .unwrap_or_default()
+        .to_string();
+    let mut report = top_level_completion_report_for_indexes(
+        source,
+        0,
+        "top-level",
+        prefix,
+        prefix_span,
+        offset,
+        EditorTopLevelCompletionMode::Value,
+        analysis,
+        &analysis.index,
+        workspace_index,
+        game_data_index,
+        LspCompletionTimings::default(),
+        total_start,
+    );
+    report.completion_context = match context {
+        UnavailableCompletionContext::Member => "member-unavailable-top-level-fallback",
+        UnavailableCompletionContext::Argument => "argument-unavailable-top-level-fallback",
+        UnavailableCompletionContext::TopLevel => "top-level",
+    }
+    .to_string();
+    report.receiver_text = None;
+    report.owner_type = None;
+    report.failure_reason = Some(context.reason().to_string());
+    report
 }
 
 pub(crate) fn completion_debug_markdown(
@@ -229,6 +345,11 @@ pub(crate) fn completion_debug_markdown(
     output.push_str(&format!("- Bytes: `{bytes}`\n"));
     output.push_str(&format!("- Revision: `{revision}`\n"));
     output.push_str("- Cached Analysis: `true`\n");
+    output.push_str(&format!("- Query Quality: `{:?}`\n", report.query_quality));
+    output.push_str(&format!(
+        "- Recovery Reason: `{}`\n",
+        escape_markdown_cell(report.recovery_reason.as_deref().unwrap_or("<none>"))
+    ));
     output.push_str(&format!(
         "- External Index Status: `{}`\n",
         escape_markdown_cell(external_index_status)
@@ -413,6 +534,8 @@ fn completion_report_for_offset(
         let Some(owner) = owner_type.clone() else {
             return argument_label_fallback.unwrap_or_else(|| LspCompletionReport {
                 list: empty_completion_list(),
+                query_quality: QueryQuality::Exact,
+                recovery_reason: None,
                 parse_diagnostics: analysis.parse_diagnostics,
                 completion_context: "member".to_string(),
                 receiver_text,
@@ -644,6 +767,8 @@ fn member_completion_report_for_indexes(
             is_incomplete,
             items,
         },
+        query_quality: QueryQuality::Exact,
+        recovery_reason: None,
         parse_diagnostics,
         completion_context: "member".to_string(),
         receiver_text,
@@ -709,6 +834,8 @@ fn argument_label_completion_report_for_indexes(
             is_incomplete,
             items,
         },
+        query_quality: QueryQuality::Exact,
+        recovery_reason: None,
         parse_diagnostics,
         completion_context: "argument-label".to_string(),
         receiver_text: None,
@@ -1175,6 +1302,8 @@ fn top_level_completion_report_for_indexes(
                 is_incomplete,
                 items,
             },
+            query_quality: QueryQuality::Exact,
+            recovery_reason: None,
             parse_diagnostics,
             completion_context: "override".to_string(),
             receiver_text: None,
@@ -1264,6 +1393,8 @@ fn top_level_completion_report_for_indexes(
             is_incomplete,
             items,
         },
+        query_quality: QueryQuality::Exact,
+        recovery_reason: None,
         parse_diagnostics,
         completion_context: completion_context.to_string(),
         receiver_text: None,
@@ -1946,6 +2077,8 @@ pub(crate) fn empty_completion_list() -> LspCompletionList {
 fn empty_completion_report(parse_diagnostics: usize) -> LspCompletionReport {
     LspCompletionReport {
         list: empty_completion_list(),
+        query_quality: QueryQuality::Exact,
+        recovery_reason: None,
         parse_diagnostics,
         completion_context: "none".to_string(),
         receiver_text: None,
@@ -2398,6 +2531,73 @@ mod tests {
         );
 
         assert_eq!(report.prefix, "getga");
+        assert!(report
+            .list
+            .items
+            .iter()
+            .any(|item| item.label == "GetGameMode"));
+        assert_eq!(report.query_quality, QueryQuality::Unavailable);
+        assert_eq!(
+            report.recovery_reason.as_deref(),
+            Some("current-revision-local-facts-pending")
+        );
+    }
+
+    #[test]
+    fn pending_member_completion_uses_top_level_fallback_without_receiver_facts() {
+        let external = file_index_for_source("class GetGameMode {}").index;
+        let source = "instance.getga";
+        let report = completion_report_for_lexical_source_with_external_indexes(
+            source,
+            LspPosition {
+                line: 0,
+                character: source.len() as u32,
+            },
+            Some(&external),
+            None,
+        );
+
+        assert_eq!(report.query_quality, QueryQuality::Unavailable);
+        assert_eq!(
+            report.completion_context,
+            "member-unavailable-top-level-fallback"
+        );
+        assert_eq!(
+            report.recovery_reason.as_deref(),
+            Some("current-revision-receiver-facts-pending")
+        );
+        assert!(report.receiver_text.is_none());
+        assert!(report.owner_type.is_none());
+        assert!(report
+            .list
+            .items
+            .iter()
+            .any(|item| item.label == "GetGameMode"));
+    }
+
+    #[test]
+    fn pending_argument_completion_uses_top_level_fallback_without_argument_facts() {
+        let external = file_index_for_source("class GetGameMode {}").index;
+        let source = "Run(getga";
+        let report = completion_report_for_lexical_source_with_external_indexes(
+            source,
+            LspPosition {
+                line: 0,
+                character: source.len() as u32,
+            },
+            Some(&external),
+            None,
+        );
+
+        assert_eq!(report.query_quality, QueryQuality::Unavailable);
+        assert_eq!(
+            report.completion_context,
+            "argument-unavailable-top-level-fallback"
+        );
+        assert_eq!(
+            report.recovery_reason.as_deref(),
+            Some("current-revision-argument-facts-pending")
+        );
         assert!(report
             .list
             .items

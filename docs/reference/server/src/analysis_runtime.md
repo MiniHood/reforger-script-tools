@@ -21,6 +21,11 @@ task, and publication succeeds only for its exact identity. `QueryQuality`
 distinguishes exact/recovery local facts from deterministic unavailable
 fallbacks, which may not use stale local state.
 
+Completion reports carry that enum instead of reconstructing quality from LSP
+cache state. `Unavailable` logs a stable reason and returns only independently
+proven lexical/top-level candidates; member and argument queries remain
+unavailable until their bounded exact foreground implementations exist.
+
 Rich token refinement is admitted through `TaskClass::Rich`. Its executor
 receives the runtime-owned cancellation token and must return the exact task
 identity before the LSP can publish a token-cache result; document caches may
