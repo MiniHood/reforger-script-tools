@@ -1,19 +1,19 @@
 use crate::analysis_runtime::DocumentSnapshot;
-use crate::ast::{AstSourceFile, ClassMember, Declaration, MethodDecl};
 use crate::index::SymbolIndex;
 use crate::index_query::{
     EditorCompletionCandidate, EditorCompletionOrigin, EditorTopLevelCompletionMode, IndexQuery,
 };
+use crate::lexer::{Token, TokenKind};
 use crate::lsp::callable::{
     callable_argument_context_at_offset, callable_signature_parts, CallableArgumentContext,
     CallableParameter, CallableSignatureParts, CallableTarget,
 };
+use crate::lsp::open_documents::ForegroundQuerySnapshot;
 use crate::lsp::{
     file_index_for_source, offset_for_position, FileIndexAnalysis, LspMarkupContent, LspPosition,
 };
 use crate::resolver::{CandidateSource, ReferenceCandidate, ReferenceResolver};
 use crate::symbol_display::documentation_display;
-use crate::syntax::Parse;
 use serde::Serialize;
 use std::time::{Duration, Instant};
 
@@ -198,11 +198,11 @@ pub(crate) fn signature_help_report_for_cached_analysis_with_external_indexes(
 /// ambiguous names require revision-matching semantic facts and return none.
 pub(crate) fn signature_help_report_for_pending_snapshot(
     snapshot: &DocumentSnapshot,
-    parse: &Parse,
+    foreground: &ForegroundQuerySnapshot,
+    parse_diagnostics: usize,
     position: LspPosition,
 ) -> LspSignatureHelpReport {
     let total_start = Instant::now();
-    let parse_diagnostics = parse.diagnostics.len();
     let Some(offset) = snapshot.positions().and_then(|positions| {
         positions.offset_for_position(crate::analysis_runtime::Position {
             line: position.line,
@@ -213,39 +213,24 @@ pub(crate) fn signature_help_report_for_pending_snapshot(
     };
     let source = snapshot.text();
     let context_start = Instant::now();
-    let Some(context) = callable_argument_context_at_offset(source, &parse.root, offset) else {
+    let Some(context) = pending_unqualified_call_context(source, foreground.tokens(), offset)
+    else {
         let mut report = empty_signature_help_report(parse_diagnostics, total_start);
         report.timings.context_detection = context_start.elapsed();
         report.failure_reason = Some("not in callable argument list".to_string());
         return report;
     };
     let context_elapsed = context_start.elapsed();
-    let CallableTarget::Call { callee_span } = &context.target else {
-        let mut report = empty_signature_help_report(parse_diagnostics, total_start);
-        report.timings.context_detection = context_elapsed;
-        report.context = Some(context_label(&context));
-        report.active_parameter = Some(context.argument_index);
-        report.failure_reason = Some("pending snapshot callable target unavailable".to_string());
-        return report;
-    };
-    let callee = &source[callee_span.start..callee_span.end];
-    if !is_simple_callable_name(callee) {
-        let mut report = empty_signature_help_report(parse_diagnostics, total_start);
-        report.timings.context_detection = context_elapsed;
-        report.context = Some(context_label(&context));
-        report.active_parameter = Some(context.argument_index);
-        report.failure_reason = Some("pending snapshot callable target unavailable".to_string());
-        return report;
-    }
-
     let lookup_start = Instant::now();
-    let candidates = simple_callable_declarations(source, parse, callee);
+    let candidates = foreground
+        .callable_declarations_named(&context.callee)
+        .collect::<Vec<_>>();
     let lookup_elapsed = lookup_start.elapsed();
     let [candidate] = candidates.as_slice() else {
         let mut report = empty_signature_help_report(parse_diagnostics, total_start);
         report.timings.context_detection = context_elapsed;
         report.timings.candidate_lookup = lookup_elapsed;
-        report.context = Some(context_label(&context));
+        report.context = Some("call".to_string());
         report.active_parameter = Some(context.argument_index);
         report.failure_reason = Some("pending snapshot callable target unavailable".to_string());
         return report;
@@ -257,12 +242,16 @@ pub(crate) fn signature_help_report_for_pending_snapshot(
         report.timings.context_detection = context_elapsed;
         report.timings.candidate_lookup = lookup_elapsed;
         report.timings.item_rendering = render_start.elapsed();
-        report.context = Some(context_label(&context));
+        report.context = Some("call".to_string());
         report.active_parameter = Some(context.argument_index);
         report.failure_reason = Some("pending snapshot callable signature unavailable".to_string());
         return report;
     };
-    let active_parameter = active_parameter_for_candidate(&context, &parts);
+    let active_parameter = (!parts.parameters_info.is_empty()).then(|| {
+        context
+            .argument_index
+            .min(parts.parameters_info.len().saturating_sub(1))
+    });
     let signature = LspSignatureInformation {
         label: candidate.signature.clone(),
         documentation: None,
@@ -284,7 +273,7 @@ pub(crate) fn signature_help_report_for_pending_snapshot(
             active_parameter: active_parameter.map(|parameter| parameter as u32),
         }),
         parse_diagnostics,
-        context: Some(context_label(&context)),
+        context: Some("call".to_string()),
         active_parameter,
         candidate_count: 1,
         selected_label: Some(candidate.name.clone()),
@@ -298,65 +287,68 @@ pub(crate) fn signature_help_report_for_pending_snapshot(
     }
 }
 
+/// A bounded token-only cursor query. It deliberately declines every shape
+/// that needs CST traversal (member calls, attributes, constructors, named
+/// arguments, or nested expression structure) while semantic analysis is
+/// pending. The foreground worker already owns the whole-file lexer/parser
+/// cost; this handler only examines the call's immediate token window.
 #[derive(Debug, Clone)]
-struct SimpleCallableDeclaration {
-    name: String,
-    signature: String,
+struct PendingUnqualifiedCallContext {
+    callee: String,
+    argument_index: usize,
 }
 
-fn simple_callable_declarations(
+fn pending_unqualified_call_context(
     source: &str,
-    parse: &Parse,
-    name: &str,
-) -> Vec<SimpleCallableDeclaration> {
-    let ast = AstSourceFile::new(source, parse);
-    ast.declaration_iter()
-        .flat_map(|declaration| match declaration {
-            Declaration::Function(method) => vec![method],
-            Declaration::Class(class) => class
-                .members()
-                .into_iter()
-                .filter_map(|member| match member {
-                    ClassMember::Method(method) => Some(method),
-                    ClassMember::Field(_) | ClassMember::Empty(_) => None,
-                })
-                .collect(),
-            Declaration::Enum(_) | Declaration::Typedef(_) | Declaration::Field(_) => Vec::new(),
-        })
-        .filter_map(simple_callable_declaration)
-        .filter(|candidate| candidate.name == name)
-        .collect()
-}
+    tokens: &[Token],
+    offset: usize,
+) -> Option<PendingUnqualifiedCallContext> {
+    const MAX_PENDING_CALL_TOKENS: usize = 256;
+    let cursor = tokens.partition_point(|token| token.span.end <= offset);
+    let mut depth = 0usize;
+    let mut argument_index = 0usize;
+    let mut opening = None;
 
-fn simple_callable_declaration(method: MethodDecl<'_, '_>) -> Option<SimpleCallableDeclaration> {
-    if method.is_destructor() || !method.parameter_fragments().is_empty() {
+    for index in (0..cursor).rev().take(MAX_PENDING_CALL_TOKENS) {
+        let token = tokens[index];
+        if token.kind.is_trivia() {
+            continue;
+        }
+        match token.kind {
+            TokenKind::RightParen => depth += 1,
+            TokenKind::LeftParen if depth > 0 => depth -= 1,
+            TokenKind::LeftParen => {
+                opening = Some(index);
+                break;
+            }
+            TokenKind::Comma if depth == 0 => argument_index += 1,
+            TokenKind::Semicolon | TokenKind::LeftBrace | TokenKind::RightBrace if depth == 0 => {
+                return None;
+            }
+            _ => {}
+        }
+    }
+    let opening = opening?;
+    let callee_index = (0..opening)
+        .rev()
+        .map(|index| (index, tokens[index]))
+        .find(|(_, token)| !token.kind.is_trivia())?;
+    let (callee_index, callee_token) = callee_index;
+    if callee_token.kind != TokenKind::Identifier {
         return None;
     }
-    let name = method.name()?.text().to_string();
-    let return_type = method.return_type_text()?.text().trim().to_string();
-    if return_type.is_empty() {
+    let before_callee = (0..callee_index)
+        .rev()
+        .map(|index| tokens[index])
+        .find(|token| !token.kind.is_trivia());
+    if before_callee.is_some_and(|token| token.kind == TokenKind::Dot) {
         return None;
     }
-    let parameters = method
-        .parameters()
-        .into_iter()
-        .map(|parameter| {
-            parameter
-                .text()
-                .map(|text| text.text().trim().to_string())
-                .filter(|text| !text.is_empty())
-        })
-        .collect::<Option<Vec<_>>>()?;
-    Some(SimpleCallableDeclaration {
-        signature: format!("{return_type} {name}({})", parameters.join(", ")),
-        name,
+    let callee = source.get(callee_token.span.start..callee_token.span.end)?;
+    Some(PendingUnqualifiedCallContext {
+        callee: callee.to_string(),
+        argument_index,
     })
-}
-
-fn is_simple_callable_name(value: &str) -> bool {
-    let mut characters = value.chars();
-    matches!(characters.next(), Some(character) if character.is_ascii_alphabetic() || character == '_')
-        && characters.all(|character| character.is_ascii_alphanumeric() || character == '_')
 }
 
 fn empty_signature_help_report(
@@ -876,26 +868,27 @@ class Example
     }
 
     #[test]
-    fn simple_callable_declarations_extract_complete_current_method() {
+    fn foreground_callable_declarations_extract_complete_current_method() {
         let source =
             "class Example { void Current(string currentValue) {} void Test() { Current(\"\", ); } }";
         let parse = crate::parser::parse_source(source);
-        let candidates = simple_callable_declarations(source, &parse, "Current");
+        let foreground = ForegroundQuerySnapshot::build(source, crate::lexer::lex(source), &parse);
+        let candidates = foreground
+            .callable_declarations_named("Current")
+            .collect::<Vec<_>>();
         assert_eq!(candidates.len(), 1, "diagnostics={:?}", parse.diagnostics);
         assert_eq!(candidates[0].signature, "void Current(string currentValue)");
     }
 
     #[test]
-    fn pending_callable_context_selects_simple_call_name() {
+    fn pending_callable_context_selects_simple_call_name_without_a_syntax_walk() {
         let source =
             "class Example { void Current(string currentValue) {} void Test() { Current(\"\", ); } }";
-        let parse = crate::parser::parse_source(source);
         let offset = source.find("Current(\"\", ").unwrap() + "Current(\"\", ".len();
-        let context = callable_argument_context_at_offset(source, &parse.root, offset).unwrap();
-        let CallableTarget::Call { callee_span } = context.target else {
-            panic!("expected call target");
-        };
-        assert_eq!(&source[callee_span.start..callee_span.end], "Current");
+        let context = pending_unqualified_call_context(source, &crate::lexer::lex(source), offset)
+            .expect("expected call context");
+        assert_eq!(context.callee, "Current");
+        assert_eq!(context.argument_index, 1);
     }
 
     #[test]

@@ -1,7 +1,8 @@
 use crate::analysis_runtime::{DocumentSnapshot, PositionIndex};
+use crate::ast::{AstSourceFile, ClassMember, Declaration, MethodDecl};
 use crate::index::SymbolIndex;
-use crate::lexer::{lex, Token};
-use crate::model::SourceFileMetadata;
+use crate::lexer::{lex, Keyword, TextSpan, Token, TokenKind};
+use crate::model::{SourceFileMetadata, SymbolKind};
 use crate::parser::parse_source;
 use crate::scope::LexicalScopeModel;
 use crate::semantic_file::SemanticFile;
@@ -28,9 +29,9 @@ pub(crate) struct OpenDocument {
     /// Current-revision parser output, retained independently from deferred
     /// semantic/index analysis so parser diagnostics never wait for it.
     syntax: Option<Parse>,
-    /// Foreground-only lexical state for this exact revision. Semantic work
-    /// is deliberately not allowed to manufacture or replace this state.
-    foreground_lexer_tokens: Option<Vec<Token>>,
+    /// Foreground-only query facts for this exact revision. Semantic work is
+    /// deliberately not allowed to manufacture or replace this state.
+    foreground: Option<ForegroundQuerySnapshot>,
     analysis: Option<FileIndexAnalysis>,
     analysis_timings: Option<FileIndexAnalysisTimings>,
     analysis_rejected: bool,
@@ -70,7 +71,7 @@ impl OpenDocument {
             version,
             revision,
             syntax: None,
-            foreground_lexer_tokens: None,
+            foreground: None,
             analysis: None,
             analysis_timings: None,
             analysis_rejected: false,
@@ -86,7 +87,7 @@ impl OpenDocument {
         self.revision = snapshot.revision();
         self.snapshot = snapshot;
         self.syntax = None;
-        self.foreground_lexer_tokens = None;
+        self.foreground = None;
         self.analysis = None;
         self.analysis_timings = None;
         self.analysis_rejected = false;
@@ -123,13 +124,21 @@ impl OpenDocument {
         if !self.snapshot.install_positions(positions) && self.snapshot.positions().is_none() {
             return false;
         }
-        self.foreground_lexer_tokens = Some(lexer_tokens);
+        self.foreground = Some(ForegroundQuerySnapshot::build(
+            self.snapshot.text(),
+            lexer_tokens,
+            &syntax,
+        ));
         self.syntax = Some(syntax);
         true
     }
 
     pub(crate) fn foreground_ready(&self) -> bool {
-        self.syntax.is_some() && self.snapshot.positions().is_some()
+        self.foreground.is_some() && self.syntax.is_some() && self.snapshot.positions().is_some()
+    }
+
+    pub(crate) fn foreground(&self) -> Option<&ForegroundQuerySnapshot> {
+        self.foreground.as_ref()
     }
 
     pub(crate) fn analysis(&self) -> &FileIndexAnalysis {
@@ -391,6 +400,210 @@ impl SemanticTokenCache {
     }
 }
 
+/// Immutable, current-revision facts built exclusively by the foreground
+/// worker. Pending request handlers may query these facts, but must not lex,
+/// parse, or walk the CST/AST themselves.
+#[derive(Clone)]
+pub(crate) struct ForegroundQuerySnapshot {
+    tokens: Vec<Token>,
+    top_level_declarations: Vec<ForegroundTopLevelDeclaration>,
+    callable_declarations: Vec<ForegroundCallableDeclaration>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ForegroundTopLevelDeclaration {
+    pub(crate) name: String,
+    pub(crate) name_span: TextSpan,
+    pub(crate) kind: SymbolKind,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ForegroundCallableDeclaration {
+    pub(crate) name: String,
+    pub(crate) signature: String,
+}
+
+impl ForegroundQuerySnapshot {
+    pub(crate) fn build(source: &str, tokens: Vec<Token>, parse: &Parse) -> Self {
+        Self {
+            top_level_declarations: foreground_top_level_declarations(source, &tokens),
+            callable_declarations: foreground_callable_declarations(source, parse),
+            tokens,
+        }
+    }
+
+    pub(crate) fn token_at_offset(&self, offset: usize) -> Option<Token> {
+        self.tokens
+            .binary_search_by(|token| {
+                if token.span.end <= offset {
+                    std::cmp::Ordering::Less
+                } else if token.span.start > offset {
+                    std::cmp::Ordering::Greater
+                } else {
+                    std::cmp::Ordering::Equal
+                }
+            })
+            .ok()
+            .and_then(|index| self.tokens.get(index).copied())
+    }
+
+    pub(crate) fn top_level_declaration_at_offset(
+        &self,
+        offset: usize,
+    ) -> Option<&ForegroundTopLevelDeclaration> {
+        self.top_level_declarations.iter().find(|declaration| {
+            declaration.name_span.start <= offset && offset <= declaration.name_span.end
+        })
+    }
+
+    pub(crate) fn callable_declarations_named<'a>(
+        &'a self,
+        name: &'a str,
+    ) -> impl Iterator<Item = &'a ForegroundCallableDeclaration> + 'a {
+        self.callable_declarations
+            .iter()
+            .filter(move |candidate| candidate.name == name)
+    }
+
+    pub(crate) fn tokens(&self) -> &[Token] {
+        &self.tokens
+    }
+}
+
+fn foreground_top_level_declarations(
+    source: &str,
+    tokens: &[Token],
+) -> Vec<ForegroundTopLevelDeclaration> {
+    let mut declarations = Vec::new();
+    let mut brace_depth = 0usize;
+    let mut index = 0usize;
+    while index < tokens.len() {
+        let token = tokens[index];
+        match token.kind {
+            TokenKind::LeftBrace => brace_depth += 1,
+            TokenKind::RightBrace => brace_depth = brace_depth.saturating_sub(1),
+            TokenKind::Keyword(Keyword::Class | Keyword::Enum | Keyword::Typedef)
+                if brace_depth == 0 =>
+            {
+                let declaration_kind = token.kind;
+                if let Some((name, name_span, next_index)) =
+                    foreground_top_level_declaration(source, tokens, index, declaration_kind)
+                {
+                    let kind = match declaration_kind {
+                        TokenKind::Keyword(Keyword::Class) => SymbolKind::Class,
+                        TokenKind::Keyword(Keyword::Enum) => SymbolKind::Enum,
+                        TokenKind::Keyword(Keyword::Typedef) => SymbolKind::Typedef,
+                        _ => unreachable!("only declaration keywords reach this branch"),
+                    };
+                    declarations.push(ForegroundTopLevelDeclaration {
+                        name,
+                        name_span,
+                        kind,
+                    });
+                    index = next_index;
+                    continue;
+                }
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    declarations
+}
+
+fn foreground_top_level_declaration(
+    source: &str,
+    tokens: &[Token],
+    keyword_index: usize,
+    declaration_kind: TokenKind,
+) -> Option<(String, TextSpan, usize)> {
+    let mut index = keyword_index + 1;
+    let mut typedef_name = None;
+    while let Some(token) = tokens.get(index).copied() {
+        if token.kind.is_trivia() {
+            index += 1;
+            continue;
+        }
+        match declaration_kind {
+            TokenKind::Keyword(Keyword::Class | Keyword::Enum) => {
+                return (token.kind == TokenKind::Identifier).then(|| {
+                    (
+                        source[token.span.start..token.span.end].to_string(),
+                        token.span,
+                        index + 1,
+                    )
+                });
+            }
+            TokenKind::Keyword(Keyword::Typedef) => match token.kind {
+                TokenKind::Identifier => typedef_name = Some(token),
+                TokenKind::Semicolon | TokenKind::Eof => {
+                    return typedef_name.map(|name| {
+                        (
+                            source[name.span.start..name.span.end].to_string(),
+                            name.span,
+                            index + 1,
+                        )
+                    });
+                }
+                TokenKind::LeftBrace | TokenKind::RightBrace => return None,
+                _ => {}
+            },
+            _ => return None,
+        }
+        index += 1;
+    }
+    None
+}
+
+fn foreground_callable_declarations(
+    source: &str,
+    parse: &Parse,
+) -> Vec<ForegroundCallableDeclaration> {
+    let ast = AstSourceFile::new(source, parse);
+    ast.declaration_iter()
+        .flat_map(|declaration| match declaration {
+            Declaration::Function(method) => vec![method],
+            Declaration::Class(class) => class
+                .members()
+                .into_iter()
+                .filter_map(|member| match member {
+                    ClassMember::Method(method) => Some(method),
+                    ClassMember::Field(_) | ClassMember::Empty(_) => None,
+                })
+                .collect(),
+            Declaration::Enum(_) | Declaration::Typedef(_) | Declaration::Field(_) => Vec::new(),
+        })
+        .filter_map(foreground_callable_declaration)
+        .collect()
+}
+
+fn foreground_callable_declaration(
+    method: MethodDecl<'_, '_>,
+) -> Option<ForegroundCallableDeclaration> {
+    if method.is_destructor() || !method.parameter_fragments().is_empty() {
+        return None;
+    }
+    let name = method.name()?.text().to_string();
+    let return_type = method.return_type_text()?.text().trim().to_string();
+    if return_type.is_empty() {
+        return None;
+    }
+    let parameters = method
+        .parameters()
+        .into_iter()
+        .map(|parameter| {
+            parameter
+                .text()
+                .map(|text| text.text().trim().to_string())
+                .filter(|text| !text.is_empty())
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(ForegroundCallableDeclaration {
+        signature: format!("{return_type} {name}({})", parameters.join(", ")),
+        name,
+    })
+}
+
 #[derive(Clone)]
 pub struct FileIndexAnalysis {
     pub(crate) parse: Parse,
@@ -461,4 +674,72 @@ pub(crate) fn file_index_for_source_with_timings(
             total_ms: total_start.elapsed().as_millis(),
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::analysis_runtime::DocumentStore;
+    use crate::lsp::definition::definition_report_for_pending_snapshot;
+    use crate::lsp::hover::hover_report_for_pending_snapshot;
+    use crate::lsp::signature_help::signature_help_report_for_pending_snapshot;
+    use crate::lsp::LspPosition;
+
+    #[test]
+    fn pending_request_projections_do_not_relex_or_rewalk_a_large_snapshot() {
+        let mut source = String::from(
+            "// pending lexical hover\nclass Pending { void Current(string value) {} void Run() { Current( ); } }\n",
+        );
+        source.push_str(&"// unrelated foreground payload\n".repeat(40_000));
+
+        let mut store = DocumentStore::new();
+        assert_eq!(
+            store.upsert("file:///Scripts/Pending.c", 1, source.as_str()),
+            crate::analysis_runtime::UpsertOutcome::Accepted
+        );
+        let snapshot = store.latest("file:///Scripts/Pending.c").unwrap();
+        assert!(snapshot.install_positions(PositionIndex::new(snapshot.text())));
+        let parse = parse_source(snapshot.text());
+        let foreground =
+            ForegroundQuerySnapshot::build(snapshot.text(), lex(snapshot.text()), &parse);
+        let lex_calls_before_requests = crate::lexer::test_lex_call_count();
+
+        let comment = hover_report_for_pending_snapshot(
+            &snapshot,
+            &foreground,
+            LspPosition {
+                line: 0,
+                character: 4,
+            },
+            parse.diagnostics.len(),
+        );
+        assert!(comment.is_hit());
+
+        let definition = definition_report_for_pending_snapshot(
+            &snapshot,
+            &foreground,
+            snapshot.uri(),
+            LspPosition {
+                line: 1,
+                character: 7,
+            },
+            parse.diagnostics.len(),
+        );
+        assert!(definition.is_hit());
+
+        let signature = signature_help_report_for_pending_snapshot(
+            &snapshot,
+            &foreground,
+            parse.diagnostics.len(),
+            LspPosition {
+                line: 1,
+                character: 67,
+            },
+        );
+        assert!(signature.help.is_some());
+        assert_eq!(
+            crate::lexer::test_lex_call_count(),
+            lex_calls_before_requests
+        );
+    }
 }

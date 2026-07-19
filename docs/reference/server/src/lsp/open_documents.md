@@ -25,7 +25,8 @@ reports its identity back
 before installation, so runtime cancellation is the sole authority for stale
 publication. This keeps a large initial open from blocking the LSP message loop.
 A pending document has current text identity only. The foreground worker
-installs its lexical state, UTF-16 positions, and syntax before parser
+installs its immutable query snapshot (lexer tokens, top-level declaration
+summary, and safe callable-declaration summary), UTF-16 positions, and syntax before parser
 diagnostics publish; only then may semantic admission begin. Until that
 installation, features use deterministic lexical fallbacks and cannot combine
 current text with old semantic facts. The full analysis later supplies
@@ -54,7 +55,9 @@ through that path.
 
 The ready-analysis identity is separate from the accepted document revision.
 Feature dispatch must require them to match; it may defer a semantic request,
-but must never combine current text with an earlier analysis. The lexical
+but must never combine current text with an earlier analysis. Hover, definition,
+and signature-help pending projections consume this foreground snapshot directly:
+request handlers never re-lex source, traverse the CST, or construct an AST. The lexical
 semantic-token projection is explicitly allowed during this pending state
 because it reads only current source text. Document Outline is likewise allowed
 through a documented lower-quality lexical contract: it returns only top-level

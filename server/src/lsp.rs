@@ -1851,10 +1851,11 @@ impl<W: Write> LspServer<W> {
                                         indexes.workspace.as_deref(),
                                         indexes.game_data.as_deref(),
                                     )
-                                } else if let Some(syntax) = document.syntax() {
+                                } else if let Some(foreground) = document.foreground() {
                                     signature_help_report_for_pending_snapshot(
                                         &document.snapshot,
-                                        syntax,
+                                        foreground,
+                                        document.parse_diagnostic_count(),
                                         params.position,
                                     )
                                 } else {
@@ -2067,13 +2068,16 @@ impl<W: Write> LspServer<W> {
                                         indexes.workspace.as_deref(),
                                         indexes.game_data.as_deref(),
                                     )
-                                } else {
+                                } else if let Some(foreground) = document.foreground() {
                                     query_quality = QueryQuality::Unavailable;
                                     hover_report_for_pending_snapshot(
                                         &document.snapshot,
+                                        foreground,
                                         params.position,
                                         document.parse_diagnostic_count(),
                                     )
+                                } else {
+                                    return None;
                                 };
                                 parse_diagnostics = report.parse_diagnostics;
                                 hit = report.is_hit();
@@ -2177,14 +2181,17 @@ impl<W: Write> LspServer<W> {
                                         indexes.workspace.as_deref(),
                                         indexes.game_data.as_deref(),
                                     )
-                                } else {
+                                } else if let Some(foreground) = document.foreground() {
                                     query_quality = QueryQuality::Unavailable;
                                     definition_report_for_pending_snapshot(
                                         &document.snapshot,
+                                        foreground,
                                         &log_uri,
                                         params.position,
                                         document.parse_diagnostic_count(),
                                     )
+                                } else {
+                                    return Vec::new();
                                 };
                                 parse_diagnostics = report.parse_diagnostics;
                                 hit = report.is_hit();
@@ -9280,11 +9287,15 @@ class Example
             AdmissionDisposition::Enqueued { .. } => server.runtime.take_next().unwrap(),
             _ => unreachable!(),
         };
-        server
-            .documents
-            .get_mut(uri)
-            .unwrap()
-            .replace(server.runtime.latest(uri).expect("accepted snapshot"));
+        let snapshot = server.runtime.latest(uri).expect("accepted snapshot");
+        let document = server.documents.get_mut(uri).unwrap();
+        document.replace(snapshot.clone());
+        assert!(document.install_foreground(
+            snapshot.revision(),
+            PositionIndex::new(snapshot.text()),
+            lex(snapshot.text()),
+            parse_source(snapshot.text()),
+        ));
         server
             .handle_internal_event(ServerEvent::DocumentAnalysisSkipped {
                 task: task.identity().clone(),

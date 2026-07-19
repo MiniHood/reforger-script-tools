@@ -17,12 +17,13 @@ dispatch.
 The resolver selects the candidate using file-local facts plus layered
 workspace and game-data indexes when matching analysis is available. Local
 targets use cached source analysis; external targets read source only to
-project stored byte spans into LSP ranges. While analysis is pending, the
-current snapshot may return only a cursor already on a lexically proven
+project stored byte spans into LSP ranges. While semantic analysis is pending
+after foreground installation, the worker-built current snapshot may return
+only a cursor already on a lexically proven
 top-level class, enum, or typedef declaration, linking to that same current
 declaration. References, members, locals, and recovery-shaped declarations
 return no result in that state. This never joins current text to former local
-semantic facts. URI generation handles local, drive-letter, UNC, and extended
+semantic facts or re-lexes the document on the request loop. URI generation handles local, drive-letter, UNC, and extended
 UNC paths.
 
 ## Dependencies and Boundaries

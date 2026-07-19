@@ -1,5 +1,15 @@
 use serde::{Deserialize, Serialize};
 
+#[cfg(test)]
+thread_local! {
+    static TEST_LEX_CALL_COUNT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn test_lex_call_count() -> u64 {
+    TEST_LEX_CALL_COUNT.with(|count| count.get())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TextSpan {
     pub start: usize,
@@ -180,6 +190,8 @@ pub enum Operator {
 }
 
 pub fn lex(source: &str) -> Vec<Token> {
+    #[cfg(test)]
+    TEST_LEX_CALL_COUNT.with(|count| count.set(count.get() + 1));
     Lexer::new(source).lex_all()
 }
 

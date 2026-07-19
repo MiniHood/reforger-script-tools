@@ -1,11 +1,12 @@
 use crate::analysis_runtime::DocumentSnapshot;
 use crate::index::{GlobalSymbolId, SymbolIndex};
 use crate::index_query::IndexQuery;
-use crate::lexer::{lex, TokenKind};
+use crate::lexer::TokenKind;
 use crate::lsp::hover_render::{
     render_hover_markdown as render_hover_markdown_with_context, HoverLinkContext,
     HoverRenderContext,
 };
+use crate::lsp::open_documents::ForegroundQuerySnapshot;
 use crate::lsp::{
     file_index_for_source, offset_for_position, range_for_span, FileIndexAnalysis,
     LspMarkupContent, LspPosition, LspRange,
@@ -128,6 +129,7 @@ pub(crate) fn hover_report_for_cached_analysis_with_external(
 /// revision-matching semantic query and must never borrow an older index.
 pub(crate) fn hover_report_for_pending_snapshot(
     snapshot: &DocumentSnapshot,
+    foreground: &ForegroundQuerySnapshot,
     position: LspPosition,
     parse_diagnostics: usize,
 ) -> LspHoverReport {
@@ -140,10 +142,7 @@ pub(crate) fn hover_report_for_pending_snapshot(
         return empty_hover_report(parse_diagnostics);
     };
     let source = snapshot.text();
-    let Some(token) = lex(source)
-        .into_iter()
-        .find(|token| token.span.start <= offset && offset < token.span.end)
-    else {
+    let Some(token) = foreground.token_at_offset(offset) else {
         return empty_hover_report(parse_diagnostics);
     };
 

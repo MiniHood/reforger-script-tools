@@ -15,10 +15,12 @@ a parallel span/string-scanning lookup path.
 ## Current Behavior
 
 Hover uses cached open-document analysis plus workspace/game-data snapshots
-when that analysis belongs to the accepted document revision. While analysis
-is pending, it instead reads only the runtime-owned current snapshot: keyword,
+when that analysis belongs to the accepted document revision. While semantic
+analysis is pending after foreground installation, it reads only the
+worker-built current-revision lexical snapshot: keyword,
 literal, and comment hovers are lexical facts; identifiers and every
-resolution-dependent syntax span return no hover. It never defers a hover or
+resolution-dependent syntax span return no hover. The request handler never
+lexes source itself. It never defers a hover or
 joins current source to a prior local analysis.
 The resolver decides identifier and non-identifier syntax-span selection, while
 the projection returns the cursor token range for file-local identifiers and

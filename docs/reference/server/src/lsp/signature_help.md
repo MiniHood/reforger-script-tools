@@ -22,12 +22,14 @@ parameters, and named arguments across local/workspace/game-data indexes.
 Each overload computes its active parameter against its own parameter list, so
 shorter candidates remain bounded. Non-call positions return no signature help.
 
-While the accepted revision is still pending semantic analysis, signature help
-responds immediately from that revision only. The fallback permits exactly one
-syntactically complete current-source callable declaration for an unqualified
-call. It does not resolve receivers, constructors, attributes, external
-symbols, recovered declarations, or ambiguous names; those cases return no
-help rather than reading a previous revision's analysis.
+While the accepted revision is still pending semantic analysis after foreground
+installation, signature help responds immediately from that revision only. The
+fallback permits exactly one foreground-worker-built, syntactically complete
+current-source callable declaration for an unqualified call. The handler uses
+a bounded token-only call window; it never traverses the CST or constructs an
+AST. It does not resolve receivers, constructors, attributes, external symbols,
+recovered declarations, named arguments, or ambiguous names; those cases return
+no help rather than reading a previous revision's analysis.
 
 The existing developer completion-debug path can render a bounded signature
 summary without creating a separate user-facing command.
