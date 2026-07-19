@@ -6686,6 +6686,12 @@ class RplRpc : UniqueAttribute
             item.text_edit.new_text,
             "[RplRpc(RplChannel.Reliable, RplRcver.Server)]"
         );
+        let wire_item = serde_json::to_value(item).unwrap();
+        assert_eq!(
+            wire_item["textEdit"]["newText"],
+            "[RplRpc(RplChannel.Reliable, RplRcver.Server)]"
+        );
+        assert_eq!(wire_item["insertTextFormat"], 2);
         assert_eq!(
             item.command
                 .as_ref()
@@ -6760,6 +6766,42 @@ class RplRpc : UniqueAttribute
             .expect("expected final enum member completion");
         assert_eq!(item.text_edit.new_text, "Server");
         assert!(item.command.is_none());
+    }
+
+    #[test]
+    fn completion_formats_rpl_rpc_inside_an_existing_attribute_bracket() {
+        let source = r#"class Example
+{
+	[RplR]
+}
+"#;
+        let external = file_index_for_source(
+            r#"enum RplChannel { Reliable }
+enum RplRcver { Server }
+class UniqueAttribute {}
+class RplRpc : UniqueAttribute
+{
+	void RplRpc(RplChannel channel, RplRcver rcver);
+}
+"#,
+        )
+        .index;
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "RplR"),
+            Some(&external),
+        );
+        let item = report
+            .list
+            .items
+            .iter()
+            .find(|item| item.label == "RplRpc")
+            .expect("expected RplRpc completion inside attribute brackets");
+        assert_eq!(
+            item.text_edit.new_text,
+            "RplRpc(RplChannel.Reliable, RplRcver.Server)"
+        );
+        assert_eq!(item.insert_text_format, Some(2));
     }
 
     #[test]

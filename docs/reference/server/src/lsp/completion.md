@@ -90,8 +90,9 @@ avoid duplicate named argument labels case-insensitively.
 callable insertion. When its constructor has the engine-defined required
 `RplChannel` and `RplRcver` parameters, it expands to the canonical
 request-to-server annotation `[RplRpc(RplChannel.Reliable, RplRcver.Server)]`.
-This is deliberately signature-checked and does not infer defaults from enum
-declaration order for other attributes.
+The same template applies inside an already typed `[` without duplicating its
+brackets. This is deliberately signature-checked and does not infer defaults
+from enum declaration order for other attributes.
 
 ## Dependencies and Boundaries
 

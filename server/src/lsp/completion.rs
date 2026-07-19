@@ -3103,7 +3103,16 @@ fn callable_completion_render(
         | SymbolKind::Constructor
         | SymbolKind::Destructor => candidate.signature.as_deref()?,
         SymbolKind::Class if insert_context == CompletionInsertContext::ConstructorCall => {
-            candidate.constructor_signature.as_deref()?
+            let signature = candidate.constructor_signature.as_deref()?;
+            let call = callable_signature_parts(label, signature)?;
+            if let Some(insert_text) = rpl_rpc_attribute_template(label, &call, false) {
+                return Some(CallableCompletionRender { call, insert_text });
+            }
+            let insert = callable_insert_text_with_context(label, &call, Some(render_context));
+            return Some(CallableCompletionRender {
+                call,
+                insert_text: insert.text,
+            });
         }
         SymbolKind::Class
             if insert_context == CompletionInsertContext::AttributeShorthand
@@ -3111,7 +3120,7 @@ fn callable_completion_render(
         {
             let signature = candidate.constructor_signature.as_deref()?;
             let call = callable_signature_parts(label, signature)?;
-            if let Some(insert_text) = rpl_rpc_attribute_template(label, &call) {
+            if let Some(insert_text) = rpl_rpc_attribute_template(label, &call, true) {
                 return Some(CallableCompletionRender { call, insert_text });
             }
             let insert = callable_insert_text_with_context(label, &call, Some(render_context));
@@ -3152,13 +3161,24 @@ struct CallableInsertText {
 /// examples use the safe request-to-server shape. Keep this a narrow,
 /// signature-checked template rather than treating an enum's declaration order
 /// as a default for arbitrary attribute constructors.
-fn rpl_rpc_attribute_template(label: &str, call: &CallableSignatureParts) -> Option<String> {
+fn rpl_rpc_attribute_template(
+    label: &str,
+    call: &CallableSignatureParts,
+    include_brackets: bool,
+) -> Option<String> {
     let required = call.required_parameters().collect::<Vec<_>>();
     (label == "RplRpc"
         && required.len() == 2
         && callable_type_owner(&required[0].type_and_modifiers).as_deref() == Some("RplChannel")
         && callable_type_owner(&required[1].type_and_modifiers).as_deref() == Some("RplRcver"))
-    .then(|| "[RplRpc(RplChannel.Reliable, RplRcver.Server)]".to_string())
+    .then(|| {
+        let body = "RplRpc(RplChannel.Reliable, RplRcver.Server)";
+        if include_brackets {
+            format!("[{body}]")
+        } else {
+            body.to_string()
+        }
+    })
 }
 
 fn callable_insert_text_with_context(
