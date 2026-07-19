@@ -5,8 +5,9 @@ use crate::model::{
     SymbolCatalog, SymbolId, SymbolKind,
 };
 use crate::semantic_file::{
-    FileContribution, FileContributionValidationError, SemanticCallableForm,
-    SemanticConditionalBranchKind, SemanticDeclarationKind, SemanticDocCommentKind, SemanticFile,
+    FileContribution, FileContributionValidationError, PublicSymbol, PublicText,
+    SemanticCallableForm, SemanticConditionalBranchKind, SemanticDeclarationKind,
+    SemanticDocCommentKind, SemanticFile,
 };
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::{BTreeMap, BTreeSet};
@@ -548,6 +549,39 @@ impl SymbolIndex {
         Ok(file_ids)
     }
 
+    /// Consumes a complete group of already-validated compiler contributions.
+    ///
+    /// Cache loading owns its decoded canonical records, so this avoids cloning
+    /// every public string into a short-lived `FileContribution` and then into
+    /// the runtime index.  Keep the borrowed API above for live semantic files
+    /// that remain owned by their caller.
+    pub fn add_owned_file_contributions(
+        &mut self,
+        contributions: impl IntoIterator<Item = (FileContribution, SourceFileMetadata)>,
+    ) -> Result<Vec<SourceFileId>, FileContributionValidationError> {
+        let contributions = contributions.into_iter().collect::<Vec<_>>();
+        for (contribution, _) in &contributions {
+            contribution.validate()?;
+        }
+
+        self.files.reserve(contributions.len());
+        self.symbols.reserve(
+            contributions
+                .iter()
+                .map(|(contribution, _)| contribution.symbols.len())
+                .sum(),
+        );
+
+        let mut file_ids = Vec::with_capacity(contributions.len());
+        for (contribution, metadata) in contributions {
+            file_ids.push(self.append_owned_file_contribution(contribution, metadata));
+        }
+        if !file_ids.is_empty() {
+            self.rebuild_lookup_maps();
+        }
+        Ok(file_ids)
+    }
+
     fn append_file_contribution(
         &mut self,
         contribution: &FileContribution,
@@ -664,6 +698,113 @@ impl SymbolIndex {
                     })
                     .collect(),
                 callable_form: declaration.callable_form.map(indexed_callable_form),
+            });
+        }
+
+        file_id
+    }
+
+    fn append_owned_file_contribution(
+        &mut self,
+        contribution: FileContribution,
+        metadata: SourceFileMetadata,
+    ) -> SourceFileId {
+        let file_id = SourceFileId(self.files.len());
+        let symbol_start = self.symbols.len();
+        let FileContribution {
+            non_declaration_callable_fragments,
+            symbols,
+            ..
+        } = contribution;
+        self.files.push(IndexedFile {
+            id: file_id,
+            metadata,
+            symbol_start,
+            symbol_count: symbols.len(),
+            non_declaration_callable_fragments,
+        });
+
+        for declaration in symbols {
+            let PublicSymbol {
+                id,
+                parent,
+                kind,
+                name,
+                detail,
+                span,
+                selection_span,
+                modifiers,
+                attributes,
+                doc_comments,
+                conditional_context,
+                callable_form,
+                ..
+            } = declaration;
+            let id = GlobalSymbolId {
+                file_id,
+                symbol_id: SymbolId(id.0 as usize),
+            };
+            let parent = parent.map(|parent| GlobalSymbolId {
+                file_id,
+                symbol_id: SymbolId(parent.0 as usize),
+            });
+            let crate::semantic_file::PublicSymbolDetail {
+                type_text,
+                return_type,
+                base_type,
+                default_value,
+                enum_value,
+            } = detail;
+            let (type_text, type_text_span) = owned_public_text(type_text);
+            let (return_type_text, return_type_text_span) = owned_public_text(return_type);
+            let (base_type, base_type_span) = owned_public_text(base_type);
+            let (default_text, default_text_span) = owned_public_text(default_value);
+            let (enum_value_text, enum_value_text_span) = owned_public_text(enum_value);
+            self.symbols.push(IndexedSymbol {
+                id,
+                parent,
+                kind: indexed_symbol_kind(kind),
+                name,
+                span,
+                selection_span,
+                detail: IndexedSymbolDetail {
+                    type_text,
+                    type_text_span,
+                    return_type_text,
+                    return_type_text_span,
+                    base_type,
+                    base_type_span,
+                    default_text,
+                    default_text_span,
+                    enum_value_text,
+                    enum_value_text_span,
+                },
+                attributes: attributes
+                    .into_iter()
+                    .map(|attribute| IndexedAttribute {
+                        name: semantic_attribute_name(&attribute.text).map(str::to_owned),
+                        text: attribute.text,
+                    })
+                    .collect(),
+                modifiers: modifiers.into_iter().map(|value| value.text).collect(),
+                doc_comments: doc_comments
+                    .into_iter()
+                    .map(|comment| IndexedDocComment {
+                        kind: match comment.kind {
+                            SemanticDocCommentKind::Line => DocCommentKind::Line,
+                            SemanticDocCommentKind::Block => DocCommentKind::Block,
+                        },
+                        text: comment.text,
+                    })
+                    .collect(),
+                conditional_context: conditional_context
+                    .into_iter()
+                    .map(|branch| IndexedConditionalBranch {
+                        kind: indexed_conditional_kind(branch.kind),
+                        condition: branch.condition.map(|value| value.text),
+                    })
+                    .collect(),
+                callable_form: callable_form.map(indexed_callable_form),
             });
         }
 
@@ -1529,6 +1670,13 @@ fn semantic_attribute_name(text: &str) -> Option<&str> {
         .map(|(index, value)| index + value.len_utf8())
         .last()?;
     Some(&trimmed[..end])
+}
+
+fn owned_public_text(value: Option<PublicText>) -> (Option<String>, Option<TextSpan>) {
+    match value {
+        Some(PublicText { span, text }) => (Some(text), span),
+        None => (None, None),
+    }
 }
 
 fn is_class_member_kind(kind: SymbolKind) -> bool {

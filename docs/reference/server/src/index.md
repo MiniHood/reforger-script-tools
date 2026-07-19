@@ -21,6 +21,12 @@ per-file incremental-update boundary and rebuilds maps for that single visible
 change. This keeps a full game-data rebuild linear in indexed records rather
 than rebuilding every global map after every discovered file.
 
+Warm v11 cache loads use `add_owned_file_contributions()`: validated canonical
+cache records transfer their owned metadata and declaration text directly into
+the runtime index, then rebuild lookup maps once. It is cache reconstruction
+only; ordinary source and incremental updates retain the borrowed contribution
+ingress above.
+
 ## Current Behavior
 
 Validated contributions receive a `SourceFileId`; symbols use `{ file_id,

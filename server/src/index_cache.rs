@@ -138,14 +138,14 @@ struct CachedGameDataIndex {
 /// serialized `SymbolIndex` (which duplicates all derived runtime records).
 /// It contains exactly the source metadata and public facts needed to rebuild
 /// a runtime contribution and its lookup maps.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct CachedFileContribution {
     metadata: SourceFileMetadata,
     non_declaration_callable_fragments: usize,
     symbols: Vec<CachedPublicSymbol>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct CachedPublicSymbol {
     id: SemanticDeclarationId,
     parent: Option<SemanticDeclarationId>,
@@ -161,7 +161,7 @@ struct CachedPublicSymbol {
     callable_form: Option<SemanticCallableForm>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct CachedPublicSymbolDetail {
     type_text: Option<String>,
     return_type: Option<String>,
@@ -170,13 +170,13 @@ struct CachedPublicSymbolDetail {
     enum_value: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct CachedDocComment {
     kind: SemanticDocCommentKind,
     text: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct CachedConditionalBranch {
     kind: SemanticConditionalBranchKind,
     condition: Option<String>,
@@ -368,6 +368,7 @@ impl CachedFileContribution {
         self
     }
 
+    #[cfg(test)]
     fn to_file_contribution(&self) -> FileContribution {
         FileContribution {
             schema_version: FILE_CONTRIBUTION_SCHEMA_VERSION,
@@ -439,14 +440,104 @@ impl CachedFileContribution {
         }
     }
 
-    /// Reconstruct the public records that this legacy query cache exposes and
-    /// validate the versioned compiler contract before rebuilding lookup maps.
-    /// The index remains a temporary query projection, never a cache-validity
-    /// fallback for malformed public semantic data.
+    fn into_file_contribution_with_metadata(self) -> (FileContribution, SourceFileMetadata) {
+        let Self {
+            metadata,
+            non_declaration_callable_fragments,
+            symbols,
+        } = self;
+        let contribution = FileContribution {
+            schema_version: FILE_CONTRIBUTION_SCHEMA_VERSION,
+            source_manifest_version: FILE_CONTRIBUTION_SOURCE_MANIFEST_VERSION,
+            non_declaration_callable_fragments,
+            symbols: symbols
+                .into_iter()
+                .map(|symbol| PublicSymbol {
+                    id: symbol.id,
+                    parent: symbol.parent,
+                    kind: symbol.kind,
+                    name: Some(symbol.name),
+                    container: None,
+                    detail: PublicSymbolDetail {
+                        type_text: cached_public_text(None, symbol.detail.type_text),
+                        return_type: cached_public_text(None, symbol.detail.return_type),
+                        base_type: cached_public_text(None, symbol.detail.base_type),
+                        default_value: cached_public_text(None, symbol.detail.default_value),
+                        enum_value: cached_public_text(None, symbol.detail.enum_value),
+                    },
+                    span: symbol.span,
+                    selection_span: symbol.selection_span,
+                    modifiers: symbol
+                        .modifiers
+                        .into_iter()
+                        .map(|text| SemanticText {
+                            span: symbol.span,
+                            text,
+                        })
+                        .collect(),
+                    attributes: symbol
+                        .attributes
+                        .into_iter()
+                        .map(|text| SemanticText {
+                            span: symbol.span,
+                            text,
+                        })
+                        .collect(),
+                    doc_comments: symbol
+                        .doc_comments
+                        .into_iter()
+                        .map(|comment| SemanticDocComment {
+                            span: symbol.span,
+                            kind: comment.kind,
+                            text: comment.text,
+                        })
+                        .collect(),
+                    conditional_context: symbol
+                        .conditional_context
+                        .into_iter()
+                        .map(|branch| SemanticConditionalBranch {
+                            kind: branch.kind,
+                            directive_span: symbol.span,
+                            condition: branch.condition.map(|text| SemanticText {
+                                span: symbol.span,
+                                text,
+                            }),
+                        })
+                        .collect(),
+                    callable_form: symbol.callable_form,
+                })
+                .collect(),
+        };
+        (contribution, metadata)
+    }
+
+    /// Validates the same identity contract as `FileContribution` without
+    /// materializing a second, string-owning contribution during warm loads.
     fn validate(&self) -> Result<(), String> {
-        self.to_file_contribution()
-            .validate()
-            .map_err(|error| format!("invalid cached public file contribution: {error:?}"))
+        for (expected, symbol) in self.symbols.iter().enumerate() {
+            let expected = SemanticDeclarationId(expected as u32);
+            if symbol.name.is_empty() {
+                return Err(format!(
+                    "invalid cached public file contribution: symbol {:?} has an empty name",
+                    symbol.id
+                ));
+            }
+            if symbol.id != expected {
+                return Err(format!(
+                    "invalid cached public file contribution: expected dense id {:?}, found {:?}",
+                    expected, symbol.id
+                ));
+            }
+            if let Some(parent) = symbol.parent {
+                if parent.0 as usize >= self.symbols.len() {
+                    return Err(format!(
+                        "invalid cached public file contribution: symbol {:?} has missing parent {:?}",
+                        symbol.id, parent
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -486,16 +577,12 @@ impl CachedGameDataIndex {
     fn into_index(self) -> SymbolIndex {
         let contributions = self
             .files
-            .iter()
-            .map(|file| (file.to_file_contribution(), file.metadata.clone()))
+            .into_iter()
+            .map(CachedFileContribution::into_file_contribution_with_metadata)
             .collect::<Vec<_>>();
         let mut index = SymbolIndex::default();
         index
-            .add_file_contributions(
-                contributions
-                    .iter()
-                    .map(|(contribution, metadata)| (contribution, metadata.clone())),
-            )
+            .add_owned_file_contributions(contributions)
             .expect("cached contributions were validated before index reconstruction");
         index
     }
@@ -522,22 +609,37 @@ impl LegacyCachedGameDataIndex {
 
 impl V10CachedGameDataIndex {
     fn into_current(self) -> Result<CachedGameDataIndex, String> {
-        let files = self
-            .index
-            .files
+        let V10CachedGameDataIndex {
+            schema,
+            crate_version,
+            fingerprint,
+            summary,
+            index,
+            ..
+        } = self;
+        let V10CachedSymbolIndex {
+            files,
+            symbols,
+            contributions,
+        } = index;
+        // The indexed graph was used only to validate parity with the
+        // canonical contribution facts. Release it before projecting v11 so a
+        // migration never retains both legacy records and its replacement.
+        drop(symbols);
+        let files = files
             .into_iter()
-            .zip(self.index.contributions)
+            .zip(contributions)
             .map(|(file, contribution)| {
                 CachedFileContribution::from_file_contribution(file.metadata, contribution)
             })
             .collect::<Result<Vec<_>, _>>()?;
         Ok(CachedGameDataIndex {
-            schema: self.schema,
+            schema,
             format_version: CACHE_FORMAT_VERSION,
             index_shape: CACHE_INDEX_SHAPE.to_string(),
-            crate_version: self.crate_version,
-            fingerprint: self.fingerprint,
-            summary: self.summary,
+            crate_version,
+            fingerprint,
+            summary,
             files,
         })
     }
@@ -555,6 +657,35 @@ impl V10CachedGameDataIndex {
                 .iter()
                 .all(|contribution| contribution.validate().is_ok())
             && validate_legacy_index_records(&self.index.files, &self.index.symbols).is_ok()
+            && self.runtime_facts_match_contributions()
+    }
+
+    /// A v10 payload duplicated its query graph and its compiler contribution
+    /// facts. Require those two representations to agree before trusting the
+    /// contribution side as the one canonical v11 source of truth.
+    fn runtime_facts_match_contributions(&self) -> bool {
+        self.index
+            .files
+            .iter()
+            .zip(&self.index.contributions)
+            .all(|(file, contribution)| {
+                let range_end = match file.symbol_start.checked_add(file.symbol_count) {
+                    Some(end) => end,
+                    None => return false,
+                };
+                let Some(symbols) = self.index.symbols.get(file.symbol_start..range_end) else {
+                    return false;
+                };
+                let expected = CachedFileContribution::from_indexed_file(file, symbols);
+                let actual = match CachedFileContribution::from_file_contribution(
+                    file.metadata.clone(),
+                    contribution.clone(),
+                ) {
+                    Ok(actual) => actual,
+                    Err(_) => return false,
+                };
+                expected == actual
+            })
     }
 }
 
@@ -1516,17 +1647,18 @@ impl BinaryWriter {
         self.write_usize(len)
     }
 
-    fn write_raw_string(&mut self, value: &str) -> Result<(), String> {
-        self.write_vec_len(value.len())?;
-        self.write_bytes(value.as_bytes());
-        Ok(())
-    }
-
     fn write_string_table(&mut self) -> Result<(), String> {
-        let values = self.string_table.values.clone();
-        self.write_vec_len(values.len())?;
-        for value in &values {
-            self.write_raw_string(value)?;
+        self.write_vec_len(self.string_table.values.len())?;
+        // `values` is already the deterministic insertion order represented
+        // by the table IDs. Append directly into the output buffer instead of
+        // cloning every interned string for the write pass.
+        let bytes = &mut self.bytes;
+        for value in &self.string_table.values {
+            let value = value.as_bytes();
+            let len =
+                u64::try_from(value.len()).map_err(|_| "usize value exceeds u64".to_string())?;
+            bytes.extend_from_slice(&len.to_le_bytes());
+            bytes.extend_from_slice(value);
         }
         Ok(())
     }
@@ -2931,6 +3063,40 @@ mod tests {
             .file_name()
             .to_string_lossy()
             .contains(".tmp")));
+
+        cleanup(&root);
+    }
+
+    #[test]
+    fn divergent_v10_query_graph_rebuilds_instead_of_migrating() {
+        let root = test_root("v10_divergent_query_graph");
+        let cache = root.join("game-data-symbol-index.v9.bin");
+        let scripts = root.join("scripts");
+        let metadata = root.join("metadata.json");
+        write_file(
+            &scripts.join("Game/Example.c"),
+            "class Example { void Run(); }",
+        );
+        write_file(&metadata, r#"{"commitSha":"v10-divergent-query-graph"}"#);
+        let config = GameDataIndexCacheConfig {
+            scripts_root: scripts,
+            cache_path: cache.clone(),
+            metadata_path: Some(metadata),
+        };
+        load_or_build_game_data_index(&config).unwrap();
+        rewrite_cache_as_v10(&cache, |mut cached| {
+            cached.index.symbols[0].name = Some("NotExample".to_string());
+            cached
+        })
+        .unwrap();
+
+        let rebuilt = load_or_build_game_data_index(&config).unwrap();
+        assert!(matches!(
+            rebuilt.cache_status,
+            IndexCacheStatus::Rebuilt { .. }
+        ));
+        assert_eq!(rebuilt.index.classes_by_name("Example").len(), 1);
+        assert!(fs::read(&cache).unwrap().starts_with(CACHE_MAGIC));
 
         cleanup(&root);
     }
