@@ -88,58 +88,22 @@ changes. Do not create reference pages for generated output, dependencies, or
 trivial metadata. Replace harmful legacy documentation when current source,
 accepted policy, user direction, or a CE artifact supports the replacement.
 
-## Continuous Plan Execution
-
-An approved plan is standing authorization to implement its entire stated
-scope. When the user asks to execute, complete, finish, or work through a plan,
-work every implementation unit, required verification, documentation update,
-review/fix cycle, and task-scoped commit until the plan is finished.
-
-Do not stop at checkpoints. Discovery, a partial implementation, a test pass,
-a review finding, an agent result, a commit, a documentation update, or a
-milestone is not a completion condition. After each one, reconcile the result
-against the plan and immediately execute the next unblocked step.
-
-A later question about status, review results, design, or progress does not
-replace, pause, narrow, or complete the active plan. Answer it concisely, then
-continue the plan in the same turn. A report-only CE skill limits edits only
-while that review runs; it does not revoke the authorization to resume the
-existing work afterward.
-
-Ask the user only when continuing needs information or authority not supplied
-by the plan: a material scope/product/design decision, destructive or external
-action outside scope, unavailable credentials/access, conflicting working-tree
-ownership, or evidence that invalidates a plan decision. State the concrete
-evidence and the smallest decision needed. Large scope, uncertainty that can be
-investigated locally, failures that can be repaired, and intermediate design
-questions are not reasons to stop.
-
-Before ending plan work, perform this terminal check: every unit is implemented,
-verified, documented, reviewed, and committed; or the user explicitly
-deferred it; or a genuine blocker was reported with evidence. If any unit
-remains, continue work. Never present unfinished plan work as completed.
-
 ## Workflow and Git
 
-Use Compound Engineering for non-trivial or ambiguous work when available:
-`ce-brainstorm` resolves scope, `ce-plan` creates implementation-ready slices,
-`ce-work` executes, `ce-code-review` reviews changed behavior, and
-`ce-compound` records durable learnings. Do not mutate CE plan progress during
-execution; derive progress from the working tree and verification evidence.
+Use the applicable Compound Engineering skill for planning, implementation,
+debugging, review, and learnings. CE owns its execution procedure, including
+task tracking, plan treatment, worker strategy, testing, review, and fix
+follow-up. Do not duplicate or override that procedure here.
 
-Use parallel agents only for independent bounded work with disjoint file
-ownership or read-only review/research. Keep dependent edits, integration,
-verification, and commits under one owner.
-
-After an implementation task is fully verified and the terminal check passes,
-commit its task-scoped changes to the current branch without a separate Git
-instruction. Stage only attributable changes; do not absorb unrelated
-pre-existing work. Use a concise, value-focused title. Do not push, open a PR,
-modify remotes, or alter branches or history unless the user explicitly asks
-for that operation. If the branch is unclear, verification fails, or changes
-cannot be separated safely, report that blocker.
+After a coherent task scope is verified, commit only its attributable changes
+to the current branch with a concise, value-focused title. Do not push, open a
+PR, modify remotes, or alter branches or history unless the user explicitly
+asks for that operation.
 
 ## Verification
+
+These are repository-specific verification requirements that supplement the
+applicable Compound Engineering skill.
 
 Before completing a source-changing task:
 
