@@ -131,14 +131,12 @@ pub(crate) fn hover_report_for_pending_snapshot(
     position: LspPosition,
     parse_diagnostics: usize,
 ) -> LspHoverReport {
-    let Some(offset) =
-        snapshot
-            .positions()
-            .offset_for_position(crate::analysis_runtime::Position {
-                line: position.line,
-                character: position.character,
-            })
-    else {
+    let Some(offset) = snapshot.positions().and_then(|positions| {
+        positions.offset_for_position(crate::analysis_runtime::Position {
+            line: position.line,
+            character: position.character,
+        })
+    }) else {
         return empty_hover_report(parse_diagnostics);
     };
     let source = snapshot.text();

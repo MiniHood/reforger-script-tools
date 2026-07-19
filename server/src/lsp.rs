@@ -6,7 +6,6 @@ use crate::index::{GlobalSymbolId, SymbolIndex};
 use crate::index_query::IndexQuery;
 use crate::lexer::{lex, Keyword, TextSpan, Token, TokenKind};
 use crate::model::SymbolKind;
-#[cfg(test)]
 use crate::parser::parse_source;
 #[cfg(test)]
 use crate::resolver::CandidateSource;
@@ -277,6 +276,18 @@ enum ServerEvent {
         timings: FileIndexAnalysisTimings,
         elapsed_ms: u128,
     },
+    ForegroundDocumentReady {
+        task: TaskIdentity,
+        positions: PositionIndex,
+        lexer_tokens: Vec<Token>,
+        syntax: crate::syntax::Parse,
+        elapsed_ms: u128,
+    },
+    ForegroundDocumentSkipped {
+        task: TaskIdentity,
+        reason: String,
+        elapsed_ms: u128,
+    },
     DocumentAnalysisSkipped {
         task: TaskIdentity,
         reason: String,
@@ -305,6 +316,11 @@ struct OpenDocumentAnalysisJob {
     scheduled_at: Instant,
 }
 
+struct ForegroundDocumentJob {
+    task: AnalysisTask,
+    scheduled_at: Instant,
+}
+
 #[derive(Clone)]
 struct RuntimeWorkExecutor {
     state: Arc<(
@@ -315,6 +331,7 @@ struct RuntimeWorkExecutor {
 }
 
 enum RuntimeWorkJob {
+    Foreground(ForegroundDocumentJob),
     Semantic(OpenDocumentAnalysisJob),
     Rich(RichSemanticTokensJob),
     Debug(DebugRequestJob),
@@ -323,6 +340,7 @@ enum RuntimeWorkJob {
 impl RuntimeWorkJob {
     fn task(&self) -> &AnalysisTask {
         match self {
+            Self::Foreground(job) => &job.task,
             Self::Semantic(job) => &job.task,
             Self::Rich(job) => &job.task,
             Self::Debug(job) => job.task(),
@@ -331,6 +349,7 @@ impl RuntimeWorkJob {
 
     fn scheduled_at(&self) -> Instant {
         match self {
+            Self::Foreground(job) => job.scheduled_at,
             Self::Semantic(job) => job.scheduled_at,
             Self::Rich(job) => job.scheduled_at,
             Self::Debug(job) => job.scheduled_at(),
@@ -339,6 +358,7 @@ impl RuntimeWorkJob {
 
     fn due_at(&self) -> Instant {
         let delay_ms = match self {
+            Self::Foreground(_) => 0,
             Self::Semantic(_) => DOCUMENT_ANALYSIS_IDLE_DELAY_MS,
             Self::Rich(_) | Self::Debug(_) => RICH_SEMANTIC_TOKENS_IDLE_DELAY_MS,
         };
@@ -359,6 +379,10 @@ impl RuntimeWorkExecutor {
 
     fn schedule(&self, job: OpenDocumentAnalysisJob) {
         self.schedule_work(RuntimeWorkJob::Semantic(job));
+    }
+
+    fn schedule_foreground(&self, job: ForegroundDocumentJob) {
+        self.schedule_work(RuntimeWorkJob::Foreground(job));
     }
 
     fn schedule_rich(&self, job: RichSemanticTokensJob) {
@@ -443,6 +467,44 @@ impl RuntimeWorkExecutor {
 
     fn execute(&self, job: RuntimeWorkJob) {
         match job {
+            RuntimeWorkJob::Foreground(job) => {
+                let cancelled = || job.task.is_cancelled();
+                let Some(positions) =
+                    PositionIndex::new_cancellable(job.task.snapshot().text(), Some(&cancelled))
+                else {
+                    self.send_skipped(
+                        RuntimeWorkJob::Foreground(job),
+                        "cancelled-during-position-index",
+                    );
+                    return;
+                };
+                if job.task.is_cancelled() {
+                    self.send_skipped(RuntimeWorkJob::Foreground(job), "cancelled-before-lexical");
+                    return;
+                }
+                let lexer_tokens = lex(job.task.snapshot().text());
+                if job.task.is_cancelled() {
+                    self.send_skipped(RuntimeWorkJob::Foreground(job), "cancelled-before-syntax");
+                    return;
+                }
+                let syntax = parse_source(job.task.snapshot().text());
+                let event = if job.task.is_cancelled() {
+                    ServerEvent::ForegroundDocumentSkipped {
+                        task: job.task.identity().clone(),
+                        reason: "cancelled-during-syntax".to_string(),
+                        elapsed_ms: job.scheduled_at.elapsed().as_millis(),
+                    }
+                } else {
+                    ServerEvent::ForegroundDocumentReady {
+                        task: job.task.identity().clone(),
+                        positions,
+                        lexer_tokens,
+                        syntax,
+                        elapsed_ms: job.scheduled_at.elapsed().as_millis(),
+                    }
+                };
+                let _ = self.sender.send(event);
+            }
             RuntimeWorkJob::Semantic(job) => {
                 let (analysis, timings) =
                     file_index_for_source_with_timings(job.task.snapshot().text());
@@ -505,6 +567,11 @@ impl RuntimeWorkExecutor {
 
     fn send_skipped(&self, job: RuntimeWorkJob, reason: &str) {
         let event = match job {
+            RuntimeWorkJob::Foreground(job) => ServerEvent::ForegroundDocumentSkipped {
+                task: job.task.identity().clone(),
+                reason: reason.to_string(),
+                elapsed_ms: job.scheduled_at.elapsed().as_millis(),
+            },
             RuntimeWorkJob::Semantic(job) => ServerEvent::DocumentAnalysisSkipped {
                 task: job.task.identity().clone(),
                 reason: reason.to_string(),
@@ -1170,7 +1237,7 @@ impl<W: Write> LspServer<W> {
                         let request_id = self.next_server_request_id;
                         self.next_server_request_id += 1;
                         match self.runtime.admit(
-                            TaskClass::Semantic,
+                            TaskClass::Foreground,
                             self.runtime.latest(&uri).expect("accepted snapshot"),
                             request_id,
                             Instant::now() + Duration::from_secs(30),
@@ -1179,8 +1246,8 @@ impl<W: Write> LspServer<W> {
                                 let task = self
                                     .runtime
                                     .take_next()
-                                    .expect("admitted semantic task is runnable");
-                                scheduler.schedule(OpenDocumentAnalysisJob {
+                                    .expect("admitted foreground task is runnable");
+                                scheduler.schedule_foreground(ForegroundDocumentJob {
                                     task,
                                     scheduled_at: Instant::now(),
                                 });
@@ -1192,21 +1259,8 @@ impl<W: Write> LspServer<W> {
                                     .reject_pending_analysis();
                             }
                         }
-                        let diagnostics_message = {
-                            let document = self
-                                .documents
-                                .get(&uri)
-                                .expect("accepted document cache exists");
-                            publish_diagnostics_message(
-                                &uri,
-                                version,
-                                document.snapshot.text(),
-                                &document.syntax().diagnostics,
-                            )
-                        };
-                        self.write_message(diagnostics_message)?;
                         self.log(&format!(
-                            "notification didOpen uri={} bytes={} version={} revision={} cached_analysis=false analysis_state=pending queue_ms={} analysis_elapsed_ms={}",
+                            "notification didOpen uri={} bytes={} version={} revision={} foreground_state=pending analysis_state=waiting-foreground queue_ms={} analysis_elapsed_ms={}",
                             uri,
                             bytes,
                             version,
@@ -1224,13 +1278,16 @@ impl<W: Write> LspServer<W> {
                         let document_symbol_ms = symbol_start.elapsed().as_millis();
                         let symbol_count = document_symbol_count(&symbols);
                         document.set_document_symbols(symbols);
-                        let parse_diagnostics = document.syntax().diagnostics.len();
+                        let parse_diagnostics = document.parse_diagnostic_count();
                         let analysis_timings = document.analysis_timings();
                         let diagnostics_message = publish_diagnostics_message(
                             &uri,
                             version,
                             document.snapshot.text(),
-                            &document.syntax().diagnostics,
+                            &document
+                                .syntax()
+                                .expect("ready test document has syntax")
+                                .diagnostics,
                         );
                         self.documents.insert(uri.clone(), document);
                         self.write_message(diagnostics_message)?;
@@ -1302,25 +1359,12 @@ impl<W: Write> LspServer<W> {
                             document.mark_analysis_pending();
                             document.snapshot.revision()
                         };
-                        let diagnostics_message = {
-                            let document = self
-                                .documents
-                                .get(&uri)
-                                .expect("accepted document cache exists");
-                            publish_diagnostics_message(
-                                &uri,
-                                version,
-                                document.snapshot.text(),
-                                &document.syntax().diagnostics,
-                            )
-                        };
-                        self.write_message(diagnostics_message)?;
                         if let Some(scheduler) = self.analysis_scheduler.clone() {
                             self.discard_deferred_document_requests(&uri, revision)?;
                             let request_id = self.next_server_request_id;
                             self.next_server_request_id += 1;
                             match self.runtime.admit(
-                                TaskClass::Semantic,
+                                TaskClass::Foreground,
                                 self.runtime.latest(&uri).expect("accepted snapshot"),
                                 request_id,
                                 Instant::now() + Duration::from_secs(30),
@@ -1329,8 +1373,8 @@ impl<W: Write> LspServer<W> {
                                     let task = self
                                         .runtime
                                         .take_next()
-                                        .expect("admitted semantic task is runnable");
-                                    scheduler.schedule(OpenDocumentAnalysisJob {
+                                        .expect("admitted foreground task is runnable");
+                                    scheduler.schedule_foreground(ForegroundDocumentJob {
                                         task,
                                         scheduled_at: Instant::now(),
                                     });
@@ -1342,10 +1386,33 @@ impl<W: Write> LspServer<W> {
                                     .reject_pending_analysis(),
                             }
                             self.log(&format!(
-                                "notification didChange uri={} bytes={} version={} revision={} cached_analysis=false analysis_state=pending queue_ms={} coalesced_changes={} superseded_changes={} analysis_elapsed_ms={}",
+                                "notification didChange uri={} bytes={} version={} revision={} foreground_state=pending analysis_state=waiting-foreground queue_ms={} coalesced_changes={} superseded_changes={} analysis_elapsed_ms={}",
                                 uri, bytes, version, revision, queue_ms, coalesced_changes, superseded_changes, start.elapsed().as_millis()
                             ));
                         } else {
+                            // This in-process path exists for deterministic
+                            // unit fixtures only. The stdio runtime always
+                            // reaches this state through a foreground worker.
+                            let snapshot = self.runtime.latest(&uri).expect("accepted snapshot");
+                            let document =
+                                self.documents.get_mut(&uri).expect("open document exists");
+                            assert!(document.install_foreground(
+                                revision,
+                                PositionIndex::new(snapshot.text()),
+                                lex(snapshot.text()),
+                                parse_source(snapshot.text()),
+                            ));
+                            let diagnostics = document
+                                .syntax()
+                                .expect("fixture foreground installation supplies syntax")
+                                .diagnostics
+                                .clone();
+                            self.write_message(publish_diagnostics_message(
+                                &uri,
+                                version,
+                                snapshot.text(),
+                                &diagnostics,
+                            ))?;
                             let (analysis, timings) = file_index_for_source_with_timings(
                                 self.runtime.latest(&uri).expect("accepted snapshot").text(),
                             );
@@ -1577,12 +1644,12 @@ impl<W: Write> LspServer<W> {
                                         indexes.game_data.as_deref(),
                                     )
                                 } else {
-                                    let offset = document.snapshot.positions().offset_for_position(
+                                    let offset = document.snapshot.positions().and_then(|positions| positions.offset_for_position(
                                         crate::analysis_runtime::Position {
                                             line: params.position.line,
                                             character: params.position.character,
                                         },
-                                    );
+                                    ));
                                     if let Some(offset) = offset {
                                         completion_report_for_current_argument_labels_at_offset_with_external_indexes(
                                             &document.text,
@@ -1711,12 +1778,14 @@ impl<W: Write> LspServer<W> {
                                         indexes.workspace.as_deref(),
                                         indexes.game_data.as_deref(),
                                     )
-                                } else {
+                                } else if let Some(syntax) = document.syntax() {
                                     signature_help_report_for_pending_snapshot(
                                         &document.snapshot,
-                                        document.syntax(),
+                                        syntax,
                                         params.position,
                                     )
+                                } else {
+                                    return None;
                                 };
                                 parse_diagnostics = report.parse_diagnostics;
                                 context = report.context.unwrap_or_else(|| "<none>".to_string());
@@ -1930,7 +1999,7 @@ impl<W: Write> LspServer<W> {
                                     hover_report_for_pending_snapshot(
                                         &document.snapshot,
                                         params.position,
-                                        document.syntax().diagnostics.len(),
+                                        document.parse_diagnostic_count(),
                                     )
                                 };
                                 parse_diagnostics = report.parse_diagnostics;
@@ -2041,7 +2110,7 @@ impl<W: Write> LspServer<W> {
                                         &document.snapshot,
                                         &log_uri,
                                         params.position,
-                                        document.syntax().diagnostics.len(),
+                                        document.parse_diagnostic_count(),
                                     )
                                 };
                                 parse_diagnostics = report.parse_diagnostics;
@@ -2421,6 +2490,75 @@ impl<W: Write> LspServer<W> {
                 ));
                 Ok(())
             }
+            ServerEvent::ForegroundDocumentReady {
+                task,
+                positions,
+                lexer_tokens,
+                syntax,
+                elapsed_ms,
+            } => {
+                if !self.runtime.complete(&task) {
+                    self.log(&format!(
+                        "foreground discarded uri={} revision={} reason=runtime-stale elapsed_ms={}",
+                        task.uri(), task.revision(), elapsed_ms
+                    ));
+                    return Ok(());
+                }
+                let Some(document) = self.documents.get_mut(task.uri()) else {
+                    return Ok(());
+                };
+                if !document.install_foreground(task.revision(), positions, lexer_tokens, syntax) {
+                    self.log(&format!(
+                        "foreground discarded uri={} revision={} reason=stale-install elapsed_ms={}",
+                        task.uri(), task.revision(), elapsed_ms
+                    ));
+                    return Ok(());
+                }
+                let uri = task.uri().to_string();
+                let version = document.version;
+                let revision = document.revision;
+                let diagnostics = document
+                    .syntax()
+                    .expect("foreground installation supplies syntax")
+                    .diagnostics
+                    .clone();
+                let source = document.snapshot.text().to_string();
+                let _ = document;
+                self.write_message(publish_diagnostics_message(
+                    &uri,
+                    version,
+                    &source,
+                    &diagnostics,
+                ))?;
+                self.log(&format!(
+                    "foreground ready uri={} version={} revision={} lexical_state=ready syntax_state=ready elapsed_ms={}",
+                    uri, version, revision, elapsed_ms
+                ));
+                self.admit_semantic_after_foreground(&uri, revision);
+                Ok(())
+            }
+            ServerEvent::ForegroundDocumentSkipped {
+                task,
+                reason,
+                elapsed_ms,
+            } => {
+                let current = self.runtime.complete(&task);
+                if current {
+                    if let Some(document) = self.documents.get_mut(task.uri()) {
+                        if document.revision == task.revision() {
+                            document.reject_pending_analysis();
+                        }
+                    }
+                }
+                self.log(&format!(
+                    "foreground skipped uri={} revision={} reason={} elapsed_ms={}",
+                    task.uri(),
+                    task.revision(),
+                    reason,
+                    elapsed_ms
+                ));
+                Ok(())
+            }
             ServerEvent::DocumentAnalysisReady {
                 task,
                 analysis,
@@ -2631,6 +2769,47 @@ impl<W: Write> LspServer<W> {
             }
         }
         Ok(())
+    }
+
+    /// Foreground publication is the only dependency edge into whole-file
+    /// semantic work.  In particular, an accepted edit never admits semantic
+    /// construction while its current syntax/position state is absent.
+    fn admit_semantic_after_foreground(&mut self, uri: &str, revision: u64) {
+        let Some(scheduler) = self.analysis_scheduler.clone() else {
+            return;
+        };
+        let Some(document) = self.documents.get(uri) else {
+            return;
+        };
+        if document.revision != revision || !document.foreground_ready() {
+            return;
+        }
+        let request_id = self.next_server_request_id;
+        self.next_server_request_id += 1;
+        match self.runtime.admit(
+            TaskClass::Semantic,
+            document.snapshot.clone(),
+            request_id,
+            Instant::now() + Duration::from_secs(30),
+        ) {
+            AdmissionDisposition::Enqueued { .. } => {
+                let task = self
+                    .runtime
+                    .take_next()
+                    .expect("foreground dependency admits a runnable semantic task");
+                scheduler.schedule(OpenDocumentAnalysisJob {
+                    task,
+                    scheduled_at: Instant::now(),
+                });
+            }
+            AdmissionDisposition::DroppedOverload { .. } => {
+                if let Some(document) = self.documents.get_mut(uri) {
+                    if document.revision == revision {
+                        document.reject_pending_analysis();
+                    }
+                }
+            }
+        }
     }
 
     fn schedule_rich_semantic_tokens(
@@ -2939,7 +3118,9 @@ pub fn document_symbols_for_source(source: &str) -> Vec<LspDocumentSymbol> {
 fn lexical_document_symbols_for_snapshot(
     snapshot: &crate::analysis_runtime::DocumentSnapshot,
 ) -> Vec<LspDocumentSymbol> {
-    lexical_document_symbols(snapshot.text(), snapshot.positions())
+    snapshot.positions().map_or_else(Vec::new, |positions| {
+        lexical_document_symbols(snapshot.text(), &positions)
+    })
 }
 
 fn lexical_document_symbols(source: &str, positions: &PositionIndex) -> Vec<LspDocumentSymbol> {
@@ -3440,6 +3621,25 @@ mod tests {
             other => panic!("unexpected admission disposition: {other:?}"),
         };
         OpenDocumentAnalysisJob { task, scheduled_at }
+    }
+
+    fn install_next_foreground(
+        server: &mut LspServer<Vec<u8>>,
+        receiver: &mpsc::Receiver<ServerEvent>,
+    ) {
+        loop {
+            let event = receiver
+                .recv_timeout(Duration::from_secs(2))
+                .expect("foreground worker event");
+            server.handle_internal_event(event).unwrap();
+            if server
+                .documents
+                .values()
+                .any(OpenDocument::foreground_ready)
+            {
+                return;
+            }
+        }
     }
 
     #[test]
@@ -8431,7 +8631,7 @@ class Example
 
     #[test]
     fn pending_signature_help_uses_only_the_current_unique_simple_callable() {
-        let (sender, _receiver) = mpsc::channel();
+        let (sender, receiver) = mpsc::channel();
         let scheduler = OpenDocumentAnalysisScheduler::start(sender);
         let mut server = LspServer::new_with_runtime_senders(
             Vec::new(),
@@ -8462,6 +8662,7 @@ class Example
                 0,
             )
             .unwrap();
+        install_next_foreground(&mut server, &receiver);
         server
             .handle_message(
                 json!({
@@ -8478,6 +8679,7 @@ class Example
             )
             .unwrap();
         assert!(!server.documents[uri].analysis_ready());
+        install_next_foreground(&mut server, &receiver);
 
         server
             .handle_message(
@@ -8581,7 +8783,7 @@ class Example
 
     #[test]
     fn pending_definition_returns_only_a_current_snapshot_declaration_target() {
-        let (sender, _receiver) = mpsc::channel();
+        let (sender, receiver) = mpsc::channel();
         let scheduler = OpenDocumentAnalysisScheduler::start(sender);
         let mut server = LspServer::new_with_runtime_senders(
             Vec::new(),
@@ -8623,6 +8825,7 @@ class Example
                 0,
             )
             .unwrap();
+        install_next_foreground(&mut server, &receiver);
 
         for (id, line, character) in [(1, 0, 6), (2, 1, 0)] {
             server
@@ -8671,7 +8874,7 @@ class Example
 
     #[test]
     fn completion_resolves_simple_current_receiver_while_analysis_is_pending() {
-        let (sender, _receiver) = mpsc::channel();
+        let (sender, receiver) = mpsc::channel();
         let scheduler = OpenDocumentAnalysisScheduler::start(sender);
         let mut server = LspServer::new_with_runtime_senders(
             Vec::new(),
@@ -8701,6 +8904,13 @@ class Example
             )
             .unwrap();
         server
+            .handle_internal_event(
+                receiver
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("foreground result"),
+            )
+            .unwrap();
+        server
             .handle_message(
                 json!({
                     "jsonrpc": "2.0",
@@ -8724,7 +8934,7 @@ class Example
 
     #[test]
     fn completion_returns_current_argument_labels_while_analysis_is_pending() {
-        let (sender, _receiver) = mpsc::channel();
+        let (sender, receiver) = mpsc::channel();
         let scheduler = OpenDocumentAnalysisScheduler::start(sender);
         let mut server = LspServer::new_with_runtime_senders(
             Vec::new(),
@@ -8754,6 +8964,13 @@ class Example
             )
             .unwrap();
         server
+            .handle_internal_event(
+                receiver
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("foreground result"),
+            )
+            .unwrap();
+        server
             .handle_message(
                 json!({
                     "jsonrpc": "2.0",
@@ -8777,7 +8994,7 @@ class Example
 
     #[test]
     fn pending_analysis_publishes_current_parser_diagnostics_before_worker_publication() {
-        let (sender, _receiver) = mpsc::channel();
+        let (sender, receiver) = mpsc::channel();
         let scheduler = OpenDocumentAnalysisScheduler::start(sender);
         let mut server = LspServer::new_with_runtime_senders(
             Vec::new(),
@@ -8804,6 +9021,13 @@ class Example
                 0,
             )
             .unwrap();
+        server
+            .handle_internal_event(
+                receiver
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("foreground result"),
+            )
+            .unwrap();
 
         let output = String::from_utf8(server.writer).unwrap();
         assert!(output.contains("\"method\":\"textDocument/publishDiagnostics\""));
@@ -8814,7 +9038,7 @@ class Example
 
     #[test]
     fn pending_analysis_clears_repaired_parser_diagnostics_before_worker_publication() {
-        let (sender, _receiver) = mpsc::channel();
+        let (sender, receiver) = mpsc::channel();
         let scheduler = OpenDocumentAnalysisScheduler::start(sender);
         let mut server = LspServer::new_with_runtime_senders(
             Vec::new(),
@@ -8846,6 +9070,13 @@ class Example
                     None,
                     0,
                     0,
+                )
+                .unwrap();
+            server
+                .handle_internal_event(
+                    receiver
+                        .recv_timeout(Duration::from_secs(2))
+                        .expect("foreground result"),
                 )
                 .unwrap();
         }
@@ -8969,6 +9200,7 @@ class Example
                 0,
             )
             .unwrap();
+        install_next_foreground(&mut server, &receiver);
         server
             .handle_message(
                 json!({
@@ -8984,6 +9216,7 @@ class Example
                 0,
             )
             .unwrap();
+        install_next_foreground(&mut server, &receiver);
         server
             .handle_message(
                 json!({

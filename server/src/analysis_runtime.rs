@@ -8,7 +8,7 @@ use std::{
     collections::{HashMap, VecDeque},
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, OnceLock,
     },
     time::Instant,
 };
@@ -107,18 +107,20 @@ pub struct DocumentSnapshot {
     version: i32,
     revision: u64,
     text: Arc<str>,
-    positions: Arc<PositionIndex>,
+    // Position conversion is foreground work.  The cell is shared by every
+    // clone of this revision so a worker installs one immutable table before
+    // any protocol projection can consume it.
+    positions: Arc<OnceLock<Arc<PositionIndex>>>,
 }
 
 impl DocumentSnapshot {
     fn new(uri: Arc<str>, version: i32, revision: u64, text: Arc<str>) -> Self {
-        let positions = Arc::new(PositionIndex::new(&text));
         Self {
             uri,
             version,
             revision,
             text,
-            positions,
+            positions: Arc::new(OnceLock::new()),
         }
     }
 
@@ -138,8 +140,14 @@ impl DocumentSnapshot {
     pub(crate) fn text_arc(&self) -> Arc<str> {
         self.text.clone()
     }
-    pub fn positions(&self) -> &PositionIndex {
-        &self.positions
+    pub fn positions(&self) -> Option<Arc<PositionIndex>> {
+        self.positions.get().cloned()
+    }
+
+    /// Installs the foreground-built coordinate table.  A stale worker may
+    /// race a newer revision, but it can only fill its own revision's cell.
+    pub fn install_positions(&self, positions: PositionIndex) -> bool {
+        self.positions.set(Arc::new(positions)).is_ok()
     }
 }
 
@@ -695,6 +703,31 @@ mod tests {
                 character: 0
             }),
             Some(6)
+        );
+    }
+
+    #[test]
+    fn accepted_snapshot_has_no_positions_until_foreground_installs_them() {
+        let mut runtime = AnalysisRuntime::new(AdmissionLimits::new(2, 128));
+        assert_eq!(
+            runtime.upsert("file:///foreground.c", 1, "a😀\r\nb"),
+            UpsertOutcome::Accepted
+        );
+        let snapshot = runtime.latest("file:///foreground.c").unwrap();
+        assert!(snapshot.positions().is_none());
+
+        assert!(snapshot.install_positions(PositionIndex::new(snapshot.text())));
+        assert_eq!(
+            runtime
+                .latest("file:///foreground.c")
+                .unwrap()
+                .positions()
+                .unwrap()
+                .offset_for_position(Position {
+                    line: 1,
+                    character: 1
+                }),
+            Some("a😀\r\nb".len())
         );
     }
 

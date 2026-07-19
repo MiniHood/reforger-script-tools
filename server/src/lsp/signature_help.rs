@@ -203,14 +203,12 @@ pub(crate) fn signature_help_report_for_pending_snapshot(
 ) -> LspSignatureHelpReport {
     let total_start = Instant::now();
     let parse_diagnostics = parse.diagnostics.len();
-    let Some(offset) =
-        snapshot
-            .positions()
-            .offset_for_position(crate::analysis_runtime::Position {
-                line: position.line,
-                character: position.character,
-            })
-    else {
+    let Some(offset) = snapshot.positions().and_then(|positions| {
+        positions.offset_for_position(crate::analysis_runtime::Position {
+            line: position.line,
+            character: position.character,
+        })
+    }) else {
         return empty_signature_help_report(parse_diagnostics, total_start);
     };
     let source = snapshot.text();

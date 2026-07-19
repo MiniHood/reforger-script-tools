@@ -1,4 +1,4 @@
-use crate::analysis_runtime::DocumentSnapshot;
+use crate::analysis_runtime::{DocumentSnapshot, PositionIndex};
 use crate::index::SymbolIndex;
 use crate::lexer::{lex, Token};
 use crate::model::SourceFileMetadata;
@@ -27,7 +27,10 @@ pub(crate) struct OpenDocument {
     pub(crate) revision: u64,
     /// Current-revision parser output, retained independently from deferred
     /// semantic/index analysis so parser diagnostics never wait for it.
-    syntax: Parse,
+    syntax: Option<Parse>,
+    /// Foreground-only lexical state for this exact revision. Semantic work
+    /// is deliberately not allowed to manufacture or replace this state.
+    foreground_lexer_tokens: Option<Vec<Token>>,
     analysis: Option<FileIndexAnalysis>,
     analysis_timings: Option<FileIndexAnalysisTimings>,
     analysis_rejected: bool,
@@ -40,6 +43,13 @@ impl OpenDocument {
     pub(crate) fn new(snapshot: DocumentSnapshot) -> Self {
         let revision = snapshot.revision();
         let mut document = Self::pending(snapshot);
+        // Deterministic in-process fixtures construct ready documents without
+        // the production executor. The transport path never calls this: it
+        // installs the same state through a `TaskClass::Foreground` worker.
+        let positions = PositionIndex::new(document.snapshot.text());
+        let lexer_tokens = lex(document.snapshot.text());
+        let syntax = parse_source(document.snapshot.text());
+        assert!(document.install_foreground(revision, positions, lexer_tokens, syntax));
         let (analysis, analysis_timings) =
             file_index_for_source_with_timings(document.snapshot.text());
         assert!(document.install_analysis(revision, analysis, analysis_timings));
@@ -54,13 +64,13 @@ impl OpenDocument {
         let text = snapshot.text_arc();
         let version = snapshot.version();
         let revision = snapshot.revision();
-        let syntax = parse_source(snapshot.text());
         Self {
             snapshot,
             text,
             version,
             revision,
-            syntax,
+            syntax: None,
+            foreground_lexer_tokens: None,
             analysis: None,
             analysis_timings: None,
             analysis_rejected: false,
@@ -75,7 +85,8 @@ impl OpenDocument {
         self.version = snapshot.version();
         self.revision = snapshot.revision();
         self.snapshot = snapshot;
-        self.syntax = parse_source(self.snapshot.text());
+        self.syntax = None;
+        self.foreground_lexer_tokens = None;
         self.analysis = None;
         self.analysis_timings = None;
         self.analysis_rejected = false;
@@ -89,8 +100,36 @@ impl OpenDocument {
         self.analysis.is_some()
     }
 
-    pub(crate) fn syntax(&self) -> &Parse {
-        &self.syntax
+    pub(crate) fn syntax(&self) -> Option<&Parse> {
+        self.syntax.as_ref()
+    }
+
+    pub(crate) fn parse_diagnostic_count(&self) -> usize {
+        self.syntax().map_or(0, |parse| parse.diagnostics.len())
+    }
+
+    pub(crate) fn install_foreground(
+        &mut self,
+        revision: u64,
+        positions: PositionIndex,
+        lexer_tokens: Vec<Token>,
+        syntax: Parse,
+    ) -> bool {
+        if revision != self.snapshot.revision() {
+            return false;
+        }
+        // A duplicate foreground event is harmless only when the exact
+        // revision already owns its immutable position table.
+        if !self.snapshot.install_positions(positions) && self.snapshot.positions().is_none() {
+            return false;
+        }
+        self.foreground_lexer_tokens = Some(lexer_tokens);
+        self.syntax = Some(syntax);
+        true
+    }
+
+    pub(crate) fn foreground_ready(&self) -> bool {
+        self.syntax.is_some() && self.snapshot.positions().is_some()
     }
 
     pub(crate) fn analysis(&self) -> &FileIndexAnalysis {

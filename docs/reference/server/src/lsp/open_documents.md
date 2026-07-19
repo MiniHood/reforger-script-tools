@@ -24,11 +24,12 @@ runtime-work executor only executes an `AnalysisRuntime`-admitted task and
 reports its identity back
 before installation, so runtime cancellation is the sole authority for stale
 publication. This keeps a large initial open from blocking the LSP message loop.
-A pending document immediately retains a current-revision syntax snapshot for
-parser diagnostics, but holds no placeholder semantic/index/scope result, so a
-feature cannot accidentally treat an empty or old analysis as current. Parser
-diagnostics are independent of whole-file semantic convergence; the full
-analysis later supplies only semantic/query state.
+A pending document has current text identity only. The foreground worker
+installs its lexical state, UTF-16 positions, and syntax before parser
+diagnostics publish; only then may semantic admission begin. Until that
+installation, features use deterministic lexical fallbacks and cannot combine
+current text with old semantic facts. The full analysis later supplies
+semantic/query state only.
 Tests without a worker may construct an immediately-ready cache
 to exercise deterministic feature projection. The full analysis contains lexer
 tokens, syntax, parse diagnostics, file index, lexical scope, and timings; its

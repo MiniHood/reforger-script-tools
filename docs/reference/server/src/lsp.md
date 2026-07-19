@@ -42,13 +42,12 @@ JSON-RPC errors; invalid notifications are ignored. After `shutdown`, requests
 are rejected and `exit` terminates the process as required by the lifecycle.
 
 Open/change notifications require document versions. The server accepts only a
-strictly newer revision. Each accepted revision parses a syntax snapshot and
-publishes its parser diagnostics immediately. `didOpen` builds the initial
-analysis synchronously when no worker is configured; production `didChange`
-immediately accepts text/version, clears text-derived caches, and schedules
-latest-wins semantic/index analysis after a short idle delay. The completed
-result installs only for the still-current revision and never republishes parser
-diagnostics.
+strictly newer revision, stores its text identity, and admits a latest-wins
+foreground job. That worker builds the UTF-16 position index, lexical state,
+and syntax off the protocol loop; only its matching installation publishes
+parser diagnostics and admits semantic/index convergence. A newer revision or
+close cancels both dependency stages. The completed semantic result installs
+only for the still-current revision and never republishes parser diagnostics.
 Close removes the document and clears diagnostics. Repeated Outline requests
 reuse cached symbol projection for the accepted revision.
 

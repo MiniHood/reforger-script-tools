@@ -107,9 +107,11 @@ pub(crate) fn definition_report_for_pending_snapshot(
     position: LspPosition,
     parse_diagnostics: usize,
 ) -> LspDefinitionReport {
-    let Some(offset) = snapshot.positions().offset_for_position(Position {
-        line: position.line,
-        character: position.character,
+    let Some(offset) = snapshot.positions().and_then(|positions| {
+        positions.offset_for_position(Position {
+            line: position.line,
+            character: position.character,
+        })
     }) else {
         return empty_definition_report(parse_diagnostics);
     };

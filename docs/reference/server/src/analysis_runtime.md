@@ -14,8 +14,10 @@ messages into runtime operations and publishes only matching results.
 
 ## Current Behavior
 
-Each accepted edit creates one immutable `DocumentSnapshot` and cancels every
-retained task for that URI. `TaskAdmission` retains at most one task per URI
+Each accepted edit creates one immutable text `DocumentSnapshot` and cancels every
+retained task for that URI. Its UTF-16 position index is installed only by the
+matching foreground task, so requests before foreground installation use their
+documented lexical fallback. `TaskAdmission` retains at most one task per URI
 and lane; replacement cancels the previous
 task, and publication succeeds only for its exact identity. `QueryQuality`
 distinguishes exact/recovery local facts from deterministic unavailable
