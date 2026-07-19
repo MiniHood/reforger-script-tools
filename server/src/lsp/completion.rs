@@ -223,10 +223,18 @@ pub(crate) fn completion_report_for_lexical_source_at_offset_with_external_index
     game_data_index: Option<&SymbolIndex>,
 ) -> LspCompletionReport {
     let Some(region) = BoundedCompletionRegion::new(source, offset) else {
-        return unavailable_completion_report(
-            empty_completion_report(0),
-            "invalid-or-unterminated-lexical-window",
+        // The fixed window can end inside a valid multi-line comment or
+        // string.  It is not safe to recover local or receiver facts without
+        // lexical context, but the cursor-local identifier prefix is enough
+        // to retain independently indexed top-level suggestions.
+        let report = top_level_fallback_report_for_prefix_span(
+            source,
+            raw_completion_prefix_span(source, offset),
+            workspace_index,
+            game_data_index,
+            UnavailableCompletionContext::TopLevel,
         );
+        return unavailable_completion_report(report, "invalid-or-unterminated-lexical-window");
     };
     let context = unavailable_completion_context(&region.tokens, offset);
     let report = lexical_top_level_fallback_report(
@@ -1083,6 +1091,33 @@ fn lexical_completion_prefix_span(tokens: &[crate::lexer::Token], offset: usize)
         .unwrap_or_else(|| TextSpan::new(offset, offset))
 }
 
+/// Returns the identifier immediately before the current cursor without
+/// attempting to derive lexical context. This is only used after the bounded
+/// lexer has rejected its arbitrary source window, so it must not be used to
+/// infer local scope, member ownership, or argument facts.
+fn raw_completion_prefix_span(source: &str, offset: usize) -> TextSpan {
+    let Some(before_cursor) = source.get(..offset) else {
+        return TextSpan::new(offset, offset);
+    };
+    let start = before_cursor
+        .char_indices()
+        .rev()
+        .find_map(|(index, character)| {
+            (!matches!(character, 'a'..='z' | 'A'..='Z' | '0'..='9' | '_'))
+                .then_some(index + character.len_utf8())
+        })
+        .unwrap_or(0);
+    let Some(prefix) = source.get(start..offset) else {
+        return TextSpan::new(offset, offset);
+    };
+    prefix
+        .chars()
+        .next()
+        .is_some_and(|character| matches!(character, 'a'..='z' | 'A'..='Z' | '_'))
+        .then_some(TextSpan::new(start, offset))
+        .unwrap_or_else(|| TextSpan::new(offset, offset))
+}
+
 fn lexical_top_level_fallback_report(
     source: &str,
     tokens: &[Token],
@@ -1091,8 +1126,23 @@ fn lexical_top_level_fallback_report(
     game_data_index: Option<&SymbolIndex>,
     context: UnavailableCompletionContext,
 ) -> LspCompletionReport {
+    top_level_fallback_report_for_prefix_span(
+        source,
+        lexical_completion_prefix_span(tokens, offset),
+        workspace_index,
+        game_data_index,
+        context,
+    )
+}
+
+fn top_level_fallback_report_for_prefix_span(
+    source: &str,
+    prefix_span: TextSpan,
+    workspace_index: Option<&SymbolIndex>,
+    game_data_index: Option<&SymbolIndex>,
+    context: UnavailableCompletionContext,
+) -> LspCompletionReport {
     let total_start = Instant::now();
-    let prefix_span = lexical_completion_prefix_span(tokens, offset);
     let prefix = source
         .get(prefix_span.start..prefix_span.end)
         .unwrap_or_default()
@@ -3370,6 +3420,37 @@ mod tests {
             report.recovery_reason.as_deref(),
             Some("current-revision-local-facts-pending")
         );
+    }
+
+    #[test]
+    fn pending_completion_keeps_top_level_suggestions_when_a_large_valid_file_window_ends_in_a_comment(
+    ) {
+        let external = file_index_for_source("class GetGameMode {}").index;
+        let mut source = "void Padding() {}\n".repeat(1_100);
+        source.push_str("getga\n/*");
+        source.push_str(&"comment ".repeat(400));
+        source.push_str("*/\n");
+        let offset = source.find("getga").unwrap() + "getga".len();
+
+        let report = completion_report_for_lexical_source_at_offset_with_external_indexes(
+            &source,
+            offset,
+            Some(&external),
+            None,
+        );
+
+        assert!(BoundedCompletionRegion::new(&source, offset).is_none());
+        assert_eq!(report.prefix, "getga");
+        assert_eq!(report.query_quality, QueryQuality::Unavailable);
+        assert_eq!(
+            report.recovery_reason.as_deref(),
+            Some("invalid-or-unterminated-lexical-window")
+        );
+        assert!(report
+            .list
+            .items
+            .iter()
+            .any(|item| item.label == "GetGameMode"));
     }
 
     #[test]

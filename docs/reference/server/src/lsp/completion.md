@@ -54,6 +54,13 @@ top-level/lexical fallback tagged `member-unavailable-top-level-fallback` or
 or argument facts from an older revision. This is not an `isIncomplete` signal
 or a request for the client to retrigger completion.
 
+If that arbitrary lexer window ends inside an otherwise valid multi-line
+comment or string, the server does not attempt to recover lexical context.
+It instead reads only the cursor-adjacent identifier prefix and returns the
+same independently indexed top-level/keyword fallback. This avoids an empty
+completion list in large files while preserving the rule that pending requests
+never infer local, member, or argument facts without current lexical proof.
+
 Keywords are LSP-owned so language suggestions do not depend on VS Code word
 suggestions. Callable completions share [callable.md](callable.md) parameter
 parsing with signature help, provide snippets/follow-up commands when safe, and
