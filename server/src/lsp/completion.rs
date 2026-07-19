@@ -39,7 +39,11 @@ const OVERRIDE_QUERY_MAX_WINDOW_BYTES: usize = LOCAL_SCOPE_QUERY_MAX_WINDOW_BYTE
 const LEXICAL_CONTEXT_RECOVERY_MAX_SOURCE_BYTES: usize = 128 * 1024;
 const LOCAL_SCOPE_QUERY_DEADLINE: Duration = Duration::from_millis(50);
 const COMMAND_TRIGGER_PARAMETER_HINTS: &str = "editor.action.triggerParameterHints";
-const COMMAND_TRIGGER_SUGGEST: &str = "editor.action.triggerSuggest";
+/// A VS Code UI bridge registered by the extension. Rust decides when an
+/// `RplRpc` template needs enum completion; the client waits for snippet mode
+/// to select the placeholder before dispatching Suggest.
+const COMMAND_TRIGGER_SUGGEST_AT_SNIPPET_PLACEHOLDER: &str =
+    "reforger-sript-tools.completion.triggerSuggestAtSnippetPlaceholder";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LspCompletionList {
@@ -78,6 +82,8 @@ pub struct LspCompletionItem {
 pub struct LspCommand {
     pub title: String,
     pub command: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arguments: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -3605,7 +3611,12 @@ fn callable_completion_render(
             let signature = candidate.constructor_signature.as_deref()?;
             let call = callable_signature_parts(label, signature)?;
             if let Some(insert_text) = rpl_rpc_attribute_template(label, &call, false) {
-                return Some(CallableCompletionRender::trigger_suggest(call, insert_text));
+                return Some(
+                    CallableCompletionRender::trigger_suggest_at_snippet_placeholder(
+                        call,
+                        insert_text,
+                    ),
+                );
             }
             let insert = callable_insert_text_with_context(label, &call, Some(render_context));
             return Some(CallableCompletionRender::trigger_parameter_hints(
@@ -3620,7 +3631,12 @@ fn callable_completion_render(
             let signature = candidate.constructor_signature.as_deref()?;
             let call = callable_signature_parts(label, signature)?;
             if let Some(insert_text) = rpl_rpc_attribute_template(label, &call, true) {
-                return Some(CallableCompletionRender::trigger_suggest(call, insert_text));
+                return Some(
+                    CallableCompletionRender::trigger_suggest_at_snippet_placeholder(
+                        call,
+                        insert_text,
+                    ),
+                );
             }
             let insert = callable_insert_text_with_context(label, &call, Some(render_context));
             let insert_text = format!("[{}]", insert.text);
@@ -3653,11 +3669,14 @@ impl CallableCompletionRender {
         }
     }
 
-    fn trigger_suggest(call: CallableSignatureParts, insert_text: String) -> Self {
+    fn trigger_suggest_at_snippet_placeholder(
+        call: CallableSignatureParts,
+        insert_text: String,
+    ) -> Self {
         Self {
             call,
             insert_text,
-            follow_up_command: trigger_suggest_command(),
+            follow_up_command: trigger_suggest_at_snippet_placeholder_command(),
         }
     }
 }
@@ -3750,13 +3769,17 @@ fn trigger_parameter_hints_command() -> LspCommand {
     LspCommand {
         title: "Trigger Parameter Hints".to_string(),
         command: COMMAND_TRIGGER_PARAMETER_HINTS.to_string(),
+        arguments: None,
     }
 }
 
-fn trigger_suggest_command() -> LspCommand {
+fn trigger_suggest_at_snippet_placeholder_command() -> LspCommand {
     LspCommand {
-        title: "Trigger Suggestions".to_string(),
-        command: COMMAND_TRIGGER_SUGGEST.to_string(),
+        title: "Trigger enum suggestions".to_string(),
+        command: COMMAND_TRIGGER_SUGGEST_AT_SNIPPET_PLACEHOLDER.to_string(),
+        // The extension uses this exact value only to recognize VS Code's
+        // selected snippet field. It never parses or classifies source text.
+        arguments: Some(vec!["RplChannel.Reliable".to_string()]),
     }
 }
 
@@ -4387,7 +4410,7 @@ class ScriptComponent
         );
         assert_eq!(
             rpc.command.as_ref().map(|command| command.command.as_str()),
-            Some("editor.action.triggerSuggest")
+            Some("reforger-sript-tools.completion.triggerSuggestAtSnippetPlaceholder")
         );
     }
 

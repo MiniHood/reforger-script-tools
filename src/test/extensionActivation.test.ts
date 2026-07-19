@@ -12,8 +12,7 @@ suite('extension activation', () => {
 		const commands = await vscode.commands.getCommands(true);
 		assert.ok(commands.includes('reforger-sript-tools.debug.hoverAtCursor'));
 		assert.ok(commands.includes('reforger-sript-tools.debug.completionAtCursor'));
-		assert.ok(!commands.includes('reforger-sript-tools.completion.triggerSuggestAtSnippetPlaceholderEnd'));
-		assert.ok(!commands.includes('reforger-sript-tools.completion.jumpToNextSnippetPlaceholderAndTriggerSuggest'));
+		assert.ok(commands.includes('reforger-sript-tools.completion.triggerSuggestAtSnippetPlaceholder'));
 	});
 
 	test('enables local diagnostic logging by default', () => {

@@ -6716,7 +6716,14 @@ class RplRpc : UniqueAttribute
             item.command
                 .as_ref()
                 .map(|command| command.command.as_str()),
-            Some("editor.action.triggerSuggest")
+            Some("reforger-sript-tools.completion.triggerSuggestAtSnippetPlaceholder")
+        );
+        assert_eq!(
+            item.command
+                .as_ref()
+                .and_then(|command| command.arguments.as_ref())
+                .map(|arguments| arguments.iter().map(String::as_str).collect::<Vec<_>>()),
+            Some(vec!["RplChannel.Reliable"])
         );
         assert_eq!(item.required_parameter_count, 2);
         assert_eq!(item.optional_parameter_count, 2);
@@ -6834,7 +6841,7 @@ class RplRpc : UniqueAttribute
             item.command
                 .as_ref()
                 .map(|command| command.command.as_str()),
-            Some("editor.action.triggerSuggest")
+            Some("reforger-sript-tools.completion.triggerSuggestAtSnippetPlaceholder")
         );
     }
 

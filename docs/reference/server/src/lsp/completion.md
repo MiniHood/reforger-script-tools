@@ -119,8 +119,9 @@ callable insertion. When its constructor has the engine-defined required
 request-to-server annotation with its snippet cursor retained inside the call:
 `[RplRpc(${1:RplChannel.Reliable}, ${2:RplRcver.Server})]`. Each complete enum
 expression is selected, so typing replaces it and resumes ordinary value
-completion. The built-in `editor.action.triggerSuggest` command opens the
-Rust-owned enum completion policy: qualified enum values rank first, while
+completion. The extension-owned, event-driven snippet-placeholder bridge opens
+the Rust-owned enum completion policy only after VS Code has selected the
+placeholder: qualified enum values rank first, while
 general value candidates remain below them. These items use the LSP
 `InsertReplaceEdit` form: their insert range is the active enum-member word so
 VS Code can display and filter the menu normally, while their replace range is

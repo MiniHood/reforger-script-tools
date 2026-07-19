@@ -14,6 +14,7 @@ export const languageClientCrashHandling = {
 export const languageClientCommands = {
 	debugHoverAtCursor: 'reforger-sript-tools.debug.hoverAtCursor',
 	debugCompletionAtCursor: 'reforger-sript-tools.debug.completionAtCursor',
+	triggerSuggestAtSnippetPlaceholder: 'reforger-sript-tools.completion.triggerSuggestAtSnippetPlaceholder',
 	openSymbolLocation: 'reforger-sript-tools.openSymbolLocation',
 } as const;
 

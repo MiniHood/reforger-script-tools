@@ -34,10 +34,18 @@ The package contribution activates the extension directly for the hover and comp
 
 Ordinary document edits never cause TypeScript to invoke VS Code Suggest. Rust
 owns the completion contract, including current-document admission, context,
-candidate eligibility, ranking, and rendering. This keeps edit latency and
-completion behavior independent of client-side text heuristics and timers.
+candidate eligibility, ranking, and rendering. The sole exception is the
+Rust-selected `RplRpc` enum snippet: its completion item invokes a registered
+extension command, which waits for VS Code's snippet selection event (or an
+already-selected placeholder matching the Rust-provided default) and then invokes
+Suggest. It does not parse text, inspect symbols, choose candidates, or use a typing-path delay. A one-second
+cleanup timer only releases an abandoned editor transaction; it never triggers
+Suggest. While that transaction is active, the client records bounded
+command/placeholder/request/response metadata through the existing optional
+diagnostic logger, allowing a missing UI widget to be separated from an absent
+LSP response without recording source text or completion payloads.
 
-Rust completion items may still use VS Code's built-in parameter-hints command after callable insertion. The extension does not register completion follow-up commands or programmatically invoke VS Code Suggest; enum placeholders remain ordinary snippets and the next completion request is initiated by normal editor behavior.
+Rust completion items may still use VS Code's built-in parameter-hints command after ordinary callable insertion.
 
 ## Dependencies and Boundaries
 
