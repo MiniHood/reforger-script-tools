@@ -1,0 +1,4 @@
+interface:
+  display_name: "Fix Reforger Script Tools"
+  short_description: "Investigate and implement durable fixes"
+  default_prompt: "Use $fix to diagnose, implement, and verify the best durable fix for this Reforger Script Tools issue."
