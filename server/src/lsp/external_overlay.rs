@@ -46,9 +46,10 @@ struct ExternalIndexState {
 #[derive(Debug, Clone)]
 struct WorkspaceIndexedFile {
     /// The versioned public contract admitted for this workspace generation.
-    /// `index` is the temporary query projection derived from the same file.
+    /// Workspace aggregation reconstructs its query projection from this
+    /// contribution, so no parallel per-file index representation is retained.
     contribution: FileContribution,
-    index: SymbolIndex,
+    metadata: SourceFileMetadata,
     bytes: usize,
     parse_diagnostics: usize,
 }
@@ -197,7 +198,7 @@ impl ExternalIndexHandle {
         });
 
         let indexed = Arc::new(build_workspace_file_index(&root, &normalized_path, &text));
-        let symbol_count = indexed.index.symbols().len();
+        let symbol_count = indexed.contribution.symbols.len();
         let parse_diagnostics = indexed.parse_diagnostics;
         self.publish_workspace_change(normalized_path, Some(indexed));
         Ok(Some((symbol_count, parse_diagnostics)))
@@ -613,7 +614,7 @@ fn build_workspace_indexes(
             "externalIndex workspace file indexed path={} bytes={} symbols={} parse_diagnostics={} elapsed_ms={} total_elapsed_ms={}",
             file.display(),
             indexed.bytes,
-            indexed.index.symbols().len(),
+            indexed.contribution.symbols.len(),
             indexed.parse_diagnostics,
             file_start.elapsed().as_millis(),
             external_start.elapsed().as_millis()
@@ -650,20 +651,16 @@ fn build_workspace_file_index(root: &Path, file: &Path, source: &str) -> Workspa
     let parse = parse_source(source);
     let ast = AstSourceFile::new(source, &parse);
     let semantic_file = SemanticFile::build(source, &ast);
-    // Workspace publication accepts only the versioned public projection; the
-    // index below remains the query representation derived from those same
-    // compiler-owned facts.
+    // Workspace publication retains only the versioned public projection.
+    // `workspace_aggregate` reconstructs a query index from these validated
+    // compiler-owned facts when it publishes the workspace generation.
     let contribution = semantic_file.contribution();
     contribution
         .validate()
         .expect("fresh compiler-owned workspace contribution is valid");
-    let mut index = SymbolIndex::default();
-    index
-        .add_file_contribution(&contribution, workspace_source_metadata(root, file))
-        .expect("fresh compiler-owned workspace contribution is valid");
     WorkspaceIndexedFile {
         contribution,
-        index,
+        metadata: workspace_source_metadata(root, file),
         bytes: source.len(),
         parse_diagnostics: parse.diagnostics.len(),
     }
@@ -792,7 +789,7 @@ fn workspace_summary_from_files(
     for file in files.values() {
         summary.files += 1;
         summary.bytes += file.bytes;
-        summary.indexed_symbols += file.index.symbols().len();
+        summary.indexed_symbols += file.contribution.symbols.len();
         summary.parse_diagnostics += file.parse_diagnostics;
     }
     summary
@@ -801,9 +798,15 @@ fn workspace_summary_from_files(
 fn workspace_aggregate(
     files: &BTreeMap<PathBuf, Arc<WorkspaceIndexedFile>>,
 ) -> (Option<Arc<SymbolIndex>>, RuntimeIndexSummary) {
-    let workspace_indexes = files.values().map(|file| &file.index).collect::<Vec<_>>();
-    let workspace_index =
-        (!workspace_indexes.is_empty()).then(|| Arc::new(SymbolIndex::merged(workspace_indexes)));
+    let workspace_index = (!files.is_empty()).then(|| {
+        let mut index = SymbolIndex::default();
+        for file in files.values() {
+            index
+                .add_file_contribution(&file.contribution, file.metadata.clone())
+                .expect("only validated workspace contributions are retained");
+        }
+        Arc::new(index)
+    });
     (workspace_index, workspace_summary_from_files(files))
 }
 
@@ -849,9 +852,13 @@ class Example : BaseExample
 
         assert_eq!(indexed.parse_diagnostics, 0);
         indexed.contribution.validate().unwrap();
-        assert_eq!(indexed.index.files().len(), 1);
-        assert_eq!(indexed.index.symbols().len(), 4);
-        let metadata = &indexed.index.files()[0].metadata;
+        let files = BTreeMap::from([(file.to_path_buf(), Arc::new(indexed.clone()))]);
+        let (index, summary) = workspace_aggregate(&files);
+        let index = index.expect("a retained contribution produces a workspace index");
+        assert_eq!(summary.indexed_symbols, 4);
+        assert_eq!(index.files().len(), 1);
+        assert_eq!(index.symbols().len(), 4);
+        let metadata = &index.files()[0].metadata;
         assert_eq!(metadata.kind, SourceKind::Workspace);
         assert_eq!(metadata.root_path.as_deref(), Some(root));
         assert_eq!(
@@ -859,16 +866,12 @@ class Example : BaseExample
             Some(Path::new("Scripts/Example.c"))
         );
         assert_eq!(
-            indexed
-                .index
-                .symbol(indexed.index.classes_by_name("Example")[0])
+            index
+                .symbol(index.classes_by_name("Example")[0])
                 .and_then(|symbol| symbol.detail.base_type.as_deref()),
             Some("BaseExample")
         );
-        assert_eq!(
-            indexed.index.methods_by_owner_name("Example", "Run").len(),
-            1
-        );
+        assert_eq!(index.methods_by_owner_name("Example", "Run").len(), 1);
     }
 
     #[test]

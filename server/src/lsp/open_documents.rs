@@ -253,6 +253,7 @@ impl SemanticTokenCache {
             .select(external_generation)
     }
 
+    #[cfg(test)]
     pub(crate) fn rich_for_revision_and_external_generation(
         &self,
         revision: u64,

@@ -195,6 +195,7 @@ impl SemanticFile {
             .unwrap_or_default()
     }
 
+    #[cfg(test)]
     fn local_region_for_callable(
         &self,
         callable: SemanticDeclarationId,
