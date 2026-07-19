@@ -57,11 +57,14 @@ and internal events are ordering barriers and are never merged. The dispatch
 log records queue time plus coalesced and superseded counts so a capture can
 separate queue delay from analysis work.
 
-While a current revision is pending analysis, source-backed requests are held
-by URI/revision instead of reading the prior analysis against new text. They
-replay after that exact analysis installs; a new edit or close receives the
-standard `ContentModified` response for retained requests. This keeps the
-transport responsive without exposing mismatched language facts.
+While a current revision is pending analysis, semantic feature requests are
+held by URI/revision instead of reading the prior analysis against new text.
+They replay after that exact analysis installs; a new edit or close receives
+the standard `ContentModified` response for retained requests. Document Outline
+is the explicit exception: it returns a current-revision lexical projection of
+top-level classes, enums, and typedefs immediately. That result intentionally
+omits members and uncertain declarations until exact syntax/semantic facts are
+installed, and it never reads the prior cached outline.
 
 The current parser/catalog analysis is an indivisible worker operation. A newer
 revision cancels a queued job immediately and causes a running obsolete result

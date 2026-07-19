@@ -4,7 +4,7 @@ use crate::analysis_runtime::{
 };
 use crate::index::{GlobalSymbolId, SymbolIndex};
 use crate::index_query::IndexQuery;
-use crate::lexer::TextSpan;
+use crate::lexer::{lex, Keyword, TextSpan, Token, TokenKind};
 use crate::model::SymbolKind;
 #[cfg(test)]
 use crate::parser::parse_source;
@@ -390,8 +390,7 @@ fn earliest_due_document_analysis_uri(
 fn source_backed_request_method(method: &str) -> bool {
     matches!(
         method,
-        "textDocument/documentSymbol"
-            | "textDocument/hover"
+        "textDocument/hover"
             | "textDocument/definition"
             | "textDocument/signatureHelp"
             | DEBUG_HOVER_METHOD
@@ -1265,6 +1264,7 @@ impl<W: Write> LspServer<W> {
                     let mut parse_diagnostics = 0usize;
                     let mut revision = 0u64;
                     let mut cached_projection = false;
+                    let mut outline_quality = "Exact";
                     let mut projection_ms = 0u128;
                     let result = params
                         .and_then(|params| {
@@ -1272,29 +1272,40 @@ impl<W: Write> LspServer<W> {
                             self.documents.get_mut(&log_uri).map(|document| {
                                 bytes = document.text.len();
                                 revision = document.revision;
-                                cached_projection = document.document_symbols_ready();
-                                if !cached_projection {
+                                if document.analysis_ready() {
+                                    cached_projection = document.document_symbols_ready();
+                                    if !cached_projection {
+                                        let projection_start = Instant::now();
+                                        let symbols = document_symbols_from_cached_analysis(
+                                            &document.text,
+                                            document.analysis(),
+                                        );
+                                        projection_ms = projection_start.elapsed().as_millis();
+                                        document.set_document_symbols(symbols);
+                                    }
+                                    let symbols = document.document_symbols();
+                                    symbol_count = document_symbol_count(&symbols);
+                                    parse_diagnostics = document.analysis().parse_diagnostics;
+                                    symbols.to_vec()
+                                } else {
+                                    outline_quality = "Unavailable";
                                     let projection_start = Instant::now();
-                                    let symbols = document_symbols_from_cached_analysis(
-                                        &document.text,
-                                        document.analysis(),
-                                    );
+                                    let symbols =
+                                        lexical_document_symbols_for_snapshot(&document.snapshot);
                                     projection_ms = projection_start.elapsed().as_millis();
-                                    document.set_document_symbols(symbols);
+                                    symbol_count = document_symbol_count(&symbols);
+                                    symbols
                                 }
-                                let symbols = document.document_symbols();
-                                symbol_count = document_symbol_count(&symbols);
-                                parse_diagnostics = document.analysis().parse_diagnostics;
-                                symbols.to_vec()
                             })
                         })
                         .map(|symbols| serde_json::to_value(symbols).unwrap_or(Value::Null))
                         .unwrap_or(Value::Null);
                     self.log(&format!(
-                        "request documentSymbol uri={} bytes={} revision={} cached_analysis=true document_symbols_cached={} document_symbol_ms={} symbols={} parse_diagnostics={} queue_ms={} elapsed_ms={}",
+                        "request documentSymbol uri={} bytes={} revision={} query_quality={} document_symbols_cached={} document_symbol_ms={} symbols={} parse_diagnostics={} queue_ms={} elapsed_ms={}",
                         log_uri,
                         bytes,
                         revision,
+                        outline_quality,
                         cached_projection,
                         projection_ms,
                         symbol_count,
@@ -2575,6 +2586,110 @@ pub fn document_symbols_for_source(source: &str) -> Vec<LspDocumentSymbol> {
     document_symbol_report_for_source(source).symbols
 }
 
+/// Returns only declarations whose identity is proven by the current lexer
+/// snapshot. This is the pending-analysis outline contract: it is exact for
+/// the returned top-level class, enum, and typedef names, but deliberately
+/// omits members and declarations that need syntax recovery or semantic facts.
+/// It must never reuse an earlier revision's cached projection.
+fn lexical_document_symbols_for_snapshot(
+    snapshot: &crate::analysis_runtime::DocumentSnapshot,
+) -> Vec<LspDocumentSymbol> {
+    lexical_document_symbols(snapshot.text(), snapshot.positions())
+}
+
+fn lexical_document_symbols(source: &str, positions: &PositionIndex) -> Vec<LspDocumentSymbol> {
+    let tokens = lex(source);
+    let mut symbols = Vec::new();
+    let mut brace_depth = 0usize;
+    let mut index = 0usize;
+
+    while index < tokens.len() {
+        let token = tokens[index];
+        match token.kind {
+            TokenKind::LeftBrace => brace_depth += 1,
+            TokenKind::RightBrace => brace_depth = brace_depth.saturating_sub(1),
+            TokenKind::Keyword(Keyword::Class | Keyword::Enum | Keyword::Typedef)
+                if brace_depth == 0 =>
+            {
+                let declaration_kind = token.kind;
+                if let Some((name, name_token, next_index)) =
+                    lexical_outline_declaration(&tokens, index, declaration_kind, source)
+                {
+                    let kind = match declaration_kind {
+                        TokenKind::Keyword(Keyword::Class) => 5,
+                        TokenKind::Keyword(Keyword::Enum) => 10,
+                        TokenKind::Keyword(Keyword::Typedef) => 26,
+                        _ => unreachable!("only outline declaration keywords reach this branch"),
+                    };
+                    let range = lsp_range_for_span(
+                        positions,
+                        TextSpan::new(token.span.start, name_token.span.end),
+                    );
+                    let selection_range = lsp_range_for_span(positions, name_token.span);
+                    symbols.push(LspDocumentSymbol {
+                        name,
+                        detail: None,
+                        kind,
+                        range,
+                        selection_range,
+                        children: Vec::new(),
+                    });
+                    index = next_index;
+                    continue;
+                }
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+
+    symbols
+}
+
+fn lexical_outline_declaration(
+    tokens: &[Token],
+    keyword_index: usize,
+    declaration_kind: TokenKind,
+    source: &str,
+) -> Option<(String, Token, usize)> {
+    let mut index = keyword_index + 1;
+    let mut typedef_name = None;
+    while let Some(token) = tokens.get(index).copied() {
+        if token.kind.is_trivia() {
+            index += 1;
+            continue;
+        }
+        match declaration_kind {
+            TokenKind::Keyword(Keyword::Class | Keyword::Enum) => {
+                return (token.kind == TokenKind::Identifier).then(|| {
+                    (
+                        source[token.span.start..token.span.end].to_string(),
+                        token,
+                        index + 1,
+                    )
+                });
+            }
+            TokenKind::Keyword(Keyword::Typedef) => match token.kind {
+                TokenKind::Identifier => typedef_name = Some(token),
+                TokenKind::Semicolon | TokenKind::Eof => {
+                    return typedef_name.map(|name| {
+                        (
+                            source[name.span.start..name.span.end].to_string(),
+                            name,
+                            index + 1,
+                        )
+                    });
+                }
+                TokenKind::LeftBrace | TokenKind::RightBrace => return None,
+                _ => {}
+            },
+            _ => return None,
+        }
+        index += 1;
+    }
+    None
+}
+
 pub fn document_symbol_report_for_source(source: &str) -> LspDocumentSymbolReport {
     let analysis = file_index_for_source(source);
     document_symbol_report_for_cached_analysis(source, &analysis)
@@ -2589,6 +2704,21 @@ fn document_symbol_report_for_cached_analysis(
     LspDocumentSymbolReport {
         symbols: document_symbols_from_index(&positions, &analysis.index, &query),
         parse_diagnostics: analysis.parse_diagnostics,
+    }
+}
+
+fn lsp_range_for_span(positions: &PositionIndex, span: TextSpan) -> LspRange {
+    let start = positions.position_for_offset(span.start);
+    let end = positions.position_for_offset(span.end);
+    LspRange {
+        start: LspPosition {
+            line: start.line,
+            character: start.character,
+        },
+        end: LspPosition {
+            line: end.line,
+            character: end.character,
+        },
     }
 }
 
@@ -7847,8 +7977,11 @@ class Example
                 json!({
                     "jsonrpc": "2.0",
                     "id": 1,
-                    "method": "textDocument/documentSymbol",
-                    "params": { "textDocument": { "uri": uri } }
+                    "method": "textDocument/hover",
+                    "params": {
+                        "textDocument": { "uri": uri },
+                        "position": { "line": 0, "character": 6 }
+                    }
                 }),
                 None,
                 0,
@@ -7862,7 +7995,7 @@ class Example
     }
 
     #[test]
-    fn pending_document_symbol_request_replays_after_current_analysis_installs() {
+    fn pending_document_symbol_request_returns_current_lexical_outline() {
         let (sender, receiver) = mpsc::channel();
         let scheduler = OpenDocumentAnalysisScheduler::start(sender);
         let mut server = LspServer::new_with_runtime_senders(
@@ -7919,7 +8052,10 @@ class Example
                 0,
             )
             .unwrap();
-        assert!(!String::from_utf8_lossy(&server.writer).contains("\"id\":1"));
+        let pending_output = String::from_utf8_lossy(&server.writer);
+        assert!(pending_output.contains("\"id\":1"));
+        assert!(pending_output.contains("\"name\":\"Current\""));
+        assert!(!pending_output.contains("\"name\":\"Initial\""));
 
         server
             .handle_internal_event(
@@ -7930,7 +8066,7 @@ class Example
             .unwrap();
 
         let output = String::from_utf8(server.writer).unwrap();
-        assert!(output.contains("\"id\":1"));
+        assert_eq!(output.matches("\"id\":1").count(), 1);
         assert!(output.contains("\"name\":\"Current\""));
         assert!(!output.contains("\"name\":\"Initial\""));
     }
@@ -8035,8 +8171,11 @@ class Example
             .handle_message(
                 json!({
                     "jsonrpc": "2.0", "id": 1,
-                    "method": "textDocument/documentSymbol",
-                    "params": { "textDocument": { "uri": uri } }
+                    "method": "textDocument/hover",
+                    "params": {
+                        "textDocument": { "uri": uri },
+                        "position": { "line": 0, "character": 6 }
+                    }
                 }),
                 None,
                 0,

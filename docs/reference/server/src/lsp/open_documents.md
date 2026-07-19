@@ -45,11 +45,15 @@ The ready-analysis identity is separate from the accepted document revision.
 Feature dispatch must require them to match; it may defer a semantic request,
 but must never combine current text with an earlier analysis. The lexical
 semantic-token projection is explicitly allowed during this pending state
-because it reads only current source text. Top-level completion is also allowed
-in this state, but only through its current lexer prefix and captured external
-indexes; it deliberately excludes local/member/argument facts until their
-current analysis contract is available. Replacing or closing a document cancels
-the tracked analysis work and invalidates its caches.
+because it reads only current source text. Document Outline is likewise allowed
+through a documented lower-quality lexical contract: it returns only top-level
+class, enum, and typedef names with ranges from the runtime-owned current
+`PositionIndex`; members and ambiguous declarations remain absent until exact
+analysis installs. Top-level completion is also allowed in this state, but only
+through its current lexer prefix and captured external indexes; it deliberately
+excludes local/member/argument facts until their current analysis contract is
+available. Replacing or closing a document cancels the tracked analysis work
+and invalidates its caches.
 
 If bounded semantic admission rejects a revision, deferred semantic requests
 receive the standard content-modified response rather than remaining queued
