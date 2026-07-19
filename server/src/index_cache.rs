@@ -23,11 +23,11 @@ use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
-const CACHE_FORMAT_VERSION: u32 = 10;
+const CACHE_FORMAT_VERSION: u32 = 11;
 const CACHE_SCHEMA: &str = "reforger-symbol-index";
-const CACHE_MAGIC: &[u8; 8] = b"RSTIDX10";
+const CACHE_MAGIC: &[u8; 8] = b"RSTIDX11";
 const CACHE_INDEX_SHAPE: &str =
-    "runtime-pruned:no-local-variables:detail-spans-stripped:layered-external-v1:binary-v3:string-table-v1:validated-file-contributions-v1";
+    "runtime-pruned:no-local-variables:detail-spans-stripped:layered-external-v1:binary-v4:string-table-v1:canonical-public-facts-v1";
 const LEGACY_CACHE_FORMAT_VERSION: u32 = 9;
 const LEGACY_CACHE_MAGIC: &[u8; 8] = b"RSTIDX09";
 const LEGACY_CACHE_INDEX_SHAPE: &str =
@@ -37,7 +37,6 @@ const MAX_CACHE_RAW_STRING_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CACHE_FILE_RECORDS: usize = 1_000_000;
 const MAX_CACHE_SYMBOL_RECORDS: usize = 5_000_000;
 const MAX_CACHE_SYMBOL_LIST_ITEMS: usize = 1_000_000;
-const MAX_CACHE_CONTRIBUTION_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug)]
 pub struct GameDataIndexCacheConfig {
@@ -115,7 +114,7 @@ pub enum SourceFingerprint {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct CachedGameDataIndex {
     schema: String,
     format_version: u32,
@@ -123,16 +122,57 @@ struct CachedGameDataIndex {
     crate_version: String,
     fingerprint: SourceFingerprint,
     summary: CachedIndexSummary,
-    index: CachedSymbolIndex,
+    files: Vec<CachedFileContribution>,
 }
 
-#[derive(Debug)]
-struct CachedSymbolIndex {
-    files: Vec<IndexedFile>,
-    symbols: Vec<IndexedSymbol>,
-    contributions: Vec<FileContribution>,
+/// The cache's canonical payload.  This intentionally is neither a
+/// `FileContribution` (which carries source-only spans/container text) nor a
+/// serialized `SymbolIndex` (which duplicates all derived runtime records).
+/// It contains exactly the source metadata and public facts needed to rebuild
+/// a runtime contribution and its lookup maps.
+#[derive(Debug, Clone)]
+struct CachedFileContribution {
+    metadata: SourceFileMetadata,
+    non_declaration_callable_fragments: usize,
+    symbols: Vec<CachedPublicSymbol>,
 }
 
+#[derive(Debug, Clone)]
+struct CachedPublicSymbol {
+    id: SemanticDeclarationId,
+    parent: Option<SemanticDeclarationId>,
+    kind: SemanticDeclarationKind,
+    name: String,
+    span: TextSpan,
+    selection_span: TextSpan,
+    detail: CachedPublicSymbolDetail,
+    attributes: Vec<String>,
+    modifiers: Vec<String>,
+    doc_comments: Vec<CachedDocComment>,
+    conditional_context: Vec<CachedConditionalBranch>,
+    callable_form: Option<SemanticCallableForm>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct CachedPublicSymbolDetail {
+    type_text: Option<String>,
+    return_type: Option<String>,
+    base_type: Option<String>,
+    default_value: Option<String>,
+    enum_value: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct CachedDocComment {
+    kind: SemanticDocCommentKind,
+    text: String,
+}
+
+#[derive(Debug, Clone)]
+struct CachedConditionalBranch {
+    kind: SemanticConditionalBranchKind,
+    condition: Option<String>,
+}
 /// A v9 cache had the same binary records as v10 up to its indexed symbols,
 /// but no compiler-owned public contribution payload. It is read only as a
 /// one-way migration input and is never an alternate runtime representation.
@@ -153,187 +193,227 @@ struct LegacyCachedSymbolIndex {
     symbols: Vec<IndexedSymbol>,
 }
 
-impl From<&SymbolIndex> for CachedSymbolIndex {
-    fn from(index: &SymbolIndex) -> Self {
-        let mut snapshot = Self {
-            files: index.files().to_vec(),
-            symbols: index.symbols().to_vec(),
-            contributions: Vec::new(),
-        };
-        snapshot.contributions = snapshot.public_contributions();
-        snapshot
-    }
-}
-
-impl From<CachedSymbolIndex> for SymbolIndex {
-    fn from(snapshot: CachedSymbolIndex) -> Self {
-        let mut index = SymbolIndex::default();
-        for (file, contribution) in snapshot.files.into_iter().zip(snapshot.contributions) {
-            index
-                .add_file_contribution(&contribution, file.metadata)
-                .expect("cached contribution was validated before index reconstruction");
+impl CachedFileContribution {
+    fn from_indexed_file(file: &IndexedFile, symbols: &[IndexedSymbol]) -> Self {
+        let public_symbols = symbols
+            .iter()
+            .filter(|symbol| symbol.name.is_some())
+            .filter_map(|symbol| {
+                let kind = public_semantic_kind(symbol.kind)?;
+                Some(CachedPublicSymbol {
+                    id: SemanticDeclarationId(symbol.id.symbol_id.0 as u32),
+                    parent: symbol
+                        .parent
+                        .map(|parent| SemanticDeclarationId(parent.symbol_id.0 as u32)),
+                    kind,
+                    name: symbol
+                        .name
+                        .clone()
+                        .expect("named public symbols are filtered above"),
+                    span: symbol.span,
+                    selection_span: symbol.selection_span,
+                    detail: CachedPublicSymbolDetail {
+                        type_text: symbol.detail.type_text.clone(),
+                        return_type: symbol.detail.return_type_text.clone(),
+                        base_type: symbol.detail.base_type.clone(),
+                        default_value: symbol.detail.default_text.clone(),
+                        enum_value: symbol.detail.enum_value_text.clone(),
+                    },
+                    attributes: symbol
+                        .attributes
+                        .iter()
+                        .map(|attribute| attribute.text.clone())
+                        .collect(),
+                    modifiers: symbol.modifiers.clone(),
+                    doc_comments: symbol
+                        .doc_comments
+                        .iter()
+                        .map(|comment| CachedDocComment {
+                            kind: match comment.kind {
+                                DocCommentKind::Line => SemanticDocCommentKind::Line,
+                                DocCommentKind::Block => SemanticDocCommentKind::Block,
+                            },
+                            text: comment.text.clone(),
+                        })
+                        .collect(),
+                    conditional_context: symbol
+                        .conditional_context
+                        .iter()
+                        .map(|branch| CachedConditionalBranch {
+                            kind: match branch.kind {
+                                PreprocessorBranchKind::If => SemanticConditionalBranchKind::If,
+                                PreprocessorBranchKind::Ifdef => {
+                                    SemanticConditionalBranchKind::Ifdef
+                                }
+                                PreprocessorBranchKind::Ifndef => {
+                                    SemanticConditionalBranchKind::Ifndef
+                                }
+                                PreprocessorBranchKind::Elif => SemanticConditionalBranchKind::Elif,
+                                PreprocessorBranchKind::Else => SemanticConditionalBranchKind::Else,
+                            },
+                            condition: branch.condition.clone(),
+                        })
+                        .collect(),
+                    callable_form: symbol.callable_form.map(|form| match form {
+                        CallableForm::Implementation => SemanticCallableForm::Implementation,
+                        CallableForm::Declaration => SemanticCallableForm::Declaration,
+                        CallableForm::Prototype => SemanticCallableForm::Prototype,
+                    }),
+                })
+            })
+            .collect::<Vec<_>>();
+        Self {
+            metadata: file.metadata.clone(),
+            non_declaration_callable_fragments: file.non_declaration_callable_fragments,
+            symbols: public_symbols,
         }
-        index
+        .with_contiguous_ids()
     }
-}
 
-impl CachedSymbolIndex {
+    fn with_contiguous_ids(mut self) -> Self {
+        let remapped: BTreeMap<_, _> = self
+            .symbols
+            .iter()
+            .enumerate()
+            .map(|(next, symbol)| (symbol.id, SemanticDeclarationId(next as u32)))
+            .collect();
+        for symbol in &mut self.symbols {
+            symbol.parent = symbol.parent.map(|parent| remapped[&parent]);
+            symbol.id = remapped[&symbol.id];
+        }
+        self
+    }
+
+    fn to_file_contribution(&self) -> FileContribution {
+        FileContribution {
+            schema_version: FILE_CONTRIBUTION_SCHEMA_VERSION,
+            source_manifest_version: FILE_CONTRIBUTION_SOURCE_MANIFEST_VERSION,
+            non_declaration_callable_fragments: self.non_declaration_callable_fragments,
+            symbols: self
+                .symbols
+                .iter()
+                .map(|symbol| PublicSymbol {
+                    id: symbol.id,
+                    parent: symbol.parent,
+                    kind: symbol.kind,
+                    name: Some(symbol.name.clone()),
+                    container: None,
+                    detail: PublicSymbolDetail {
+                        type_text: cached_public_text(None, symbol.detail.type_text.clone()),
+                        return_type: cached_public_text(None, symbol.detail.return_type.clone()),
+                        base_type: cached_public_text(None, symbol.detail.base_type.clone()),
+                        default_value: cached_public_text(
+                            None,
+                            symbol.detail.default_value.clone(),
+                        ),
+                        enum_value: cached_public_text(None, symbol.detail.enum_value.clone()),
+                    },
+                    span: symbol.span,
+                    selection_span: symbol.selection_span,
+                    modifiers: symbol
+                        .modifiers
+                        .iter()
+                        .cloned()
+                        .map(|text| SemanticText {
+                            span: symbol.span,
+                            text,
+                        })
+                        .collect(),
+                    attributes: symbol
+                        .attributes
+                        .iter()
+                        .cloned()
+                        .map(|text| SemanticText {
+                            span: symbol.span,
+                            text,
+                        })
+                        .collect(),
+                    doc_comments: symbol
+                        .doc_comments
+                        .iter()
+                        .map(|comment| SemanticDocComment {
+                            span: symbol.span,
+                            kind: comment.kind,
+                            text: comment.text.clone(),
+                        })
+                        .collect(),
+                    conditional_context: symbol
+                        .conditional_context
+                        .iter()
+                        .map(|branch| SemanticConditionalBranch {
+                            kind: branch.kind,
+                            directive_span: symbol.span,
+                            condition: branch.condition.clone().map(|text| SemanticText {
+                                span: symbol.span,
+                                text,
+                            }),
+                        })
+                        .collect(),
+                    callable_form: symbol.callable_form,
+                })
+                .collect(),
+        }
+    }
+
     /// Reconstruct the public records that this legacy query cache exposes and
     /// validate the versioned compiler contract before rebuilding lookup maps.
     /// The index remains a temporary query projection, never a cache-validity
     /// fallback for malformed public semantic data.
-    fn validate_public_contributions(&self) -> Result<(), String> {
-        if self.files.len() != self.contributions.len() {
-            return Err(format!(
-                "cached contribution count {} does not match file count {}",
-                self.contributions.len(),
-                self.files.len()
-            ));
+    fn validate(&self) -> Result<(), String> {
+        self.to_file_contribution()
+            .validate()
+            .map_err(|error| format!("invalid cached public file contribution: {error:?}"))
+    }
+}
+
+impl CachedGameDataIndex {
+    fn from_index(
+        index: &SymbolIndex,
+        fingerprint: SourceFingerprint,
+        summary: CachedIndexSummary,
+    ) -> Self {
+        Self {
+            schema: CACHE_SCHEMA.to_string(),
+            format_version: CACHE_FORMAT_VERSION,
+            index_shape: CACHE_INDEX_SHAPE.to_string(),
+            crate_version: env!("CARGO_PKG_VERSION").to_string(),
+            fingerprint,
+            summary,
+            files: index
+                .files()
+                .iter()
+                .map(|file| {
+                    let end = file.symbol_start + file.symbol_count;
+                    CachedFileContribution::from_indexed_file(
+                        file,
+                        &index.symbols()[file.symbol_start..end],
+                    )
+                })
+                .collect(),
         }
-        for contribution in &self.contributions {
-            contribution
-                .validate()
-                .map_err(|error| format!("invalid public file contribution: {error:?}"))?;
-        }
-        Ok(())
     }
 
-    fn public_contributions(&self) -> Vec<FileContribution> {
-        let names_by_id: BTreeMap<_, _> = self
-            .symbols
-            .iter()
-            .filter_map(|symbol| symbol.name.as_ref().map(|name| (symbol.id, name.clone())))
-            .collect();
+    fn validate(&self) -> Result<(), String> {
         self.files
             .iter()
-            .map(|file| {
-                let symbol_end = file
-                    .symbol_start
-                    .checked_add(file.symbol_count)
-                    .expect("cached file symbol range overflowed");
-                let symbols = self.symbols.get(file.symbol_start..symbol_end).expect(
-                    "cached file symbol range was validated before contribution projection",
-                );
-                FileContribution {
-                    schema_version: FILE_CONTRIBUTION_SCHEMA_VERSION,
-                    source_manifest_version: FILE_CONTRIBUTION_SOURCE_MANIFEST_VERSION,
-                    non_declaration_callable_fragments: file.non_declaration_callable_fragments,
-                    symbols: symbols
-                        .iter()
-                        .filter(|symbol| symbol.name.is_some())
-                        .filter_map(|symbol| {
-                            let kind = public_semantic_kind(symbol.kind)?;
-                            Some(PublicSymbol {
-                                id: SemanticDeclarationId(symbol.id.symbol_id.0 as u32),
-                                parent: symbol
-                                    .parent
-                                    .map(|parent| SemanticDeclarationId(parent.symbol_id.0 as u32)),
-                                kind,
-                                name: symbol.name.clone(),
-                                container: symbol
-                                    .parent
-                                    .and_then(|parent| names_by_id.get(&parent).cloned()),
-                                detail: PublicSymbolDetail {
-                                    type_text: cached_public_text(
-                                        symbol.detail.type_text_span,
-                                        symbol.detail.type_text.clone(),
-                                    ),
-                                    return_type: cached_public_text(
-                                        symbol.detail.return_type_text_span,
-                                        symbol.detail.return_type_text.clone(),
-                                    ),
-                                    base_type: cached_public_text(
-                                        symbol.detail.base_type_span,
-                                        symbol.detail.base_type.clone(),
-                                    ),
-                                    default_value: cached_public_text(
-                                        symbol.detail.default_text_span,
-                                        symbol.detail.default_text.clone(),
-                                    ),
-                                    enum_value: cached_public_text(
-                                        symbol.detail.enum_value_text_span,
-                                        symbol.detail.enum_value_text.clone(),
-                                    ),
-                                },
-                                span: symbol.span,
-                                selection_span: symbol.selection_span,
-                                modifiers: symbol
-                                    .modifiers
-                                    .iter()
-                                    .cloned()
-                                    .map(|text| SemanticText {
-                                        span: symbol.span,
-                                        text,
-                                    })
-                                    .collect(),
-                                attributes: symbol
-                                    .attributes
-                                    .iter()
-                                    .map(|attribute| SemanticText {
-                                        span: symbol.span,
-                                        text: attribute.text.clone(),
-                                    })
-                                    .collect(),
-                                doc_comments: symbol
-                                    .doc_comments
-                                    .iter()
-                                    .map(|comment| SemanticDocComment {
-                                        span: symbol.span,
-                                        kind: match comment.kind {
-                                            crate::ast::DocCommentKind::Line => {
-                                                SemanticDocCommentKind::Line
-                                            }
-                                            crate::ast::DocCommentKind::Block => {
-                                                SemanticDocCommentKind::Block
-                                            }
-                                        },
-                                        text: comment.text.clone(),
-                                    })
-                                    .collect(),
-                                conditional_context: symbol
-                                    .conditional_context
-                                    .iter()
-                                    .map(|branch| SemanticConditionalBranch {
-                                        kind: match branch.kind {
-                                            PreprocessorBranchKind::If => {
-                                                SemanticConditionalBranchKind::If
-                                            }
-                                            PreprocessorBranchKind::Ifdef => {
-                                                SemanticConditionalBranchKind::Ifdef
-                                            }
-                                            PreprocessorBranchKind::Ifndef => {
-                                                SemanticConditionalBranchKind::Ifndef
-                                            }
-                                            PreprocessorBranchKind::Elif => {
-                                                SemanticConditionalBranchKind::Elif
-                                            }
-                                            PreprocessorBranchKind::Else => {
-                                                SemanticConditionalBranchKind::Else
-                                            }
-                                        },
-                                        directive_span: symbol.span,
-                                        condition: branch.condition.as_ref().map(|text| {
-                                            SemanticText {
-                                                span: symbol.span,
-                                                text: text.clone(),
-                                            }
-                                        }),
-                                    })
-                                    .collect(),
-                                callable_form: symbol.callable_form.map(|form| match form {
-                                    CallableForm::Implementation => {
-                                        SemanticCallableForm::Implementation
-                                    }
-                                    CallableForm::Declaration => SemanticCallableForm::Declaration,
-                                    CallableForm::Prototype => SemanticCallableForm::Prototype,
-                                }),
-                            })
-                        })
-                        .collect(),
-                }
-                .with_contiguous_ids()
-            })
-            .collect()
+            .try_for_each(CachedFileContribution::validate)
+    }
+
+    fn into_index(self) -> SymbolIndex {
+        let contributions = self
+            .files
+            .iter()
+            .map(|file| (file.to_file_contribution(), file.metadata.clone()))
+            .collect::<Vec<_>>();
+        let mut index = SymbolIndex::default();
+        index
+            .add_file_contributions(
+                contributions
+                    .iter()
+                    .map(|(contribution, metadata)| (contribution, metadata.clone())),
+            )
+            .expect("cached contributions were validated before index reconstruction");
+        index
     }
 }
 
@@ -342,25 +422,8 @@ impl LegacyCachedGameDataIndex {
     /// contribution contract. The v9 `SymbolIndex` records are source-derived
     /// facts; they are not used as a fallback query model after migration.
     fn into_current(self) -> CachedGameDataIndex {
-        let legacy_index = CachedSymbolIndex {
-            files: self.index.files,
-            symbols: self.index.symbols,
-            contributions: Vec::new(),
-        };
-        let contributions = legacy_index.public_contributions();
-        CachedGameDataIndex {
-            schema: CACHE_SCHEMA.to_string(),
-            format_version: CACHE_FORMAT_VERSION,
-            index_shape: CACHE_INDEX_SHAPE.to_string(),
-            crate_version: self.crate_version,
-            fingerprint: self.fingerprint,
-            summary: self.summary,
-            index: CachedSymbolIndex {
-                files: legacy_index.files,
-                symbols: legacy_index.symbols,
-                contributions,
-            },
-        }
+        let index = SymbolIndex::from_indexed_parts(self.index.files, self.index.symbols);
+        CachedGameDataIndex::from_index(&index, self.fingerprint, self.summary)
     }
 
     fn validates_for_migration(&self, expected_fingerprint: &SourceFingerprint) -> bool {
@@ -568,13 +631,14 @@ pub fn load_or_build_game_data_index_with_progress(
             progress("cache-load-hit");
             progress("map-rebuild-start");
             let map_rebuild_start = Instant::now();
-            let index = cached.index.into();
+            let summary: RuntimeIndexSummary = cached.summary.clone().into();
+            let index = cached.into_index();
             timings.map_rebuild = map_rebuild_start.elapsed();
             progress("map-rebuild-end");
             timings.total = total_start.elapsed();
             return Ok(GameDataIndexCacheResult {
                 index,
-                summary: cached.summary.into(),
+                summary,
                 cache_status: IndexCacheStatus::Loaded,
                 fingerprint,
                 timings,
@@ -586,9 +650,9 @@ pub fn load_or_build_game_data_index_with_progress(
             progress("cache-load-hit");
             progress("map-rebuild-start");
             let map_rebuild_start = Instant::now();
-            let index = cached.index.into();
-            timings.map_rebuild = map_rebuild_start.elapsed();
             let summary: RuntimeIndexSummary = cached.summary.clone().into();
+            let index = cached.into_index();
+            timings.map_rebuild = map_rebuild_start.elapsed();
 
             // The v9 bytes have already passed source-identity and structural
             // validation. Replace them with the current contribution contract
@@ -720,7 +784,7 @@ fn load_cached_index(
         || cached.index_shape != CACHE_INDEX_SHAPE
         || cached.crate_version != env!("CARGO_PKG_VERSION")
         || cached.fingerprint != *expected_fingerprint
-        || cached.index.validate_public_contributions().is_err()
+        || cached.validate().is_err()
     {
         timings.cache_validate = validate_start.elapsed();
         return Ok(None);
@@ -752,15 +816,11 @@ fn write_cached_index(
             temp_path.display()
         )
     })?;
-    let cached = CachedGameDataIndex {
-        schema: CACHE_SCHEMA.to_string(),
-        format_version: CACHE_FORMAT_VERSION,
-        index_shape: CACHE_INDEX_SHAPE.to_string(),
-        crate_version: env!("CARGO_PKG_VERSION").to_string(),
-        fingerprint: fingerprint.clone(),
-        summary: CachedIndexSummary::from(summary),
-        index: CachedSymbolIndex::from(index),
-    };
+    let cached = CachedGameDataIndex::from_index(
+        index,
+        fingerprint.clone(),
+        CachedIndexSummary::from(summary),
+    );
     let bytes = encode_cached_index(&cached)?;
     let mut writer = BufWriter::new(file);
     writer.write_all(&bytes).map_err(|error| {
@@ -882,36 +942,18 @@ fn encode_cached_index(cached: &CachedGameDataIndex) -> Result<Vec<u8>, String> 
     writer.write_string(&cached.crate_version)?;
     writer.write_fingerprint(&cached.fingerprint)?;
     writer.write_summary(&cached.summary);
-    writer.write_vec_len(cached.index.files.len())?;
-    for file in &cached.index.files {
-        writer.write_indexed_file(file)?;
+    writer.write_vec_len(cached.files.len())?;
+    for file in &cached.files {
+        writer.write_cached_file_contribution(file)?;
     }
-    writer.write_vec_len(cached.index.symbols.len())?;
-    for symbol in &cached.index.symbols {
-        writer.write_indexed_symbol(symbol)?;
-    }
-    let contribution_bytes = serde_json::to_vec(&cached.index.contributions)
-        .map_err(|error| format!("Failed to encode file contributions: {error}"))?;
-    writer.write_vec_len(contribution_bytes.len())?;
-    writer.write_bytes(&contribution_bytes);
     Ok(writer.into_bytes())
 }
 
 #[cfg(test)]
 fn encode_legacy_cached_index(cached: &LegacyCachedGameDataIndex) -> Result<Vec<u8>, String> {
-    let string_table = CacheStringTable::from_cached_index(&CachedGameDataIndex {
-        schema: cached.schema.clone(),
-        format_version: cached.format_version,
-        index_shape: cached.index_shape.clone(),
-        crate_version: cached.crate_version.clone(),
-        fingerprint: cached.fingerprint.clone(),
-        summary: cached.summary.clone(),
-        index: CachedSymbolIndex {
-            files: cached.index.files.clone(),
-            symbols: cached.index.symbols.clone(),
-            contributions: Vec::new(),
-        },
-    })?;
+    let runtime =
+        SymbolIndex::from_indexed_parts(cached.index.files.clone(), cached.index.symbols.clone());
+    let string_table = CacheStringTable::from_legacy(cached, &runtime)?;
     let mut writer = BinaryWriter::new(string_table);
     writer.write_bytes(LEGACY_CACHE_MAGIC);
     writer.write_string_table()?;
@@ -948,17 +990,8 @@ fn decode_cached_index(bytes: &[u8]) -> Result<CachedGameDataIndex, String> {
     let file_count = reader.read_bounded_len("file records", MAX_CACHE_FILE_RECORDS)?;
     let mut files = Vec::with_capacity(file_count);
     for _ in 0..file_count {
-        files.push(reader.read_indexed_file()?);
+        files.push(reader.read_cached_file_contribution()?);
     }
-    let symbol_count = reader.read_bounded_len("symbol records", MAX_CACHE_SYMBOL_RECORDS)?;
-    let mut symbols = Vec::with_capacity(symbol_count);
-    for _ in 0..symbol_count {
-        symbols.push(reader.read_indexed_symbol()?);
-    }
-    let contribution_len =
-        reader.read_bounded_len("public contribution bytes", MAX_CACHE_CONTRIBUTION_BYTES)?;
-    let contributions = serde_json::from_slice(reader.read_exact(contribution_len)?)
-        .map_err(|error| format!("invalid public file contributions: {error}"))?;
     reader.expect_eof()?;
     Ok(CachedGameDataIndex {
         schema,
@@ -967,11 +1000,7 @@ fn decode_cached_index(bytes: &[u8]) -> Result<CachedGameDataIndex, String> {
         crate_version,
         fingerprint,
         summary,
-        index: CachedSymbolIndex {
-            files,
-            symbols,
-            contributions,
-        },
+        files,
     })
 }
 
@@ -1025,10 +1054,29 @@ impl CacheStringTable {
         table.insert(&cached.index_shape)?;
         table.insert(&cached.crate_version)?;
         table.insert_fingerprint(&cached.fingerprint)?;
-        for file in &cached.index.files {
+        for file in &cached.files {
+            table.insert_cached_file(file)?;
+        }
+        Ok(table)
+    }
+
+    #[cfg(test)]
+    fn from_legacy(
+        cached: &LegacyCachedGameDataIndex,
+        runtime: &SymbolIndex,
+    ) -> Result<Self, String> {
+        let mut table = Self {
+            ids: BTreeMap::new(),
+            values: Vec::new(),
+        };
+        table.insert(&cached.schema)?;
+        table.insert(&cached.index_shape)?;
+        table.insert(&cached.crate_version)?;
+        table.insert_fingerprint(&cached.fingerprint)?;
+        for file in runtime.files() {
             table.insert_metadata(&file.metadata)?;
         }
-        for symbol in &cached.index.symbols {
+        for symbol in runtime.symbols() {
             table.insert_symbol(symbol)?;
         }
         Ok(table)
@@ -1100,6 +1148,31 @@ impl CacheStringTable {
         }
         for branch in &symbol.conditional_context {
             self.insert_option(branch.condition.as_deref())?;
+        }
+        Ok(())
+    }
+
+    fn insert_cached_file(&mut self, file: &CachedFileContribution) -> Result<(), String> {
+        self.insert_metadata(&file.metadata)?;
+        for symbol in &file.symbols {
+            self.insert(&symbol.name)?;
+            self.insert_option(symbol.detail.type_text.as_deref())?;
+            self.insert_option(symbol.detail.return_type.as_deref())?;
+            self.insert_option(symbol.detail.base_type.as_deref())?;
+            self.insert_option(symbol.detail.default_value.as_deref())?;
+            self.insert_option(symbol.detail.enum_value.as_deref())?;
+            for attribute in &symbol.attributes {
+                self.insert(attribute)?;
+            }
+            for modifier in &symbol.modifiers {
+                self.insert(modifier)?;
+            }
+            for comment in &symbol.doc_comments {
+                self.insert(&comment.text)?;
+            }
+            for branch in &symbol.conditional_context {
+                self.insert_option(branch.condition.as_deref())?;
+            }
         }
         Ok(())
     }
@@ -1365,6 +1438,65 @@ impl BinaryWriter {
     ) -> Result<(), String> {
         self.write_u8(preprocessor_branch_kind_tag(branch.kind));
         self.write_option_string(branch.condition.as_deref())
+    }
+
+    fn write_cached_file_contribution(
+        &mut self,
+        file: &CachedFileContribution,
+    ) -> Result<(), String> {
+        self.write_metadata(&file.metadata)?;
+        self.write_usize(file.non_declaration_callable_fragments)?;
+        self.write_vec_len(file.symbols.len())?;
+        for symbol in &file.symbols {
+            self.write_cached_public_symbol(symbol)?;
+        }
+        Ok(())
+    }
+
+    fn write_cached_public_symbol(&mut self, symbol: &CachedPublicSymbol) -> Result<(), String> {
+        self.write_u32(symbol.id.0);
+        match symbol.parent {
+            Some(parent) => {
+                self.write_u8(1);
+                self.write_u32(parent.0);
+            }
+            None => self.write_u8(0),
+        }
+        self.write_u8(semantic_declaration_kind_tag(symbol.kind));
+        self.write_string(&symbol.name)?;
+        self.write_span(symbol.span)?;
+        self.write_span(symbol.selection_span)?;
+        self.write_option_string(symbol.detail.type_text.as_deref())?;
+        self.write_option_string(symbol.detail.return_type.as_deref())?;
+        self.write_option_string(symbol.detail.base_type.as_deref())?;
+        self.write_option_string(symbol.detail.default_value.as_deref())?;
+        self.write_option_string(symbol.detail.enum_value.as_deref())?;
+        self.write_vec_len(symbol.attributes.len())?;
+        for attribute in &symbol.attributes {
+            self.write_string(attribute)?;
+        }
+        self.write_vec_len(symbol.modifiers.len())?;
+        for modifier in &symbol.modifiers {
+            self.write_string(modifier)?;
+        }
+        self.write_vec_len(symbol.doc_comments.len())?;
+        for comment in &symbol.doc_comments {
+            self.write_u8(semantic_doc_comment_kind_tag(comment.kind));
+            self.write_string(&comment.text)?;
+        }
+        self.write_vec_len(symbol.conditional_context.len())?;
+        for branch in &symbol.conditional_context {
+            self.write_u8(semantic_conditional_branch_kind_tag(branch.kind));
+            self.write_option_string(branch.condition.as_deref())?;
+        }
+        match symbol.callable_form {
+            Some(form) => {
+                self.write_u8(1);
+                self.write_u8(semantic_callable_form_tag(form));
+            }
+            None => self.write_u8(0),
+        }
+        Ok(())
     }
 }
 
@@ -1649,6 +1781,75 @@ impl<'a> BinaryReader<'a> {
         })
     }
 
+    fn read_cached_file_contribution(&mut self) -> Result<CachedFileContribution, String> {
+        let metadata = self.read_metadata()?;
+        let non_declaration_callable_fragments = self.read_usize()?;
+        let symbol_count =
+            self.read_bounded_len("cached public symbols", MAX_CACHE_SYMBOL_RECORDS)?;
+        let mut symbols = Vec::with_capacity(symbol_count);
+        for _ in 0..symbol_count {
+            symbols.push(self.read_cached_public_symbol()?);
+        }
+        Ok(CachedFileContribution {
+            metadata,
+            non_declaration_callable_fragments,
+            symbols,
+        })
+    }
+
+    fn read_cached_public_symbol(&mut self) -> Result<CachedPublicSymbol, String> {
+        let id = SemanticDeclarationId(self.read_u32()?);
+        let parent = match self.read_u8()? {
+            0 => None,
+            1 => Some(SemanticDeclarationId(self.read_u32()?)),
+            tag => return Err(format!("invalid cached parent option tag {tag}")),
+        };
+        let kind = semantic_declaration_kind_from_tag(self.read_u8()?)?;
+        let name = self.read_string()?;
+        let span = self.read_span()?;
+        let selection_span = self.read_span()?;
+        let detail = CachedPublicSymbolDetail {
+            type_text: self.read_option_string()?,
+            return_type: self.read_option_string()?,
+            base_type: self.read_option_string()?,
+            default_value: self.read_option_string()?,
+            enum_value: self.read_option_string()?,
+        };
+        let attributes = self.read_list(Self::read_string)?;
+        let modifiers = self.read_list(Self::read_string)?;
+        let doc_comments = self.read_list(|reader| {
+            Ok(CachedDocComment {
+                kind: semantic_doc_comment_kind_from_tag(reader.read_u8()?)?,
+                text: reader.read_string()?,
+            })
+        })?;
+        let conditional_context = self.read_list(|reader| {
+            Ok(CachedConditionalBranch {
+                kind: semantic_conditional_branch_kind_from_tag(reader.read_u8()?)?,
+                condition: reader.read_option_string()?,
+            })
+        })?;
+        let callable_form = match self.read_u8()? {
+            0 => None,
+            1 => Some(semantic_callable_form_from_tag(self.read_u8()?)?),
+            tag => return Err(format!("invalid cached callable form option tag {tag}")),
+        };
+        Ok(CachedPublicSymbol {
+            id,
+            parent,
+            kind,
+            name,
+            span,
+            selection_span,
+            detail,
+            attributes,
+            modifiers,
+            doc_comments,
+            conditional_context,
+            callable_form,
+        })
+    }
+
     fn expect_eof(&self) -> Result<(), String> {
         if self.offset == self.bytes.len() {
             Ok(())
@@ -1747,6 +1948,102 @@ fn symbol_kind_from_tag(tag: u8) -> Result<SymbolKind, String> {
         12 => Ok(SymbolKind::LocalVariable),
         13 => Ok(SymbolKind::PreprocessorMacro),
         _ => Err(format!("invalid symbol kind tag {tag}")),
+    }
+}
+
+fn semantic_declaration_kind_tag(kind: SemanticDeclarationKind) -> u8 {
+    match kind {
+        SemanticDeclarationKind::Class => 0,
+        SemanticDeclarationKind::TypeParameter => 1,
+        SemanticDeclarationKind::Enum => 2,
+        SemanticDeclarationKind::EnumMember => 3,
+        SemanticDeclarationKind::Typedef => 4,
+        SemanticDeclarationKind::Function => 5,
+        SemanticDeclarationKind::GlobalField => 6,
+        SemanticDeclarationKind::Field => 7,
+        SemanticDeclarationKind::Method => 8,
+        SemanticDeclarationKind::Constructor => 9,
+        SemanticDeclarationKind::Destructor => 10,
+        SemanticDeclarationKind::Parameter => 11,
+        SemanticDeclarationKind::LocalVariable => 12,
+        SemanticDeclarationKind::PreprocessorMacro => 13,
+    }
+}
+
+fn semantic_declaration_kind_from_tag(tag: u8) -> Result<SemanticDeclarationKind, String> {
+    Ok(match tag {
+        0 => SemanticDeclarationKind::Class,
+        1 => SemanticDeclarationKind::TypeParameter,
+        2 => SemanticDeclarationKind::Enum,
+        3 => SemanticDeclarationKind::EnumMember,
+        4 => SemanticDeclarationKind::Typedef,
+        5 => SemanticDeclarationKind::Function,
+        6 => SemanticDeclarationKind::GlobalField,
+        7 => SemanticDeclarationKind::Field,
+        8 => SemanticDeclarationKind::Method,
+        9 => SemanticDeclarationKind::Constructor,
+        10 => SemanticDeclarationKind::Destructor,
+        11 => SemanticDeclarationKind::Parameter,
+        12 => SemanticDeclarationKind::LocalVariable,
+        13 => SemanticDeclarationKind::PreprocessorMacro,
+        _ => return Err(format!("invalid semantic declaration kind tag {tag}")),
+    })
+}
+
+fn semantic_doc_comment_kind_tag(kind: SemanticDocCommentKind) -> u8 {
+    match kind {
+        SemanticDocCommentKind::Line => 0,
+        SemanticDocCommentKind::Block => 1,
+    }
+}
+
+fn semantic_doc_comment_kind_from_tag(tag: u8) -> Result<SemanticDocCommentKind, String> {
+    match tag {
+        0 => Ok(SemanticDocCommentKind::Line),
+        1 => Ok(SemanticDocCommentKind::Block),
+        _ => Err(format!("invalid semantic doc comment kind tag {tag}")),
+    }
+}
+
+fn semantic_conditional_branch_kind_tag(kind: SemanticConditionalBranchKind) -> u8 {
+    match kind {
+        SemanticConditionalBranchKind::If => 0,
+        SemanticConditionalBranchKind::Ifdef => 1,
+        SemanticConditionalBranchKind::Ifndef => 2,
+        SemanticConditionalBranchKind::Elif => 3,
+        SemanticConditionalBranchKind::Else => 4,
+    }
+}
+
+fn semantic_conditional_branch_kind_from_tag(
+    tag: u8,
+) -> Result<SemanticConditionalBranchKind, String> {
+    match tag {
+        0 => Ok(SemanticConditionalBranchKind::If),
+        1 => Ok(SemanticConditionalBranchKind::Ifdef),
+        2 => Ok(SemanticConditionalBranchKind::Ifndef),
+        3 => Ok(SemanticConditionalBranchKind::Elif),
+        4 => Ok(SemanticConditionalBranchKind::Else),
+        _ => Err(format!(
+            "invalid semantic conditional branch kind tag {tag}"
+        )),
+    }
+}
+
+fn semantic_callable_form_tag(form: SemanticCallableForm) -> u8 {
+    match form {
+        SemanticCallableForm::Implementation => 0,
+        SemanticCallableForm::Declaration => 1,
+        SemanticCallableForm::Prototype => 2,
+    }
+}
+
+fn semantic_callable_form_from_tag(tag: u8) -> Result<SemanticCallableForm, String> {
+    match tag {
+        0 => Ok(SemanticCallableForm::Implementation),
+        1 => Ok(SemanticCallableForm::Declaration),
+        2 => Ok(SemanticCallableForm::Prototype),
+        _ => Err(format!("invalid semantic callable form tag {tag}")),
     }
 }
 
@@ -1999,8 +2296,8 @@ mod tests {
         let decoded = decode_cached_index(&cache_bytes).unwrap();
         assert_eq!(decoded.format_version, CACHE_FORMAT_VERSION);
         assert_eq!(decoded.index_shape, CACHE_INDEX_SHAPE);
-        assert_eq!(decoded.index.contributions.len(), 1);
-        decoded.index.validate_public_contributions().unwrap();
+        assert_eq!(decoded.files.len(), 1);
+        decoded.validate().unwrap();
 
         cleanup(&root);
     }
@@ -2198,7 +2495,7 @@ mod tests {
         load_or_build_game_data_index(&config).unwrap();
 
         let mut decoded = decode_cached_index(&fs::read(&cache).unwrap()).unwrap();
-        decoded.index.contributions[0].symbols[2].id = SemanticDeclarationId(3);
+        decoded.files[0].symbols[2].id = SemanticDeclarationId(3);
         fs::write(&cache, encode_cached_index(&decoded).unwrap()).unwrap();
 
         let rebuilt = load_or_build_game_data_index(&config).unwrap();
@@ -2210,7 +2507,7 @@ mod tests {
     }
 
     #[test]
-    fn v9_cache_migrates_to_validated_v10_contributions() {
+    fn v9_cache_migrates_to_validated_v11_contributions() {
         let root = test_root("v9_migration");
         let cache = root.join("cache.bin");
         let scripts = root.join("scripts");
@@ -2239,10 +2536,7 @@ mod tests {
         let migrated_bytes = fs::read(&cache).unwrap();
         assert!(migrated_bytes.starts_with(CACHE_MAGIC));
         let migrated_cache = decode_cached_index(&migrated_bytes).unwrap();
-        migrated_cache
-            .index
-            .validate_public_contributions()
-            .unwrap();
+        migrated_cache.validate().unwrap();
 
         cleanup(&root);
     }
@@ -2509,7 +2803,7 @@ class BaseGameModeClass : GenericEntityClass
         load_or_build_game_data_index(&config).unwrap();
 
         let mut decoded = decode_cached_index(&fs::read(&cache).unwrap()).unwrap();
-        decoded.index.contributions[0].schema_version += 1;
+        decoded.files[0].symbols[0].id = SemanticDeclarationId(7);
         fs::write(&cache, encode_cached_index(&decoded).unwrap()).unwrap();
 
         let rebuilt = load_or_build_game_data_index(&config).unwrap();
@@ -2625,6 +2919,7 @@ class BaseGameModeClass : GenericEntityClass
     ) -> Result<(), String> {
         let current =
             decode_cached_index(&fs::read(cache_path).map_err(|error| error.to_string())?)?;
+        let runtime = current.clone().into_index();
         let legacy = transform(LegacyCachedGameDataIndex {
             schema: CACHE_SCHEMA.to_string(),
             format_version: LEGACY_CACHE_FORMAT_VERSION,
@@ -2633,8 +2928,8 @@ class BaseGameModeClass : GenericEntityClass
             fingerprint: current.fingerprint,
             summary: current.summary,
             index: LegacyCachedSymbolIndex {
-                files: current.index.files,
-                symbols: current.index.symbols,
+                files: runtime.files().to_vec(),
+                symbols: runtime.symbols().to_vec(),
             },
         });
         fs::write(cache_path, encode_legacy_cached_index(&legacy)?)
