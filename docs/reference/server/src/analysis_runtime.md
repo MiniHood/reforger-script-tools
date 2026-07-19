@@ -32,7 +32,10 @@ Rich token refinement and developer debug captures are admitted through
 byte capacity boundary for those jobs. The LSP's one `RuntimeWorkExecutor`
 owns the fixed worker slot, coalesces by `(TaskClass, URI)`, dispatches ready
 semantic work before ready rich work, and does not create a separate rich-token
-worker. Its executors receive the
+worker or a per-request debug thread. At executor capacity, semantic admission
+evicts queued rich work first; an incoming rich job may replace rich work but
+is dropped when only semantic work remains, so rich never displaces semantic.
+Its executors receive the
 runtime-owned cancellation token and must return the exact task identity before
 the LSP can publish a token-cache result or answer a capture request. A newer
 edit, close, or replacement rich job makes that identity ineligible; debug

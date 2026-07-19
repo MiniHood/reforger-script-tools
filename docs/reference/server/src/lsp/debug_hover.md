@@ -22,11 +22,14 @@ palette used by normal semantic tokens, so the report does not introduce a
 second coloring model. A small label extractor supports request logging.
 
 At runtime, `lsp.rs` admits this developer-only capture through
-`AnalysisRuntime`'s low-priority `Rich` lane, then runs it on a worker and sends
-the completed JSON-RPC response back through the internal event channel. The
+`AnalysisRuntime`'s low-priority `Rich` lane, then queues it on the same
+`RuntimeWorkExecutor` used by semantic convergence and rich token refinement;
+it never starts a request-specific thread. The completed JSON-RPC response
+returns through the internal event channel. The
 runtime task identity is checked before responding, so an edit, close, or newer
 rich job causes the capture to return `Content modified` rather than expose an
-obsolete snapshot. It must never run rich semantic-token or resolver work on
+obsolete snapshot. Debug completion checks cancellation between its bounded
+completion and signature-report phases. It must never run rich semantic-token or resolver work on
 the serialized LSP message loop: document changes and completion requests must
 remain serviceable while a capture is running. The direct in-process entrypoints
 remain synchronous for focused unit tests.

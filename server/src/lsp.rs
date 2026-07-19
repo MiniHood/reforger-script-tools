@@ -239,7 +239,6 @@ struct LspServer<W: Write> {
     logger: LspLogger,
     external_index: ExternalIndexHandle,
     analysis_scheduler: Option<RuntimeWorkExecutor>,
-    internal_sender: Option<mpsc::Sender<ServerEvent>>,
     deferred_document_requests: BTreeMap<String, Vec<DeferredDocumentRequest>>,
     next_server_request_id: u64,
     semantic_tokens_refresh_in_flight: Option<String>,
@@ -318,6 +317,7 @@ struct RuntimeWorkExecutor {
 enum RuntimeWorkJob {
     Semantic(OpenDocumentAnalysisJob),
     Rich(RichSemanticTokensJob),
+    Debug(DebugRequestJob),
 }
 
 impl RuntimeWorkJob {
@@ -325,6 +325,7 @@ impl RuntimeWorkJob {
         match self {
             Self::Semantic(job) => &job.task,
             Self::Rich(job) => &job.task,
+            Self::Debug(job) => job.task(),
         }
     }
 
@@ -332,13 +333,14 @@ impl RuntimeWorkJob {
         match self {
             Self::Semantic(job) => job.scheduled_at,
             Self::Rich(job) => job.scheduled_at,
+            Self::Debug(job) => job.scheduled_at(),
         }
     }
 
     fn due_at(&self) -> Instant {
         let delay_ms = match self {
             Self::Semantic(_) => DOCUMENT_ANALYSIS_IDLE_DELAY_MS,
-            Self::Rich(_) => RICH_SEMANTIC_TOKENS_IDLE_DELAY_MS,
+            Self::Rich(_) | Self::Debug(_) => RICH_SEMANTIC_TOKENS_IDLE_DELAY_MS,
         };
         self.scheduled_at() + Duration::from_millis(delay_ms)
     }
@@ -363,6 +365,10 @@ impl RuntimeWorkExecutor {
         self.schedule_work(RuntimeWorkJob::Rich(job));
     }
 
+    fn schedule_debug(&self, job: DebugRequestJob) {
+        self.schedule_work(RuntimeWorkJob::Debug(job));
+    }
+
     fn schedule_work(&self, job: RuntimeWorkJob) {
         let (lock, wake) = &*self.state;
         let mut pending = lock.lock().unwrap();
@@ -371,9 +377,32 @@ impl RuntimeWorkExecutor {
             job.task().identity().uri().to_string(),
         );
         if !pending.contains_key(&key) && pending.len() >= MAX_PENDING_DOCUMENT_ANALYSIS_JOBS {
-            let evicted_key = next_runnable_work_key(&pending, Instant::now())
-                .expect("non-empty full scheduler has an eviction candidate");
-            if let Some(evicted) = pending.remove(&evicted_key) {
+            let incoming_is_rich = key.0 == TaskClass::Rich;
+            let eviction = pending
+                .iter()
+                .filter(|((class, _), _)| *class == TaskClass::Rich)
+                .min_by_key(|((_, uri), job)| (job.scheduled_at(), uri.as_str()))
+                .map(|(key, _)| key.clone());
+            if let Some(evicted_key) = eviction {
+                let evicted = pending
+                    .remove(&evicted_key)
+                    .expect("selected pending job exists");
+                evicted.task().cancel();
+                self.send_skipped(evicted, "scheduler-capacity-evicted");
+            } else if incoming_is_rich {
+                // Best-effort work must never displace semantic convergence.
+                self.send_skipped(job, "scheduler-capacity-dropped-rich");
+                return;
+            } else {
+                // Keep semantic latest-wins when every retained job is semantic.
+                let evicted_key = pending
+                    .iter()
+                    .min_by_key(|((_, uri), job)| (job.scheduled_at(), uri.as_str()))
+                    .map(|(key, _)| key.clone())
+                    .expect("non-empty full scheduler has an eviction candidate");
+                let evicted = pending
+                    .remove(&evicted_key)
+                    .expect("selected pending job exists");
                 evicted.task().cancel();
                 self.send_skipped(evicted, "scheduler-capacity-evicted");
             }
@@ -405,6 +434,7 @@ impl RuntimeWorkExecutor {
             };
             drop(pending);
             if job.task().is_cancelled() {
+                self.send_skipped(job, "cancelled-before-dispatch");
                 continue;
             }
             self.execute(job);
@@ -462,6 +492,14 @@ impl RuntimeWorkExecutor {
                 };
                 let _ = self.sender.send(event);
             }
+            RuntimeWorkJob::Debug(job) => {
+                if job.task().is_cancelled() {
+                    self.send_skipped(RuntimeWorkJob::Debug(job), "cancelled-before-work");
+                    return;
+                }
+                let event = job.execute();
+                let _ = self.sender.send(event);
+            }
         }
     }
 
@@ -479,6 +517,28 @@ impl RuntimeWorkExecutor {
                 external_generation: job.external_generation,
                 reason: reason.to_string(),
                 elapsed_ms: job.scheduled_at.elapsed().as_millis(),
+            },
+            RuntimeWorkJob::Debug(job) => match job {
+                DebugRequestJob::Hover(job) => ServerEvent::DebugRequestReady {
+                    task: job.task.identity().clone(),
+                    id: job.id,
+                    method: DEBUG_HOVER_METHOD,
+                    uri: job.uri,
+                    revision: job.revision,
+                    details: format!("skipped reason={reason}"),
+                    result: Value::Null,
+                    elapsed_ms: job.scheduled_at.elapsed().as_millis(),
+                },
+                DebugRequestJob::Completion(job) => ServerEvent::DebugRequestReady {
+                    task: job.task.identity().clone(),
+                    id: job.id,
+                    method: DEBUG_COMPLETION_METHOD,
+                    uri: job.uri,
+                    revision: job.revision,
+                    details: format!("skipped reason={reason}"),
+                    result: Value::Null,
+                    elapsed_ms: job.scheduled_at.elapsed().as_millis(),
+                },
             },
         };
         let _ = self.sender.send(event);
@@ -524,6 +584,129 @@ struct RichSemanticTokensJob {
     scheduled_at: Instant,
     analysis: FileIndexAnalysis,
     external_snapshot: ExternalIndexSnapshot,
+}
+
+enum DebugRequestJob {
+    Hover(DebugHoverJob),
+    Completion(DebugCompletionJob),
+}
+
+struct DebugHoverJob {
+    task: AnalysisTask,
+    id: Value,
+    uri: String,
+    position: LspPosition,
+    revision: u64,
+    scheduled_at: Instant,
+    analysis: FileIndexAnalysis,
+    external_snapshot: ExternalIndexSnapshot,
+    external_status: ExternalIndexStatusSummary,
+}
+
+struct DebugCompletionJob {
+    task: AnalysisTask,
+    id: Value,
+    uri: String,
+    position: LspPosition,
+    revision: u64,
+    scheduled_at: Instant,
+    analysis: FileIndexAnalysis,
+    external_snapshot: ExternalIndexSnapshot,
+}
+
+impl DebugRequestJob {
+    fn task(&self) -> &AnalysisTask {
+        match self {
+            Self::Hover(job) => &job.task,
+            Self::Completion(job) => &job.task,
+        }
+    }
+
+    fn scheduled_at(&self) -> Instant {
+        match self {
+            Self::Hover(job) => job.scheduled_at,
+            Self::Completion(job) => job.scheduled_at,
+        }
+    }
+
+    fn execute(self) -> ServerEvent {
+        match self {
+            Self::Hover(job) => {
+                let report = debug_hover_report_for_cached_analysis_with_external_indexes(
+                    job.task.snapshot().text(),
+                    &job.analysis,
+                    &job.uri,
+                    job.position,
+                    job.external_snapshot.workspace.as_deref(),
+                    job.external_snapshot.game_data.as_deref(),
+                    Some(&job.external_status),
+                );
+                let hit = report.contains("Selected Symbol: yes");
+                let label = selected_label_from_debug_report(&report)
+                    .unwrap_or_else(|| "<none>".to_string());
+                ServerEvent::DebugRequestReady {
+                    task: job.task.identity().clone(),
+                    id: job.id,
+                    method: DEBUG_HOVER_METHOD,
+                    uri: job.uri,
+                    revision: job.revision,
+                    details: format!("cached_analysis=true hit={} label={}", hit, label),
+                    result: Value::String(report),
+                    elapsed_ms: job.scheduled_at.elapsed().as_millis(),
+                }
+            }
+            Self::Completion(job) => {
+                let report = completion_report_for_cached_analysis_with_external_indexes(
+                    job.task.snapshot().text(),
+                    &job.analysis,
+                    job.position,
+                    job.external_snapshot.workspace.as_deref(),
+                    job.external_snapshot.game_data.as_deref(),
+                );
+                if job.task.is_cancelled() {
+                    return ServerEvent::DebugRequestReady {
+                        task: job.task.identity().clone(),
+                        id: job.id,
+                        method: DEBUG_COMPLETION_METHOD,
+                        uri: job.uri,
+                        revision: job.revision,
+                        details: "cancelled-after-completion-report".to_string(),
+                        result: Value::Null,
+                        elapsed_ms: job.scheduled_at.elapsed().as_millis(),
+                    };
+                }
+                let signature_report =
+                    signature_help_report_for_cached_analysis_with_external_indexes(
+                        job.task.snapshot().text(),
+                        &job.analysis,
+                        job.position,
+                        job.external_snapshot.workspace.as_deref(),
+                        job.external_snapshot.game_data.as_deref(),
+                    );
+                let completion_context = report.completion_context.clone();
+                let candidate_count = report.candidate_count;
+                let signature_context = signature_report
+                    .context
+                    .clone()
+                    .unwrap_or_else(|| "none".to_string());
+                let signature_candidate_count = signature_report.candidate_count;
+                let mut markdown = completion_debug_markdown(
+                    &report,
+                    &job.uri,
+                    job.task.snapshot().text().len(),
+                    job.revision,
+                    job.external_snapshot.status,
+                );
+                markdown.push_str(&signature_help_debug_markdown(&signature_report));
+                ServerEvent::DebugRequestReady {
+                    task: job.task.identity().clone(), id: job.id, method: DEBUG_COMPLETION_METHOD,
+                    uri: job.uri, revision: job.revision,
+                    details: format!("cached_analysis=true context={} candidates={} signature_context={} signature_candidates={} external_index_status={} external_index_layers={}", completion_context, candidate_count, signature_context, signature_candidate_count, job.external_snapshot.status, job.external_snapshot.available_layers()),
+                    result: Value::String(markdown), elapsed_ms: job.scheduled_at.elapsed().as_millis(),
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -700,7 +883,7 @@ impl<W: Write> LspServer<W> {
         options: LspServerOptions,
         _removed_rich_scheduler: Option<()>,
         analysis_scheduler: Option<RuntimeWorkExecutor>,
-        internal_sender: Option<mpsc::Sender<ServerEvent>>,
+        _internal_sender: Option<mpsc::Sender<ServerEvent>>,
     ) -> Self {
         let logger = LspLogger::new(options.log_path.clone());
         let external_index = start_external_index(&options, logger.clone());
@@ -711,7 +894,6 @@ impl<W: Write> LspServer<W> {
             logger,
             external_index,
             analysis_scheduler,
-            internal_sender,
             deferred_document_requests: BTreeMap::new(),
             next_server_request_id: 1,
             semantic_tokens_refresh_in_flight: None,
@@ -1917,7 +2099,7 @@ impl<W: Write> LspServer<W> {
                     let params = parse_params::<HoverParams>(message.params, method)?;
                     if let Some(ref params) = params {
                         if let Some(document) = self.documents.get(&params.text_document.uri) {
-                            if let Some(sender) = self.internal_sender.clone() {
+                            if let Some(scheduler) = self.analysis_scheduler.clone() {
                                 let uri = params.text_document.uri.clone();
                                 let position = params.position;
                                 let revision = document.revision;
@@ -1943,33 +2125,17 @@ impl<W: Write> LspServer<W> {
                                         return Ok(false);
                                     }
                                 };
-                                thread::spawn(move || {
-                                    let report = debug_hover_report_for_cached_analysis_with_external_indexes(
-                                        task.snapshot().text(),
-                                        &analysis,
-                                        &uri,
-                                        position,
-                                        indexes.workspace.as_deref(),
-                                        indexes.game_data.as_deref(),
-                                        Some(&external_status),
-                                    );
-                                    let hit = report.contains("Selected Symbol: yes");
-                                    let label = selected_label_from_debug_report(&report)
-                                        .unwrap_or_else(|| "<none>".to_string());
-                                    let _ = sender.send(ServerEvent::DebugRequestReady {
-                                        task: task.identity().clone(),
-                                        id,
-                                        method: DEBUG_HOVER_METHOD,
-                                        uri,
-                                        revision,
-                                        details: format!(
-                                            "cached_analysis=true hit={} label={}",
-                                            hit, label
-                                        ),
-                                        result: Value::String(report),
-                                        elapsed_ms: start.elapsed().as_millis(),
-                                    });
-                                });
+                                scheduler.schedule_debug(DebugRequestJob::Hover(DebugHoverJob {
+                                    task,
+                                    id,
+                                    uri,
+                                    position,
+                                    revision,
+                                    scheduled_at: start,
+                                    analysis,
+                                    external_snapshot: indexes,
+                                    external_status,
+                                }));
                                 return Ok(false);
                             }
                         }
@@ -2028,7 +2194,7 @@ impl<W: Write> LspServer<W> {
                     let params = parse_params::<HoverParams>(message.params, method)?;
                     if let Some(ref params) = params {
                         if let Some(document) = self.documents.get(&params.text_document.uri) {
-                            if let Some(sender) = self.internal_sender.clone() {
+                            if let Some(scheduler) = self.analysis_scheduler.clone() {
                                 let uri = params.text_document.uri.clone();
                                 let position = params.position;
                                 let revision = document.revision;
@@ -2053,59 +2219,18 @@ impl<W: Write> LspServer<W> {
                                         return Ok(false);
                                     }
                                 };
-                                thread::spawn(move || {
-                                    let report =
-                                        completion_report_for_cached_analysis_with_external_indexes(
-                                            task.snapshot().text(),
-                                            &analysis,
-                                            position,
-                                            indexes.workspace.as_deref(),
-                                            indexes.game_data.as_deref(),
-                                        );
-                                    let signature_report = signature_help_report_for_cached_analysis_with_external_indexes(
-                                        task.snapshot().text(),
-                                        &analysis,
-                                        position,
-                                        indexes.workspace.as_deref(),
-                                        indexes.game_data.as_deref(),
-                                    );
-                                    let completion_context = report.completion_context.clone();
-                                    let candidate_count = report.candidate_count;
-                                    let signature_context = signature_report
-                                        .context
-                                        .clone()
-                                        .unwrap_or_else(|| "none".to_string());
-                                    let signature_candidate_count =
-                                        signature_report.candidate_count;
-                                    let mut markdown = completion_debug_markdown(
-                                        &report,
-                                        &uri,
-                                        task.snapshot().text().len(),
-                                        revision,
-                                        indexes.status,
-                                    );
-                                    markdown.push_str(&signature_help_debug_markdown(
-                                        &signature_report,
-                                    ));
-                                    let _ = sender.send(ServerEvent::DebugRequestReady {
-                                        task: task.identity().clone(),
+                                scheduler.schedule_debug(DebugRequestJob::Completion(
+                                    DebugCompletionJob {
+                                        task,
                                         id,
-                                        method: DEBUG_COMPLETION_METHOD,
                                         uri,
+                                        position,
                                         revision,
-                                        details: format!(
-                                            "cached_analysis=true context={} candidates={} signature_context={} signature_candidates={} external_index_status={} external_index_layers={}",
-                                            completion_context,
-                                            candidate_count,
-                                            signature_context,
-                                            signature_candidate_count,
-                                            indexes.status,
-                                            indexes.available_layers(),
-                                        ),
-                                        result: Value::String(markdown),
-                                        elapsed_ms: start.elapsed().as_millis(),
-                                    });
-                                });
+                                        scheduled_at: start,
+                                        analysis,
+                                        external_snapshot: indexes,
+                                    },
+                                ));
                                 return Ok(false);
                             }
                         }
@@ -3347,6 +3472,76 @@ mod tests {
             next_runnable_work_key(&pending, now),
             Some((TaskClass::Semantic, "file:///semantic.c".to_string()))
         );
+    }
+
+    #[test]
+    fn full_shared_executor_evicts_or_drops_rich_before_semantic() {
+        let (sender, receiver) = mpsc::channel();
+        // Deliberately do not start a worker: this exercises admission and
+        // eviction deterministically, without a dispatch race.
+        let scheduler = RuntimeWorkExecutor {
+            state: Arc::new((Mutex::new(BTreeMap::new()), Condvar::new())),
+            sender,
+        };
+        let now = Instant::now();
+        let mut runtime = AnalysisRuntime::new(AdmissionLimits::new(128, 128));
+        {
+            let (lock, _) = &*scheduler.state;
+            let mut pending = lock.lock().unwrap();
+            for index in 0..MAX_PENDING_DOCUMENT_ANALYSIS_JOBS - 1 {
+                let uri = format!("file:///semantic-{index}.c");
+                pending.insert(
+                    (TaskClass::Semantic, uri.clone()),
+                    RuntimeWorkJob::Semantic(semantic_analysis_job(&mut runtime, &uri, 1, now)),
+                );
+            }
+            let rich_uri = "file:///rich.c";
+            pending.insert(
+                (TaskClass::Rich, rich_uri.to_string()),
+                RuntimeWorkJob::Rich(rich_semantic_tokens_job(&mut runtime, rich_uri, 1, now)),
+            );
+        }
+
+        let incoming_semantic_uri = "file:///semantic-incoming.c";
+        scheduler.schedule(semantic_analysis_job(
+            &mut runtime,
+            incoming_semantic_uri,
+            1,
+            now,
+        ));
+        {
+            let (lock, _) = &*scheduler.state;
+            let pending = lock.lock().unwrap();
+            assert_eq!(pending.len(), MAX_PENDING_DOCUMENT_ANALYSIS_JOBS);
+            assert!(pending
+                .keys()
+                .all(|(class, _)| *class == TaskClass::Semantic));
+        }
+
+        let incoming_rich_uri = "file:///rich-incoming.c";
+        scheduler.schedule_rich(rich_semantic_tokens_job(
+            &mut runtime,
+            incoming_rich_uri,
+            1,
+            now,
+        ));
+        let (lock, _) = &*scheduler.state;
+        let pending = lock.lock().unwrap();
+        assert_eq!(pending.len(), MAX_PENDING_DOCUMENT_ANALYSIS_JOBS);
+        assert!(pending
+            .keys()
+            .all(|(class, _)| *class == TaskClass::Semantic));
+        drop(pending);
+        // The evicted and dropped rich jobs are both completed through the
+        // normal event channel, preserving cancellation/publication handling.
+        assert!(matches!(
+            receiver.recv().unwrap(),
+            ServerEvent::RichSemanticTokensSkipped { .. }
+        ));
+        assert!(matches!(
+            receiver.recv().unwrap(),
+            ServerEvent::RichSemanticTokensSkipped { .. }
+        ));
     }
 
     #[test]
@@ -8824,12 +9019,13 @@ class Example
     #[test]
     fn runtime_debug_hover_runs_off_the_lsp_message_loop() {
         let (sender, receiver) = mpsc::channel();
+        let scheduler = RuntimeWorkExecutor::start(sender);
         let mut server = LspServer::new_with_runtime_senders(
             Vec::new(),
             LspServerOptions::default(),
             None,
+            Some(scheduler),
             None,
-            Some(sender),
         );
         let uri = "file:///Scripts/AsyncDebug.c";
         server
@@ -8870,9 +9066,15 @@ class Example
             "the main LSP loop must not wait for a debug capture"
         );
 
-        let event = receiver
-            .recv_timeout(Duration::from_secs(2))
-            .expect("debug result");
+        let event = loop {
+            let event = receiver
+                .recv_timeout(Duration::from_secs(2))
+                .expect("debug result");
+            if matches!(event, ServerEvent::DebugRequestReady { .. }) {
+                break event;
+            }
+            server.handle_internal_event(event).unwrap();
+        };
         match &event {
             ServerEvent::DebugRequestReady { task, .. } => {
                 assert_eq!(task.class(), TaskClass::Rich);
@@ -8887,12 +9089,13 @@ class Example
     #[test]
     fn runtime_debug_hover_rejects_a_capture_superseded_before_publication() {
         let (sender, receiver) = mpsc::channel();
+        let scheduler = RuntimeWorkExecutor::start(sender);
         let mut server = LspServer::new_with_runtime_senders(
             Vec::new(),
             LspServerOptions::default(),
             None,
+            Some(scheduler),
             None,
-            Some(sender),
         );
         let uri = "file:///Scripts/StaleAsyncDebug.c";
         server
