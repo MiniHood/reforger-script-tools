@@ -35,11 +35,15 @@ directive context, spans, and callable form. Conditional-directive context
 remains an explicit follow-up semantic fact before file-local LSP analysis can
 cut over completely.
 
-`SemanticBuildStats` records source-free directive-line, declaration-record,
-and macro-scan operation counts. Directive branch stacks are interned once per
-file and declarations retain compact context IDs, rather than cloned stacks.
-Scale tests use these counters instead of hardware-sensitive timing to guard
-against reintroducing repeated whole-source conditional scans.
+`SemanticBuildStats` records source-free directive-line, typed-CST declaration
+visitor, declaration-record, and macro-scan operation counts. Directive branch
+stacks are interned once per file and declarations retain compact context IDs,
+rather than cloned stacks. The committed
+`tools/fixtures/semantic/semantic_scale_declaration_unit.c` fixture is repeated
+at 1x, 2x, and 4x by the semantic-file scale test; each observed counter must
+grow by the same exact ratio. This avoids hardware-sensitive wall-clock gates
+while guarding against repeated whole-source conditional scans or extra
+whole-file declaration walks.
 
 ## Verification
 

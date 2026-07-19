@@ -133,6 +133,11 @@ struct LocalSemanticRegion {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct SemanticBuildStats {
     pub directive_lines: usize,
+    /// Typed CST declarations consumed by the semantic builder's sole
+    /// declaration traversal. This is deliberately separate from emitted
+    /// declaration records because a class can emit members, parameters, and
+    /// locals from one CST declaration visit.
+    pub cst_declaration_visits: usize,
     pub declaration_records: usize,
     pub macro_definition_scan_lines: usize,
 }
@@ -144,9 +149,11 @@ impl SemanticFile {
             declarations: Vec::new(),
             local_regions: Vec::new(),
             non_declaration_callable_fragments: 0,
+            cst_declaration_visits: 0,
             directive_contexts: DirectiveContextMap::for_source(source),
         };
         for declaration in ast.declaration_iter() {
+            builder.cst_declaration_visits += 1;
             builder.add_declaration(declaration);
         }
         builder.add_preprocessor_macro_definitions();
@@ -159,6 +166,7 @@ impl SemanticFile {
             non_declaration_callable_fragments: builder.non_declaration_callable_fragments,
             build_stats: SemanticBuildStats {
                 directive_lines,
+                cst_declaration_visits: builder.cst_declaration_visits,
                 declaration_records,
                 macro_definition_scan_lines: source.lines().count(),
             },
@@ -353,6 +361,7 @@ struct SemanticFileBuilder<'source> {
     declarations: Vec<SemanticDeclaration>,
     local_regions: Vec<LocalSemanticRegion>,
     non_declaration_callable_fragments: usize,
+    cst_declaration_visits: usize,
     directive_contexts: DirectiveContextMap<'source>,
 }
 
@@ -1017,20 +1026,25 @@ mod tests {
 
     #[test]
     fn semantic_build_operation_counts_scale_linearly_with_declarations() {
-        fn source(count: usize) -> String {
-            (0..count)
-                .map(|index| {
-                    format!("#ifdef FEATURE\nclass Item{index} {{ int value; }}\n#endif\n")
-                })
-                .collect()
+        const UNIT: &str =
+            include_str!("../../tools/fixtures/semantic/semantic_scale_declaration_unit.c");
+
+        fn source(scale: usize) -> String {
+            UNIT.repeat(scale)
         }
 
-        let one = semantic(&source(16)).build_stats();
-        let two = semantic(&source(32)).build_stats();
-        let four = semantic(&source(64)).build_stats();
+        let one = semantic(&source(1)).build_stats();
+        let two = semantic(&source(2)).build_stats();
+        let four = semantic(&source(4)).build_stats();
 
+        assert!(one.directive_lines > 0);
+        assert!(one.cst_declaration_visits > 0);
+        assert!(one.declaration_records > 0);
+        assert!(one.macro_definition_scan_lines > 0);
         assert_eq!(two.directive_lines, one.directive_lines * 2);
         assert_eq!(four.directive_lines, one.directive_lines * 4);
+        assert_eq!(two.cst_declaration_visits, one.cst_declaration_visits * 2);
+        assert_eq!(four.cst_declaration_visits, one.cst_declaration_visits * 4);
         assert_eq!(two.declaration_records, one.declaration_records * 2);
         assert_eq!(four.declaration_records, one.declaration_records * 4);
         assert_eq!(
