@@ -43,12 +43,15 @@ parser diagnostics.
 Outline projection is built lazily then retained for the ready revision.
 
 Semantic tokens keep one `TokenSnapshot` per document revision. Its lexical
-baseline is cached from current snapshot text and is always the first valid
+baseline is cached from current snapshot text and is the safe first-open
 response. A rich projection is an optional replacement overlay valid only for
-that revision and external-overlay generation. Full-token result IDs encode the
-published revision and layer (`lexical` or `rich:<generation>`); token deltas
-are not advertised. Pending/cancelled state and revision/generation checks
-discard obsolete overlays, leaving the lexical baseline authoritative.
+that revision and external-overlay generation. After a rich projection has
+been published, replacement preserves that established-display state while
+invalidating all current-revision facts: the LSP can withhold the next full
+response until matching rich data arrives, but it can never return old ranges.
+Full-token result IDs encode the published revision and layer (`lexical` or
+`rich:<generation>`); token deltas are not advertised. Pending/cancelled state
+and revision/generation checks discard obsolete overlays.
 Close removes all document-local state.
 
 Before this owner receives a change, the runtime may collapse a contiguous run

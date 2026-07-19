@@ -246,6 +246,7 @@ struct LspServer<W: Write> {
     external_index: ExternalIndexHandle,
     analysis_scheduler: Option<RuntimeWorkExecutor>,
     deferred_document_requests: BTreeMap<String, Vec<DeferredDocumentRequest>>,
+    deferred_semantic_token_requests: BTreeMap<String, Vec<DeferredSemanticTokenRequest>>,
     next_server_request_id: u64,
     semantic_tokens_refresh_in_flight: Option<String>,
     semantic_tokens_refresh_dirty: bool,
@@ -314,6 +315,17 @@ struct DeferredDocumentRequest {
     revision: u64,
     received_at: Instant,
     value: Value,
+}
+
+/// Full semantic-token responses replace the editor's entire token display.
+/// Keep these requests apart from source-backed feature deferral so a newer
+/// revision can wait for a matching rich projection without publishing a
+/// lexical downgrade.
+struct DeferredSemanticTokenRequest {
+    id: Value,
+    revision: u64,
+    external_generation: u64,
+    received_at: Instant,
 }
 
 struct OpenDocumentAnalysisJob {
@@ -1129,6 +1141,7 @@ impl<W: Write> LspServer<W> {
             external_index,
             analysis_scheduler,
             deferred_document_requests: BTreeMap::new(),
+            deferred_semantic_token_requests: BTreeMap::new(),
             next_server_request_id: 1,
             semantic_tokens_refresh_in_flight: None,
             semantic_tokens_refresh_dirty: false,
@@ -1150,11 +1163,14 @@ impl<W: Write> LspServer<W> {
             format_paths(&options.workspace_scripts),
             server.external_index.status_summary().status
         ));
-        server.logger.diagnostic("startup", json!({
-            "gameDataConfigured": options.game_data_scripts.is_some(),
-            "workspaceRoots": options.workspace_scripts.len(),
-            "indexCacheConfigured": options.index_cache.is_some(),
-        }));
+        server.logger.diagnostic(
+            "startup",
+            json!({
+                "gameDataConfigured": options.game_data_scripts.is_some(),
+                "workspaceRoots": options.workspace_scripts.len(),
+                "indexCacheConfigured": options.index_cache.is_some(),
+            }),
+        );
         server
     }
 
@@ -1167,7 +1183,8 @@ impl<W: Write> LspServer<W> {
             }
         }
         self.log("exit");
-        self.logger.diagnostic("shutdown", json!({"outcome": "normal"}));
+        self.logger
+            .diagnostic("shutdown", json!({"outcome": "normal"}));
         self.logger.flush_diagnostics();
         Ok(())
     }
@@ -1274,7 +1291,8 @@ impl<W: Write> LspServer<W> {
             }
         }
         self.log("exit");
-        self.logger.diagnostic("shutdown", json!({"outcome": "normal"}));
+        self.logger
+            .diagnostic("shutdown", json!({"outcome": "normal"}));
         self.logger.flush_diagnostics();
         Ok(())
     }
@@ -1294,13 +1312,16 @@ impl<W: Write> LspServer<W> {
             self.handle_semantic_tokens_refresh_response(&message)?;
             return Ok(false);
         };
-        self.logger.diagnostic("rpc.received", json!({
-            "method": method,
-            "request": message.id.is_some(),
-            "queueMs": queue_ms,
-            "coalescedChanges": coalesced_changes,
-            "supersededChanges": superseded_changes,
-        }));
+        self.logger.diagnostic(
+            "rpc.received",
+            json!({
+                "method": method,
+                "request": message.id.is_some(),
+                "queueMs": queue_ms,
+                "coalescedChanges": coalesced_changes,
+                "supersededChanges": superseded_changes,
+            }),
+        );
 
         if self.shutdown_requested && method != "exit" {
             let error = "Server has already received shutdown";
@@ -1333,6 +1354,11 @@ impl<W: Write> LspServer<W> {
         }
 
         match method {
+            "$/cancelRequest" => {
+                if let Some(id) = message.params.as_ref().and_then(|params| params.get("id")) {
+                    self.cancel_deferred_semantic_token_request(id);
+                }
+            }
             "initialize" => {
                 self.log("request initialize");
                 if let Some(id) = message.id {
@@ -1413,6 +1439,7 @@ impl<W: Write> LspServer<W> {
                         .expect("accepted document snapshot is immediately readable");
                     let revision = snapshot.revision();
                     self.discard_deferred_document_requests(&uri, revision)?;
+                    self.discard_deferred_semantic_token_requests(&uri, revision, "opened")?;
                     let revision = snapshot.revision();
                     if let Some(scheduler) = self.analysis_scheduler.clone() {
                         let mut document = OpenDocument::pending(snapshot);
@@ -1543,6 +1570,11 @@ impl<W: Write> LspServer<W> {
                             document.mark_analysis_pending();
                             document.snapshot.revision()
                         };
+                        self.discard_deferred_semantic_token_requests(
+                            &uri,
+                            revision,
+                            "superseded",
+                        )?;
                         if let Some(scheduler) = self.analysis_scheduler.clone() {
                             self.discard_deferred_document_requests(&uri, revision)?;
                             let request_id = self.next_server_request_id;
@@ -1642,6 +1674,11 @@ impl<W: Write> LspServer<W> {
                             .close(&params.text_document.uri, document.snapshot.revision());
                     }
                     self.discard_deferred_document_requests(&params.text_document.uri, 0)?;
+                    self.discard_deferred_semantic_token_requests(
+                        &params.text_document.uri,
+                        0,
+                        "closed",
+                    )?;
                     self.write_message(clear_diagnostics_message(&params.text_document.uri))?;
                 }
             }
@@ -2054,12 +2091,16 @@ impl<W: Write> LspServer<W> {
                     let mut encode_ms = 0u128;
                     let mut rich_work: Option<(String, u64, u64)> = None;
                     let mut result_id = "reforger:missing:lexical".to_string();
-                    let result = params
-                        .and_then(|params| {
-                            log_uri = params.text_document.uri;
-                            self.documents.get_mut(&log_uri).map(|document| {
+                    let mut defer_current_request = false;
+                    let result =
+                        params
+                            .and_then(|params| {
+                                log_uri = params.text_document.uri;
+                                self.documents.get_mut(&log_uri).map(|document| {
                                     bytes = document.text.len();
                                     revision = document.revision;
+                                    let had_rich_display =
+                                        document.semantic_tokens.has_rich_display();
                                     let source = document.text.clone();
                                     let (
                                         selection_kind,
@@ -2108,6 +2149,9 @@ impl<W: Write> LspServer<W> {
                                             ));
                                         }
                                     }
+                                    defer_current_request = selection_kind
+                                        == TokenProjectionKind::LexicalBaseline
+                                        && had_rich_display;
                                     token_count = projection.token_count;
                                     parse_diagnostics = projection.parse_diagnostics;
                                     lex_ms = projection.timings.lex_ms;
@@ -2120,21 +2164,22 @@ impl<W: Write> LspServer<W> {
                                         &projection.tokens,
                                     )
                                 })
-                        })
-                        .map(|tokens| serde_json::to_value(tokens).unwrap_or(Value::Null))
-                        .unwrap_or_else(|| {
-                            serde_json::to_value(LspSemanticTokensFull {
-                                result_id,
-                                data: Vec::new(),
                             })
-                            .unwrap_or(Value::Null)
-                        });
+                            .map(|tokens| serde_json::to_value(tokens).unwrap_or(Value::Null))
+                            .unwrap_or_else(|| {
+                                serde_json::to_value(LspSemanticTokensFull {
+                                    result_id,
+                                    data: Vec::new(),
+                                })
+                                .unwrap_or(Value::Null)
+                            });
                     self.log(&format!(
-                        "request semanticTokens uri={} bytes={} revision={} cached_analysis=true mode={} tokens={} external_index_status={} external_generation={} parse_diagnostics={} lex_ms={} token_loop_ms={} resolver_ms={} resolver_calls={} encode_ms={} queue_ms={} elapsed_ms={}",
+                        "request semanticTokens uri={} bytes={} revision={} cached_analysis=true mode={} outcome={} tokens={} external_index_status={} external_generation={} parse_diagnostics={} lex_ms={} token_loop_ms={} resolver_ms={} resolver_calls={} encode_ms={} queue_ms={} elapsed_ms={}",
                         log_uri,
                         bytes,
                         revision,
                         projection_mode,
+                        if defer_current_request { "deferred-rich" } else { "responded" },
                         token_count,
                         external_index_status,
                         external_generation,
@@ -2147,7 +2192,16 @@ impl<W: Write> LspServer<W> {
                         queue_ms,
                         start.elapsed().as_millis()
                     ));
-                    self.respond(id, result)?;
+                    if defer_current_request {
+                        self.defer_semantic_token_request(
+                            &log_uri,
+                            revision,
+                            external_generation,
+                            id,
+                        )?;
+                    } else {
+                        self.respond(id, result)?;
+                    }
                     if let Some((uri, rich_revision, rich_external_generation)) = rich_work {
                         self.schedule_rich_semantic_tokens(
                             &uri,
@@ -2680,7 +2734,20 @@ impl<W: Write> LspServer<W> {
                     encode_ms,
                     elapsed_ms
                 ));
-                self.request_semantic_tokens_refresh()
+                let published = self.publish_deferred_semantic_token_requests(
+                    &uri,
+                    revision,
+                    external_generation,
+                )?;
+                if published == 0 {
+                    self.request_semantic_tokens_refresh()
+                } else {
+                    self.log(&format!(
+                        "semanticTokensRich delivered uri={} revision={} external_generation={} deferred_requests={} refresh=false",
+                        uri, revision, external_generation, published
+                    ));
+                    Ok(())
+                }
             }
             ServerEvent::RichSemanticTokensSkipped {
                 task,
@@ -2696,6 +2763,7 @@ impl<W: Write> LspServer<W> {
                         .semantic_tokens
                         .cancel_pending_if_matches(revision, external_generation);
                 }
+                self.discard_deferred_semantic_token_requests(&uri, revision, "rich-skipped")?;
                 self.log(&format!(
                     "semanticTokensRich skipped uri={} revision={} external_generation={} reason={} elapsed_ms={}",
                     uri, revision, external_generation, reason, elapsed_ms
@@ -2816,6 +2884,11 @@ impl<W: Write> LspServer<W> {
                         if document.revision == task.revision() && !document.analysis_ready() {
                             document.reject_pending_analysis();
                             self.discard_deferred_document_requests(task.uri(), task.revision())?;
+                            self.discard_deferred_semantic_token_requests(
+                                task.uri(),
+                                task.revision(),
+                                "analysis-skipped",
+                            )?;
                         }
                     }
                 }
@@ -2927,6 +3000,134 @@ impl<W: Write> LspServer<W> {
             uri, current_revision
         ));
         Ok(())
+    }
+
+    fn defer_semantic_token_request(
+        &mut self,
+        uri: &str,
+        revision: u64,
+        external_generation: u64,
+        id: Value,
+    ) -> Result<(), String> {
+        let pending_count = self
+            .deferred_semantic_token_requests
+            .get(uri)
+            .map_or(0, Vec::len);
+        if pending_count >= MAX_PENDING_DOCUMENT_REQUESTS_PER_URI {
+            self.respond_error(id, -32802, "Semantic tokens superseded")?;
+            self.log(&format!(
+                "semanticTokens deferred uri={} revision={} external_generation={} outcome=server-cancelled reason=capacity pending_requests={}",
+                uri, revision, external_generation, pending_count
+            ));
+            return Ok(());
+        }
+        let pending_count = {
+            let pending = self
+                .deferred_semantic_token_requests
+                .entry(uri.to_string())
+                .or_default();
+            pending.push(DeferredSemanticTokenRequest {
+                id,
+                revision,
+                external_generation,
+                received_at: Instant::now(),
+            });
+            pending.len()
+        };
+        self.log(&format!(
+            "semanticTokens deferred uri={} revision={} external_generation={} pending_requests={}",
+            uri, revision, external_generation, pending_count
+        ));
+        Ok(())
+    }
+
+    fn discard_deferred_semantic_token_requests(
+        &mut self,
+        uri: &str,
+        current_revision: u64,
+        reason: &str,
+    ) -> Result<(), String> {
+        let Some(pending) = self.deferred_semantic_token_requests.remove(uri) else {
+            return Ok(());
+        };
+        for request in pending {
+            self.respond_error(request.id, -32802, "Semantic tokens superseded")?;
+        }
+        self.log(&format!(
+            "semanticTokens deferred discarded uri={} current_revision={} reason={} outcome=server-cancelled",
+            uri, current_revision, reason
+        ));
+        Ok(())
+    }
+
+    fn cancel_deferred_semantic_token_request(&mut self, id: &Value) {
+        let mut cancellations = Vec::new();
+        self.deferred_semantic_token_requests
+            .retain(|uri, pending| {
+                let before = pending.len();
+                pending.retain(|request| &request.id != id);
+                let removed = before - pending.len();
+                if removed > 0 {
+                    cancellations.push((uri.clone(), removed));
+                }
+                !pending.is_empty()
+            });
+        if cancellations.is_empty() {
+            self.log("semanticTokens deferred cancellation ignored reason=not-pending");
+        } else {
+            for (uri, removed) in cancellations {
+                self.log(&format!(
+                    "semanticTokens deferred cancelled uri={} requests={}",
+                    uri, removed
+                ));
+            }
+        }
+    }
+
+    fn publish_deferred_semantic_token_requests(
+        &mut self,
+        uri: &str,
+        revision: u64,
+        external_generation: u64,
+    ) -> Result<usize, String> {
+        let Some(projection) = self
+            .documents
+            .get(uri)
+            .and_then(|document| {
+                document
+                    .semantic_tokens
+                    .rich_for_revision_and_external_generation(revision, external_generation)
+            })
+            .cloned()
+        else {
+            return Ok(0);
+        };
+        let pending = self
+            .deferred_semantic_token_requests
+            .remove(uri)
+            .unwrap_or_default();
+        let mut published = 0usize;
+        for request in pending {
+            if request.revision == revision && request.external_generation == external_generation {
+                let result = serde_json::to_value(LspSemanticTokensFull::from_tokens(
+                    format!("reforger:{}:rich:{}", revision, external_generation),
+                    &projection.tokens,
+                ))
+                .unwrap_or(Value::Null);
+                self.respond(request.id, result)?;
+                published += 1;
+                self.log(&format!(
+                    "semanticTokens deferred published uri={} revision={} external_generation={} wait_ms={}",
+                    uri,
+                    revision,
+                    external_generation,
+                    request.received_at.elapsed().as_millis()
+                ));
+            } else {
+                self.respond_error(request.id, -32802, "Semantic tokens superseded")?;
+            }
+        }
+        Ok(published)
     }
 
     fn install_document_analysis(
@@ -3178,7 +3379,17 @@ impl<W: Write> LspServer<W> {
             encode_ms,
             start.elapsed().as_millis()
         ));
-        self.request_semantic_tokens_refresh()
+        let published =
+            self.publish_deferred_semantic_token_requests(uri, revision, external_generation)?;
+        if published == 0 {
+            self.request_semantic_tokens_refresh()
+        } else {
+            self.log(&format!(
+                "semanticTokensRich delivered uri={} revision={} external_generation={} deferred_requests={} refresh=false",
+                uri, revision, external_generation, published
+            ));
+            Ok(())
+        }
     }
 
     /// Debug captures share the optional rich lane rather than creating a
@@ -9050,9 +9261,91 @@ class Example
                 break;
             }
         }
-        assert!(rich_ready, "current lexical baseline must converge to rich tokens");
-        assert!(String::from_utf8_lossy(&server.writer)
-            .contains("workspace/semanticTokens/refresh"));
+        assert!(
+            rich_ready,
+            "current lexical baseline must converge to rich tokens"
+        );
+        assert!(
+            String::from_utf8_lossy(&server.writer).contains("workspace/semanticTokens/refresh")
+        );
+    }
+
+    #[test]
+    fn semantic_tokens_keep_existing_rich_display_until_current_rich_result() {
+        let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
+        let uri = "file:///Scripts/StableTokens.c";
+        for (method, params) in [(
+            "textDocument/didOpen",
+            json!({ "textDocument": {
+                "uri": uri, "languageId": "enforce", "version": 1,
+                "text": "class SCR_GameModeEndData {}"
+            }}),
+        )] {
+            server
+                .handle_message(
+                    json!({ "jsonrpc": "2.0", "method": method, "params": params }),
+                    None,
+                    0,
+                    0,
+                )
+                .unwrap();
+        }
+        server
+            .handle_message(
+                json!({ "jsonrpc": "2.0", "id": 1, "method": "textDocument/semanticTokens/full", "params": { "textDocument": { "uri": uri } } }),
+                None, 0, 0,
+            )
+            .unwrap();
+        assert!(server.documents[uri].semantic_tokens.has_rich_display());
+
+        server
+            .handle_message(
+                json!({ "jsonrpc": "2.0", "method": "textDocument/didChange", "params": {
+                    "textDocument": { "uri": uri, "version": 2 },
+                    "contentChanges": [{ "text": "// edit\nclass SCR_GameModeEndData {}" }]
+                }}),
+                None,
+                0,
+                0,
+            )
+            .unwrap();
+        server.writer.clear();
+        server
+            .handle_message(
+                json!({ "jsonrpc": "2.0", "id": 2, "method": "textDocument/semanticTokens/full", "params": { "textDocument": { "uri": uri } } }),
+                None, 0, 0,
+            )
+            .unwrap();
+
+        let output = String::from_utf8_lossy(&server.writer);
+        assert!(output.contains("\"id\":2"));
+        assert!(
+            output.contains("\"resultId\":\"reforger:2:rich:"),
+            "{output}"
+        );
+        assert!(!output.contains("\"resultId\":\"reforger:2:lexical\""));
+        assert!(!output.contains("workspace/semanticTokens/refresh"));
+    }
+
+    #[test]
+    fn deferred_semantic_tokens_are_server_cancelled_when_superseded_or_cancelled() {
+        let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
+        let uri = "file:///Scripts/DeferredTokens.c";
+        server
+            .defer_semantic_token_request(uri, 2, 4, json!(10))
+            .unwrap();
+        server
+            .discard_deferred_semantic_token_requests(uri, 3, "superseded")
+            .unwrap();
+        assert!(String::from_utf8_lossy(&server.writer).contains("\"code\":-32802"));
+
+        server.writer.clear();
+        server
+            .defer_semantic_token_request(uri, 3, 4, json!(11))
+            .unwrap();
+        server.cancel_deferred_semantic_token_request(&json!(11));
+        assert!(!server.deferred_semantic_token_requests.contains_key(uri));
+        assert!(server.writer.is_empty());
     }
 
     #[test]

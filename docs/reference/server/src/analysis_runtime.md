@@ -32,7 +32,10 @@ available only for one bare resolver-proven function or method in valid current 
 every other pending argument form remains unavailable.
 
 Full semantic analysis and rich-token refinement are admitted immediately
-after their matching dependency is ready: they have no idle debounce.
+after their matching dependency is ready: they have no idle debounce. When a
+document already has rich semantic colors, the LSP may retain its current
+full-token request until this current-revision rich work completes; this is
+result-driven request ownership, not a timer or an additional runtime lane.
 Latest-wins cancellation and bounded per-URI/lane admission suppress obsolete
 revisions, while the reserved foreground worker preserves typing-path priority.
 Rich token refinement and

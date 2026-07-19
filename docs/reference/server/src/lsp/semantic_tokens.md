@@ -16,13 +16,17 @@ external indexing, or any TextMate/TypeScript coloring path.
 The foreground lexical projection reads only the current source and lexer
 output, so it remains available while syntax and semantic analysis for a newer
 revision is pending. It deliberately emits no parser diagnostics, declaration,
-scope, or resolver facts. Each LSP response selects the current revision's
-cached lexical `TokenSnapshot` baseline unless a rich overlay has exactly the
-same revision and external generation. A rich pass replaces that baseline with
-resolver-backed references and external workspace/game-data facts only after
-those identity checks pass. Responses are full only, with an opaque result ID
-for `revision:lexical` or `revision:rich:generation`; semantic-token deltas are
-not advertised.
+scope, or resolver facts. A first token request may publish that current
+lexical baseline. Once a document has established a rich display, an edit
+retains the full-token request until a matching rich projection is ready; the
+prior editor rendering stays visible rather than being replaced with a lexical
+downgrade. Old ranges are never returned as a new-revision response. Deferred
+requests are revision- and external-generation-scoped, bounded, cancelled on
+edit/close/client cancellation, and answered only with matching rich data. A
+rich pass replaces the baseline with resolver-backed references and external
+workspace/game-data facts only after those identity checks pass. Responses are
+full only, with an opaque result ID for `revision:lexical` or
+`revision:rich:generation`; semantic-token deltas are not advertised.
 
 Token priorities preserve comments over code-like text, declarations/type
 positions over weaker references, and scope facts over generic variable
@@ -56,14 +60,15 @@ cancellation, and publication eligibility, including the only retained
 job/byte capacity limit. `lsp.rs`'s rich worker starts immediately after
 admission and executes with the runtime cancellation token. A rich projection
 is scheduled when matching analysis completes if VS Code already requested a
-lexical baseline for that revision; it therefore converges even when the
+token projection for that revision; it therefore converges even when the
 initial token request arrived before foreground or semantic analysis was ready.
 There is no fixed token idle delay.
 
 ## Verification
 
-Run focused semantic-token tests and `cargo test` from `server/`. Cover fast to
-rich replacement, stale revision/generation rejection, cancellation, Unicode
+Run focused semantic-token tests and `cargo test` from `server/`. Cover
+first-open lexical fallback, stable rich display across an edit, deferred
+request supersession/cancellation, stale revision/generation rejection, Unicode
 and CRLF delta encoding, multiline comments, malformed source, token priority,
 and the final output cap.
 
