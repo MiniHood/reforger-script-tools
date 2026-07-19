@@ -16,21 +16,23 @@ dispatch, document caching, resolver policy, or TypeScript retrigger parsing.
 
 Completion reuses matching-revision file analysis to recognize member,
 top-level, type, override, and callable-argument contexts. While full analysis
-is pending, the foreground path first attempts a valid-syntax, size- and
-deadline-bounded `ReceiverResolutionQuery` for one bare local, parameter, or
-field receiver, then a `LocalScopeQuery` for ordinary callable-local prefixes,
-and an `ArgumentLabelQuery` for one bare resolver-proven callable. All three
-construct an ephemeral parser/scope view from the current source revision
-and never read a prior document analysis. The receiver query captures the
-workspace/game-data indexes once and admits only a simple identifier receiver;
-chains, calls, indexing, static receivers, malformed source, oversize source,
-and deadline-exceeded work use only current lexer prefix facts and captured
-workspace/game-data indexes for a deterministic top-level result. The argument
-query returns only parameter-label items for a valid bounded current document
-with one bare resolved function or method callee; member/delegate
-calls, constructors, malformed text, values after a label, and over-budget work
-remain unavailable. No pending path combines current text with older local
-facts.
+is pending, the foreground path uses a fixed 16KiB-before/2KiB-after
+current-snapshot lexer window: a `ReceiverResolutionQuery` for one bare local,
+parameter, or field receiver, a `LocalScopeQuery` for ordinary callable-local
+prefixes, and an `ArgumentLabelQuery` for one bare externally indexed callable.
+These queries recover only brace-scoped declarations, parameter-body ownership,
+receiver type, and call-label facts wholly proven inside that window. They never
+call `file_index_for_source`, construct `SemanticFile`/`SymbolIndex`/
+`LexicalScopeModel` from document text, walk a CST root, or read prior document
+analysis on the request thread. The receiver query captures workspace/game-data
+indexes once and admits only a simple identifier receiver; chains, calls,
+indexing, static receivers, malformed/unterminated regions, unproven enclosing
+bodies, and deadline-exceeded work use only current lexer prefix facts and
+captured workspace/game-data indexes for a deterministic top-level result. The
+argument query returns only parameter-label items for a bare captured-index
+function or method; member/delegate calls, constructors, malformed text, values
+after a label, locally declared callables, and over-budget work remain
+unavailable. No pending path combines current text with older local facts.
 It combines local,
 workspace, and game-data candidates without rebuilding a merged index,
 preserves source-backed precedence, and caps output at 250 items. Member access

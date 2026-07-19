@@ -4,7 +4,7 @@ use crate::index_query::{
     completion_name_match_rank, EditorCompletionCandidate, EditorCompletionOrigin,
     EditorTopLevelCompletionMode, IndexQuery,
 };
-use crate::lexer::{lex, TextSpan, TokenKind};
+use crate::lexer::{lex, Keyword, TextSpan, Token, TokenKind};
 use crate::lsp::callable::{
     callable_argument_context_at_offset, callable_signature_parts, callable_type_owner,
     CallableParameter, CallableSignatureParts, CallableTarget,
@@ -24,7 +24,12 @@ const MAX_COMPLETION_ITEMS: usize = 250;
 /// A foreground local query deliberately has a small, source-free admission
 /// bound. Larger documents continue on the runtime semantic lane and use the
 /// documented lexical/top-level result meanwhile.
-const LOCAL_SCOPE_QUERY_MAX_SOURCE_BYTES: usize = 64 * 1024;
+/// Foreground queries inspect a fixed syntax window around the cursor.  This
+/// deliberately bounds both lexing and declaration recovery for arbitrarily
+/// large current snapshots; full parser/index construction stays on the
+/// runtime semantic lane.
+const LOCAL_SCOPE_QUERY_MAX_WINDOW_BYTES: usize = 16 * 1024;
+const LOCAL_SCOPE_QUERY_TRAILING_BYTES: usize = 2 * 1024;
 const LOCAL_SCOPE_QUERY_DEADLINE: Duration = Duration::from_millis(50);
 const COMMAND_TRIGGER_PARAMETER_HINTS: &str = "editor.action.triggerParameterHints";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -216,66 +221,53 @@ pub(crate) fn completion_report_for_lexical_source_at_offset_with_external_index
     workspace_index: Option<&SymbolIndex>,
     game_data_index: Option<&SymbolIndex>,
 ) -> LspCompletionReport {
-    let mut lexical_analysis = file_index_for_source("");
-    lexical_analysis.lexer_tokens = lex(source);
-    let context = unavailable_completion_context(&lexical_analysis.lexer_tokens, offset);
-    let report = completion_report_for_offset(
+    let Some(region) = BoundedCompletionRegion::new(source, offset) else {
+        return unavailable_completion_report(
+            empty_completion_report(0),
+            "invalid-or-unterminated-lexical-window",
+        );
+    };
+    let context = unavailable_completion_context(&region.tokens, offset);
+    let report = lexical_top_level_fallback_report(
         source,
-        &lexical_analysis,
+        &region.tokens,
         offset,
         workspace_index,
         game_data_index,
+        context,
     );
-    let report = match context {
-        UnavailableCompletionContext::Member | UnavailableCompletionContext::Argument => {
-            lexical_top_level_fallback_report(
-                source,
-                &lexical_analysis,
-                offset,
-                workspace_index,
-                game_data_index,
-                context,
-            )
-        }
-        UnavailableCompletionContext::TopLevel => report,
-    };
     unavailable_completion_report(report, context.reason())
 }
 
-/// Runs the valid-syntax `LocalScopeQuery` against the current source
-/// revision. This is intentionally independent of background semantic
-/// installation: it constructs only an ephemeral current parser/scope view
-/// and never reads a prior document analysis. Argument contexts remain
-/// unavailable until their dedicated bounded query exists.
+/// Runs `LocalScopeQuery` over a fixed lexical/syntax window from the current
+/// revision.  It intentionally does not parse, index, or project the file:
+/// when the callable block cannot be proved inside that window, callers use
+/// the documented unavailable fallback.
 pub(crate) fn completion_report_for_current_local_scope_at_offset_with_external_indexes(
     source: &str,
     offset: usize,
     workspace_index: Option<&SymbolIndex>,
     game_data_index: Option<&SymbolIndex>,
 ) -> Option<LspCompletionReport> {
-    if source.len() > LOCAL_SCOPE_QUERY_MAX_SOURCE_BYTES {
-        return None;
-    }
     let start = Instant::now();
-    let tokens = lex(source);
-    if unavailable_completion_context(&tokens, offset) != UnavailableCompletionContext::TopLevel {
-        return None;
-    }
-
-    let analysis = file_index_for_source(source);
-    if analysis.parse_diagnostics != 0
-        || !analysis.scope.has_callable_scope_at(offset)
-        || start.elapsed() > LOCAL_SCOPE_QUERY_DEADLINE
+    let region = BoundedCompletionRegion::new(source, offset)?;
+    if unavailable_completion_context(&region.tokens, offset)
+        != UnavailableCompletionContext::TopLevel
     {
         return None;
     }
-
-    let mut report =
-        completion_report_for_offset(source, &analysis, offset, workspace_index, game_data_index);
-    report.query_quality = QueryQuality::Exact;
-    report.recovery_reason = None;
-    report.completion_context = "local".to_string();
-    Some(report)
+    let facts = BoundedCompletionFacts::recover(source, &region, offset)?;
+    if start.elapsed() > LOCAL_SCOPE_QUERY_DEADLINE {
+        return None;
+    }
+    Some(facts.local_completion_report(
+        source,
+        &region,
+        offset,
+        workspace_index,
+        game_data_index,
+        start,
+    ))
 }
 
 /// Runs the current-revision `ReceiverResolutionQuery` for one bare local,
@@ -289,48 +281,40 @@ pub(crate) fn completion_report_for_current_receiver_at_offset_with_external_ind
     workspace_index: Option<&SymbolIndex>,
     game_data_index: Option<&SymbolIndex>,
 ) -> Option<LspCompletionReport> {
-    if source.len() > LOCAL_SCOPE_QUERY_MAX_SOURCE_BYTES {
-        return None;
-    }
     let start = Instant::now();
-    let tokens = lex(source);
-    if unavailable_completion_context(&tokens, offset) != UnavailableCompletionContext::Member {
-        return None;
-    }
-
-    let analysis = file_index_for_source(source);
-    if analysis.parse_diagnostics != 0 || start.elapsed() > LOCAL_SCOPE_QUERY_DEADLINE {
-        return None;
-    }
-
-    let resolver = ReferenceResolver::new_with_parse_scope_and_external_indexes(
-        source,
-        &analysis.index,
-        &analysis.parse,
-        &analysis.scope,
-        layered_external_indexes(workspace_index, game_data_index),
-    );
-    let context = resolver.member_completion_context_at_offset_with_tokens(offset, &tokens)?;
-    if !is_simple_current_receiver(&context.receiver.receiver_text)
-        || context.receiver.is_static
-        || !matches!(
-            resolver
-                .resolve_at_offset(context.receiver.receiver_span.start)
-                .and_then(|resolution| resolution.selected),
-            Some(candidate)
-                if matches!(candidate.kind, SymbolKind::LocalVariable | SymbolKind::Parameter | SymbolKind::Field)
-        )
-        || context.receiver.owner_type.is_none()
-        || start.elapsed() > LOCAL_SCOPE_QUERY_DEADLINE
+    let region = BoundedCompletionRegion::new(source, offset)?;
+    if unavailable_completion_context(&region.tokens, offset)
+        != UnavailableCompletionContext::Member
     {
         return None;
     }
-
-    let mut report =
-        completion_report_for_offset(source, &analysis, offset, workspace_index, game_data_index);
-    report.query_quality = QueryQuality::Exact;
-    report.recovery_reason = None;
-    report.completion_context = "member".to_string();
+    let facts = BoundedCompletionFacts::recover(source, &region, offset)?;
+    let (receiver, receiver_span, prefix, prefix_span) =
+        region.simple_member_context(source, offset)?;
+    let owner = facts.visible_type(&receiver)?;
+    if start.elapsed() > LOCAL_SCOPE_QUERY_DEADLINE {
+        return None;
+    }
+    let empty_local_index = SymbolIndex::default();
+    let mut report = member_completion_report_for_indexes(
+        source,
+        0,
+        &owner,
+        Some(receiver),
+        receiver_span,
+        Some(owner.clone()),
+        prefix.clone(),
+        prefix_span,
+        None,
+        false,
+        MemberVisibilityContext::ExternalReceiver,
+        &empty_local_index,
+        workspace_index,
+        game_data_index,
+        LspCompletionTimings::default(),
+        start,
+    );
+    facts.append_current_member_items(source, &region, &owner, &prefix, prefix_span, &mut report);
     Some(report)
 }
 
@@ -346,64 +330,567 @@ pub(crate) fn completion_report_for_current_argument_labels_at_offset_with_exter
     workspace_index: Option<&SymbolIndex>,
     game_data_index: Option<&SymbolIndex>,
 ) -> Option<LspCompletionReport> {
-    if source.len() > LOCAL_SCOPE_QUERY_MAX_SOURCE_BYTES {
-        return None;
-    }
     let start = Instant::now();
-    let tokens = lex(source);
-    if unavailable_completion_context(&tokens, offset) != UnavailableCompletionContext::Argument {
-        return None;
-    }
-
-    let analysis = file_index_for_source(source);
-    if analysis.parse_diagnostics != 0 || start.elapsed() > LOCAL_SCOPE_QUERY_DEADLINE {
-        return None;
-    }
-    let context = argument_label_completion_context(source, &analysis.parse.root, offset)?;
-    let CallableTarget::Call { callee_span } = &context.target else {
-        return None;
-    };
-    let callee = source.get(callee_span.start..callee_span.end)?;
-    if !is_simple_current_receiver(callee) {
-        return None;
-    }
-
-    let resolver = ReferenceResolver::new_with_parse_scope_and_external_indexes(
-        source,
-        &analysis.index,
-        &analysis.parse,
-        &analysis.scope,
-        layered_external_indexes(workspace_index, game_data_index),
-    );
-    if !matches!(
-        resolver
-            .resolve_at_offset(callee_span.start)
-            .and_then(|resolution| resolution.selected)
-            .map(|candidate| candidate.kind),
-        Some(SymbolKind::Function | SymbolKind::Method)
-    ) || start.elapsed() > LOCAL_SCOPE_QUERY_DEADLINE
+    let region = BoundedCompletionRegion::new(source, offset)?;
+    if unavailable_completion_context(&region.tokens, offset)
+        != UnavailableCompletionContext::Argument
     {
         return None;
     }
-
-    let report = argument_label_completion_report_for_indexes(
-        source,
-        analysis.parse_diagnostics,
-        context,
-        &resolver,
-        &analysis.index,
-        workspace_index,
-        game_data_index,
-        LspCompletionTimings::default(),
-        start,
+    let context = region.bare_argument_context(source, offset)?;
+    let mut callable_candidates = Vec::new();
+    for index in layered_external_indexes(workspace_index, game_data_index) {
+        callable_candidates.extend(
+            exact_top_level_candidates(index, &context.callee)
+                .into_iter()
+                .filter(|candidate| {
+                    matches!(candidate.kind, SymbolKind::Function | SymbolKind::Method)
+                }),
+        );
+    }
+    let callable_candidates = combine_completion_candidates(callable_candidates);
+    if start.elapsed() > LOCAL_SCOPE_QUERY_DEADLINE {
+        return None;
+    }
+    if callable_candidates.is_empty() {
+        let labels =
+            BoundedCompletionFacts::callable_parameter_names(source, &region, &context.callee)?;
+        return (start.elapsed() <= LOCAL_SCOPE_QUERY_DEADLINE).then_some(
+            bounded_argument_label_report(source, context, labels, start),
+        );
+    }
+    let parameter_candidates =
+        parameter_label_candidates_for_callables(&callable_candidates, &context);
+    let edit_range = range_for_span(source, context.prefix_span);
+    let empty_local_index = SymbolIndex::default();
+    let (items, source_kind_counts, origin_counts) = completion_items_for_parameter_labels(
+        &parameter_candidates,
+        edit_range,
+        CompletionRenderContext::new(&empty_local_index, workspace_index, game_data_index),
     );
-    (start.elapsed() <= LOCAL_SCOPE_QUERY_DEADLINE).then_some(report)
+    let (items, is_incomplete) = cap_completion_items(items);
+    (start.elapsed() <= LOCAL_SCOPE_QUERY_DEADLINE).then_some(LspCompletionReport {
+        candidate_count: items.len(),
+        list: LspCompletionList {
+            is_incomplete,
+            items,
+        },
+        query_quality: QueryQuality::Exact,
+        recovery_reason: None,
+        parse_diagnostics: 0,
+        completion_context: "argument-label".to_string(),
+        receiver_text: None,
+        owner_type: None,
+        prefix: context.prefix,
+        source_kind_counts,
+        origin_counts,
+        failure_reason: None,
+        timings: LspCompletionTimings {
+            total: start.elapsed(),
+            ..LspCompletionTimings::default()
+        },
+    })
 }
 
 fn is_simple_current_receiver(receiver: &str) -> bool {
     let mut chars = receiver.chars();
     matches!(chars.next(), Some(first) if first.is_ascii_alphabetic() || first == '_')
         && chars.all(|character| character.is_ascii_alphanumeric() || character == '_')
+}
+
+/// A source-free foreground view.  The window starts at a line boundary, so
+/// lexer spans can be translated back to the immutable snapshot without ever
+/// traversing its root syntax tree.
+struct BoundedCompletionRegion {
+    tokens: Vec<Token>,
+}
+
+impl BoundedCompletionRegion {
+    fn new(source: &str, offset: usize) -> Option<Self> {
+        if offset > source.len() || !source.is_char_boundary(offset) {
+            return None;
+        }
+        let mut start = offset.saturating_sub(LOCAL_SCOPE_QUERY_MAX_WINDOW_BYTES);
+        while start < offset && !source.is_char_boundary(start) {
+            start += 1;
+        }
+        if let Some(newline) = source.get(start..offset)?.find('\n') {
+            start += newline + 1;
+        }
+        let mut end = (offset + LOCAL_SCOPE_QUERY_TRAILING_BYTES).min(source.len());
+        while end > offset && !source.is_char_boundary(end) {
+            end -= 1;
+        }
+        let mut tokens = lex(source.get(start..end)?);
+        for token in &mut tokens {
+            token.span.start += start;
+            token.span.end += start;
+        }
+        (!tokens.iter().any(|token| token.kind.is_error())).then_some(Self { tokens })
+    }
+
+    fn significant_before(&self, offset: usize) -> Vec<Token> {
+        self.tokens
+            .iter()
+            .copied()
+            .filter(|token| {
+                token.span.end <= offset && !token.kind.is_trivia() && token.kind != TokenKind::Eof
+            })
+            .collect()
+    }
+
+    fn simple_member_context(
+        &self,
+        source: &str,
+        offset: usize,
+    ) -> Option<(String, TextSpan, String, TextSpan)> {
+        let prefix_span = lexical_completion_prefix_span(&self.tokens, offset);
+        let prefix = source.get(prefix_span.start..prefix_span.end)?.to_string();
+        let tokens = self.significant_before(prefix_span.start);
+        let dot = tokens.last()?;
+        (dot.kind == TokenKind::Dot).then_some(())?;
+        let receiver = tokens.get(tokens.len().checked_sub(2)?)?;
+        (receiver.kind == TokenKind::Identifier).then_some(())?;
+        let receiver_text = source
+            .get(receiver.span.start..receiver.span.end)?
+            .to_string();
+        is_simple_current_receiver(&receiver_text).then_some((
+            receiver_text,
+            receiver.span,
+            prefix,
+            prefix_span,
+        ))
+    }
+
+    fn bare_argument_context(
+        &self,
+        source: &str,
+        offset: usize,
+    ) -> Option<ArgumentLabelCompletionContext> {
+        let (prefix, prefix_span) =
+            completion_identifier_prefix_for_argument_label(source, &self.tokens, offset)?;
+        let tokens = self.significant_before(prefix_span.start);
+        let left_paren_index = tokens
+            .iter()
+            .rposition(|token| token.kind == TokenKind::LeftParen)?;
+        let callee = tokens.get(left_paren_index.checked_sub(1)?)?;
+        (callee.kind == TokenKind::Identifier).then_some(())?;
+        let callee = source.get(callee.span.start..callee.span.end)?.to_string();
+        is_simple_current_receiver(&callee).then_some(())?;
+        let mut supplied_labels = BTreeSet::new();
+        for pair in tokens[left_paren_index + 1..].windows(2) {
+            if pair[0].kind == TokenKind::Identifier && pair[1].kind == TokenKind::Colon {
+                supplied_labels.insert(
+                    source
+                        .get(pair[0].span.start..pair[0].span.end)?
+                        .to_string(),
+                );
+            }
+        }
+        Some(ArgumentLabelCompletionContext {
+            prefix,
+            prefix_span,
+            target: CallableTarget::Call {
+                callee_span: TextSpan::new(0, 0),
+            },
+            argument_index: tokens[left_paren_index + 1..]
+                .iter()
+                .filter(|token| token.kind == TokenKind::Comma)
+                .count(),
+            supplied_labels,
+            callee,
+        })
+    }
+}
+
+#[derive(Clone)]
+struct BoundedDeclaration {
+    name: String,
+    owner_type: String,
+    scope: Vec<usize>,
+    declared_at: usize,
+}
+
+struct BoundedCompletionFacts {
+    declarations: Vec<BoundedDeclaration>,
+    cursor_scope: Vec<usize>,
+}
+
+impl BoundedCompletionFacts {
+    fn recover(source: &str, region: &BoundedCompletionRegion, offset: usize) -> Option<Self> {
+        let tokens = region.significant_before(offset);
+        let mut scopes = Vec::new();
+        let mut declarations = Vec::new();
+        for (index, token) in tokens.iter().enumerate() {
+            match token.kind {
+                TokenKind::LeftBrace => scopes.push(token.span.start),
+                TokenKind::RightBrace => {
+                    scopes.pop()?;
+                }
+                _ => {}
+            }
+            let Some(name) = tokens.get(index + 1) else {
+                continue;
+            };
+            if !is_bounded_type_token(token.kind) || name.kind != TokenKind::Identifier {
+                continue;
+            }
+            let Some(next) = tokens.get(index + 2) else {
+                continue;
+            };
+            if next.kind == TokenKind::LeftParen
+                || !matches!(
+                    next.kind,
+                    TokenKind::Semicolon
+                        | TokenKind::Comma
+                        | TokenKind::Operator(_)
+                        | TokenKind::RightParen
+                )
+            {
+                continue;
+            }
+            let owner_type = source.get(token.span.start..token.span.end)?.to_string();
+            let name_text = source.get(name.span.start..name.span.end)?.to_string();
+            let mut declaration_scope = scopes.clone();
+            // A parameter belongs to the following callable body, not the
+            // enclosing class.  Requiring that body inside the window avoids
+            // leaking parameters into sibling methods.
+            if next.kind == TokenKind::Comma || next.kind == TokenKind::RightParen {
+                let body = tokens[index + 2..]
+                    .iter()
+                    .find(|candidate| candidate.kind == TokenKind::LeftBrace)?;
+                declaration_scope.push(body.span.start);
+            }
+            declarations.push(BoundedDeclaration {
+                name: name_text,
+                owner_type,
+                scope: declaration_scope,
+                declared_at: name.span.start,
+            });
+        }
+        // A callable-local query is exact only with a proven enclosing body
+        // and its closing delimiter inside the same bounded region.  This
+        // deliberately declines an in-progress unterminated body rather than
+        // guessing from a partial file projection.
+        (!scopes.is_empty()
+            && region
+                .tokens
+                .iter()
+                .any(|token| token.span.start >= offset && token.kind == TokenKind::RightBrace))
+        .then_some(Self {
+            declarations,
+            cursor_scope: scopes,
+        })
+    }
+
+    fn visible_declarations(&self) -> Vec<&BoundedDeclaration> {
+        let mut latest = BTreeMap::<String, &BoundedDeclaration>::new();
+        for declaration in &self.declarations {
+            if declaration.scope.len() <= self.cursor_scope.len()
+                && self.cursor_scope.starts_with(&declaration.scope)
+            {
+                latest
+                    .entry(declaration.name.clone())
+                    .and_modify(|current| {
+                        if declaration.scope.len() > current.scope.len()
+                            || (declaration.scope.len() == current.scope.len()
+                                && declaration.declared_at > current.declared_at)
+                        {
+                            *current = declaration;
+                        }
+                    })
+                    .or_insert(declaration);
+            }
+        }
+        latest.into_values().collect()
+    }
+
+    fn visible_type(&self, name: &str) -> Option<String> {
+        self.visible_declarations()
+            .into_iter()
+            .find(|declaration| declaration.name == name)
+            .map(|declaration| declaration.owner_type.clone())
+    }
+
+    fn local_completion_report(
+        &self,
+        source: &str,
+        region: &BoundedCompletionRegion,
+        offset: usize,
+        workspace_index: Option<&SymbolIndex>,
+        game_data_index: Option<&SymbolIndex>,
+        start: Instant,
+    ) -> LspCompletionReport {
+        let prefix_span = lexical_completion_prefix_span(&region.tokens, offset);
+        let prefix = source[prefix_span.start..prefix_span.end].to_string();
+        let mut items = self
+            .visible_declarations()
+            .into_iter()
+            .filter_map(|declaration| {
+                candidate_matches_prefix_name(&declaration.name, &prefix).then_some(
+                    LspCompletionItem {
+                        label: declaration.name.clone(),
+                        label_details: Some(LspCompletionItemLabelDetails {
+                            detail: Some(format!(": {}", declaration.owner_type)),
+                            description: None,
+                        }),
+                        kind: 6,
+                        detail: Some(declaration.owner_type.clone()),
+                        documentation: None,
+                        sort_text: Some(format!("000:local:{}", declaration.name)),
+                        filter_text: Some(declaration.name.clone()),
+                        insert_text_format: None,
+                        command: None,
+                        text_edit: LspTextEdit {
+                            range: range_for_span(source, prefix_span),
+                            new_text: declaration.name.clone(),
+                        },
+                        required_parameter_count: 0,
+                        optional_parameter_count: 0,
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        // Local facts are exact, but ordinary completion also retains the
+        // independently valid external/keyword candidates from this same
+        // lexical window.  This is a merge of current bounded facts, never a
+        // projection of the document snapshot.
+        let fallback = lexical_top_level_fallback_report(
+            source,
+            &region.tokens,
+            offset,
+            workspace_index,
+            game_data_index,
+            UnavailableCompletionContext::TopLevel,
+        );
+        items.extend(fallback.list.items);
+        let mut seen = BTreeSet::new();
+        items.retain(|item| {
+            seen.insert((
+                item.label.to_ascii_lowercase(),
+                item.text_edit.new_text.clone(),
+            ))
+        });
+        let (items, is_incomplete) = cap_completion_items(items);
+        LspCompletionReport {
+            candidate_count: items.len(),
+            list: LspCompletionList {
+                is_incomplete,
+                items,
+            },
+            query_quality: QueryQuality::Exact,
+            recovery_reason: None,
+            parse_diagnostics: 0,
+            completion_context: "local".to_string(),
+            receiver_text: None,
+            owner_type: None,
+            prefix,
+            source_kind_counts: fallback.source_kind_counts,
+            origin_counts: fallback.origin_counts,
+            failure_reason: None,
+            timings: LspCompletionTimings {
+                total: start.elapsed(),
+                ..LspCompletionTimings::default()
+            },
+        }
+    }
+
+    fn append_current_member_items(
+        &self,
+        source: &str,
+        region: &BoundedCompletionRegion,
+        owner: &str,
+        prefix: &str,
+        prefix_span: TextSpan,
+        report: &mut LspCompletionReport,
+    ) {
+        let mut items = Self::class_member_names(source, region, owner)
+            .into_iter()
+            .filter(|name| candidate_matches_prefix_name(name, prefix))
+            .map(|name| {
+                bounded_completion_item(source, prefix_span, name, Some(owner.to_string()), 2)
+            })
+            .collect::<Vec<_>>();
+        if items.is_empty() {
+            return;
+        }
+        items.extend(std::mem::take(&mut report.list.items));
+        let (items, is_incomplete) = cap_completion_items(items);
+        report.candidate_count = items.len();
+        report.list = LspCompletionList {
+            is_incomplete,
+            items,
+        };
+    }
+
+    fn class_member_names(
+        source: &str,
+        region: &BoundedCompletionRegion,
+        owner: &str,
+    ) -> Vec<String> {
+        let tokens = region
+            .tokens
+            .iter()
+            .copied()
+            .filter(|token| !token.kind.is_trivia() && token.kind != TokenKind::Eof)
+            .collect::<Vec<_>>();
+        let class_index = tokens.windows(3).position(|window| {
+            matches!(window[0].kind, TokenKind::Keyword(Keyword::Class))
+                && source.get(window[1].span.start..window[1].span.end) == Some(owner)
+                && window[2].kind == TokenKind::LeftBrace
+        });
+        let Some(class_index) = class_index else {
+            return Vec::new();
+        };
+        let mut depth = 1usize;
+        let mut names = Vec::new();
+        for window in tokens[class_index + 3..].windows(3) {
+            match window[0].kind {
+                TokenKind::LeftBrace => depth += 1,
+                TokenKind::RightBrace => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ if depth == 1
+                    && is_bounded_type_token(window[0].kind)
+                    && window[1].kind == TokenKind::Identifier
+                    && window[2].kind == TokenKind::LeftParen =>
+                {
+                    if let Some(name) = source.get(window[1].span.start..window[1].span.end) {
+                        names.push(name.to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+        names
+    }
+
+    fn callable_parameter_names(
+        source: &str,
+        region: &BoundedCompletionRegion,
+        callee: &str,
+    ) -> Option<Vec<String>> {
+        let tokens = region.significant_before(source.len());
+        let callable = tokens.windows(3).find(|window| {
+            is_bounded_type_token(window[0].kind)
+                && window[1].kind == TokenKind::Identifier
+                && source.get(window[1].span.start..window[1].span.end) == Some(callee)
+                && window[2].kind == TokenKind::LeftParen
+        })?;
+        let open = tokens
+            .iter()
+            .position(|token| token.span == callable[2].span)?;
+        let close = tokens[open + 1..]
+            .iter()
+            .position(|token| token.kind == TokenKind::RightParen)?
+            + open
+            + 1;
+        let mut names = Vec::new();
+        for window in tokens[open + 1..close].windows(2) {
+            if is_bounded_type_token(window[0].kind) && window[1].kind == TokenKind::Identifier {
+                names.push(
+                    source
+                        .get(window[1].span.start..window[1].span.end)?
+                        .to_string(),
+                );
+            }
+        }
+        Some(names)
+    }
+}
+
+fn bounded_completion_item(
+    source: &str,
+    prefix_span: TextSpan,
+    label: String,
+    detail: Option<String>,
+    kind: u32,
+) -> LspCompletionItem {
+    LspCompletionItem {
+        label: label.clone(),
+        label_details: detail.as_ref().map(|detail| LspCompletionItemLabelDetails {
+            detail: Some(format!(": {detail}")),
+            description: None,
+        }),
+        kind,
+        detail,
+        documentation: None,
+        sort_text: Some(format!("000:bounded:{label}")),
+        filter_text: Some(label.clone()),
+        insert_text_format: None,
+        command: None,
+        text_edit: LspTextEdit {
+            range: range_for_span(source, prefix_span),
+            new_text: label,
+        },
+        required_parameter_count: 0,
+        optional_parameter_count: 0,
+    }
+}
+
+fn bounded_argument_label_report(
+    source: &str,
+    context: ArgumentLabelCompletionContext,
+    labels: Vec<String>,
+    start: Instant,
+) -> LspCompletionReport {
+    let mut items = labels
+        .into_iter()
+        .filter(|label| starts_with_ignore_ascii_case(label, &context.prefix))
+        .filter(|label| {
+            !context
+                .supplied_labels
+                .iter()
+                .any(|supplied| supplied.eq_ignore_ascii_case(label))
+        })
+        .map(|label| bounded_completion_item(source, context.prefix_span, label, None, 5))
+        .collect::<Vec<_>>();
+    let (items, is_incomplete) = cap_completion_items(std::mem::take(&mut items));
+    LspCompletionReport {
+        candidate_count: items.len(),
+        list: LspCompletionList {
+            is_incomplete,
+            items,
+        },
+        query_quality: QueryQuality::Exact,
+        recovery_reason: None,
+        parse_diagnostics: 0,
+        completion_context: "argument-label".to_string(),
+        receiver_text: None,
+        owner_type: None,
+        prefix: context.prefix,
+        source_kind_counts: BTreeMap::new(),
+        origin_counts: BTreeMap::new(),
+        failure_reason: None,
+        timings: LspCompletionTimings {
+            total: start.elapsed(),
+            ..LspCompletionTimings::default()
+        },
+    }
+}
+
+fn is_bounded_type_token(kind: TokenKind) -> bool {
+    matches!(
+        kind,
+        TokenKind::Identifier
+            | TokenKind::Keyword(
+                Keyword::Int
+                    | Keyword::Void
+                    | Keyword::Float
+                    | Keyword::Bool
+                    | Keyword::String
+                    | Keyword::Vector
+                    | Keyword::Typename
+                    | Keyword::Auto
+            )
+    )
+}
+
+fn candidate_matches_prefix_name(name: &str, prefix: &str) -> bool {
+    completion_name_match_rank(name, prefix).is_some()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -461,33 +948,65 @@ fn lexical_completion_prefix_span(tokens: &[crate::lexer::Token], offset: usize)
 
 fn lexical_top_level_fallback_report(
     source: &str,
-    analysis: &FileIndexAnalysis,
+    tokens: &[Token],
     offset: usize,
     workspace_index: Option<&SymbolIndex>,
     game_data_index: Option<&SymbolIndex>,
     context: UnavailableCompletionContext,
 ) -> LspCompletionReport {
     let total_start = Instant::now();
-    let prefix_span = lexical_completion_prefix_span(&analysis.lexer_tokens, offset);
+    let prefix_span = lexical_completion_prefix_span(tokens, offset);
     let prefix = source
         .get(prefix_span.start..prefix_span.end)
         .unwrap_or_default()
         .to_string();
-    let mut report = top_level_completion_report_for_indexes(
-        source,
-        0,
-        "top-level",
-        prefix,
-        prefix_span,
-        offset,
+    let empty_local_index = SymbolIndex::default();
+    let candidates = top_level_source_completion_candidates(
+        &prefix,
         EditorTopLevelCompletionMode::Value,
-        analysis,
-        &analysis.index,
+        &empty_local_index,
         workspace_index,
         game_data_index,
-        LspCompletionTimings::default(),
-        total_start,
+        32,
     );
+    let render_context =
+        CompletionRenderContext::new(&empty_local_index, workspace_index, game_data_index);
+    let (mut items, source_kind_counts, origin_counts) = completion_items_for_candidates(
+        &candidates,
+        range_for_span(source, prefix_span),
+        None,
+        CompletionInsertContext::Normal,
+        Some(&prefix),
+        render_context,
+    );
+    items.extend(keyword_completion_items(
+        &prefix,
+        range_for_span(source, prefix_span),
+        EditorTopLevelCompletionMode::Value,
+        false,
+    ));
+    let (items, is_incomplete) = cap_completion_items(items);
+    let mut report = LspCompletionReport {
+        candidate_count: items.len(),
+        list: LspCompletionList {
+            is_incomplete,
+            items,
+        },
+        query_quality: QueryQuality::Exact,
+        recovery_reason: None,
+        parse_diagnostics: 0,
+        completion_context: "top-level".to_string(),
+        receiver_text: None,
+        owner_type: None,
+        prefix,
+        source_kind_counts,
+        origin_counts,
+        failure_reason: None,
+        timings: LspCompletionTimings {
+            total: total_start.elapsed(),
+            ..LspCompletionTimings::default()
+        },
+    };
     report.completion_context = match context {
         UnavailableCompletionContext::Member => "member-unavailable-top-level-fallback",
         UnavailableCompletionContext::Argument => "argument-unavailable-top-level-fallback",
@@ -1316,6 +1835,9 @@ struct ArgumentLabelCompletionContext {
     target: CallableTarget,
     argument_index: usize,
     supplied_labels: BTreeSet<String>,
+    /// Present only for the bounded lexical query.  Parser-backed callers
+    /// retain `target` as their source of callee identity.
+    callee: String,
 }
 
 fn member_visibility_context(
@@ -2150,6 +2672,7 @@ fn argument_label_completion_context(
         target: context.target,
         argument_index: context.argument_index,
         supplied_labels: context.supplied_labels,
+        callee: String::new(),
     })
 }
 
@@ -2926,6 +3449,58 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn bounded_pending_queries_admit_large_snapshots_without_file_projection() {
+        // The query window is anchored at the cursor, so a large unrelated
+        // prefix cannot force parse/catalog/index/scope construction on the
+        // request thread.  The old implementation rejected this source at
+        // 64KiB before it could answer any of these current-revision facts.
+        let padding = "// unrelated background text\n".repeat(5_000);
+        let external = file_index_for_source(
+            "class Widget { void GetName() {} } void Run(int firstValue, string secondValue) {}",
+        )
+        .index;
+        let source = format!(
+            "{padding}class Example {{ Widget m_widget; void Test(Widget parameter) {{ Widget localValue; localValue.Get; Run(sec); loc }} }}"
+        );
+
+        let local_offset = source.rfind("loc }").unwrap() + 3;
+        assert!(
+            completion_report_for_current_local_scope_at_offset_with_external_indexes(
+                &source,
+                local_offset,
+                Some(&external),
+                None,
+            )
+            .is_some()
+        );
+
+        let member_offset = source.rfind("localValue.Get").unwrap() + "localValue.Get".len();
+        let member = completion_report_for_current_receiver_at_offset_with_external_indexes(
+            &source,
+            member_offset,
+            Some(&external),
+            None,
+        )
+        .expect("the bounded region contains the local declaration and receiver");
+        assert!(member.list.items.iter().any(|item| item.label == "GetName"));
+
+        let argument_offset = source.rfind("Run(sec").unwrap() + "Run(sec".len();
+        let argument =
+            completion_report_for_current_argument_labels_at_offset_with_external_indexes(
+                &source,
+                argument_offset,
+                Some(&external),
+                None,
+            )
+            .expect("the bounded region resolves the captured external callable");
+        assert!(argument
+            .list
+            .items
+            .iter()
+            .any(|item| item.label == "secondValue"));
     }
 
     #[test]
