@@ -24,10 +24,9 @@ use std::io::{self, BufRead, BufReader, Read, Write};
 #[cfg(test)]
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    mpsc, Arc, Condvar, Mutex,
-};
+#[cfg(test)]
+use std::sync::atomic::Ordering;
+use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -248,6 +247,7 @@ enum ServerEvent {
         result: Result<Value, String>,
     },
     RichSemanticTokensReady {
+        task: TaskIdentity,
         uri: String,
         revision: u64,
         external_generation: u64,
@@ -256,6 +256,7 @@ enum ServerEvent {
         elapsed_ms: u128,
     },
     RichSemanticTokensSkipped {
+        task: TaskIdentity,
         uri: String,
         revision: u64,
         external_generation: u64,
@@ -407,12 +408,11 @@ fn request_document_uri(params: Option<&Value>) -> Option<String> {
 }
 
 struct RichSemanticTokensJob {
+    task: AnalysisTask,
     uri: String,
     revision: u64,
     external_generation: u64,
-    cancel: Arc<AtomicBool>,
     scheduled_at: Instant,
-    source: String,
     analysis: FileIndexAnalysis,
     external_snapshot: ExternalIndexSnapshot,
 }
@@ -455,8 +455,9 @@ impl RichSemanticTokensScheduler {
         {
             let evicted_uri = oldest_pending_uri(&pending).unwrap();
             let evicted = pending.remove(&evicted_uri).unwrap();
-            evicted.cancel.store(true, Ordering::Relaxed);
+            evicted.task.cancel();
             let _ = self.sender.send(ServerEvent::RichSemanticTokensSkipped {
+                task: evicted.task.identity().clone(),
                 uri: evicted.uri,
                 revision: evicted.revision,
                 external_generation: evicted.external_generation,
@@ -465,7 +466,7 @@ impl RichSemanticTokensScheduler {
             });
         }
         if let Some(previous) = pending.insert(job.uri.clone(), job) {
-            previous.cancel.store(true, Ordering::Relaxed);
+            previous.task.cancel();
         }
         wake.notify_one();
     }
@@ -490,18 +491,19 @@ impl RichSemanticTokensScheduler {
                 continue;
             };
             drop(pending);
-            if job.cancel.load(Ordering::Relaxed) {
+            if job.task.is_cancelled() {
                 continue;
             }
             let projection = semantic_tokens_for_cached_analysis_with_external_indexes_cancelled(
-                &job.source,
+                job.task.snapshot().text(),
                 &job.analysis,
                 job.external_snapshot.workspace.as_deref(),
                 job.external_snapshot.game_data.as_deref(),
-                &|| job.cancel.load(Ordering::Relaxed),
+                &|| job.task.is_cancelled(),
             );
             let event = match projection {
                 Some(projection) => ServerEvent::RichSemanticTokensReady {
+                    task: job.task.identity().clone(),
                     uri: job.uri,
                     revision: job.revision,
                     external_generation: job.external_generation,
@@ -510,6 +512,7 @@ impl RichSemanticTokensScheduler {
                     elapsed_ms: job.scheduled_at.elapsed().as_millis(),
                 },
                 None => ServerEvent::RichSemanticTokensSkipped {
+                    task: job.task.identity().clone(),
                     uri: job.uri,
                     revision: job.revision,
                     external_generation: job.external_generation,
@@ -1525,7 +1528,7 @@ impl<W: Write> LspServer<W> {
                     let mut resolver_calls = 0usize;
                     let mut token_loop_ms = 0u128;
                     let mut encode_ms = 0u128;
-                    let mut rich_work: Option<(String, u64, u64, Arc<AtomicBool>)> = None;
+                    let mut rich_work: Option<(String, u64, u64)> = None;
                     let result = params
                         .and_then(|params| {
                             log_uri = params.text_document.uri;
@@ -1553,14 +1556,10 @@ impl<W: Write> LspServer<W> {
                                             external_generation,
                                         )
                                     {
-                                        let cancel = document
-                                            .semantic_tokens
-                                            .mark_pending(document.revision, external_generation);
                                         rich_work = Some((
                                             log_uri.clone(),
                                             document.revision,
                                             external_generation,
-                                            cancel,
                                         ));
                                     }
                                     fast_semantic_tokens_for_cached_analysis(
@@ -1602,13 +1601,11 @@ impl<W: Write> LspServer<W> {
                         start.elapsed().as_millis()
                     ));
                     self.respond(id, result)?;
-                    if let Some((uri, rich_revision, rich_external_generation, cancel)) = rich_work
-                    {
+                    if let Some((uri, rich_revision, rich_external_generation)) = rich_work {
                         self.schedule_rich_semantic_tokens(
                             &uri,
                             rich_revision,
                             rich_external_generation,
-                            cancel,
                         )?;
                     }
                 }
@@ -2046,6 +2043,7 @@ impl<W: Write> LspServer<W> {
         match event {
             ServerEvent::Incoming { .. } => Ok(()),
             ServerEvent::RichSemanticTokensReady {
+                task,
                 uri,
                 revision,
                 external_generation,
@@ -2053,6 +2051,13 @@ impl<W: Write> LspServer<W> {
                 projection,
                 elapsed_ms,
             } => {
+                if !self.runtime.complete(&task) {
+                    self.log(&format!(
+                        "semanticTokensRich discarded uri={} revision={} reason=runtime-stale elapsed_ms={}",
+                        uri, revision, elapsed_ms
+                    ));
+                    return Ok(());
+                }
                 let token_count = projection.token_count;
                 let parse_diagnostics = projection.parse_diagnostics;
                 let lex_ms = projection.timings.lex_ms;
@@ -2116,12 +2121,14 @@ impl<W: Write> LspServer<W> {
                 self.request_semantic_tokens_refresh()
             }
             ServerEvent::RichSemanticTokensSkipped {
+                task,
                 uri,
                 revision,
                 external_generation,
                 reason,
                 elapsed_ms,
             } => {
+                self.runtime.complete(&task);
                 if let Some(document) = self.documents.get_mut(&uri) {
                     document
                         .semantic_tokens
@@ -2349,7 +2356,6 @@ impl<W: Write> LspServer<W> {
         uri: &str,
         revision: u64,
         external_generation: u64,
-        cancel: Arc<AtomicBool>,
     ) -> Result<(), String> {
         if let Some(scheduler) = self.rich_scheduler.clone() {
             let start = Instant::now();
@@ -2371,14 +2377,44 @@ impl<W: Write> LspServer<W> {
                 ));
                 return Ok(());
             }
+            let analysis = document.analysis().clone();
+            let _ = document;
+            let request_id = self.next_server_request_id;
+            self.next_server_request_id += 1;
+            let task = match self.runtime.admit(
+                TaskClass::Rich,
+                self.runtime.latest(uri).expect("current rich snapshot"),
+                request_id,
+                Instant::now() + Duration::from_secs(30),
+            ) {
+                AdmissionDisposition::Enqueued { .. } => self
+                    .runtime
+                    .take_next()
+                    .expect("admitted rich task is runnable"),
+                AdmissionDisposition::DroppedOverload {
+                    retained_jobs,
+                    retained_bytes,
+                    ..
+                } => {
+                    self.log(&format!(
+                        "semanticTokensRich skipped uri={} revision={} external_generation={} reason=runtime-overload retained_jobs={} retained_bytes={}",
+                        uri, revision, external_generation, retained_jobs, retained_bytes
+                    ));
+                    return Ok(());
+                }
+            };
+            self.documents
+                .get_mut(uri)
+                .expect("document remains present for admitted rich task")
+                .semantic_tokens
+                .mark_pending(revision, external_generation, task.cancellation_token());
             let job = RichSemanticTokensJob {
+                task,
                 uri: uri.to_string(),
                 revision,
                 external_generation,
-                cancel,
                 scheduled_at: start,
-                source: document.text.to_string(),
-                analysis: document.analysis().clone(),
+                analysis,
                 external_snapshot: self.external_index.snapshot(),
             };
             scheduler.schedule(job);
@@ -3048,13 +3084,23 @@ mod tests {
     use super::*;
 
     fn rich_semantic_tokens_job(uri: &str, scheduled_at: Instant) -> RichSemanticTokensJob {
+        let mut runtime = AnalysisRuntime::new(AdmissionLimits::new(1, 1));
+        assert_eq!(runtime.upsert(uri, 1, ""), UpsertOutcome::Accepted);
+        let task = match runtime.admit(
+            TaskClass::Rich,
+            runtime.latest(uri).expect("accepted snapshot"),
+            1,
+            Instant::now(),
+        ) {
+            AdmissionDisposition::Enqueued { .. } => runtime.take_next().unwrap(),
+            other => panic!("unexpected admission disposition: {other:?}"),
+        };
         RichSemanticTokensJob {
+            task,
             uri: uri.to_string(),
             revision: 1,
             external_generation: 0,
-            cancel: Arc::new(AtomicBool::new(false)),
             scheduled_at,
-            source: String::new(),
             analysis: file_index_for_source(""),
             external_snapshot: ExternalIndexSnapshot {
                 status: "missing",
@@ -3169,11 +3215,23 @@ mod tests {
             .unwrap();
 
         let external_generation = server.external_index.status_summary().generation;
+        let task = match server.runtime.admit(
+            TaskClass::Rich,
+            server.runtime.latest(uri).expect("accepted snapshot"),
+            1,
+            Instant::now(),
+        ) {
+            AdmissionDisposition::Enqueued { .. } => server.runtime.take_next().unwrap(),
+            other => panic!("unexpected admission disposition: {other:?}"),
+        };
         let (old_revision, projection, cancel) = {
             let document = server.documents.get_mut(uri).unwrap();
-            let cancel = document
-                .semantic_tokens
-                .mark_pending(document.revision, external_generation);
+            let cancel = task.cancellation_token();
+            document.semantic_tokens.mark_pending(
+                document.revision,
+                external_generation,
+                cancel.clone(),
+            );
             (
                 document.revision,
                 fast_semantic_tokens_for_cached_analysis(&document.text, document.analysis()),
@@ -3207,6 +3265,7 @@ mod tests {
 
         server
             .handle_internal_event(ServerEvent::RichSemanticTokensReady {
+                task: task.identity().clone(),
                 uri: uri.to_string(),
                 revision: old_revision,
                 external_generation,

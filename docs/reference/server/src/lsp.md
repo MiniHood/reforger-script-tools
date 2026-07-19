@@ -74,9 +74,10 @@ being mistaken for ingress queue time.
 
 Feature requests combine the open document's cached file-local analysis with a
 short-lived snapshot of the workspace/game-data overlay. Rich semantic-token
-work is delayed and scheduled by URI/revision/generation; late or cancelled
-worker results cannot replace current token state. Refresh notifications are
-coalesced until the client acknowledges the in-flight request.
+work is delayed and admitted through `analysis_runtime`'s `TaskClass::Rich`
+lane by URI/revision/generation; late, cancelled, or non-current task results
+cannot replace current token state. Refresh notifications are coalesced until
+the client acknowledges the in-flight request.
 
 The module exposes bounded developer-only debug requests and wires workspace
 file-change notifications to the external overlay. It is deliberately a small

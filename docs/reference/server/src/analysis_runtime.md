@@ -21,6 +21,11 @@ task, and publication succeeds only for its exact identity. `QueryQuality`
 distinguishes exact/recovery local facts from deterministic unavailable
 fallbacks, which may not use stale local state.
 
+Rich token refinement is admitted through `TaskClass::Rich`. Its executor
+receives the runtime-owned cancellation token and must return the exact task
+identity before the LSP can publish a token-cache result; document caches may
+only mirror that token for cooperative cancellation.
+
 ## Verification
 
 Run `cargo test analysis_runtime --lib` and the full Rust suite from `server/`.

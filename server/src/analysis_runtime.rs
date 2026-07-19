@@ -370,6 +370,13 @@ impl AnalysisTask {
         self.cancelled.load(Ordering::Acquire)
     }
 
+    /// Shares runtime-owned cancellation with a bounded background projection.
+    /// Consumers may observe or cooperatively poll this flag, but only the
+    /// runtime decides whether the task remains eligible to publish.
+    pub fn cancellation_token(&self) -> Arc<AtomicBool> {
+        self.cancelled.clone()
+    }
+
     /// Used only by a bounded executor when it evicts queued work.  The
     /// runtime still owns publication: the executor must report the identity
     /// back and [`AnalysisRuntime::complete`] decides whether it was current.

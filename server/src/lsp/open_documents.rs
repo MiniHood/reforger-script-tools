@@ -198,13 +198,12 @@ impl SemanticTokenCache {
         &mut self,
         revision: u64,
         external_generation: u64,
-    ) -> Arc<AtomicBool> {
+        cancel: Arc<AtomicBool>,
+    ) {
         self.cancel_pending();
-        let cancel = Arc::new(AtomicBool::new(false));
         self.pending_revision = Some(revision);
         self.pending_external_generation = Some(external_generation);
-        self.pending_cancel = Some(cancel.clone());
-        cancel
+        self.pending_cancel = Some(cancel);
     }
 
     pub(crate) fn cancel_pending(&mut self) {

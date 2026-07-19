@@ -49,7 +49,9 @@ editor coloring pipeline.
 Depends on lexer/parser/model/index/resolver facts, cached `FileIndexAnalysis`,
 and external snapshots. The lexical foreground entrypoint depends only on the
 current source and lexer output. [open_documents.md](open_documents.md) owns
-cache identity; `lsp.rs` owns workers, cancellation, and refresh coalescing.
+cache identity; `analysis_runtime` owns rich-task admission, latest-wins
+cancellation, and publication eligibility; `lsp.rs` executes admitted work and
+coalesces refreshes.
 
 ## Verification
 
