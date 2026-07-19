@@ -23,8 +23,9 @@ fallbacks, which may not use stale local state.
 
 Completion reports carry that enum instead of reconstructing quality from LSP
 cache state. `Unavailable` logs a stable reason and returns only independently
-proven lexical/top-level candidates; member and argument queries remain
-unavailable until their bounded exact foreground implementations exist.
+proven lexical/top-level candidates. A bounded exact argument-label query is
+available only for one bare resolver-proven function or method in valid current text;
+every other pending argument form remains unavailable.
 
 Rich token refinement is admitted through `TaskClass::Rich`. Its executor
 receives the runtime-owned cancellation token and must return the exact task

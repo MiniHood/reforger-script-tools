@@ -334,6 +334,72 @@ pub(crate) fn completion_report_for_current_receiver_at_offset_with_external_ind
     Some(report)
 }
 
+/// Runs the bounded current-revision argument-label query for one bare,
+/// already-resolved callable. The query admits only a valid current CST and a
+/// simple identifier callee, so it cannot combine current argument text with
+/// a prior document's callable facts. Member/delegate calls, constructors,
+/// malformed text, values after a label, and over-budget work intentionally
+/// remain on the documented unavailable fallback.
+pub(crate) fn completion_report_for_current_argument_labels_at_offset_with_external_indexes(
+    source: &str,
+    offset: usize,
+    workspace_index: Option<&SymbolIndex>,
+    game_data_index: Option<&SymbolIndex>,
+) -> Option<LspCompletionReport> {
+    if source.len() > LOCAL_SCOPE_QUERY_MAX_SOURCE_BYTES {
+        return None;
+    }
+    let start = Instant::now();
+    let tokens = lex(source);
+    if unavailable_completion_context(&tokens, offset) != UnavailableCompletionContext::Argument {
+        return None;
+    }
+
+    let analysis = file_index_for_source(source);
+    if analysis.parse_diagnostics != 0 || start.elapsed() > LOCAL_SCOPE_QUERY_DEADLINE {
+        return None;
+    }
+    let context = argument_label_completion_context(source, &analysis.parse.root, offset)?;
+    let CallableTarget::Call { callee_span } = &context.target else {
+        return None;
+    };
+    let callee = source.get(callee_span.start..callee_span.end)?;
+    if !is_simple_current_receiver(callee) {
+        return None;
+    }
+
+    let resolver = ReferenceResolver::new_with_parse_scope_and_external_indexes(
+        source,
+        &analysis.index,
+        &analysis.parse,
+        &analysis.scope,
+        layered_external_indexes(workspace_index, game_data_index),
+    );
+    if !matches!(
+        resolver
+            .resolve_at_offset(callee_span.start)
+            .and_then(|resolution| resolution.selected)
+            .map(|candidate| candidate.kind),
+        Some(SymbolKind::Function | SymbolKind::Method)
+    ) || start.elapsed() > LOCAL_SCOPE_QUERY_DEADLINE
+    {
+        return None;
+    }
+
+    let report = argument_label_completion_report_for_indexes(
+        source,
+        analysis.parse_diagnostics,
+        context,
+        &resolver,
+        &analysis.index,
+        workspace_index,
+        game_data_index,
+        LspCompletionTimings::default(),
+        start,
+    );
+    (start.elapsed() <= LOCAL_SCOPE_QUERY_DEADLINE).then_some(report)
+}
+
 fn is_simple_current_receiver(receiver: &str) -> bool {
     let mut chars = receiver.chars();
     matches!(chars.next(), Some(first) if first.is_ascii_alphabetic() || first == '_')
@@ -2706,6 +2772,37 @@ mod tests {
             .items
             .iter()
             .any(|item| item.label == "GetGameMode"));
+    }
+
+    #[test]
+    fn current_argument_query_returns_labels_for_a_resolved_bare_callable() {
+        let external = file_index_for_source(
+            "void Run(int firstValue, string secondValue, bool optionalValue = true) {}",
+        )
+        .index;
+        let source = "class Example { void Test() { Run(sec); } }";
+        let offset = source.find("Run(sec").unwrap() + "Run(sec".len();
+
+        let report = completion_report_for_current_argument_labels_at_offset_with_external_indexes(
+            source,
+            offset,
+            Some(&external),
+            None,
+        )
+        .expect("a valid bare callable with source-backed external facts should be exact");
+
+        assert_eq!(report.query_quality, QueryQuality::Exact);
+        assert_eq!(report.completion_context, "argument-label");
+        assert!(report
+            .list
+            .items
+            .iter()
+            .any(|item| item.label == "secondValue"));
+        assert!(!report
+            .list
+            .items
+            .iter()
+            .any(|item| item.label == "firstValue"));
     }
 
     #[test]
