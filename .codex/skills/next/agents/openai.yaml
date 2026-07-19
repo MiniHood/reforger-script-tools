@@ -1,0 +1,4 @@
+interface:
+  display_name: "Next Task"
+  short_description: "Continue or identify the next extension task"
+  default_prompt: "Use $next to continue the most relevant unfinished task."
