@@ -37,7 +37,7 @@ owns the completion contract, including current-document admission, context,
 candidate eligibility, ranking, and rendering. This keeps edit latency and
 completion behavior independent of client-side text heuristics and timers.
 
-Rust completion items may include an extension-owned completion follow-up command for enum placeholders inside callable snippets. `reforger-sript-tools.completion.triggerSuggestAtSnippetPlaceholderEnd` preserves a selected `EnumOwner.` placeholder, orients the selection's active end after the dot, and runs normal suggest so Rust member completion sees the correct position while free typing can still replace the whole placeholder. Rust may also use the same command after accepting an enum member when that completion item appended the next required enum placeholder, such as `EnumOwner.Member, ${1:NextEnum.}`. The command only runs VS Code snippet navigation and normal suggest; it does not inspect source text, choose completion candidates, or duplicate Rust completion behavior. It waits briefly around snippet navigation because VS Code applies completion text and snippet state asynchronously. It writes one concise debug record to the language-client output channel when it runs or fails, and a small `completionFollowup...` timing record to `language-client-startup.log` so enum-placeholder command execution can be confirmed from global-storage logs.
+Rust completion items may still use VS Code's built-in parameter-hints command after callable insertion. The extension does not register completion follow-up commands or programmatically invoke VS Code Suggest; enum placeholders remain ordinary snippets and the next completion request is initiated by normal editor behavior.
 
 ## Dependencies and Boundaries
 

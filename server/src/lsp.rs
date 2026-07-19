@@ -5039,7 +5039,7 @@ class Example
             item.command
                 .as_ref()
                 .map(|command| command.command.as_str()),
-            Some("reforger-sript-tools.completion.triggerSuggestAtSnippetPlaceholderEnd")
+            Some("editor.action.triggerParameterHints")
         );
         assert_eq!(item.required_parameter_count, 1);
     }
@@ -5159,7 +5159,7 @@ class RplRpc : UniqueAttribute
             item.command
                 .as_ref()
                 .map(|command| command.command.as_str()),
-            Some("reforger-sript-tools.completion.triggerSuggestAtSnippetPlaceholderEnd")
+            Some("editor.action.triggerParameterHints")
         );
         assert_eq!(item.required_parameter_count, 2);
         assert_eq!(item.optional_parameter_count, 1);
@@ -5205,18 +5205,10 @@ class RplRpc : UniqueAttribute
             .iter()
             .find(|item| item.label == "Reliable")
             .expect("expected enum member completion");
-        assert_eq!(
-            item.text_edit.new_text,
-            "RplChannel.Reliable, ${1:RplRcver.}"
-        );
-        assert_eq!(item.insert_text_format, Some(2));
-        assert_eq!(item.filter_text.as_deref(), Some("RplChannel.Reliable"));
-        assert_eq!(
-            item.command
-                .as_ref()
-                .map(|command| command.command.as_str()),
-            Some("reforger-sript-tools.completion.triggerSuggestAtSnippetPlaceholderEnd")
-        );
+        assert_eq!(item.text_edit.new_text, "Reliable");
+        assert_eq!(item.insert_text_format, None);
+        assert_eq!(item.filter_text.as_deref(), Some("Reliable"));
+        assert!(item.command.is_none());
 
         let source = r#"class Example
 {
@@ -5235,7 +5227,7 @@ class RplRpc : UniqueAttribute
             .iter()
             .find(|item| item.label == "Server")
             .expect("expected final enum member completion");
-        assert_eq!(item.text_edit.new_text, "RplRcver.Server");
+        assert_eq!(item.text_edit.new_text, "Server");
         assert!(item.command.is_none());
     }
 

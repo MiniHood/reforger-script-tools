@@ -3,7 +3,7 @@ use crate::index_query::{
     completion_name_match_rank, EditorCompletionCandidate, EditorCompletionOrigin,
     EditorTopLevelCompletionMode, IndexQuery,
 };
-use crate::lexer::{lex, Keyword, TextSpan, TokenKind};
+use crate::lexer::{lex, TextSpan, TokenKind};
 use crate::lsp::callable::{
     callable_argument_context_at_offset, callable_signature_parts, callable_type_owner,
     CallableParameter, CallableSignatureParts, CallableTarget,
@@ -20,8 +20,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 const MAX_COMPLETION_ITEMS: usize = 250;
-const COMMAND_TRIGGER_SUGGEST_AT_SNIPPET_PLACEHOLDER_END: &str =
-    "reforger-sript-tools.completion.triggerSuggestAtSnippetPlaceholderEnd";
 const COMMAND_TRIGGER_PARAMETER_HINTS: &str = "editor.action.triggerParameterHints";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -115,17 +113,6 @@ struct CompletionRenderContext<'a> {
     local_index: &'a SymbolIndex,
     workspace_index: Option<&'a SymbolIndex>,
     game_data_index: Option<&'a SymbolIndex>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-enum CompletionItemCommandContext {
-    #[default]
-    None,
-    StaticEnumMemberArgument {
-        receiver_text: String,
-        replacement_range: LspRange,
-        next_enum_owner: Option<String>,
-    },
 }
 
 impl<'a> CompletionRenderContext<'a> {
@@ -448,25 +435,6 @@ fn completion_report_for_offset(
             &owner,
             containing_class_name(&analysis.index, offset).as_deref(),
         );
-        let next_enum_owner = if receiver_is_static
-            && is_callable_argument_completion_position(source, context.prefix_span.start)
-        {
-            let render_context =
-                CompletionRenderContext::new(&analysis.index, workspace_index, game_data_index);
-            next_required_enum_owner_after_argument(
-                source,
-                &analysis.parse.root,
-                context.prefix_span.start,
-                &resolver,
-                &analysis.index,
-                workspace_index,
-                game_data_index,
-                render_context,
-            )
-        } else {
-            None
-        };
-
         let member_report = member_completion_report_for_indexes(
             source,
             analysis.parse_diagnostics,
@@ -478,7 +446,6 @@ fn completion_report_for_offset(
             context.prefix_span,
             failure_reason,
             receiver_is_static,
-            next_enum_owner,
             visibility,
             &analysis.index,
             workspace_index,
@@ -622,13 +589,12 @@ fn member_completion_report_for_indexes(
     parse_diagnostics: usize,
     owner: &str,
     receiver_text: Option<String>,
-    receiver_span: TextSpan,
+    _receiver_span: TextSpan,
     owner_type: Option<String>,
     prefix: String,
     prefix_span: TextSpan,
     failure_reason: Option<String>,
     receiver_is_static: bool,
-    next_enum_owner: Option<String>,
     visibility: MemberVisibilityContext,
     local_index: &SymbolIndex,
     workspace_index: Option<&SymbolIndex>,
@@ -660,20 +626,6 @@ fn member_completion_report_for_indexes(
     let render_start = Instant::now();
     let render_context =
         CompletionRenderContext::new(local_index, workspace_index, game_data_index);
-    let command_context = if receiver_is_static
-        && is_callable_argument_completion_position(source, prefix_span.start)
-    {
-        CompletionItemCommandContext::StaticEnumMemberArgument {
-            receiver_text: receiver_text.clone().unwrap_or_else(|| owner.to_string()),
-            replacement_range: range_for_span(
-                source,
-                TextSpan::new(receiver_span.start, prefix_span.end),
-            ),
-            next_enum_owner,
-        }
-    } else {
-        CompletionItemCommandContext::None
-    };
     let (items, source_kind_counts, origin_counts) = completion_items_for_candidates(
         &candidates,
         edit_range,
@@ -681,7 +633,6 @@ fn member_completion_report_for_indexes(
         CompletionInsertContext::Normal,
         Some(&prefix),
         render_context,
-        command_context,
     );
     let (items, is_incomplete) = cap_completion_items(items);
     timings.item_rendering = render_start.elapsed();
@@ -978,11 +929,7 @@ fn completion_item_for_parameter_label(
         value: parameter_label_documentation(parameter, optionality),
     });
     let insert_value = parameter_label_insert_value(parameter, Some(render_context));
-    let command = if insert_value.contains('.') {
-        Some(trigger_suggest_command())
-    } else {
-        Some(trigger_parameter_hints_command())
-    };
+    let command = Some(trigger_parameter_hints_command());
     let new_text = if candidate.active_positional && insert_value.contains('.') {
         insert_value.clone()
     } else if candidate.active_positional {
@@ -1111,47 +1058,6 @@ fn is_restricted_member_candidate(candidate: &EditorCompletionCandidate) -> bool
         .any(|modifier| matches!(modifier.as_str(), "private" | "protected"))
 }
 
-fn is_callable_argument_completion_position(source: &str, offset: usize) -> bool {
-    let mut paren_stack = Vec::new();
-    let mut previous_significant = None;
-    for token in lex(source) {
-        if token.span.start >= offset {
-            break;
-        }
-        if matches!(
-            token.kind,
-            TokenKind::Whitespace
-                | TokenKind::LineComment
-                | TokenKind::DocLineComment
-                | TokenKind::BlockComment
-                | TokenKind::DocBlockComment
-        ) {
-            continue;
-        }
-
-        match token.kind {
-            TokenKind::LeftParen => paren_stack.push(previous_significant),
-            TokenKind::RightParen => {
-                paren_stack.pop();
-            }
-            _ => {}
-        }
-        previous_significant = Some(token.kind);
-    }
-
-    paren_stack
-        .last()
-        .and_then(|kind| *kind)
-        .is_some_and(is_callable_argument_opener)
-}
-
-fn is_callable_argument_opener(kind: TokenKind) -> bool {
-    matches!(
-        kind,
-        TokenKind::Identifier | TokenKind::RightParen | TokenKind::RightBracket
-    ) || matches!(kind, TokenKind::Keyword(Keyword::This | Keyword::Super))
-}
-
 fn completion_items_for_candidates(
     candidates: &[EditorCompletionCandidate],
     edit_range: LspRange,
@@ -1159,7 +1065,6 @@ fn completion_items_for_candidates(
     insert_context: CompletionInsertContext,
     match_prefix: Option<&str>,
     render_context: CompletionRenderContext<'_>,
-    command_context: CompletionItemCommandContext,
 ) -> (
     Vec<LspCompletionItem>,
     BTreeMap<SourceKind, usize>,
@@ -1183,7 +1088,6 @@ fn completion_items_for_candidates(
                 match_prefix,
                 order,
                 render_context,
-                command_context.clone(),
             )
         })
         .collect::<Vec<_>>();
@@ -1248,7 +1152,6 @@ fn top_level_completion_report_for_indexes(
             insert_context,
             Some(&prefix),
             render_context,
-            CompletionItemCommandContext::None,
         );
         merge_count_maps(&mut source_kind_counts, source_counts);
         merge_count_maps(&mut origin_counts, source_origins);
@@ -1342,7 +1245,6 @@ fn top_level_completion_report_for_indexes(
         insert_context,
         Some(&prefix),
         render_context,
-        CompletionItemCommandContext::None,
     );
     let mut keyword_items =
         keyword_completion_items(&prefix, edit_range, mode, declaration_context);
@@ -1951,52 +1853,6 @@ fn argument_label_completion_context(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-fn next_required_enum_owner_after_argument(
-    source: &str,
-    root: &SyntaxNode,
-    offset: usize,
-    resolver: &ReferenceResolver<'_, '_>,
-    local_index: &SymbolIndex,
-    workspace_index: Option<&SymbolIndex>,
-    game_data_index: Option<&SymbolIndex>,
-    render_context: CompletionRenderContext<'_>,
-) -> Option<String> {
-    let context = callable_argument_context_at_offset(source, root, offset)?;
-    let label_context = ArgumentLabelCompletionContext {
-        prefix: String::new(),
-        prefix_span: TextSpan::new(offset, offset),
-        target: context.target,
-        argument_index: context.argument_index,
-        supplied_labels: context.supplied_labels,
-    };
-    let callable_candidates = callable_candidates_for_argument_label_context(
-        &label_context,
-        resolver,
-        local_index,
-        workspace_index,
-        game_data_index,
-    );
-    callable_candidates.into_iter().find_map(|candidate| {
-        let label = candidate
-            .name
-            .as_deref()
-            .unwrap_or(candidate.display.label.as_str());
-        let signature = candidate
-            .signature
-            .as_deref()
-            .or(candidate.constructor_signature.as_deref())?;
-        let parts = callable_signature_parts(label, signature)?;
-        parts
-            .parameters_info
-            .iter()
-            .enumerate()
-            .skip(context.argument_index + 1)
-            .find(|(_, parameter)| parameter.default_text.is_none())
-            .and_then(|(_, parameter)| enum_parameter_owner(parameter, Some(render_context)))
-    })
-}
-
 fn completion_identifier_prefix_for_argument_label(
     source: &str,
     tokens: &[crate::lexer::Token],
@@ -2110,7 +1966,6 @@ fn completion_item_for_candidate(
     match_prefix: Option<&str>,
     order: usize,
     render_context: CompletionRenderContext<'_>,
-    command_context: CompletionItemCommandContext,
 ) -> Option<LspCompletionItem> {
     let label = candidate
         .name
@@ -2125,19 +1980,11 @@ fn completion_item_for_candidate(
             description: render.call.result.clone(),
         })
         .or_else(|| completion_label_details(&label, candidate));
-    let (new_text, mut insert_text_format) = callable
+    let (new_text, insert_text_format) = callable
         .as_ref()
         .map(|render| (render.insert_text.clone(), Some(2)))
         .unwrap_or_else(|| (label.clone(), None));
-    let command = callable
-        .as_ref()
-        .and_then(|render| {
-            render
-                .trigger_suggest_after_insert
-                .then(trigger_suggest_command)
-                .or_else(|| Some(trigger_parameter_hints_command()))
-        })
-        .or_else(|| completion_followup_command(candidate, command_context.clone()));
+    let command = callable.as_ref().map(|_| trigger_parameter_hints_command());
     let documentation = completion_documentation(candidate, callable.as_ref());
     let required_parameter_count = callable
         .as_ref()
@@ -2148,25 +1995,11 @@ fn completion_item_for_candidate(
         .map(|render| render.call.optional_parameter_count())
         .unwrap_or(0);
 
-    let mut text_edit = LspTextEdit {
+    let text_edit = LspTextEdit {
         range: edit_range,
         new_text,
     };
-    let mut filter_text = label.clone();
-    if let Some((range, replacement_text)) =
-        completion_followup_replacement(candidate, command_context.clone(), &label)
-    {
-        text_edit.range = range;
-        if replacement_text.contains('$') {
-            insert_text_format = Some(2);
-        }
-        filter_text = replacement_text
-            .split(',')
-            .next()
-            .unwrap_or(replacement_text.as_str())
-            .to_string();
-        text_edit.new_text = replacement_text;
-    }
+    let filter_text = label.clone();
     Some(LspCompletionItem {
         label: label.clone(),
         label_details,
@@ -2217,11 +2050,7 @@ fn callable_completion_render(
             let call = callable_signature_parts(label, signature)?;
             let insert = callable_insert_text_with_context(label, &call, Some(render_context));
             let insert_text = format!("[{}]", insert.text);
-            return Some(CallableCompletionRender {
-                call,
-                insert_text,
-                trigger_suggest_after_insert: insert.trigger_suggest_after_insert,
-            });
+            return Some(CallableCompletionRender { call, insert_text });
         }
         _ => return None,
     };
@@ -2230,7 +2059,6 @@ fn callable_completion_render(
     Some(CallableCompletionRender {
         call,
         insert_text: insert.text,
-        trigger_suggest_after_insert: insert.trigger_suggest_after_insert,
     })
 }
 
@@ -2242,7 +2070,6 @@ fn is_attribute_like_completion_candidate(candidate: &EditorCompletionCandidate)
 struct CallableCompletionRender {
     call: CallableSignatureParts,
     insert_text: String,
-    trigger_suggest_after_insert: bool,
 }
 
 #[cfg(test)]
@@ -2253,7 +2080,6 @@ fn callable_insert_text(label: &str, call: &CallableSignatureParts) -> String {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CallableInsertText {
     text: String,
-    trigger_suggest_after_insert: bool,
 }
 
 fn callable_insert_text_with_context(
@@ -2265,17 +2091,14 @@ fn callable_insert_text_with_context(
     if call.parameters_info.is_empty() {
         return CallableInsertText {
             text: format!("{label}()"),
-            trigger_suggest_after_insert: false,
         };
     }
     if required.is_empty() {
         return CallableInsertText {
             text: format!("{label}($0)"),
-            trigger_suggest_after_insert: false,
         };
     }
 
-    let mut trigger_suggest_after_insert = false;
     let mut enum_placeholder_seen = false;
     let mut arguments = Vec::new();
     for (index, parameter) in required.iter().enumerate() {
@@ -2284,7 +2107,6 @@ fn callable_insert_text_with_context(
                 break;
             }
             enum_placeholder_seen = true;
-            trigger_suggest_after_insert = true;
             let placeholder = format!("{owner}.");
             format!(
                 "${{{}:{}}}",
@@ -2304,14 +2126,6 @@ fn callable_insert_text_with_context(
     let arguments = arguments.join(", ");
     CallableInsertText {
         text: format!("{label}({arguments})"),
-        trigger_suggest_after_insert,
-    }
-}
-
-fn trigger_suggest_command() -> LspCommand {
-    LspCommand {
-        title: "Trigger Suggest".to_string(),
-        command: COMMAND_TRIGGER_SUGGEST_AT_SNIPPET_PLACEHOLDER_END.to_string(),
     }
 }
 
@@ -2320,48 +2134,6 @@ fn trigger_parameter_hints_command() -> LspCommand {
         title: "Trigger Parameter Hints".to_string(),
         command: COMMAND_TRIGGER_PARAMETER_HINTS.to_string(),
     }
-}
-
-fn completion_followup_command(
-    candidate: &EditorCompletionCandidate,
-    command_context: CompletionItemCommandContext,
-) -> Option<LspCommand> {
-    let CompletionItemCommandContext::StaticEnumMemberArgument {
-        next_enum_owner, ..
-    } = command_context
-    else {
-        return None;
-    };
-    if candidate.kind != SymbolKind::EnumMember {
-        return None;
-    }
-    next_enum_owner.is_some().then(trigger_suggest_command)
-}
-
-fn completion_followup_replacement(
-    candidate: &EditorCompletionCandidate,
-    command_context: CompletionItemCommandContext,
-    label: &str,
-) -> Option<(LspRange, String)> {
-    let CompletionItemCommandContext::StaticEnumMemberArgument {
-        receiver_text,
-        replacement_range,
-        next_enum_owner,
-    } = command_context
-    else {
-        return None;
-    };
-    (candidate.kind == SymbolKind::EnumMember).then(|| {
-        let mut replacement = format!("{receiver_text}.{label}");
-        if let Some(owner) = next_enum_owner {
-            replacement.push_str(", ");
-            replacement.push_str(&format!(
-                "${{1:{}}}",
-                snippet_placeholder_text(&format!("{owner}."))
-            ));
-        }
-        (replacement_range, replacement)
-    })
 }
 
 fn parameter_label_insert_value(
