@@ -30,7 +30,7 @@ records retain names, detail text/spans, modifiers, attributes, raw docs,
 conditional context, macro names, callable form, provenance, and parent/child
 relations without retaining source text.
 
-The index supports raw name/kind/top-level/class/typedef/function/member/child lookup, preferred ordering, callable signatures, conflict review, source counts, and direct or best-effort base-chain member views. Local variables remain available for lookup and display but are excluded from top-level and class-member maps. `from_indexed_parts()` reconstructs derived maps from trusted cached records. Runtime-cache compaction removes external locals and source-only spans while preserving copied editor facts.
+The index supports raw name/kind/top-level/class/typedef/function/member/child lookup, preferred ordering, callable signatures, conflict review, source counts, and direct or best-effort base-chain member views. Local variables remain available for lookup and display but are excluded from top-level and class-member maps. The current game-data cache reconstructs this index from its canonical per-file contribution records; `from_indexed_parts()` is retained only for validated legacy-cache conversion and compatibility tests. Runtime-cache compaction projects out external locals and source-only spans before canonical persistence while preserving copied editor facts.
 
 Priority ordering is a source-policy aid, not semantic merge or `modded` interpretation. Editor consumers should use `IndexQuery` rather than raw aggregate APIs.
 
