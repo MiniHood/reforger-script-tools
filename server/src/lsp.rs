@@ -6682,7 +6682,10 @@ class RplRpc : UniqueAttribute
             .iter()
             .find(|item| item.label == "RplRpc")
             .expect("expected RplRpc attribute shorthand completion");
-        assert_eq!(item.text_edit.new_text, "[RplRpc(${1:RplChannel.})]");
+        assert_eq!(
+            item.text_edit.new_text,
+            "[RplRpc(RplChannel.Reliable, RplRcver.Server)]"
+        );
         assert_eq!(
             item.command
                 .as_ref()

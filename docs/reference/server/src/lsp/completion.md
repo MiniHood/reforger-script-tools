@@ -86,6 +86,13 @@ suggestions. Callable completions share [callable.md](callable.md) parameter
 parsing with signature help, provide snippets/follow-up commands when safe, and
 avoid duplicate named argument labels case-insensitively.
 
+`RplRpc` attribute shorthand is a verified exception to placeholder-only
+callable insertion. When its constructor has the engine-defined required
+`RplChannel` and `RplRcver` parameters, it expands to the canonical
+request-to-server annotation `[RplRpc(RplChannel.Reliable, RplRcver.Server)]`.
+This is deliberately signature-checked and does not infer defaults from enum
+declaration order for other attributes.
+
 ## Dependencies and Boundaries
 
 Depends on current open-document source/analysis, `ReferenceResolver`,

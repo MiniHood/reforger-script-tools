@@ -3111,6 +3111,9 @@ fn callable_completion_render(
         {
             let signature = candidate.constructor_signature.as_deref()?;
             let call = callable_signature_parts(label, signature)?;
+            if let Some(insert_text) = rpl_rpc_attribute_template(label, &call) {
+                return Some(CallableCompletionRender { call, insert_text });
+            }
             let insert = callable_insert_text_with_context(label, &call, Some(render_context));
             let insert_text = format!("[{}]", insert.text);
             return Some(CallableCompletionRender { call, insert_text });
@@ -3143,6 +3146,19 @@ fn callable_insert_text(label: &str, call: &CallableSignatureParts) -> String {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CallableInsertText {
     text: String,
+}
+
+/// `RplRpc` has two required enum arguments but the engine's canonical RPC
+/// examples use the safe request-to-server shape. Keep this a narrow,
+/// signature-checked template rather than treating an enum's declaration order
+/// as a default for arbitrary attribute constructors.
+fn rpl_rpc_attribute_template(label: &str, call: &CallableSignatureParts) -> Option<String> {
+    let required = call.required_parameters().collect::<Vec<_>>();
+    (label == "RplRpc"
+        && required.len() == 2
+        && callable_type_owner(&required[0].type_and_modifiers).as_deref() == Some("RplChannel")
+        && callable_type_owner(&required[1].type_and_modifiers).as_deref() == Some("RplRcver"))
+    .then(|| "[RplRpc(RplChannel.Reliable, RplRcver.Server)]".to_string())
 }
 
 fn callable_insert_text_with_context(
