@@ -531,7 +531,10 @@ impl BoundedCompletionRegion {
             cursor = previous;
         }
         calls.reverse();
-        (calls.len() >= 2).then_some(())?;
+        // A completed external call is already a member receiver path:
+        // `GetGame().GetPlayer...` must not wait for whole-file analysis.
+        // Each additional `.Method()` is another proven external step.
+        (!calls.is_empty()).then_some(())?;
         let receiver_start = tokens.get(cursor)?.span.start;
         let receiver_span = TextSpan::new(receiver_start, receiver_end);
         let receiver = source
@@ -3633,7 +3636,7 @@ mod tests {
     }
 
     #[test]
-    fn current_receiver_query_resolves_external_zero_argument_call_chains() {
+    fn current_receiver_query_resolves_external_zero_argument_call_paths() {
         let external = file_index_for_source(
             r#"class ChimeraGame
 {
@@ -3655,29 +3658,55 @@ class PlayerController
 {
 	void Run()
 	{
+		GetGame().GetPlayer
 		GetGame().GetPlayerController().
 	}
 }
 "#;
-        let offset =
-            source.find("GetPlayerController().").unwrap() + "GetPlayerController().".len();
-
-        let report = completion_report_for_current_receiver_at_offset_with_external_indexes(
+        let first_member_offset = source.find("GetPlayer\n").unwrap() + "GetPlayer".len();
+        let first_member = completion_report_for_current_receiver_at_offset_with_external_indexes(
             source,
-            offset,
+            first_member_offset,
             None,
             Some(&external),
         )
-        .expect("external call chain should use the bounded receiver query");
+        .expect("an external root call should use the bounded receiver query");
 
-        assert_eq!(report.query_quality, QueryQuality::Exact);
-        assert_eq!(report.completion_context, "member");
+        assert_eq!(first_member.query_quality, QueryQuality::Exact);
+        assert_eq!(first_member.completion_context, "member");
+        assert_eq!(first_member.receiver_text.as_deref(), Some("GetGame()"));
         assert_eq!(
-            report.receiver_text.as_deref(),
+            first_member.owner_type.as_deref(),
+            Some("ArmaReforgerScripted")
+        );
+        assert!(first_member
+            .list
+            .items
+            .iter()
+            .any(|item| item.label == "GetPlayerController"));
+
+        let chained_member_offset =
+            source.find("GetPlayerController().").unwrap() + "GetPlayerController().".len();
+        let chained_member =
+            completion_report_for_current_receiver_at_offset_with_external_indexes(
+                source,
+                chained_member_offset,
+                None,
+                Some(&external),
+            )
+            .expect("an external call chain should use the bounded receiver query");
+
+        assert_eq!(chained_member.query_quality, QueryQuality::Exact);
+        assert_eq!(chained_member.completion_context, "member");
+        assert_eq!(
+            chained_member.receiver_text.as_deref(),
             Some("GetGame().GetPlayerController()")
         );
-        assert_eq!(report.owner_type.as_deref(), Some("PlayerController"));
-        assert!(report
+        assert_eq!(
+            chained_member.owner_type.as_deref(),
+            Some("PlayerController")
+        );
+        assert!(chained_member
             .list
             .items
             .iter()

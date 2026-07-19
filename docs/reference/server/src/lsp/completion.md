@@ -22,10 +22,11 @@ parameter, or field receiver, a `LocalScopeQuery` for ordinary callable-local
 prefixes, and an `ArgumentLabelQuery` for one bare externally indexed callable.
 These queries recover only brace-scoped declarations, parameter-body ownership,
 receiver type, and call-label facts wholly proven inside that window. A
-zero-argument call chain rooted in an externally indexed global function is
-also admitted when every return type can be proved from the captured external
-indexes; this preserves immediate completion for common game API chains such
-as `GetGame().GetPlayerController().`. They never
+one-or-more-step zero-argument external call path rooted in an externally
+indexed global function is also admitted when every return type can be proved
+from the captured external indexes; this preserves immediate completion both
+after the root call (`GetGame().GetPlayer...`) and through common game API
+chains such as `GetGame().GetPlayerController().`. They never
 call `file_index_for_source`, construct `SemanticFile`/`SymbolIndex`/
 `LexicalScopeModel` from document text, walk a CST root, or read prior document
 analysis on the request thread. The receiver query captures workspace/game-data
