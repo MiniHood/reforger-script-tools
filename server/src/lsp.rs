@@ -141,7 +141,7 @@ pub fn run_stdio(options: LspServerOptions) -> Result<(), String> {
     let stdout = io::stdout();
     let (incoming_sender, incoming_receiver) = mpsc::sync_channel(INCOMING_EVENT_QUEUE_CAPACITY);
     let (internal_sender, internal_receiver) = mpsc::channel();
-    let rich_scheduler = RichSemanticTokensScheduler::start(internal_sender.clone());
+    let rich_scheduler = RichSemanticTokensWorker::start(internal_sender.clone());
     let analysis_scheduler = OpenDocumentAnalysisScheduler::start(internal_sender.clone());
     let mut server = LspServer::new_with_runtime_senders(
         stdout.lock(),
@@ -238,7 +238,7 @@ struct LspServer<W: Write> {
     runtime: AnalysisRuntime,
     logger: LspLogger,
     external_index: ExternalIndexHandle,
-    rich_scheduler: Option<RichSemanticTokensScheduler>,
+    rich_scheduler: Option<RichSemanticTokensWorker>,
     analysis_scheduler: Option<OpenDocumentAnalysisScheduler>,
     internal_sender: Option<mpsc::Sender<ServerEvent>>,
     deferred_document_requests: BTreeMap<String, Vec<DeferredDocumentRequest>>,
@@ -250,7 +250,6 @@ struct LspServer<W: Write> {
 }
 
 const RICH_SEMANTIC_TOKENS_IDLE_DELAY_MS: u64 = 250;
-const MAX_PENDING_RICH_SEMANTIC_TOKEN_JOBS: usize = 16;
 
 enum ServerEvent {
     Incoming {
@@ -422,13 +421,6 @@ struct RichSemanticTokensJob {
     external_snapshot: ExternalIndexSnapshot,
 }
 
-fn oldest_pending_uri(pending: &BTreeMap<String, RichSemanticTokensJob>) -> Option<String> {
-    pending
-        .iter()
-        .min_by_key(|(_, job)| job.scheduled_at)
-        .map(|(uri, _)| uri.clone())
-}
-
 fn earliest_due_pending_uri(pending: &BTreeMap<String, RichSemanticTokensJob>) -> Option<String> {
     pending
         .iter()
@@ -437,12 +429,18 @@ fn earliest_due_pending_uri(pending: &BTreeMap<String, RichSemanticTokensJob>) -
 }
 
 #[derive(Clone)]
-struct RichSemanticTokensScheduler {
+/// Runs rich-token work already admitted by [`AnalysisRuntime`].
+///
+/// This is deliberately a coalescing delay worker, not an admission queue:
+/// runtime task retention is the sole job/byte capacity boundary. Keeping
+/// latest-wins coalescing here avoids resolver work for an obsolete token
+/// request while preserving the runtime-owned cancellation token.
+struct RichSemanticTokensWorker {
     state: Arc<(Mutex<BTreeMap<String, RichSemanticTokensJob>>, Condvar)>,
     sender: mpsc::Sender<ServerEvent>,
 }
 
-impl RichSemanticTokensScheduler {
+impl RichSemanticTokensWorker {
     fn start(sender: mpsc::Sender<ServerEvent>) -> Self {
         let scheduler = Self {
             state: Arc::new((Mutex::new(BTreeMap::new()), Condvar::new())),
@@ -456,23 +454,7 @@ impl RichSemanticTokensScheduler {
     fn schedule(&self, job: RichSemanticTokensJob) {
         let (lock, wake) = &*self.state;
         let mut pending = lock.lock().unwrap();
-        if !pending.contains_key(&job.uri) && pending.len() >= MAX_PENDING_RICH_SEMANTIC_TOKEN_JOBS
-        {
-            let evicted_uri = oldest_pending_uri(&pending).unwrap();
-            let evicted = pending.remove(&evicted_uri).unwrap();
-            evicted.task.cancel();
-            let _ = self.sender.send(ServerEvent::RichSemanticTokensSkipped {
-                task: evicted.task.identity().clone(),
-                uri: evicted.uri,
-                revision: evicted.revision,
-                external_generation: evicted.external_generation,
-                reason: "scheduler-capacity-evicted".to_string(),
-                elapsed_ms: evicted.scheduled_at.elapsed().as_millis(),
-            });
-        }
-        if let Some(previous) = pending.insert(job.uri.clone(), job) {
-            previous.task.cancel();
-        }
+        coalesce_rich_job(&mut pending, job);
         wake.notify_one();
     }
 
@@ -527,6 +509,15 @@ impl RichSemanticTokensScheduler {
             };
             let _ = self.sender.send(event);
         }
+    }
+}
+
+fn coalesce_rich_job(
+    pending: &mut BTreeMap<String, RichSemanticTokensJob>,
+    job: RichSemanticTokensJob,
+) {
+    if let Some(previous) = pending.insert(job.uri.clone(), job) {
+        previous.task.cancel();
     }
 }
 
@@ -684,7 +675,7 @@ impl<W: Write> LspServer<W> {
     fn new_with_runtime_senders(
         writer: W,
         options: LspServerOptions,
-        rich_scheduler: Option<RichSemanticTokensScheduler>,
+        rich_scheduler: Option<RichSemanticTokensWorker>,
         analysis_scheduler: Option<OpenDocumentAnalysisScheduler>,
         internal_sender: Option<mpsc::Sender<ServerEvent>>,
     ) -> Self {
@@ -3254,9 +3245,13 @@ fn timestamp_millis() -> u128 {
 mod tests {
     use super::*;
 
-    fn rich_semantic_tokens_job(uri: &str, scheduled_at: Instant) -> RichSemanticTokensJob {
-        let mut runtime = AnalysisRuntime::new(AdmissionLimits::new(1, 1));
-        assert_eq!(runtime.upsert(uri, 1, ""), UpsertOutcome::Accepted);
+    fn rich_semantic_tokens_job(
+        runtime: &mut AnalysisRuntime,
+        uri: &str,
+        version: i32,
+        scheduled_at: Instant,
+    ) -> RichSemanticTokensJob {
+        assert_eq!(runtime.upsert(uri, version, ""), UpsertOutcome::Accepted);
         let task = match runtime.admit(
             TaskClass::Rich,
             runtime.latest(uri).expect("accepted snapshot"),
@@ -3282,35 +3277,20 @@ mod tests {
     }
 
     #[test]
-    fn rich_scheduler_evicts_the_oldest_pending_job() {
-        let now = Instant::now();
-        let mut pending = BTreeMap::new();
-        for (uri, scheduled_at) in [
-            ("file:///zeta.c", now - Duration::from_secs(1)),
-            ("file:///alpha.c", now - Duration::from_secs(3)),
-            ("file:///middle.c", now - Duration::from_secs(2)),
-        ] {
-            pending.insert(uri.to_string(), rich_semantic_tokens_job(uri, scheduled_at));
-        }
-
-        assert_eq!(
-            oldest_pending_uri(&pending).as_deref(),
-            Some("file:///alpha.c")
-        );
-    }
-
-    #[test]
     fn rich_scheduler_selects_the_earliest_due_job_not_the_first_uri() {
         let now = Instant::now();
+        let mut runtime = AnalysisRuntime::new(AdmissionLimits::new(2, 2));
         let mut pending = BTreeMap::new();
         pending.insert(
             "file:///a.c".to_string(),
-            rich_semantic_tokens_job("file:///a.c", now),
+            rich_semantic_tokens_job(&mut runtime, "file:///a.c", 1, now),
         );
         pending.insert(
             "file:///z.c".to_string(),
             rich_semantic_tokens_job(
+                &mut runtime,
                 "file:///z.c",
+                1,
                 now - Duration::from_millis(RICH_SEMANTIC_TOKENS_IDLE_DELAY_MS + 1),
             ),
         );
@@ -3319,6 +3299,47 @@ mod tests {
             earliest_due_pending_uri(&pending).as_deref(),
             Some("file:///z.c")
         );
+    }
+
+    #[test]
+    fn rich_worker_relies_on_runtime_capacity_and_coalesces_only_same_uri() {
+        let now = Instant::now();
+        let mut runtime = AnalysisRuntime::new(AdmissionLimits::new(17, 17));
+        let mut pending = BTreeMap::new();
+        for index in 0..17 {
+            let uri = format!("file:///rich-{index}.c");
+            let job = rich_semantic_tokens_job(&mut runtime, &uri, 1, now);
+            coalesce_rich_job(&mut pending, job);
+        }
+
+        assert_eq!(pending.len(), 17);
+        assert_eq!(
+            runtime.upsert("file:///rich-overflow.c", 1, ""),
+            UpsertOutcome::Accepted
+        );
+        assert!(matches!(
+            runtime.admit(
+                TaskClass::Rich,
+                runtime.latest("file:///rich-overflow.c").unwrap(),
+                18,
+                Instant::now(),
+            ),
+            AdmissionDisposition::DroppedOverload {
+                class: TaskClass::Rich,
+                ..
+            }
+        ));
+
+        let original = pending["file:///rich-0.c"].task.clone();
+        let replacement = rich_semantic_tokens_job(
+            &mut runtime,
+            "file:///rich-0.c",
+            2,
+            now + Duration::from_millis(1),
+        );
+        coalesce_rich_job(&mut pending, replacement);
+        assert_eq!(pending.len(), 17);
+        assert!(original.is_cancelled());
     }
 
     #[test]

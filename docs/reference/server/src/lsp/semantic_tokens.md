@@ -52,8 +52,10 @@ Depends on lexer/parser/model/index/resolver facts, cached `FileIndexAnalysis`,
 and external snapshots. The lexical foreground entrypoint depends only on the
 current source and lexer output. [open_documents.md](open_documents.md) owns
 cache identity; `analysis_runtime` owns rich-task admission, latest-wins
-cancellation, and publication eligibility; `lsp.rs` executes admitted work and
-coalesces refreshes.
+cancellation, and publication eligibility, including the only retained
+job/byte capacity limit. `lsp.rs`'s rich worker merely coalesces
+already-admitted work through its idle delay and executes it with the runtime
+cancellation token.
 
 ## Verification
 
