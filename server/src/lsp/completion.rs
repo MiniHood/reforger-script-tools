@@ -3504,7 +3504,11 @@ fn rpl_rpc_attribute_template(
         && callable_type_owner(&required[0].type_and_modifiers).as_deref() == Some("RplChannel")
         && callable_type_owner(&required[1].type_and_modifiers).as_deref() == Some("RplRcver"))
     .then(|| {
-        let body = "RplRpc(RplChannel.Reliable, RplRcver.Server)";
+        // Keep the final snippet cursor inside the call. The normal completion
+        // command can then open signature help against the original constructor
+        // (including optional condition/custom-condition inputs) while the two
+        // engine-default enum arguments remain prefilled.
+        let body = "RplRpc(RplChannel.Reliable, RplRcver.Server$0)";
         if include_brackets {
             format!("[{body}]")
         } else {
@@ -4190,7 +4194,7 @@ class ScriptComponent
             .expect("expected RplRpc attribute completion");
         assert_eq!(
             rpc.text_edit.new_text,
-            "[RplRpc(RplChannel.Reliable, RplRcver.Server)]"
+            "[RplRpc(RplChannel.Reliable, RplRcver.Server$0)]"
         );
     }
 

@@ -6681,7 +6681,7 @@ enum RplCondition
 class UniqueAttribute {}
 class RplRpc : UniqueAttribute
 {
-	void RplRpc(RplChannel channel, RplRcver rcver, RplCondition condition = RplCondition.None);
+	void RplRpc(RplChannel channel, RplRcver rcver, RplCondition condition = RplCondition.None, string customConditionName = "");
 }
 "#,
         )
@@ -6701,12 +6701,12 @@ class RplRpc : UniqueAttribute
             .expect("expected RplRpc attribute shorthand completion");
         assert_eq!(
             item.text_edit.new_text,
-            "[RplRpc(RplChannel.Reliable, RplRcver.Server)]"
+            "[RplRpc(RplChannel.Reliable, RplRcver.Server$0)]"
         );
         let wire_item = serde_json::to_value(item).unwrap();
         assert_eq!(
             wire_item["textEdit"]["newText"],
-            "[RplRpc(RplChannel.Reliable, RplRcver.Server)]"
+            "[RplRpc(RplChannel.Reliable, RplRcver.Server$0)]"
         );
         assert_eq!(wire_item["insertTextFormat"], 2);
         assert_eq!(
@@ -6716,7 +6716,7 @@ class RplRpc : UniqueAttribute
             Some("editor.action.triggerParameterHints")
         );
         assert_eq!(item.required_parameter_count, 2);
-        assert_eq!(item.optional_parameter_count, 1);
+        assert_eq!(item.optional_parameter_count, 2);
     }
 
     #[test]
@@ -6816,7 +6816,7 @@ class RplRpc : UniqueAttribute
             .expect("expected RplRpc completion inside attribute brackets");
         assert_eq!(
             item.text_edit.new_text,
-            "RplRpc(RplChannel.Reliable, RplRcver.Server)"
+            "RplRpc(RplChannel.Reliable, RplRcver.Server$0)"
         );
         assert_eq!(item.insert_text_format, Some(2));
     }
