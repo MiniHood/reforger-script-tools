@@ -23,6 +23,12 @@ valid only for the revision and external-overlay generation that produced them;
 pending/cancelled state prevents obsolete background work from becoming current.
 Close removes all document-local state.
 
+Before this owner receives a change, the runtime may collapse a contiguous run
+of safe full-text replacements for one URI to its newest version. That is an
+ingress optimization only: this module still sees a normal accepted version,
+performs its usual cache invalidation, and never applies a partial/ranged edit
+through that path.
+
 ## Dependencies and Boundaries
 
 Depends on lexer, parser, AST/model/index/scope construction, document-symbol

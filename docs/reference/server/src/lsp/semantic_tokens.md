@@ -27,6 +27,11 @@ Multiline spans are split before encoding. Raw tokens, post-split tokens, and
 encoded output are all capped at 200,000 tokens to bound malformed or huge
 input.
 
+Rich-token cancellation is cooperative across lexical/resolver projection,
+declaration overlays, filtering, multiline splitting, and UTF-16 encoding.
+The latter phases poll at bounded intervals, so a superseded revision cannot
+spend an unbounded tail encoding tokens that will be discarded.
+
 Semantic tokens are the only Enforce editor-coloring source. The palette helper
 is shared only for best-effort hover presentation; it does not create a second
 editor coloring pipeline.

@@ -94,6 +94,17 @@ function finalizeRecord(record) {
     ?? 0;
   record.uri = record.fields.uri ?? record.fields.path ?? record.fields.scripts ?? "";
   record.fileName = basenameFromUri(record.uri);
+  record.revision = record.fields.selected_revision ?? record.fields.revision ?? "";
+  record.version = record.fields.selected_version ?? record.fields.version ?? "";
+  if (record.operation === "notification didChange") {
+    record.didChange = {
+      queueMs: numberField(record.fields, "queue_ms") ?? 0,
+      coalescedChanges: numberField(record.fields, "coalesced_changes") ?? 0,
+      supersededChanges: numberField(record.fields, "superseded_changes") ?? 0,
+      selectedVersion: numberField(record.fields, "selected_version") ?? numberField(record.fields, "version") ?? 0,
+      selectedRevision: numberField(record.fields, "selected_revision") ?? numberField(record.fields, "revision") ?? 0,
+    };
+  }
   return record;
 }
 
@@ -162,6 +173,8 @@ function renderReport(input) {
   const windows = summarizeWindows(records, 1000)
     .sort((left, right) => right.totalMs - left.totalMs)
     .slice(0, 20);
+  const revisionRows = summarizeRevisionGroups(records);
+  const captureRows = summarizeCaptureWindows(revisionRows);
 
   const lines = [];
   lines.push("# LSP Runtime Performance Report");
@@ -173,6 +186,7 @@ function renderReport(input) {
   lines.push(`- Generated: ${input.generatedAt.toISOString()}`);
   lines.push(`- Log: \`${input.logPath}\`${existsSync(input.logPath) ? "" : " (missing)"}`);
   lines.push(`- Scope: ${input.sinceMinutes ? `last ${input.sinceMinutes} minutes` : "entire log"}`);
+  lines.push(`- Capture window: ${input.sinceMinutes ? "explicit --since-minutes window" : "entire log (use --since-minutes for a controlled capture)"}`);
   lines.push(`- Records analyzed: ${records.length} / ${input.totalRecords}`);
   lines.push(`- Timed work total: ${formatMs(summary.totalMs)}`);
   lines.push(`- Foreground request/notification time: ${formatMs(summary.foregroundMs)}`);
@@ -249,6 +263,33 @@ function renderReport(input) {
   lines.push(`- Completion max: ${formatMs(summary.completion.elapsed.length ? Math.max(...summary.completion.elapsed) : 0)}`);
   lines.push(`- Completion candidate lookup total: ${formatMs(summary.completion.lookupMs)}`);
   lines.push("");
+  lines.push("## Burst Comparison");
+  lines.push("");
+  lines.push("Groups are attributed by URI and accepted document revision. A capture is qualified only when its URI has at least ten completion requests in the selected report window; this preserves revision attribution while judging the controlled burst as a whole.");
+  lines.push("");
+  table(lines, ["File", "Version", "Revision", "Changes", "Completions", "Completion queue p95", "Perceived p95", "Coalesced", "Superseded"], revisionRows.map((row) => [
+    row.fileName || "<none>",
+    row.version || "<missing>",
+    row.revision || "<missing>",
+    row.didChangeCount,
+    row.completionCount,
+    formatMs(percentile(row.completionQueueElapsed, 0.95)),
+    formatMs(percentile(row.completionPerceivedElapsed, 0.95)),
+    row.coalescedChanges,
+    row.supersededChanges,
+  ]));
+  lines.push("");
+  lines.push("## Capture Evidence Quality");
+  lines.push("");
+  lines.push("A controlled file capture needs at least ten qualified completion requests. Treat an insufficient row as diagnostic context, not before/after proof.");
+  lines.push("");
+  table(lines, ["File", "Revisions", "Qualified completions", "Classification"], captureRows.map((row) => [
+    row.fileName || "<none>",
+    row.revisionCount,
+    row.completionCount,
+    row.completionCount >= 10 ? "Sufficient" : "Insufficient",
+  ]));
+  lines.push("");
   lines.push("## Edit Analysis Latency");
   lines.push("");
   lines.push(`- didChange count: ${summary.didChange.count}`);
@@ -317,7 +358,7 @@ function summarize(records) {
       summary.completion.lookupMs += numberField(record.fields, "lookup_ms") ?? 0;
     }
     if (record.operation === "notification didChange") {
-      const queue = numberField(record.fields, "queue_ms") ?? 0;
+      const queue = record.didChange.queueMs;
       summary.didChange.count += 1;
       summary.didChange.totalMs += elapsed;
       summary.didChange.queueMs += queue;
@@ -347,6 +388,60 @@ function summarize(records) {
     }
   }
   return summary;
+}
+
+function summarizeRevisionGroups(records) {
+  const groups = new Map();
+  for (const record of records) {
+    if (!record.uri || !record.revision) {
+      continue;
+    }
+    const key = `${record.uri}\u0000${record.revision}`;
+    if (!groups.has(key)) {
+      groups.set(key, {
+        uri: record.uri,
+        fileName: record.fileName,
+        version: record.version,
+        revision: record.revision,
+        didChangeCount: 0,
+        completionCount: 0,
+        completionQueueElapsed: [],
+        completionPerceivedElapsed: [],
+        coalescedChanges: 0,
+        supersededChanges: 0,
+      });
+    }
+    const group = groups.get(key);
+    if (record.operation === "notification didChange") {
+      group.didChangeCount += 1;
+      group.coalescedChanges += record.didChange.coalescedChanges;
+      group.supersededChanges += record.didChange.supersededChanges;
+    } else if (record.operation === "request completion") {
+      const queue = numberField(record.fields, "queue_ms") ?? 0;
+      group.completionCount += 1;
+      group.completionQueueElapsed.push(queue);
+      group.completionPerceivedElapsed.push(queue + record.elapsedMs);
+    }
+  }
+  return Array.from(groups.values())
+    .sort((left, right) => left.uri.localeCompare(right.uri) || Number(left.revision) - Number(right.revision));
+}
+
+function summarizeCaptureWindows(revisionRows) {
+  const captures = new Map();
+  for (const row of revisionRows) {
+    if (!captures.has(row.uri)) {
+      captures.set(row.uri, {
+        fileName: row.fileName,
+        revisionCount: 0,
+        completionCount: 0,
+      });
+    }
+    const capture = captures.get(row.uri);
+    capture.revisionCount += 1;
+    capture.completionCount += row.completionCount;
+  }
+  return Array.from(captures.values()).sort((left, right) => left.fileName.localeCompare(right.fileName));
 }
 
 function addRow(map, name, elapsed) {
@@ -449,7 +544,6 @@ function compactDetail(record) {
   for (const key of [
     "mode",
     "context",
-    "prefix",
     "candidates",
     "analysis_build_ms",
     "analysis_catalog_ms",

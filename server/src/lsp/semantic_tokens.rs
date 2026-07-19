@@ -1,7 +1,7 @@
 use crate::index::SymbolIndex;
 use crate::lexer::{lex, Keyword, TextSpan, Token, TokenKind};
 use crate::lsp::{
-    file_index_for_source, range_for_span, span_text, FileIndexAnalysis, LspPosition, LspRange,
+    file_index_for_source, range_for_span, span_text, FileIndexAnalysis, LspPositionIndex, LspRange,
 };
 use crate::model::{SourceKind, SymbolKind};
 use crate::resolver::{CandidateSource, ReferenceCandidate, ReferenceResolver, ResolutionReason};
@@ -214,7 +214,8 @@ fn semantic_tokens_report_for_cached_analysis_mode(
         })
         .collect::<Vec<_>>();
     let encode_start = Instant::now();
-    let data = encode_semantic_tokens(source, &raw_projection.tokens);
+    let data = encode_semantic_tokens(source, &raw_projection.tokens, None)
+        .expect("semantic token reports are not cancellable");
     let mut timings = raw_projection.timings;
     timings.decode_debug_ms = decode_start.elapsed().as_millis();
     timings.encode_ms = encode_start.elapsed().as_millis();
@@ -255,7 +256,8 @@ pub(crate) fn semantic_tokens_for_cached_analysis_with_external_indexes(
         None,
     )
     .expect("rich semantic token projection is not cancellable through this entrypoint");
-    encode_projection(source, analysis, raw_projection)
+    encode_projection(source, analysis, raw_projection, None)
+        .expect("rich semantic token projection is not cancellable through this entrypoint")
 }
 
 pub(crate) fn semantic_tokens_for_cached_analysis_with_external_indexes_cancelled(
@@ -273,7 +275,7 @@ pub(crate) fn semantic_tokens_for_cached_analysis_with_external_indexes_cancelle
         SemanticTokenMode::Rich,
         Some(should_cancel),
     )?;
-    (!should_cancel()).then(|| encode_projection(source, analysis, raw_projection))
+    encode_projection(source, analysis, raw_projection, Some(should_cancel))
 }
 
 pub(crate) fn fast_semantic_tokens_for_cached_analysis(
@@ -283,25 +285,27 @@ pub(crate) fn fast_semantic_tokens_for_cached_analysis(
     let raw_projection =
         semantic_raw_tokens(source, analysis, None, None, SemanticTokenMode::Fast, None)
             .expect("fast semantic token projection is not cancellable");
-    encode_projection(source, analysis, raw_projection)
+    encode_projection(source, analysis, raw_projection, None)
+        .expect("fast semantic token projection is not cancellable")
 }
 
 fn encode_projection(
     source: &str,
     analysis: &FileIndexAnalysis,
     raw_projection: RawSemanticTokenProjection,
-) -> LspSemanticTokenProjection {
+    should_cancel: Option<&dyn Fn() -> bool>,
+) -> Option<LspSemanticTokenProjection> {
     let token_count = raw_projection.tokens.len();
     let encode_start = Instant::now();
-    let data = encode_semantic_tokens(source, &raw_projection.tokens);
+    let data = encode_semantic_tokens(source, &raw_projection.tokens, should_cancel)?;
     let mut timings = raw_projection.timings;
     timings.encode_ms = encode_start.elapsed().as_millis();
-    LspSemanticTokenProjection {
+    Some(LspSemanticTokenProjection {
         tokens: LspSemanticTokens { data },
         token_count,
         parse_diagnostics: analysis.parse_diagnostics,
         timings,
-    }
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -478,11 +482,14 @@ fn semantic_raw_tokens(
     let token_loop_elapsed = token_loop_start.elapsed();
 
     let type_detail_overlay_start = Instant::now();
-    overlay_source_backed_type_details(source, &analysis.index, &mut tokens);
-    overlay_source_backed_new_expression_types(source, &analysis.parse.root, &mut tokens);
-    if should_cancel.is_some_and(|should_cancel| should_cancel()) {
-        return None;
-    }
+    overlay_source_backed_type_details(source, &analysis.index, &mut tokens, should_cancel)?;
+    overlay_source_backed_new_expression_types(
+        source,
+        &analysis.parse.root,
+        &mut tokens,
+        should_cancel,
+        &mut 0,
+    )?;
     let type_detail_overlay_elapsed = type_detail_overlay_start.elapsed();
 
     let declaration_overlay_start = Instant::now();
@@ -532,7 +539,7 @@ fn semantic_raw_tokens(
         filtered.push(token);
     }
     filtered.sort_by_key(|token| (token.span.start, token.span.end));
-    let tokens = split_multiline_semantic_tokens(source, filtered)
+    let tokens = split_multiline_semantic_tokens(source, filtered, should_cancel)?
         .into_iter()
         .take(MAX_RAW_SEMANTIC_TOKENS)
         .collect();
@@ -577,8 +584,12 @@ fn overlay_source_backed_type_details(
     source: &str,
     index: &SymbolIndex,
     tokens: &mut Vec<RawSemanticToken>,
-) {
-    for symbol in index.symbols() {
+    should_cancel: Option<&dyn Fn() -> bool>,
+) -> Option<()> {
+    for (symbol_index, symbol) in index.symbols().iter().enumerate() {
+        if symbol_index % 64 == 0 && should_cancel.is_some_and(|should_cancel| should_cancel()) {
+            return None;
+        }
         if let Some(type_text_span) = symbol.detail.type_text_span {
             push_type_tokens_in_span(
                 source,
@@ -610,13 +621,20 @@ fn overlay_source_backed_type_details(
             );
         }
     }
+    Some(())
 }
 
 fn overlay_source_backed_new_expression_types(
     source: &str,
     node: &SyntaxNode,
     tokens: &mut Vec<RawSemanticToken>,
-) {
+    should_cancel: Option<&dyn Fn() -> bool>,
+    visited_nodes: &mut usize,
+) -> Option<()> {
+    if *visited_nodes % 64 == 0 && should_cancel.is_some_and(|should_cancel| should_cancel()) {
+        return None;
+    }
+    *visited_nodes += 1;
     if node.kind == SyntaxKind::NewExpression {
         if let Some(type_name) = first_name_expression_child(node) {
             push_identifier_tokens_in_span(
@@ -631,9 +649,16 @@ fn overlay_source_backed_new_expression_types(
 
     for child in &node.children {
         if let SyntaxElement::Node(child) = child {
-            overlay_source_backed_new_expression_types(source, child, tokens);
+            overlay_source_backed_new_expression_types(
+                source,
+                child,
+                tokens,
+                should_cancel,
+                visited_nodes,
+            )?;
         }
     }
+    Some(())
 }
 
 fn first_name_expression_child(node: &SyntaxNode) -> Option<&SyntaxNode> {
@@ -1055,11 +1080,21 @@ fn starts_attribute_context(source: &str, tokens: &[Token], index: usize) -> boo
 fn split_multiline_semantic_tokens(
     source: &str,
     tokens: Vec<RawSemanticToken>,
-) -> Vec<RawSemanticToken> {
+    should_cancel: Option<&dyn Fn() -> bool>,
+) -> Option<Vec<RawSemanticToken>> {
     let mut result = Vec::new();
-    for token in tokens {
+    for (token_index, token) in tokens.into_iter().enumerate() {
+        if token_index % 64 == 0 && should_cancel.is_some_and(|should_cancel| should_cancel()) {
+            return None;
+        }
         let mut segment_start = token.span.start;
+        let mut segment_index = 0usize;
         while segment_start < token.span.end {
+            if segment_index % 64 == 0 && should_cancel.is_some_and(|should_cancel| should_cancel())
+            {
+                return None;
+            }
+            segment_index += 1;
             let line_end = source[segment_start..token.span.end]
                 .find(['\r', '\n'])
                 .map(|offset| segment_start + offset)
@@ -1086,19 +1121,26 @@ fn split_multiline_semantic_tokens(
                 };
         }
     }
-    result
+    Some(result)
 }
 
-fn encode_semantic_tokens(source: &str, tokens: &[RawSemanticToken]) -> Vec<u32> {
+fn encode_semantic_tokens(
+    source: &str,
+    tokens: &[RawSemanticToken],
+    should_cancel: Option<&dyn Fn() -> bool>,
+) -> Option<Vec<u32>> {
     let encoded_capacity = tokens.len().min(MAX_RAW_SEMANTIC_TOKENS).saturating_mul(5);
     let mut data = Vec::with_capacity(encoded_capacity);
     let mut previous_line = 0u32;
     let mut previous_start = 0u32;
-    let line_index = SemanticLineIndex::new(source);
+    let line_index = LspPositionIndex::new_cancellable(source, should_cancel)?;
 
-    for token in tokens.iter().take(MAX_RAW_SEMANTIC_TOKENS) {
-        let start = line_index.position_for_offset(source, token.span.start);
-        let end = line_index.position_for_offset(source, token.span.end);
+    for (token_index, token) in tokens.iter().take(MAX_RAW_SEMANTIC_TOKENS).enumerate() {
+        if token_index % 64 == 0 && should_cancel.is_some_and(|should_cancel| should_cancel()) {
+            return None;
+        }
+        let start = line_index.position_for_offset(token.span.start);
+        let end = line_index.position_for_offset(token.span.end);
         if start.line != end.line || end.character <= start.character {
             continue;
         }
@@ -1119,49 +1161,7 @@ fn encode_semantic_tokens(source: &str, tokens: &[RawSemanticToken]) -> Vec<u32>
         previous_start = start.character;
     }
 
-    data
-}
-
-struct SemanticLineIndex {
-    line_starts: Vec<usize>,
-}
-
-impl SemanticLineIndex {
-    fn new(source: &str) -> Self {
-        let mut line_starts = vec![0];
-        for (index, character) in source.char_indices() {
-            if character == '\r' {
-                line_starts.push(
-                    index
-                        + if source.as_bytes().get(index + 1) == Some(&b'\n') {
-                            2
-                        } else {
-                            1
-                        },
-                );
-            } else if character == '\n' && (index == 0 || source.as_bytes()[index - 1] != b'\r') {
-                line_starts.push(index + 1);
-            }
-        }
-        Self { line_starts }
-    }
-
-    fn position_for_offset(&self, source: &str, offset: usize) -> LspPosition {
-        let bounded_offset = offset.min(source.len());
-        let line_index = self
-            .line_starts
-            .partition_point(|line_start| *line_start <= bounded_offset)
-            .saturating_sub(1);
-        let line_start = self.line_starts.get(line_index).copied().unwrap_or(0);
-        let character = source[line_start..bounded_offset]
-            .chars()
-            .map(|character| character.len_utf16() as u32)
-            .sum();
-        LspPosition {
-            line: line_index as u32,
-            character,
-        }
-    }
+    Some(data)
 }
 
 fn semantic_type_index(name: &str) -> u32 {
@@ -1269,6 +1269,7 @@ fn is_preprocessor_directive_token(source: &str, token: Token) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
 
     #[test]
     fn multiline_token_expansion_respects_the_final_output_cap() {
@@ -1278,5 +1279,78 @@ mod tests {
 
         assert_eq!(projection.tokens.data.len() % 5, 0);
         assert!(projection.tokens.data.len() / 5 <= MAX_RAW_SEMANTIC_TOKENS);
+    }
+
+    #[test]
+    fn encoding_stops_when_cancellation_arrives_mid_projection() {
+        let source = "value ".repeat(128);
+        let tokens = (0..128)
+            .map(|index| {
+                let start = index * 6;
+                RawSemanticToken {
+                    span: TextSpan::new(start, start + 5),
+                    token_type: semantic_type_index("variable"),
+                    modifiers: 0,
+                    priority: 0,
+                }
+            })
+            .collect::<Vec<_>>();
+        let checks = Cell::new(0usize);
+
+        let result = encode_semantic_tokens(
+            &source,
+            &tokens,
+            Some(&|| {
+                checks.set(checks.get() + 1);
+                checks.get() >= 2
+            }),
+        );
+
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn type_detail_overlay_stops_when_cancellation_arrives_mid_scan() {
+        let source = (0..128)
+            .map(|index| format!("class Type{index} {{ Type{index} value; }}\n"))
+            .collect::<String>();
+        let analysis = file_index_for_source(&source);
+        let checks = Cell::new(0usize);
+        let mut tokens = Vec::new();
+
+        let result = overlay_source_backed_type_details(
+            &source,
+            &analysis.index,
+            &mut tokens,
+            Some(&|| {
+                checks.set(checks.get() + 1);
+                checks.get() >= 2
+            }),
+        );
+
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn multiline_split_stops_within_one_large_token() {
+        let source = format!("/*{}*/", "line\n".repeat(256));
+        let token = RawSemanticToken {
+            span: TextSpan::new(0, source.len()),
+            token_type: semantic_type_index("comment"),
+            modifiers: 0,
+            priority: 0,
+        };
+        let checks = Cell::new(0usize);
+
+        let result = split_multiline_semantic_tokens(
+            &source,
+            vec![token],
+            Some(&|| {
+                checks.set(checks.get() + 1);
+                checks.get() >= 3
+            }),
+        );
+
+        assert!(result.is_none());
     }
 }

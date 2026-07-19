@@ -29,6 +29,17 @@ node tools/lsp-runtime-performance-report.mjs --since-minutes 10
 node tools/lsp-runtime-performance-report.mjs --log <path> --out <path>
 ```
 
+## Controlled Typing Capture
+
+For comparable large-file latency evidence, start a fresh language server, wait until external indexing is idle, and avoid unrelated editor activity. For each control file, perform three bursts of ten gibberish-to-real-prefix completion cycles, then use `Ctrl+F2` to retain the completion capture. Generate one report window for `GC_MarkerArea.c` and one for `GC_Sounds.c` with `--since-minutes`.
+
+The report preserves aggregate sections and also provides two capture-oriented summaries:
+
+- **Burst Comparison** attributes `didChange`, completion, queue, coalescing, and perceived-latency observations by URI and accepted document revision. Missing fixed `didChange` fields (`queue_ms`, `coalesced_changes`, `superseded_changes`, selected version, and selected revision) safely default to zero or the legacy version/revision field.
+- **Capture Evidence Quality** aggregates those revision rows by URI in the explicit report window. A file requires at least ten completion requests to be classified **Sufficient**; an **Insufficient** result is useful context but not before/after proof.
+
+The report reads the runtime log without modifying it. It never emits source text, completion prefixes, or completion payload fields, even if legacy log records contain them.
+
 The report does not sample OS CPU directly. It uses logged elapsed timings as the first debugging pass for identifying which LSP subsystem likely caused CPU use or visible delay. When logs include `queue_ms`, completion sections separate execution time from perceived latency caused by waiting behind earlier LSP work.
 
 ## Dependencies and Boundaries

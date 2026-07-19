@@ -47,6 +47,14 @@ and publishes parser diagnostics carrying the accepted version. Close removes
 the document and clears diagnostics. Repeated Outline requests reuse cached
 symbol projection for the accepted revision.
 
+The bounded ingress queue remains the backpressure and ordering boundary. When
+several contiguous `didChange` notifications each contain exactly one
+full-document replacement for the same URI, the runtime retains only the
+newest version before rebuilding analysis. Ranged edits, mixed URIs, requests,
+and internal events are ordering barriers and are never merged. The dispatch
+log records queue time plus coalesced and superseded counts so a capture can
+separate queue delay from analysis work.
+
 Feature requests combine the open document's cached file-local analysis with a
 short-lived snapshot of the workspace/game-data overlay. Rich semantic-token
 work is delayed and scheduled by URI/revision/generation; late or cancelled
@@ -66,7 +74,8 @@ only consumes and emits LSP protocol messages.
 
 Keep position/range conversion here as the shared LSP boundary. Source spans
 are UTF-8 byte offsets internally; LSP positions are UTF-16 code units and
-must remain correct for Unicode and CRLF text.
+must remain correct for Unicode and CRLF text. A per-source position index is
+built once for multi-span projections, avoiding repeated source scans.
 
 ## Verification
 

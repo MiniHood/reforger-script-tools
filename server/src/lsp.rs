@@ -12,7 +12,9 @@ use crate::resolver::{IdentifierContext, ResolutionReason};
 use crate::syntax::ParseDiagnostic;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
+#[cfg(test)]
+use std::cell::Cell;
+use std::collections::{BTreeMap, VecDeque};
 use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Write};
 #[cfg(test)]
@@ -437,7 +439,33 @@ struct VersionedTextDocumentIdentifier {
 
 #[derive(Debug, Deserialize)]
 struct TextDocumentContentChangeEvent {
+    #[serde(default)]
+    range: Option<Value>,
+    #[serde(rename = "rangeLength")]
+    #[serde(default)]
+    range_length: Option<u32>,
     text: String,
+}
+
+#[derive(Debug)]
+struct CoalescibleDidChange {
+    uri: String,
+    version: i32,
+}
+
+fn coalescible_full_sync_did_change(value: &Value) -> Option<CoalescibleDidChange> {
+    let message: RpcMessage = serde_json::from_value(value.clone()).ok()?;
+    if message.id.is_some() || message.method.as_deref() != Some("textDocument/didChange") {
+        return None;
+    }
+    let params: DidChangeTextDocumentParams = serde_json::from_value(message.params?).ok()?;
+    (params.content_changes.len() == 1
+        && params.content_changes[0].range.is_none()
+        && params.content_changes[0].range_length.is_none())
+    .then_some(CoalescibleDidChange {
+        uri: params.text_document.uri,
+        version: params.text_document.version,
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -536,7 +564,7 @@ impl<W: Write> LspServer<W> {
     fn run<R: Read>(&mut self, reader: R) -> Result<(), String> {
         let mut reader = BufReader::new(reader);
         while let Some(message) = read_message(&mut reader)? {
-            let should_exit = self.handle_message(message, None)?;
+            let should_exit = self.handle_message(message, None, 0, 0)?;
             if should_exit {
                 break;
             }
@@ -550,6 +578,7 @@ impl<W: Write> LspServer<W> {
         incoming_receiver: mpsc::Receiver<ServerEvent>,
         internal_receiver: mpsc::Receiver<ServerEvent>,
     ) -> Result<(), String> {
+        let mut deferred_incoming = VecDeque::new();
         loop {
             for _ in 0..INCOMING_EVENT_QUEUE_CAPACITY {
                 match internal_receiver.try_recv() {
@@ -558,13 +587,79 @@ impl<W: Write> LspServer<W> {
                 }
             }
 
-            match incoming_receiver.recv_timeout(Duration::from_millis(100)) {
+            let next_event = deferred_incoming
+                .pop_front()
+                .map(Ok)
+                .unwrap_or_else(|| incoming_receiver.recv_timeout(Duration::from_millis(100)));
+            match next_event {
                 Ok(ServerEvent::Incoming {
                     received_at,
                     result: Ok(message),
                 }) => {
-                    let should_exit =
-                        self.handle_message(message, Some(received_at.elapsed().as_millis()))?;
+                    let mut selected_message = message;
+                    let mut selected_received_at = received_at;
+                    let mut coalesced_changes = 1usize;
+                    let mut superseded_changes = 0usize;
+                    let Some(first_change) = coalescible_full_sync_did_change(&selected_message)
+                    else {
+                        let should_exit = self.handle_message(
+                            selected_message,
+                            Some(selected_received_at.elapsed().as_millis()),
+                            0,
+                            0,
+                        )?;
+                        if should_exit {
+                            break;
+                        }
+                        continue;
+                    };
+
+                    while coalesced_changes < INCOMING_EVENT_QUEUE_CAPACITY {
+                        let Ok(next_event) = incoming_receiver.try_recv() else {
+                            break;
+                        };
+                        let ServerEvent::Incoming {
+                            received_at,
+                            result: Ok(next_message),
+                        } = next_event
+                        else {
+                            deferred_incoming.push_back(next_event);
+                            break;
+                        };
+                        let Some(next_change) = coalescible_full_sync_did_change(&next_message)
+                        else {
+                            deferred_incoming.push_back(ServerEvent::Incoming {
+                                received_at,
+                                result: Ok(next_message),
+                            });
+                            break;
+                        };
+                        if next_change.uri != first_change.uri {
+                            deferred_incoming.push_back(ServerEvent::Incoming {
+                                received_at,
+                                result: Ok(next_message),
+                            });
+                            break;
+                        }
+                        coalesced_changes += 1;
+                        if next_change.version
+                            > coalescible_full_sync_did_change(&selected_message)
+                                .expect("selected message remains coalescible")
+                                .version
+                        {
+                            selected_message = next_message;
+                            selected_received_at = received_at;
+                            superseded_changes += 1;
+                        } else {
+                            superseded_changes += 1;
+                        }
+                    }
+                    let should_exit = self.handle_message(
+                        selected_message,
+                        Some(selected_received_at.elapsed().as_millis()),
+                        coalesced_changes,
+                        superseded_changes,
+                    )?;
                     if should_exit {
                         break;
                     }
@@ -583,7 +678,13 @@ impl<W: Write> LspServer<W> {
         Ok(())
     }
 
-    fn handle_message(&mut self, value: Value, queue_ms: Option<u128>) -> Result<bool, String> {
+    fn handle_message(
+        &mut self,
+        value: Value,
+        queue_ms: Option<u128>,
+        coalesced_changes: usize,
+        superseded_changes: usize,
+    ) -> Result<bool, String> {
         let message = serde_json::from_value::<RpcMessage>(value.clone())
             .map_err(|error| format!("Invalid JSON-RPC message: {error}"))?;
         let queue_ms = queue_ms.unwrap_or(0);
@@ -764,7 +865,7 @@ impl<W: Write> LspServer<W> {
                         );
                         self.write_message(diagnostics_message)?;
                         self.log(&format!(
-                            "notification didChange uri={} bytes={} version={} revision={} cached_analysis=true document_symbols_cached=false symbols=pending parse_diagnostics={} analysis_parse_ms={} analysis_catalog_ms={} analysis_index_ms={} analysis_scope_ms={} analysis_build_ms={} queue_ms={} analysis_elapsed_ms={}",
+                            "notification didChange uri={} bytes={} version={} revision={} cached_analysis=true document_symbols_cached=false symbols=pending parse_diagnostics={} analysis_parse_ms={} analysis_catalog_ms={} analysis_index_ms={} analysis_scope_ms={} analysis_build_ms={} queue_ms={} coalesced_changes={} superseded_changes={} analysis_elapsed_ms={}",
                             uri,
                             bytes,
                             version,
@@ -776,6 +877,8 @@ impl<W: Write> LspServer<W> {
                             analysis_timings.scope_ms,
                             analysis_timings.total_ms,
                             queue_ms,
+                            coalesced_changes,
+                            superseded_changes,
                             start.elapsed().as_millis()
                         ));
                     }
@@ -1863,8 +1966,9 @@ fn document_symbol_report_for_cached_analysis(
     analysis: &FileIndexAnalysis,
 ) -> LspDocumentSymbolReport {
     let query = IndexQuery::new(&analysis.index);
+    let positions = LspPositionIndex::new(source);
     LspDocumentSymbolReport {
-        symbols: document_symbols_from_index(source, &analysis.index, &query),
+        symbols: document_symbols_from_index(&positions, &analysis.index, &query),
         parse_diagnostics: analysis.parse_diagnostics,
     }
 }
@@ -1884,7 +1988,7 @@ pub fn document_symbol_count(symbols: &[LspDocumentSymbol]) -> usize {
 }
 
 fn document_symbols_from_index(
-    source: &str,
+    positions: &LspPositionIndex,
     index: &SymbolIndex,
     query: &IndexQuery<'_>,
 ) -> Vec<LspDocumentSymbol> {
@@ -1893,12 +1997,12 @@ fn document_symbols_from_index(
         .iter()
         .filter(|symbol| symbol.parent.is_none())
         .filter(|symbol| !is_document_symbol_excluded_kind(symbol.kind))
-        .filter_map(|symbol| document_symbol_for_id(source, index, query, symbol.id))
+        .filter_map(|symbol| document_symbol_for_id(positions, index, query, symbol.id))
         .collect()
 }
 
 fn document_symbol_for_id(
-    source: &str,
+    positions: &LspPositionIndex,
     index: &SymbolIndex,
     query: &IndexQuery<'_>,
     id: GlobalSymbolId,
@@ -1911,48 +2015,103 @@ fn document_symbol_for_id(
     let children = index
         .children(id)
         .iter()
-        .filter_map(|child| document_symbol_for_id(source, index, query, *child))
+        .filter_map(|child| document_symbol_for_id(positions, index, query, *child))
         .collect::<Vec<_>>();
 
     Some(LspDocumentSymbol {
         name: display.label,
         detail: display.detail.or(display.signature),
         kind: document_symbol_kind(symbol.kind),
-        range: range_for_span(source, symbol.span),
-        selection_range: range_for_span(source, symbol.selection_span),
+        range: positions.range_for_span(symbol.span),
+        selection_range: positions.range_for_span(symbol.selection_span),
         children,
     })
 }
 
-pub(crate) fn range_for_span(source: &str, span: crate::lexer::TextSpan) -> LspRange {
-    LspRange {
-        start: position_for_offset(source, span.start),
-        end: position_for_offset(source, span.end),
+#[derive(Debug)]
+pub(crate) struct LspPositionIndex {
+    positions: Vec<LspPosition>,
+}
+
+#[cfg(test)]
+thread_local! {
+    static POSITION_INDEX_BUILD_COUNT: Cell<usize> = const { Cell::new(0) };
+}
+
+impl LspPositionIndex {
+    pub(crate) fn new(source: &str) -> Self {
+        Self::new_cancellable(source, None).expect("unconditional position index build")
+    }
+
+    pub(crate) fn new_cancellable(
+        source: &str,
+        should_cancel: Option<&dyn Fn() -> bool>,
+    ) -> Option<Self> {
+        #[cfg(test)]
+        POSITION_INDEX_BUILD_COUNT.with(|count| count.set(count.get() + 1));
+        let origin = LspPosition {
+            line: 0,
+            character: 0,
+        };
+        let mut positions = vec![origin; source.len().saturating_add(1)];
+        let mut position = origin;
+        for (character_index, (offset, character)) in source.char_indices().enumerate() {
+            if character_index % 64 == 0
+                && should_cancel.is_some_and(|should_cancel| should_cancel())
+            {
+                return None;
+            }
+            let next_offset = offset.saturating_add(character.len_utf8());
+            for entry in &mut positions[offset..next_offset] {
+                *entry = position;
+            }
+            match character {
+                '\r' => {
+                    position.line = position.line.saturating_add(1);
+                    position.character = 0;
+                }
+                '\n' if offset == 0 || source.as_bytes()[offset - 1] != b'\r' => {
+                    position.line = position.line.saturating_add(1);
+                    position.character = 0;
+                }
+                '\n' => {}
+                _ => {
+                    position.character = position
+                        .character
+                        .saturating_add(character.len_utf16() as u32)
+                }
+            }
+        }
+        if let Some(end) = positions.last_mut() {
+            *end = position;
+        }
+        Some(Self { positions })
+    }
+
+    pub(crate) fn position_for_offset(&self, offset: usize) -> LspPosition {
+        self.positions
+            .get(offset.min(self.positions.len().saturating_sub(1)))
+            .copied()
+            .unwrap_or(LspPosition {
+                line: 0,
+                character: 0,
+            })
+    }
+
+    pub(crate) fn range_for_span(&self, span: crate::lexer::TextSpan) -> LspRange {
+        LspRange {
+            start: self.position_for_offset(span.start),
+            end: self.position_for_offset(span.end),
+        }
     }
 }
 
+pub(crate) fn range_for_span(source: &str, span: crate::lexer::TextSpan) -> LspRange {
+    LspPositionIndex::new(source).range_for_span(span)
+}
+
 pub fn position_for_offset(source: &str, offset: usize) -> LspPosition {
-    let mut line = 0u32;
-    let mut character = 0u32;
-
-    for (index, value) in source.char_indices() {
-        if index >= offset {
-            break;
-        }
-        if value == '\r' {
-            line += 1;
-            character = 0;
-        } else if value == '\n' {
-            if index == 0 || source.as_bytes()[index - 1] != b'\r' {
-                line += 1;
-            }
-            character = 0;
-        } else {
-            character += value.len_utf16() as u32;
-        }
-    }
-
-    LspPosition { line, character }
+    LspPositionIndex::new(source).position_for_offset(offset)
 }
 
 pub fn offset_for_position(source: &str, position: LspPosition) -> Option<usize> {
@@ -2256,6 +2415,8 @@ mod tests {
             .handle_message(
                 json!({ "jsonrpc": "2.0", "id": "server-1", "result": null }),
                 None,
+                0,
+                0,
             )
             .unwrap();
 
@@ -2291,6 +2452,8 @@ mod tests {
                     }
                 }),
                 None,
+                0,
+                0,
             )
             .unwrap();
 
@@ -2322,6 +2485,8 @@ mod tests {
                     }
                 }),
                 None,
+                0,
+                0,
             )
             .unwrap();
 
@@ -6279,6 +6444,55 @@ class Example
     }
 
     #[test]
+    fn position_index_preserves_utf16_and_crlf_boundaries() {
+        let source = "ab😀\r\nclass Marker {}";
+        let index = LspPositionIndex::new(source);
+
+        assert_eq!(
+            index.position_for_offset(source.find('😀').expect("emoji")),
+            LspPosition {
+                line: 0,
+                character: 2
+            }
+        );
+        assert_eq!(
+            index.position_for_offset(source.find("class").expect("second line")),
+            LspPosition {
+                line: 1,
+                character: 0
+            }
+        );
+    }
+
+    #[test]
+    fn document_symbol_projection_builds_one_position_index() {
+        POSITION_INDEX_BUILD_COUNT.with(|count| count.set(0));
+
+        let report = document_symbol_report_for_source(
+            "class First { void Run() {} }\nclass Second { int value; }\n",
+        );
+
+        assert_eq!(report.symbols.len(), 2);
+        assert_eq!(POSITION_INDEX_BUILD_COUNT.with(|count| count.get()), 1);
+    }
+
+    #[test]
+    fn position_index_stops_when_cancellation_arrives_mid_build() {
+        let source = "field ".repeat(256);
+        let checks = Cell::new(0usize);
+
+        let index = LspPositionIndex::new_cancellable(
+            &source,
+            Some(&|| {
+                checks.set(checks.get() + 1);
+                checks.get() >= 2
+            }),
+        );
+
+        assert!(index.is_none());
+    }
+
+    #[test]
     fn framed_lsp_smoke_test_handles_open_and_document_symbol() {
         let source = "class Smoke\n{\n\tvoid Run();\n}\n";
         let mut input = Vec::new();
@@ -6668,6 +6882,127 @@ class Example
         assert!(log.contains("document_symbols_cached=false document_symbol_ms="));
 
         cleanup_log(&log_path);
+    }
+
+    #[test]
+    fn channel_runtime_coalesces_contiguous_full_sync_changes_before_outline_request() {
+        let uri = "file:///Scripts/Coalesced.c";
+        let log_path = test_log_path("coalesced_channel_changes");
+        let (incoming_sender, incoming_receiver) = mpsc::channel();
+        let (internal_sender, internal_receiver) = mpsc::channel();
+        let mut server = LspServer::new(
+            Vec::new(),
+            LspServerOptions {
+                log_path: Some(log_path.clone()),
+                ..LspServerOptions::default()
+            },
+        );
+        let send = |value| {
+            incoming_sender
+                .send(ServerEvent::Incoming {
+                    received_at: Instant::now(),
+                    result: Ok(value),
+                })
+                .unwrap();
+        };
+        send(json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": { "textDocument": {
+                "uri": uri,
+                "languageId": "enforce",
+                "version": 1,
+                "text": "class Initial {}"
+            }}
+        }));
+        for (version, name) in [(2, "Second"), (3, "Third")] {
+            send(json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didChange",
+                "params": {
+                    "textDocument": { "uri": uri, "version": version },
+                    "contentChanges": [{ "text": format!("class {name} {{}}") }]
+                }
+            }));
+        }
+        send(json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "textDocument/documentSymbol",
+            "params": { "textDocument": { "uri": uri } }
+        }));
+        send(json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didChange",
+            "params": {
+                "textDocument": { "uri": uri, "version": 4 },
+                "contentChanges": [{ "text": "class Current {}" }]
+            }
+        }));
+        send(json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/documentSymbol",
+            "params": { "textDocument": { "uri": uri } }
+        }));
+        drop(incoming_sender);
+        drop(internal_sender);
+
+        server
+            .run_message_channels(incoming_receiver, internal_receiver)
+            .unwrap();
+
+        let output = String::from_utf8(server.writer).unwrap();
+        assert!(output.contains("\"id\":1"));
+        assert!(output.contains("\"id\":2"));
+        assert!(output.contains("\"name\":\"Third\""));
+        assert!(output.contains("\"name\":\"Current\""));
+        assert!(!output.contains("\"name\":\"Second\""));
+
+        let log = std::fs::read_to_string(&log_path).unwrap();
+        assert_eq!(log.matches("notification didChange uri=").count(), 2);
+        assert!(log.contains("version=3"));
+        assert!(log.contains("version=4"));
+        assert!(log.contains("coalesced_changes=2 superseded_changes=1"));
+        cleanup_log(&log_path);
+    }
+
+    #[test]
+    fn only_single_full_text_changes_are_coalescible() {
+        let full_text = json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didChange",
+            "params": {
+                "textDocument": { "uri": "file:///Scripts/Full.c", "version": 2 },
+                "contentChanges": [{ "text": "class Full {}" }]
+            }
+        });
+        let ranged = json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didChange",
+            "params": {
+                "textDocument": { "uri": "file:///Scripts/Range.c", "version": 2 },
+                "contentChanges": [{
+                    "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 0 } },
+                    "text": "x"
+                }]
+            }
+        });
+        let multiple = json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didChange",
+            "params": {
+                "textDocument": { "uri": "file:///Scripts/Multiple.c", "version": 2 },
+                "contentChanges": [{ "text": "class A {}" }, { "text": "class B {}" }]
+            }
+        });
+
+        assert_eq!(
+            coalescible_full_sync_did_change(&full_text).map(|change| (change.uri, change.version)),
+            Some(("file:///Scripts/Full.c".to_string(), 2))
+        );
+        assert!(coalescible_full_sync_did_change(&ranged).is_none());
+        assert!(coalescible_full_sync_did_change(&multiple).is_none());
     }
 
     #[test]
@@ -7868,6 +8203,8 @@ class Example
                     }
                 }),
                 None,
+                0,
+                0,
             )
             .unwrap();
         assert!(!server.documents.contains_key(uri));
@@ -7886,6 +8223,8 @@ class Example
                     }
                 }),
                 None,
+                0,
+                0,
             )
             .unwrap();
         assert!(!server.documents.contains_key(uri));
@@ -7905,6 +8244,8 @@ class Example
                     }
                 }),
                 None,
+                0,
+                0,
             )
             .unwrap();
         server
@@ -7918,6 +8259,8 @@ class Example
                     }
                 }),
                 None,
+                0,
+                0,
             )
             .unwrap();
 
@@ -7936,6 +8279,8 @@ class Example
                     }
                 }),
                 None,
+                0,
+                0,
             )
             .unwrap();
 

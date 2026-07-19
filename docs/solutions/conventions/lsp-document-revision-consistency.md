@@ -37,6 +37,12 @@ increments its internal revision, clears its document-symbol projection, and
 cancels pending semantic-token work during replacement
 ([`server/src/lsp/open_documents.rs`](../../../server/src/lsp/open_documents.rs)).
 
+The transport may coalesce a contiguous burst of full-document replacements
+for one URI before this acceptance gate. It must retain the newest version and
+treat a ranged change, another URI, a request, or an internal event as a hard
+ordering barrier. Coalescing reduces redundant work; it does not weaken version
+ordering or allow a partial edit to be interpreted as a full replacement.
+
 Publish parser diagnostics with the accepted document version. The diagnostic
 message includes `version` for live documents, while the empty diagnostic
 notification sent after `didClose` intentionally has no version because that
