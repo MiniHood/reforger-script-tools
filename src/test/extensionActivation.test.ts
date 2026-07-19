@@ -13,6 +13,9 @@ suite('extension activation', () => {
 		assert.ok(commands.includes('reforger-sript-tools.debug.hoverAtCursor'));
 		assert.ok(commands.includes('reforger-sript-tools.debug.completionAtCursor'));
 		assert.ok(commands.includes('reforger-sript-tools.completion.triggerSuggestAtSnippetPlaceholder'));
+		const contributedCommands = extension.packageJSON.contributes.commands as Array<{ command: string }>;
+		assert.ok(contributedCommands.some(command =>
+			command.command === 'reforger-sript-tools.completion.triggerSuggestAtSnippetPlaceholder'));
 	});
 
 	test('enables local diagnostic logging by default', () => {

@@ -12,7 +12,8 @@
   "activationEvents": [
     "onStartupFinished",
     "onCommand:reforger-sript-tools.debug.hoverAtCursor",
-    "onCommand:reforger-sript-tools.debug.completionAtCursor"
+    "onCommand:reforger-sript-tools.debug.completionAtCursor",
+    "onCommand:reforger-sript-tools.completion.triggerSuggestAtSnippetPlaceholder"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -59,6 +60,10 @@
         "title": "Reforger Script Tools: Debug Completion At Cursor"
       },
       {
+        "command": "reforger-sript-tools.completion.triggerSuggestAtSnippetPlaceholder",
+        "title": "Reforger Script Tools: Trigger Snippet Suggestions"
+      },
+      {
         "command": "reforger-sript-tools.gameData.checkForUpdates",
         "title": "Reforger Script Tools: Check Game Data Updates"
       },
@@ -98,7 +103,15 @@
         "key": "ctrl+f2",
         "when": "suggestWidgetVisible && editorLangId == enforce"
       }
-    ]
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "reforger-sript-tools.completion.triggerSuggestAtSnippetPlaceholder",
+          "when": "false"
+        }
+      ]
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run package",
