@@ -51,11 +51,13 @@ only for the still-current revision and never republishes parser diagnostics.
 Close removes the document and clears diagnostics. Repeated Outline requests
 reuse cached symbol projection for the accepted revision.
 
-`RuntimeWorkExecutor` has one bounded shared pending-work map and exactly two
-fixed worker slots: one reserved for `Foreground` work and one for semantic,
-rich-token, and debug work. This is a capacity reservation inside one executor,
-not a second scheduler. A running whole-file background operation therefore
-cannot prevent a current edit from building lexical and syntax state. Shared
+`RuntimeWorkExecutor` has one bounded shared pending-work map and CPU-aware
+fixed worker capacity. It always reserves one `Foreground` worker; it starts
+one semantic/rich-token/debug worker only when `available_parallelism` reports
+another logical CPU. On a one-CPU host, the foreground worker advances
+background convergence only while foreground work is idle, so the runtime does
+not oversubscribe the CPU with a competing background worker. This is a
+capacity reservation inside one executor, not a second scheduler. Shared
 admission remains latest-wins by `(TaskClass, URI)`; when its queue is full,
 higher-priority foreground work evicts lower-priority queued work first, while
 rich/debug work remains best effort.

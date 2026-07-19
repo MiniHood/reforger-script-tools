@@ -26,7 +26,8 @@ before installation, so runtime cancellation is the sole authority for stale
 publication. This keeps a large initial open from blocking the LSP message loop.
 A pending document has current text identity only. The foreground worker
 installs its immutable query snapshot (lexer tokens, top-level declaration
-summary, and safe callable-declaration summary), UTF-16 positions, and syntax before parser
+summary, and safe callable-declaration summary built by direct
+`Parse::declaration_iter` traversal), UTF-16 positions, and syntax before parser
 diagnostics publish; only then may semantic admission begin. Until that
 installation, features use deterministic lexical fallbacks and cannot combine
 current text with old semantic facts. The full analysis later supplies

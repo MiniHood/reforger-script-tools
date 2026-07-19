@@ -1,5 +1,5 @@
 use crate::analysis_runtime::{DocumentSnapshot, PositionIndex};
-use crate::ast::{AstSourceFile, ClassMember, Declaration, MethodDecl};
+use crate::ast::{ClassMember, Declaration, MethodDecl};
 use crate::index::SymbolIndex;
 use crate::lexer::{lex, Keyword, TextSpan, Token, TokenKind};
 use crate::model::{SourceFileMetadata, SymbolKind};
@@ -559,8 +559,11 @@ fn foreground_callable_declarations(
     source: &str,
     parse: &Parse,
 ) -> Vec<ForegroundCallableDeclaration> {
-    let ast = AstSourceFile::new(source, parse);
-    ast.declaration_iter()
+    // The parser owns the canonical typed declaration traversal.  Keep the
+    // foreground snapshot on that CST path rather than reinstating an
+    // `AstSourceFile` facade solely for pending signature help.
+    parse
+        .declaration_iter(source)
         .flat_map(|declaration| match declaration {
             Declaration::Function(method) => vec![method],
             Declaration::Class(class) => class

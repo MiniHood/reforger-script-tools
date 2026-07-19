@@ -32,11 +32,13 @@ every other pending argument form remains unavailable.
 Rich token refinement and developer debug captures are admitted through
 `TaskClass::Rich`. This runtime admission is the sole retained job and snapshot
 byte capacity boundary for those jobs. The LSP's one `RuntimeWorkExecutor`
-owns one shared pending-work map and two fixed worker slots: a reserved
-foreground slot plus a background slot. It coalesces by `(TaskClass, URI)`,
-keeps foreground analysis independent of a running whole-file background job,
-dispatches ready semantic work before ready rich work on the background slot,
-and does not create a separate rich-token worker or a per-request debug thread.
+owns one shared pending-work map and a CPU-aware fixed worker capacity. It
+always reserves one foreground slot. When `available_parallelism` reports at
+least two logical CPUs, it also starts one background slot; on a one-CPU host,
+it starts no competing background worker and the foreground slot advances
+semantic/rich work only while no foreground work is runnable. It coalesces by
+`(TaskClass, URI)`, dispatches ready semantic work before ready rich work, and
+does not create a separate rich-token worker or a per-request debug thread.
 At executor capacity, an incoming class may evict only queued work of equal or
 lower priority: foreground evicts rich then semantic work first, semantic
 evicts rich before semantic work, and rich is dropped when no rich work remains.

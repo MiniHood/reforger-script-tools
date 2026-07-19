@@ -129,11 +129,12 @@ const INCOMING_EVENT_QUEUE_CAPACITY: usize = 64;
 const DOCUMENT_ANALYSIS_IDLE_DELAY_MS: u64 = 150;
 const MAX_PENDING_DOCUMENT_ANALYSIS_JOBS: usize = 32;
 const MAX_PENDING_DOCUMENT_REQUESTS_PER_URI: usize = 32;
-// The runtime deliberately has one reserved foreground worker plus one
-// background worker.  This is a fixed CPU bound, not a second scheduler: both
-// workers consume the same admitted, latest-wins pending-work map.
+// The executor retains a single foreground slot. A second CPU-bearing worker
+// exists only when the host actually has another logical CPU available. This
+// remains one executor and one admitted-work map, rather than a second
+// scheduler.
 const FOREGROUND_RUNTIME_WORKERS: usize = 1;
-const BACKGROUND_RUNTIME_WORKERS: usize = 1;
+const MAX_BACKGROUND_RUNTIME_WORKERS: usize = 1;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LspServerOptions {
     pub log_path: Option<PathBuf>,
@@ -341,6 +342,11 @@ struct RuntimeWorkExecutor {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RuntimeWorkerLane {
     Foreground,
+    /// On a single logical CPU, the sole foreground worker may advance
+    /// background convergence only when no foreground work is runnable. This
+    /// avoids oversubscribing the CPU while preserving eventual convergence
+    /// during an idle period.
+    ForegroundWithIdleBackground,
     Background,
 }
 
@@ -349,8 +355,44 @@ impl RuntimeWorkerLane {
         match self {
             // This reservation means an edit can build its current lexical and
             // syntax snapshot even when a whole-file background job is busy.
-            Self::Foreground => class == TaskClass::Foreground,
+            Self::Foreground | Self::ForegroundWithIdleBackground => class == TaskClass::Foreground,
             Self::Background => class != TaskClass::Foreground,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RuntimeWorkCapacity {
+    foreground_workers: usize,
+    background_workers: usize,
+}
+
+impl RuntimeWorkCapacity {
+    fn for_logical_cpus(logical_cpus: usize) -> Self {
+        // A process may fail to discover CPU capacity; treating that as one
+        // CPU is the safe choice because it never starts competing background
+        // CPU work beside foreground edits.
+        let logical_cpus = logical_cpus.max(1);
+        Self {
+            foreground_workers: FOREGROUND_RUNTIME_WORKERS,
+            background_workers: logical_cpus
+                .saturating_sub(FOREGROUND_RUNTIME_WORKERS)
+                .min(MAX_BACKGROUND_RUNTIME_WORKERS),
+        }
+    }
+
+    fn available() -> Self {
+        let logical_cpus = thread::available_parallelism()
+            .map(|count| count.get())
+            .unwrap_or(1);
+        Self::for_logical_cpus(logical_cpus)
+    }
+
+    fn foreground_lane(self) -> RuntimeWorkerLane {
+        if self.background_workers == 0 {
+            RuntimeWorkerLane::ForegroundWithIdleBackground
+        } else {
+            RuntimeWorkerLane::Foreground
         }
     }
 }
@@ -396,17 +438,25 @@ impl RuntimeWorkJob {
 
 impl RuntimeWorkExecutor {
     fn start(sender: mpsc::Sender<ServerEvent>) -> Self {
+        Self::start_with_capacity(sender, RuntimeWorkCapacity::available())
+    }
+
+    fn start_with_capacity(
+        sender: mpsc::Sender<ServerEvent>,
+        capacity: RuntimeWorkCapacity,
+    ) -> Self {
         let scheduler = Self {
             state: Arc::new((Mutex::new(BTreeMap::new()), Condvar::new())),
             sender,
             #[cfg(test)]
             test_before_execute: None,
         };
-        for _ in 0..FOREGROUND_RUNTIME_WORKERS {
+        for _ in 0..capacity.foreground_workers {
             let worker = scheduler.clone();
-            thread::spawn(move || worker.run(RuntimeWorkerLane::Foreground));
+            let lane = capacity.foreground_lane();
+            thread::spawn(move || worker.run(lane));
         }
-        for _ in 0..BACKGROUND_RUNTIME_WORKERS {
+        for _ in 0..capacity.background_workers {
             let worker = scheduler.clone();
             thread::spawn(move || worker.run(RuntimeWorkerLane::Background));
         }
@@ -414,8 +464,9 @@ impl RuntimeWorkExecutor {
     }
 
     #[cfg(test)]
-    fn start_with_test_hook(
+    fn start_with_capacity_and_test_hook(
         sender: mpsc::Sender<ServerEvent>,
+        capacity: RuntimeWorkCapacity,
         test_before_execute: RuntimeWorkTestHook,
     ) -> Self {
         let scheduler = Self {
@@ -423,11 +474,12 @@ impl RuntimeWorkExecutor {
             sender,
             test_before_execute: Some(test_before_execute),
         };
-        for _ in 0..FOREGROUND_RUNTIME_WORKERS {
+        for _ in 0..capacity.foreground_workers {
             let worker = scheduler.clone();
-            thread::spawn(move || worker.run(RuntimeWorkerLane::Foreground));
+            let lane = capacity.foreground_lane();
+            thread::spawn(move || worker.run(lane));
         }
-        for _ in 0..BACKGROUND_RUNTIME_WORKERS {
+        for _ in 0..capacity.background_workers {
             let worker = scheduler.clone();
             thread::spawn(move || worker.run(RuntimeWorkerLane::Background));
         }
@@ -693,9 +745,15 @@ fn next_runnable_work_key_for_lane(
     now: Instant,
     lane: RuntimeWorkerLane,
 ) -> Option<(TaskClass, String)> {
+    let idle_background = lane == RuntimeWorkerLane::ForegroundWithIdleBackground
+        && !pending
+            .iter()
+            .any(|((class, _), job)| *class == TaskClass::Foreground && job.due_at() <= now);
     pending
         .iter()
-        .filter(|((class, _), _)| lane.accepts(*class))
+        .filter(|((class, _), _)| {
+            lane.accepts(*class) || (idle_background && *class != TaskClass::Foreground)
+        })
         .min_by_key(|((class, uri), job)| {
             // A ready higher-priority class always runs first. Until it is
             // ready, an older lower-priority job may use the idle worker.
@@ -3751,6 +3809,69 @@ mod tests {
     }
 
     #[test]
+    fn one_cpu_capacity_reserves_execution_for_foreground() {
+        assert_eq!(
+            RuntimeWorkCapacity::for_logical_cpus(1),
+            RuntimeWorkCapacity {
+                foreground_workers: 1,
+                background_workers: 0,
+            }
+        );
+        assert_eq!(
+            RuntimeWorkCapacity::for_logical_cpus(2),
+            RuntimeWorkCapacity {
+                foreground_workers: 1,
+                background_workers: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn one_cpu_foreground_lane_advances_background_only_when_foreground_is_idle() {
+        let now = Instant::now();
+        let mut runtime = AnalysisRuntime::new(AdmissionLimits::new(2, 64));
+        let mut pending = BTreeMap::new();
+        let semantic = semantic_analysis_job(
+            &mut runtime,
+            "file:///semantic.c",
+            1,
+            now - Duration::from_millis(DOCUMENT_ANALYSIS_IDLE_DELAY_MS + 1),
+        );
+        let foreground = foreground_document_job(
+            &mut runtime,
+            "file:///foreground.c",
+            1,
+            "class Fresh {}",
+            now,
+        );
+        pending.insert(
+            (TaskClass::Semantic, "file:///semantic.c".to_string()),
+            RuntimeWorkJob::Semantic(semantic),
+        );
+        assert_eq!(
+            next_runnable_work_key_for_lane(
+                &pending,
+                now,
+                RuntimeWorkerLane::ForegroundWithIdleBackground,
+            ),
+            Some((TaskClass::Semantic, "file:///semantic.c".to_string()))
+        );
+
+        pending.insert(
+            (TaskClass::Foreground, "file:///foreground.c".to_string()),
+            RuntimeWorkJob::Foreground(foreground),
+        );
+        assert_eq!(
+            next_runnable_work_key_for_lane(
+                &pending,
+                now,
+                RuntimeWorkerLane::ForegroundWithIdleBackground,
+            ),
+            Some((TaskClass::Foreground, "file:///foreground.c".to_string()))
+        );
+    }
+
+    #[test]
     fn shared_executor_prioritizes_ready_semantic_work_over_ready_rich_work() {
         let now = Instant::now();
         let mut runtime = AnalysisRuntime::new(AdmissionLimits::new(2, 2));
@@ -3789,8 +3910,9 @@ mod tests {
         let (release_semantic_sender, release_semantic_receiver) = mpsc::channel();
         let release_semantic_receiver = Arc::new(Mutex::new(Some(release_semantic_receiver)));
         let hook_release = release_semantic_receiver.clone();
-        let scheduler = RuntimeWorkExecutor::start_with_test_hook(
+        let scheduler = RuntimeWorkExecutor::start_with_capacity_and_test_hook(
             event_sender,
+            RuntimeWorkCapacity::for_logical_cpus(2),
             Arc::new(move |class| {
                 if class == TaskClass::Semantic {
                     semantic_started_sender
