@@ -46,6 +46,8 @@ unavailable. No pending path combines current text with older local facts. A suc
 declaration keywords (including `override`); it does not append the generic
 top-level fallback. This keeps incomplete declarations from surfacing unrelated
 symbols and preserves keyword completion before full document analysis publishes.
+If neither kind matches the current prefix, the query declines so the ordinary
+local/top-level path can provide its normal results.
 It combines local,
 workspace, and game-data candidates without rebuilding a merged index,
 preserves source-backed precedence, and caps output at 250 items. Member access

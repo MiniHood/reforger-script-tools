@@ -354,6 +354,11 @@ pub(crate) fn completion_report_for_current_override_at_offset_with_external_ind
         keyword_items.extend(items);
         items = keyword_items;
     }
+    // This bounded query is only a contextual specialization. When neither an
+    // inherited member nor a declaration keyword matches, preserve the normal
+    // local/top-level completion path instead of claiming an empty override
+    // response for an ordinary identifier at class scope.
+    (!items.is_empty()).then_some(())?;
     let (items, is_incomplete) = cap_completion_items(items);
 
     Some(LspCompletionReport {
@@ -4027,6 +4032,34 @@ mod tests {
         assert_eq!(report.prefix, "overr");
         assert_eq!(report.list.items.first().map(|item| item.label.as_str()), Some("override"));
         assert!(report.list.items.iter().all(|item| item.label == "override"));
+    }
+
+    #[test]
+    fn current_override_query_falls_through_when_the_prefix_has_no_override_match() {
+        let source = r#"class Child : ScriptComponent
+{
+	SCR_
+}
+"#;
+        let external = file_index_for_source(
+            r#"class ScriptComponent
+{
+	event protected void OnPostInit(IEntity owner);
+}
+"#,
+        )
+        .index;
+        let offset = source.find("\tSCR_").unwrap() + "\tSCR_".len();
+
+        assert!(
+            completion_report_for_current_override_at_offset_with_external_indexes(
+                source,
+                offset,
+                Some(&external),
+                None,
+            )
+            .is_none()
+        );
     }
 
     #[test]
