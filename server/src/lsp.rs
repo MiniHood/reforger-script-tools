@@ -44,6 +44,7 @@ mod signature_help;
 
 use completion::{
     completion_debug_markdown, completion_report_for_cached_analysis_with_external_indexes,
+    completion_report_for_current_local_scope_at_offset_with_external_indexes,
     completion_report_for_lexical_source_at_offset_with_external_indexes,
     completion_report_for_lexical_source_with_external_indexes, empty_completion_list,
 };
@@ -1365,12 +1366,20 @@ impl<W: Write> LspServer<W> {
                                         },
                                     );
                                     if let Some(offset) = offset {
-                                        completion_report_for_lexical_source_at_offset_with_external_indexes(
+                                        completion_report_for_current_local_scope_at_offset_with_external_indexes(
                                             &document.text,
                                             offset,
                                             indexes.workspace.as_deref(),
                                             indexes.game_data.as_deref(),
                                         )
+                                        .unwrap_or_else(|| {
+                                            completion_report_for_lexical_source_at_offset_with_external_indexes(
+                                                &document.text,
+                                                offset,
+                                                indexes.workspace.as_deref(),
+                                                indexes.game_data.as_deref(),
+                                            )
+                                        })
                                     } else {
                                         completion_report_for_lexical_source_with_external_indexes(
                                             &document.text,

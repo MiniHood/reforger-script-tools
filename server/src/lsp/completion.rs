@@ -21,6 +21,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 const MAX_COMPLETION_ITEMS: usize = 250;
+/// A foreground local query deliberately has a small, source-free admission
+/// bound. Larger documents continue on the runtime semantic lane and use the
+/// documented lexical/top-level result meanwhile.
+const LOCAL_SCOPE_QUERY_MAX_SOURCE_BYTES: usize = 64 * 1024;
+const LOCAL_SCOPE_QUERY_DEADLINE: Duration = Duration::from_millis(50);
 const COMMAND_TRIGGER_PARAMETER_HINTS: &str = "editor.action.triggerParameterHints";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -235,6 +240,42 @@ pub(crate) fn completion_report_for_lexical_source_at_offset_with_external_index
         UnavailableCompletionContext::TopLevel => report,
     };
     unavailable_completion_report(report, context.reason())
+}
+
+/// Runs the valid-syntax `LocalScopeQuery` against the current source
+/// revision. This is intentionally independent of background semantic
+/// installation: it constructs only an ephemeral current parser/scope view
+/// and never reads a prior document analysis. Receiver and argument contexts
+/// remain unavailable until their dedicated bounded queries exist.
+pub(crate) fn completion_report_for_current_local_scope_at_offset_with_external_indexes(
+    source: &str,
+    offset: usize,
+    workspace_index: Option<&SymbolIndex>,
+    game_data_index: Option<&SymbolIndex>,
+) -> Option<LspCompletionReport> {
+    if source.len() > LOCAL_SCOPE_QUERY_MAX_SOURCE_BYTES {
+        return None;
+    }
+    let start = Instant::now();
+    let tokens = lex(source);
+    if unavailable_completion_context(&tokens, offset) != UnavailableCompletionContext::TopLevel {
+        return None;
+    }
+
+    let analysis = file_index_for_source(source);
+    if analysis.parse_diagnostics != 0
+        || !analysis.scope.has_callable_scope_at(offset)
+        || start.elapsed() > LOCAL_SCOPE_QUERY_DEADLINE
+    {
+        return None;
+    }
+
+    let mut report =
+        completion_report_for_offset(source, &analysis, offset, workspace_index, game_data_index);
+    report.query_quality = QueryQuality::Exact;
+    report.recovery_reason = None;
+    report.completion_context = "local".to_string();
+    Some(report)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2603,6 +2644,55 @@ mod tests {
             .items
             .iter()
             .any(|item| item.label == "GetGameMode"));
+    }
+
+    #[test]
+    fn current_local_scope_query_returns_current_locals_without_ready_analysis() {
+        let source = r#"class Example
+{
+	void Run(int parameter)
+	{
+		string localValue;
+		loc
+	}
+}"#;
+        let offset = source.find("loc\n").unwrap() + 3;
+
+        let report = completion_report_for_current_local_scope_at_offset_with_external_indexes(
+            source, offset, None, None,
+        )
+        .expect("valid callable-local source should use the current local query");
+
+        assert_eq!(report.query_quality, QueryQuality::Exact);
+        assert_eq!(report.completion_context, "local");
+        assert!(report
+            .list
+            .items
+            .iter()
+            .any(|item| item.label == "localValue"));
+    }
+
+    #[test]
+    fn current_local_scope_query_declines_malformed_or_member_source() {
+        let malformed = "void Run() { int localValue; loc";
+        assert!(
+            completion_report_for_current_local_scope_at_offset_with_external_indexes(
+                malformed,
+                malformed.len(),
+                None,
+                None,
+            )
+            .is_none()
+        );
+
+        let member = "void Run() { localValue.loc }";
+        let offset = member.find("loc }").unwrap() + 3;
+        assert!(
+            completion_report_for_current_local_scope_at_offset_with_external_indexes(
+                member, offset, None, None,
+            )
+            .is_none()
+        );
     }
 
     #[test]

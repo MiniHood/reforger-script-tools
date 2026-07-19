@@ -121,6 +121,23 @@ impl LexicalScopeModel {
             .map(|scope| scope.id)
     }
 
+    /// True when `offset` is inside a callable's lexical region.  Foreground
+    /// local completion uses this to avoid treating file/class scope as a
+    /// local-scope query.
+    pub fn has_callable_scope_at(&self, offset: usize) -> bool {
+        let mut current = self.innermost_scope_at(offset);
+        while let Some(scope_id) = current {
+            let Some(scope) = self.scope(scope_id) else {
+                return false;
+            };
+            if scope.kind == LexicalScopeKind::Callable {
+                return true;
+            }
+            current = scope.parent;
+        }
+        false
+    }
+
     pub fn visible_symbols_named(
         &self,
         index: &SymbolIndex,
@@ -579,5 +596,15 @@ mod tests {
             index.symbol(visible[0]).unwrap().kind,
             SymbolKind::Parameter
         );
+    }
+
+    #[test]
+    fn identifies_callable_regions_without_treating_root_as_local_scope() {
+        let source = "class Example { void Run() { int localValue; localValue; } }";
+        let (parse, index) = index_for(source);
+        let scopes = LexicalScopeModel::from_parse_and_index(&parse, &index);
+
+        assert!(scopes.has_callable_scope_at(source.find("localValue;").unwrap()));
+        assert!(!scopes.has_callable_scope_at(0));
     }
 }
