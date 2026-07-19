@@ -245,8 +245,8 @@ pub(crate) fn completion_report_for_lexical_source_at_offset_with_external_index
 /// Runs the valid-syntax `LocalScopeQuery` against the current source
 /// revision. This is intentionally independent of background semantic
 /// installation: it constructs only an ephemeral current parser/scope view
-/// and never reads a prior document analysis. Receiver and argument contexts
-/// remain unavailable until their dedicated bounded queries exist.
+/// and never reads a prior document analysis. Argument contexts remain
+/// unavailable until their dedicated bounded query exists.
 pub(crate) fn completion_report_for_current_local_scope_at_offset_with_external_indexes(
     source: &str,
     offset: usize,
@@ -276,6 +276,68 @@ pub(crate) fn completion_report_for_current_local_scope_at_offset_with_external_
     report.recovery_reason = None;
     report.completion_context = "local".to_string();
     Some(report)
+}
+
+/// Runs the current-revision `ReceiverResolutionQuery` for one bare local,
+/// parameter, or field receiver. This is deliberately narrower than the
+/// ready-analysis resolver: chained, call, index, static, malformed, and
+/// over-budget expressions use the lexical fallback rather than joining
+/// current text to an older local analysis.
+pub(crate) fn completion_report_for_current_receiver_at_offset_with_external_indexes(
+    source: &str,
+    offset: usize,
+    workspace_index: Option<&SymbolIndex>,
+    game_data_index: Option<&SymbolIndex>,
+) -> Option<LspCompletionReport> {
+    if source.len() > LOCAL_SCOPE_QUERY_MAX_SOURCE_BYTES {
+        return None;
+    }
+    let start = Instant::now();
+    let tokens = lex(source);
+    if unavailable_completion_context(&tokens, offset) != UnavailableCompletionContext::Member {
+        return None;
+    }
+
+    let analysis = file_index_for_source(source);
+    if analysis.parse_diagnostics != 0 || start.elapsed() > LOCAL_SCOPE_QUERY_DEADLINE {
+        return None;
+    }
+
+    let resolver = ReferenceResolver::new_with_parse_scope_and_external_indexes(
+        source,
+        &analysis.index,
+        &analysis.parse,
+        &analysis.scope,
+        layered_external_indexes(workspace_index, game_data_index),
+    );
+    let context = resolver.member_completion_context_at_offset_with_tokens(offset, &tokens)?;
+    if !is_simple_current_receiver(&context.receiver.receiver_text)
+        || context.receiver.is_static
+        || !matches!(
+            resolver
+                .resolve_at_offset(context.receiver.receiver_span.start)
+                .and_then(|resolution| resolution.selected),
+            Some(candidate)
+                if matches!(candidate.kind, SymbolKind::LocalVariable | SymbolKind::Parameter | SymbolKind::Field)
+        )
+        || context.receiver.owner_type.is_none()
+        || start.elapsed() > LOCAL_SCOPE_QUERY_DEADLINE
+    {
+        return None;
+    }
+
+    let mut report =
+        completion_report_for_offset(source, &analysis, offset, workspace_index, game_data_index);
+    report.query_quality = QueryQuality::Exact;
+    report.recovery_reason = None;
+    report.completion_context = "member".to_string();
+    Some(report)
+}
+
+fn is_simple_current_receiver(receiver: &str) -> bool {
+    let mut chars = receiver.chars();
+    matches!(chars.next(), Some(first) if first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|character| character.is_ascii_alphanumeric() || character == '_')
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2690,6 +2752,80 @@ mod tests {
         assert!(
             completion_report_for_current_local_scope_at_offset_with_external_indexes(
                 member, offset, None, None,
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn current_receiver_query_resolves_simple_current_locals_parameters_and_fields() {
+        let external =
+            file_index_for_source("class Widget { void GetName() {} void GetSize() {} }").index;
+        let source = r#"class Example
+{
+	Widget m_widget;
+	void Run(Widget parameter)
+	{
+		Widget localValue;
+		localValue.Get
+		parameter.Get
+		m_widget.Get
+	}
+}"#;
+
+        for receiver in ["localValue.Get", "parameter.Get", "m_widget.Get"] {
+            let offset = source.find(receiver).unwrap() + receiver.len();
+            let report = completion_report_for_current_receiver_at_offset_with_external_indexes(
+                source,
+                offset,
+                Some(&external),
+                None,
+            )
+            .unwrap_or_else(|| panic!("{receiver} should use the current receiver query"));
+
+            assert_eq!(report.query_quality, QueryQuality::Exact);
+            assert_eq!(report.completion_context, "member");
+            assert_eq!(
+                report.receiver_text.as_deref(),
+                Some(&receiver[..receiver.len() - 4])
+            );
+            assert_eq!(report.owner_type.as_deref(), Some("Widget"));
+            assert!(report.list.items.iter().any(|item| item.label == "GetName"));
+        }
+    }
+
+    #[test]
+    fn current_receiver_query_declines_chained_malformed_and_static_receivers() {
+        let chained = "class Example { void Run(Widget value) { value.GetWidget().Get } }";
+        let chained_offset = chained.find(".Get }").unwrap() + 4;
+        assert!(
+            completion_report_for_current_receiver_at_offset_with_external_indexes(
+                chained,
+                chained_offset,
+                None,
+                None,
+            )
+            .is_none()
+        );
+
+        let static_receiver = "class Example { void Run() { Widget.Get } }";
+        assert!(
+            completion_report_for_current_receiver_at_offset_with_external_indexes(
+                static_receiver,
+                static_receiver.find("Get }").unwrap() + 3,
+                None,
+                None,
+            )
+            .is_none()
+        );
+
+        let malformed = "class Example { void Run(Widget value) { value.Get";
+        assert!(
+            completion_report_for_current_receiver_at_offset_with_external_indexes(
+                malformed,
+                malformed.len(),
+                None,
+                None,
             )
             .is_none()
         );

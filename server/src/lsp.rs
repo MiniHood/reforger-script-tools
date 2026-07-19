@@ -45,6 +45,7 @@ mod signature_help;
 use completion::{
     completion_debug_markdown, completion_report_for_cached_analysis_with_external_indexes,
     completion_report_for_current_local_scope_at_offset_with_external_indexes,
+    completion_report_for_current_receiver_at_offset_with_external_indexes,
     completion_report_for_lexical_source_at_offset_with_external_indexes,
     completion_report_for_lexical_source_with_external_indexes, empty_completion_list,
 };
@@ -1366,12 +1367,18 @@ impl<W: Write> LspServer<W> {
                                         },
                                     );
                                     if let Some(offset) = offset {
-                                        completion_report_for_current_local_scope_at_offset_with_external_indexes(
+                                        completion_report_for_current_receiver_at_offset_with_external_indexes(
                                             &document.text,
                                             offset,
                                             indexes.workspace.as_deref(),
                                             indexes.game_data.as_deref(),
                                         )
+                                        .or_else(|| completion_report_for_current_local_scope_at_offset_with_external_indexes(
+                                            &document.text,
+                                            offset,
+                                            indexes.workspace.as_deref(),
+                                            indexes.game_data.as_deref(),
+                                        ))
                                         .unwrap_or_else(|| {
                                             completion_report_for_lexical_source_at_offset_with_external_indexes(
                                                 &document.text,
@@ -7966,6 +7973,59 @@ class Example
         let output = String::from_utf8(server.writer).unwrap();
         assert!(output.contains("\"id\":1"));
         assert!(output.contains("\"items\":["));
+    }
+
+    #[test]
+    fn completion_resolves_simple_current_receiver_while_analysis_is_pending() {
+        let (sender, _receiver) = mpsc::channel();
+        let scheduler = OpenDocumentAnalysisScheduler::start(sender);
+        let mut server = LspServer::new_with_runtime_senders(
+            Vec::new(),
+            LspServerOptions::default(),
+            None,
+            Some(scheduler),
+            None,
+        );
+        let uri = "file:///Scripts/PendingReceiverCompletion.c";
+        let source = "class Widget { void GetName() {} } class Example { void Run(Widget parameter) { parameter.Get } }";
+        let offset = source.find("parameter.Get").unwrap() + "parameter.Get".len();
+        server
+            .handle_message(
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "textDocument/didOpen",
+                    "params": { "textDocument": {
+                        "uri": uri,
+                        "languageId": "enforce",
+                        "version": 1,
+                        "text": source
+                    }}
+                }),
+                None,
+                0,
+                0,
+            )
+            .unwrap();
+        server
+            .handle_message(
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "textDocument/completion",
+                    "params": {
+                        "textDocument": { "uri": uri },
+                        "position": { "line": 0, "character": offset }
+                    }
+                }),
+                None,
+                0,
+                0,
+            )
+            .unwrap();
+
+        let output = String::from_utf8(server.writer).unwrap();
+        assert!(output.contains("\"id\":1"));
+        assert!(output.contains("\"label\":\"GetName\""));
     }
 
     #[test]

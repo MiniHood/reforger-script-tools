@@ -17,12 +17,16 @@ dispatch, document caching, resolver policy, or TypeScript retrigger parsing.
 Completion reuses matching-revision file analysis to recognize member,
 top-level, type, override, and callable-argument contexts. While full analysis
 is pending, the foreground path first attempts a valid-syntax, size- and
-deadline-bounded `LocalScopeQuery` against the current source revision. That
-query constructs an ephemeral parser/scope view and returns current callable
-locals and parameters without waiting for background analysis. Malformed,
-oversize, deadline-exceeded, member, and argument contexts use only current
-lexer prefix facts and captured workspace/game-data indexes for a deterministic
-top-level result; they never combine current text with an older local analysis.
+deadline-bounded `ReceiverResolutionQuery` for one bare local, parameter, or
+field receiver, then a `LocalScopeQuery` for ordinary callable-local prefixes.
+Both construct an ephemeral parser/scope view from the current source revision
+and never read a prior document analysis. The receiver query captures the
+workspace/game-data indexes once and admits only a simple identifier receiver;
+chains, calls, indexing, static receivers, malformed source, oversize source,
+and deadline-exceeded work use only current lexer prefix facts and captured
+workspace/game-data indexes for a deterministic top-level result. Argument
+contexts remain unavailable until their bounded query exists. No pending path
+combines current text with older local facts.
 It combines local,
 workspace, and game-data candidates without rebuilding a merged index,
 preserves source-backed precedence, and caps output at 250 items. Member access
