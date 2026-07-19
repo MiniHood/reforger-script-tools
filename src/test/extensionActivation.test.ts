@@ -2,7 +2,7 @@ import * as assert from 'node:assert';
 import * as vscode from 'vscode';
 
 suite('extension activation', () => {
-	test('registers editor-facing commands without ordinary edit suggest hooks', async () => {
+	test('registers editor-facing commands', async () => {
 		const extension = vscode.extensions.all.find(
 			candidate => candidate.packageJSON.name === 'reforger-sript-tools',
 		);
