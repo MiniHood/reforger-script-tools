@@ -65,6 +65,13 @@ impl<'source, 'tree> AstSourceFile<'source, 'tree> {
     }
 
     pub fn declarations(&self) -> Vec<Declaration<'source, 'tree>> {
+        self.declaration_iter().collect()
+    }
+
+    /// Zero-copy typed CST traversal for semantic construction. Callers that
+    /// only need one coordinated pass must not first materialize a declaration
+    /// vector.
+    pub fn declaration_iter(&self) -> impl Iterator<Item = Declaration<'source, 'tree>> + '_ {
         self.parse
             .root
             .children
@@ -75,7 +82,6 @@ impl<'source, 'tree> AstSourceFile<'source, 'tree> {
                 }
                 SyntaxElement::Token(_) => None,
             })
-            .collect()
     }
 }
 

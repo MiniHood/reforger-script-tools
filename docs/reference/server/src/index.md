@@ -2,11 +2,17 @@
 
 ## Purpose
 
-Owns the in-memory multi-file symbol index built from file-local model catalogs.
+Owns the in-memory multi-file symbol index built from compiler-produced file
+semantic facts.
 
 ## Ownership
 
-`SymbolIndex` aggregates catalogs into global handles and raw lookup maps. It owns copied lookup and display facts plus source-priority ordering; `index_build` owns source-to-catalog construction, `index_cache` owns persistence, `index_query` owns editor policy, and `symbol_display` owns presentation.
+`SymbolIndex` aggregates semantic files into global handles and raw lookup maps.
+It owns copied lookup and display facts plus source-priority ordering;
+`index_build` owns source-to-semantic construction, `index_cache` owns
+persistence, `index_query` owns editor policy, and `symbol_display` owns
+presentation. The legacy catalog ingress remains only for differential and
+compatibility tests.
 
 ## Current Behavior
 

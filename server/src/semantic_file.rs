@@ -15,6 +15,11 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct SemanticDeclarationId(pub u32);
 
+/// Snapshot-local identity for a conditional branch stack. The actual branch
+/// details are interned once per file rather than cloned onto every record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct SemanticConditionalContextId(pub u32);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SemanticDeclarationKind {
     Class,
@@ -74,7 +79,7 @@ pub struct SemanticDeclaration {
     pub attributes: Vec<SemanticText>,
     pub doc_comments: Vec<SemanticDocComment>,
     pub callable_form: Option<SemanticCallableForm>,
-    pub conditional_context: Vec<SemanticConditionalBranch>,
+    pub conditional_context: SemanticConditionalContextId,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -105,8 +110,19 @@ pub struct SemanticConditionalBranch {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct SemanticFile {
     declarations: Vec<SemanticDeclaration>,
+    conditional_contexts: Vec<Vec<SemanticConditionalBranch>>,
+    local_regions: Vec<LocalSemanticRegion>,
     non_declaration_callable_fragments: usize,
     build_stats: SemanticBuildStats,
+}
+
+/// File-private callable scope facts. These never participate in workspace
+/// contribution publication; bounded cursor queries consume them later.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct LocalSemanticRegion {
+    callable: SemanticDeclarationId,
+    span: TextSpan,
+    bindings: Vec<SemanticDeclarationId>,
 }
 
 /// Source-free operation counters for scale regression tests and runtime
@@ -124,10 +140,11 @@ impl SemanticFile {
         let mut builder = SemanticFileBuilder {
             source,
             declarations: Vec::new(),
+            local_regions: Vec::new(),
             non_declaration_callable_fragments: 0,
             directive_contexts: DirectiveContextMap::for_source(source),
         };
-        for declaration in ast.declarations() {
+        for declaration in ast.declaration_iter() {
             builder.add_declaration(declaration);
         }
         builder.add_preprocessor_macro_definitions();
@@ -135,6 +152,8 @@ impl SemanticFile {
         let declaration_records = builder.declarations.len();
         let mut result = Self {
             declarations: builder.declarations,
+            conditional_contexts: builder.directive_contexts.contexts(),
+            local_regions: builder.local_regions,
             non_declaration_callable_fragments: builder.non_declaration_callable_fragments,
             build_stats: SemanticBuildStats {
                 directive_lines,
@@ -156,6 +175,25 @@ impl SemanticFile {
         self.declarations.get(id.0 as usize)
     }
 
+    pub fn conditional_context(
+        &self,
+        id: SemanticConditionalContextId,
+    ) -> &[SemanticConditionalBranch] {
+        self.conditional_contexts
+            .get(id.0 as usize)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    }
+
+    fn local_region_for_callable(
+        &self,
+        callable: SemanticDeclarationId,
+    ) -> Option<&LocalSemanticRegion> {
+        self.local_regions
+            .iter()
+            .find(|region| region.callable == callable)
+    }
+
     pub fn non_declaration_callable_fragments(&self) -> usize {
         self.non_declaration_callable_fragments
     }
@@ -167,6 +205,7 @@ impl SemanticFile {
     pub fn contribution(&self) -> FileContribution {
         FileContribution {
             schema_version: FILE_CONTRIBUTION_SCHEMA_VERSION,
+            source_manifest_version: FILE_CONTRIBUTION_SOURCE_MANIFEST_VERSION,
             symbols: self
                 .declarations
                 .iter()
@@ -198,17 +237,21 @@ impl SemanticFile {
 /// declarations that can participate in external lookup, not private scope
 /// state or AST references.
 pub const FILE_CONTRIBUTION_SCHEMA_VERSION: u32 = 1;
+pub const FILE_CONTRIBUTION_SOURCE_MANIFEST_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct FileContribution {
     #[serde(default)]
     pub schema_version: u32,
+    #[serde(default)]
+    pub source_manifest_version: u32,
     pub symbols: Vec<PublicSymbol>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileContributionValidationError {
     UnsupportedSchema { found: u32, supported: u32 },
+    UnsupportedSourceManifest { found: u32, supported: u32 },
     MissingName { kind: SemanticDeclarationKind },
 }
 
@@ -221,6 +264,12 @@ impl FileContribution {
             return Err(FileContributionValidationError::UnsupportedSchema {
                 found: self.schema_version,
                 supported: FILE_CONTRIBUTION_SCHEMA_VERSION,
+            });
+        }
+        if self.source_manifest_version != FILE_CONTRIBUTION_SOURCE_MANIFEST_VERSION {
+            return Err(FileContributionValidationError::UnsupportedSourceManifest {
+                found: self.source_manifest_version,
+                supported: FILE_CONTRIBUTION_SOURCE_MANIFEST_VERSION,
             });
         }
         for symbol in &self.symbols {
@@ -260,6 +309,7 @@ impl From<&SemanticDeclarationDetail> for PublicSymbolDetail {
 struct SemanticFileBuilder<'source> {
     source: &'source str,
     declarations: Vec<SemanticDeclaration>,
+    local_regions: Vec<LocalSemanticRegion>,
     non_declaration_callable_fragments: usize,
     directive_contexts: DirectiveContextMap<'source>,
 }
@@ -448,8 +498,9 @@ impl<'source> SemanticFileBuilder<'source> {
             doc_comments(method.doc_comments()),
             Some(callable_form(method)),
         );
+        let mut bindings = Vec::new();
         for parameter in method.parameters() {
-            self.push(
+            bindings.push(self.push(
                 Some(id),
                 SemanticDeclarationKind::Parameter,
                 parameter.name(),
@@ -462,10 +513,10 @@ impl<'source> SemanticFileBuilder<'source> {
                 text_values(parameter.modifiers(), self.source),
                 Vec::new(),
                 Vec::new(),
-            );
+            ));
         }
         for local in method.local_variables() {
-            self.push(
+            bindings.push(self.push(
                 Some(id),
                 SemanticDeclarationKind::LocalVariable,
                 Some(local.name()),
@@ -478,8 +529,13 @@ impl<'source> SemanticFileBuilder<'source> {
                 text_values(local.modifiers(), self.source),
                 Vec::new(),
                 Vec::new(),
-            );
+            ));
         }
+        self.local_regions.push(LocalSemanticRegion {
+            callable: id,
+            span: method.body_span().unwrap_or(method.span()),
+            bindings,
+        });
         self.non_declaration_callable_fragments += method.parameter_fragments().len();
     }
 
@@ -535,7 +591,7 @@ impl<'source> SemanticFileBuilder<'source> {
             attributes,
             doc_comments,
             callable_form,
-            conditional_context: self.directive_contexts.context_at(span.start),
+            conditional_context: self.directive_contexts.context_id_at(span.start),
         });
         id
     }
@@ -631,11 +687,12 @@ fn is_identifier_continue(character: char) -> bool {
 
 #[derive(Debug, Clone)]
 struct DirectiveContextMap<'source> {
-    line_contexts: Vec<(usize, Vec<RawConditionalBranch>)>,
-    source: &'source str,
+    line_contexts: Vec<(usize, SemanticConditionalContextId)>,
+    contexts: Vec<Vec<SemanticConditionalBranch>>,
+    _source: &'source str,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RawConditionalBranch {
     kind: SemanticConditionalBranchKind,
     directive_span: TextSpan,
@@ -646,49 +703,75 @@ impl<'source> DirectiveContextMap<'source> {
     fn for_source(source: &'source str) -> Self {
         let mut line_contexts = Vec::new();
         let mut context = Vec::new();
+        let mut raw_contexts = vec![Vec::new()];
         let mut line_start = 0usize;
         for line in source.split_inclusive('\n') {
-            line_contexts.push((line_start, context.clone()));
+            line_contexts.push((line_start, intern_context(&mut raw_contexts, &context)));
             let line_end = line_start + line.trim_end_matches(['\r', '\n']).len();
             apply_preprocessor_line(source, line_start, line_end, &mut context);
             line_start += line.len();
         }
         if line_start < source.len() {
-            line_contexts.push((line_start, context.clone()));
+            line_contexts.push((line_start, intern_context(&mut raw_contexts, &context)));
             apply_preprocessor_line(source, line_start, source.len(), &mut context);
         }
         Self {
             line_contexts,
-            source,
+            contexts: raw_contexts
+                .into_iter()
+                .map(|context| semantic_context(source, context))
+                .collect(),
+            _source: source,
         }
     }
 
-    fn context_at(&self, offset: usize) -> Vec<SemanticConditionalBranch> {
+    fn context_id_at(&self, offset: usize) -> SemanticConditionalContextId {
         let index = self
             .line_contexts
             .partition_point(|(line_start, _)| *line_start <= offset)
             .saturating_sub(1);
         self.line_contexts
             .get(index)
-            .map(|(_, context)| {
-                context
-                    .iter()
-                    .map(|branch| SemanticConditionalBranch {
-                        kind: branch.kind,
-                        directive_span: branch.directive_span,
-                        condition: branch.condition.map(|span| SemanticText {
-                            span,
-                            text: self.source[span.start..span.end].to_owned(),
-                        }),
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
+            .map(|(_, context)| *context)
+            .unwrap_or(SemanticConditionalContextId(0))
+    }
+
+    fn contexts(&self) -> Vec<Vec<SemanticConditionalBranch>> {
+        self.contexts.clone()
     }
 
     fn line_count(&self) -> usize {
         self.line_contexts.len()
     }
+}
+
+fn intern_context(
+    contexts: &mut Vec<Vec<RawConditionalBranch>>,
+    context: &[RawConditionalBranch],
+) -> SemanticConditionalContextId {
+    if let Some(index) = contexts.iter().position(|candidate| candidate == context) {
+        return SemanticConditionalContextId(index as u32);
+    }
+    let id = SemanticConditionalContextId(contexts.len() as u32);
+    contexts.push(context.to_vec());
+    id
+}
+
+fn semantic_context(
+    source: &str,
+    context: Vec<RawConditionalBranch>,
+) -> Vec<SemanticConditionalBranch> {
+    context
+        .into_iter()
+        .map(|branch| SemanticConditionalBranch {
+            kind: branch.kind,
+            directive_span: branch.directive_span,
+            condition: branch.condition.map(|span| SemanticText {
+                span,
+                text: source[span.start..span.end].to_owned(),
+            }),
+        })
+        .collect()
 }
 
 fn apply_preprocessor_line(
@@ -864,6 +947,18 @@ mod tests {
             })
         );
 
+        contribution.source_manifest_version = FILE_CONTRIBUTION_SOURCE_MANIFEST_VERSION;
+        contribution.schema_version = FILE_CONTRIBUTION_SCHEMA_VERSION;
+        contribution.source_manifest_version = FILE_CONTRIBUTION_SOURCE_MANIFEST_VERSION + 1;
+        assert_eq!(
+            contribution.validate(),
+            Err(FileContributionValidationError::UnsupportedSourceManifest {
+                found: FILE_CONTRIBUTION_SOURCE_MANIFEST_VERSION + 1,
+                supported: FILE_CONTRIBUTION_SOURCE_MANIFEST_VERSION,
+            })
+        );
+
+        contribution.source_manifest_version = FILE_CONTRIBUTION_SOURCE_MANIFEST_VERSION;
         contribution.schema_version = FILE_CONTRIBUTION_SCHEMA_VERSION;
         contribution.symbols[0].name = None;
         assert_eq!(
@@ -944,13 +1039,14 @@ mod tests {
                     .is_some_and(|name| name.text == "Enabled")
             })
             .unwrap();
-        assert_eq!(enabled.conditional_context.len(), 1);
+        let enabled_context = file.conditional_context(enabled.conditional_context);
+        assert_eq!(enabled_context.len(), 1);
         assert_eq!(
-            enabled.conditional_context[0].kind,
+            enabled_context[0].kind,
             SemanticConditionalBranchKind::Ifdef
         );
         assert_eq!(
-            enabled.conditional_context[0]
+            enabled_context[0]
                 .condition
                 .as_ref()
                 .map(|condition| condition.text.as_str()),
@@ -967,8 +1063,25 @@ mod tests {
             })
             .unwrap();
         assert_eq!(
-            disabled.conditional_context[0].kind,
+            file.conditional_context(disabled.conditional_context)[0].kind,
             SemanticConditionalBranchKind::Else
         );
+        assert_ne!(enabled.conditional_context, disabled.conditional_context);
+    }
+
+    #[test]
+    fn groups_callable_locals_into_private_regions() {
+        let file = semantic(
+            "void Run(int parameter) { int first = 1; for (int second = 0; second < 1; second++) {} }",
+        );
+        let callable = file
+            .declarations()
+            .iter()
+            .find(|declaration| declaration.kind == SemanticDeclarationKind::Function)
+            .unwrap();
+        let region = file.local_region_for_callable(callable.id).unwrap();
+        assert_eq!(region.bindings.len(), 3);
+        assert!(region.span.start >= callable.span.start);
+        assert!(region.span.end <= callable.span.end);
     }
 }

@@ -12,6 +12,10 @@ The parser owns syntactic structure and recovery below AST/model/index/resolver/
 
 It structures declarations, classes, attributes/modifiers, generic parameters, inheritance, enums, typedefs, fields, callables, parameters, preprocessor directives, initializer expressions, and preserved empty declarations. Callable bodies and attribute arguments use statement/expression syntax for control flow, loops, switch sections, locals, calls, member/index access, casts, operators, named arguments, `new`, `thread`, `delete`, and initializer expressions.
 
+The typed AST facade supplies both compatibility collection helpers and a
+zero-copy declaration iterator. Compiler-owned semantic construction uses the
+iterator so a coordinated CST pass does not first allocate a declaration list.
+
 `TypeRef`, `DeclaratorList`, and `Declarator` define shared type/modifier, comma-separated declarator, array suffix, and default-expression boundaries for fields, locals, and declaration-form `for` initializers. `ForeachVariable` retains its distinct header shape. `ForHeader`, `ForeachHeader`, and `SwitchSection` preserve loop/header and label grouping without semantic control-flow interpretation.
 
 Recovery forwards lexer errors, creates bounded `Error` nodes, uses semicolon/braces/declaration starts as synchronization, and preserves later valid declarations. Recursion has a shared depth budget; deep input yields a diagnostic and iterative nested-region consumption. Physical CR, LF, and CRLF terminate directive recovery. Progress assertions prevent non-consuming recovery loops.

@@ -479,8 +479,8 @@ impl SymbolIndex {
                         text: comment.text.clone(),
                     })
                     .collect(),
-                conditional_context: declaration
-                    .conditional_context
+                conditional_context: semantic_file
+                    .conditional_context(declaration.conditional_context)
                     .iter()
                     .map(|branch| IndexedConditionalBranch {
                         kind: indexed_conditional_kind(branch.kind),
