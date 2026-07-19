@@ -27,10 +27,13 @@ proven lexical/top-level candidates. A bounded exact argument-label query is
 available only for one bare resolver-proven function or method in valid current text;
 every other pending argument form remains unavailable.
 
-Rich token refinement is admitted through `TaskClass::Rich`. Its executor
-receives the runtime-owned cancellation token and must return the exact task
-identity before the LSP can publish a token-cache result; document caches may
-only mirror that token for cooperative cancellation.
+Rich token refinement and developer debug captures are admitted through
+`TaskClass::Rich`. Their executors receive the runtime-owned cancellation token
+and must return the exact task identity before the LSP can publish a token-cache
+result or answer a capture request. A newer edit, close, or replacement rich
+job makes that identity ineligible; debug callers receive `Content modified`
+rather than a report from an obsolete snapshot. Document caches may only mirror
+the token for cooperative cancellation.
 
 ## Verification
 

@@ -286,6 +286,7 @@ enum ServerEvent {
         elapsed_ms: u128,
     },
     DebugRequestReady {
+        task: TaskIdentity,
         id: Value,
         method: &'static str,
         uri: String,
@@ -1907,13 +1908,31 @@ impl<W: Write> LspServer<W> {
                                 let uri = params.text_document.uri.clone();
                                 let position = params.position;
                                 let revision = document.revision;
-                                let source = document.text.clone();
                                 let analysis = document.analysis().clone();
                                 let external_status = self.external_index.status_summary();
                                 let indexes = self.external_index.snapshot();
+                                let task = match self.admit_debug_capture(&uri) {
+                                    Ok(task) => task,
+                                    Err((retained_jobs, retained_bytes)) => {
+                                        self.log(&format!(
+                                            "request debugHover skipped uri={} revision={} reason=runtime-overload retained_jobs={} retained_bytes={} elapsed_ms={}",
+                                            uri,
+                                            revision,
+                                            retained_jobs,
+                                            retained_bytes,
+                                            start.elapsed().as_millis()
+                                        ));
+                                        self.respond_error(
+                                            id,
+                                            -32801,
+                                            "Debug capture unavailable",
+                                        )?;
+                                        return Ok(false);
+                                    }
+                                };
                                 thread::spawn(move || {
                                     let report = debug_hover_report_for_cached_analysis_with_external_indexes(
-                                        &source,
+                                        task.snapshot().text(),
                                         &analysis,
                                         &uri,
                                         position,
@@ -1925,6 +1944,7 @@ impl<W: Write> LspServer<W> {
                                     let label = selected_label_from_debug_report(&report)
                                         .unwrap_or_else(|| "<none>".to_string());
                                     let _ = sender.send(ServerEvent::DebugRequestReady {
+                                        task: task.identity().clone(),
                                         id,
                                         method: DEBUG_HOVER_METHOD,
                                         uri,
@@ -1999,20 +2019,38 @@ impl<W: Write> LspServer<W> {
                                 let uri = params.text_document.uri.clone();
                                 let position = params.position;
                                 let revision = document.revision;
-                                let source = document.text.clone();
                                 let analysis = document.analysis().clone();
                                 let indexes = self.external_index.snapshot();
+                                let task = match self.admit_debug_capture(&uri) {
+                                    Ok(task) => task,
+                                    Err((retained_jobs, retained_bytes)) => {
+                                        self.log(&format!(
+                                            "request debugCompletion skipped uri={} revision={} reason=runtime-overload retained_jobs={} retained_bytes={} elapsed_ms={}",
+                                            uri,
+                                            revision,
+                                            retained_jobs,
+                                            retained_bytes,
+                                            start.elapsed().as_millis()
+                                        ));
+                                        self.respond_error(
+                                            id,
+                                            -32801,
+                                            "Debug capture unavailable",
+                                        )?;
+                                        return Ok(false);
+                                    }
+                                };
                                 thread::spawn(move || {
                                     let report =
                                         completion_report_for_cached_analysis_with_external_indexes(
-                                            &source,
+                                            task.snapshot().text(),
                                             &analysis,
                                             position,
                                             indexes.workspace.as_deref(),
                                             indexes.game_data.as_deref(),
                                         );
                                     let signature_report = signature_help_report_for_cached_analysis_with_external_indexes(
-                                        &source,
+                                        task.snapshot().text(),
                                         &analysis,
                                         position,
                                         indexes.workspace.as_deref(),
@@ -2029,7 +2067,7 @@ impl<W: Write> LspServer<W> {
                                     let mut markdown = completion_debug_markdown(
                                         &report,
                                         &uri,
-                                        source.len(),
+                                        task.snapshot().text().len(),
                                         revision,
                                         indexes.status,
                                     );
@@ -2037,6 +2075,7 @@ impl<W: Write> LspServer<W> {
                                         &signature_report,
                                     ));
                                     let _ = sender.send(ServerEvent::DebugRequestReady {
+                                        task: task.identity().clone(),
                                         id,
                                         method: DEBUG_COMPLETION_METHOD,
                                         uri,
@@ -2290,6 +2329,7 @@ impl<W: Write> LspServer<W> {
                 Ok(())
             }
             ServerEvent::DebugRequestReady {
+                task,
                 id,
                 method,
                 uri,
@@ -2298,6 +2338,13 @@ impl<W: Write> LspServer<W> {
                 result,
                 elapsed_ms,
             } => {
+                if !self.runtime.complete(&task) {
+                    self.log(&format!(
+                        "request {} discarded uri={} revision={} reason=runtime-stale async=true elapsed_ms={}",
+                        method, uri, revision, elapsed_ms
+                    ));
+                    return self.respond_error(id, -32801, "Content modified");
+                }
                 self.log(&format!(
                     "request {} uri={} revision={} {} async=true elapsed_ms={}",
                     method, uri, revision, details, elapsed_ms
@@ -2591,6 +2638,30 @@ impl<W: Write> LspServer<W> {
             start.elapsed().as_millis()
         ));
         self.request_semantic_tokens_refresh()
+    }
+
+    /// Debug captures share the optional rich lane rather than creating a
+    /// second background owner. The returned identity remains the only
+    /// authority for responding to the request after worker execution.
+    fn admit_debug_capture(&mut self, uri: &str) -> Result<AnalysisTask, (usize, usize)> {
+        let request_id = self.next_server_request_id;
+        self.next_server_request_id += 1;
+        match self.runtime.admit(
+            TaskClass::Rich,
+            self.runtime.latest(uri).expect("current debug snapshot"),
+            request_id,
+            Instant::now() + Duration::from_secs(30),
+        ) {
+            AdmissionDisposition::Enqueued { .. } => Ok(self
+                .runtime
+                .take_next()
+                .expect("admitted debug task is runnable")),
+            AdmissionDisposition::DroppedOverload {
+                retained_jobs,
+                retained_bytes,
+                ..
+            } => Err((retained_jobs, retained_bytes)),
+        }
     }
 
     fn rich_semantic_tokens_for_revision(
@@ -8705,14 +8776,89 @@ class Example
             "the main LSP loop must not wait for a debug capture"
         );
 
+        let event = receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("debug result");
+        match &event {
+            ServerEvent::DebugRequestReady { task, .. } => {
+                assert_eq!(task.class(), TaskClass::Rich);
+                assert_eq!(task.revision(), 1);
+            }
+            _ => panic!("expected runtime-admitted debug result"),
+        }
+        server.handle_internal_event(event).unwrap();
+        assert!(String::from_utf8_lossy(&server.writer).contains("\"id\":7"));
+    }
+
+    #[test]
+    fn runtime_debug_hover_rejects_a_capture_superseded_before_publication() {
+        let (sender, receiver) = mpsc::channel();
+        let mut server = LspServer::new_with_runtime_senders(
+            Vec::new(),
+            LspServerOptions::default(),
+            None,
+            None,
+            Some(sender),
+        );
+        let uri = "file:///Scripts/StaleAsyncDebug.c";
         server
-            .handle_internal_event(
-                receiver
-                    .recv_timeout(Duration::from_secs(2))
-                    .expect("debug result"),
+            .handle_message(
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "textDocument/didOpen",
+                    "params": { "textDocument": {
+                        "uri": uri,
+                        "languageId": "enforce",
+                        "version": 1,
+                        "text": "class StaleAsyncDebug { void Run() {} }"
+                    }}
+                }),
+                None,
+                0,
+                0,
             )
             .unwrap();
-        assert!(String::from_utf8_lossy(&server.writer).contains("\"id\":7"));
+        server
+            .handle_message(
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": 8,
+                    "method": "reforger/debugHover",
+                    "params": {
+                        "textDocument": { "uri": uri },
+                        "position": { "line": 0, "character": 24 }
+                    }
+                }),
+                None,
+                0,
+                0,
+            )
+            .unwrap();
+        let event = receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("debug result");
+
+        server
+            .handle_message(
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "textDocument/didChange",
+                    "params": {
+                        "textDocument": { "uri": uri, "version": 2 },
+                        "contentChanges": [{ "text": "class Current {}" }]
+                    }
+                }),
+                None,
+                0,
+                0,
+            )
+            .unwrap();
+        server.handle_internal_event(event).unwrap();
+
+        let output = String::from_utf8(server.writer).unwrap();
+        assert!(output.contains("\"id\":8"));
+        assert!(output.contains("\"code\":-32801"));
+        assert!(output.contains("Content modified"));
     }
 
     #[test]
