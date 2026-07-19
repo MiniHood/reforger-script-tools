@@ -325,21 +325,24 @@ pub(crate) fn completion_report_for_current_override_at_offset_with_external_ind
         return None;
     }
 
-    let mut fallback = lexical_top_level_fallback_report(
-        source,
-        &region.tokens,
-        offset,
-        workspace_index,
-        game_data_index,
-        UnavailableCompletionContext::TopLevel,
-    );
     let (mut items, source_kind_counts, origin_counts) = completion_items_for_override_candidates(
         &candidates,
         range_for_span(source, context.prefix_span),
         &context.typed_modifiers,
         &context.prefix,
     );
-    items.extend(std::mem::take(&mut fallback.list.items));
+    let mut keyword_items = keyword_completion_items(
+        &context.prefix,
+        range_for_span(source, context.prefix_span),
+        EditorTopLevelCompletionMode::Type,
+        true,
+    );
+    if !keyword_items.is_empty() {
+        prioritize_keyword_item(&mut keyword_items, "override");
+        remove_items_shadowed_by_keywords(&mut items, &keyword_items);
+        keyword_items.extend(items);
+        items = keyword_items;
+    }
     let (items, is_incomplete) = cap_completion_items(items);
 
     Some(LspCompletionReport {
@@ -3931,6 +3934,36 @@ mod tests {
                     .new_text
                     .contains("override protected void OnPostInit(IEntity owner)")
         }));
+    }
+
+    #[test]
+    fn current_override_query_offers_the_override_keyword_without_generic_fallback_items() {
+        let source = r#"class Child : ScriptComponent
+{
+	overr
+}
+"#;
+        let external = file_index_for_source(
+            r#"class ScriptComponent
+{
+	event protected void OnPostInit(IEntity owner);
+}
+"#,
+        )
+        .index;
+        let offset = source.find("\toverr").unwrap() + "\toverr".len();
+        let report = completion_report_for_current_override_at_offset_with_external_indexes(
+            source,
+            offset,
+            Some(&external),
+            None,
+        )
+        .expect("current class header should prove an override context");
+
+        assert_eq!(report.completion_context, "override");
+        assert_eq!(report.prefix, "overr");
+        assert_eq!(report.list.items.first().map(|item| item.label.as_str()), Some("override"));
+        assert!(report.list.items.iter().all(|item| item.label == "override"));
     }
 
     #[test]

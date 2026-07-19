@@ -41,7 +41,11 @@ workspace/game-data indexes for a deterministic top-level result. The
 argument query returns only parameter-label items for a bare captured-index
 function or method; member/delegate calls, constructors, malformed text, values
 after a label, locally declared callables, and over-budget work remain
-unavailable. No pending path combines current text with older local facts.
+unavailable. No pending path combines current text with older local facts. A successful
+`OverrideQuery` returns only externally proven override skeletons and
+declaration keywords (including `override`); it does not append the generic
+top-level fallback. This keeps incomplete declarations from surfacing unrelated
+symbols and preserves keyword completion before full document analysis publishes.
 It combines local,
 workspace, and game-data candidates without rebuilding a merged index,
 preserves source-backed precedence, and caps output at 250 items. Member access
