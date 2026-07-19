@@ -284,6 +284,86 @@ pub(crate) fn completion_report_for_current_local_scope_at_offset_with_external_
     ))
 }
 
+/// Runs a bounded current-revision query for an override declaration. The
+/// current lexer window must prove both the enclosing class body and its direct
+/// base; method facts always come from immutable external indexes.
+pub(crate) fn completion_report_for_current_override_at_offset_with_external_indexes(
+    source: &str,
+    offset: usize,
+    workspace_index: Option<&SymbolIndex>,
+    game_data_index: Option<&SymbolIndex>,
+) -> Option<LspCompletionReport> {
+    let start = Instant::now();
+    let region = BoundedCompletionRegion::for_current_override(source, offset)?;
+    let context = region.current_override_context(source, offset)?;
+    if start.elapsed() > LOCAL_SCOPE_QUERY_DEADLINE {
+        return None;
+    }
+
+    let mut candidates = Vec::new();
+    for owner in external_completion_owners(
+        &context.base_type,
+        workspace_index,
+        game_data_index,
+    ) {
+        if let Some(index) = workspace_index {
+            candidates.extend(prefixed_candidates(
+                override_candidates_for_owner(index, &owner),
+                &context.prefix,
+            ));
+        }
+        if let Some(index) = game_data_index {
+            candidates.extend(prefixed_candidates(
+                override_candidates_for_owner(index, &owner),
+                &context.prefix,
+            ));
+        }
+    }
+    let candidates = combine_completion_candidates(candidates);
+    if start.elapsed() > LOCAL_SCOPE_QUERY_DEADLINE {
+        return None;
+    }
+
+    let mut fallback = lexical_top_level_fallback_report(
+        source,
+        &region.tokens,
+        offset,
+        workspace_index,
+        game_data_index,
+        UnavailableCompletionContext::TopLevel,
+    );
+    let (mut items, source_kind_counts, origin_counts) = completion_items_for_override_candidates(
+        &candidates,
+        range_for_span(source, context.prefix_span),
+        &context.typed_modifiers,
+        &context.prefix,
+    );
+    items.extend(std::mem::take(&mut fallback.list.items));
+    let (items, is_incomplete) = cap_completion_items(items);
+
+    Some(LspCompletionReport {
+        candidate_count: items.len(),
+        list: LspCompletionList {
+            is_incomplete,
+            items,
+        },
+        query_quality: QueryQuality::Exact,
+        recovery_reason: None,
+        parse_diagnostics: 0,
+        completion_context: "override".to_string(),
+        receiver_text: None,
+        owner_type: Some(context.base_type),
+        prefix: context.prefix,
+        source_kind_counts,
+        origin_counts,
+        failure_reason: None,
+        timings: LspCompletionTimings {
+            total: start.elapsed(),
+            ..LspCompletionTimings::default()
+        },
+    })
+}
+
 /// Runs the current-revision `ReceiverResolutionQuery` for one bare local,
 /// parameter, or field receiver. It also accepts a zero-argument call chain
 /// whose callable facts are fully supplied by the captured external indexes.
@@ -458,11 +538,28 @@ struct BoundedCompletionRegion {
     tokens: Vec<Token>,
 }
 
+struct CurrentOverrideCompletionContext {
+    base_type: String,
+    prefix: String,
+    prefix_span: TextSpan,
+    typed_modifiers: BTreeSet<String>,
+}
+
 impl BoundedCompletionRegion {
     fn new(source: &str, offset: usize) -> Option<Self> {
         let (start, end) = Self::window_bounds(source, offset)?;
         Self::from_window(source, start, end)
             .or_else(|| Self::from_current_snapshot_context(source, start, end))
+    }
+
+    fn for_current_override(source: &str, offset: usize) -> Option<Self> {
+        let (_, end) = Self::window_bounds(source, offset)?;
+        // At the start of a document the normal local window intentionally
+        // drops the class-header line. Override completion needs that header,
+        // so retain the bounded prefix only while it stays inside the same
+        // foreground budget. Larger files safely use the ordinary fallback.
+        (offset <= LOCAL_SCOPE_QUERY_MAX_WINDOW_BYTES).then_some(())?;
+        Self::from_window(source, 0, end)
     }
 
     fn window_bounds(source: &str, offset: usize) -> Option<(usize, usize)> {
@@ -632,6 +729,52 @@ impl BoundedCompletionRegion {
                 .count(),
             supplied_labels,
             callee,
+        })
+    }
+
+    fn current_override_context(
+        &self,
+        source: &str,
+        offset: usize,
+    ) -> Option<CurrentOverrideCompletionContext> {
+        let prefix_span = lexical_completion_prefix_span(&self.tokens, offset);
+        let prefix = source.get(prefix_span.start..prefix_span.end)?.to_string();
+        (!prefix.is_empty()).then_some(())?;
+        let tokens = self.significant_before(prefix_span.start);
+        let previous = tokens.last().map(|token| token.kind);
+        is_declaration_boundary(previous).then_some(())?;
+
+        let mut class_bases = BTreeMap::new();
+        for window in tokens.windows(5) {
+            if matches!(window[0].kind, TokenKind::Keyword(Keyword::Class))
+                && window[1].kind == TokenKind::Identifier
+                && window[2].kind == TokenKind::Colon
+                && window[3].kind == TokenKind::Identifier
+                && window[4].kind == TokenKind::LeftBrace
+            {
+                class_bases.insert(
+                    window[4].span.start,
+                    source.get(window[3].span.start..window[3].span.end)?.to_string(),
+                );
+            }
+        }
+
+        let mut scopes = Vec::new();
+        for token in tokens {
+            match token.kind {
+                TokenKind::LeftBrace => scopes.push(class_bases.remove(&token.span.start)),
+                TokenKind::RightBrace => {
+                    scopes.pop()?;
+                }
+                _ => {}
+            }
+        }
+        let base_type = scopes.last().and_then(|base| base.clone())?;
+        Some(CurrentOverrideCompletionContext {
+            base_type,
+            prefix,
+            prefix_span,
+            typed_modifiers: bounded_typed_declaration_modifiers(&self.tokens, prefix_span),
         })
     }
 }
@@ -1087,6 +1230,66 @@ fn is_bounded_type_token(kind: TokenKind) -> bool {
 
 fn candidate_matches_prefix_name(name: &str, prefix: &str) -> bool {
     completion_name_match_rank(name, prefix).is_some()
+}
+
+fn is_declaration_boundary(previous: Option<TokenKind>) -> bool {
+    previous.is_none_or(|kind| match kind {
+        TokenKind::LeftBrace | TokenKind::RightBrace | TokenKind::Semicolon => true,
+        TokenKind::Keyword(keyword) => matches!(
+            keyword,
+            Keyword::Class
+                | Keyword::Modded
+                | Keyword::Sealed
+                | Keyword::Typedef
+                | Keyword::Proto
+                | Keyword::External
+                | Keyword::Native
+                | Keyword::Private
+                | Keyword::Protected
+                | Keyword::Static
+                | Keyword::Override
+                | Keyword::Const
+                | Keyword::Ref
+                | Keyword::Out
+                | Keyword::Inout
+                | Keyword::Notnull
+                | Keyword::Autoptr
+                | Keyword::Owned
+                | Keyword::Event
+        ),
+        _ => false,
+    })
+}
+
+fn bounded_typed_declaration_modifiers(
+    tokens: &[Token],
+    prefix_span: TextSpan,
+) -> BTreeSet<String> {
+    let mut modifiers = BTreeSet::new();
+    for token in tokens.iter().rev().filter(|token| {
+        token.span.end <= prefix_span.start
+            && !token.kind.is_trivia()
+            && token.kind != TokenKind::Eof
+    }) {
+        match token.kind {
+            TokenKind::LeftBrace | TokenKind::RightBrace | TokenKind::Semicolon => break,
+            TokenKind::Keyword(_) => {
+                // The bounded query only needs to suppress duplicate modifiers;
+                // all other modifier interpretation remains in the shared
+                // override renderer.
+                let text = match token.kind {
+                    TokenKind::Keyword(Keyword::Override) => "override",
+                    TokenKind::Keyword(Keyword::Protected) => "protected",
+                    TokenKind::Keyword(Keyword::Const) => "const",
+                    TokenKind::Keyword(Keyword::Notnull) => "notnull",
+                    _ => break,
+                };
+                modifiers.insert(text.to_string());
+            }
+            _ => break,
+        }
+    }
+    modifiers
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2840,6 +3043,32 @@ fn containing_class_completion_owners(
     owners
 }
 
+fn external_completion_owners(
+    root_owner: &str,
+    workspace_index: Option<&SymbolIndex>,
+    game_data_index: Option<&SymbolIndex>,
+) -> Vec<String> {
+    let indexes = layered_external_indexes(workspace_index, game_data_index);
+    let mut owners = Vec::new();
+    let mut pending = vec![root_owner.to_string()];
+    let mut seen = BTreeSet::new();
+
+    while let Some(owner) = pending.pop() {
+        if owners.len() >= 32 || !seen.insert(owner.clone()) {
+            continue;
+        }
+        let base = indexes
+            .iter()
+            .find_map(|index| class_base_type(index, &owner));
+        owners.push(owner);
+        if let Some(base) = base {
+            pending.push(base);
+        }
+    }
+
+    owners
+}
+
 fn class_base_type(index: &SymbolIndex, class_name: &str) -> Option<String> {
     index
         .preferred_classes_by_name(class_name)
@@ -3657,6 +3886,72 @@ mod tests {
             .items
             .iter()
             .any(|item| item.label == "localValue"));
+    }
+
+    #[test]
+    fn current_override_query_returns_script_component_events_without_ready_analysis() {
+        let source = r#"class Child : ScriptComponent
+{
+	on
+}
+"#;
+        let external = file_index_for_source(
+            r#"class ScriptComponent
+{
+	event protected void OnPostInit(IEntity owner);
+}
+"#,
+        )
+        .index;
+        let offset = source.find("\ton").unwrap() + 3;
+        let report = completion_report_for_current_override_at_offset_with_external_indexes(
+            source,
+            offset,
+            Some(&external),
+            None,
+        )
+        .expect("current class header should prove an override context");
+
+        assert_eq!(report.completion_context, "override");
+        assert_eq!(report.prefix, "on");
+        assert!(report.list.items.iter().any(|item| {
+            item.label == "OnPostInit"
+                && item
+                    .text_edit
+                    .new_text
+                    .contains("override protected void OnPostInit(IEntity owner)")
+        }));
+    }
+
+    #[test]
+    fn current_override_query_declines_callable_bodies() {
+        let source = r#"class Child : ScriptComponent
+{
+	void Run()
+	{
+		on
+	}
+}
+"#;
+        let external = file_index_for_source(
+            r#"class ScriptComponent
+{
+	event protected void OnPostInit(IEntity owner);
+}
+"#,
+        )
+        .index;
+        let offset = source.rfind("on").unwrap() + 2;
+
+        assert!(
+            completion_report_for_current_override_at_offset_with_external_indexes(
+                source,
+                offset,
+                Some(&external),
+                None,
+            )
+            .is_none()
+        );
     }
 
     #[test]

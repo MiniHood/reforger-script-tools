@@ -60,9 +60,11 @@ or a request for the client to retrigger completion.
 
 The normal completion log's `foreground_ready` and `cached_analysis` fields
 separately record position-index availability and whether matching-revision full
-analysis was actually used; neither is inferred from query quality. Completion
-timings report request latency independently from bounded context, lookup, and
-render work. Semantic-analysis logs record `semantic_idle_delay_ms=0`, build
+analysis was actually used; neither is inferred from query quality. Its bounded
+`response_labels` field records the first three labels sent in the actual LSP
+response, so typing-path diagnostics can be distinguished from the separate
+cached-analysis debug command. Completion timings report request latency
+independently from bounded context, lookup, and render work. Semantic-analysis logs record `semantic_idle_delay_ms=0`, build
 timings, and total job latency so scheduler delay cannot be mistaken for parse
 or index cost. When a completed call receiver is syntactically current but its
 externally indexed zero-argument chain cannot be proved, the fallback records

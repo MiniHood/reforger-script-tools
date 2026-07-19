@@ -46,6 +46,7 @@ use completion::{
     completion_debug_markdown, completion_report_for_cached_analysis_with_external_indexes,
     completion_report_for_current_argument_labels_at_offset_with_external_indexes,
     completion_report_for_current_local_scope_at_offset_with_external_indexes,
+    completion_report_for_current_override_at_offset_with_external_indexes,
     completion_report_for_current_receiver_at_offset_with_external_indexes,
     completion_report_for_lexical_source_at_offset_with_external_indexes,
     completion_report_for_lexical_source_with_external_indexes, empty_completion_list,
@@ -1839,6 +1840,7 @@ impl<W: Write> LspServer<W> {
                     let mut completion_context = "none".to_string();
                     let mut prefix = String::new();
                     let mut candidate_count = 0usize;
+                    let mut response_labels = String::new();
                     let mut failure_reason = "<none>".to_string();
                     let mut query_quality = QueryQuality::Exact;
                     let mut recovery_reason = "<none>".to_string();
@@ -1899,13 +1901,19 @@ impl<W: Write> LspServer<W> {
                                             offset,
                                             indexes.workspace.as_deref(),
                                             indexes.game_data.as_deref(),
-                                        )
+                                        ))
+                                        .or_else(|| completion_report_for_current_override_at_offset_with_external_indexes(
+                                            &document.text,
+                                            offset,
+                                            indexes.workspace.as_deref(),
+                                            indexes.game_data.as_deref(),
+                                        ))
                                         .or_else(|| completion_report_for_current_local_scope_at_offset_with_external_indexes(
                                             &document.text,
                                             offset,
                                             indexes.workspace.as_deref(),
                                             indexes.game_data.as_deref(),
-                                        )))
+                                        ))
                                         .unwrap_or_else(|| {
                                             completion_report_for_lexical_source_at_offset_with_external_indexes(
                                                 &document.text,
@@ -1940,6 +1948,14 @@ impl<W: Write> LspServer<W> {
                                     .unwrap_or_else(|| "<none>".to_string());
                                 prefix = report.prefix.clone();
                                 candidate_count = report.candidate_count;
+                                response_labels = report
+                                    .list
+                                    .items
+                                    .iter()
+                                    .take(3)
+                                    .map(|item| item.label.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(",");
                                 failure_reason = report
                                     .failure_reason
                                     .clone()
@@ -1955,7 +1971,7 @@ impl<W: Write> LspServer<W> {
                             serde_json::to_value(empty_completion_list()).unwrap_or(Value::Null)
                         });
                     self.log(&format!(
-                        "request completion uri={} bytes={} revision={} foreground_ready={} cached_analysis={} query_quality={:?} recovery_reason={} context={} receiver={} owner_type={} prefix={} candidates={} failure_reason={} external_index_status={} external_index_layers={} parse_diagnostics={} context_ms={} lookup_ms={} render_ms={} queue_ms={} elapsed_ms={}",
+                        "request completion uri={} bytes={} revision={} foreground_ready={} cached_analysis={} query_quality={:?} recovery_reason={} context={} receiver={} owner_type={} prefix={} candidates={} response_labels={} failure_reason={} external_index_status={} external_index_layers={} parse_diagnostics={} context_ms={} lookup_ms={} render_ms={} queue_ms={} elapsed_ms={}",
                         log_uri,
                         bytes,
                         revision,
@@ -1968,6 +1984,7 @@ impl<W: Write> LspServer<W> {
                         owner_type,
                         prefix,
                         candidate_count,
+                        response_labels,
                         failure_reason,
                         external_index_status,
                         external_index_layers,
