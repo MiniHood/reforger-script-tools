@@ -101,6 +101,10 @@ Keywords are LSP-owned so language suggestions do not depend on VS Code word
 suggestions. Across every completion context, exact names and case-insensitive
 prefixes rank before boundary abbreviations and subsequence matches; the score
 bands are non-overlapping so a long fuzzy name cannot outrank a direct prefix.
+Override completion replaces only the incomplete declaration prefix. When the
+current lexer tokens prove a following block already exists (including after a
+comment), it emits only the resolved signature and preserves that body; it
+otherwise emits the normal method skeleton.
 Callable completions share [callable.md](callable.md) parameter
 parsing with signature help, provide snippets/follow-up commands when safe, and
 avoid duplicate named argument labels case-insensitively.

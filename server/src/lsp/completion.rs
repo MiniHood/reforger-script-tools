@@ -336,11 +336,13 @@ pub(crate) fn completion_report_for_current_override_at_offset_with_external_ind
         return None;
     }
 
+    let existing_body = override_completion_has_existing_body(&region.tokens, context.prefix_span);
     let (mut items, mut source_kind_counts, mut origin_counts) = completion_items_for_override_candidates(
         &candidates,
         range_for_span(source, context.prefix_span),
         &context.typed_modifiers,
         &context.prefix,
+        existing_body,
     );
     let empty_local_index = SymbolIndex::default();
     let source_candidates = top_level_source_completion_candidates(
@@ -2485,6 +2487,7 @@ fn top_level_completion_report_for_indexes(
                 edit_range,
                 &typed_modifiers,
                 &prefix,
+                override_completion_has_existing_body(&analysis.lexer_tokens, prefix_span),
             );
         let insert_context = completion_insert_context(source, prefix_span.start, mode);
         let (source_items, source_counts, source_origins) = completion_items_for_candidates(
@@ -2767,6 +2770,7 @@ fn completion_items_for_override_candidates(
     edit_range: LspRange,
     typed_modifiers: &BTreeSet<String>,
     match_prefix: &str,
+    existing_body: bool,
 ) -> (
     Vec<LspCompletionItem>,
     BTreeMap<SourceKind, usize>,
@@ -2786,11 +2790,22 @@ fn completion_items_for_override_candidates(
                 typed_modifiers,
                 match_prefix,
                 order,
+                existing_body,
             )
         })
         .collect::<Vec<_>>();
 
     (items, source_kind_counts, origin_counts)
+}
+
+/// A completion edit replaces only the in-progress declaration text. When a
+/// following block already belongs to that declaration, preserve it and render
+/// only the resolved signature instead of inserting a second method body.
+fn override_completion_has_existing_body(tokens: &[Token], prefix_span: TextSpan) -> bool {
+    tokens
+        .iter()
+        .find(|token| token.span.start >= prefix_span.end && !token.kind.is_trivia())
+        .is_some_and(|token| token.kind == TokenKind::LeftBrace)
 }
 
 fn completion_item_for_override_candidate(
@@ -2799,6 +2814,7 @@ fn completion_item_for_override_candidate(
     typed_modifiers: &BTreeSet<String>,
     match_prefix: &str,
     order: usize,
+    existing_body: bool,
 ) -> Option<LspCompletionItem> {
     let label = candidate
         .name
@@ -2820,7 +2836,11 @@ fn completion_item_for_override_candidate(
         format!("{} {return_type}", modifiers.join(" "))
     };
     let declaration = format!("{declaration_prefix} {label}{}", call.parameters);
-    let new_text = format!("{declaration}\n{{\n\t$0\n}}");
+    let new_text = if existing_body {
+        declaration
+    } else {
+        format!("{declaration}\n{{\n\t$0\n}}")
+    };
 
     Some(LspCompletionItem {
         label: label.clone(),
@@ -4027,6 +4047,48 @@ mod tests {
                     .new_text
                     .contains("override protected void OnPostInit(IEntity owner)")
         }));
+    }
+
+    #[test]
+    fn override_completion_preserves_an_existing_following_body() {
+        let source = r#"class Child : ScriptComponent
+{
+	override protected on
+	// Keep this body while completing the declaration.
+	{
+		int value = 1;
+	}
+}
+"#;
+        let external = file_index_for_source(
+            r#"class ScriptComponent
+{
+	event protected void OnPostInit(IEntity owner);
+}
+"#,
+        )
+        .index;
+        let offset = source.find("protected on").unwrap() + "protected on".len();
+
+        let pending = completion_report_for_current_override_at_offset_with_external_indexes(
+            source,
+            offset,
+            Some(&external),
+            None,
+        )
+        .expect("pending query should recognize the incomplete override");
+        let analysis = file_index_for_source(source);
+        let cached = completion_report_for_offset(source, &analysis, offset, Some(&external), None);
+
+        for report in [&pending, &cached] {
+            let item = report
+                .list
+                .items
+                .iter()
+                .find(|item| item.label == "OnPostInit")
+                .expect("expected OnPostInit override completion");
+            assert_eq!(item.text_edit.new_text, "void OnPostInit(IEntity owner)");
+        }
     }
 
     #[test]
