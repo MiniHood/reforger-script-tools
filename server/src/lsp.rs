@@ -84,12 +84,14 @@ pub use hover::{
 pub use open_documents::{file_index_for_source, FileIndexAnalysis};
 pub(crate) use open_documents::{
     file_index_for_source_with_timings, FileIndexAnalysisTimings, OpenDocument,
+    TokenProjectionKind, TokenResultDisposition,
 };
 use semantic_tokens::{
     fast_semantic_tokens_for_cached_analysis, lexical_semantic_tokens_for_source,
     semantic_tokens_for_cached_analysis_with_external_indexes,
     semantic_tokens_for_cached_analysis_with_external_indexes_cancelled,
-    LspSemanticTokenProjection, LspSemanticTokens, SEMANTIC_TOKEN_MODIFIERS, SEMANTIC_TOKEN_TYPES,
+    LspSemanticTokenProjection, LspSemanticTokens, LspSemanticTokensFull, SEMANTIC_TOKEN_MODIFIERS,
+    SEMANTIC_TOKEN_TYPES,
 };
 pub use semantic_tokens::{
     fast_semantic_tokens_for_source, fast_semantic_tokens_report_for_source,
@@ -1584,58 +1586,81 @@ impl<W: Write> LspServer<W> {
                     let mut token_loop_ms = 0u128;
                     let mut encode_ms = 0u128;
                     let mut rich_work: Option<(String, u64, u64)> = None;
+                    let mut result_id = "reforger:missing:lexical".to_string();
                     let result = params
                         .and_then(|params| {
                             log_uri = params.text_document.uri;
                             self.documents.get_mut(&log_uri).map(|document| {
-                                bytes = document.text.len();
-                                revision = document.revision;
-                                let projection = if !document.analysis_ready() {
-                                    projection_mode = "lexical-pending";
-                                    lexical_semantic_tokens_for_source(&document.text)
-                                } else if let Some(projection) = document
-                                    .semantic_tokens
-                                    .rich_for_revision_and_external_generation(
-                                        document.revision,
-                                        external_generation,
-                                    )
-                                {
-                                    projection_mode = "rich-cache";
-                                    projection.clone()
-                                } else {
-                                    projection_mode = "fast-compute";
-                                    if !document
-                                        .semantic_tokens
-                                        .pending_for_revision_and_external_generation(
-                                            document.revision,
-                                            external_generation,
+                                    bytes = document.text.len();
+                                    revision = document.revision;
+                                    let source = document.text.clone();
+                                    let (
+                                        selection_kind,
+                                        selection_result_id,
+                                        disposition,
+                                        projection,
+                                    ) = {
+                                        let selection =
+                                            document.semantic_tokens.select_or_insert_lexical(
+                                                document.revision,
+                                                external_generation,
+                                                || lexical_semantic_tokens_for_source(&source),
+                                            );
+                                        (
+                                            selection.kind,
+                                            selection.result_id,
+                                            selection.disposition,
+                                            selection.projection.clone(),
                                         )
+                                    };
+                                    result_id = selection_result_id;
+                                    projection_mode = match selection_kind {
+                                        TokenProjectionKind::LexicalBaseline
+                                            if document.analysis_ready() =>
+                                        {
+                                            "lexical-baseline"
+                                        }
+                                        TokenProjectionKind::LexicalBaseline => "lexical-pending",
+                                        TokenProjectionKind::RichOverlay => "rich-overlay",
+                                    };
+                                    debug_assert_eq!(disposition, TokenResultDisposition::Full);
+                                    if selection_kind == TokenProjectionKind::LexicalBaseline
+                                        && document.analysis_ready()
                                     {
-                                        rich_work = Some((
-                                            log_uri.clone(),
-                                            document.revision,
-                                            external_generation,
-                                        ));
+                                        if !document
+                                            .semantic_tokens
+                                            .pending_for_revision_and_external_generation(
+                                                document.revision,
+                                                external_generation,
+                                            )
+                                        {
+                                            rich_work = Some((
+                                                log_uri.clone(),
+                                                document.revision,
+                                                external_generation,
+                                            ));
+                                        }
                                     }
-                                    fast_semantic_tokens_for_cached_analysis(
-                                        &document.text,
-                                        document.analysis(),
+                                    token_count = projection.token_count;
+                                    parse_diagnostics = projection.parse_diagnostics;
+                                    lex_ms = projection.timings.lex_ms;
+                                    resolver_ms = projection.timings.resolver_ms;
+                                    resolver_calls = projection.timings.identifier_resolver_calls;
+                                    token_loop_ms = projection.timings.token_loop_ms;
+                                    encode_ms = projection.timings.encode_ms;
+                                    LspSemanticTokensFull::from_tokens(
+                                        result_id.clone(),
+                                        &projection.tokens,
                                     )
-                                };
-                                token_count = projection.token_count;
-                                parse_diagnostics = projection.parse_diagnostics;
-                                lex_ms = projection.timings.lex_ms;
-                                resolver_ms = projection.timings.resolver_ms;
-                                resolver_calls = projection.timings.identifier_resolver_calls;
-                                token_loop_ms = projection.timings.token_loop_ms;
-                                encode_ms = projection.timings.encode_ms;
-                                projection.tokens
-                            })
+                                })
                         })
                         .map(|tokens| serde_json::to_value(tokens).unwrap_or(Value::Null))
                         .unwrap_or_else(|| {
-                            serde_json::to_value(LspSemanticTokens { data: Vec::new() })
-                                .unwrap_or(Value::Null)
+                            serde_json::to_value(LspSemanticTokensFull {
+                                result_id,
+                                data: Vec::new(),
+                            })
+                            .unwrap_or(Value::Null)
                         });
                     self.log(&format!(
                         "request semanticTokens uri={} bytes={} revision={} cached_analysis=true mode={} tokens={} external_index_status={} external_generation={} parse_diagnostics={} lex_ms={} token_loop_ms={} resolver_ms={} resolver_calls={} encode_ms={} queue_ms={} elapsed_ms={}",
@@ -4119,7 +4144,7 @@ class Example
     #[test]
     fn semantic_token_cache_is_keyed_by_external_generation() {
         let mut cache = open_documents::SemanticTokenCache::default();
-        let projection = LspSemanticTokenProjection {
+        let lexical_baseline = LspSemanticTokenProjection {
             tokens: LspSemanticTokens {
                 data: vec![1, 2, 3],
             },
@@ -4127,8 +4152,12 @@ class Example
             parse_diagnostics: 0,
             timings: LspSemanticTokenTimings::default(),
         };
+        let selection = cache.select_or_insert_lexical(7, 1, || lexical_baseline.clone());
+        assert_eq!(selection.kind, TokenProjectionKind::LexicalBaseline);
+        assert_eq!(selection.result_id, "reforger:7:lexical");
+        assert_eq!(selection.disposition, TokenResultDisposition::Full);
 
-        cache.set_rich(7, 1, projection);
+        cache.set_rich(7, 1, lexical_baseline);
 
         assert!(cache
             .rich_for_revision_and_external_generation(7, 1)
@@ -4139,6 +4168,14 @@ class Example
         assert!(cache
             .rich_for_revision_and_external_generation(8, 1)
             .is_none());
+
+        let stale_generation = cache.select_or_insert_lexical(7, 2, || unreachable!());
+        assert_eq!(stale_generation.kind, TokenProjectionKind::LexicalBaseline);
+        assert_eq!(stale_generation.result_id, "reforger:7:lexical");
+
+        let matching_generation = cache.select_or_insert_lexical(7, 1, || unreachable!());
+        assert_eq!(matching_generation.kind, TokenProjectionKind::RichOverlay);
+        assert_eq!(matching_generation.result_id, "reforger:7:rich:1");
     }
 
     #[test]
@@ -7972,6 +8009,7 @@ class Example
         let output = String::from_utf8(server.writer).unwrap();
         assert!(output.contains("\"id\":1"));
         assert!(output.contains("\"data\":["));
+        assert!(output.contains("\"resultId\":\"reforger:1:lexical\""));
     }
 
     #[test]

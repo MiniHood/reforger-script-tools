@@ -16,11 +16,13 @@ external indexing, or any TextMate/TypeScript coloring path.
 The foreground lexical projection reads only the current source and lexer
 output, so it remains available while syntax and semantic analysis for a newer
 revision is pending. It deliberately emits no parser diagnostics, declaration,
-scope, or resolver facts. The fast pass returns lexical, declaration, and
-cached scope-reference colors once cached analysis is available. A rich pass
-overlays resolver-backed references and external workspace/game-data facts. The
-runtime accepts rich output only when its document revision and external
-generation still match.
+scope, or resolver facts. Each LSP response selects the current revision's
+cached lexical `TokenSnapshot` baseline unless a rich overlay has exactly the
+same revision and external generation. A rich pass replaces that baseline with
+resolver-backed references and external workspace/game-data facts only after
+those identity checks pass. Responses are full only, with an opaque result ID
+for `revision:lexical` or `revision:rich:generation`; semantic-token deltas are
+not advertised.
 
 Token priorities preserve comments over code-like text, declarations/type
 positions over weaker references, and scope facts over generic variable

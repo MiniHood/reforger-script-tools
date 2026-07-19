@@ -35,9 +35,13 @@ syntax is compatibility/query state rather than the publication authority for
 parser diagnostics.
 Outline projection is built lazily then retained for the ready revision.
 
-Semantic tokens keep separate fast and rich cache entries. Rich results are
-valid only for the revision and external-overlay generation that produced them;
-pending/cancelled state prevents obsolete background work from becoming current.
+Semantic tokens keep one `TokenSnapshot` per document revision. Its lexical
+baseline is cached from current snapshot text and is always the first valid
+response. A rich projection is an optional replacement overlay valid only for
+that revision and external-overlay generation. Full-token result IDs encode the
+published revision and layer (`lexical` or `rich:<generation>`); token deltas
+are not advertised. Pending/cancelled state and revision/generation checks
+discard obsolete overlays, leaving the lexical baseline authoritative.
 Close removes all document-local state.
 
 Before this owner receives a change, the runtime may collapse a contiguous run

@@ -80,6 +80,28 @@ pub struct LspSemanticTokens {
     pub data: Vec<u32>,
 }
 
+/// Full-response wire form for `textDocument/semanticTokens/full`.
+///
+/// The current server intentionally does not advertise delta tokens. `resultId`
+/// still identifies the exact lexical baseline or rich overlay that produced a
+/// full response, so a later delta-capable implementation has an explicit,
+/// revision-safe lifecycle to extend.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LspSemanticTokensFull {
+    pub(crate) result_id: String,
+    pub(crate) data: Vec<u32>,
+}
+
+impl LspSemanticTokensFull {
+    pub(crate) fn from_tokens(result_id: String, tokens: &LspSemanticTokens) -> Self {
+        Self {
+            result_id,
+            data: tokens.data.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LspSemanticTokenProjection {
     pub tokens: LspSemanticTokens,

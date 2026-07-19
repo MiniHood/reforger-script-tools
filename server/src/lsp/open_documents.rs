@@ -149,26 +149,120 @@ impl OpenDocument {
     }
 }
 
+/// The complete token state that may be published for one document revision.
+///
+/// The lexical baseline is the authoritative first response: it is derived
+/// solely from the current snapshot text. A rich projection is an optional
+/// replacement overlay, never an input to the lexical pass. The server only
+/// supports full semantic-token responses today, so a changed overlay receives
+/// a new opaque result id rather than attempting an unsafe delta against a
+/// former result.
+pub(crate) struct TokenSnapshot {
+    revision: u64,
+    lexical_baseline: LspSemanticTokenProjection,
+    rich_overlay: Option<RichTokenOverlay>,
+}
+
+struct RichTokenOverlay {
+    external_generation: u64,
+    projection: LspSemanticTokenProjection,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TokenResultDisposition {
+    Full,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TokenProjectionKind {
+    LexicalBaseline,
+    RichOverlay,
+}
+
+pub(crate) struct TokenSelection<'a> {
+    pub(crate) projection: &'a LspSemanticTokenProjection,
+    pub(crate) kind: TokenProjectionKind,
+    pub(crate) result_id: String,
+    pub(crate) disposition: TokenResultDisposition,
+}
+
+impl TokenSnapshot {
+    fn new(revision: u64, lexical_baseline: LspSemanticTokenProjection) -> Self {
+        Self {
+            revision,
+            lexical_baseline,
+            rich_overlay: None,
+        }
+    }
+
+    fn select(&self, external_generation: u64) -> TokenSelection<'_> {
+        if let Some(overlay) = self
+            .rich_overlay
+            .as_ref()
+            .filter(|overlay| overlay.external_generation == external_generation)
+        {
+            return TokenSelection {
+                projection: &overlay.projection,
+                kind: TokenProjectionKind::RichOverlay,
+                result_id: format!("reforger:{}:rich:{}", self.revision, external_generation),
+                disposition: TokenResultDisposition::Full,
+            };
+        }
+        TokenSelection {
+            projection: &self.lexical_baseline,
+            kind: TokenProjectionKind::LexicalBaseline,
+            result_id: format!("reforger:{}:lexical", self.revision),
+            disposition: TokenResultDisposition::Full,
+        }
+    }
+
+    fn set_rich(&mut self, external_generation: u64, projection: LspSemanticTokenProjection) {
+        self.rich_overlay = Some(RichTokenOverlay {
+            external_generation,
+            projection,
+        });
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct SemanticTokenCache {
-    rich_revision: Option<u64>,
-    rich_external_generation: Option<u64>,
-    rich_projection: Option<LspSemanticTokenProjection>,
+    snapshot: Option<TokenSnapshot>,
     pending_revision: Option<u64>,
     pending_external_generation: Option<u64>,
     pending_cancel: Option<Arc<AtomicBool>>,
 }
 
 impl SemanticTokenCache {
+    pub(crate) fn select_or_insert_lexical(
+        &mut self,
+        revision: u64,
+        external_generation: u64,
+        lexical_baseline: impl FnOnce() -> LspSemanticTokenProjection,
+    ) -> TokenSelection<'_> {
+        if self
+            .snapshot
+            .as_ref()
+            .is_none_or(|snapshot| snapshot.revision != revision)
+        {
+            self.snapshot = Some(TokenSnapshot::new(revision, lexical_baseline()));
+        }
+        self.snapshot
+            .as_ref()
+            .expect("lexical token snapshot was just installed")
+            .select(external_generation)
+    }
+
     pub(crate) fn rich_for_revision_and_external_generation(
         &self,
         revision: u64,
         external_generation: u64,
     ) -> Option<&LspSemanticTokenProjection> {
-        (self.rich_revision == Some(revision)
-            && self.rich_external_generation == Some(external_generation))
-        .then_some(self.rich_projection.as_ref())
-        .flatten()
+        self.snapshot
+            .as_ref()
+            .filter(|snapshot| snapshot.revision == revision)
+            .and_then(|snapshot| snapshot.rich_overlay.as_ref())
+            .filter(|overlay| overlay.external_generation == external_generation)
+            .map(|overlay| &overlay.projection)
     }
 
     pub(crate) fn set_rich(
@@ -177,9 +271,13 @@ impl SemanticTokenCache {
         external_generation: u64,
         projection: LspSemanticTokenProjection,
     ) {
-        self.rich_revision = Some(revision);
-        self.rich_external_generation = Some(external_generation);
-        self.rich_projection = Some(projection);
+        if let Some(snapshot) = self
+            .snapshot
+            .as_mut()
+            .filter(|snapshot| snapshot.revision == revision)
+        {
+            snapshot.set_rich(external_generation, projection);
+        }
         self.pending_revision = None;
         self.pending_external_generation = None;
         self.pending_cancel = None;
