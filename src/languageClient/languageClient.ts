@@ -12,7 +12,6 @@ import {
 } from 'vscode-languageclient/node';
 import { gameDataConfig, gameDataStorage } from '../extensionConfig/gameData';
 import {
-	languageClientCompletion,
 	languageClientCrashHandling,
 	languageClientCommands,
 	languageClientDocumentSelector,
@@ -34,8 +33,6 @@ let restartTimer: NodeJS.Timeout | undefined;
 let restartingClient = false;
 const workspaceWatcherDebounceMs = 250;
 const devServerRestartDebounceMs = 500;
-let deletionCompletionTimer: NodeJS.Timeout | undefined;
-let insertionCompletionTimer: NodeJS.Timeout | undefined;
 const startupTimingSessionStartMs = Date.now();
 const startupTimingSessionId = `${startupTimingSessionStartMs}-${process.pid}`;
 let startupTimingWriteQueue: Promise<void> = Promise.resolve();
@@ -103,7 +100,6 @@ export function registerLanguageClientFeatures(context: vscode.ExtensionContext)
 		languageClientCommands.jumpToNextSnippetPlaceholderAndTriggerSuggest,
 		() => jumpToNextSnippetPlaceholderAndTriggerSuggest(context, outputChannel),
 	));
-	context.subscriptions.push(registerCompletionRetriggerOnTextEdit(outputChannel));
 	context.subscriptions.push(registerFirstDocumentOpenTiming(context));
 
 	void startLanguageClient(context, outputChannel);
@@ -143,103 +139,6 @@ function logFirstDocumentOpened(
 	});
 }
 
-function registerCompletionRetriggerOnTextEdit(outputChannel: vscode.LogOutputChannel): vscode.Disposable {
-	return vscode.workspace.onDidChangeTextDocument(event => {
-		if (event.document.languageId !== languageClientLanguage.id) {
-			return;
-		}
-
-		const changedDocumentUri = event.document.uri.toString();
-
-		if (event.contentChanges.some(isDeletionChange)) {
-			if (deletionCompletionTimer) {
-				clearTimeout(deletionCompletionTimer);
-			}
-			deletionCompletionTimer = setTimeout(() => {
-				deletionCompletionTimer = undefined;
-				triggerCompletionWhenActive(
-					changedDocumentUri,
-					shouldRetriggerCompletionAfterDeletion,
-					outputChannel,
-					'deletion',
-				);
-			}, languageClientCompletion.deletionRetriggerDebounceMs);
-		}
-
-		if (event.contentChanges.some(isIdentifierInsertionChange)) {
-			if (insertionCompletionTimer) {
-				clearTimeout(insertionCompletionTimer);
-			}
-			insertionCompletionTimer = setTimeout(() => {
-				insertionCompletionTimer = undefined;
-				triggerCompletionWhenActive(
-					changedDocumentUri,
-					shouldRetriggerCompletionAfterInsertion,
-					outputChannel,
-					'identifier insertion',
-				);
-			}, languageClientCompletion.insertionRetriggerDebounceMs);
-		}
-	});
-}
-
-function isDeletionChange(change: vscode.TextDocumentContentChangeEvent): boolean {
-	const rangeLength = change.rangeLength ?? change.range.end.character - change.range.start.character;
-	return rangeLength > change.text.length || (change.text.length === 0 && !change.range.isEmpty);
-}
-
-function isIdentifierInsertionChange(change: vscode.TextDocumentContentChangeEvent): boolean {
-	return change.range.isEmpty && /^[A-Za-z0-9_]$/.test(change.text);
-}
-
-export function shouldRetriggerCompletionAfterDeletion(editor: vscode.TextEditor): boolean {
-	const position = editor.selection.active;
-	if (!editor.selection.isEmpty) {
-		return false;
-	}
-	const linePrefix = editor.document.lineAt(position.line).text.slice(0, position.character);
-	return /[A-Za-z0-9_\.]$/.test(linePrefix);
-}
-
-export function shouldRetriggerCompletionAfterInsertion(editor: vscode.TextEditor): boolean {
-	const position = editor.selection.active;
-	if (!editor.selection.isEmpty) {
-		return false;
-	}
-	const linePrefix = editor.document.lineAt(position.line).text.slice(0, position.character);
-	const wordMatch = /[A-Za-z_][A-Za-z0-9_]*$/.exec(linePrefix);
-	if (!wordMatch || wordMatch[0].length < 2) {
-		return false;
-	}
-	return true;
-}
-
-function triggerCompletionWhenActive(
-	documentUri: string,
-	shouldTrigger: (editor: vscode.TextEditor) => boolean,
-	outputChannel: vscode.LogOutputChannel,
-	reason: string,
-): void {
-	const activeEditor = vscode.window.activeTextEditor;
-	if (!canTriggerCompletionWhenActive(activeEditor, documentUri, shouldTrigger)) {
-		return;
-	}
-	outputChannel.debug(`Triggering Enforce completion after ${reason}: ${documentUri}`);
-	void vscode.commands.executeCommand('editor.action.triggerSuggest');
-}
-
-export function canTriggerCompletionWhenActive(
-	activeEditor: vscode.TextEditor | undefined,
-	documentUri: string,
-	shouldTrigger: (editor: vscode.TextEditor) => boolean,
-): activeEditor is vscode.TextEditor {
-	return (
-		activeEditor !== undefined
-		&& activeEditor.document.uri.toString() === documentUri
-		&& activeEditor.document.languageId === languageClientLanguage.id
-		&& shouldTrigger(activeEditor)
-	);
-}
 
 async function jumpToNextSnippetPlaceholderAndTriggerSuggest(
 	context: vscode.ExtensionContext,
@@ -386,14 +285,6 @@ export async function deactivateLanguageClient(): Promise<void> {
 	if (restartTimer) {
 		clearTimeout(restartTimer);
 		restartTimer = undefined;
-	}
-	if (deletionCompletionTimer) {
-		clearTimeout(deletionCompletionTimer);
-		deletionCompletionTimer = undefined;
-	}
-	if (insertionCompletionTimer) {
-		clearTimeout(insertionCompletionTimer);
-		insertionCompletionTimer = undefined;
 	}
 	const activeClient = client;
 	client = undefined;

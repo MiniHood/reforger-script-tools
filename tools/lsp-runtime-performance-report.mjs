@@ -175,6 +175,9 @@ function renderReport(input) {
     .slice(0, 20);
   const revisionRows = summarizeRevisionGroups(records);
   const captureRows = summarizeCaptureWindows(revisionRows);
+  const snapshotQuality = summarizeSnapshotQuality(records);
+  const admission = summarizeAdmission(records);
+  const cancellation = summarizeCancellation(records);
 
   const lines = [];
   lines.push("# LSP Runtime Performance Report");
@@ -193,6 +196,8 @@ function renderReport(input) {
   lines.push(`- Background rich semantic-token time: ${formatMs(summary.richSemanticMs)}`);
   lines.push(`- Stale/skipped rich semantic-token records: ${summary.staleRichCount}`);
   lines.push(`- Cancelled rich semantic-token records: ${summary.cancelledRichCount}`);
+  lines.push(`- First usable token observations: ${snapshotQuality.firstToken.latencies.length} / ${snapshotQuality.acceptedSnapshots}`);
+  lines.push(`- First completion observations: ${snapshotQuality.firstCompletion.latencies.length} / ${snapshotQuality.acceptedSnapshots}`);
   lines.push(`- Slowest operation: ${slowRecords[0] ? `${slowRecords[0].operation} (${formatMs(slowRecords[0].elapsedMs)})` : "None"}`);
   lines.push("");
   lines.push("## Interpretation");
@@ -262,6 +267,48 @@ function renderReport(input) {
   lines.push(`- Completion perceived p95: ${formatMs(percentile(summary.completion.perceivedElapsed, 0.95))}`);
   lines.push(`- Completion max: ${formatMs(summary.completion.elapsed.length ? Math.max(...summary.completion.elapsed) : 0)}`);
   lines.push(`- Completion candidate lookup total: ${formatMs(summary.completion.lookupMs)}`);
+  lines.push("");
+  lines.push("## First Usable Foreground Response");
+  lines.push("");
+  lines.push("Latency is observed from an accepted `didOpen`/`didChange` snapshot to the first matching token or completion response in this log. It measures end-to-end log time, not source text or completion payload contents. Missing pairs are reported as unavailable rather than estimated.");
+  lines.push("");
+  table(lines, ["Response", "Observed", "Unpaired", "P95", "Max", "Lexical-pending"], [
+    ["Usable tokens", snapshotQuality.firstToken.latencies.length, snapshotQuality.firstToken.unpaired, formatMs(percentile(snapshotQuality.firstToken.latencies, 0.95)), formatMs(maxOrZero(snapshotQuality.firstToken.latencies)), snapshotQuality.firstToken.lexicalPending],
+    ["Completion", snapshotQuality.firstCompletion.latencies.length, snapshotQuality.firstCompletion.unpaired, formatMs(percentile(snapshotQuality.firstCompletion.latencies, 0.95)), formatMs(maxOrZero(snapshotQuality.firstCompletion.latencies)), "n/a"],
+  ]);
+  lines.push("");
+  lines.push("## Snapshot Quality");
+  lines.push("");
+  lines.push("A request is **current** only when its URI and revision match an accepted open-document snapshot in the selected window. Older logs without a revision remain **unpaired**, not stale by assumption.");
+  lines.push("");
+  table(lines, ["Measure", "Count"], [
+    ["Accepted snapshots", snapshotQuality.acceptedSnapshots],
+    ["Current foreground responses", snapshotQuality.currentForegroundResponses],
+    ["Unpaired foreground responses", snapshotQuality.unpairedForegroundResponses],
+    ["Matching semantic publications", snapshotQuality.matchingSemanticPublications],
+    ["Stale/discarded semantic publications", snapshotQuality.staleSemanticPublications],
+  ]);
+  lines.push("");
+  lines.push("## Admission and Overload");
+  lines.push("");
+  lines.push("Admission metrics use explicit runtime disposition fields (`disposition`, `admission`, or `outcome`) or runtime admission operation names. Legacy logs without those fields are shown as unavailable; worker completion records are not treated as admission evidence.");
+  lines.push("");
+  if (admission.records === 0) {
+    lines.push("No explicit admission records were present in this capture.");
+  } else {
+    table(lines, ["Disposition", "Count"], [
+      ["Admitted", admission.admitted], ["Queued", admission.queued], ["Overloaded/rejected/dropped", admission.overloaded], ["Cancelled", admission.cancelled], ["Other", admission.other],
+    ]);
+  }
+  lines.push("");
+  lines.push("## Cancellation Tails");
+  lines.push("");
+  lines.push("A cancellation tail is reported only when a terminal cancellation record includes `cancellation_tail_ms` or `tail_ms`. Total worker elapsed time is not a cancellation-tail proxy.");
+  lines.push("");
+  lines.push(`- Cancelled terminal records: ${cancellation.cancelledRecords}`);
+  lines.push(`- Measured tails: ${cancellation.tails.length}`);
+  lines.push(`- Cancellation tail p95: ${formatMs(percentile(cancellation.tails, 0.95))}`);
+  lines.push(`- Cancellation tail max: ${formatMs(maxOrZero(cancellation.tails))}`);
   lines.push("");
   lines.push("## Burst Comparison");
   lines.push("");
@@ -464,6 +511,102 @@ function summarizeCaptureWindows(revisionRows) {
   return Array.from(captures.values()).sort((left, right) => left.fileName.localeCompare(right.fileName));
 }
 
+function summarizeSnapshotQuality(records) {
+  const snapshots = new Map();
+  const firstToken = { latencies: [], unpaired: 0, lexicalPending: 0 };
+  const firstCompletion = { latencies: [], unpaired: 0 };
+  let acceptedSnapshots = 0;
+  let currentForegroundResponses = 0;
+  let unpairedForegroundResponses = 0;
+  let matchingSemanticPublications = 0;
+  let staleSemanticPublications = 0;
+
+  for (const record of records) {
+    if (isAcceptedSnapshot(record)) {
+      const key = snapshotKey(record);
+      if (key) {
+        snapshots.set(key, { timestamp: record.timestamp, firstToken: false, firstCompletion: false });
+        acceptedSnapshots += 1;
+      }
+      continue;
+    }
+    if (record.operation === "documentAnalysis ready") {
+      if (snapshots.has(snapshotKey(record))) matchingSemanticPublications += 1;
+      else staleSemanticPublications += 1;
+      continue;
+    }
+    if (isStaleSemanticTerminal(record)) {
+      staleSemanticPublications += 1;
+      continue;
+    }
+    const isToken = record.operation === "request semanticTokens";
+    const isCompletion = record.operation === "request completion";
+    if (!isToken && !isCompletion) continue;
+    const snapshot = snapshots.get(snapshotKey(record));
+    if (!snapshot) {
+      unpairedForegroundResponses += 1;
+      if (isToken) firstToken.unpaired += 1;
+      else firstCompletion.unpaired += 1;
+      continue;
+    }
+    currentForegroundResponses += 1;
+    const latency = Math.max(0, record.timestamp - snapshot.timestamp);
+    if (isToken && !snapshot.firstToken) {
+      snapshot.firstToken = true;
+      firstToken.latencies.push(latency);
+      if (record.fields.mode === "lexical-pending") firstToken.lexicalPending += 1;
+    }
+    if (isCompletion && !snapshot.firstCompletion) {
+      snapshot.firstCompletion = true;
+      firstCompletion.latencies.push(latency);
+    }
+  }
+  return { acceptedSnapshots, currentForegroundResponses, unpairedForegroundResponses, matchingSemanticPublications, staleSemanticPublications, firstToken, firstCompletion };
+}
+
+function isAcceptedSnapshot(record) {
+  return (record.operation === "notification didOpen" || record.operation === "notification didChange") && record.fields.uri !== undefined && record.revision !== "";
+}
+
+function isStaleSemanticTerminal(record) {
+  return record.operation === "documentAnalysis skipped" || record.operation === "documentAnalysis discarded";
+}
+
+function snapshotKey(record) {
+  if (!record.uri || record.revision === "") return "";
+  return `${record.uri}\u0000${record.revision}`;
+}
+
+function summarizeAdmission(records) {
+  const summary = { records: 0, admitted: 0, queued: 0, overloaded: 0, cancelled: 0, other: 0 };
+  for (const record of records) {
+    const explicitDisposition = record.fields.disposition ?? record.fields.admission ?? record.fields.outcome;
+    const admissionOperation = /(?:analysisRuntime|analysisAdmission|runtimeAdmission)/i.test(record.operation);
+    if (!explicitDisposition && !admissionOperation) continue;
+    summary.records += 1;
+    const disposition = String(explicitDisposition ?? record.operation).toLowerCase();
+    if (disposition.includes("admit")) summary.admitted += 1;
+    else if (disposition.includes("queue")) summary.queued += 1;
+    else if (/(?:overload|reject|drop|limit)/.test(disposition)) summary.overloaded += 1;
+    else if (disposition.includes("cancel")) summary.cancelled += 1;
+    else summary.other += 1;
+  }
+  return summary;
+}
+
+function summarizeCancellation(records) {
+  const tails = [];
+  let cancelledRecords = 0;
+  for (const record of records) {
+    const reason = String(record.fields.reason ?? record.fields.disposition ?? record.fields.outcome ?? "").toLowerCase();
+    if (!reason.includes("cancel")) continue;
+    cancelledRecords += 1;
+    const tail = numberField(record.fields, "cancellation_tail_ms") ?? numberField(record.fields, "tail_ms");
+    if (tail !== undefined) tails.push(tail);
+  }
+  return { cancelledRecords, tails };
+}
+
 function addRow(map, name, elapsed) {
   if (!map.has(name)) {
     map.set(name, { name, count: 0, totalMs: 0, elapsed: [] });
@@ -585,6 +728,10 @@ function formatMs(value) {
     return "";
   }
   return `${Math.round(value)} ms`;
+}
+
+function maxOrZero(values) {
+  return values.length ? Math.max(...values) : 0;
 }
 
 function escapeMd(value) {

@@ -9,6 +9,12 @@ pub struct TextValue<'source> {
 }
 
 impl<'source> TextValue<'source> {
+    pub(crate) const fn from_span(source: &'source str, span: TextSpan) -> Self {
+        Self { span, source }
+    }
+}
+
+impl<'source> TextValue<'source> {
     pub const fn new(source: &'source str, span: TextSpan) -> Self {
         Self { span, source }
     }

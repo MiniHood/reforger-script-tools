@@ -5,10 +5,10 @@ use crate::index_cache::{
     load_or_build_game_data_index_with_progress, GameDataIndexCacheConfig, RuntimeIndexSummary,
 };
 use crate::model::{
-    source_category_for_path, SourceFileMetadata, SourceKind, SymbolCatalog,
-    SOURCE_PRIORITY_WORKSPACE,
+    source_category_for_path, SourceFileMetadata, SourceKind, SOURCE_PRIORITY_WORKSPACE,
 };
 use crate::parser::parse_source;
+use crate::semantic_file::SemanticFile;
 use std::collections::BTreeMap;
 use std::fs;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -646,9 +646,16 @@ fn normalize_workspace_roots(roots: &[PathBuf]) -> NormalizedWorkspaceRoots {
 fn build_workspace_file_index(root: &Path, file: &Path, source: &str) -> WorkspaceIndexedFile {
     let parse = parse_source(source);
     let ast = AstSourceFile::new(source, &parse);
-    let catalog =
-        SymbolCatalog::from_ast_with_metadata(source, &ast, workspace_source_metadata(root, file));
-    let index = SymbolIndex::from_catalogs([&catalog]);
+    let semantic_file = SemanticFile::build(source, &ast);
+    // Workspace publication accepts only the versioned public projection; the
+    // index below remains the query representation derived from those same
+    // compiler-owned facts.
+    semantic_file
+        .contribution()
+        .validate()
+        .expect("fresh compiler-owned workspace contribution is valid");
+    let mut index = SymbolIndex::default();
+    index.add_semantic_file(&semantic_file, workspace_source_metadata(root, file));
     WorkspaceIndexedFile {
         index,
         bytes: source.len(),
@@ -817,6 +824,45 @@ fn recompute_summary(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workspace_file_ingestion_uses_compiler_owned_semantic_facts() {
+        let root = Path::new("C:/workspace");
+        let file = Path::new("C:/workspace/Scripts/Example.c");
+        let indexed = build_workspace_file_index(
+            root,
+            file,
+            r#"
+class Example : BaseExample
+{
+    int m_Value;
+    void Run(string name);
+}
+"#,
+        );
+
+        assert_eq!(indexed.parse_diagnostics, 0);
+        assert_eq!(indexed.index.files().len(), 1);
+        assert_eq!(indexed.index.symbols().len(), 4);
+        let metadata = &indexed.index.files()[0].metadata;
+        assert_eq!(metadata.kind, SourceKind::Workspace);
+        assert_eq!(metadata.root_path.as_deref(), Some(root));
+        assert_eq!(
+            metadata.relative_path.as_deref(),
+            Some(Path::new("Scripts/Example.c"))
+        );
+        assert_eq!(
+            indexed
+                .index
+                .symbol(indexed.index.classes_by_name("Example")[0])
+                .and_then(|symbol| symbol.detail.base_type.as_deref()),
+            Some("BaseExample")
+        );
+        assert_eq!(
+            indexed.index.methods_by_owner_name("Example", "Run").len(),
+            1
+        );
+    }
 
     #[test]
     fn workspace_updates_are_latest_wins_across_deletes_and_path_aliases() {

@@ -1,3 +1,4 @@
+use crate::analysis_runtime::{AdmissionLimits, AnalysisRuntime, PositionIndex, UpsertOutcome};
 use crate::index::{GlobalSymbolId, SymbolIndex};
 use crate::index_query::IndexQuery;
 use crate::lexer::TextSpan;
@@ -41,7 +42,8 @@ mod signature_help;
 
 use completion::{
     completion_debug_markdown, completion_report_for_cached_analysis_with_external_indexes,
-    empty_completion_list,
+    completion_report_for_lexical_source_at_offset_with_external_indexes,
+    completion_report_for_lexical_source_with_external_indexes, empty_completion_list,
 };
 pub use completion::{
     completion_report_for_cached_analysis_with_external,
@@ -74,7 +76,7 @@ pub(crate) use open_documents::{
     file_index_for_source_with_timings, FileIndexAnalysisTimings, OpenDocument,
 };
 use semantic_tokens::{
-    fast_semantic_tokens_for_cached_analysis,
+    fast_semantic_tokens_for_cached_analysis, lexical_semantic_tokens_for_source,
     semantic_tokens_for_cached_analysis_with_external_indexes,
     semantic_tokens_for_cached_analysis_with_external_indexes_cancelled,
     LspSemanticTokenProjection, LspSemanticTokens, SEMANTIC_TOKEN_MODIFIERS, SEMANTIC_TOKEN_TYPES,
@@ -111,6 +113,7 @@ const MAX_LSP_HEADER_BYTES: usize = 32 * 1024;
 const MAX_LSP_BODY_BYTES: usize = 16 * 1024 * 1024;
 const INCOMING_EVENT_QUEUE_CAPACITY: usize = 64;
 const DOCUMENT_ANALYSIS_IDLE_DELAY_MS: u64 = 150;
+const MAX_PENDING_DOCUMENT_ANALYSIS_JOBS: usize = 32;
 const MAX_PENDING_DOCUMENT_REQUESTS_PER_URI: usize = 32;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LspServerOptions {
@@ -219,7 +222,7 @@ impl LspDocumentSymbolReport {
 struct LspServer<W: Write> {
     writer: W,
     documents: BTreeMap<String, OpenDocument>,
-    document_revisions: BTreeMap<String, u64>,
+    runtime: AnalysisRuntime,
     logger: LspLogger,
     external_index: ExternalIndexHandle,
     rich_scheduler: Option<RichSemanticTokensScheduler>,
@@ -314,6 +317,18 @@ impl OpenDocumentAnalysisScheduler {
     fn schedule(&self, job: OpenDocumentAnalysisJob) {
         let (lock, wake) = &*self.state;
         let mut pending = lock.lock().unwrap();
+        if !pending.contains_key(&job.uri) && pending.len() >= MAX_PENDING_DOCUMENT_ANALYSIS_JOBS {
+            let evicted_uri = earliest_due_document_analysis_uri(&pending)
+                .expect("non-empty full scheduler has an eviction candidate");
+            let evicted = pending.remove(&evicted_uri).expect("candidate is retained");
+            evicted.cancel.store(true, Ordering::Relaxed);
+            let _ = self.sender.send(ServerEvent::DocumentAnalysisSkipped {
+                uri: evicted.uri,
+                revision: evicted.revision,
+                reason: "scheduler-capacity-evicted".to_string(),
+                elapsed_ms: evicted.scheduled_at.elapsed().as_millis(),
+            });
+        }
         if let Some(previous) = pending.insert(job.uri.clone(), job) {
             previous.cancel.store(true, Ordering::Relaxed);
         }
@@ -380,9 +395,7 @@ fn source_backed_request_method(method: &str) -> bool {
         "textDocument/documentSymbol"
             | "textDocument/hover"
             | "textDocument/definition"
-            | "textDocument/completion"
             | "textDocument/signatureHelp"
-            | "textDocument/semanticTokens/full"
             | DEBUG_HOVER_METHOD
             | DEBUG_COMPLETION_METHOD
     )
@@ -675,7 +688,7 @@ impl<W: Write> LspServer<W> {
         let server = Self {
             writer,
             documents: BTreeMap::new(),
-            document_revisions: BTreeMap::new(),
+            runtime: AnalysisRuntime::new(AdmissionLimits::new(64, 64 * 1024 * 1024)),
             logger,
             external_index,
             rich_scheduler,
@@ -704,17 +717,6 @@ impl<W: Write> LspServer<W> {
             server.external_index.status_summary().status
         ));
         server
-    }
-
-    fn next_document_revision(&mut self, uri: &str) -> u64 {
-        let revision = self
-            .document_revisions
-            .get(uri)
-            .copied()
-            .unwrap_or(0)
-            .saturating_add(1);
-        self.document_revisions.insert(uri.to_string(), revision);
-        revision
     }
 
     fn run<R: Read>(&mut self, reader: R) -> Result<(), String> {
@@ -944,47 +946,89 @@ impl<W: Write> LspServer<W> {
                     let version = params.text_document.version;
                     let text = params.text_document.text;
                     let bytes = text.len();
-                    let revision = self.next_document_revision(&uri);
                     if let Some(mut previous) = self.documents.remove(&uri) {
                         previous.semantic_tokens.cancel_pending();
                         previous.cancel_pending_analysis();
+                        self.runtime.close(&uri, previous.snapshot.revision());
                     }
+                    let UpsertOutcome::Accepted = self.runtime.upsert(uri.clone(), version, text)
+                    else {
+                        return Err(format!(
+                            "didOpen could not install document snapshot for {uri}"
+                        ));
+                    };
+                    let snapshot = self
+                        .runtime
+                        .latest(&uri)
+                        .expect("accepted document snapshot is immediately readable");
+                    let revision = snapshot.revision();
                     self.discard_deferred_document_requests(&uri, revision)?;
-                    let mut document = OpenDocument::new(text, version, revision);
-                    let symbol_start = Instant::now();
-                    let symbols =
-                        document_symbols_from_cached_analysis(&document.text, &document.analysis);
-                    let document_symbol_ms = symbol_start.elapsed().as_millis();
-                    let symbol_count = document_symbol_count(&symbols);
-                    document.set_document_symbols(symbols);
-                    let parse_diagnostics = document.analysis.parse_diagnostics;
-                    let revision = document.revision;
-                    let analysis_timings = document.analysis_timings;
-                    let diagnostics_message = publish_diagnostics_message(
-                        &uri,
-                        version,
-                        &document.text,
-                        &document.analysis.diagnostics,
-                    );
-                    self.documents.insert(uri.clone(), document);
-                    self.write_message(diagnostics_message)?;
-                    self.log(&format!(
-                        "notification didOpen uri={} bytes={} version={} revision={} cached_analysis=true document_symbols_cached=true symbols={} parse_diagnostics={} analysis_parse_ms={} analysis_catalog_ms={} analysis_index_ms={} analysis_scope_ms={} analysis_build_ms={} document_symbol_ms={} queue_ms={} analysis_elapsed_ms={}",
-                        uri,
-                        bytes,
-                        version,
-                        revision,
-                        symbol_count,
-                        parse_diagnostics,
-                        analysis_timings.parse_ms,
-                        analysis_timings.catalog_ms,
-                        analysis_timings.index_ms,
-                        analysis_timings.scope_ms,
-                        analysis_timings.total_ms,
-                        document_symbol_ms,
-                        queue_ms,
-                        start.elapsed().as_millis()
-                    ));
+                    let revision = snapshot.revision();
+                    if let Some(scheduler) = self.analysis_scheduler.clone() {
+                        let mut document = OpenDocument::pending(snapshot);
+                        let analysis_cancel = document.mark_analysis_pending();
+                        self.documents.insert(uri.clone(), document);
+                        scheduler.schedule(OpenDocumentAnalysisJob {
+                            uri: uri.clone(),
+                            revision,
+                            source: self
+                                .documents
+                                .get(&uri)
+                                .expect("pending document is immediately readable")
+                                .snapshot
+                                .text()
+                                .to_string(),
+                            cancel: analysis_cancel,
+                            scheduled_at: Instant::now(),
+                        });
+                        self.write_message(publish_diagnostics_message(&uri, version, "", &[]))?;
+                        self.log(&format!(
+                            "notification didOpen uri={} bytes={} version={} revision={} cached_analysis=false analysis_state=pending queue_ms={} analysis_elapsed_ms={}",
+                            uri,
+                            bytes,
+                            version,
+                            revision,
+                            queue_ms,
+                            start.elapsed().as_millis()
+                        ));
+                    } else {
+                        let mut document = OpenDocument::new(snapshot);
+                        let symbol_start = Instant::now();
+                        let symbols = document_symbols_from_cached_analysis(
+                            document.snapshot.text(),
+                            document.analysis(),
+                        );
+                        let document_symbol_ms = symbol_start.elapsed().as_millis();
+                        let symbol_count = document_symbol_count(&symbols);
+                        document.set_document_symbols(symbols);
+                        let parse_diagnostics = document.analysis().parse_diagnostics;
+                        let analysis_timings = document.analysis_timings();
+                        let diagnostics_message = publish_diagnostics_message(
+                            &uri,
+                            version,
+                            document.snapshot.text(),
+                            &document.analysis().diagnostics,
+                        );
+                        self.documents.insert(uri.clone(), document);
+                        self.write_message(diagnostics_message)?;
+                        self.log(&format!(
+                            "notification didOpen uri={} bytes={} version={} revision={} cached_analysis=true document_symbols_cached=true symbols={} parse_diagnostics={} analysis_parse_ms={} analysis_catalog_ms={} analysis_index_ms={} analysis_scope_ms={} analysis_build_ms={} document_symbol_ms={} queue_ms={} analysis_elapsed_ms={}",
+                            uri,
+                            bytes,
+                            version,
+                            revision,
+                            symbol_count,
+                            parse_diagnostics,
+                            analysis_timings.parse_ms,
+                            analysis_timings.catalog_ms,
+                            analysis_timings.index_ms,
+                            analysis_timings.scope_ms,
+                            analysis_timings.total_ms,
+                            document_symbol_ms,
+                            queue_ms,
+                            start.elapsed().as_millis()
+                        ));
+                    }
                 }
             }
             "textDocument/didChange" => {
@@ -998,7 +1042,7 @@ impl<W: Write> LspServer<W> {
                         let text = change.text;
                         let bytes = text.len();
                         let Some(current_version) =
-                            self.documents.get(&uri).map(|document| document.version)
+                            self.runtime.latest(&uri).map(|snapshot| snapshot.version())
                         else {
                             self.log(&format!(
                                 "notification didChange ignored uri={} version={} reason=not_open",
@@ -1013,14 +1057,26 @@ impl<W: Write> LspServer<W> {
                             ));
                             return Ok(false);
                         }
+                        let UpsertOutcome::Accepted =
+                            self.runtime.upsert(uri.clone(), version, text)
+                        else {
+                            self.log(&format!(
+                                "notification didChange ignored uri={} version={} current_version={} reason=stale",
+                                uri, version, current_version
+                            ));
+                            return Ok(false);
+                        };
+                        let snapshot = self
+                            .runtime
+                            .latest(&uri)
+                            .expect("accepted document snapshot is immediately readable");
                         let document = self
                             .documents
                             .get_mut(&uri)
                             .expect("open document exists after version check");
-                        document.replace(text, version);
-                        let revision = document.revision;
-                        self.document_revisions.insert(uri.clone(), revision);
-                        let source = document.text.clone();
+                        document.replace(snapshot);
+                        let revision = document.snapshot.revision();
+                        let source = document.snapshot.text().to_string();
                         let analysis_cancel = document.mark_analysis_pending();
                         if let Some(scheduler) = self.analysis_scheduler.clone() {
                             self.discard_deferred_document_requests(&uri, revision)?;
@@ -1031,6 +1087,12 @@ impl<W: Write> LspServer<W> {
                                 cancel: analysis_cancel,
                                 scheduled_at: Instant::now(),
                             });
+                            self.write_message(publish_diagnostics_message(
+                                &uri,
+                                version,
+                                "",
+                                &[],
+                            ))?;
                             self.log(&format!(
                                 "notification didChange uri={} bytes={} version={} revision={} cached_analysis=false analysis_state=pending queue_ms={} coalesced_changes={} superseded_changes={} analysis_elapsed_ms={}",
                                 uri, bytes, version, revision, queue_ms, coalesced_changes, superseded_changes, start.elapsed().as_millis()
@@ -1076,6 +1138,8 @@ impl<W: Write> LspServer<W> {
                     if let Some(mut document) = self.documents.remove(&params.text_document.uri) {
                         document.semantic_tokens.cancel_pending();
                         document.cancel_pending_analysis();
+                        self.runtime
+                            .close(&params.text_document.uri, document.snapshot.revision());
                     }
                     self.discard_deferred_document_requests(&params.text_document.uri, 0)?;
                     self.write_message(clear_diagnostics_message(&params.text_document.uri))?;
@@ -1185,14 +1249,14 @@ impl<W: Write> LspServer<W> {
                                     let projection_start = Instant::now();
                                     let symbols = document_symbols_from_cached_analysis(
                                         &document.text,
-                                        &document.analysis,
+                                        document.analysis(),
                                     );
                                     projection_ms = projection_start.elapsed().as_millis();
                                     document.set_document_symbols(symbols);
                                 }
                                 let symbols = document.document_symbols();
                                 symbol_count = document_symbol_count(&symbols);
-                                parse_diagnostics = document.analysis.parse_diagnostics;
+                                parse_diagnostics = document.analysis().parse_diagnostics;
                                 symbols.to_vec()
                             })
                         })
@@ -1227,6 +1291,7 @@ impl<W: Write> LspServer<W> {
                     let mut prefix = String::new();
                     let mut candidate_count = 0usize;
                     let mut failure_reason = "<none>".to_string();
+                    let mut query_quality = "Exact";
                     let mut context_ms = 0u128;
                     let mut lookup_ms = 0u128;
                     let mut render_ms = 0u128;
@@ -1241,14 +1306,38 @@ impl<W: Write> LspServer<W> {
                                 let indexes = self.external_index.snapshot();
                                 external_index_status = indexes.status;
                                 external_index_layers = indexes.available_layers();
-                                let report =
+                                let report = if document.analysis_ready() {
                                     completion_report_for_cached_analysis_with_external_indexes(
                                         &document.text,
-                                        &document.analysis,
+                                        document.analysis(),
                                         params.position,
                                         indexes.workspace.as_deref(),
                                         indexes.game_data.as_deref(),
+                                    )
+                                } else {
+                                    query_quality = "Unavailable";
+                                    let offset = document.snapshot.positions().offset_for_position(
+                                        crate::analysis_runtime::Position {
+                                            line: params.position.line,
+                                            character: params.position.character,
+                                        },
                                     );
+                                    if let Some(offset) = offset {
+                                        completion_report_for_lexical_source_at_offset_with_external_indexes(
+                                            &document.text,
+                                            offset,
+                                            indexes.workspace.as_deref(),
+                                            indexes.game_data.as_deref(),
+                                        )
+                                    } else {
+                                        completion_report_for_lexical_source_with_external_indexes(
+                                            &document.text,
+                                            params.position,
+                                            indexes.workspace.as_deref(),
+                                            indexes.game_data.as_deref(),
+                                        )
+                                    }
+                                };
                                 parse_diagnostics = report.parse_diagnostics;
                                 completion_context = report.completion_context.clone();
                                 receiver = report
@@ -1276,10 +1365,12 @@ impl<W: Write> LspServer<W> {
                             serde_json::to_value(empty_completion_list()).unwrap_or(Value::Null)
                         });
                     self.log(&format!(
-                        "request completion uri={} bytes={} revision={} cached_analysis=true context={} receiver={} owner_type={} prefix={} candidates={} failure_reason={} external_index_status={} external_index_layers={} parse_diagnostics={} context_ms={} lookup_ms={} render_ms={} queue_ms={} elapsed_ms={}",
+                        "request completion uri={} bytes={} revision={} cached_analysis={} query_quality={} context={} receiver={} owner_type={} prefix={} candidates={} failure_reason={} external_index_status={} external_index_layers={} parse_diagnostics={} context_ms={} lookup_ms={} render_ms={} queue_ms={} elapsed_ms={}",
                         log_uri,
                         bytes,
                         revision,
+                        query_quality == "Exact",
+                        query_quality,
                         completion_context,
                         receiver,
                         owner_type,
@@ -1328,7 +1419,7 @@ impl<W: Write> LspServer<W> {
                                 let report =
                                     signature_help_report_for_cached_analysis_with_external_indexes(
                                         &document.text,
-                                        &document.analysis,
+                                        document.analysis(),
                                         params.position,
                                         indexes.workspace.as_deref(),
                                         indexes.game_data.as_deref(),
@@ -1402,12 +1493,16 @@ impl<W: Write> LspServer<W> {
                             self.documents.get_mut(&log_uri).map(|document| {
                                 bytes = document.text.len();
                                 revision = document.revision;
-                                let projection = if let Some(projection) = document
+                                let projection = if !document.analysis_ready() {
+                                    projection_mode = "lexical-pending";
+                                    lexical_semantic_tokens_for_source(&document.text)
+                                } else if let Some(projection) = document
                                     .semantic_tokens
                                     .rich_for_revision_and_external_generation(
                                         document.revision,
                                         external_generation,
-                                    ) {
+                                    )
+                                {
                                     projection_mode = "rich-cache";
                                     projection.clone()
                                 } else {
@@ -1431,7 +1526,7 @@ impl<W: Write> LspServer<W> {
                                     }
                                     fast_semantic_tokens_for_cached_analysis(
                                         &document.text,
-                                        &document.analysis,
+                                        document.analysis(),
                                     )
                                 };
                                 token_count = projection.token_count;
@@ -1510,7 +1605,7 @@ impl<W: Write> LspServer<W> {
                                 external_index_layers = indexes.available_layers();
                                 let report = hover_report_for_cached_analysis_with_external_indexes(
                                     &document.text,
-                                    &document.analysis,
+                                    document.analysis(),
                                     &log_uri,
                                     params.position,
                                     indexes.workspace.as_deref(),
@@ -1609,7 +1704,7 @@ impl<W: Write> LspServer<W> {
                                 let report =
                                     definition_report_for_cached_analysis_with_external_indexes(
                                         &document.text,
-                                        &document.analysis,
+                                        document.analysis(),
                                         &log_uri,
                                         params.position,
                                         indexes.workspace.as_deref(),
@@ -1673,7 +1768,7 @@ impl<W: Write> LspServer<W> {
                                 let position = params.position;
                                 let revision = document.revision;
                                 let source = document.text.clone();
-                                let analysis = document.analysis.clone();
+                                let analysis = document.analysis().clone();
                                 let external_status = self.external_index.status_summary();
                                 let indexes = self.external_index.snapshot();
                                 thread::spawn(move || {
@@ -1694,7 +1789,10 @@ impl<W: Write> LspServer<W> {
                                         method: DEBUG_HOVER_METHOD,
                                         uri,
                                         revision,
-                                        details: format!("cached_analysis=true hit={} label={}", hit, label),
+                                        details: format!(
+                                            "cached_analysis=true hit={} label={}",
+                                            hit, label
+                                        ),
                                         result: Value::String(report),
                                         elapsed_ms: start.elapsed().as_millis(),
                                     });
@@ -1719,7 +1817,7 @@ impl<W: Write> LspServer<W> {
                                 let report =
                                     debug_hover_report_for_cached_analysis_with_external_indexes(
                                         &document.text,
-                                        &document.analysis,
+                                        document.analysis(),
                                         &log_uri,
                                         params.position,
                                         indexes.workspace.as_deref(),
@@ -1762,16 +1860,17 @@ impl<W: Write> LspServer<W> {
                                 let position = params.position;
                                 let revision = document.revision;
                                 let source = document.text.clone();
-                                let analysis = document.analysis.clone();
+                                let analysis = document.analysis().clone();
                                 let indexes = self.external_index.snapshot();
                                 thread::spawn(move || {
-                                    let report = completion_report_for_cached_analysis_with_external_indexes(
-                                        &source,
-                                        &analysis,
-                                        position,
-                                        indexes.workspace.as_deref(),
-                                        indexes.game_data.as_deref(),
-                                    );
+                                    let report =
+                                        completion_report_for_cached_analysis_with_external_indexes(
+                                            &source,
+                                            &analysis,
+                                            position,
+                                            indexes.workspace.as_deref(),
+                                            indexes.game_data.as_deref(),
+                                        );
                                     let signature_report = signature_help_report_for_cached_analysis_with_external_indexes(
                                         &source,
                                         &analysis,
@@ -1781,9 +1880,12 @@ impl<W: Write> LspServer<W> {
                                     );
                                     let completion_context = report.completion_context.clone();
                                     let candidate_count = report.candidate_count;
-                                    let signature_context = signature_report.context.clone()
+                                    let signature_context = signature_report
+                                        .context
+                                        .clone()
                                         .unwrap_or_else(|| "none".to_string());
-                                    let signature_candidate_count = signature_report.candidate_count;
+                                    let signature_candidate_count =
+                                        signature_report.candidate_count;
                                     let mut markdown = completion_debug_markdown(
                                         &report,
                                         &uri,
@@ -1791,7 +1893,9 @@ impl<W: Write> LspServer<W> {
                                         revision,
                                         indexes.status,
                                     );
-                                    markdown.push_str(&signature_help_debug_markdown(&signature_report));
+                                    markdown.push_str(&signature_help_debug_markdown(
+                                        &signature_report,
+                                    ));
                                     let _ = sender.send(ServerEvent::DebugRequestReady {
                                         id,
                                         method: DEBUG_COMPLETION_METHOD,
@@ -1834,14 +1938,14 @@ impl<W: Write> LspServer<W> {
                                 external_index_layers = indexes.available_layers();
                                 let report = completion_report_for_cached_analysis_with_external_indexes(
                                         &document.text,
-                                        &document.analysis,
+                                        document.analysis(),
                                         params.position,
                                         indexes.workspace.as_deref(),
                                         indexes.game_data.as_deref(),
                                     );
                                 let signature_report = signature_help_report_for_cached_analysis_with_external_indexes(
                                         &document.text,
-                                        &document.analysis,
+                                        document.analysis(),
                                         params.position,
                                         indexes.workspace.as_deref(),
                                         indexes.game_data.as_deref(),
@@ -2003,6 +2107,14 @@ impl<W: Write> LspServer<W> {
                 reason,
                 elapsed_ms,
             } => {
+                if reason == "scheduler-capacity-evicted" {
+                    if let Some(document) = self.documents.get_mut(&uri) {
+                        if document.revision == revision && !document.analysis_ready() {
+                            document.reject_pending_analysis();
+                            self.discard_deferred_document_requests(&uri, revision)?;
+                        }
+                    }
+                }
                 self.log(&format!(
                     "documentAnalysis skipped uri={} revision={} reason={} elapsed_ms={}",
                     uri, revision, reason, elapsed_ms
@@ -2042,6 +2154,17 @@ impl<W: Write> LspServer<W> {
             return Ok(false);
         }
         let revision = document.revision;
+        let analysis_rejected = document.analysis_rejected();
+        if analysis_rejected {
+            if let Some(id) = message.id.clone() {
+                self.respond_error(id, -32801, "Content modified")?;
+            }
+            self.log(&format!(
+                "request deferred rejected uri={} revision={} reason=analysis-overload",
+                uri, revision
+            ));
+            return Ok(true);
+        }
         let pending = self
             .deferred_document_requests
             .entry(uri.clone())
@@ -2117,13 +2240,13 @@ impl<W: Write> LspServer<W> {
         }
         let version = document.version;
         let bytes = document.text.len();
-        let parse_diagnostics = document.analysis.parse_diagnostics;
-        let analysis_timings = document.analysis_timings;
+        let parse_diagnostics = document.analysis().parse_diagnostics;
+        let analysis_timings = document.analysis_timings();
         let diagnostics_message = publish_diagnostics_message(
             uri,
             version,
             &document.text,
-            &document.analysis.diagnostics,
+            &document.analysis().diagnostics,
         );
         let _ = document;
         self.write_message(diagnostics_message)?;
@@ -2197,8 +2320,8 @@ impl<W: Write> LspServer<W> {
                 external_generation,
                 cancel,
                 scheduled_at: start,
-                source: document.text.clone(),
-                analysis: document.analysis.clone(),
+                source: document.text.to_string(),
+                analysis: document.analysis().clone(),
                 external_snapshot: self.external_index.snapshot(),
             };
             scheduler.schedule(job);
@@ -2294,7 +2417,7 @@ impl<W: Write> LspServer<W> {
         *external_index_status = indexes.status;
         Some(semantic_tokens_for_cached_analysis_with_external_indexes(
             &document.text,
-            &document.analysis,
+            document.analysis(),
             indexes.workspace.as_deref(),
             indexes.game_data.as_deref(),
         ))
@@ -2480,7 +2603,7 @@ fn document_symbol_for_id(
 
 #[derive(Debug)]
 pub(crate) struct LspPositionIndex {
-    positions: Vec<LspPosition>,
+    positions: PositionIndex,
 }
 
 #[cfg(test)]
@@ -2499,53 +2622,15 @@ impl LspPositionIndex {
     ) -> Option<Self> {
         #[cfg(test)]
         POSITION_INDEX_BUILD_COUNT.with(|count| count.set(count.get() + 1));
-        let origin = LspPosition {
-            line: 0,
-            character: 0,
-        };
-        let mut positions = vec![origin; source.len().saturating_add(1)];
-        let mut position = origin;
-        for (character_index, (offset, character)) in source.char_indices().enumerate() {
-            if character_index % 64 == 0
-                && should_cancel.is_some_and(|should_cancel| should_cancel())
-            {
-                return None;
-            }
-            let next_offset = offset.saturating_add(character.len_utf8());
-            for entry in &mut positions[offset..next_offset] {
-                *entry = position;
-            }
-            match character {
-                '\r' => {
-                    position.line = position.line.saturating_add(1);
-                    position.character = 0;
-                }
-                '\n' if offset == 0 || source.as_bytes()[offset - 1] != b'\r' => {
-                    position.line = position.line.saturating_add(1);
-                    position.character = 0;
-                }
-                '\n' => {}
-                _ => {
-                    position.character = position
-                        .character
-                        .saturating_add(character.len_utf16() as u32)
-                }
-            }
-        }
-        if let Some(end) = positions.last_mut() {
-            *end = position;
-        }
-        Some(Self { positions })
+        PositionIndex::new_cancellable(source, should_cancel).map(|positions| Self { positions })
     }
 
     pub(crate) fn position_for_offset(&self, offset: usize) -> LspPosition {
-        self.positions
-            .get(offset.min(self.positions.len().saturating_sub(1)))
-            .copied()
-            .unwrap_or(LspPosition {
-                line: 0,
-                character: 0,
-            })
+        let position = self.positions.position_for_offset(offset);
+        LspPosition {
+            line: position.line,
+            character: position.character,
+        }
     }
 
     pub(crate) fn range_for_span(&self, span: crate::lexer::TextSpan) -> LspRange {
@@ -2915,7 +3000,7 @@ mod tests {
                 .mark_pending(document.revision, external_generation);
             (
                 document.revision,
-                fast_semantic_tokens_for_cached_analysis(&document.text, &document.analysis),
+                fast_semantic_tokens_for_cached_analysis(&document.text, document.analysis()),
                 cancel,
             )
         };
@@ -7485,6 +7570,221 @@ class Example
     }
 
     #[test]
+    fn document_analysis_scheduler_bounds_distinct_pending_documents() {
+        let (sender, receiver) = mpsc::channel();
+        let scheduler = OpenDocumentAnalysisScheduler::start(sender);
+        for index in 0..=MAX_PENDING_DOCUMENT_ANALYSIS_JOBS {
+            scheduler.schedule(OpenDocumentAnalysisJob {
+                uri: format!("file:///Scripts/Pending{index}.c"),
+                revision: 1,
+                source: "class Pending {}".to_string(),
+                cancel: Arc::new(AtomicBool::new(false)),
+                scheduled_at: Instant::now(),
+            });
+        }
+
+        let event = receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("capacity eviction event");
+        assert!(matches!(
+            event,
+            ServerEvent::DocumentAnalysisSkipped { reason, .. }
+                if reason == "scheduler-capacity-evicted"
+        ));
+    }
+
+    #[test]
+    fn semantic_tokens_respond_lexically_while_initial_open_analysis_is_pending() {
+        let (sender, _receiver) = mpsc::channel();
+        let scheduler = OpenDocumentAnalysisScheduler::start(sender);
+        let mut server = LspServer::new_with_runtime_senders(
+            Vec::new(),
+            LspServerOptions::default(),
+            None,
+            Some(scheduler),
+            None,
+        );
+        let uri = "file:///Scripts/PendingTokens.c";
+        server
+            .handle_message(
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "textDocument/didOpen",
+                    "params": { "textDocument": {
+                        "uri": uri,
+                        "languageId": "enforce",
+                        "version": 1,
+                        "text": "// pending\r\nclass Pending {}"
+                    }}
+                }),
+                None,
+                0,
+                0,
+            )
+            .unwrap();
+        assert!(!server.documents[uri].analysis_ready());
+
+        server
+            .handle_message(
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "textDocument/semanticTokens/full",
+                    "params": { "textDocument": { "uri": uri } }
+                }),
+                None,
+                0,
+                0,
+            )
+            .unwrap();
+
+        let output = String::from_utf8(server.writer).unwrap();
+        assert!(output.contains("\"id\":1"));
+        assert!(output.contains("\"data\":["));
+    }
+
+    #[test]
+    fn completion_responds_with_current_lexical_top_level_result_while_analysis_is_pending() {
+        let (sender, _receiver) = mpsc::channel();
+        let scheduler = OpenDocumentAnalysisScheduler::start(sender);
+        let mut server = LspServer::new_with_runtime_senders(
+            Vec::new(),
+            LspServerOptions::default(),
+            None,
+            Some(scheduler),
+            None,
+        );
+        let uri = "file:///Scripts/PendingCompletion.c";
+        server
+            .handle_message(
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "textDocument/didOpen",
+                    "params": { "textDocument": {
+                        "uri": uri,
+                        "languageId": "enforce",
+                        "version": 1,
+                        "text": "getga"
+                    }}
+                }),
+                None,
+                0,
+                0,
+            )
+            .unwrap();
+        server
+            .handle_message(
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "textDocument/completion",
+                    "params": {
+                        "textDocument": { "uri": uri },
+                        "position": { "line": 0, "character": 5 }
+                    }
+                }),
+                None,
+                0,
+                0,
+            )
+            .unwrap();
+
+        let output = String::from_utf8(server.writer).unwrap();
+        assert!(output.contains("\"id\":1"));
+        assert!(output.contains("\"items\":["));
+    }
+
+    #[test]
+    fn pending_analysis_clears_previous_diagnostics_before_worker_publication() {
+        let (sender, _receiver) = mpsc::channel();
+        let scheduler = OpenDocumentAnalysisScheduler::start(sender);
+        let mut server = LspServer::new_with_runtime_senders(
+            Vec::new(),
+            LspServerOptions::default(),
+            None,
+            Some(scheduler),
+            None,
+        );
+        let uri = "file:///Scripts/PendingDiagnostics.c";
+        server
+            .handle_message(
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "textDocument/didOpen",
+                    "params": { "textDocument": {
+                        "uri": uri,
+                        "languageId": "enforce",
+                        "version": 1,
+                        "text": "class {"
+                    }}
+                }),
+                None,
+                0,
+                0,
+            )
+            .unwrap();
+
+        let output = String::from_utf8(server.writer).unwrap();
+        assert!(output.contains("\"method\":\"textDocument/publishDiagnostics\""));
+        assert!(output.contains("\"version\":1"));
+        assert!(output.contains("\"diagnostics\":[]"));
+    }
+
+    #[test]
+    fn analysis_overload_rejects_deferred_semantic_requests_instead_of_hanging() {
+        let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
+        let uri = "file:///Scripts/Overloaded.c";
+        server
+            .handle_message(
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "textDocument/didOpen",
+                    "params": { "textDocument": {
+                        "uri": uri,
+                        "languageId": "enforce",
+                        "version": 1,
+                        "text": "class Overloaded {}"
+                    }}
+                }),
+                None,
+                0,
+                0,
+            )
+            .unwrap();
+        let revision = server.documents[uri].revision;
+        server
+            .documents
+            .get_mut(uri)
+            .unwrap()
+            .replace(server.runtime.latest(uri).expect("accepted snapshot"));
+        server
+            .handle_internal_event(ServerEvent::DocumentAnalysisSkipped {
+                uri: uri.to_string(),
+                revision,
+                reason: "scheduler-capacity-evicted".to_string(),
+                elapsed_ms: 0,
+            })
+            .unwrap();
+        server
+            .handle_message(
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "textDocument/documentSymbol",
+                    "params": { "textDocument": { "uri": uri } }
+                }),
+                None,
+                0,
+                0,
+            )
+            .unwrap();
+
+        let output = String::from_utf8(server.writer).unwrap();
+        assert!(output.contains("\"id\":1"));
+        assert!(output.contains("\"code\":-32801"));
+    }
+
+    #[test]
     fn pending_document_symbol_request_replays_after_current_analysis_installs() {
         let (sender, receiver) = mpsc::channel();
         let scheduler = OpenDocumentAnalysisScheduler::start(sender);
@@ -8947,7 +9247,7 @@ class Example
 
         let document = &server.documents[uri];
         assert_eq!(document.version, 1);
-        assert_eq!(document.text, "class Current {}");
+        assert_eq!(document.text.as_ref(), "class Current {}");
 
         server
             .handle_message(
@@ -8967,7 +9267,7 @@ class Example
 
         let document = &server.documents[uri];
         assert_eq!(document.version, 1);
-        assert_eq!(document.text, "class Current {}");
+        assert_eq!(document.text.as_ref(), "class Current {}");
     }
 
     #[test]

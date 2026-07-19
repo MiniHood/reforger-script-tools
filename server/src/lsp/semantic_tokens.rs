@@ -70,6 +70,10 @@ const RESOLVER_REFERENCE_PRIORITY: u8 = 60;
 const SCOPE_REFERENCE_PRIORITY: u8 = 75;
 const RESOLVER_TYPE_REFERENCE_PRIORITY: u8 = 80;
 const MAX_RAW_SEMANTIC_TOKENS: usize = 200_000;
+/// Rich resolver coloring is optional refinement. Keeping this bounded means
+/// one pathological file cannot monopolize a background worker after the
+/// lexical/fast baseline is already available to the editor.
+const MAX_RICH_RESOLVER_CALLS: usize = 96;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct LspSemanticTokens {
@@ -148,6 +152,21 @@ pub fn semantic_tokens_for_source_with_external(
 pub fn fast_semantic_tokens_for_source(source: &str) -> LspSemanticTokenProjection {
     let analysis = file_index_for_source(source);
     fast_semantic_tokens_for_cached_analysis(source, &analysis)
+}
+
+/// Projects only facts available from the current lexer input.
+///
+/// This entrypoint deliberately does not construct a `FileIndexAnalysis`: it
+/// is safe to use while a newer document revision is awaiting syntax and
+/// semantic analysis. It preserves the shared semantic-token encoding rules,
+/// including UTF-16 positions and CRLF-aware multiline token splitting.
+pub(crate) fn lexical_semantic_tokens_for_source(source: &str) -> LspSemanticTokenProjection {
+    let lex_start = Instant::now();
+    let lexer_tokens = lex(source);
+    let raw_projection = lexical_raw_tokens(source, &lexer_tokens, lex_start.elapsed(), None)
+        .expect("lexical semantic token projection is not cancellable through this entrypoint");
+    encode_lexical_projection(source, raw_projection, None)
+        .expect("lexical semantic token projection is not cancellable through this entrypoint")
 }
 
 fn semantic_tokens_report_for_cached_analysis(
@@ -308,6 +327,25 @@ fn encode_projection(
     })
 }
 
+fn encode_lexical_projection(
+    source: &str,
+    raw_projection: RawSemanticTokenProjection,
+    should_cancel: Option<&dyn Fn() -> bool>,
+) -> Option<LspSemanticTokenProjection> {
+    let token_count = raw_projection.tokens.len();
+    let encode_start = Instant::now();
+    let data = encode_semantic_tokens(source, &raw_projection.tokens, should_cancel)?;
+    let mut timings = raw_projection.timings;
+    timings.encode_ms = encode_start.elapsed().as_millis();
+    Some(LspSemanticTokenProjection {
+        tokens: LspSemanticTokens { data },
+        token_count,
+        // Parsing has intentionally not run on this path.
+        parse_diagnostics: 0,
+        timings,
+    })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RawSemanticToken {
     span: TextSpan,
@@ -444,7 +482,10 @@ fn semantic_raw_tokens(
                 continue;
             }
         }
-        if token.kind == TokenKind::Identifier && mode == SemanticTokenMode::Rich {
+        if token.kind == TokenKind::Identifier
+            && mode == SemanticTokenMode::Rich
+            && identifier_resolver_calls < MAX_RICH_RESOLVER_CALLS
+        {
             if declaration_spans.contains(&(token.span.start, token.span.end)) {
                 continue;
             }
@@ -555,6 +596,124 @@ fn semantic_raw_tokens(
             encode_ms: 0,
             decode_debug_ms: 0,
             identifier_resolver_calls,
+        },
+    })
+}
+
+fn lexical_raw_tokens(
+    source: &str,
+    lexer_tokens: &[Token],
+    lex_elapsed: Duration,
+    should_cancel: Option<&dyn Fn() -> bool>,
+) -> Option<RawSemanticTokenProjection> {
+    if should_cancel.is_some_and(|should_cancel| should_cancel()) {
+        return None;
+    }
+
+    let mut tokens = Vec::new();
+    let attribute_roles = attribute_identifier_roles(source, lexer_tokens);
+    let call_roles = call_identifier_roles(lexer_tokens);
+    let static_member_roles = static_member_identifier_roles(source, lexer_tokens);
+    let token_loop_start = Instant::now();
+
+    for (token_index, token) in lexer_tokens.iter().enumerate() {
+        if token_index % 64 == 0 && should_cancel.is_some_and(|should_cancel| should_cancel()) {
+            return None;
+        }
+        if token.kind == TokenKind::Whitespace || token.kind == TokenKind::Eof {
+            continue;
+        }
+        if is_preprocessor_line_token(source, *token) {
+            if let Some(token_type) = preprocessor_line_semantic_type(source, *token) {
+                push_raw_semantic_token(&mut tokens, raw_semantic(*token, token_type, 0, 20));
+            }
+            continue;
+        }
+        if let Some(role) = attribute_roles.get(&token_index).copied() {
+            let token_type = match role {
+                AttributeIdentifierRole::AttributeName => semantic_type_index("class"),
+                AttributeIdentifierRole::NamedArgumentLabel => semantic_type_index("variable"),
+                AttributeIdentifierRole::StaticOwner => semantic_type_index("class"),
+                AttributeIdentifierRole::MemberCallName => semantic_type_index("method"),
+                AttributeIdentifierRole::MemberValueName => semantic_type_index("enumMember"),
+                AttributeIdentifierRole::TypeLikeUnqualifiedValue => semantic_type_index("class"),
+                AttributeIdentifierRole::UnqualifiedValue => semantic_type_index("variable"),
+            };
+            let priority = match role {
+                AttributeIdentifierRole::UnqualifiedValue => RESOLVER_REFERENCE_PRIORITY,
+                AttributeIdentifierRole::TypeLikeUnqualifiedValue => TYPE_SPAN_PRIORITY,
+                _ => TYPE_SPAN_PRIORITY,
+            };
+            push_raw_semantic_token(&mut tokens, raw_semantic(*token, token_type, 0, priority));
+        }
+        if let Some(role) = call_roles.get(&token_index).copied() {
+            let token_type = match role {
+                CallIdentifierRole::UnqualifiedCall => semantic_type_index("function"),
+                CallIdentifierRole::MemberCall => semantic_type_index("method"),
+            };
+            push_raw_semantic_token(
+                &mut tokens,
+                raw_semantic(*token, token_type, 0, RESOLVER_REFERENCE_PRIORITY),
+            );
+        }
+        if let Some(role) = static_member_roles.get(&token_index).copied() {
+            let token_type = match role {
+                StaticMemberIdentifierRole::Owner => semantic_type_index("class"),
+                StaticMemberIdentifierRole::MemberValue => semantic_type_index("enumMember"),
+            };
+            push_raw_semantic_token(
+                &mut tokens,
+                raw_semantic(*token, token_type, 0, TYPE_SPAN_PRIORITY),
+            );
+        }
+        if let Some(token_type) = lexical_semantic_type(token.kind) {
+            let priority = if is_comment_token_kind(token.kind) {
+                200
+            } else {
+                10
+            };
+            push_raw_semantic_token(&mut tokens, raw_semantic(*token, token_type, 0, priority));
+        }
+    }
+
+    let sort_filter_split_start = Instant::now();
+    tokens.sort_by_key(|token| {
+        (
+            token.span.start,
+            std::cmp::Reverse(token.priority),
+            std::cmp::Reverse(token.span.len()),
+        )
+    });
+    let mut filtered = Vec::new();
+    for token in tokens {
+        if filtered.len() % 1024 == 0 && should_cancel.is_some_and(|should_cancel| should_cancel())
+        {
+            return None;
+        }
+        if filtered
+            .last()
+            .is_some_and(|last: &RawSemanticToken| token.span.start < last.span.end)
+        {
+            continue;
+        }
+        filtered.push(token);
+    }
+    filtered.sort_by_key(|token| (token.span.start, token.span.end));
+    let tokens = split_multiline_semantic_tokens(source, filtered, should_cancel)?
+        .into_iter()
+        .take(MAX_RAW_SEMANTIC_TOKENS)
+        .collect();
+    Some(RawSemanticTokenProjection {
+        tokens,
+        timings: LspSemanticTokenTimings {
+            lex_ms: lex_elapsed.as_millis(),
+            token_loop_ms: token_loop_start.elapsed().as_millis(),
+            resolver_ms: 0,
+            declaration_overlay_ms: 0,
+            sort_filter_split_ms: sort_filter_split_start.elapsed().as_millis(),
+            encode_ms: 0,
+            decode_debug_ms: 0,
+            identifier_resolver_calls: 0,
         },
     })
 }
@@ -1270,6 +1429,53 @@ fn is_preprocessor_directive_token(source: &str, token: Token) -> bool {
 mod tests {
     use super::*;
     use std::cell::Cell;
+
+    #[test]
+    fn lexical_projection_colours_current_malformed_source_without_analysis() {
+        let source = "class Broken {\n// current edit";
+
+        let projection = lexical_semantic_tokens_for_source(source);
+
+        assert_eq!(projection.parse_diagnostics, 0);
+        assert_eq!(projection.timings.identifier_resolver_calls, 0);
+        assert_eq!(projection.tokens.data.len() % 5, 0);
+        assert!(projection.token_count >= 3);
+    }
+
+    #[test]
+    fn lexical_projection_encodes_utf16_positions_across_crlf_multiline_comments() {
+        let source = "/* 😀\r\nstill";
+
+        let projection = lexical_semantic_tokens_for_source(source);
+
+        assert_eq!(
+            projection.tokens.data,
+            vec![
+                0,
+                0,
+                5,
+                semantic_type_index("comment"),
+                0,
+                1,
+                0,
+                5,
+                semantic_type_index("comment"),
+                0,
+            ]
+        );
+    }
+
+    #[test]
+    fn rich_resolver_refinement_has_a_fixed_call_budget() {
+        let source = (0..(MAX_RICH_RESOLVER_CALLS * 3))
+            .map(|index| format!("Unknown{index};\n"))
+            .collect::<String>();
+
+        let projection = semantic_tokens_for_source_with_external(&source, None);
+
+        assert!(projection.timings.identifier_resolver_calls <= MAX_RICH_RESOLVER_CALLS);
+        assert!(projection.token_count >= MAX_RICH_RESOLVER_CALLS * 2);
+    }
 
     #[test]
     fn multiline_token_expansion_respects_the_final_output_cap() {

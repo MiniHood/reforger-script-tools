@@ -4,6 +4,10 @@ use crate::model::{
     CallableForm, ConditionalBranch, PreprocessorBranchKind, SourceFileMetadata, SourceKind,
     SymbolCatalog, SymbolId, SymbolKind,
 };
+use crate::semantic_file::{
+    SemanticCallableForm, SemanticConditionalBranchKind, SemanticDeclarationKind,
+    SemanticDocCommentKind, SemanticFile,
+};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -360,6 +364,137 @@ impl SymbolIndex {
             self.symbols.push(symbol);
         }
 
+        file_id
+    }
+
+    /// Adds compiler-owned declaration facts without constructing the legacy
+    /// `SymbolCatalog`.  This is intentionally an ingestion seam only: callers
+    /// continue to choose when a file is parsed and when its immutable facts
+    /// are published into an index.
+    pub fn add_semantic_file(
+        &mut self,
+        semantic_file: &SemanticFile,
+        metadata: SourceFileMetadata,
+    ) -> SourceFileId {
+        let file_id = SourceFileId(self.files.len());
+        let symbol_start = self.symbols.len();
+
+        self.files.push(IndexedFile {
+            id: file_id,
+            metadata,
+            symbol_start,
+            symbol_count: semantic_file.declarations().len(),
+            non_declaration_callable_fragments: semantic_file.non_declaration_callable_fragments(),
+        });
+
+        for declaration in semantic_file.declarations() {
+            let id = GlobalSymbolId {
+                file_id,
+                symbol_id: SymbolId(declaration.id.0 as usize),
+            };
+            let parent = declaration.parent.map(|parent| GlobalSymbolId {
+                file_id,
+                symbol_id: SymbolId(parent.0 as usize),
+            });
+            self.symbols.push(IndexedSymbol {
+                id,
+                parent,
+                kind: indexed_symbol_kind(declaration.kind),
+                name: declaration.name.as_ref().map(|value| value.text.clone()),
+                span: declaration.span,
+                selection_span: declaration.selection_span,
+                detail: IndexedSymbolDetail {
+                    type_text: declaration
+                        .detail
+                        .type_text
+                        .as_ref()
+                        .map(|value| value.text.clone()),
+                    type_text_span: declaration
+                        .detail
+                        .type_text
+                        .as_ref()
+                        .map(|value| value.span),
+                    return_type_text: declaration
+                        .detail
+                        .return_type
+                        .as_ref()
+                        .map(|value| value.text.clone()),
+                    return_type_text_span: declaration
+                        .detail
+                        .return_type
+                        .as_ref()
+                        .map(|value| value.span),
+                    base_type: declaration
+                        .detail
+                        .base_type
+                        .as_ref()
+                        .map(|value| value.text.clone()),
+                    base_type_span: declaration
+                        .detail
+                        .base_type
+                        .as_ref()
+                        .map(|value| value.span),
+                    default_text: declaration
+                        .detail
+                        .default_value
+                        .as_ref()
+                        .map(|value| value.text.clone()),
+                    default_text_span: declaration
+                        .detail
+                        .default_value
+                        .as_ref()
+                        .map(|value| value.span),
+                    enum_value_text: declaration
+                        .detail
+                        .enum_value
+                        .as_ref()
+                        .map(|value| value.text.clone()),
+                    enum_value_text_span: declaration
+                        .detail
+                        .enum_value
+                        .as_ref()
+                        .map(|value| value.span),
+                },
+                attributes: declaration
+                    .attributes
+                    .iter()
+                    .map(|attribute| IndexedAttribute {
+                        name: semantic_attribute_name(&attribute.text).map(str::to_owned),
+                        text: attribute.text.clone(),
+                    })
+                    .collect(),
+                modifiers: declaration
+                    .modifiers
+                    .iter()
+                    .map(|modifier| modifier.text.clone())
+                    .collect(),
+                doc_comments: declaration
+                    .doc_comments
+                    .iter()
+                    .map(|comment| IndexedDocComment {
+                        kind: match comment.kind {
+                            SemanticDocCommentKind::Line => DocCommentKind::Line,
+                            SemanticDocCommentKind::Block => DocCommentKind::Block,
+                        },
+                        text: comment.text.clone(),
+                    })
+                    .collect(),
+                conditional_context: declaration
+                    .conditional_context
+                    .iter()
+                    .map(|branch| IndexedConditionalBranch {
+                        kind: indexed_conditional_kind(branch.kind),
+                        condition: branch
+                            .condition
+                            .as_ref()
+                            .map(|condition| condition.text.clone()),
+                    })
+                    .collect(),
+                callable_form: declaration.callable_form.map(indexed_callable_form),
+            });
+        }
+
+        self.rebuild_lookup_maps();
         file_id
     }
 
@@ -1167,6 +1302,54 @@ fn indexed_conditional_context<'source>(
         .collect()
 }
 
+fn indexed_symbol_kind(kind: SemanticDeclarationKind) -> SymbolKind {
+    match kind {
+        SemanticDeclarationKind::Class => SymbolKind::Class,
+        SemanticDeclarationKind::TypeParameter => SymbolKind::TypeParameter,
+        SemanticDeclarationKind::Enum => SymbolKind::Enum,
+        SemanticDeclarationKind::EnumMember => SymbolKind::EnumMember,
+        SemanticDeclarationKind::Typedef => SymbolKind::Typedef,
+        SemanticDeclarationKind::Function => SymbolKind::Function,
+        SemanticDeclarationKind::GlobalField => SymbolKind::GlobalField,
+        SemanticDeclarationKind::Field => SymbolKind::Field,
+        SemanticDeclarationKind::Method => SymbolKind::Method,
+        SemanticDeclarationKind::Constructor => SymbolKind::Constructor,
+        SemanticDeclarationKind::Destructor => SymbolKind::Destructor,
+        SemanticDeclarationKind::Parameter => SymbolKind::Parameter,
+        SemanticDeclarationKind::LocalVariable => SymbolKind::LocalVariable,
+        SemanticDeclarationKind::PreprocessorMacro => SymbolKind::PreprocessorMacro,
+    }
+}
+
+fn indexed_callable_form(form: SemanticCallableForm) -> CallableForm {
+    match form {
+        SemanticCallableForm::Implementation => CallableForm::Implementation,
+        SemanticCallableForm::Declaration => CallableForm::Declaration,
+        SemanticCallableForm::Prototype => CallableForm::Prototype,
+    }
+}
+
+fn indexed_conditional_kind(kind: SemanticConditionalBranchKind) -> PreprocessorBranchKind {
+    match kind {
+        SemanticConditionalBranchKind::If => PreprocessorBranchKind::If,
+        SemanticConditionalBranchKind::Ifdef => PreprocessorBranchKind::Ifdef,
+        SemanticConditionalBranchKind::Ifndef => PreprocessorBranchKind::Ifndef,
+        SemanticConditionalBranchKind::Elif => PreprocessorBranchKind::Elif,
+        SemanticConditionalBranchKind::Else => PreprocessorBranchKind::Else,
+    }
+}
+
+fn semantic_attribute_name(text: &str) -> Option<&str> {
+    let trimmed = text.trim_start();
+    let trimmed = trimmed.strip_prefix('[').unwrap_or(trimmed).trim_start();
+    let end = trimmed
+        .char_indices()
+        .take_while(|(_, value)| value.is_ascii_alphanumeric() || *value == '_')
+        .map(|(index, value)| index + value.len_utf8())
+        .last()?;
+    Some(&trimmed[..end])
+}
+
 fn is_class_member_kind(kind: SymbolKind) -> bool {
     matches!(
         kind,
@@ -1253,7 +1436,56 @@ mod tests {
         SOURCE_PRIORITY_WORKSPACE,
     };
     use crate::parser::parse_source;
+    use crate::semantic_file::SemanticFile;
     use std::path::PathBuf;
+
+    #[test]
+    fn semantic_file_ingestion_matches_legacy_declaration_indexing() {
+        let source = r#"typedef int Count;
+class Example : Base
+{
+    int m_Value;
+    void Run(string label = "x");
+}
+void Start();
+"#;
+        let metadata = SourceFileMetadata::unknown();
+        let legacy_catalog = catalog(source, metadata.clone());
+        let legacy = SymbolIndex::from_catalogs([&legacy_catalog]);
+
+        let parse = parse_source(source);
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
+        let semantic_file = SemanticFile::build(source, &AstSourceFile::new(source, &parse));
+        let mut semantic = SymbolIndex::default();
+        semantic.add_semantic_file(&semantic_file, metadata);
+
+        assert_eq!(semantic.files(), legacy.files());
+        assert_eq!(semantic.symbols().len(), legacy.symbols().len());
+        for (actual, expected) in semantic.symbols().iter().zip(legacy.symbols()) {
+            assert_eq!(actual.id, expected.id);
+            assert_eq!(actual.parent, expected.parent);
+            assert_eq!(actual.kind, expected.kind);
+            assert_eq!(actual.name, expected.name);
+            assert_eq!(actual.span, expected.span);
+            assert_eq!(actual.selection_span, expected.selection_span);
+            assert_eq!(actual.detail, expected.detail);
+            assert_eq!(actual.attributes, expected.attributes);
+            assert_eq!(actual.modifiers, expected.modifiers);
+            assert_eq!(actual.doc_comments, expected.doc_comments);
+        }
+        assert_eq!(
+            semantic.methods_by_owner_name("Example", "Run"),
+            legacy.methods_by_owner_name("Example", "Run")
+        );
+        assert_eq!(
+            semantic.fields_by_owner_name("Example", "m_Value"),
+            legacy.fields_by_owner_name("Example", "m_Value")
+        );
+        assert_eq!(
+            semantic.functions_by_name("Start"),
+            legacy.functions_by_name("Start")
+        );
+    }
 
     #[test]
     fn indexes_names_kinds_children_classes_typedefs_and_methods() {

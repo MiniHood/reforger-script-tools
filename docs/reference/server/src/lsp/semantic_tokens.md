@@ -13,9 +13,12 @@ external indexing, or any TextMate/TypeScript coloring path.
 
 ## Current Behavior
 
-The fast pass returns lexical, declaration, and cached scope-reference colors
-immediately. A rich pass overlays resolver-backed references and external
-workspace/game-data facts. Both use the same cached document analysis; the
+The foreground lexical projection reads only the current source and lexer
+output, so it remains available while syntax and semantic analysis for a newer
+revision is pending. It deliberately emits no parser diagnostics, declaration,
+scope, or resolver facts. The fast pass returns lexical, declaration, and
+cached scope-reference colors once cached analysis is available. A rich pass
+overlays resolver-backed references and external workspace/game-data facts. The
 runtime accepts rich output only when its document revision and external
 generation still match.
 
@@ -32,6 +35,11 @@ declaration overlays, filtering, multiline splitting, and UTF-16 encoding.
 The latter phases poll at bounded intervals, so a superseded revision cannot
 spend an unbounded tail encoding tokens that will be discarded.
 
+Resolver-backed rich refinement is additionally capped at 96 identifier
+resolutions per document projection. The full lexical/fast token baseline still
+classifies every token; only optional cross-file resolver overlays stop at the
+budget, so a large file cannot turn rich coloring into a foreground competitor.
+
 Semantic tokens are the only Enforce editor-coloring source. The palette helper
 is shared only for best-effort hover presentation; it does not create a second
 editor coloring pipeline.
@@ -39,8 +47,9 @@ editor coloring pipeline.
 ## Dependencies and Boundaries
 
 Depends on lexer/parser/model/index/resolver facts, cached `FileIndexAnalysis`,
-and external snapshots. [open_documents.md](open_documents.md) owns cache
-identity; `lsp.rs` owns workers, cancellation, and refresh coalescing.
+and external snapshots. The lexical foreground entrypoint depends only on the
+current source and lexer output. [open_documents.md](open_documents.md) owns
+cache identity; `lsp.rs` owns workers, cancellation, and refresh coalescing.
 
 ## Verification
 

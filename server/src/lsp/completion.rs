@@ -189,6 +189,45 @@ pub(crate) fn completion_report_for_cached_analysis_with_external_indexes(
     completion_report_for_offset(source, analysis, offset, workspace_index, game_data_index)
 }
 
+/// Returns the current-revision lexical/top-level completion contract while a
+/// whole-file analysis is still converging.  It intentionally supplies no
+/// stale local scope or syntax facts: the lightweight analysis has current
+/// lexer tokens plus an empty local index, so candidates are limited to
+/// independently valid workspace/game-data and language facts.
+pub(crate) fn completion_report_for_lexical_source_with_external_indexes(
+    source: &str,
+    position: LspPosition,
+    workspace_index: Option<&SymbolIndex>,
+    game_data_index: Option<&SymbolIndex>,
+) -> LspCompletionReport {
+    let Some(offset) = offset_for_position(source, position) else {
+        return empty_completion_report(0);
+    };
+    completion_report_for_lexical_source_at_offset_with_external_indexes(
+        source,
+        offset,
+        workspace_index,
+        game_data_index,
+    )
+}
+
+pub(crate) fn completion_report_for_lexical_source_at_offset_with_external_indexes(
+    source: &str,
+    offset: usize,
+    workspace_index: Option<&SymbolIndex>,
+    game_data_index: Option<&SymbolIndex>,
+) -> LspCompletionReport {
+    let mut lexical_analysis = file_index_for_source("");
+    lexical_analysis.lexer_tokens = lex(source);
+    completion_report_for_offset(
+        source,
+        &lexical_analysis,
+        offset,
+        workspace_index,
+        game_data_index,
+    )
+}
+
 pub(crate) fn completion_debug_markdown(
     report: &LspCompletionReport,
     uri: &str,
@@ -2571,6 +2610,27 @@ mod tests {
                 character: 5,
             },
         }
+    }
+
+    #[test]
+    fn lexical_pending_completion_uses_current_prefix_and_external_top_level_symbols() {
+        let external = file_index_for_source("class GetGameMode {}").index;
+        let report = completion_report_for_lexical_source_with_external_indexes(
+            "getga",
+            LspPosition {
+                line: 0,
+                character: 5,
+            },
+            Some(&external),
+            None,
+        );
+
+        assert_eq!(report.prefix, "getga");
+        assert!(report
+            .list
+            .items
+            .iter()
+            .any(|item| item.label == "GetGameMode"));
     }
 
     #[test]

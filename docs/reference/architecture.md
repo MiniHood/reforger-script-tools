@@ -22,16 +22,17 @@ flowchart TB
     subgraph Rust["Rust language server"]
         direction TB
         Transport[LSP transport and request dispatch]
-        Documents[Open-document state<br/>text, revision, cached analysis]
+        Runtime[Analysis runtime<br/>immutable document snapshots,<br/>revision admission, cancellation]
         Parse[Lexer and parser]
-        Syntax[Syntax/AST and diagnostics]
-        Semantic[Semantic model, scope, and file index]
-        External[External overlay<br/>workspace and game-data indexes]
+        Syntax[Typed CST, navigation, and diagnostics]
+        Semantic[Semantic file and query kernel]
+        External[Immutable workspace snapshot<br/>workspace and game-data contributions]
         Features[Feature projection<br/>hover, completion, definition,<br/>semantic tokens, formatting]
         Results[LSP responses, diagnostics,<br/>and refresh notifications]
 
-        Transport -->|didOpen, didChange, didClose| Documents
-        Documents --> Parse --> Syntax --> Semantic
+        Transport -->|didOpen, didChange, didClose| Runtime
+        Runtime --> Parse --> Syntax --> Semantic
+        Runtime -->|current lexical snapshot| Features
         Transport -->|workspace file notifications and startup paths| External
         Semantic --> Features
         External -->|snapshot of external facts| Features
@@ -44,11 +45,14 @@ flowchart TB
     Workbench[Reforger Workbench/compiler] -. validates language truth .-> Semantic
 ```
 
-Open documents follow one cached analysis path through the Rust language engine.
-Feature handlers combine that file-local analysis with a snapshot of external
-workspace and game-data facts, then return protocol-shaped results. Background
-indexing may refresh those facts, but it never moves language intelligence into
-the TypeScript client.
+Open documents enter a compiler-owned analysis runtime that admits immutable,
+revisioned snapshots. Lexical feedback, syntax/cursor queries, whole-file
+semantic construction, and rich resolver refinement have distinct contracts;
+no feature may combine current text with old local semantic facts. Feature
+handlers consume the minimum current snapshot layer they need plus one immutable
+workspace/game-data snapshot, then return protocol-shaped results. Background
+indexing may refresh external facts, but it never moves language intelligence
+into the TypeScript client.
 
 ## Ownership
 
@@ -57,7 +61,7 @@ the TypeScript client.
 | VS Code extension host | Activation, commands, configuration, user-facing prompts, global-storage paths, process lifecycle, and editor integration | Parsing, semantic analysis, indexing, or feature-specific language decisions |
 | Game-data service | Resolving manual/downloaded game scripts and maintaining their global-storage metadata | Language parsing, semantic modeling, or Workbench validation |
 | TypeScript language client | Bundled-server resolution, stdio transport, document/watch notifications, and thin rendering bridges | Tokenization, symbol lookup, completion ranking, hover generation, or type reasoning |
-| Rust language server | Lexing, parsing, syntax/AST, semantic model, workspace/game-data indexes, diagnostics, formatting, and LSP handlers | VS Code commands, UI prompts, extension settings, and game-data download flows |
+| Rust language server | Analysis runtime, lexing, parsing, typed CST, semantic/query model, workspace/game-data snapshots, diagnostics, formatting, and LSP handlers | VS Code commands, UI prompts, extension settings, and game-data download flows |
 | Workbench/compiler | Ground-truth validation of uncertain Enfusion Script behavior | Runtime LSP service or extension architecture |
 
 ## Data Boundaries

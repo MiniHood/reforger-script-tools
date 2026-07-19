@@ -46,11 +46,6 @@ export const languageClientLanguage = {
 	id: 'enforce',
 } as const;
 
-export const languageClientCompletion = {
-	deletionRetriggerDebounceMs: 75,
-	insertionRetriggerDebounceMs: 75,
-} as const;
-
 export const languageClientRequests = {
 	debugHover: 'reforger/debugHover',
 	debugCompletion: 'reforger/debugCompletion',

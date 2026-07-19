@@ -27,12 +27,16 @@ index layers turn those views into source-backed symbols and lexical visibility
 facts. Type, expression-type, resolver, reference-finder, and symbol-display
 layers provide the semantic facts shared by editor features.
 
-The LSP layer maintains versioned open-document analysis, projects parser
+The LSP layer admits immutable, versioned open-document snapshots through its
+compiler-owned runtime, derives analysis caches from those snapshots, projects parser
 diagnostics and document symbols, and serves resolver-backed hover, definition,
 completion, signature help, and semantic tokens. It combines file-local facts
 with a background-maintained overlay of workspace and game-data indexes. Feature
 responses use LSP UTF-16 positions and reject stale background results rather
 than allowing an old document or overlay revision to replace current state.
+Foreground fallbacks declare their query quality explicitly: unavailable local
+facts may produce only independently valid lexical/top-level results, never
+stale scope or receiver facts.
 
 Formatting remains a planned engine capability; its intended boundary is
 documented in [formatting.md](server/src/formatting.md).
@@ -45,6 +49,9 @@ LSP adapters translate protocol data at the boundary and delegate language
 decisions to the engine layers. External source roots and cache locations arrive
 as resolved inputs; indexing consumes them but does not discover or download
 them.
+
+Snapshot and admission ownership is specified in
+[analysis_runtime.md](server/src/analysis_runtime.md).
 
 ## Verification
 

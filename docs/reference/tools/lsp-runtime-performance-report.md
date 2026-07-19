@@ -20,6 +20,10 @@ The report summarizes logged elapsed work by operation, file/URI, one-second tim
 - completion candidate lookup time
 - `didChange` parse/catalog/index/scope timing
 - lazy document-symbol projection spikes
+- first usable token and completion responses after an accepted snapshot
+- current-snapshot versus unpaired foreground-response correlation
+- explicit runtime admission/overload dispositions when emitted
+- explicit rich/debug cancellation tails when emitted
 
 It accepts:
 
@@ -46,6 +50,29 @@ zero analysis work; compare it with the background-analysis totals.
 The report reads the runtime log without modifying it. It never emits source text, completion prefixes, or completion payload fields, even if legacy log records contain them.
 
 The report does not sample OS CPU directly. It uses logged elapsed timings as the first debugging pass for identifying which LSP subsystem likely caused CPU use or visible delay. When logs include `queue_ms`, completion sections separate execution time from perceived latency caused by waiting behind earlier LSP work.
+
+## Foreground, Snapshot, and Cancellation Evidence
+
+**First Usable Foreground Response** correlates an accepted `didOpen` or
+`didChange` snapshot with the first later `semanticTokens` or `completion`
+record for the same URI and revision. It measures observed log time only; the
+report never inspects source text, typed prefixes, or completion payloads.
+`lexical-pending` counts show how often the first token response was available
+before semantic analysis completed.
+
+**Snapshot Quality** marks a foreground response current only when its URI and
+revision match accepted ingress in the selected window. A missing match is
+unpaired, not assumed stale. Semantic ready, skipped, and discarded records are
+reported separately.
+
+**Admission and Overload** consumes explicit `disposition`, `admission`, or
+`outcome` fields (or recognized runtime admission records). If a legacy log
+does not contain them, the report says that admission evidence is unavailable;
+worker completion is not mistaken for admission.
+
+**Cancellation Tails** use only `cancellation_tail_ms` or `tail_ms` on a
+terminal cancellation record. Total worker elapsed time is deliberately not
+used as a tail proxy because it includes useful work before cancellation.
 
 ## Dependencies and Boundaries
 

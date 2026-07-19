@@ -1,9 +1,11 @@
+use crate::analysis_runtime::DocumentSnapshot;
 use crate::ast::AstSourceFile;
 use crate::index::SymbolIndex;
 use crate::lexer::{lex, Token};
-use crate::model::{SourceFileMetadata, SymbolCatalog};
+use crate::model::SourceFileMetadata;
 use crate::parser::parse_source;
 use crate::scope::LexicalScopeModel;
+use crate::semantic_file::SemanticFile;
 use crate::syntax::{Parse, ParseDiagnostic};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -15,42 +17,79 @@ use super::semantic_tokens::LspSemanticTokenProjection;
 use super::LspDocumentSymbol;
 
 pub(crate) struct OpenDocument {
-    pub(crate) text: String,
+    /// The runtime-owned immutable source identity.  Analysis and caches below
+    /// are derived state only and may never outlive this revision.
+    pub(crate) snapshot: DocumentSnapshot,
+    // Compatibility views share the snapshot's `Arc<str>` allocation.  They
+    // exist only while feature adapters migrate to snapshot access; ownership
+    // and admission remain in `AnalysisRuntime`.
+    pub(crate) text: Arc<str>,
     pub(crate) version: i32,
     pub(crate) revision: u64,
-    pub(crate) analysis: FileIndexAnalysis,
-    pub(crate) analysis_timings: FileIndexAnalysisTimings,
-    analysis_revision: u64,
+    analysis: Option<FileIndexAnalysis>,
+    analysis_timings: Option<FileIndexAnalysisTimings>,
     analysis_cancel: Option<Arc<AtomicBool>>,
+    analysis_rejected: bool,
     document_symbols: Vec<LspDocumentSymbol>,
     document_symbols_ready: bool,
     pub(crate) semantic_tokens: SemanticTokenCache,
 }
 
 impl OpenDocument {
-    pub(crate) fn new(text: String, version: i32, revision: u64) -> Self {
-        let (analysis, analysis_timings) = file_index_for_source_with_timings(&text);
+    pub(crate) fn new(snapshot: DocumentSnapshot) -> Self {
+        let (analysis, analysis_timings) = file_index_for_source_with_timings(snapshot.text());
+        let text = snapshot.text_arc();
+        let version = snapshot.version();
+        let revision = snapshot.revision();
         Self {
+            snapshot,
             text,
             version,
             revision,
-            analysis,
-            analysis_timings,
-            analysis_revision: revision,
+            analysis: Some(analysis),
+            analysis_timings: Some(analysis_timings),
             analysis_cancel: None,
+            analysis_rejected: false,
             document_symbols: Vec::new(),
             document_symbols_ready: false,
             semantic_tokens: SemanticTokenCache::default(),
         }
     }
 
-    pub(crate) fn replace(&mut self, text: String, version: i32) {
+    /// Creates a cache whose source snapshot is authoritative but whose
+    /// compiler analysis has not run yet. Feature dispatch must therefore use
+    /// only a foreground-safe projection until the worker installs this
+    /// revision; no legacy empty-file analysis exists in this state.
+    pub(crate) fn pending(snapshot: DocumentSnapshot) -> Self {
+        let text = snapshot.text_arc();
+        let version = snapshot.version();
+        let revision = snapshot.revision();
+        Self {
+            snapshot,
+            text,
+            version,
+            revision,
+            analysis: None,
+            analysis_timings: None,
+            analysis_cancel: None,
+            analysis_rejected: false,
+            document_symbols: Vec::new(),
+            document_symbols_ready: false,
+            semantic_tokens: SemanticTokenCache::default(),
+        }
+    }
+
+    pub(crate) fn replace(&mut self, snapshot: DocumentSnapshot) {
         if let Some(cancel) = self.analysis_cancel.take() {
             cancel.store(true, Ordering::Relaxed);
         }
-        self.text = text;
-        self.version = version;
-        self.revision += 1;
+        self.text = snapshot.text_arc();
+        self.version = snapshot.version();
+        self.revision = snapshot.revision();
+        self.snapshot = snapshot;
+        self.analysis = None;
+        self.analysis_timings = None;
+        self.analysis_rejected = false;
         self.document_symbols.clear();
         self.document_symbols_ready = false;
         self.semantic_tokens.cancel_pending();
@@ -58,10 +97,22 @@ impl OpenDocument {
     }
 
     pub(crate) fn analysis_ready(&self) -> bool {
-        self.analysis_revision == self.revision
+        self.analysis.is_some()
+    }
+
+    pub(crate) fn analysis(&self) -> &FileIndexAnalysis {
+        self.analysis
+            .as_ref()
+            .expect("ready analysis is required by this feature path")
+    }
+
+    pub(crate) fn analysis_timings(&self) -> FileIndexAnalysisTimings {
+        self.analysis_timings
+            .expect("ready analysis timings are required by this feature path")
     }
 
     pub(crate) fn mark_analysis_pending(&mut self) -> Arc<AtomicBool> {
+        self.analysis_rejected = false;
         let cancel = Arc::new(AtomicBool::new(false));
         self.analysis_cancel = Some(cancel.clone());
         cancel
@@ -73,18 +124,30 @@ impl OpenDocument {
         }
     }
 
+    /// Marks the matching revision unavailable after deterministic runtime
+    /// overload. Request dispatch must respond rather than retaining an
+    /// unbounded deferred request that can never be replayed.
+    pub(crate) fn reject_pending_analysis(&mut self) {
+        self.cancel_pending_analysis();
+        self.analysis_rejected = true;
+    }
+
+    pub(crate) fn analysis_rejected(&self) -> bool {
+        self.analysis_rejected
+    }
+
     pub(crate) fn install_analysis(
         &mut self,
         revision: u64,
         analysis: FileIndexAnalysis,
         analysis_timings: FileIndexAnalysisTimings,
     ) -> bool {
-        if revision != self.revision {
+        if revision != self.snapshot.revision() {
             return false;
         }
-        self.analysis = analysis;
-        self.analysis_timings = analysis_timings;
-        self.analysis_revision = revision;
+        self.analysis = Some(analysis);
+        self.analysis_timings = Some(analysis_timings);
+        self.analysis_rejected = false;
         self.analysis_cancel = None;
         true
     }
@@ -225,9 +288,12 @@ pub(crate) fn file_index_for_source_with_timings(
     let diagnostics = parse.diagnostics.clone();
     let ast = AstSourceFile::new(source, &parse);
     let catalog_start = Instant::now();
-    let catalog = SymbolCatalog::from_ast_with_metadata(
-        source,
-        &ast,
+    let semantic_file = SemanticFile::build(source, &ast);
+    let catalog_ms = catalog_start.elapsed().as_millis();
+    let index_start = Instant::now();
+    let mut index = SymbolIndex::default();
+    index.add_semantic_file(
+        &semantic_file,
         SourceFileMetadata {
             kind: crate::model::SourceKind::Workspace,
             category: crate::model::SourceCategory::Workspace,
@@ -237,10 +303,6 @@ pub(crate) fn file_index_for_source_with_timings(
             priority: crate::model::SOURCE_PRIORITY_WORKSPACE,
         },
     );
-    let catalog_ms = catalog_start.elapsed().as_millis();
-    let index_start = Instant::now();
-    let mut index = SymbolIndex::default();
-    index.add_catalog(&catalog);
     let index_ms = index_start.elapsed().as_millis();
     let scope_start = Instant::now();
     let scope = LexicalScopeModel::from_parse_and_index(&parse, &index);

@@ -1,3 +1,4 @@
+pub mod analysis_runtime;
 pub mod ast;
 pub mod expression_type;
 pub mod index;
@@ -11,6 +12,7 @@ pub mod parser;
 pub mod reference_finder;
 pub mod resolver;
 pub mod scope;
+pub mod semantic_file;
 pub mod symbol_display;
 pub mod syntax;
 pub mod type_facts;

@@ -1,8 +1,9 @@
 use crate::ast::AstSourceFile;
 use crate::index::SymbolIndex;
 use crate::lexer::TextSpan;
-use crate::model::{source_category_for_path, SourceFileMetadata, SourceKind, SymbolCatalog};
+use crate::model::{source_category_for_path, SourceFileMetadata, SourceKind};
 use crate::parser::parse_source;
+use crate::semantic_file::SemanticFile;
 use crate::syntax::ParseDiagnostic;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -135,7 +136,7 @@ fn build_file(
     index: &mut SymbolIndex,
     summary: &mut IndexBuildSummary,
 ) -> Result<(), String> {
-    let catalog_build_start = Instant::now();
+    let semantic_file_build_start = Instant::now();
     let read_decode_start = Instant::now();
     let bytes =
         fs::read(file).map_err(|error| format!("Failed to read {}: {error}", file.display()))?;
@@ -152,18 +153,23 @@ fn build_file(
 
     let ast_model_catalog_start = Instant::now();
     let ast = AstSourceFile::new(&source, &parse);
-    let catalog = SymbolCatalog::from_ast_with_metadata(
-        &source,
-        &ast,
-        source_metadata(&root.root_path, file, root.kind, root.priority),
-    );
-    let indexed_symbols = catalog.records().len();
-    let non_declaration_callable_fragments = catalog.non_declaration_callable_fragments();
+    let semantic_file = SemanticFile::build(&source, &ast);
+    semantic_file.contribution().validate().map_err(|error| {
+        format!(
+            "Invalid semantic contribution for {}: {error:?}",
+            file.display()
+        )
+    })?;
+    let indexed_symbols = semantic_file.declarations().len();
+    let non_declaration_callable_fragments = semantic_file.non_declaration_callable_fragments();
     summary.timings.ast_model_catalog += ast_model_catalog_start.elapsed();
-    summary.timings.catalog_build += catalog_build_start.elapsed();
+    summary.timings.catalog_build += semantic_file_build_start.elapsed();
 
     let index_build_start = Instant::now();
-    index.add_catalog(&catalog);
+    index.add_semantic_file(
+        &semantic_file,
+        source_metadata(&root.root_path, file, root.kind, root.priority),
+    );
     summary.timings.index_build += index_build_start.elapsed();
 
     record_file_counts(
@@ -388,9 +394,11 @@ fn collect_script_files(folder: &Path, files: &mut Vec<PathBuf>) -> Result<(), S
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::AstSourceFile;
     use crate::model::{
         SourceCategory, SymbolKind, SOURCE_PRIORITY_GAME_DATA, SOURCE_PRIORITY_WORKSPACE,
     };
+    use crate::semantic_file::SemanticFile;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -605,17 +613,16 @@ mod tests {
     }
 
     #[test]
-    fn matches_direct_catalog_pipeline_for_small_fixture() {
+    fn matches_direct_semantic_pipeline_for_small_fixture() {
         let root = test_root("matches_direct");
-        write_file(
-            &root.join("Example.c"),
-            r#"class Example
+        let file = root.join("Example.c");
+        let source = r#"class Example
 {
 	int m_Value;
 	void Run(int value);
 }
-"#,
-        );
+"#;
+        write_file(&file, source);
 
         let result = build_index(&IndexBuildConfig {
             roots: vec![IndexSourceRoot::new(
@@ -626,6 +633,22 @@ mod tests {
         })
         .unwrap();
 
+        let parse = parse_source(source);
+        let ast = AstSourceFile::new(source, &parse);
+        let semantic_file = SemanticFile::build(source, &ast);
+        let mut expected = SymbolIndex::default();
+        expected.add_semantic_file(
+            &semantic_file,
+            source_metadata(
+                &root,
+                &file,
+                SourceKind::GameData,
+                SOURCE_PRIORITY_GAME_DATA,
+            ),
+        );
+
+        assert_eq!(result.index.files(), expected.files());
+        assert_eq!(result.index.symbols(), expected.symbols());
         assert_eq!(result.index.symbols_for_kind(SymbolKind::Class).len(), 1);
         assert_eq!(result.index.symbols_for_kind(SymbolKind::Field).len(), 1);
         assert_eq!(result.index.symbols_for_kind(SymbolKind::Method).len(), 1);

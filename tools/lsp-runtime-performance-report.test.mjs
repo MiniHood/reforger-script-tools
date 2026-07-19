@@ -81,3 +81,33 @@ test("does not reproduce source or completion payload fields in the report", () 
 
   assert.doesNotMatch(report, /DO_NOT_COPY/);
 });
+
+test("correlates first current-snapshot token and completion responses without payload data", () => {
+  const report = runReport([
+    "[1000] notification didChange uri=file:///workspace/GC_MarkerArea.c version=7 revision=42 cached_analysis=false analysis_state=pending elapsed_ms=2",
+    "[1015] request completion uri=file:///workspace/GC_MarkerArea.c revision=42 context=top-level candidates=3 elapsed_ms=5",
+    "[1020] request semanticTokens uri=file:///workspace/GC_MarkerArea.c revision=42 mode=lexical-pending tokens=3 elapsed_ms=2",
+    "[1040] documentAnalysis ready uri=file:///workspace/GC_MarkerArea.c revision=42 elapsed_ms=40",
+  ].join("\n"));
+  assert.match(report, /Usable tokens.*1.*0.*20 ms.*20 ms.*1/);
+  assert.match(report, /Completion.*1.*0.*15 ms.*15 ms/);
+  assert.match(report, /Accepted snapshots.*1/);
+  assert.match(report, /Current foreground responses.*2/);
+  assert.match(report, /Matching semantic publications.*1/);
+});
+
+test("keeps unpaired revisions distinct and parses explicit admission plus cancellation-tail telemetry", () => {
+  const report = runReport([
+    "[1000] notification didChange uri=file:///workspace/GC_MarkerArea.c version=7 revision=42 elapsed_ms=2",
+    "[1010] request semanticTokens uri=file:///workspace/GC_MarkerArea.c revision=41 mode=lexical-pending elapsed_ms=2",
+    "[1020] analysisRuntime admission uri=file:///workspace/GC_MarkerArea.c revision=42 disposition=admitted lane=foreground",
+    "[1030] analysisRuntime admission uri=file:///workspace/GC_MarkerArea.c revision=42 disposition=overloaded lane=rich",
+    "[1040] semanticTokensRich discarded uri=file:///workspace/GC_MarkerArea.c revision=41 reason=cancelled-superseded cancellation_tail_ms=12 elapsed_ms=80",
+  ].join("\n"));
+  assert.match(report, /Unpaired foreground responses.*1/);
+  assert.match(report, /Admitted.*1/);
+  assert.match(report, /Overloaded\/rejected\/dropped.*1/);
+  assert.match(report, /Cancelled terminal records: 1/);
+  assert.match(report, /Measured tails: 1/);
+  assert.match(report, /Cancellation tail p95: 12 ms/);
+});

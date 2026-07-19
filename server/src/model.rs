@@ -315,6 +315,7 @@ impl<'source> SymbolCatalog<'source> {
             metadata,
             records: Vec::new(),
             non_declaration_callable_fragments: 0,
+            directive_contexts: DirectiveContextMap::for_source(source),
         };
         builder.add_ast(ast);
         builder.finish()
@@ -381,6 +382,7 @@ struct SymbolCatalogBuilder<'source> {
     metadata: SourceFileMetadata,
     records: Vec<SymbolRecord>,
     non_declaration_callable_fragments: usize,
+    directive_contexts: DirectiveContextMap,
 }
 
 impl<'source> SymbolCatalogBuilder<'source> {
@@ -629,7 +631,7 @@ impl<'source> SymbolCatalogBuilder<'source> {
             attributes: symbol.attributes,
             modifiers: symbol.modifiers,
             doc_comments: symbol.doc_comments,
-            conditional_context: conditional_context_at(self.source, symbol.span.start),
+            conditional_context: self.directive_contexts.context_at(symbol.span.start),
             callable_form: symbol.callable_form,
         });
         id
@@ -754,6 +756,45 @@ fn is_identifier_continue(character: char) -> bool {
     character == '_' || character.is_ascii_alphanumeric()
 }
 
+#[derive(Debug, Clone)]
+struct DirectiveContextMap {
+    line_contexts: Vec<(usize, Vec<ConditionalBranch>)>,
+}
+
+impl DirectiveContextMap {
+    fn for_source(source: &str) -> Self {
+        let mut line_contexts = Vec::new();
+        let mut context = Vec::new();
+        let mut line_start = 0usize;
+
+        for line in source.split_inclusive('\n') {
+            line_contexts.push((line_start, context.clone()));
+            let line_end = line_start + line.trim_end_matches(['\r', '\n']).len();
+            apply_preprocessor_line(source, line_start, line_end, &mut context);
+            line_start += line.len();
+        }
+        if line_start < source.len() {
+            line_contexts.push((line_start, context.clone()));
+            apply_preprocessor_line(source, line_start, source.len(), &mut context);
+        }
+
+        Self { line_contexts }
+    }
+
+    fn context_at(&self, offset: usize) -> Vec<ConditionalBranch> {
+        let index = self
+            .line_contexts
+            .partition_point(|(line_start, _)| *line_start <= offset)
+            .saturating_sub(1);
+        self.line_contexts
+            .get(index)
+            .map(|(_, context)| context.clone())
+            .unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
 fn conditional_context_at(source: &str, offset: usize) -> Vec<ConditionalBranch> {
     let mut context = Vec::new();
     let mut line_start = 0usize;

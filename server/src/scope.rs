@@ -47,31 +47,40 @@ impl LexicalScopeModel {
             declaration_scopes: Vec::new(),
         };
         let root = model.push_scope(None, LexicalScopeKind::Root, parse.root.span, None);
+        let mut callable_scopes = BTreeMap::new();
+        let mut callable_nodes = Vec::new();
 
-        for callable in index.symbols().iter().filter_map(|symbol| {
-            is_callable_symbol(symbol.kind).then_some((symbol.id, symbol.span))
-        }) {
+        for callable in index
+            .symbols()
+            .iter()
+            .filter(|symbol| is_callable_symbol(symbol.kind))
+        {
             let callable_scope = model.push_scope(
                 Some(root),
                 LexicalScopeKind::Callable,
-                callable.1,
-                Some(callable.0),
+                callable.span,
+                Some(callable.id),
             );
-            collect_scopes_for_callable(&parse.root, callable.1, callable_scope, &mut model);
+            callable_scopes.insert(callable.id, callable_scope);
+            callable_nodes.push((callable.span, callable_scope));
         }
+
+        collect_scopes_once(&parse.root, None, &callable_nodes, &mut model);
 
         for symbol in index.symbols() {
             match symbol.kind {
                 SymbolKind::Parameter => {
-                    if let Some(callable_scope) =
-                        model.scope_for_owner(symbol.parent, LexicalScopeKind::Callable)
+                    if let Some(callable_scope) = symbol
+                        .parent
+                        .and_then(|parent| callable_scopes.get(&parent).copied())
                     {
                         model.attach_symbol(callable_scope, symbol.id);
                     }
                 }
                 SymbolKind::LocalVariable => {
-                    if let Some(callable_scope) =
-                        model.scope_for_owner(symbol.parent, LexicalScopeKind::Callable)
+                    if let Some(callable_scope) = symbol
+                        .parent
+                        .and_then(|parent| callable_scopes.get(&parent).copied())
                     {
                         let scope = model
                             .declaration_scope_at(symbol.selection_span)
@@ -192,17 +201,6 @@ impl LexicalScopeModel {
         }
     }
 
-    fn scope_for_owner(
-        &self,
-        owner: Option<GlobalSymbolId>,
-        kind: LexicalScopeKind,
-    ) -> Option<LexicalScopeId> {
-        self.scopes
-            .iter()
-            .find(|scope| scope.kind == kind && scope.owner == owner)
-            .map(|scope| scope.id)
-    }
-
     fn innermost_scope_under_at(
         &self,
         root: LexicalScopeId,
@@ -233,24 +231,47 @@ fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
         .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
 }
 
-fn collect_scopes_for_callable(
+fn collect_scopes_once(
     node: &SyntaxNode,
-    callable_span: TextSpan,
-    callable_scope: LexicalScopeId,
+    current_scope: Option<LexicalScopeId>,
+    callable_nodes: &[(TextSpan, LexicalScopeId)],
     model: &mut LexicalScopeModel,
 ) {
-    if !spans_overlap(callable_span, node.span) {
+    let current_scope = match node.kind {
+        SyntaxKind::FunctionDecl | SyntaxKind::MethodDecl => callable_nodes
+            .iter()
+            .find_map(|(span, scope)| (*span == node.span).then_some(*scope)),
+        _ => current_scope,
+    };
+
+    let Some(current_scope) = current_scope else {
+        for child in &node.children {
+            if let SyntaxElement::Node(child) = child {
+                collect_scopes_once(child, None, callable_nodes, model);
+            }
+        }
         return;
-    }
+    };
+
     match node.kind {
         SyntaxKind::ForStatement => {
             if let Some(initializer) = direct_child(node, SyntaxKind::ForHeader)
                 .and_then(|header| direct_child(header, SyntaxKind::ForInitializer))
                 .filter(|initializer| has_direct_child(initializer, SyntaxKind::LocalDeclStatement))
             {
-                let scope =
-                    push_nested_scope(model, callable_scope, LexicalScopeKind::ForLoop, node.span);
+                let scope = model.push_scope(
+                    Some(current_scope),
+                    LexicalScopeKind::ForLoop,
+                    node.span,
+                    None,
+                );
                 model.declaration_scopes.push((initializer.span, scope));
+                for child in &node.children {
+                    if let SyntaxElement::Node(child) = child {
+                        collect_scopes_once(child, Some(scope), callable_nodes, model);
+                    }
+                }
+                return;
             }
         }
         SyntaxKind::ForeachStatement => {
@@ -259,49 +280,48 @@ fn collect_scopes_for_callable(
                     .and_then(|header| direct_child(header, SyntaxKind::ForeachVariableList)),
                 statement_body(node, SyntaxKind::ForeachHeader),
             ) {
-                let scope = push_nested_scope(
-                    model,
-                    callable_scope,
+                let scope = model.push_scope(
+                    Some(current_scope),
                     LexicalScopeKind::ForeachLoop,
                     body.span,
+                    None,
                 );
                 model.declaration_scopes.push((variables.span, scope));
+                for child in &node.children {
+                    if let SyntaxElement::Node(child) = child {
+                        let child_scope = (child.span == body.span).then_some(scope);
+                        collect_scopes_once(
+                            child,
+                            child_scope.or(Some(current_scope)),
+                            callable_nodes,
+                            model,
+                        );
+                    }
+                }
+                return;
             }
         }
-        SyntaxKind::Block if span_contains(callable_span, node.span) => {
-            push_nested_scope(model, callable_scope, LexicalScopeKind::Block, node.span);
+        SyntaxKind::Block => {
+            let scope = model.push_scope(
+                Some(current_scope),
+                LexicalScopeKind::Block,
+                node.span,
+                None,
+            );
+            for child in &node.children {
+                if let SyntaxElement::Node(child) = child {
+                    collect_scopes_once(child, Some(scope), callable_nodes, model);
+                }
+            }
+            return;
         }
         _ => {}
     }
     for child in &node.children {
         if let SyntaxElement::Node(child) = child {
-            collect_scopes_for_callable(child, callable_span, callable_scope, model);
+            collect_scopes_once(child, Some(current_scope), callable_nodes, model);
         }
     }
-}
-
-fn push_nested_scope(
-    model: &mut LexicalScopeModel,
-    callable_scope: LexicalScopeId,
-    kind: LexicalScopeKind,
-    span: TextSpan,
-) -> LexicalScopeId {
-    let parent = model
-        .scopes
-        .iter()
-        .filter(|scope| {
-            matches!(
-                scope.kind,
-                LexicalScopeKind::Callable
-                    | LexicalScopeKind::Block
-                    | LexicalScopeKind::ForLoop
-                    | LexicalScopeKind::ForeachLoop
-            ) && span_contains(scope.span, span)
-        })
-        .min_by_key(|scope| (scope.span.len(), std::cmp::Reverse(scope.id.0)))
-        .map(|scope| scope.id)
-        .unwrap_or(callable_scope);
-    model.push_scope(Some(parent), kind, span, None)
 }
 
 fn direct_child(node: &SyntaxNode, kind: SyntaxKind) -> Option<&SyntaxNode> {
@@ -365,10 +385,6 @@ fn contains_offset(span: TextSpan, offset: usize) -> bool {
 
 fn span_contains(outer: TextSpan, inner: TextSpan) -> bool {
     outer.start <= inner.start && inner.end <= outer.end
-}
-
-fn spans_overlap(left: TextSpan, right: TextSpan) -> bool {
-    left.start < right.end && right.start < left.end
 }
 
 #[cfg(test)]
@@ -461,6 +477,45 @@ mod tests {
         let first = index.symbol(visible[0]).unwrap();
         assert_eq!(first.kind, SymbolKind::LocalVariable);
         assert_eq!(first.detail.type_text.as_deref(), Some("string"));
+    }
+
+    #[test]
+    fn keeps_block_scopes_and_locals_with_their_own_callable() {
+        let source = r#"class Example
+{
+	void First()
+	{
+		int first;
+		first;
+	}
+
+	void Second()
+	{
+		int second;
+		second;
+	}
+}
+"#;
+        let (parse, index) = index_for(source);
+        let scopes = LexicalScopeModel::from_parse_and_index(&parse, &index);
+
+        let first_use = source.rfind("first;").expect("first use");
+        let second_use = source.rfind("second;").expect("second use");
+        assert_eq!(
+            scopes
+                .visible_symbols_named(&index, "first", first_use)
+                .len(),
+            1
+        );
+        assert!(scopes
+            .visible_symbols_named(&index, "first", second_use)
+            .is_empty());
+        assert_eq!(
+            scopes
+                .visible_symbols_named(&index, "second", second_use)
+                .len(),
+            1
+        );
     }
 
     #[test]
