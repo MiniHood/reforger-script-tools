@@ -78,7 +78,7 @@ Before finalizing, reconcile the plan against the working tree: every unit is
 completed, explicitly deferred with user approval, or blocked with concrete
 evidence; required verification has passed or has a recorded exception;
 required documentation is complete; and the task-scoped diff is reviewed and
-committed. Attempt the authorized push after the commit; report authentication
+committed. Attempt the commit; report authentication
 failure only after the commit exists. A completed batch is not completion.
 Keep working rather than offering next steps or summarizing unfinished work.
 
