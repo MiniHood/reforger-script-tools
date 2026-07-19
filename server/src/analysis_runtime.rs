@@ -285,7 +285,7 @@ impl DocumentStore {
 /// Runtime lane for CPU-bearing work. The order is also the deterministic
 /// admission priority: foreground work is always dispatched before semantic
 /// convergence, which is dispatched before best-effort rich/debug work.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum TaskClass {
     Foreground,
     Semantic,

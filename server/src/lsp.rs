@@ -86,18 +86,19 @@ pub(crate) use open_documents::{
     file_index_for_source_with_timings, FileIndexAnalysisTimings, OpenDocument,
     TokenProjectionKind, TokenResultDisposition,
 };
-use semantic_tokens::{
-    fast_semantic_tokens_for_cached_analysis, lexical_semantic_tokens_for_source,
-    semantic_tokens_for_cached_analysis_with_external_indexes,
-    semantic_tokens_for_cached_analysis_with_external_indexes_cancelled,
-    LspSemanticTokenProjection, LspSemanticTokens, LspSemanticTokensFull, SEMANTIC_TOKEN_MODIFIERS,
-    SEMANTIC_TOKEN_TYPES,
-};
+#[cfg(test)]
+use semantic_tokens::{fast_semantic_tokens_for_cached_analysis, LspSemanticTokens};
 pub use semantic_tokens::{
     fast_semantic_tokens_for_source, fast_semantic_tokens_report_for_source,
     semantic_tokens_for_source_with_external, semantic_tokens_report_for_source,
     semantic_tokens_report_for_source_with_external, LspSemanticTokenReport,
     LspSemanticTokenTimings, SemanticTokenDebug,
+};
+use semantic_tokens::{
+    lexical_semantic_tokens_for_source, semantic_tokens_for_cached_analysis_with_external_indexes,
+    semantic_tokens_for_cached_analysis_with_external_indexes_cancelled,
+    LspSemanticTokenProjection, LspSemanticTokensFull, SEMANTIC_TOKEN_MODIFIERS,
+    SEMANTIC_TOKEN_TYPES,
 };
 use signature_help::{
     signature_help_debug_markdown, signature_help_report_for_cached_analysis_with_external_indexes,
@@ -141,12 +142,11 @@ pub fn run_stdio(options: LspServerOptions) -> Result<(), String> {
     let stdout = io::stdout();
     let (incoming_sender, incoming_receiver) = mpsc::sync_channel(INCOMING_EVENT_QUEUE_CAPACITY);
     let (internal_sender, internal_receiver) = mpsc::channel();
-    let rich_scheduler = RichSemanticTokensWorker::start(internal_sender.clone());
-    let analysis_scheduler = OpenDocumentAnalysisScheduler::start(internal_sender.clone());
+    let analysis_scheduler = RuntimeWorkExecutor::start(internal_sender.clone());
     let mut server = LspServer::new_with_runtime_senders(
         stdout.lock(),
         options,
-        Some(rich_scheduler),
+        None,
         Some(analysis_scheduler),
         Some(internal_sender),
     );
@@ -238,8 +238,7 @@ struct LspServer<W: Write> {
     runtime: AnalysisRuntime,
     logger: LspLogger,
     external_index: ExternalIndexHandle,
-    rich_scheduler: Option<RichSemanticTokensWorker>,
-    analysis_scheduler: Option<OpenDocumentAnalysisScheduler>,
+    analysis_scheduler: Option<RuntimeWorkExecutor>,
     internal_sender: Option<mpsc::Sender<ServerEvent>>,
     deferred_document_requests: BTreeMap<String, Vec<DeferredDocumentRequest>>,
     next_server_request_id: u64,
@@ -308,12 +307,44 @@ struct OpenDocumentAnalysisJob {
 }
 
 #[derive(Clone)]
-struct OpenDocumentAnalysisScheduler {
-    state: Arc<(Mutex<BTreeMap<String, OpenDocumentAnalysisJob>>, Condvar)>,
+struct RuntimeWorkExecutor {
+    state: Arc<(
+        Mutex<BTreeMap<(TaskClass, String), RuntimeWorkJob>>,
+        Condvar,
+    )>,
     sender: mpsc::Sender<ServerEvent>,
 }
 
-impl OpenDocumentAnalysisScheduler {
+enum RuntimeWorkJob {
+    Semantic(OpenDocumentAnalysisJob),
+    Rich(RichSemanticTokensJob),
+}
+
+impl RuntimeWorkJob {
+    fn task(&self) -> &AnalysisTask {
+        match self {
+            Self::Semantic(job) => &job.task,
+            Self::Rich(job) => &job.task,
+        }
+    }
+
+    fn scheduled_at(&self) -> Instant {
+        match self {
+            Self::Semantic(job) => job.scheduled_at,
+            Self::Rich(job) => job.scheduled_at,
+        }
+    }
+
+    fn due_at(&self) -> Instant {
+        let delay_ms = match self {
+            Self::Semantic(_) => DOCUMENT_ANALYSIS_IDLE_DELAY_MS,
+            Self::Rich(_) => RICH_SEMANTIC_TOKENS_IDLE_DELAY_MS,
+        };
+        self.scheduled_at() + Duration::from_millis(delay_ms)
+    }
+}
+
+impl RuntimeWorkExecutor {
     fn start(sender: mpsc::Sender<ServerEvent>) -> Self {
         let scheduler = Self {
             state: Arc::new((Mutex::new(BTreeMap::new()), Condvar::new())),
@@ -325,23 +356,31 @@ impl OpenDocumentAnalysisScheduler {
     }
 
     fn schedule(&self, job: OpenDocumentAnalysisJob) {
+        self.schedule_work(RuntimeWorkJob::Semantic(job));
+    }
+
+    fn schedule_rich(&self, job: RichSemanticTokensJob) {
+        self.schedule_work(RuntimeWorkJob::Rich(job));
+    }
+
+    fn schedule_work(&self, job: RuntimeWorkJob) {
         let (lock, wake) = &*self.state;
         let mut pending = lock.lock().unwrap();
-        if !pending.contains_key(job.task.identity().uri())
-            && pending.len() >= MAX_PENDING_DOCUMENT_ANALYSIS_JOBS
-        {
-            let evicted_uri = earliest_due_document_analysis_uri(&pending)
+        let key = (
+            job.task().identity().class(),
+            job.task().identity().uri().to_string(),
+        );
+        if !pending.contains_key(&key) && pending.len() >= MAX_PENDING_DOCUMENT_ANALYSIS_JOBS {
+            let evicted_key = next_runnable_work_key(&pending, Instant::now())
                 .expect("non-empty full scheduler has an eviction candidate");
-            let evicted = pending.remove(&evicted_uri).expect("candidate is retained");
-            evicted.task.cancel();
-            let _ = self.sender.send(ServerEvent::DocumentAnalysisSkipped {
-                task: evicted.task.identity().clone(),
-                reason: "scheduler-capacity-evicted".to_string(),
-                elapsed_ms: evicted.scheduled_at.elapsed().as_millis(),
-            });
+            if let Some(evicted) = pending.remove(&evicted_key) {
+                evicted.task().cancel();
+                self.send_skipped(evicted, "scheduler-capacity-evicted");
+            }
         }
-        if let Some(previous) = pending.insert(job.task.identity().uri().to_string(), job) {
-            previous.task.cancel();
+        if let Some(previous) = pending.insert(key, job) {
+            previous.task().cancel();
+            self.send_skipped(previous, "superseded-before-dispatch");
         }
         wake.notify_one();
     }
@@ -353,9 +392,8 @@ impl OpenDocumentAnalysisScheduler {
             while pending.is_empty() {
                 pending = wake.wait(pending).unwrap();
             }
-            let key = earliest_due_document_analysis_uri(&pending).unwrap();
-            let due_at =
-                pending[&key].scheduled_at + Duration::from_millis(DOCUMENT_ANALYSIS_IDLE_DELAY_MS);
+            let key = next_runnable_work_key(&pending, Instant::now()).unwrap();
+            let due_at = pending[&key].due_at();
             let now = Instant::now();
             if now < due_at {
                 let (pending_after_wait, _) = wake.wait_timeout(pending, due_at - now).unwrap();
@@ -366,37 +404,104 @@ impl OpenDocumentAnalysisScheduler {
                 continue;
             };
             drop(pending);
-            if job.task.is_cancelled() {
+            if job.task().is_cancelled() {
                 continue;
             }
-            let (analysis, timings) =
-                file_index_for_source_with_timings(job.task.snapshot().text());
-            let event = if job.task.is_cancelled() {
-                ServerEvent::DocumentAnalysisSkipped {
-                    task: job.task.identity().clone(),
-                    reason: "superseded-during-analysis".to_string(),
-                    elapsed_ms: job.scheduled_at.elapsed().as_millis(),
-                }
-            } else {
-                ServerEvent::DocumentAnalysisReady {
-                    task: job.task.identity().clone(),
-                    analysis,
-                    timings,
-                    elapsed_ms: job.scheduled_at.elapsed().as_millis(),
-                }
-            };
-            let _ = self.sender.send(event);
+            self.execute(job);
         }
+    }
+
+    fn execute(&self, job: RuntimeWorkJob) {
+        match job {
+            RuntimeWorkJob::Semantic(job) => {
+                let (analysis, timings) =
+                    file_index_for_source_with_timings(job.task.snapshot().text());
+                let event = if job.task.is_cancelled() {
+                    ServerEvent::DocumentAnalysisSkipped {
+                        task: job.task.identity().clone(),
+                        reason: "superseded-during-analysis".to_string(),
+                        elapsed_ms: job.scheduled_at.elapsed().as_millis(),
+                    }
+                } else {
+                    ServerEvent::DocumentAnalysisReady {
+                        task: job.task.identity().clone(),
+                        analysis,
+                        timings,
+                        elapsed_ms: job.scheduled_at.elapsed().as_millis(),
+                    }
+                };
+                let _ = self.sender.send(event);
+            }
+            RuntimeWorkJob::Rich(job) => {
+                let projection =
+                    semantic_tokens_for_cached_analysis_with_external_indexes_cancelled(
+                        job.task.snapshot().text(),
+                        &job.analysis,
+                        job.external_snapshot.workspace.as_deref(),
+                        job.external_snapshot.game_data.as_deref(),
+                        &|| job.task.is_cancelled(),
+                    );
+                let event = match projection {
+                    Some(projection) => ServerEvent::RichSemanticTokensReady {
+                        task: job.task.identity().clone(),
+                        uri: job.uri,
+                        revision: job.revision,
+                        external_generation: job.external_generation,
+                        external_status: job.external_snapshot.status,
+                        projection,
+                        elapsed_ms: job.scheduled_at.elapsed().as_millis(),
+                    },
+                    None => ServerEvent::RichSemanticTokensSkipped {
+                        task: job.task.identity().clone(),
+                        uri: job.uri,
+                        revision: job.revision,
+                        external_generation: job.external_generation,
+                        reason: "cancelled-during-work".to_string(),
+                        elapsed_ms: job.scheduled_at.elapsed().as_millis(),
+                    },
+                };
+                let _ = self.sender.send(event);
+            }
+        }
+    }
+
+    fn send_skipped(&self, job: RuntimeWorkJob, reason: &str) {
+        let event = match job {
+            RuntimeWorkJob::Semantic(job) => ServerEvent::DocumentAnalysisSkipped {
+                task: job.task.identity().clone(),
+                reason: reason.to_string(),
+                elapsed_ms: job.scheduled_at.elapsed().as_millis(),
+            },
+            RuntimeWorkJob::Rich(job) => ServerEvent::RichSemanticTokensSkipped {
+                task: job.task.identity().clone(),
+                uri: job.uri,
+                revision: job.revision,
+                external_generation: job.external_generation,
+                reason: reason.to_string(),
+                elapsed_ms: job.scheduled_at.elapsed().as_millis(),
+            },
+        };
+        let _ = self.sender.send(event);
     }
 }
 
-fn earliest_due_document_analysis_uri(
-    pending: &BTreeMap<String, OpenDocumentAnalysisJob>,
-) -> Option<String> {
+// Compatibility name for focused scheduler tests. Production only constructs
+// `RuntimeWorkExecutor`; the former semantic-only worker no longer exists.
+#[cfg(test)]
+type OpenDocumentAnalysisScheduler = RuntimeWorkExecutor;
+
+fn next_runnable_work_key(
+    pending: &BTreeMap<(TaskClass, String), RuntimeWorkJob>,
+    now: Instant,
+) -> Option<(TaskClass, String)> {
     pending
         .iter()
-        .min_by_key(|(uri, job)| (job.scheduled_at, *uri))
-        .map(|(uri, _)| uri.clone())
+        .min_by_key(|((class, uri), job)| {
+            // A ready higher-priority class always runs first. Until it is
+            // ready, an older lower-priority job may use the idle worker.
+            (job.due_at() > now, *class, job.due_at(), uri.as_str())
+        })
+        .map(|(key, _)| key.clone())
 }
 
 fn source_backed_request_method(method: &str) -> bool {
@@ -421,6 +526,7 @@ struct RichSemanticTokensJob {
     external_snapshot: ExternalIndexSnapshot,
 }
 
+#[cfg(test)]
 fn earliest_due_pending_uri(pending: &BTreeMap<String, RichSemanticTokensJob>) -> Option<String> {
     pending
         .iter()
@@ -428,90 +534,7 @@ fn earliest_due_pending_uri(pending: &BTreeMap<String, RichSemanticTokensJob>) -
         .map(|(uri, _)| uri.clone())
 }
 
-#[derive(Clone)]
-/// Runs rich-token work already admitted by [`AnalysisRuntime`].
-///
-/// This is deliberately a coalescing delay worker, not an admission queue:
-/// runtime task retention is the sole job/byte capacity boundary. Keeping
-/// latest-wins coalescing here avoids resolver work for an obsolete token
-/// request while preserving the runtime-owned cancellation token.
-struct RichSemanticTokensWorker {
-    state: Arc<(Mutex<BTreeMap<String, RichSemanticTokensJob>>, Condvar)>,
-    sender: mpsc::Sender<ServerEvent>,
-}
-
-impl RichSemanticTokensWorker {
-    fn start(sender: mpsc::Sender<ServerEvent>) -> Self {
-        let scheduler = Self {
-            state: Arc::new((Mutex::new(BTreeMap::new()), Condvar::new())),
-            sender,
-        };
-        let worker = scheduler.clone();
-        thread::spawn(move || worker.run());
-        scheduler
-    }
-
-    fn schedule(&self, job: RichSemanticTokensJob) {
-        let (lock, wake) = &*self.state;
-        let mut pending = lock.lock().unwrap();
-        coalesce_rich_job(&mut pending, job);
-        wake.notify_one();
-    }
-
-    fn run(self) {
-        let (lock, wake) = &*self.state;
-        loop {
-            let mut pending = lock.lock().unwrap();
-            while pending.is_empty() {
-                pending = wake.wait(pending).unwrap();
-            }
-            let key = earliest_due_pending_uri(&pending).unwrap();
-            let due_at = pending[&key].scheduled_at
-                + Duration::from_millis(RICH_SEMANTIC_TOKENS_IDLE_DELAY_MS);
-            let now = Instant::now();
-            if now < due_at {
-                let (pending_after_wait, _) = wake.wait_timeout(pending, due_at - now).unwrap();
-                pending = pending_after_wait;
-                continue;
-            }
-            let Some(job) = pending.remove(&key) else {
-                continue;
-            };
-            drop(pending);
-            if job.task.is_cancelled() {
-                continue;
-            }
-            let projection = semantic_tokens_for_cached_analysis_with_external_indexes_cancelled(
-                job.task.snapshot().text(),
-                &job.analysis,
-                job.external_snapshot.workspace.as_deref(),
-                job.external_snapshot.game_data.as_deref(),
-                &|| job.task.is_cancelled(),
-            );
-            let event = match projection {
-                Some(projection) => ServerEvent::RichSemanticTokensReady {
-                    task: job.task.identity().clone(),
-                    uri: job.uri,
-                    revision: job.revision,
-                    external_generation: job.external_generation,
-                    external_status: job.external_snapshot.status,
-                    projection,
-                    elapsed_ms: job.scheduled_at.elapsed().as_millis(),
-                },
-                None => ServerEvent::RichSemanticTokensSkipped {
-                    task: job.task.identity().clone(),
-                    uri: job.uri,
-                    revision: job.revision,
-                    external_generation: job.external_generation,
-                    reason: "cancelled-during-work".to_string(),
-                    elapsed_ms: job.scheduled_at.elapsed().as_millis(),
-                },
-            };
-            let _ = self.sender.send(event);
-        }
-    }
-}
-
+#[cfg(test)]
 fn coalesce_rich_job(
     pending: &mut BTreeMap<String, RichSemanticTokensJob>,
     job: RichSemanticTokensJob,
@@ -675,8 +698,8 @@ impl<W: Write> LspServer<W> {
     fn new_with_runtime_senders(
         writer: W,
         options: LspServerOptions,
-        rich_scheduler: Option<RichSemanticTokensWorker>,
-        analysis_scheduler: Option<OpenDocumentAnalysisScheduler>,
+        _removed_rich_scheduler: Option<()>,
+        analysis_scheduler: Option<RuntimeWorkExecutor>,
         internal_sender: Option<mpsc::Sender<ServerEvent>>,
     ) -> Self {
         let logger = LspLogger::new(options.log_path.clone());
@@ -687,7 +710,6 @@ impl<W: Write> LspServer<W> {
             runtime: AnalysisRuntime::new(AdmissionLimits::new(64, 64 * 1024 * 1024)),
             logger,
             external_index,
-            rich_scheduler,
             analysis_scheduler,
             internal_sender,
             deferred_document_requests: BTreeMap::new(),
@@ -2492,7 +2514,7 @@ impl<W: Write> LspServer<W> {
         revision: u64,
         external_generation: u64,
     ) -> Result<(), String> {
-        if let Some(scheduler) = self.rich_scheduler.clone() {
+        if let Some(scheduler) = self.analysis_scheduler.clone() {
             let start = Instant::now();
             let Some(document) = self.documents.get(uri) else {
                 self.log(&format!(
@@ -2552,7 +2574,7 @@ impl<W: Write> LspServer<W> {
                 analysis,
                 external_snapshot: self.external_index.snapshot(),
             };
-            scheduler.schedule(job);
+            scheduler.schedule_rich(job);
             return Ok(());
         }
 
@@ -3274,6 +3296,57 @@ mod tests {
                 game_data: None,
             },
         }
+    }
+
+    fn semantic_analysis_job(
+        runtime: &mut AnalysisRuntime,
+        uri: &str,
+        version: i32,
+        scheduled_at: Instant,
+    ) -> OpenDocumentAnalysisJob {
+        assert_eq!(runtime.upsert(uri, version, ""), UpsertOutcome::Accepted);
+        let task = match runtime.admit(
+            TaskClass::Semantic,
+            runtime.latest(uri).expect("accepted snapshot"),
+            1,
+            Instant::now(),
+        ) {
+            AdmissionDisposition::Enqueued { .. } => runtime.take_next().unwrap(),
+            other => panic!("unexpected admission disposition: {other:?}"),
+        };
+        OpenDocumentAnalysisJob { task, scheduled_at }
+    }
+
+    #[test]
+    fn shared_executor_prioritizes_ready_semantic_work_over_ready_rich_work() {
+        let now = Instant::now();
+        let mut runtime = AnalysisRuntime::new(AdmissionLimits::new(2, 2));
+        let mut pending = BTreeMap::new();
+        let rich = rich_semantic_tokens_job(
+            &mut runtime,
+            "file:///rich.c",
+            1,
+            now - Duration::from_millis(RICH_SEMANTIC_TOKENS_IDLE_DELAY_MS + 1),
+        );
+        let semantic = semantic_analysis_job(
+            &mut runtime,
+            "file:///semantic.c",
+            1,
+            now - Duration::from_millis(DOCUMENT_ANALYSIS_IDLE_DELAY_MS + 1),
+        );
+        pending.insert(
+            (TaskClass::Rich, "file:///rich.c".to_string()),
+            RuntimeWorkJob::Rich(rich),
+        );
+        pending.insert(
+            (TaskClass::Semantic, "file:///semantic.c".to_string()),
+            RuntimeWorkJob::Semantic(semantic),
+        );
+
+        assert_eq!(
+            next_runnable_work_key(&pending, now),
+            Some((TaskClass::Semantic, "file:///semantic.c".to_string()))
+        );
     }
 
     #[test]

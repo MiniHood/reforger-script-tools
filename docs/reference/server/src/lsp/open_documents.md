@@ -19,8 +19,9 @@ features, or own document admission.
 A document cache is created from an already-accepted runtime snapshot and
 replaced only after `DocumentStore` accepts a strictly newer `didChange`
 version. In the production runtime, both an initial open and a replacement make
-the snapshot authoritative first and mark full analysis pending. The LSP worker
-only executes an `AnalysisRuntime`-admitted task and reports its identity back
+the snapshot authoritative first and mark full analysis pending. The shared
+runtime-work executor only executes an `AnalysisRuntime`-admitted task and
+reports its identity back
 before installation, so runtime cancellation is the sole authority for stale
 publication. This keeps a large initial open from blocking the LSP message loop.
 A pending document immediately retains a current-revision syntax snapshot for
