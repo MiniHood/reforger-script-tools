@@ -6708,6 +6708,9 @@ class RplRpc : UniqueAttribute
             wire_item["textEdit"]["newText"],
             "[RplRpc(${1:RplChannel.Reliable}, ${2:RplRcver.Server})]"
         );
+        assert!(wire_item["textEdit"].get("range").is_some());
+        assert!(wire_item["textEdit"].get("insert").is_none());
+        assert!(wire_item["textEdit"].get("replace").is_none());
         assert_eq!(wire_item["insertTextFormat"], 2);
         assert_eq!(
             item.command
@@ -6763,6 +6766,14 @@ class RplRpc : UniqueAttribute
         assert_eq!(item.insert_text_format, None);
         assert_eq!(item.filter_text.as_deref(), Some(""));
         assert!(item.command.is_none());
+        let wire_item = serde_json::to_value(item).unwrap();
+        assert!(wire_item["textEdit"].get("range").is_none());
+        assert_eq!(
+            wire_item["textEdit"]["insert"],
+            serde_json::to_value(item.text_edit.range).unwrap()
+        );
+        assert_eq!(wire_item["textEdit"]["replace"]["start"]["character"], 9);
+        assert_eq!(wire_item["textEdit"]["replace"]["end"]["character"], 20);
 
         let source = r#"class Example
 {
@@ -7873,6 +7884,15 @@ class Example
         );
         assert!(report.list.items.len() > 2);
         assert!(report.list.items.iter().all(|item| item.command.is_none()));
+        let enum_item = &report.list.items[0];
+        let wire_item = serde_json::to_value(enum_item).unwrap();
+        assert!(wire_item["textEdit"].get("range").is_none());
+        assert_eq!(
+            wire_item["textEdit"]["insert"],
+            serde_json::to_value(enum_item.text_edit.range).unwrap()
+        );
+        assert_eq!(wire_item["textEdit"]["replace"]["start"]["character"], 2);
+        assert_eq!(wire_item["textEdit"]["replace"]["end"]["character"], 11);
     }
 
     #[test]

@@ -17,7 +17,7 @@ use crate::lsp::{
 use crate::model::{SourceKind, SymbolKind};
 use crate::resolver::{CandidateSource, IdentifierContext, ReferenceCandidate, ReferenceResolver};
 use crate::syntax::SyntaxNode;
-use serde::Serialize;
+use serde::{ser::SerializeMap, Serialize, Serializer};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
@@ -89,11 +89,34 @@ pub struct LspCompletionItemLabelDetails {
     pub description: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LspTextEdit {
+    /// The regular insertion range. This remains the active word so clients
+    /// can filter and show the completion list normally.
     pub range: LspRange,
     pub new_text: String,
+    /// When present, serialize this edit as LSP's `InsertReplaceEdit`: the
+    /// client uses `range` while presenting the list and `replace_range` only
+    /// after the user accepts an item.
+    pub replace_range: Option<LspRange>,
+}
+
+impl Serialize for LspTextEdit {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut map =
+            serializer.serialize_map(Some(if self.replace_range.is_some() { 3 } else { 2 }))?;
+        map.serialize_entry("newText", &self.new_text)?;
+        if let Some(replace_range) = &self.replace_range {
+            map.serialize_entry("insert", &self.range)?;
+            map.serialize_entry("replace", replace_range)?;
+        } else {
+            map.serialize_entry("range", &self.range)?;
+        }
+        map.end()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1083,6 +1106,7 @@ impl BoundedCompletionFacts {
                         text_edit: LspTextEdit {
                             range: range_for_span(source, prefix_span),
                             new_text: declaration.name.clone(),
+                            replace_range: None,
                         },
                         required_parameter_count: 0,
                         optional_parameter_count: 0,
@@ -1264,6 +1288,7 @@ fn bounded_completion_item(
         text_edit: LspTextEdit {
             range: range_for_span(source, prefix_span),
             new_text: label,
+            replace_range: None,
         },
         required_parameter_count: 0,
         optional_parameter_count: 0,
@@ -2056,8 +2081,10 @@ fn member_completion_report_for_indexes(
 
 /// Enum defaults are commonly inserted as a single replaceable expression
 /// (`Owner.Member`). Keep every enum value first, but retain normal value
-/// completion beneath it. All edits replace the full expression so choosing a
-/// non-enum value cannot leave an invalid `Owner.<unrelated value>` suffix.
+/// completion beneath it. The LSP `insert` range remains the active member
+/// word, while `replace` covers the full expression. This lets clients show
+/// and filter the list normally yet safely replace `Owner.Member` when a
+/// general value is selected.
 #[allow(clippy::too_many_arguments)]
 fn enum_static_completion_items_with_value_fallbacks(
     source: &str,
@@ -2077,10 +2104,11 @@ fn enum_static_completion_items_with_value_fallbacks(
 ) {
     let full_expression_span = TextSpan::new(receiver_span.start, prefix_span.end);
     let full_expression_range = range_for_span(source, full_expression_span);
+    let insert_range = range_for_span(source, prefix_span);
     let (mut enum_items, mut source_kind_counts, mut origin_counts) =
         completion_items_for_candidates(
             enum_candidates,
-            full_expression_range.clone(),
+            insert_range.clone(),
             None,
             CompletionInsertContext::Normal,
             Some(prefix),
@@ -2090,6 +2118,7 @@ fn enum_static_completion_items_with_value_fallbacks(
         item.label = format!("{owner}.{}", item.label);
         item.filter_text = Some(prefix.to_string());
         item.text_edit.new_text = format!("{owner}.{}", item.text_edit.new_text);
+        item.text_edit.replace_range = Some(full_expression_range.clone());
         item.sort_text = Some(format!("000:enum:{index:03}:{}", item.label));
     }
 
@@ -2103,7 +2132,7 @@ fn enum_static_completion_items_with_value_fallbacks(
     );
     let (mut value_items, value_source_counts, value_origins) = completion_items_for_candidates(
         &value_candidates,
-        full_expression_range.clone(),
+        insert_range.clone(),
         None,
         CompletionInsertContext::Normal,
         Some(""),
@@ -2113,7 +2142,7 @@ fn enum_static_completion_items_with_value_fallbacks(
     merge_count_maps(&mut origin_counts, value_origins);
     value_items.extend(keyword_completion_items(
         "",
-        full_expression_range,
+        insert_range,
         EditorTopLevelCompletionMode::Value,
         false,
     ));
@@ -2121,6 +2150,7 @@ fn enum_static_completion_items_with_value_fallbacks(
         // The active snippet field owns the whole default expression. Its
         // current text must not hide otherwise valid replacement choices.
         item.filter_text = Some(prefix.to_string());
+        item.text_edit.replace_range = Some(full_expression_range.clone());
         item.sort_text = Some(format!("100:enum-fallback:{index:03}:{}", item.label));
     }
 
@@ -2438,6 +2468,7 @@ fn completion_item_for_parameter_label(
         text_edit: LspTextEdit {
             range: edit_range,
             new_text,
+            replace_range: None,
         },
         required_parameter_count: usize::from(candidate.required),
         optional_parameter_count: usize::from(!candidate.required),
@@ -3003,6 +3034,7 @@ fn completion_item_for_override_candidate(
         text_edit: LspTextEdit {
             range: edit_range,
             new_text,
+            replace_range: None,
         },
         required_parameter_count: call.required_parameter_count(),
         optional_parameter_count: call.optional_parameter_count(),
@@ -3092,6 +3124,7 @@ fn keyword_completion_items(
             text_edit: LspTextEdit {
                 range: edit_range,
                 new_text: keyword.to_string(),
+                replace_range: None,
             },
             required_parameter_count: 0,
             optional_parameter_count: 0,
@@ -3526,6 +3559,7 @@ fn completion_item_for_candidate(
     let text_edit = LspTextEdit {
         range: edit_range,
         new_text,
+        replace_range: None,
     };
     let filter_text = label.clone();
     Some(LspCompletionItem {

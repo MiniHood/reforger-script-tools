@@ -121,9 +121,11 @@ request-to-server annotation with its snippet cursor retained inside the call:
 expression is selected, so typing replaces it and resumes ordinary value
 completion. The built-in `editor.action.triggerSuggest` command opens the
 Rust-owned enum completion policy: qualified enum values rank first, while
-general value candidates remain below them. Every item replaces the full enum
-expression, so selecting a general value cannot form an invalid
-`RplChannel.<unrelated value>` expression. Tab advances to the selected
+general value candidates remain below them. These items use the LSP
+`InsertReplaceEdit` form: their insert range is the active enum-member word so
+VS Code can display and filter the menu normally, while their replace range is
+the complete enum expression. Selecting a general value therefore cannot form
+an invalid `RplChannel.<unrelated value>` expression. Tab advances to the selected
 `RplRcver.Server` expression. The completion item's signature detail still
 documents the optional condition and custom-condition inputs.
 The same template applies inside an already typed `[` without duplicating its
