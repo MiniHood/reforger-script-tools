@@ -35,11 +35,16 @@ Perform a bounded orientation before proposing a new topic:
 4. Review recent code/docs changes and existing diagnostic evidence for one
    concrete gap, regression risk, performance bottleneck, or stale contract.
 
-Return a ranked shortlist of at most three next tasks. Each item must include
-the evidence, expected value, owner layer, and smallest first verification.
-Choose and start the top item only when it is clearly a continuation or a
-safe, user-authorized maintenance step. Otherwise ask the user to choose; do
-not invent product work from a vague review signal.
+Create one concrete recommended next task before prompting the user or
+suggesting a topic change. The recommendation must state its evidence,
+expected value, owner layer, and smallest first verification. You may include
+up to two alternatives only when they materially change scope or risk.
+
+Choose and start the recommendation only when it is clearly a continuation or
+a safe, user-authorized maintenance step. Otherwise present the recommendation
+and ask whether to pursue it. Do not invent product work from a vague review
+signal, and do not merely say there is nothing to do without completing the
+bounded review.
 
 ## Guardrails
 
