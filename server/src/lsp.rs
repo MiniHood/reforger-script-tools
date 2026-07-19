@@ -70,7 +70,9 @@ use diagnostics::{clear_diagnostics_message, publish_diagnostics_message};
 pub use diagnostics::{parser_diagnostics_for_source, LspDiagnostic};
 pub(crate) use external_overlay::ExternalIndexStatusSummary;
 use external_overlay::{start_external_index, ExternalIndexHandle, ExternalIndexSnapshot};
-use hover::hover_report_for_cached_analysis_with_external_indexes;
+use hover::{
+    hover_report_for_cached_analysis_with_external_indexes, hover_report_for_pending_snapshot,
+};
 pub use hover::{
     hover_report_for_source_position, hover_report_for_source_position_with_external,
     hover_reports_for_source_positions, hover_reports_for_source_positions_with_external,
@@ -394,8 +396,7 @@ fn earliest_due_document_analysis_uri(
 fn source_backed_request_method(method: &str) -> bool {
     matches!(
         method,
-        "textDocument/hover"
-            | "textDocument/definition"
+        "textDocument/definition"
             | "textDocument/signatureHelp"
             | DEBUG_HOVER_METHOD
             | DEBUG_COMPLETION_METHOD
@@ -1678,6 +1679,7 @@ impl<W: Write> LspServer<W> {
                     let mut external_index_layers = "none";
                     let mut revision = 0u64;
                     let mut hit = false;
+                    let mut query_quality = QueryQuality::Exact;
                     let result = params
                         .and_then(|params| {
                             log_uri = params.text_document.uri;
@@ -1687,14 +1689,23 @@ impl<W: Write> LspServer<W> {
                                 let indexes = self.external_index.snapshot();
                                 external_index_status = indexes.status;
                                 external_index_layers = indexes.available_layers();
-                                let report = hover_report_for_cached_analysis_with_external_indexes(
-                                    &document.text,
-                                    document.analysis(),
-                                    &log_uri,
-                                    params.position,
-                                    indexes.workspace.as_deref(),
-                                    indexes.game_data.as_deref(),
-                                );
+                                let report = if document.analysis_ready() {
+                                    hover_report_for_cached_analysis_with_external_indexes(
+                                        &document.text,
+                                        document.analysis(),
+                                        &log_uri,
+                                        params.position,
+                                        indexes.workspace.as_deref(),
+                                        indexes.game_data.as_deref(),
+                                    )
+                                } else {
+                                    query_quality = QueryQuality::Unavailable;
+                                    hover_report_for_pending_snapshot(
+                                        &document.snapshot,
+                                        params.position,
+                                        document.syntax().diagnostics.len(),
+                                    )
+                                };
                                 parse_diagnostics = report.parse_diagnostics;
                                 hit = report.is_hit();
                                 selection_source = report.selection_source;
@@ -1736,10 +1747,12 @@ impl<W: Write> LspServer<W> {
                         .map(|hover| serde_json::to_value(hover).unwrap_or(Value::Null))
                         .unwrap_or(Value::Null);
                     self.log(&format!(
-                        "request hover uri={} bytes={} revision={} cached_analysis=true hit={} selection_source={} selected_source={} resolver_reason={} identifier_context={} resolver_candidates={} receiver_owner={} receiver_failure={} external_index_status={} external_index_layers={} label={} kind={} parse_diagnostics={} queue_ms={} elapsed_ms={}",
+                        "request hover uri={} bytes={} revision={} query_quality={:?} cached_analysis={} hit={} selection_source={} selected_source={} resolver_reason={} identifier_context={} resolver_candidates={} receiver_owner={} receiver_failure={} external_index_status={} external_index_layers={} label={} kind={} parse_diagnostics={} queue_ms={} elapsed_ms={}",
                         log_uri,
                         bytes,
                         revision,
+                        query_quality,
+                        query_quality.permits_local_facts(),
                         hit,
                         selection_source.as_str(),
                         selected_source,
@@ -8189,7 +8202,7 @@ class Example
     }
 
     #[test]
-    fn analysis_overload_rejects_deferred_semantic_requests_instead_of_hanging() {
+    fn pending_hover_returns_only_current_lexical_facts_after_semantic_overload() {
         let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
         let uri = "file:///Scripts/Overloaded.c";
         server
@@ -8238,7 +8251,7 @@ class Example
                     "method": "textDocument/hover",
                     "params": {
                         "textDocument": { "uri": uri },
-                        "position": { "line": 0, "character": 6 }
+                        "position": { "line": 0, "character": 0 }
                     }
                 }),
                 None,
@@ -8248,8 +8261,20 @@ class Example
             .unwrap();
 
         let output = String::from_utf8(server.writer).unwrap();
-        assert!(output.contains("\"id\":1"));
-        assert!(output.contains("\"code\":-32801"));
+        let mut reader = BufReader::new(output.as_bytes());
+        let response = loop {
+            let message = read_message(&mut reader).unwrap();
+            let message = message.expect("hover response");
+            if message["id"] == 1 {
+                break message;
+            }
+        };
+        assert_eq!(response["id"], 1);
+        assert_eq!(
+            response["result"]["contents"]["value"],
+            "**Keyword**\n\n```enforce\nclass\n```"
+        );
+        assert!(response.get("error").is_none());
     }
 
     #[test]

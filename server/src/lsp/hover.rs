@@ -1,5 +1,7 @@
+use crate::analysis_runtime::DocumentSnapshot;
 use crate::index::{GlobalSymbolId, SymbolIndex};
 use crate::index_query::IndexQuery;
+use crate::lexer::{lex, TokenKind};
 use crate::lsp::hover_render::{
     render_hover_markdown as render_hover_markdown_with_context, HoverLinkContext,
     HoverRenderContext,
@@ -62,6 +64,8 @@ pub struct LspHoverReport {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HoverSelectionSource {
+    /// A current-revision lexer fact. This never attempts name resolution.
+    Lexical,
     ResolverIdentifier,
     ResolverSyntaxSpan,
     None,
@@ -70,6 +74,7 @@ pub enum HoverSelectionSource {
 impl HoverSelectionSource {
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::Lexical => "lexical",
             Self::ResolverIdentifier => "resolver-identifier",
             Self::ResolverSyntaxSpan => "resolver-syntax-span",
             Self::None => "none",
@@ -115,6 +120,67 @@ pub(crate) fn hover_report_for_cached_analysis_with_external(
         None,
         external_index,
     )
+}
+
+/// Produces the deliberately narrow hover result allowed while full local
+/// analysis for an accepted snapshot is still pending.  In particular,
+/// identifiers return no hover: a name can only be interpreted by the
+/// revision-matching semantic query and must never borrow an older index.
+pub(crate) fn hover_report_for_pending_snapshot(
+    snapshot: &DocumentSnapshot,
+    position: LspPosition,
+    parse_diagnostics: usize,
+) -> LspHoverReport {
+    let Some(offset) =
+        snapshot
+            .positions()
+            .offset_for_position(crate::analysis_runtime::Position {
+                line: position.line,
+                character: position.character,
+            })
+    else {
+        return empty_hover_report(parse_diagnostics);
+    };
+    let source = snapshot.text();
+    let Some(token) = lex(source)
+        .into_iter()
+        .find(|token| token.span.start <= offset && offset < token.span.end)
+    else {
+        return empty_hover_report(parse_diagnostics);
+    };
+
+    let category = match token.kind {
+        TokenKind::Keyword(_) => "Keyword",
+        TokenKind::Number | TokenKind::InvalidNumber => "Number literal",
+        TokenKind::String | TokenKind::UnterminatedString => "String literal",
+        TokenKind::LineComment
+        | TokenKind::DocLineComment
+        | TokenKind::BlockComment
+        | TokenKind::DocBlockComment
+        | TokenKind::UnterminatedBlockComment => "Comment",
+        _ => return empty_hover_report(parse_diagnostics),
+    };
+    let text = source
+        .get(token.span.start..token.span.end)
+        .unwrap_or_default();
+    LspHoverReport {
+        hover: Some(LspHover {
+            contents: LspMarkupContent {
+                kind: "markdown".to_string(),
+                value: format!("**{category}**\n\n```enforce\n{text}\n```"),
+            },
+            range: Some(range_for_span(source, token.span)),
+        }),
+        parse_diagnostics,
+        selected_label: Some(text.to_string()),
+        selected_kind: None,
+        selected_source: None,
+        selection_source: HoverSelectionSource::Lexical,
+        resolver_reason: None,
+        identifier_context: None,
+        resolver_candidate_count: 0,
+        receiver_resolution: None,
+    }
 }
 
 pub(crate) fn hover_report_for_cached_analysis_with_external_indexes(

@@ -69,6 +69,13 @@ top-level classes, enums, and typedefs immediately. That result intentionally
 omits members and uncertain declarations until exact syntax/semantic facts are
 installed, and it never reads the prior cached outline.
 
+Hover is a current-snapshot exception to that retained-request behavior. A
+pending document returns immediately with only lexical hover facts (keywords,
+literals, and comments) from the accepted snapshot; identifiers and
+resolver-dependent syntax spans return `null` until matching analysis exists.
+This preserves ordinary hover responsiveness without presenting stale local
+semantic facts.
+
 The current parser/catalog analysis is an indivisible worker operation. A newer
 revision cancels a queued job immediately and causes a running obsolete result
 to be skipped after that operation returns; the runtime log records the
