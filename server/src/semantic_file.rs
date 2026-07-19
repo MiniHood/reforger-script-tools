@@ -106,7 +106,9 @@ pub struct SemanticConditionalBranch {
 }
 
 /// Complete declaration facts for one parsed file.  Local bindings and scope
-/// regions are intentionally not part of this first, public-interface slice.
+/// regions are intentionally private; the public projection below retains
+/// declaration facts needed to rebuild an external index without reopening the
+/// source file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct SemanticFile {
     declarations: Vec<SemanticDeclaration>,
@@ -206,19 +208,17 @@ impl SemanticFile {
         FileContribution {
             schema_version: FILE_CONTRIBUTION_SCHEMA_VERSION,
             source_manifest_version: FILE_CONTRIBUTION_SOURCE_MANIFEST_VERSION,
+            non_declaration_callable_fragments: self.non_declaration_callable_fragments,
             symbols: self
                 .declarations
                 .iter()
                 .filter(|declaration| {
                     declaration.name.is_some()
-                        && !matches!(
-                            declaration.kind,
-                            SemanticDeclarationKind::TypeParameter
-                                | SemanticDeclarationKind::Parameter
-                                | SemanticDeclarationKind::LocalVariable
-                        )
+                        && !matches!(declaration.kind, SemanticDeclarationKind::LocalVariable)
                 })
                 .map(|declaration| PublicSymbol {
+                    id: declaration.id,
+                    parent: declaration.parent,
                     kind: declaration.kind,
                     name: declaration.name.as_ref().map(|value| value.text.clone()),
                     container: declaration.parent.and_then(|parent| {
@@ -227,6 +227,15 @@ impl SemanticFile {
                             .map(|name| name.text.clone())
                     }),
                     detail: PublicSymbolDetail::from(&declaration.detail),
+                    span: declaration.span,
+                    selection_span: declaration.selection_span,
+                    modifiers: declaration.modifiers.clone(),
+                    attributes: declaration.attributes.clone(),
+                    doc_comments: declaration.doc_comments.clone(),
+                    conditional_context: self
+                        .conditional_context(declaration.conditional_context)
+                        .to_vec(),
+                    callable_form: declaration.callable_form,
                 })
                 .collect(),
         }
@@ -236,7 +245,7 @@ impl SemanticFile {
 /// The serializable, workspace-facing subset of a semantic file.  It contains
 /// declarations that can participate in external lookup, not private scope
 /// state or AST references.
-pub const FILE_CONTRIBUTION_SCHEMA_VERSION: u32 = 1;
+pub const FILE_CONTRIBUTION_SCHEMA_VERSION: u32 = 2;
 pub const FILE_CONTRIBUTION_SOURCE_MANIFEST_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -245,6 +254,9 @@ pub struct FileContribution {
     pub schema_version: u32,
     #[serde(default)]
     pub source_manifest_version: u32,
+    /// Parser fragments that look callable but do not form a declaration.
+    /// Preserved for index diagnostics/telemetry without exposing local scope.
+    pub non_declaration_callable_fragments: usize,
     pub symbols: Vec<PublicSymbol>,
 }
 
@@ -283,27 +295,57 @@ impl FileContribution {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PublicSymbol {
+    /// Snapshot-local declaration identity. It is valid only within this file
+    /// contribution and lets an index reconstruct parent edges exactly.
+    pub id: SemanticDeclarationId,
+    pub parent: Option<SemanticDeclarationId>,
     pub kind: SemanticDeclarationKind,
     pub name: Option<String>,
     pub container: Option<String>,
     pub detail: PublicSymbolDetail,
+    pub span: TextSpan,
+    pub selection_span: TextSpan,
+    pub modifiers: Vec<SemanticText>,
+    pub attributes: Vec<SemanticText>,
+    pub doc_comments: Vec<SemanticDocComment>,
+    pub conditional_context: Vec<SemanticConditionalBranch>,
+    pub callable_form: Option<SemanticCallableForm>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct PublicSymbolDetail {
-    pub type_text: Option<String>,
-    pub return_type: Option<String>,
-    pub base_type: Option<String>,
+    pub type_text: Option<PublicText>,
+    pub return_type: Option<PublicText>,
+    pub base_type: Option<PublicText>,
+    pub default_value: Option<PublicText>,
+    pub enum_value: Option<PublicText>,
+}
+
+/// Copied public text whose span is deliberately optional for compact runtime
+/// caches. Source-built contributions always retain `Some(span)`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublicText {
+    pub span: Option<TextSpan>,
+    pub text: String,
 }
 
 impl From<&SemanticDeclarationDetail> for PublicSymbolDetail {
     fn from(detail: &SemanticDeclarationDetail) -> Self {
         Self {
-            type_text: detail.type_text.as_ref().map(|value| value.text.clone()),
-            return_type: detail.return_type.as_ref().map(|value| value.text.clone()),
-            base_type: detail.base_type.as_ref().map(|value| value.text.clone()),
+            type_text: public_text(detail.type_text.as_ref()),
+            return_type: public_text(detail.return_type.as_ref()),
+            base_type: public_text(detail.base_type.as_ref()),
+            default_value: public_text(detail.default_value.as_ref()),
+            enum_value: public_text(detail.enum_value.as_ref()),
         }
     }
+}
+
+fn public_text(value: Option<&SemanticText>) -> Option<PublicText> {
+    value.map(|value| PublicText {
+        span: Some(value.span),
+        text: value.text.clone(),
+    })
 }
 
 struct SemanticFileBuilder<'source> {
@@ -916,18 +958,22 @@ mod tests {
     fn contribution_keeps_workspace_visible_symbols_and_signature_facts() {
         let file = semantic("class Widget { int count; void Run(string label) {} }");
         let contribution = file.contribution();
-        assert_eq!(contribution.symbols.len(), 3);
+        assert_eq!(contribution.symbols.len(), 4);
         assert_eq!(contribution.symbols[0].name.as_deref(), Some("Widget"));
         assert_eq!(contribution.symbols[1].name.as_deref(), Some("count"));
         assert_eq!(contribution.symbols[1].container.as_deref(), Some("Widget"));
         assert_eq!(
-            contribution.symbols[2].detail.return_type.as_deref(),
+            contribution.symbols[2]
+                .detail
+                .return_type
+                .as_ref()
+                .map(|value| value.text.as_str()),
             Some("void")
         );
         assert!(contribution
             .symbols
             .iter()
-            .all(|symbol| symbol.name.as_deref() != Some("label")));
+            .any(|symbol| symbol.name.as_deref() == Some("label")));
         assert_eq!(
             contribution.schema_version,
             FILE_CONTRIBUTION_SCHEMA_VERSION

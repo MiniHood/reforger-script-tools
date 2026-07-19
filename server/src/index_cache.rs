@@ -10,7 +10,9 @@ use crate::model::{
     SymbolKind, SOURCE_PRIORITY_GAME_DATA,
 };
 use crate::semantic_file::{
-    FileContribution, PublicSymbol, PublicSymbolDetail, SemanticDeclarationKind,
+    FileContribution, PublicSymbol, PublicSymbolDetail, PublicText, SemanticCallableForm,
+    SemanticConditionalBranch, SemanticConditionalBranchKind, SemanticDeclarationId,
+    SemanticDeclarationKind, SemanticDocComment, SemanticDocCommentKind, SemanticText,
     FILE_CONTRIBUTION_SCHEMA_VERSION, FILE_CONTRIBUTION_SOURCE_MANIFEST_VERSION,
 };
 use serde::{Deserialize, Serialize};
@@ -141,7 +143,13 @@ impl From<&SymbolIndex> for CachedSymbolIndex {
 
 impl From<CachedSymbolIndex> for SymbolIndex {
     fn from(snapshot: CachedSymbolIndex) -> Self {
-        SymbolIndex::from_indexed_parts(snapshot.files, snapshot.symbols)
+        let mut index = SymbolIndex::default();
+        for (file, contribution) in snapshot.files.into_iter().zip(snapshot.contributions) {
+            index
+                .add_file_contribution(&contribution, file.metadata)
+                .expect("cached contribution was validated before index reconstruction");
+        }
+        index
     }
 }
 
@@ -151,6 +159,13 @@ impl CachedSymbolIndex {
     /// The index remains a temporary query projection, never a cache-validity
     /// fallback for malformed public semantic data.
     fn validate_public_contributions(&self) -> Result<(), String> {
+        if self.files.len() != self.contributions.len() {
+            return Err(format!(
+                "cached contribution count {} does not match file count {}",
+                self.contributions.len(),
+                self.files.len()
+            ));
+        }
         for contribution in &self.contributions {
             contribution
                 .validate()
@@ -165,6 +180,7 @@ impl CachedSymbolIndex {
             .map(|file| FileContribution {
                 schema_version: FILE_CONTRIBUTION_SCHEMA_VERSION,
                 source_manifest_version: FILE_CONTRIBUTION_SOURCE_MANIFEST_VERSION,
+                non_declaration_callable_fragments: file.non_declaration_callable_fragments,
                 symbols: self
                     .symbols
                     .iter()
@@ -173,6 +189,10 @@ impl CachedSymbolIndex {
                     .filter_map(|symbol| {
                         let kind = public_semantic_kind(symbol.kind)?;
                         Some(PublicSymbol {
+                            id: SemanticDeclarationId(symbol.id.symbol_id.0 as u32),
+                            parent: symbol
+                                .parent
+                                .map(|parent| SemanticDeclarationId(parent.symbol_id.0 as u32)),
                             kind,
                             name: symbol.name.clone(),
                             container: symbol.parent.and_then(|parent| {
@@ -182,16 +202,107 @@ impl CachedSymbolIndex {
                                     .and_then(|candidate| candidate.name.clone())
                             }),
                             detail: PublicSymbolDetail {
-                                type_text: symbol.detail.type_text.clone(),
-                                return_type: symbol.detail.return_type_text.clone(),
-                                base_type: symbol.detail.base_type.clone(),
+                                type_text: cached_public_text(
+                                    symbol.detail.type_text_span,
+                                    symbol.detail.type_text.clone(),
+                                ),
+                                return_type: cached_public_text(
+                                    symbol.detail.return_type_text_span,
+                                    symbol.detail.return_type_text.clone(),
+                                ),
+                                base_type: cached_public_text(
+                                    symbol.detail.base_type_span,
+                                    symbol.detail.base_type.clone(),
+                                ),
+                                default_value: cached_public_text(
+                                    symbol.detail.default_text_span,
+                                    symbol.detail.default_text.clone(),
+                                ),
+                                enum_value: cached_public_text(
+                                    symbol.detail.enum_value_text_span,
+                                    symbol.detail.enum_value_text.clone(),
+                                ),
                             },
+                            span: symbol.span,
+                            selection_span: symbol.selection_span,
+                            modifiers: symbol
+                                .modifiers
+                                .iter()
+                                .cloned()
+                                .map(|text| SemanticText {
+                                    span: symbol.span,
+                                    text,
+                                })
+                                .collect(),
+                            attributes: symbol
+                                .attributes
+                                .iter()
+                                .map(|attribute| SemanticText {
+                                    span: symbol.span,
+                                    text: attribute.text.clone(),
+                                })
+                                .collect(),
+                            doc_comments: symbol
+                                .doc_comments
+                                .iter()
+                                .map(|comment| SemanticDocComment {
+                                    span: symbol.span,
+                                    kind: match comment.kind {
+                                        crate::ast::DocCommentKind::Line => {
+                                            SemanticDocCommentKind::Line
+                                        }
+                                        crate::ast::DocCommentKind::Block => {
+                                            SemanticDocCommentKind::Block
+                                        }
+                                    },
+                                    text: comment.text.clone(),
+                                })
+                                .collect(),
+                            conditional_context: symbol
+                                .conditional_context
+                                .iter()
+                                .map(|branch| SemanticConditionalBranch {
+                                    kind: match branch.kind {
+                                        PreprocessorBranchKind::If => {
+                                            SemanticConditionalBranchKind::If
+                                        }
+                                        PreprocessorBranchKind::Ifdef => {
+                                            SemanticConditionalBranchKind::Ifdef
+                                        }
+                                        PreprocessorBranchKind::Ifndef => {
+                                            SemanticConditionalBranchKind::Ifndef
+                                        }
+                                        PreprocessorBranchKind::Elif => {
+                                            SemanticConditionalBranchKind::Elif
+                                        }
+                                        PreprocessorBranchKind::Else => {
+                                            SemanticConditionalBranchKind::Else
+                                        }
+                                    },
+                                    directive_span: symbol.span,
+                                    condition: branch.condition.as_ref().map(|text| SemanticText {
+                                        span: symbol.span,
+                                        text: text.clone(),
+                                    }),
+                                })
+                                .collect(),
+                            callable_form: symbol.callable_form.map(|form| match form {
+                                CallableForm::Implementation => {
+                                    SemanticCallableForm::Implementation
+                                }
+                                CallableForm::Declaration => SemanticCallableForm::Declaration,
+                                CallableForm::Prototype => SemanticCallableForm::Prototype,
+                            }),
                         })
                     })
                     .collect(),
             })
             .collect()
     }
+}
+
+fn cached_public_text(span: Option<TextSpan>, text: Option<String>) -> Option<PublicText> {
+    text.map(|text| PublicText { span, text })
 }
 
 fn public_semantic_kind(kind: SymbolKind) -> Option<SemanticDeclarationKind> {
@@ -207,9 +318,9 @@ fn public_semantic_kind(kind: SymbolKind) -> Option<SemanticDeclarationKind> {
         SymbolKind::Constructor => SemanticDeclarationKind::Constructor,
         SymbolKind::Destructor => SemanticDeclarationKind::Destructor,
         SymbolKind::PreprocessorMacro => SemanticDeclarationKind::PreprocessorMacro,
-        SymbolKind::TypeParameter | SymbolKind::Parameter | SymbolKind::LocalVariable => {
-            return None
-        }
+        SymbolKind::TypeParameter => SemanticDeclarationKind::TypeParameter,
+        SymbolKind::Parameter => SemanticDeclarationKind::Parameter,
+        SymbolKind::LocalVariable => return None,
     })
 }
 

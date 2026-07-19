@@ -658,7 +658,9 @@ fn build_workspace_file_index(root: &Path, file: &Path, source: &str) -> Workspa
         .validate()
         .expect("fresh compiler-owned workspace contribution is valid");
     let mut index = SymbolIndex::default();
-    index.add_semantic_file(&semantic_file, workspace_source_metadata(root, file));
+    index
+        .add_file_contribution(&contribution, workspace_source_metadata(root, file))
+        .expect("fresh compiler-owned workspace contribution is valid");
     WorkspaceIndexedFile {
         contribution,
         index,

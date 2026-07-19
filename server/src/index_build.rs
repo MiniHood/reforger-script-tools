@@ -166,10 +166,17 @@ fn build_file(
     summary.timings.catalog_build += semantic_file_build_start.elapsed();
 
     let index_build_start = Instant::now();
-    index.add_semantic_file(
-        &semantic_file,
-        source_metadata(&root.root_path, file, root.kind, root.priority),
-    );
+    index
+        .add_file_contribution(
+            &semantic_file.contribution(),
+            source_metadata(&root.root_path, file, root.kind, root.priority),
+        )
+        .map_err(|error| {
+            format!(
+                "Invalid semantic contribution for {}: {error:?}",
+                file.display()
+            )
+        })?;
     summary.timings.index_build += index_build_start.elapsed();
 
     record_file_counts(
@@ -637,15 +644,17 @@ mod tests {
         let ast = AstSourceFile::new(source, &parse);
         let semantic_file = SemanticFile::build(source, &ast);
         let mut expected = SymbolIndex::default();
-        expected.add_semantic_file(
-            &semantic_file,
-            source_metadata(
-                &root,
-                &file,
-                SourceKind::GameData,
-                SOURCE_PRIORITY_GAME_DATA,
-            ),
-        );
+        expected
+            .add_file_contribution(
+                &semantic_file.contribution(),
+                source_metadata(
+                    &root,
+                    &file,
+                    SourceKind::GameData,
+                    SOURCE_PRIORITY_GAME_DATA,
+                ),
+            )
+            .unwrap();
 
         assert_eq!(result.index.files(), expected.files());
         assert_eq!(result.index.symbols(), expected.symbols());

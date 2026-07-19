@@ -5,8 +5,8 @@ use crate::model::{
     SymbolCatalog, SymbolId, SymbolKind,
 };
 use crate::semantic_file::{
-    SemanticCallableForm, SemanticConditionalBranchKind, SemanticDeclarationKind,
-    SemanticDocCommentKind, SemanticFile,
+    FileContribution, FileContributionValidationError, SemanticCallableForm,
+    SemanticConditionalBranchKind, SemanticDeclarationKind, SemanticDocCommentKind, SemanticFile,
 };
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::{BTreeMap, BTreeSet};
@@ -496,6 +496,134 @@ impl SymbolIndex {
 
         self.rebuild_lookup_maps();
         file_id
+    }
+
+    /// Adds a validated, serialized compiler contribution. Production
+    /// workspace and game-data ingestion uses this boundary so the index never
+    /// reconstructs facts from the legacy catalog or source text.
+    pub fn add_file_contribution(
+        &mut self,
+        contribution: &FileContribution,
+        metadata: SourceFileMetadata,
+    ) -> Result<SourceFileId, FileContributionValidationError> {
+        contribution.validate()?;
+
+        let file_id = SourceFileId(self.files.len());
+        let symbol_start = self.symbols.len();
+        self.files.push(IndexedFile {
+            id: file_id,
+            metadata,
+            symbol_start,
+            symbol_count: contribution.symbols.len(),
+            non_declaration_callable_fragments: contribution.non_declaration_callable_fragments,
+        });
+
+        for declaration in &contribution.symbols {
+            let id = GlobalSymbolId {
+                file_id,
+                symbol_id: SymbolId(declaration.id.0 as usize),
+            };
+            let parent = declaration.parent.map(|parent| GlobalSymbolId {
+                file_id,
+                symbol_id: SymbolId(parent.0 as usize),
+            });
+            self.symbols.push(IndexedSymbol {
+                id,
+                parent,
+                kind: indexed_symbol_kind(declaration.kind),
+                name: declaration.name.clone(),
+                span: declaration.span,
+                selection_span: declaration.selection_span,
+                detail: IndexedSymbolDetail {
+                    type_text: declaration
+                        .detail
+                        .type_text
+                        .as_ref()
+                        .map(|value| value.text.clone()),
+                    type_text_span: declaration
+                        .detail
+                        .type_text
+                        .as_ref()
+                        .and_then(|value| value.span),
+                    return_type_text: declaration
+                        .detail
+                        .return_type
+                        .as_ref()
+                        .map(|value| value.text.clone()),
+                    return_type_text_span: declaration
+                        .detail
+                        .return_type
+                        .as_ref()
+                        .and_then(|value| value.span),
+                    base_type: declaration
+                        .detail
+                        .base_type
+                        .as_ref()
+                        .map(|value| value.text.clone()),
+                    base_type_span: declaration
+                        .detail
+                        .base_type
+                        .as_ref()
+                        .and_then(|value| value.span),
+                    default_text: declaration
+                        .detail
+                        .default_value
+                        .as_ref()
+                        .map(|value| value.text.clone()),
+                    default_text_span: declaration
+                        .detail
+                        .default_value
+                        .as_ref()
+                        .and_then(|value| value.span),
+                    enum_value_text: declaration
+                        .detail
+                        .enum_value
+                        .as_ref()
+                        .map(|value| value.text.clone()),
+                    enum_value_text_span: declaration
+                        .detail
+                        .enum_value
+                        .as_ref()
+                        .and_then(|value| value.span),
+                },
+                attributes: declaration
+                    .attributes
+                    .iter()
+                    .map(|attribute| IndexedAttribute {
+                        name: semantic_attribute_name(&attribute.text).map(str::to_owned),
+                        text: attribute.text.clone(),
+                    })
+                    .collect(),
+                modifiers: declaration
+                    .modifiers
+                    .iter()
+                    .map(|value| value.text.clone())
+                    .collect(),
+                doc_comments: declaration
+                    .doc_comments
+                    .iter()
+                    .map(|comment| IndexedDocComment {
+                        kind: match comment.kind {
+                            SemanticDocCommentKind::Line => DocCommentKind::Line,
+                            SemanticDocCommentKind::Block => DocCommentKind::Block,
+                        },
+                        text: comment.text.clone(),
+                    })
+                    .collect(),
+                conditional_context: declaration
+                    .conditional_context
+                    .iter()
+                    .map(|branch| IndexedConditionalBranch {
+                        kind: indexed_conditional_kind(branch.kind),
+                        condition: branch.condition.as_ref().map(|value| value.text.clone()),
+                    })
+                    .collect(),
+                callable_form: declaration.callable_form.map(indexed_callable_form),
+            });
+        }
+
+        self.rebuild_lookup_maps();
+        Ok(file_id)
     }
 
     pub fn files(&self) -> &[IndexedFile] {
@@ -1484,6 +1612,37 @@ void Start();
         assert_eq!(
             semantic.functions_by_name("Start"),
             legacy.functions_by_name("Start")
+        );
+    }
+
+    #[test]
+    fn validated_contribution_ingestion_matches_semantic_file_indexing() {
+        let source = r#"typedef int Count;
+class Example : Base
+{
+    int m_Value;
+    void Run(string label = "x");
+}
+void Start();
+"#;
+        let metadata = SourceFileMetadata::unknown();
+        let parse = parse_source(source);
+        let semantic_file = SemanticFile::build(source, &AstSourceFile::new(source, &parse));
+
+        let mut from_semantic_file = SymbolIndex::default();
+        from_semantic_file.add_semantic_file(&semantic_file, metadata.clone());
+
+        let contribution = semantic_file.contribution();
+        let mut from_contribution = SymbolIndex::default();
+        from_contribution
+            .add_file_contribution(&contribution, metadata)
+            .unwrap();
+
+        assert_eq!(from_contribution.files(), from_semantic_file.files());
+        assert_eq!(from_contribution.symbols(), from_semantic_file.symbols());
+        assert_eq!(
+            from_contribution.methods_by_owner_name("Example", "Run"),
+            from_semantic_file.methods_by_owner_name("Example", "Run")
         );
     }
 

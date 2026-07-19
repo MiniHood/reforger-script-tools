@@ -13,11 +13,13 @@ iterator and records declaration identity, hierarchy, source/selection spans,
 modifiers, attributes, comments, signature details, callable form, parameters,
 and local bindings. File-private callable regions group each callable's
 parameters and locals for bounded future cursor queries. Its
-`FileContribution` projection exposes only symbols appropriate for external
-lookup. It carries schema and source-manifest versions and validates both plus
-its required public names before publication; file-private locals and
-parameters remain available to the file-local semantic/query path but never
-escape into workspace lookup.
+`FileContribution` projection exposes external declarations and callable
+signature parameters with their snapshot-local IDs, parents, spans, details,
+modifiers, attributes, documentation, directive context, and callable form.
+This permits lossless `SymbolIndex` reconstruction without source text or a
+legacy catalog. It carries schema and source-manifest versions and validates
+both plus its required public names before publication; file-private locals
+remain available only to the file-local semantic/query path.
 
 It does not resolve names, decide editor presentation, manage open-document
 revisions, read files, or own workspace snapshot replacement.
@@ -25,11 +27,13 @@ revisions, read files, or own workspace snapshot replacement.
 ## Current Behavior
 
 `index_build` and workspace external-overlay ingestion construct a
-`SemanticFile` directly from `AstSourceFile` and add it to `SymbolIndex` without
-constructing `SymbolCatalog`. Direct index ingestion preserves declaration,
-parameter, local-binding, modifier, documentation, signature, and callable-form
-facts. Conditional-directive context remains an explicit follow-up semantic
-fact before file-local LSP analysis can cut over completely.
+`SemanticFile` directly from `AstSourceFile`, project and validate a versioned
+`FileContribution`, then reconstruct their `SymbolIndex` through the validated
+contribution boundary without constructing `SymbolCatalog`. The projection
+preserves declaration and parameter signature facts, modifiers, documentation,
+directive context, spans, and callable form. Conditional-directive context
+remains an explicit follow-up semantic fact before file-local LSP analysis can
+cut over completely.
 
 `SemanticBuildStats` records source-free directive-line, declaration-record,
 and macro-scan operation counts. Directive branch stacks are interned once per
