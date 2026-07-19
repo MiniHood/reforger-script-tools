@@ -77,8 +77,7 @@ scripting-language conventions.
 for document lifecycle and verification. [docs/reference/architecture.md](docs/reference/architecture.md)
 owns cross-layer architecture. [docs/agent-workflow.md](docs/agent-workflow.md)
 owns workflow rationale. `docs/reference/` owns current subsystem context;
-`docs/plans/` owns CE planning artifacts; `docs/solutions/` owns reusable
-resolved-problem learnings.
+`tools/reports/` contains ignored generated investigation output.
 
 Before changing a non-trivial or architecture-sensitive source file, read its
 matching active reference page in full when one exists, plus any related page
@@ -86,14 +85,9 @@ that defines a boundary involved in the change. Update or create the matching
 reference page when ownership, behavior, boundaries, or future direction
 changes. Do not create reference pages for generated output, dependencies, or
 trivial metadata. Replace harmful legacy documentation when current source,
-accepted policy, user direction, or a CE artifact supports the replacement.
+accepted policy, or user direction supports the replacement.
 
 ## Workflow and Git
-
-Use the applicable Compound Engineering skill for planning, implementation,
-debugging, review, and learnings. CE owns its execution procedure, including
-task tracking, plan treatment, worker strategy, testing, review, and fix
-follow-up. Do not duplicate or override that procedure here.
 
 After a coherent task scope is verified, commit only its attributable changes
 to the current branch with a concise, value-focused title. Do not push, open a
@@ -102,8 +96,7 @@ asks for that operation.
 
 ## Verification
 
-These are repository-specific verification requirements that supplement the
-applicable Compound Engineering skill.
+These are repository-specific verification requirements.
 
 Before completing a source-changing task:
 

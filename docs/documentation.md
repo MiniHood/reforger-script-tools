@@ -5,8 +5,6 @@
 - `AGENTS.md`: enforceable repository policy and entry links.
 - `docs/reference/architecture.md`: cross-layer runtime architecture and ownership.
 - `docs/reference/`: current subsystem and source-owner context.
-- `docs/plans/`: historical implementation and decision artifacts.
-- `docs/solutions/`: reusable resolved-problem learnings.
 - `docs/agent-workflow.md`: rationale for the repository workflow.
 - `tools/reports/`: ignored generated investigation output.
 
@@ -30,18 +28,14 @@ facts change.
 Keep architecture pages conceptual and cross-layer; their headings may be
 tailored to explain the system rather than repeat the source-owner contract.
 Keep source-reference pages current and concise. Do not retain change-note
-timelines that Git history, plans, or solutions already preserve. Start from
-the [reference index](reference/README.md) when navigating by subsystem rather
+timelines that Git history already preserves. Start from the
+[reference index](reference/README.md) when navigating by subsystem rather
 than source path.
-
-Use plans for intended work and decisions, never as current architecture. Use
-solutions for durable lessons, linking to current owners instead of duplicating
-their behavior. Search solutions when working in a documented problem area.
 
 ## Retirement and verification
 
 Rewrite, move, or delete stale documentation only with evidence from current
-source, accepted policy, explicit user direction, or a current CE artifact.
+source, accepted policy, or explicit user direction.
 Preserve useful replacement context in its correct owner. For docs-only work,
 run `git diff --check` and manually validate links, paths, and the affected
 entry-point journey.

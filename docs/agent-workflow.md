@@ -15,13 +15,6 @@ maintainer the cross-layer map. `docs/reference/` then mirrors source and
 subsystem ownership, making it possible to start with a file and find the
 behavior and boundaries that matter before changing it.
 
-Plans and solutions serve different kinds of memory. [Plans](plans/) record why
-a bounded piece of work was chosen; they are historical once source and policy
-move on. The [solution store](solutions/) records reusable conclusions from
-resolved problems. Searching it before reopening familiar territory helps
-preserve hard-won constraints without mistaking an old plan for current
-architecture.
-
 Generated investigation output belongs under `tools/reports/`, not in the
 documentation hierarchy. A reference page can explain the generator and its
 contract while its output remains disposable evidence.
@@ -36,25 +29,13 @@ provide progressively weaker supporting context. This ordering keeps the
 language server from silently becoming an authority on language truth.
 
 The same principle applies to implementation work. A small, focused check is
-more useful than repeating broad commands that answer the same question. Plans,
-reviews, tests, and runtime checks each have a distinct role: they establish a
-decision, challenge it, prove behavior, and validate integration respectively.
-
-## Compound Engineering as continuity
-
-Compound Engineering artifacts make significant work understandable after the
-original session ends. Brainstorming resolves uncertain outcomes, plans record
-the chosen slice and verification intent, execution leaves the result in source
-and tests, and review or debugging supplies focused challenge when needed.
-The resulting plan is useful historical context, while current source-owner
-pages and solution records remain the places to look for present behavior and
-durable lessons.
+more useful than repeating broad commands that answer the same question. Code
+reviews, tests, and runtime checks each have a distinct role: they challenge a
+change, prove behavior, and validate integration respectively.
 
 ## Preserving useful history
 
-Documentation is valuable when it explains current ownership, constraints, or
-decisions that still shape the code. It becomes a liability when it preserves a
+Documentation is valuable when it explains current ownership or constraints
+that still shape the code. It becomes a liability when it preserves a
 superseded architecture as if it were current. The documentation procedure
-therefore favors concise current owners, historical plans for decisions, and
-solutions for recurring lessons. This separation lets the project discard
-obsolete timelines without discarding the reasoning future maintainers need.
+therefore favors concise, current owner pages and Git history for past changes.
