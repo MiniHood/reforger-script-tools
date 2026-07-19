@@ -14,11 +14,12 @@ modifiers, attributes, comments, signature details, callable form, parameters,
 and local bindings. File-private callable regions group each callable's
 parameters and locals for bounded future cursor queries. Its
 `FileContribution` projection exposes external declarations and callable
-signature parameters with their snapshot-local IDs, parents, spans, details,
+signature parameters with dense snapshot-local IDs, remapped parents, spans, details,
 modifiers, attributes, documentation, directive context, and callable form.
 This permits lossless `SymbolIndex` reconstruction without source text or a
 legacy catalog. It carries schema and source-manifest versions and validates
-both plus its required public names before publication; file-private locals
+both plus its required public names, dense IDs, and retained parent references
+before publication; file-private locals
 remain available only to the file-local semantic/query path.
 
 It does not resolve names, decide editor presentation, manage open-document

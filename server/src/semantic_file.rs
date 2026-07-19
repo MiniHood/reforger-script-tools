@@ -11,6 +11,7 @@ use crate::ast::{
 };
 use crate::lexer::TextSpan;
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct SemanticDeclarationId(pub u32);
@@ -248,13 +249,14 @@ impl SemanticFile {
                 })
                 .collect(),
         }
+        .with_contiguous_ids()
     }
 }
 
 /// The serializable, workspace-facing subset of a semantic file.  It contains
 /// declarations that can participate in external lookup, not private scope
 /// state or AST references.
-pub const FILE_CONTRIBUTION_SCHEMA_VERSION: u32 = 2;
+pub const FILE_CONTRIBUTION_SCHEMA_VERSION: u32 = 3;
 pub const FILE_CONTRIBUTION_SOURCE_MANIFEST_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -271,9 +273,25 @@ pub struct FileContribution {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileContributionValidationError {
-    UnsupportedSchema { found: u32, supported: u32 },
-    UnsupportedSourceManifest { found: u32, supported: u32 },
-    MissingName { kind: SemanticDeclarationKind },
+    UnsupportedSchema {
+        found: u32,
+        supported: u32,
+    },
+    UnsupportedSourceManifest {
+        found: u32,
+        supported: u32,
+    },
+    MissingName {
+        kind: SemanticDeclarationKind,
+    },
+    NonContiguousSymbolId {
+        expected: SemanticDeclarationId,
+        found: SemanticDeclarationId,
+    },
+    MissingParent {
+        symbol: SemanticDeclarationId,
+        parent: SemanticDeclarationId,
+    },
 }
 
 impl FileContribution {
@@ -298,7 +316,43 @@ impl FileContribution {
                 return Err(FileContributionValidationError::MissingName { kind: symbol.kind });
             }
         }
+        let ids: BTreeSet<_> = self.symbols.iter().map(|symbol| symbol.id).collect();
+        for (expected, symbol) in self.symbols.iter().enumerate() {
+            let expected = SemanticDeclarationId(expected as u32);
+            if symbol.id != expected {
+                return Err(FileContributionValidationError::NonContiguousSymbolId {
+                    expected,
+                    found: symbol.id,
+                });
+            }
+            if let Some(parent) = symbol.parent {
+                if !ids.contains(&parent) {
+                    return Err(FileContributionValidationError::MissingParent {
+                        symbol: symbol.id,
+                        parent,
+                    });
+                }
+            }
+        }
         Ok(())
+    }
+
+    /// Reassigns public declaration identities densely after a projection
+    /// removes file-private records, preserving every retained parent edge.
+    pub fn with_contiguous_ids(mut self) -> Self {
+        let remapped_ids: BTreeMap<_, _> = self
+            .symbols
+            .iter()
+            .enumerate()
+            .map(|(next, symbol)| (symbol.id, SemanticDeclarationId(next as u32)))
+            .collect();
+        for symbol in &mut self.symbols {
+            let original_id = symbol.id;
+            let original_parent = symbol.parent;
+            symbol.id = remapped_ids[&original_id];
+            symbol.parent = original_parent.map(|parent| remapped_ids[&parent]);
+        }
+        self
     }
 }
 
@@ -1023,6 +1077,23 @@ mod tests {
                 kind: SemanticDeclarationKind::Class,
             })
         );
+    }
+
+    #[test]
+    fn contribution_compacts_public_ids_after_local_declarations() {
+        let file = semantic(include_str!(
+            "../../tools/fixtures/index/contribution_public_ids_after_local.c"
+        ));
+        let contribution = file.contribution();
+        assert_eq!(
+            contribution
+                .symbols
+                .iter()
+                .map(|symbol| symbol.id.0)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+        assert_eq!(contribution.validate(), Ok(()));
     }
 
     #[test]

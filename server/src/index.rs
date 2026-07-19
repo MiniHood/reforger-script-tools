@@ -1647,6 +1647,28 @@ void Start();
     }
 
     #[test]
+    fn contribution_ingestion_preserves_public_symbols_after_local_ids() {
+        let source =
+            include_str!("../../tools/fixtures/index/contribution_public_ids_after_local.c");
+        let parse = parse_source(source);
+        let semantic_file = SemanticFile::build(source, &AstSourceFile::new(source, &parse));
+        let contribution = semantic_file.contribution();
+        let mut index = SymbolIndex::default();
+        index
+            .add_file_contribution(&contribution, SourceFileMetadata::unknown())
+            .unwrap();
+
+        let later = index.classes_by_name("ContributionIdsAfterPublicFixture")[0];
+        assert_eq!(later.symbol_id, SymbolId(2));
+        assert_eq!(
+            index
+                .symbol(later)
+                .and_then(|symbol| symbol.name.as_deref()),
+            Some("ContributionIdsAfterPublicFixture")
+        );
+    }
+
+    #[test]
     fn indexes_names_kinds_children_classes_typedefs_and_methods() {
         let source = r#"typedef string FactionKey;
 

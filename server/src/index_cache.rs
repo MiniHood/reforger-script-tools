@@ -177,125 +177,130 @@ impl CachedSymbolIndex {
     fn public_contributions(&self) -> Vec<FileContribution> {
         self.files
             .iter()
-            .map(|file| FileContribution {
-                schema_version: FILE_CONTRIBUTION_SCHEMA_VERSION,
-                source_manifest_version: FILE_CONTRIBUTION_SOURCE_MANIFEST_VERSION,
-                non_declaration_callable_fragments: file.non_declaration_callable_fragments,
-                symbols: self
-                    .symbols
-                    .iter()
-                    .filter(|symbol| symbol.id.file_id == file.id)
-                    .filter(|symbol| symbol.name.is_some())
-                    .filter_map(|symbol| {
-                        let kind = public_semantic_kind(symbol.kind)?;
-                        Some(PublicSymbol {
-                            id: SemanticDeclarationId(symbol.id.symbol_id.0 as u32),
-                            parent: symbol
-                                .parent
-                                .map(|parent| SemanticDeclarationId(parent.symbol_id.0 as u32)),
-                            kind,
-                            name: symbol.name.clone(),
-                            container: symbol.parent.and_then(|parent| {
-                                self.symbols
+            .map(|file| {
+                FileContribution {
+                    schema_version: FILE_CONTRIBUTION_SCHEMA_VERSION,
+                    source_manifest_version: FILE_CONTRIBUTION_SOURCE_MANIFEST_VERSION,
+                    non_declaration_callable_fragments: file.non_declaration_callable_fragments,
+                    symbols: self
+                        .symbols
+                        .iter()
+                        .filter(|symbol| symbol.id.file_id == file.id)
+                        .filter(|symbol| symbol.name.is_some())
+                        .filter_map(|symbol| {
+                            let kind = public_semantic_kind(symbol.kind)?;
+                            Some(PublicSymbol {
+                                id: SemanticDeclarationId(symbol.id.symbol_id.0 as u32),
+                                parent: symbol
+                                    .parent
+                                    .map(|parent| SemanticDeclarationId(parent.symbol_id.0 as u32)),
+                                kind,
+                                name: symbol.name.clone(),
+                                container: symbol.parent.and_then(|parent| {
+                                    self.symbols
+                                        .iter()
+                                        .find(|candidate| candidate.id == parent)
+                                        .and_then(|candidate| candidate.name.clone())
+                                }),
+                                detail: PublicSymbolDetail {
+                                    type_text: cached_public_text(
+                                        symbol.detail.type_text_span,
+                                        symbol.detail.type_text.clone(),
+                                    ),
+                                    return_type: cached_public_text(
+                                        symbol.detail.return_type_text_span,
+                                        symbol.detail.return_type_text.clone(),
+                                    ),
+                                    base_type: cached_public_text(
+                                        symbol.detail.base_type_span,
+                                        symbol.detail.base_type.clone(),
+                                    ),
+                                    default_value: cached_public_text(
+                                        symbol.detail.default_text_span,
+                                        symbol.detail.default_text.clone(),
+                                    ),
+                                    enum_value: cached_public_text(
+                                        symbol.detail.enum_value_text_span,
+                                        symbol.detail.enum_value_text.clone(),
+                                    ),
+                                },
+                                span: symbol.span,
+                                selection_span: symbol.selection_span,
+                                modifiers: symbol
+                                    .modifiers
                                     .iter()
-                                    .find(|candidate| candidate.id == parent)
-                                    .and_then(|candidate| candidate.name.clone())
-                            }),
-                            detail: PublicSymbolDetail {
-                                type_text: cached_public_text(
-                                    symbol.detail.type_text_span,
-                                    symbol.detail.type_text.clone(),
-                                ),
-                                return_type: cached_public_text(
-                                    symbol.detail.return_type_text_span,
-                                    symbol.detail.return_type_text.clone(),
-                                ),
-                                base_type: cached_public_text(
-                                    symbol.detail.base_type_span,
-                                    symbol.detail.base_type.clone(),
-                                ),
-                                default_value: cached_public_text(
-                                    symbol.detail.default_text_span,
-                                    symbol.detail.default_text.clone(),
-                                ),
-                                enum_value: cached_public_text(
-                                    symbol.detail.enum_value_text_span,
-                                    symbol.detail.enum_value_text.clone(),
-                                ),
-                            },
-                            span: symbol.span,
-                            selection_span: symbol.selection_span,
-                            modifiers: symbol
-                                .modifiers
-                                .iter()
-                                .cloned()
-                                .map(|text| SemanticText {
-                                    span: symbol.span,
-                                    text,
-                                })
-                                .collect(),
-                            attributes: symbol
-                                .attributes
-                                .iter()
-                                .map(|attribute| SemanticText {
-                                    span: symbol.span,
-                                    text: attribute.text.clone(),
-                                })
-                                .collect(),
-                            doc_comments: symbol
-                                .doc_comments
-                                .iter()
-                                .map(|comment| SemanticDocComment {
-                                    span: symbol.span,
-                                    kind: match comment.kind {
-                                        crate::ast::DocCommentKind::Line => {
-                                            SemanticDocCommentKind::Line
-                                        }
-                                        crate::ast::DocCommentKind::Block => {
-                                            SemanticDocCommentKind::Block
-                                        }
-                                    },
-                                    text: comment.text.clone(),
-                                })
-                                .collect(),
-                            conditional_context: symbol
-                                .conditional_context
-                                .iter()
-                                .map(|branch| SemanticConditionalBranch {
-                                    kind: match branch.kind {
-                                        PreprocessorBranchKind::If => {
-                                            SemanticConditionalBranchKind::If
-                                        }
-                                        PreprocessorBranchKind::Ifdef => {
-                                            SemanticConditionalBranchKind::Ifdef
-                                        }
-                                        PreprocessorBranchKind::Ifndef => {
-                                            SemanticConditionalBranchKind::Ifndef
-                                        }
-                                        PreprocessorBranchKind::Elif => {
-                                            SemanticConditionalBranchKind::Elif
-                                        }
-                                        PreprocessorBranchKind::Else => {
-                                            SemanticConditionalBranchKind::Else
-                                        }
-                                    },
-                                    directive_span: symbol.span,
-                                    condition: branch.condition.as_ref().map(|text| SemanticText {
+                                    .cloned()
+                                    .map(|text| SemanticText {
                                         span: symbol.span,
-                                        text: text.clone(),
-                                    }),
-                                })
-                                .collect(),
-                            callable_form: symbol.callable_form.map(|form| match form {
-                                CallableForm::Implementation => {
-                                    SemanticCallableForm::Implementation
-                                }
-                                CallableForm::Declaration => SemanticCallableForm::Declaration,
-                                CallableForm::Prototype => SemanticCallableForm::Prototype,
-                            }),
+                                        text,
+                                    })
+                                    .collect(),
+                                attributes: symbol
+                                    .attributes
+                                    .iter()
+                                    .map(|attribute| SemanticText {
+                                        span: symbol.span,
+                                        text: attribute.text.clone(),
+                                    })
+                                    .collect(),
+                                doc_comments: symbol
+                                    .doc_comments
+                                    .iter()
+                                    .map(|comment| SemanticDocComment {
+                                        span: symbol.span,
+                                        kind: match comment.kind {
+                                            crate::ast::DocCommentKind::Line => {
+                                                SemanticDocCommentKind::Line
+                                            }
+                                            crate::ast::DocCommentKind::Block => {
+                                                SemanticDocCommentKind::Block
+                                            }
+                                        },
+                                        text: comment.text.clone(),
+                                    })
+                                    .collect(),
+                                conditional_context: symbol
+                                    .conditional_context
+                                    .iter()
+                                    .map(|branch| SemanticConditionalBranch {
+                                        kind: match branch.kind {
+                                            PreprocessorBranchKind::If => {
+                                                SemanticConditionalBranchKind::If
+                                            }
+                                            PreprocessorBranchKind::Ifdef => {
+                                                SemanticConditionalBranchKind::Ifdef
+                                            }
+                                            PreprocessorBranchKind::Ifndef => {
+                                                SemanticConditionalBranchKind::Ifndef
+                                            }
+                                            PreprocessorBranchKind::Elif => {
+                                                SemanticConditionalBranchKind::Elif
+                                            }
+                                            PreprocessorBranchKind::Else => {
+                                                SemanticConditionalBranchKind::Else
+                                            }
+                                        },
+                                        directive_span: symbol.span,
+                                        condition: branch.condition.as_ref().map(|text| {
+                                            SemanticText {
+                                                span: symbol.span,
+                                                text: text.clone(),
+                                            }
+                                        }),
+                                    })
+                                    .collect(),
+                                callable_form: symbol.callable_form.map(|form| match form {
+                                    CallableForm::Implementation => {
+                                        SemanticCallableForm::Implementation
+                                    }
+                                    CallableForm::Declaration => SemanticCallableForm::Declaration,
+                                    CallableForm::Prototype => SemanticCallableForm::Prototype,
+                                }),
+                            })
                         })
-                    })
-                    .collect(),
+                        .collect(),
+                }
+                .with_contiguous_ids()
             })
             .collect()
     }
@@ -1770,6 +1775,78 @@ mod tests {
             Some("Example.Run(string name = \"ok\") -> int")
         );
 
+        cleanup(&root);
+    }
+
+    #[test]
+    fn cache_preserves_public_symbols_after_pruned_local_ids() {
+        const SOURCE: &str =
+            include_str!("../../tools/fixtures/index/contribution_public_ids_after_local.c");
+        let root = test_root("public-ids-after-local");
+        let cache = root.join("cache.bin");
+        let scripts = root.join("scripts");
+        write_file(&scripts.join("Game/Contribution.c"), SOURCE);
+
+        let config = GameDataIndexCacheConfig {
+            scripts_root: scripts,
+            cache_path: cache,
+            metadata_path: None,
+        };
+        let rebuilt = load_or_build_game_data_index(&config).unwrap();
+        let later = rebuilt
+            .index
+            .classes_by_name("ContributionIdsAfterPublicFixture")[0];
+        assert_eq!(later.symbol_id.0, 2);
+        assert_eq!(
+            rebuilt
+                .index
+                .symbol(later)
+                .and_then(|symbol| symbol.name.as_deref()),
+            Some("ContributionIdsAfterPublicFixture")
+        );
+
+        let loaded = load_or_build_game_data_index(&config).unwrap();
+        assert_eq!(loaded.cache_status, IndexCacheStatus::Loaded);
+        let later = loaded
+            .index
+            .classes_by_name("ContributionIdsAfterPublicFixture")[0];
+        assert_eq!(later.symbol_id.0, 2);
+        assert_eq!(
+            loaded
+                .index
+                .symbol(later)
+                .and_then(|symbol| symbol.name.as_deref()),
+            Some("ContributionIdsAfterPublicFixture")
+        );
+
+        cleanup(&root);
+    }
+
+    #[test]
+    fn cache_rebuilds_when_a_contribution_has_sparse_public_ids() {
+        const SOURCE: &str =
+            include_str!("../../tools/fixtures/index/contribution_public_ids_after_local.c");
+        let root = test_root("sparse-public-ids");
+        let cache = root.join("cache.bin");
+        let scripts = root.join("scripts");
+        write_file(&scripts.join("Game/Contribution.c"), SOURCE);
+
+        let config = GameDataIndexCacheConfig {
+            scripts_root: scripts,
+            cache_path: cache.clone(),
+            metadata_path: None,
+        };
+        load_or_build_game_data_index(&config).unwrap();
+
+        let mut decoded = decode_cached_index(&fs::read(&cache).unwrap()).unwrap();
+        decoded.index.contributions[0].symbols[2].id = SemanticDeclarationId(3);
+        fs::write(&cache, encode_cached_index(&decoded).unwrap()).unwrap();
+
+        let rebuilt = load_or_build_game_data_index(&config).unwrap();
+        assert!(matches!(
+            rebuilt.cache_status,
+            IndexCacheStatus::Rebuilt { .. }
+        ));
         cleanup(&root);
     }
 

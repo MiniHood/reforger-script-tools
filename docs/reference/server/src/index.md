@@ -17,7 +17,8 @@ compatibility tests.
 ## Current Behavior
 
 Validated contributions receive a `SourceFileId`; symbols use `{ file_id,
-symbol_id }` so snapshot-local declaration identity remains local. Indexed
+symbol_id }` where every contribution's `symbol_id` is dense after private
+records are projected out, so snapshot-local declaration identity remains local. Indexed
 records retain names, detail text/spans, modifiers, attributes, raw docs,
 conditional context, macro names, callable form, provenance, and parent/child
 relations without retaining source text.
