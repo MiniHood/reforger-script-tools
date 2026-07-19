@@ -9,6 +9,10 @@ use crate::model::{
     CallableForm, PreprocessorBranchKind, SourceCategory, SourceFileMetadata, SourceKind, SymbolId,
     SymbolKind, SOURCE_PRIORITY_GAME_DATA,
 };
+use crate::semantic_file::{
+    FileContribution, PublicSymbol, PublicSymbolDetail, SemanticDeclarationKind,
+    FILE_CONTRIBUTION_SCHEMA_VERSION, FILE_CONTRIBUTION_SOURCE_MANIFEST_VERSION,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -17,16 +21,17 @@ use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
-const CACHE_FORMAT_VERSION: u32 = 9;
+const CACHE_FORMAT_VERSION: u32 = 10;
 const CACHE_SCHEMA: &str = "reforger-symbol-index";
-const CACHE_MAGIC: &[u8; 8] = b"RSTIDX09";
+const CACHE_MAGIC: &[u8; 8] = b"RSTIDX10";
 const CACHE_INDEX_SHAPE: &str =
-    "runtime-pruned:no-local-variables:detail-spans-stripped:layered-external-v1:binary-v2:string-table-v1";
+    "runtime-pruned:no-local-variables:detail-spans-stripped:layered-external-v1:binary-v3:string-table-v1:validated-file-contributions-v1";
 const MAX_CACHE_STRING_TABLE_ENTRIES: usize = 1_000_000;
 const MAX_CACHE_RAW_STRING_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CACHE_FILE_RECORDS: usize = 1_000_000;
 const MAX_CACHE_SYMBOL_RECORDS: usize = 5_000_000;
 const MAX_CACHE_SYMBOL_LIST_ITEMS: usize = 1_000_000;
+const MAX_CACHE_CONTRIBUTION_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug)]
 pub struct GameDataIndexCacheConfig {
@@ -119,14 +124,18 @@ struct CachedGameDataIndex {
 struct CachedSymbolIndex {
     files: Vec<IndexedFile>,
     symbols: Vec<IndexedSymbol>,
+    contributions: Vec<FileContribution>,
 }
 
 impl From<&SymbolIndex> for CachedSymbolIndex {
     fn from(index: &SymbolIndex) -> Self {
-        Self {
+        let mut snapshot = Self {
             files: index.files().to_vec(),
             symbols: index.symbols().to_vec(),
-        }
+            contributions: Vec::new(),
+        };
+        snapshot.contributions = snapshot.public_contributions();
+        snapshot
     }
 }
 
@@ -134,6 +143,74 @@ impl From<CachedSymbolIndex> for SymbolIndex {
     fn from(snapshot: CachedSymbolIndex) -> Self {
         SymbolIndex::from_indexed_parts(snapshot.files, snapshot.symbols)
     }
+}
+
+impl CachedSymbolIndex {
+    /// Reconstruct the public records that this legacy query cache exposes and
+    /// validate the versioned compiler contract before rebuilding lookup maps.
+    /// The index remains a temporary query projection, never a cache-validity
+    /// fallback for malformed public semantic data.
+    fn validate_public_contributions(&self) -> Result<(), String> {
+        for contribution in &self.contributions {
+            contribution
+                .validate()
+                .map_err(|error| format!("invalid public file contribution: {error:?}"))?;
+        }
+        Ok(())
+    }
+
+    fn public_contributions(&self) -> Vec<FileContribution> {
+        self.files
+            .iter()
+            .map(|file| FileContribution {
+                schema_version: FILE_CONTRIBUTION_SCHEMA_VERSION,
+                source_manifest_version: FILE_CONTRIBUTION_SOURCE_MANIFEST_VERSION,
+                symbols: self
+                    .symbols
+                    .iter()
+                    .filter(|symbol| symbol.id.file_id == file.id)
+                    .filter(|symbol| symbol.name.is_some())
+                    .filter_map(|symbol| {
+                        let kind = public_semantic_kind(symbol.kind)?;
+                        Some(PublicSymbol {
+                            kind,
+                            name: symbol.name.clone(),
+                            container: symbol.parent.and_then(|parent| {
+                                self.symbols
+                                    .iter()
+                                    .find(|candidate| candidate.id == parent)
+                                    .and_then(|candidate| candidate.name.clone())
+                            }),
+                            detail: PublicSymbolDetail {
+                                type_text: symbol.detail.type_text.clone(),
+                                return_type: symbol.detail.return_type_text.clone(),
+                                base_type: symbol.detail.base_type.clone(),
+                            },
+                        })
+                    })
+                    .collect(),
+            })
+            .collect()
+    }
+}
+
+fn public_semantic_kind(kind: SymbolKind) -> Option<SemanticDeclarationKind> {
+    Some(match kind {
+        SymbolKind::Class => SemanticDeclarationKind::Class,
+        SymbolKind::Enum => SemanticDeclarationKind::Enum,
+        SymbolKind::EnumMember => SemanticDeclarationKind::EnumMember,
+        SymbolKind::Typedef => SemanticDeclarationKind::Typedef,
+        SymbolKind::Function => SemanticDeclarationKind::Function,
+        SymbolKind::GlobalField => SemanticDeclarationKind::GlobalField,
+        SymbolKind::Field => SemanticDeclarationKind::Field,
+        SymbolKind::Method => SemanticDeclarationKind::Method,
+        SymbolKind::Constructor => SemanticDeclarationKind::Constructor,
+        SymbolKind::Destructor => SemanticDeclarationKind::Destructor,
+        SymbolKind::PreprocessorMacro => SemanticDeclarationKind::PreprocessorMacro,
+        SymbolKind::TypeParameter | SymbolKind::Parameter | SymbolKind::LocalVariable => {
+            return None
+        }
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -306,6 +383,10 @@ fn load_cached_index(
         timings.cache_validate = validate_start.elapsed();
         return Ok(None);
     }
+    if cached.index.validate_public_contributions().is_err() {
+        timings.cache_validate = validate_start.elapsed();
+        return Ok(None);
+    }
     timings.cache_validate = validate_start.elapsed();
 
     Ok(Some(cached))
@@ -404,6 +485,10 @@ fn encode_cached_index(cached: &CachedGameDataIndex) -> Result<Vec<u8>, String> 
     for symbol in &cached.index.symbols {
         writer.write_indexed_symbol(symbol)?;
     }
+    let contribution_bytes = serde_json::to_vec(&cached.index.contributions)
+        .map_err(|error| format!("Failed to encode file contributions: {error}"))?;
+    writer.write_vec_len(contribution_bytes.len())?;
+    writer.write_bytes(&contribution_bytes);
     Ok(writer.into_bytes())
 }
 
@@ -430,6 +515,10 @@ fn decode_cached_index(bytes: &[u8]) -> Result<CachedGameDataIndex, String> {
     for _ in 0..symbol_count {
         symbols.push(reader.read_indexed_symbol()?);
     }
+    let contribution_len =
+        reader.read_bounded_len("public contribution bytes", MAX_CACHE_CONTRIBUTION_BYTES)?;
+    let contributions = serde_json::from_slice(reader.read_exact(contribution_len)?)
+        .map_err(|error| format!("invalid public file contributions: {error}"))?;
     reader.expect_eof()?;
     Ok(CachedGameDataIndex {
         schema,
@@ -438,7 +527,11 @@ fn decode_cached_index(bytes: &[u8]) -> Result<CachedGameDataIndex, String> {
         crate_version,
         fingerprint,
         summary,
-        index: CachedSymbolIndex { files, symbols },
+        index: CachedSymbolIndex {
+            files,
+            symbols,
+            contributions,
+        },
     })
 }
 
@@ -1431,6 +1524,8 @@ mod tests {
         let decoded = decode_cached_index(&cache_bytes).unwrap();
         assert_eq!(decoded.format_version, CACHE_FORMAT_VERSION);
         assert_eq!(decoded.index_shape, CACHE_INDEX_SHAPE);
+        assert_eq!(decoded.index.contributions.len(), 1);
+        decoded.index.validate_public_contributions().unwrap();
 
         cleanup(&root);
     }
@@ -1568,7 +1663,7 @@ mod tests {
     }
 
     #[test]
-    fn v9_binary_cache_load_rebuilds_lookup_maps_from_files_and_symbols() {
+    fn v10_binary_cache_load_rebuilds_lookup_maps_from_files_and_symbols() {
         let root = test_root("rebuild_maps");
         let cache = root.join("cache.json");
         let scripts = root.join("scripts");
@@ -1735,6 +1830,34 @@ class BaseGameModeClass : GenericEntityClass
             metadata_path: None,
         })
         .unwrap();
+        assert!(matches!(
+            rebuilt.cache_status,
+            IndexCacheStatus::Rebuilt { .. }
+        ));
+
+        cleanup(&root);
+    }
+
+    #[test]
+    fn cache_rebuilds_when_a_public_contribution_is_not_current() {
+        let root = test_root("stale-contribution");
+        let scripts = root.join("scripts");
+        let cache = root.join("index.bin");
+        fs::create_dir_all(&scripts).unwrap();
+        fs::write(scripts.join("Example.c"), "class Example {}\n").unwrap();
+
+        let config = GameDataIndexCacheConfig {
+            scripts_root: scripts,
+            cache_path: cache.clone(),
+            metadata_path: None,
+        };
+        load_or_build_game_data_index(&config).unwrap();
+
+        let mut decoded = decode_cached_index(&fs::read(&cache).unwrap()).unwrap();
+        decoded.index.contributions[0].schema_version += 1;
+        fs::write(&cache, encode_cached_index(&decoded).unwrap()).unwrap();
+
+        let rebuilt = load_or_build_game_data_index(&config).unwrap();
         assert!(matches!(
             rebuilt.cache_status,
             IndexCacheStatus::Rebuilt { .. }

@@ -27,6 +27,11 @@ older events cannot resurrect or roll back newer workspace state. Status and
 phase markers make cache/index startup failures observable without moving
 indexing work into the client.
 
+Each workspace-file entry retains the validated, versioned public
+`FileContribution` that admitted it. Its `SymbolIndex` is a query projection
+from the same compiler-owned semantic file, rather than the publication
+contract.
+
 ## Dependencies and Boundaries
 
 Depends on parser/AST/model/index/index-cache and standard synchronization.

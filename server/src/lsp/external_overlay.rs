@@ -8,7 +8,7 @@ use crate::model::{
     source_category_for_path, SourceFileMetadata, SourceKind, SOURCE_PRIORITY_WORKSPACE,
 };
 use crate::parser::parse_source;
-use crate::semantic_file::SemanticFile;
+use crate::semantic_file::{FileContribution, SemanticFile};
 use std::collections::BTreeMap;
 use std::fs;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -45,6 +45,9 @@ struct ExternalIndexState {
 
 #[derive(Debug, Clone)]
 struct WorkspaceIndexedFile {
+    /// The versioned public contract admitted for this workspace generation.
+    /// `index` is the temporary query projection derived from the same file.
+    contribution: FileContribution,
     index: SymbolIndex,
     bytes: usize,
     parse_diagnostics: usize,
@@ -650,13 +653,14 @@ fn build_workspace_file_index(root: &Path, file: &Path, source: &str) -> Workspa
     // Workspace publication accepts only the versioned public projection; the
     // index below remains the query representation derived from those same
     // compiler-owned facts.
-    semantic_file
-        .contribution()
+    let contribution = semantic_file.contribution();
+    contribution
         .validate()
         .expect("fresh compiler-owned workspace contribution is valid");
     let mut index = SymbolIndex::default();
     index.add_semantic_file(&semantic_file, workspace_source_metadata(root, file));
     WorkspaceIndexedFile {
+        contribution,
         index,
         bytes: source.len(),
         parse_diagnostics: parse.diagnostics.len(),
@@ -842,6 +846,7 @@ class Example : BaseExample
         );
 
         assert_eq!(indexed.parse_diagnostics, 0);
+        indexed.contribution.validate().unwrap();
         assert_eq!(indexed.index.files().len(), 1);
         assert_eq!(indexed.index.symbols().len(), 4);
         let metadata = &indexed.index.files()[0].metadata;
