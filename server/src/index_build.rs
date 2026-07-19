@@ -2,7 +2,7 @@ use crate::index::SymbolIndex;
 use crate::lexer::TextSpan;
 use crate::model::{source_category_for_path, SourceFileMetadata, SourceKind};
 use crate::parser::parse_source;
-use crate::semantic_file::SemanticFile;
+use crate::semantic_file::{FileContribution, SemanticFile};
 use crate::syntax::ParseDiagnostic;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -87,6 +87,11 @@ pub struct IndexBuildTimings {
     pub total: Duration,
 }
 
+struct PendingFileContribution {
+    contribution: FileContribution,
+    metadata: SourceFileMetadata,
+}
+
 impl IndexSourceRoot {
     pub fn new(root_path: impl Into<PathBuf>, kind: SourceKind, priority: u16) -> Self {
         Self {
@@ -104,7 +109,7 @@ pub fn build_index(config: &IndexBuildConfig) -> Result<IndexBuildResult, String
         by_source_kind: BTreeMap::new(),
         timings: IndexBuildTimings::default(),
     };
-    let mut index = SymbolIndex::default();
+    let mut pending_contributions = Vec::new();
 
     for root in &config.roots {
         if !root.root_path.is_dir() {
@@ -121,9 +126,22 @@ pub fn build_index(config: &IndexBuildConfig) -> Result<IndexBuildResult, String
         summary.timings.file_discovery += file_discovery_start.elapsed();
 
         for file in files {
-            build_file(root, &file, &mut index, &mut summary)?;
+            pending_contributions.push(build_file(root, &file, &mut summary)?);
         }
     }
+
+    let index_build_start = Instant::now();
+    let mut index = SymbolIndex::default();
+    index
+        .add_file_contributions(
+            pending_contributions
+                .iter()
+                .map(|pending| (&pending.contribution, pending.metadata.clone())),
+        )
+        .map_err(|error| {
+            format!("Invalid semantic contribution during index aggregation: {error:?}")
+        })?;
+    summary.timings.index_build += index_build_start.elapsed();
 
     summary.timings.total = total_start.elapsed();
     Ok(IndexBuildResult { index, summary })
@@ -132,9 +150,8 @@ pub fn build_index(config: &IndexBuildConfig) -> Result<IndexBuildResult, String
 fn build_file(
     root: &IndexSourceRoot,
     file: &Path,
-    index: &mut SymbolIndex,
     summary: &mut IndexBuildSummary,
-) -> Result<(), String> {
+) -> Result<PendingFileContribution, String> {
     let semantic_file_build_start = Instant::now();
     let read_decode_start = Instant::now();
     let bytes =
@@ -163,20 +180,6 @@ fn build_file(
     summary.timings.ast_model_catalog += ast_model_catalog_start.elapsed();
     summary.timings.catalog_build += semantic_file_build_start.elapsed();
 
-    let index_build_start = Instant::now();
-    index
-        .add_file_contribution(
-            &semantic_file.contribution(),
-            source_metadata(&root.root_path, file, root.kind, root.priority),
-        )
-        .map_err(|error| {
-            format!(
-                "Invalid semantic contribution for {}: {error:?}",
-                file.display()
-            )
-        })?;
-    summary.timings.index_build += index_build_start.elapsed();
-
     record_file_counts(
         summary,
         root.kind,
@@ -191,7 +194,10 @@ fn build_file(
         non_declaration_callable_fragments,
     );
 
-    Ok(())
+    Ok(PendingFileContribution {
+        contribution: semantic_file.contribution().clone(),
+        metadata: source_metadata(&root.root_path, file, root.kind, root.priority),
+    })
 }
 
 fn record_file_counts(
@@ -553,6 +559,30 @@ mod tests {
         assert!(result.index.classes_by_name("Ignored").is_empty());
         assert_eq!(result.index.symbols()[0].name.as_deref(), Some("A"));
         assert_eq!(result.index.symbols()[1].name.as_deref(), Some("B"));
+
+        cleanup(&root);
+    }
+
+    #[test]
+    fn rebuilds_lookup_maps_once_after_batching_multiple_files() {
+        let root = test_root("batched_lookup_rebuild");
+        write_file(&root.join("A.c"), "class A {}");
+        write_file(&root.join("B.c"), "class B {}");
+        write_file(&root.join("C.c"), "class C {}");
+
+        let result = build_index(&IndexBuildConfig {
+            roots: vec![IndexSourceRoot::new(
+                &root,
+                SourceKind::GameData,
+                SOURCE_PRIORITY_GAME_DATA,
+            )],
+        })
+        .unwrap();
+
+        assert_eq!(result.index.lookup_map_rebuild_count(), 1);
+        assert_eq!(result.index.classes_by_name("A").len(), 1);
+        assert_eq!(result.index.classes_by_name("B").len(), 1);
+        assert_eq!(result.index.classes_by_name("C").len(), 1);
 
         cleanup(&root);
     }

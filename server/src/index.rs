@@ -105,6 +105,8 @@ pub struct SymbolIndex {
     methods_by_owner_name: BTreeMap<(String, String), Vec<GlobalSymbolId>>,
     fields_by_owner_name: BTreeMap<(String, String), Vec<GlobalSymbolId>>,
     members_by_owner: BTreeMap<String, Vec<GlobalSymbolId>>,
+    #[cfg(test)]
+    lookup_map_rebuild_count: usize,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -197,6 +199,8 @@ impl From<SymbolIndexSnapshot> for SymbolIndex {
             methods_by_owner_name: snapshot.methods_by_owner_name.into_iter().collect(),
             fields_by_owner_name: snapshot.fields_by_owner_name.into_iter().collect(),
             members_by_owner: snapshot.members_by_owner.into_iter().collect(),
+            #[cfg(test)]
+            lookup_map_rebuild_count: 0,
         }
     }
 }
@@ -506,8 +510,49 @@ impl SymbolIndex {
         contribution: &FileContribution,
         metadata: SourceFileMetadata,
     ) -> Result<SourceFileId, FileContributionValidationError> {
-        contribution.validate()?;
+        let mut file_ids =
+            self.add_file_contributions(std::iter::once((contribution, metadata)))?;
+        Ok(file_ids
+            .pop()
+            .expect("one contribution must produce one source file id"))
+    }
 
+    /// Adds a complete group of validated compiler contributions and rebuilds
+    /// global lookup maps once after the group is visible. This is the bulk
+    /// construction boundary for a cold index build; per-file updates should
+    /// continue to use [`Self::add_file_contribution`].
+    pub fn add_file_contributions<'contribution>(
+        &mut self,
+        contributions: impl IntoIterator<Item = (&'contribution FileContribution, SourceFileMetadata)>,
+    ) -> Result<Vec<SourceFileId>, FileContributionValidationError> {
+        let contributions = contributions.into_iter().collect::<Vec<_>>();
+        for (contribution, _) in &contributions {
+            contribution.validate()?;
+        }
+
+        self.files.reserve(contributions.len());
+        self.symbols.reserve(
+            contributions
+                .iter()
+                .map(|(contribution, _)| contribution.symbols.len())
+                .sum(),
+        );
+
+        let mut file_ids = Vec::with_capacity(contributions.len());
+        for (contribution, metadata) in contributions {
+            file_ids.push(self.append_file_contribution(contribution, metadata));
+        }
+        if !file_ids.is_empty() {
+            self.rebuild_lookup_maps();
+        }
+        Ok(file_ids)
+    }
+
+    fn append_file_contribution(
+        &mut self,
+        contribution: &FileContribution,
+        metadata: SourceFileMetadata,
+    ) -> SourceFileId {
         let file_id = SourceFileId(self.files.len());
         let symbol_start = self.symbols.len();
         self.files.push(IndexedFile {
@@ -622,8 +667,12 @@ impl SymbolIndex {
             });
         }
 
-        self.rebuild_lookup_maps();
-        Ok(file_id)
+        file_id
+    }
+
+    #[cfg(test)]
+    pub fn lookup_map_rebuild_count(&self) -> usize {
+        self.lookup_map_rebuild_count
     }
 
     pub fn files(&self) -> &[IndexedFile] {
@@ -1031,6 +1080,10 @@ impl SymbolIndex {
     }
 
     fn rebuild_lookup_maps(&mut self) {
+        #[cfg(test)]
+        {
+            self.lookup_map_rebuild_count += 1;
+        }
         let mut by_name = BTreeMap::<String, Vec<GlobalSymbolId>>::new();
         let mut top_level_by_name = BTreeMap::<String, Vec<GlobalSymbolId>>::new();
         let mut by_kind = BTreeMap::<SymbolKind, Vec<GlobalSymbolId>>::new();

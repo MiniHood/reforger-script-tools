@@ -14,6 +14,13 @@ persistence, `index_query` owns editor policy, and `symbol_display` owns
 presentation. The legacy catalog ingress remains only for differential and
 compatibility tests.
 
+Cold builds use `add_file_contributions()`: it validates the complete batch,
+preserves each contribution's file-local IDs and metadata, appends all records,
+then constructs global lookup maps once. `add_file_contribution()` remains the
+per-file incremental-update boundary and rebuilds maps for that single visible
+change. This keeps a full game-data rebuild linear in indexed records rather
+than rebuilding every global map after every discovered file.
+
 ## Current Behavior
 
 Validated contributions receive a `SourceFileId`; symbols use `{ file_id,

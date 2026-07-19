@@ -16,8 +16,11 @@ pipeline instead of duplicating it.
 `IndexSourceRoot` supplies path, `SourceKind`, and priority; `IndexBuildConfig`
 combines roots. `build_index` validates roots, recursively discovers and sorts
 `.c` files, creates path-derived metadata/categories, parses each source,
-builds a `SemanticFile`, validates its versioned `FileContribution`, and adds
-that contribution to `SymbolIndex`.
+builds a `SemanticFile`, validates its versioned `FileContribution`, records
+per-file diagnostics/counts, then aggregates all validated contributions into
+`SymbolIndex` as one batch. Batch aggregation rebuilds global lookup maps once
+after all files are present; it does not change the separate per-file update
+path used by dynamic index maintenance.
 
 `IndexBuildSummary` reports file/byte/decode/diagnostic/semantic counts and
 bounded review details for lossy decode and parse diagnostics.
