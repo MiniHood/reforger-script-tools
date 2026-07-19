@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 #[cfg(test)]
 use std::cell::Cell;
+use std::cmp::Reverse;
 use std::collections::{BTreeMap, VecDeque};
 use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Write};
@@ -128,6 +129,11 @@ const INCOMING_EVENT_QUEUE_CAPACITY: usize = 64;
 const DOCUMENT_ANALYSIS_IDLE_DELAY_MS: u64 = 150;
 const MAX_PENDING_DOCUMENT_ANALYSIS_JOBS: usize = 32;
 const MAX_PENDING_DOCUMENT_REQUESTS_PER_URI: usize = 32;
+// The runtime deliberately has one reserved foreground worker plus one
+// background worker.  This is a fixed CPU bound, not a second scheduler: both
+// workers consume the same admitted, latest-wins pending-work map.
+const FOREGROUND_RUNTIME_WORKERS: usize = 1;
+const BACKGROUND_RUNTIME_WORKERS: usize = 1;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LspServerOptions {
     pub log_path: Option<PathBuf>,
@@ -328,7 +334,29 @@ struct RuntimeWorkExecutor {
         Condvar,
     )>,
     sender: mpsc::Sender<ServerEvent>,
+    #[cfg(test)]
+    test_before_execute: Option<RuntimeWorkTestHook>,
 }
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RuntimeWorkerLane {
+    Foreground,
+    Background,
+}
+
+impl RuntimeWorkerLane {
+    fn accepts(self, class: TaskClass) -> bool {
+        match self {
+            // This reservation means an edit can build its current lexical and
+            // syntax snapshot even when a whole-file background job is busy.
+            Self::Foreground => class == TaskClass::Foreground,
+            Self::Background => class != TaskClass::Foreground,
+        }
+    }
+}
+
+#[cfg(test)]
+type RuntimeWorkTestHook = Arc<dyn Fn(TaskClass) + Send + Sync>;
 
 enum RuntimeWorkJob {
     Foreground(ForegroundDocumentJob),
@@ -371,9 +399,38 @@ impl RuntimeWorkExecutor {
         let scheduler = Self {
             state: Arc::new((Mutex::new(BTreeMap::new()), Condvar::new())),
             sender,
+            #[cfg(test)]
+            test_before_execute: None,
         };
-        let worker = scheduler.clone();
-        thread::spawn(move || worker.run());
+        for _ in 0..FOREGROUND_RUNTIME_WORKERS {
+            let worker = scheduler.clone();
+            thread::spawn(move || worker.run(RuntimeWorkerLane::Foreground));
+        }
+        for _ in 0..BACKGROUND_RUNTIME_WORKERS {
+            let worker = scheduler.clone();
+            thread::spawn(move || worker.run(RuntimeWorkerLane::Background));
+        }
+        scheduler
+    }
+
+    #[cfg(test)]
+    fn start_with_test_hook(
+        sender: mpsc::Sender<ServerEvent>,
+        test_before_execute: RuntimeWorkTestHook,
+    ) -> Self {
+        let scheduler = Self {
+            state: Arc::new((Mutex::new(BTreeMap::new()), Condvar::new())),
+            sender,
+            test_before_execute: Some(test_before_execute),
+        };
+        for _ in 0..FOREGROUND_RUNTIME_WORKERS {
+            let worker = scheduler.clone();
+            thread::spawn(move || worker.run(RuntimeWorkerLane::Foreground));
+        }
+        for _ in 0..BACKGROUND_RUNTIME_WORKERS {
+            let worker = scheduler.clone();
+            thread::spawn(move || worker.run(RuntimeWorkerLane::Background));
+        }
         scheduler
     }
 
@@ -401,11 +458,16 @@ impl RuntimeWorkExecutor {
             job.task().identity().uri().to_string(),
         );
         if !pending.contains_key(&key) && pending.len() >= MAX_PENDING_DOCUMENT_ANALYSIS_JOBS {
-            let incoming_is_rich = key.0 == TaskClass::Rich;
+            // A higher-priority incoming job may displace only equal- or
+            // lower-priority queued work. Foreground edits therefore retain a
+            // path to their reserved worker while rich/debug work remains
+            // best-effort.
             let eviction = pending
                 .iter()
-                .filter(|((class, _), _)| *class == TaskClass::Rich)
-                .min_by_key(|((_, uri), job)| (job.scheduled_at(), uri.as_str()))
+                .filter(|((class, _), _)| *class >= key.0)
+                .min_by_key(|((class, uri), job)| {
+                    (Reverse(*class), job.scheduled_at(), uri.as_str())
+                })
                 .map(|(key, _)| key.clone());
             if let Some(evicted_key) = eviction {
                 let evicted = pending
@@ -413,39 +475,36 @@ impl RuntimeWorkExecutor {
                     .expect("selected pending job exists");
                 evicted.task().cancel();
                 self.send_skipped(evicted, "scheduler-capacity-evicted");
-            } else if incoming_is_rich {
-                // Best-effort work must never displace semantic convergence.
-                self.send_skipped(job, "scheduler-capacity-dropped-rich");
-                return;
             } else {
-                // Keep semantic latest-wins when every retained job is semantic.
-                let evicted_key = pending
-                    .iter()
-                    .min_by_key(|((_, uri), job)| (job.scheduled_at(), uri.as_str()))
-                    .map(|(key, _)| key.clone())
-                    .expect("non-empty full scheduler has an eviction candidate");
-                let evicted = pending
-                    .remove(&evicted_key)
-                    .expect("selected pending job exists");
-                evicted.task().cancel();
-                self.send_skipped(evicted, "scheduler-capacity-evicted");
+                let reason = match key.0 {
+                    TaskClass::Foreground => "scheduler-capacity-dropped-foreground",
+                    TaskClass::Semantic => "scheduler-capacity-dropped-semantic",
+                    TaskClass::Rich => "scheduler-capacity-dropped-rich",
+                };
+                self.send_skipped(job, reason);
+                return;
             }
         }
         if let Some(previous) = pending.insert(key, job) {
             previous.task().cancel();
             self.send_skipped(previous, "superseded-before-dispatch");
         }
-        wake.notify_one();
+        // Workers serve disjoint lanes. A single wake-up can choose the wrong
+        // idle lane, so every newly admitted job wakes both fixed workers.
+        wake.notify_all();
     }
 
-    fn run(self) {
+    fn run(self, lane: RuntimeWorkerLane) {
         let (lock, wake) = &*self.state;
         loop {
             let mut pending = lock.lock().unwrap();
-            while pending.is_empty() {
+            let key = loop {
+                let now = Instant::now();
+                if let Some(key) = next_runnable_work_key_for_lane(&pending, now, lane) {
+                    break key;
+                }
                 pending = wake.wait(pending).unwrap();
-            }
-            let key = next_runnable_work_key(&pending, Instant::now()).unwrap();
+            };
             let due_at = pending[&key].due_at();
             let now = Instant::now();
             if now < due_at {
@@ -466,6 +525,10 @@ impl RuntimeWorkExecutor {
     }
 
     fn execute(&self, job: RuntimeWorkJob) {
+        #[cfg(test)]
+        if let Some(test_before_execute) = &self.test_before_execute {
+            test_before_execute(job.task().identity().class());
+        }
         match job {
             RuntimeWorkJob::Foreground(job) => {
                 let cancelled = || job.task.is_cancelled();
@@ -617,12 +680,22 @@ impl RuntimeWorkExecutor {
 #[cfg(test)]
 type OpenDocumentAnalysisScheduler = RuntimeWorkExecutor;
 
+#[cfg(test)]
 fn next_runnable_work_key(
     pending: &BTreeMap<(TaskClass, String), RuntimeWorkJob>,
     now: Instant,
 ) -> Option<(TaskClass, String)> {
+    next_runnable_work_key_for_lane(pending, now, RuntimeWorkerLane::Background)
+}
+
+fn next_runnable_work_key_for_lane(
+    pending: &BTreeMap<(TaskClass, String), RuntimeWorkJob>,
+    now: Instant,
+    lane: RuntimeWorkerLane,
+) -> Option<(TaskClass, String)> {
     pending
         .iter()
+        .filter(|((class, _), _)| lane.accepts(*class))
         .min_by_key(|((class, uri), job)| {
             // A ready higher-priority class always runs first. Until it is
             // ready, an older lower-priority job may use the idle worker.
@@ -3623,6 +3696,29 @@ mod tests {
         OpenDocumentAnalysisJob { task, scheduled_at }
     }
 
+    fn foreground_document_job(
+        runtime: &mut AnalysisRuntime,
+        uri: &str,
+        version: i32,
+        source: &str,
+        scheduled_at: Instant,
+    ) -> ForegroundDocumentJob {
+        assert_eq!(
+            runtime.upsert(uri, version, source),
+            UpsertOutcome::Accepted
+        );
+        let task = match runtime.admit(
+            TaskClass::Foreground,
+            runtime.latest(uri).expect("accepted snapshot"),
+            1,
+            Instant::now(),
+        ) {
+            AdmissionDisposition::Enqueued { .. } => runtime.take_next().unwrap(),
+            other => panic!("unexpected admission disposition: {other:?}"),
+        };
+        ForegroundDocumentJob { task, scheduled_at }
+    }
+
     fn install_next_foreground(
         server: &mut LspServer<Vec<u8>>,
         receiver: &mpsc::Receiver<ServerEvent>,
@@ -3675,6 +3771,65 @@ mod tests {
     }
 
     #[test]
+    fn foreground_worker_completes_while_background_semantic_work_is_in_flight() {
+        let (event_sender, event_receiver) = mpsc::channel();
+        let (semantic_started_sender, semantic_started_receiver) = mpsc::channel();
+        let (release_semantic_sender, release_semantic_receiver) = mpsc::channel();
+        let release_semantic_receiver = Arc::new(Mutex::new(Some(release_semantic_receiver)));
+        let hook_release = release_semantic_receiver.clone();
+        let scheduler = RuntimeWorkExecutor::start_with_test_hook(
+            event_sender,
+            Arc::new(move |class| {
+                if class == TaskClass::Semantic {
+                    semantic_started_sender
+                        .send(())
+                        .expect("test waits for semantic start");
+                    hook_release
+                        .lock()
+                        .unwrap()
+                        .take()
+                        .expect("semantic hook runs once")
+                        .recv()
+                        .expect("test releases semantic work");
+                }
+            }),
+        );
+        let mut runtime = AnalysisRuntime::new(AdmissionLimits::new(8, 8 * 1024));
+        let now = Instant::now();
+        scheduler.schedule(semantic_analysis_job(
+            &mut runtime,
+            "file:///background.c",
+            1,
+            now - Duration::from_millis(DOCUMENT_ANALYSIS_IDLE_DELAY_MS + 1),
+        ));
+        semantic_started_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("background worker began semantic work");
+
+        scheduler.schedule_foreground(foreground_document_job(
+            &mut runtime,
+            "file:///foreground.c",
+            1,
+            "class Fresh {}",
+            Instant::now(),
+        ));
+
+        // The semantic hook cannot finish until after this assertion.  The
+        // foreground-ready event therefore proves the reserved foreground
+        // worker made progress independently, without wall-clock assertions.
+        assert!(matches!(
+            event_receiver
+                .recv_timeout(Duration::from_secs(2))
+                .expect("foreground worker event"),
+            ServerEvent::ForegroundDocumentReady { task, .. }
+                if task.uri() == "file:///foreground.c"
+        ));
+        release_semantic_sender
+            .send(())
+            .expect("release blocked semantic worker");
+    }
+
+    #[test]
     fn full_shared_executor_evicts_or_drops_rich_before_semantic() {
         let (sender, receiver) = mpsc::channel();
         // Deliberately do not start a worker: this exercises admission and
@@ -3682,6 +3837,7 @@ mod tests {
         let scheduler = RuntimeWorkExecutor {
             state: Arc::new((Mutex::new(BTreeMap::new()), Condvar::new())),
             sender,
+            test_before_execute: None,
         };
         let now = Instant::now();
         let mut runtime = AnalysisRuntime::new(AdmissionLimits::new(128, 128));

@@ -51,6 +51,15 @@ only for the still-current revision and never republishes parser diagnostics.
 Close removes the document and clears diagnostics. Repeated Outline requests
 reuse cached symbol projection for the accepted revision.
 
+`RuntimeWorkExecutor` has one bounded shared pending-work map and exactly two
+fixed worker slots: one reserved for `Foreground` work and one for semantic,
+rich-token, and debug work. This is a capacity reservation inside one executor,
+not a second scheduler. A running whole-file background operation therefore
+cannot prevent a current edit from building lexical and syntax state. Shared
+admission remains latest-wins by `(TaskClass, URI)`; when its queue is full,
+higher-priority foreground work evicts lower-priority queued work first, while
+rich/debug work remains best effort.
+
 The bounded ingress queue remains the backpressure and ordering boundary. When
 several contiguous `didChange` notifications each contain exactly one
 full-document replacement for the same URI, the runtime retains only the
