@@ -16,7 +16,10 @@ dispatch, document caching, resolver policy, or TypeScript retrigger parsing.
 
 Completion reuses matching-revision file analysis to recognize member,
 top-level, type, override, and callable-argument contexts. While full analysis
-is pending, the foreground path uses a fixed 16KiB-before/2KiB-after
+is pending, it first maps the LSP UTF-16 position through the matching
+foreground position index when present, or directly through the immutable
+current snapshot when foreground publication is still in flight. It then uses a
+fixed 16KiB-before/2KiB-after
 current-snapshot lexer window: a `ReceiverResolutionQuery` for one bare local,
 parameter, or field receiver, a `LocalScopeQuery` for ordinary callable-local
 prefixes, and an `ArgumentLabelQuery` for one bare externally indexed callable.
@@ -55,9 +58,13 @@ top-level/lexical fallback tagged `member-unavailable-top-level-fallback` or
 or argument facts from an older revision. This is not an `isIncomplete` signal
 or a request for the client to retrigger completion.
 
-The normal completion log's `cached_analysis` field records whether the
-matching-revision full analysis was actually used; it is not inferred from
-query quality. When a completed call receiver is syntactically current but its
+The normal completion log's `foreground_ready` and `cached_analysis` fields
+separately record position-index availability and whether matching-revision full
+analysis was actually used; neither is inferred from query quality. Completion
+timings report request latency independently from bounded context, lookup, and
+render work. Semantic-analysis logs record `semantic_idle_delay_ms=0`, build
+timings, and total job latency so scheduler delay cannot be mistaken for parse
+or index cost. When a completed call receiver is syntactically current but its
 externally indexed zero-argument chain cannot be proved, the fallback records
 `current-revision-external-call-chain-unresolved`. This keeps the response
 safe while distinguishing external-chain lookup from ordinary unavailable

@@ -16,10 +16,12 @@ messages into runtime operations and publishes only matching results.
 
 Each accepted edit creates one immutable text `DocumentSnapshot` and cancels every
 retained task for that URI. Its UTF-16 position index is installed only by the
-matching foreground task, so requests before foreground installation use their
-documented lexical fallback. `TaskAdmission` retains at most one task per URI
-and lane; replacement cancels the previous
-task, and publication succeeds only for its exact identity. `QueryQuality`
+matching foreground task. Completion requests that arrive before that
+publication derive their offset directly from the same immutable snapshot, then
+use the documented bounded current-text query; they never use stale local
+facts. `TaskAdmission` retains at most one task per URI and lane; replacement
+cancels the previous task, and publication succeeds only for its exact
+identity. `QueryQuality`
 distinguishes exact/recovery local facts from deterministic unavailable
 fallbacks, which may not use stale local state.
 
@@ -29,7 +31,11 @@ proven lexical/top-level candidates. A bounded exact argument-label query is
 available only for one bare resolver-proven function or method in valid current text;
 every other pending argument form remains unavailable.
 
-Rich token refinement and developer debug captures are admitted through
+Full semantic analysis is admitted immediately after matching foreground
+publication: it has no idle debounce. Latest-wins cancellation and bounded
+per-URI/lane admission suppress obsolete revisions, while the reserved
+foreground worker preserves typing-path priority. Rich token refinement and
+developer debug captures are admitted through
 `TaskClass::Rich`. This runtime admission is the sole retained job and snapshot
 byte capacity boundary for those jobs. The LSP's one `RuntimeWorkExecutor`
 owns one shared pending-work map and a CPU-aware fixed worker capacity. It

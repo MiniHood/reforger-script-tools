@@ -126,7 +126,6 @@ const MAX_LSP_HEADER_LINE_BYTES: usize = 8 * 1024;
 const MAX_LSP_HEADER_BYTES: usize = 32 * 1024;
 const MAX_LSP_BODY_BYTES: usize = 16 * 1024 * 1024;
 const INCOMING_EVENT_QUEUE_CAPACITY: usize = 64;
-const DOCUMENT_ANALYSIS_IDLE_DELAY_MS: u64 = 150;
 const MAX_PENDING_DOCUMENT_ANALYSIS_JOBS: usize = 32;
 const MAX_PENDING_DOCUMENT_REQUESTS_PER_URI: usize = 32;
 // The executor retains a single foreground slot. A second CPU-bearing worker
@@ -429,8 +428,10 @@ impl RuntimeWorkJob {
 
     fn due_at(&self) -> Instant {
         let delay_ms = match self {
-            Self::Foreground(_) => 0,
-            Self::Semantic(_) => DOCUMENT_ANALYSIS_IDLE_DELAY_MS,
+            // Foreground publication is the semantic dependency boundary. Once
+            // it has completed, full analysis is immediately runnable and
+            // latest-wins cancellation prevents obsolete work from publishing.
+            Self::Foreground(_) | Self::Semantic(_) => 0,
             Self::Rich(_) | Self::Debug(_) => RICH_SEMANTIC_TOKENS_IDLE_DELAY_MS,
         };
         self.scheduled_at() + Duration::from_millis(delay_ms)
@@ -1814,6 +1815,7 @@ impl<W: Write> LspServer<W> {
                     let mut lookup_ms = 0u128;
                     let mut render_ms = 0u128;
                     let mut cached_analysis = false;
+                    let mut foreground_ready = false;
                     let mut external_index_status = self.external_index.status_summary().status;
                     let mut external_index_layers = "none";
                     let result = params
@@ -1822,6 +1824,7 @@ impl<W: Write> LspServer<W> {
                             self.documents.get(&log_uri).map(|document| {
                                 bytes = document.text.len();
                                 revision = document.revision;
+                                foreground_ready = document.foreground_ready();
                                 let indexes = self.external_index.snapshot();
                                 external_index_status = indexes.status;
                                 external_index_layers = indexes.available_layers();
@@ -1835,12 +1838,24 @@ impl<W: Write> LspServer<W> {
                                         indexes.game_data.as_deref(),
                                     )
                                 } else {
-                                    let offset = document.snapshot.positions().and_then(|positions| positions.offset_for_position(
-                                        crate::analysis_runtime::Position {
-                                            line: params.position.line,
-                                            character: params.position.character,
-                                        },
-                                    ));
+                                    let offset = document
+                                        .snapshot
+                                        .positions()
+                                        .and_then(|positions| {
+                                            positions.offset_for_position(
+                                                crate::analysis_runtime::Position {
+                                                    line: params.position.line,
+                                                    character: params.position.character,
+                                                },
+                                            )
+                                        })
+                                        // A completion may arrive in the short interval before
+                                        // foreground publication. Derive the offset from the same
+                                        // immutable snapshot rather than falling back to broad
+                                        // position-based lexical completion.
+                                        .or_else(|| {
+                                            offset_for_position(&document.text, params.position)
+                                        });
                                     if let Some(offset) = offset {
                                         completion_report_for_current_argument_labels_at_offset_with_external_indexes(
                                             &document.text,
@@ -1909,10 +1924,11 @@ impl<W: Write> LspServer<W> {
                             serde_json::to_value(empty_completion_list()).unwrap_or(Value::Null)
                         });
                     self.log(&format!(
-                        "request completion uri={} bytes={} revision={} cached_analysis={} query_quality={:?} recovery_reason={} context={} receiver={} owner_type={} prefix={} candidates={} failure_reason={} external_index_status={} external_index_layers={} parse_diagnostics={} context_ms={} lookup_ms={} render_ms={} queue_ms={} elapsed_ms={}",
+                        "request completion uri={} bytes={} revision={} foreground_ready={} cached_analysis={} query_quality={:?} recovery_reason={} context={} receiver={} owner_type={} prefix={} candidates={} failure_reason={} external_index_status={} external_index_layers={} parse_diagnostics={} context_ms={} lookup_ms={} render_ms={} queue_ms={} elapsed_ms={}",
                         log_uri,
                         bytes,
                         revision,
+                        foreground_ready,
                         cached_analysis,
                         query_quality,
                         recovery_reason,
@@ -2937,7 +2953,7 @@ impl<W: Write> LspServer<W> {
         let analysis_timings = document.analysis_timings();
         let _ = document;
         self.log(&format!(
-            "documentAnalysis ready uri={} bytes={} version={} revision={} cached_analysis=true parse_diagnostics={} analysis_parse_ms={} analysis_catalog_ms={} analysis_index_ms={} analysis_scope_ms={} analysis_build_ms={} elapsed_ms={}",
+            "documentAnalysis ready uri={} bytes={} version={} revision={} cached_analysis=true semantic_idle_delay_ms=0 parse_diagnostics={} analysis_parse_ms={} analysis_catalog_ms={} analysis_index_ms={} analysis_scope_ms={} analysis_build_ms={} elapsed_ms={}",
             uri,
             bytes,
             version,
@@ -3895,12 +3911,7 @@ mod tests {
         let now = Instant::now();
         let mut runtime = AnalysisRuntime::new(AdmissionLimits::new(2, 64));
         let mut pending = BTreeMap::new();
-        let semantic = semantic_analysis_job(
-            &mut runtime,
-            "file:///semantic.c",
-            1,
-            now - Duration::from_millis(DOCUMENT_ANALYSIS_IDLE_DELAY_MS + 1),
-        );
+        let semantic = semantic_analysis_job(&mut runtime, "file:///semantic.c", 1, now);
         let foreground = foreground_document_job(
             &mut runtime,
             "file:///foreground.c",
@@ -3946,12 +3957,7 @@ mod tests {
             1,
             now - Duration::from_millis(RICH_SEMANTIC_TOKENS_IDLE_DELAY_MS + 1),
         );
-        let semantic = semantic_analysis_job(
-            &mut runtime,
-            "file:///semantic.c",
-            1,
-            now - Duration::from_millis(DOCUMENT_ANALYSIS_IDLE_DELAY_MS + 1),
-        );
+        let semantic = semantic_analysis_job(&mut runtime, "file:///semantic.c", 1, now);
         pending.insert(
             (TaskClass::Rich, "file:///rich.c".to_string()),
             RuntimeWorkJob::Rich(rich),
@@ -3998,7 +4004,7 @@ mod tests {
             &mut runtime,
             "file:///background.c",
             1,
-            now - Duration::from_millis(DOCUMENT_ANALYSIS_IDLE_DELAY_MS + 1),
+            now,
         ));
         semantic_started_receiver
             .recv_timeout(Duration::from_secs(2))
@@ -8924,7 +8930,13 @@ class Example
     #[test]
     fn document_analysis_scheduler_bounds_distinct_pending_documents() {
         let (sender, receiver) = mpsc::channel();
-        let scheduler = OpenDocumentAnalysisScheduler::start(sender);
+        // Deliberately keep the executor workerless: immediate semantic work
+        // otherwise drains this queue before capacity can be observed.
+        let scheduler = RuntimeWorkExecutor {
+            state: Arc::new((Mutex::new(BTreeMap::new()), Condvar::new())),
+            sender,
+            test_before_execute: None,
+        };
         for index in 0..=MAX_PENDING_DOCUMENT_ANALYSIS_JOBS {
             let mut runtime = AnalysisRuntime::new(AdmissionLimits::new(2, 1024));
             let uri = format!("file:///Scripts/Pending{index}.c");
@@ -9303,8 +9315,8 @@ class Example
     }
 
     #[test]
-    fn completion_resolves_simple_current_receiver_while_analysis_is_pending() {
-        let (sender, receiver) = mpsc::channel();
+    fn completion_resolves_current_receiver_before_foreground_publication() {
+        let (sender, _receiver) = mpsc::channel();
         let scheduler = OpenDocumentAnalysisScheduler::start(sender);
         let mut server = LspServer::new_with_runtime_senders(
             Vec::new(),
@@ -9333,13 +9345,8 @@ class Example
                 0,
             )
             .unwrap();
-        server
-            .handle_internal_event(
-                receiver
-                    .recv_timeout(Duration::from_secs(2))
-                    .expect("foreground result"),
-            )
-            .unwrap();
+        assert!(!server.documents[uri].foreground_ready());
+        assert!(!server.documents[uri].analysis_ready());
         server
             .handle_message(
                 json!({
@@ -9502,13 +9509,20 @@ class Example
                     0,
                 )
                 .unwrap();
-            server
-                .handle_internal_event(
-                    receiver
-                        .recv_timeout(Duration::from_secs(2))
-                        .expect("foreground result"),
-                )
-                .unwrap();
+            loop {
+                let event = receiver
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("foreground result");
+                let is_current_foreground = matches!(
+                    &event,
+                    ServerEvent::ForegroundDocumentReady { task, .. }
+                        if task.revision() == version as u64
+                );
+                server.handle_internal_event(event).unwrap();
+                if is_current_foreground {
+                    break;
+                }
+            }
         }
 
         let output = String::from_utf8(server.writer).unwrap();
