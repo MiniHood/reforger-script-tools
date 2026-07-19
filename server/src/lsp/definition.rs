@@ -183,7 +183,7 @@ fn definition_report_for_offset(
     let candidate_count = resolution.candidates.len();
     let reason = resolution.reason;
     let identifier_context = resolution.identifier_context;
-    let Some(selected) = resolution.selected.as_ref() else {
+    let Some(selected) = definition_target_for_resolution(&resolution) else {
         return LspDefinitionReport {
             locations: Vec::new(),
             links: Vec::new(),
@@ -210,6 +210,33 @@ fn definition_report_for_offset(
         identifier_context: Some(identifier_context),
         resolver_candidate_count: candidate_count,
     }
+}
+
+/// A definition request on an override declaration should lead to the inherited
+/// contract, while the shared resolver keeps its usual local-declaration
+/// selection for hover and all other consumers.
+fn definition_target_for_resolution(
+    resolution: &crate::resolver::ReferenceResolution,
+) -> Option<&ReferenceCandidate> {
+    let selected = resolution.selected.as_ref()?;
+    if !(selected.source == CandidateSource::FileLocal
+        && selected.reason == ResolutionReason::DeclarationHit
+        && selected.kind == SymbolKind::Method
+        && selected.is_override)
+    {
+        return Some(selected);
+    }
+    let override_key = selected.callable_override_key.as_deref()?;
+    resolution
+        .candidates
+        .iter()
+        .skip(1)
+        .find(|candidate| {
+            candidate.kind == SymbolKind::Method
+                && candidate.selection_span != resolution.token_span
+                && candidate.callable_override_key.as_deref() == Some(override_key)
+        })
+        .or(Some(selected))
 }
 
 fn empty_definition_report(parse_diagnostics: usize) -> LspDefinitionReport {
@@ -298,4 +325,107 @@ fn percent_encode_uri_path(value: &str) -> String {
         }
     }
     encoded
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lsp::file_index_for_source;
+
+    fn override_method_position(source: &str) -> LspPosition {
+        crate::lsp::position_for_offset(source, source.rfind("OnPostInit").unwrap())
+    }
+
+    #[test]
+    fn override_definition_selects_a_matching_file_local_base_method() {
+        let source = r#"class Base
+{
+	event protected void OnPostInit(IEntity owner);
+}
+
+class Child : Base
+{
+	override protected void OnPostInit(IEntity owner) {}
+}
+"#;
+        let report = definition_report_for_source_position(
+            source,
+            "file:///Scripts/Child.c",
+            override_method_position(source),
+        );
+
+        assert_eq!(report.selected_source, Some(CandidateSource::FileLocal));
+        assert_eq!(report.selected_label.as_deref(), Some("OnPostInit"));
+        assert_eq!(report.links.len(), 1);
+        assert_eq!(report.links[0].target_uri, "file:///Scripts/Child.c");
+        assert!(report.links[0].target_selection_range.start.line < 5);
+    }
+
+    #[test]
+    fn override_definition_selects_a_matching_external_base_method() {
+        let source = r#"class Child : ScriptComponent
+{
+	override protected void OnPostInit(IEntity owner) {}
+}
+"#;
+        let external = file_index_for_source(
+            "class ScriptComponent { event protected void OnPostInit(IEntity owner); }",
+        )
+        .index;
+        let report = definition_report_for_source_position_with_external(
+            source,
+            "file:///Scripts/Child.c",
+            override_method_position(source),
+            Some(&external),
+        );
+
+        assert_eq!(report.selected_source, Some(CandidateSource::External));
+        assert_eq!(report.selected_label.as_deref(), Some("OnPostInit"));
+    }
+
+    #[test]
+    fn override_definition_does_not_select_a_different_overload() {
+        let source = r#"class Base
+{
+	event protected void OnPostInit(int value);
+	event protected void OnPostInit(IEntity owner);
+}
+
+class Child : Base
+{
+	override protected void OnPostInit(IEntity owner) {}
+}
+"#;
+        let report = definition_report_for_source_position(
+            source,
+            "file:///Scripts/Child.c",
+            override_method_position(source),
+        );
+
+        assert_eq!(report.links.len(), 1);
+        assert_eq!(report.links[0].target_selection_range.start.line, 3);
+    }
+
+    #[test]
+    fn definition_keeps_a_non_override_method_on_its_own_declaration() {
+        let source = r#"class Base
+{
+	event protected void OnPostInit(IEntity owner);
+}
+
+class Child : Base
+{
+	protected void OnPostInit(IEntity owner) {}
+}
+"#;
+        let report = definition_report_for_source_position(
+            source,
+            "file:///Scripts/Child.c",
+            override_method_position(source),
+        );
+
+        assert_eq!(report.selected_source, Some(CandidateSource::FileLocal));
+        assert_eq!(report.links.len(), 1);
+        assert_eq!(report.links[0].target_selection_range.start.line, 7);
+    }
 }

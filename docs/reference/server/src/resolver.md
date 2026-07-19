@@ -14,6 +14,12 @@ The resolver returns `ReferenceResolution` with selected candidate, provenance, 
 
 Member access uses AST expression views and `ExpressionTypeEnvironment` for names, calls, indexing, casts, `new`, parenthesized chains, `this`, `super`, static type-like receivers, typedef/base expansion, generic return substitution, literals, and auto-local defaults. It supports source-backed enum members, pseudo `Class` members, and `Type.Cast` handling without raw receiver text scanning. The resolver remains best effort: it neither evaluates expressions nor resolves overloads.
 
+Class-member lookup includes both file-local and layered external base owners.
+Candidates retain a normalized callable shape and override marker so consumers
+that need a more specific policy, such as definition navigation from an
+`override` declaration, can distinguish a matching inherited method from an
+unrelated overload without changing shared resolver selection.
+
 Named call and attribute labels intentionally return explicit non-symbol reasons; their values remain resolvable. Preprocessor directives are non-symbol targets; `#define` uses resolve to indexed macros when present and otherwise receive an explicit macro reason. Syntax-span safeguards exclude comments, whitespace, literals, punctuation, and modifiers from misleading enclosing-declaration matches.
 
 ## Dependencies and Boundaries

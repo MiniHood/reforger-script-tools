@@ -26,6 +26,13 @@ return no result in that state. This never joins current text to former local
 semantic facts or re-lexes the document on the request loop. URI generation handles local, drive-letter, UNC, and extended
 UNC paths.
 
+When the cursor is on a file-local method declaration marked `override`,
+definition navigation selects the matching inherited method contract instead
+of the override itself. Matching requires the same callable kind, return type,
+and parameter type/modifier shape; unrelated overloads and non-overrides keep
+normal declaration navigation. This selection policy is definition-only and
+does not change resolver ranking used by hover.
+
 ## Dependencies and Boundaries
 
 Depends on `ReferenceResolver`, `FileIndexAnalysis`, `SymbolIndex`, external

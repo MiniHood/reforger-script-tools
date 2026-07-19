@@ -63,6 +63,10 @@ pub struct ReferenceCandidate {
     pub source_priority: u16,
     pub relative_path: Option<PathBuf>,
     pub absolute_path: Option<PathBuf>,
+    /// Normalized callable shape used by definition navigation to distinguish
+    /// an override's inherited declaration from unrelated overloads.
+    pub callable_override_key: Option<String>,
+    pub is_override: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -618,6 +622,7 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
                     symbol.id.file_id,
                     symbol.id.symbol_id,
                     candidate_from_symbol(
+                        self.file_index,
                         CandidateSource::FileLocal,
                         symbol.id,
                         ResolutionReason::SyntaxSpan,
@@ -747,6 +752,16 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
             candidates,
             seen,
         );
+        if let Some(base_type) = base_owner_type_from_symbol(self.file_index, class) {
+            push_class_member_candidates_from_index(
+                self.file_index,
+                CandidateSource::FileLocal,
+                &base_type,
+                token_text,
+                candidates,
+                seen,
+            );
+        }
         for external_index in self.external_indexes() {
             push_class_member_candidates_from_index(
                 external_index,
@@ -1244,7 +1259,9 @@ fn push_index_candidate(
     let Some(file) = index.file(id.file_id) else {
         return;
     };
-    candidates.push(candidate_from_symbol(source, id, reason, symbol, file));
+    candidates.push(candidate_from_symbol(
+        index, source, id, reason, symbol, file,
+    ));
 }
 
 fn push_class_member_candidates_from_index(
@@ -1287,6 +1304,7 @@ fn push_class_member_candidates_from_index_with_reason(
 }
 
 fn candidate_from_symbol(
+    index: &SymbolIndex,
     source: CandidateSource,
     id: GlobalSymbolId,
     reason: ResolutionReason,
@@ -1306,7 +1324,28 @@ fn candidate_from_symbol(
         source_priority: file.metadata.priority,
         relative_path: file.metadata.relative_path.clone(),
         absolute_path: file.metadata.absolute_path.clone(),
+        callable_override_key: callable_override_key(index, id),
+        is_override: has_modifier(symbol, "override"),
     }
+}
+
+fn callable_override_key(index: &SymbolIndex, id: GlobalSymbolId) -> Option<String> {
+    let symbol = index.symbol(id)?;
+    (symbol.kind == SymbolKind::Method).then_some(())?;
+    let return_type = symbol.detail.return_type_text.as_deref().unwrap_or("");
+    let parameters = index
+        .children(id)
+        .iter()
+        .filter_map(|child_id| index.symbol(*child_id))
+        .filter(|child| child.kind == SymbolKind::Parameter)
+        .map(|child| {
+            let modifiers = child.modifiers.join(" ");
+            let type_text = child.detail.type_text.as_deref().unwrap_or("");
+            format!("{modifiers}|{type_text}")
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    Some(format!("{return_type}({parameters})"))
 }
 
 fn token_at_offset(source: &str, offset: usize) -> Option<crate::lexer::Token> {
