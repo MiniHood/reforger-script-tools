@@ -21,14 +21,18 @@ current-snapshot lexer window: a `ReceiverResolutionQuery` for one bare local,
 parameter, or field receiver, a `LocalScopeQuery` for ordinary callable-local
 prefixes, and an `ArgumentLabelQuery` for one bare externally indexed callable.
 These queries recover only brace-scoped declarations, parameter-body ownership,
-receiver type, and call-label facts wholly proven inside that window. They never
+receiver type, and call-label facts wholly proven inside that window. A
+zero-argument call chain rooted in an externally indexed global function is
+also admitted when every return type can be proved from the captured external
+indexes; this preserves immediate completion for common game API chains such
+as `GetGame().GetPlayerController().`. They never
 call `file_index_for_source`, construct `SemanticFile`/`SymbolIndex`/
 `LexicalScopeModel` from document text, walk a CST root, or read prior document
 analysis on the request thread. The receiver query captures workspace/game-data
-indexes once and admits only a simple identifier receiver; chains, calls,
-indexing, static receivers, malformed/unterminated regions, unproven enclosing
-bodies, and deadline-exceeded work use only current lexer prefix facts and
-captured workspace/game-data indexes for a deterministic top-level result. The
+indexes once and otherwise admits only a simple identifier receiver; local,
+argument-bearing, indexed, static, malformed/unterminated, unproven, and
+deadline-exceeded chains use only current lexer prefix facts and captured
+workspace/game-data indexes for a deterministic top-level result. The
 argument query returns only parameter-label items for a bare captured-index
 function or method; member/delegate calls, constructors, malformed text, values
 after a label, locally declared callables, and over-budget work remain

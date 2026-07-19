@@ -5649,6 +5649,79 @@ class Example
     }
 
     #[test]
+    fn completion_follows_external_game_api_return_type_chain() {
+        let game_source = r#"class Example
+{
+	void Run()
+	{
+		GetGame().
+	}
+}
+"#;
+        let external = file_index_for_source(
+            r#"class Game {}
+
+class ChimeraGame : Game
+{
+	proto external PlayerController GetPlayerController();
+}
+
+class ArmaReforgerScripted : ChimeraGame {}
+
+ArmaReforgerScripted GetGame();
+
+class PlayerController
+{
+	proto external IEntity GetControlledEntity();
+}
+"#,
+        )
+        .index;
+        assert_eq!(
+            external
+                .methods_by_owner_name("ChimeraGame", "GetPlayerController")
+                .len(),
+            1
+        );
+        assert_eq!(
+            crate::expression_type::member_lookup_owners(&external, "ArmaReforgerScripted"),
+            vec!["ArmaReforgerScripted", "ChimeraGame"]
+        );
+
+        let game_report = completion_report_for_source_position_with_external(
+            game_source,
+            position_after_needle(game_source, "GetGame()."),
+            Some(&external),
+        );
+        assert_eq!(game_report.owner_type.as_deref(), Some("ArmaReforgerScripted"));
+        assert!(game_report
+            .list
+            .items
+            .iter()
+            .any(|item| item.label == "GetPlayerController"));
+
+        let controller_source = r#"class Example
+{
+	void Run()
+	{
+		GetGame().GetPlayerController().
+	}
+}
+"#;
+        let controller_report = completion_report_for_source_position_with_external(
+            controller_source,
+            position_after_needle(controller_source, "GetGame().GetPlayerController()."),
+            Some(&external),
+        );
+        assert_eq!(controller_report.owner_type.as_deref(), Some("PlayerController"));
+        assert!(controller_report
+            .list
+            .items
+            .iter()
+            .any(|item| item.label == "GetControlledEntity"));
+    }
+
+    #[test]
     fn completion_hides_restricted_members_for_external_receivers() {
         let source = r#"class GRAY_TEST2
 {

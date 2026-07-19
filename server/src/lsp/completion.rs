@@ -1,4 +1,5 @@
 use crate::analysis_runtime::QueryQuality;
+use crate::expression_type::expression_type_from_index_symbol;
 use crate::index::SymbolIndex;
 use crate::index_query::{
     completion_name_match_rank, EditorCompletionCandidate, EditorCompletionOrigin,
@@ -271,10 +272,11 @@ pub(crate) fn completion_report_for_current_local_scope_at_offset_with_external_
 }
 
 /// Runs the current-revision `ReceiverResolutionQuery` for one bare local,
-/// parameter, or field receiver. This is deliberately narrower than the
-/// ready-analysis resolver: chained, call, index, static, malformed, and
-/// over-budget expressions use the lexical fallback rather than joining
-/// current text to an older local analysis.
+/// parameter, or field receiver. It also accepts a zero-argument call chain
+/// whose callable facts are fully supplied by the captured external indexes.
+/// Other chained, call, index, static, malformed, and over-budget expressions
+/// use the lexical fallback rather than joining current text to older local
+/// analysis.
 pub(crate) fn completion_report_for_current_receiver_at_offset_with_external_indexes(
     source: &str,
     offset: usize,
@@ -288,10 +290,25 @@ pub(crate) fn completion_report_for_current_receiver_at_offset_with_external_ind
     {
         return None;
     }
-    let facts = BoundedCompletionFacts::recover(source, &region, offset)?;
-    let (receiver, receiver_span, prefix, prefix_span) =
-        region.simple_member_context(source, offset)?;
-    let owner = facts.visible_type(&receiver)?;
+    let (receiver, receiver_span, owner, prefix, prefix_span, facts) =
+        if let Some((receiver, receiver_span, owner, prefix, prefix_span)) = region
+            .external_call_chain_member_context(source, offset, workspace_index, game_data_index)
+        {
+            (receiver, receiver_span, owner, prefix, prefix_span, None)
+        } else {
+            let facts = BoundedCompletionFacts::recover(source, &region, offset)?;
+            let (receiver, receiver_span, prefix, prefix_span) =
+                region.simple_member_context(source, offset)?;
+            let owner = facts.visible_type(&receiver)?;
+            (
+                receiver,
+                receiver_span,
+                owner,
+                prefix,
+                prefix_span,
+                Some(facts),
+            )
+        };
     if start.elapsed() > LOCAL_SCOPE_QUERY_DEADLINE {
         return None;
     }
@@ -314,7 +331,16 @@ pub(crate) fn completion_report_for_current_receiver_at_offset_with_external_ind
         LspCompletionTimings::default(),
         start,
     );
-    facts.append_current_member_items(source, &region, &owner, &prefix, prefix_span, &mut report);
+    if let Some(facts) = facts {
+        facts.append_current_member_items(
+            source,
+            &region,
+            &owner,
+            &prefix,
+            prefix_span,
+            &mut report,
+        );
+    }
     Some(report)
 }
 
@@ -462,6 +488,54 @@ impl BoundedCompletionRegion {
         ))
     }
 
+    fn external_call_chain_member_context(
+        &self,
+        source: &str,
+        offset: usize,
+        workspace_index: Option<&SymbolIndex>,
+        game_data_index: Option<&SymbolIndex>,
+    ) -> Option<(String, TextSpan, String, String, TextSpan)> {
+        let prefix_span = lexical_completion_prefix_span(&self.tokens, offset);
+        let prefix = source.get(prefix_span.start..prefix_span.end)?.to_string();
+        let tokens = self.significant_before(prefix_span.start);
+        let dot = tokens.last()?;
+        (dot.kind == TokenKind::Dot).then_some(())?;
+
+        let mut cursor = tokens.len().checked_sub(1)?;
+        let mut calls = Vec::new();
+        let receiver_end = tokens.get(cursor.checked_sub(1)?)?.span.end;
+        loop {
+            cursor = cursor.checked_sub(1)?;
+            (tokens.get(cursor)?.kind == TokenKind::RightParen).then_some(())?;
+            cursor = cursor.checked_sub(1)?;
+            (tokens.get(cursor)?.kind == TokenKind::LeftParen).then_some(())?;
+            cursor = cursor.checked_sub(1)?;
+            let name = tokens.get(cursor)?;
+            (name.kind == TokenKind::Identifier).then_some(())?;
+            calls.push(source.get(name.span.start..name.span.end)?.to_string());
+
+            let Some(previous) = cursor.checked_sub(1) else {
+                break;
+            };
+            if tokens.get(previous)?.kind != TokenKind::Dot {
+                break;
+            }
+            cursor = previous;
+        }
+        calls.reverse();
+        (calls.len() >= 2).then_some(())?;
+        let receiver_start = tokens.get(cursor)?.span.start;
+        let receiver_span = TextSpan::new(receiver_start, receiver_end);
+        let receiver = source
+            .get(receiver_span.start..receiver_span.end)?
+            .to_string();
+        let owner = external_call_chain_owner(
+            &calls,
+            [workspace_index, game_data_index].into_iter().flatten(),
+        )?;
+        Some((receiver, receiver_span, owner, prefix, prefix_span))
+    }
+
     fn bare_argument_context(
         &self,
         source: &str,
@@ -501,6 +575,69 @@ impl BoundedCompletionRegion {
             callee,
         })
     }
+}
+
+fn external_call_chain_owner<'a>(
+    calls: &[String],
+    indexes: impl IntoIterator<Item = &'a SymbolIndex>,
+) -> Option<String> {
+    let indexes = indexes.into_iter().collect::<Vec<_>>();
+    let first = calls.first()?;
+    let mut owner = None;
+    for index in &indexes {
+        for id in index.preferred_from_symbols(index.functions_by_name(first)) {
+            if !callable_accepts_zero_arguments(index, id) {
+                continue;
+            }
+            let Some(symbol) = index.symbol(id) else {
+                continue;
+            };
+            if let Some(result) = expression_type_from_index_symbol(index, symbol) {
+                owner = Some(result.owner_type);
+                break;
+            }
+        }
+        if owner.is_some() {
+            break;
+        }
+    }
+    let mut owner = owner?;
+
+    for call in calls.iter().skip(1) {
+        let mut next = None;
+        for index in &indexes {
+            let candidates = IndexQuery::new(index).completion_members_for_class(&owner);
+            for candidate in candidates.candidates {
+                if candidate.name.as_deref() != Some(call.as_str()) {
+                    continue;
+                }
+                if !callable_accepts_zero_arguments(index, candidate.id) {
+                    continue;
+                }
+                let Some(symbol) = index.symbol(candidate.id) else {
+                    continue;
+                };
+                if let Some(result) = expression_type_from_index_symbol(index, symbol) {
+                    next = Some(result.owner_type);
+                    break;
+                }
+            }
+            if next.is_some() {
+                break;
+            }
+        }
+        owner = next?;
+    }
+
+    Some(owner)
+}
+
+fn callable_accepts_zero_arguments(index: &SymbolIndex, id: crate::index::GlobalSymbolId) -> bool {
+    index.children(id).iter().all(|parameter| {
+        index.symbol(*parameter).is_some_and(|symbol| {
+            symbol.kind != SymbolKind::Parameter || symbol.detail.default_text.is_some()
+        })
+    })
 }
 
 #[derive(Clone)]
@@ -3412,6 +3549,58 @@ mod tests {
             assert_eq!(report.owner_type.as_deref(), Some("Widget"));
             assert!(report.list.items.iter().any(|item| item.label == "GetName"));
         }
+    }
+
+    #[test]
+    fn current_receiver_query_resolves_external_zero_argument_call_chains() {
+        let external = file_index_for_source(
+            r#"class ChimeraGame
+{
+	proto external PlayerController GetPlayerController();
+}
+
+class ArmaReforgerScripted : ChimeraGame {}
+
+ArmaReforgerScripted GetGame();
+
+class PlayerController
+{
+	proto external IEntity GetControlledEntity();
+}
+"#,
+        )
+        .index;
+        let source = r#"class Example
+{
+	void Run()
+	{
+		GetGame().GetPlayerController().
+	}
+}
+"#;
+        let offset =
+            source.find("GetPlayerController().").unwrap() + "GetPlayerController().".len();
+
+        let report = completion_report_for_current_receiver_at_offset_with_external_indexes(
+            source,
+            offset,
+            None,
+            Some(&external),
+        )
+        .expect("external call chain should use the bounded receiver query");
+
+        assert_eq!(report.query_quality, QueryQuality::Exact);
+        assert_eq!(report.completion_context, "member");
+        assert_eq!(
+            report.receiver_text.as_deref(),
+            Some("GetGame().GetPlayerController()")
+        );
+        assert_eq!(report.owner_type.as_deref(), Some("PlayerController"));
+        assert!(report
+            .list
+            .items
+            .iter()
+            .any(|item| item.label == "GetControlledEntity"));
     }
 
     #[test]
