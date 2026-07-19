@@ -23,7 +23,7 @@ Small text-scanning shortcuts therefore affect both editor features at once.
 
 Prefer parser structure when selecting the active argument list, and continue traversal so the smallest enclosing call wins.
 When a fallback scanner is necessary, keep delimiter, quote, and escape state together.
-Do not treat every `<` as a generic opener: relational expressions are valid arguments while the user is editing.
+Do not treat every `<` as a generic opener: relational expressions are valid arguments while the user is editing. A fallback generic scan must mirror the parser's continuation rule: after its matching `>` (or `>>`), a generic expression continues only into `.`, `(`, or `[`. Count `>>` as two generic closers.
 
 Compute active parameters per callable candidate, then expose only a valid selected-candidate value.
 Normalize named labels at collection time because parameter matching is case-insensitive.
@@ -44,6 +44,7 @@ Sharing a mutable active index across overloads can produce an index outside a c
 
 For `Outer(Inner(value))`, the cursor in `Inner` must select `Inner`.
 For `Use(left < right, next)`, the comma begins the second argument rather than remaining nested under a generic bracket.
+For `Use(Outer<Inner<A, B>>(), next)`, the `>>` closes both generic levels before the second argument begins.
 For `Log(string separator = ",")`, the default comma must not split the signature.
 
 ## Related

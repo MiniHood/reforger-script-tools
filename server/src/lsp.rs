@@ -7861,6 +7861,21 @@ class Example
             .handle_message(
                 json!({
                     "jsonrpc": "2.0",
+                    "method": "textDocument/didChange",
+                    "params": {
+                        "textDocument": { "uri": uri, "version": 1 },
+                        "contentChanges": [{ "text": "class ChangedBeforeOpen {}" }]
+                    }
+                }),
+                None,
+            )
+            .unwrap();
+        assert!(!server.documents.contains_key(uri));
+
+        server
+            .handle_message(
+                json!({
+                    "jsonrpc": "2.0",
                     "method": "textDocument/didOpen",
                     "params": {
                         "textDocument": {
@@ -7900,6 +7915,24 @@ class Example
                     "params": {
                         "textDocument": { "uri": uri },
                         "contentChanges": [{ "text": "class MissingChangeVersion {}" }]
+                    }
+                }),
+                None,
+            )
+            .unwrap();
+
+        let document = &server.documents[uri];
+        assert_eq!(document.version, 1);
+        assert_eq!(document.text, "class Current {}");
+
+        server
+            .handle_message(
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "textDocument/didChange",
+                    "params": {
+                        "textDocument": { "uri": uri, "version": 1 },
+                        "contentChanges": [{ "text": "class SameVersionReplay {}" }]
                     }
                 }),
                 None,

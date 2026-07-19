@@ -192,7 +192,7 @@ function isIdentifierInsertionChange(change: vscode.TextDocumentContentChangeEve
 	return change.range.isEmpty && /^[A-Za-z0-9_]$/.test(change.text);
 }
 
-function shouldRetriggerCompletionAfterDeletion(editor: vscode.TextEditor): boolean {
+export function shouldRetriggerCompletionAfterDeletion(editor: vscode.TextEditor): boolean {
 	const position = editor.selection.active;
 	if (!editor.selection.isEmpty) {
 		return false;
@@ -201,7 +201,7 @@ function shouldRetriggerCompletionAfterDeletion(editor: vscode.TextEditor): bool
 	return /[A-Za-z0-9_\.]$/.test(linePrefix);
 }
 
-function shouldRetriggerCompletionAfterInsertion(editor: vscode.TextEditor): boolean {
+export function shouldRetriggerCompletionAfterInsertion(editor: vscode.TextEditor): boolean {
 	const position = editor.selection.active;
 	if (!editor.selection.isEmpty) {
 		return false;
@@ -221,18 +221,24 @@ function triggerCompletionWhenActive(
 	reason: string,
 ): void {
 	const activeEditor = vscode.window.activeTextEditor;
-	if (
-		!activeEditor
-		|| activeEditor.document.uri.toString() !== documentUri
-		|| activeEditor.document.languageId !== languageClientLanguage.id
-	) {
-		return;
-	}
-	if (!shouldTrigger(activeEditor)) {
+	if (!canTriggerCompletionWhenActive(activeEditor, documentUri, shouldTrigger)) {
 		return;
 	}
 	outputChannel.debug(`Triggering Enforce completion after ${reason}: ${documentUri}`);
 	void vscode.commands.executeCommand('editor.action.triggerSuggest');
+}
+
+export function canTriggerCompletionWhenActive(
+	activeEditor: vscode.TextEditor | undefined,
+	documentUri: string,
+	shouldTrigger: (editor: vscode.TextEditor) => boolean,
+): activeEditor is vscode.TextEditor {
+	return (
+		activeEditor !== undefined
+		&& activeEditor.document.uri.toString() === documentUri
+		&& activeEditor.document.languageId === languageClientLanguage.id
+		&& shouldTrigger(activeEditor)
+	);
 }
 
 async function jumpToNextSnippetPlaceholderAndTriggerSuggest(

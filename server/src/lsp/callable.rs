@@ -246,6 +246,7 @@ pub(crate) fn argument_index_at_offset(source: &str, args: &SyntaxNode, offset: 
                 angle += 1;
             }
             TokenKind::Operator(Operator::Greater) => angle = angle.saturating_sub(1),
+            TokenKind::Operator(Operator::GreaterGreater) => angle = angle.saturating_sub(2),
             TokenKind::LeftParen => paren += 1,
             TokenKind::RightParen => paren = paren.saturating_sub(1),
             TokenKind::LeftBracket => bracket += 1,
@@ -286,19 +287,19 @@ fn generic_angle_opens(
     }
 
     let mut depth = 0usize;
-    for token in &tokens[open_index..] {
+    for (index, token) in tokens[open_index..].iter().enumerate() {
         match token.kind {
             TokenKind::Operator(Operator::Less) => depth += 1,
             TokenKind::Operator(Operator::Greater) => {
                 depth = depth.saturating_sub(1);
                 if depth == 0 {
-                    return true;
+                    return generic_argument_list_can_continue(tokens, open_index + index + 1);
                 }
             }
             TokenKind::Operator(Operator::GreaterGreater) => {
                 depth = depth.saturating_sub(2);
                 if depth == 0 {
-                    return true;
+                    return generic_argument_list_can_continue(tokens, open_index + index + 1);
                 }
             }
             TokenKind::RightParen if depth > 0 => return false,
@@ -306,6 +307,16 @@ fn generic_angle_opens(
         }
     }
     false
+}
+
+fn generic_argument_list_can_continue(tokens: &[crate::lexer::Token], mut index: usize) -> bool {
+    while index < tokens.len() && tokens[index].kind.is_trivia() {
+        index += 1;
+    }
+    matches!(
+        tokens.get(index).map(|token| token.kind),
+        Some(TokenKind::Dot | TokenKind::LeftParen | TokenKind::LeftBracket)
+    )
 }
 
 fn active_named_argument_label_at_offset(
@@ -697,6 +708,51 @@ mod tests {
         assert_eq!(
             argument_index_at_offset(generic, generic_args, generic_offset),
             1
+        );
+
+        let nested_generic = "class Example { void Run() { Use(Outer<Inner<A, B>>(), third); } }";
+        let nested_generic_parse = parse_source(nested_generic);
+        let nested_generic_args =
+            find_first_node(&nested_generic_parse.root, SyntaxKind::ArgumentList).unwrap();
+        let nested_generic_offset = nested_generic.find("third").unwrap() + "third".len();
+        assert_eq!(
+            argument_index_at_offset(nested_generic, nested_generic_args, nested_generic_offset),
+            1
+        );
+
+        let compact_comparison =
+            "class Example { void Run() { Use(first<second>third, fourth); } }";
+        let compact_comparison_parse = parse_source(compact_comparison);
+        let compact_comparison_args =
+            find_first_node(&compact_comparison_parse.root, SyntaxKind::ArgumentList).unwrap();
+        let compact_comparison_offset = compact_comparison.find("fourth").unwrap() + "fourth".len();
+        assert_eq!(
+            argument_index_at_offset(
+                compact_comparison,
+                compact_comparison_args,
+                compact_comparison_offset,
+            ),
+            1
+        );
+
+        let comparison_with_comma_before_close =
+            "class Example { void Run() { Use(first<second, third>fourth, fifth); } }";
+        let comparison_with_comma_before_close_parse =
+            parse_source(comparison_with_comma_before_close);
+        let comparison_with_comma_before_close_args = find_first_node(
+            &comparison_with_comma_before_close_parse.root,
+            SyntaxKind::ArgumentList,
+        )
+        .unwrap();
+        let comparison_with_comma_before_close_offset =
+            comparison_with_comma_before_close.find("fifth").unwrap() + "fifth".len();
+        assert_eq!(
+            argument_index_at_offset(
+                comparison_with_comma_before_close,
+                comparison_with_comma_before_close_args,
+                comparison_with_comma_before_close_offset,
+            ),
+            2
         );
     }
 
