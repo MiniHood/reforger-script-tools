@@ -415,9 +415,10 @@ pub(crate) fn completion_report_for_current_override_at_offset_with_external_ind
 /// Runs the current-revision `ReceiverResolutionQuery` for one bare local,
 /// parameter, or field receiver. It also accepts a zero-argument call chain
 /// whose callable facts are fully supplied by the captured external indexes.
-/// Other chained, call, index, static, malformed, and over-budget expressions
-/// use the lexical fallback rather than joining current text to older local
-/// analysis.
+/// A bare static owner is also admitted when bounded current facts prove that
+/// no visible local binding shadows its externally indexed name. Other chained,
+/// call, index, malformed, and over-budget expressions use the lexical fallback
+/// rather than joining current text to older local analysis.
 pub(crate) fn completion_report_for_current_receiver_at_offset_with_external_indexes(
     source: &str,
     offset: usize,
@@ -434,9 +435,17 @@ pub(crate) fn completion_report_for_current_receiver_at_offset_with_external_ind
     }
     let external_chain =
         region.external_call_chain_member_context(source, offset, workspace_index, game_data_index);
-    let (receiver, receiver_span, owner, prefix, prefix_span, facts) =
+    let (receiver, receiver_span, owner, prefix, prefix_span, receiver_is_static, facts) =
         if let Some((receiver, receiver_span, owner, prefix, prefix_span)) = external_chain {
-            (receiver, receiver_span, owner, prefix, prefix_span, None)
+            (
+                receiver,
+                receiver_span,
+                owner,
+                prefix,
+                prefix_span,
+                false,
+                None,
+            )
         } else {
             if region.has_completed_call_receiver(source, offset) {
                 let report = lexical_top_level_fallback_report(
@@ -455,15 +464,37 @@ pub(crate) fn completion_report_for_current_receiver_at_offset_with_external_ind
             let facts = BoundedCompletionFacts::recover(source, &region, offset)?;
             let (receiver, receiver_span, prefix, prefix_span) =
                 region.simple_member_context(source, offset)?;
-            let owner = facts.visible_type(&receiver)?;
-            (
-                receiver,
-                receiver_span,
-                owner,
-                prefix,
-                prefix_span,
-                Some(facts),
-            )
+            if let Some(owner) = facts.visible_type(&receiver) {
+                (
+                    receiver,
+                    receiver_span,
+                    owner,
+                    prefix,
+                    prefix_span,
+                    false,
+                    Some(facts),
+                )
+            } else if external_static_owner_has_members(
+                &receiver,
+                workspace_index,
+                game_data_index,
+            ) {
+                // The current bounded facts prove no local/parameter/field
+                // binding shadows this name. Static candidates therefore come
+                // solely from immutable external indexes and remain safe while
+                // whole-file analysis is pending.
+                (
+                    receiver.clone(),
+                    receiver_span,
+                    receiver,
+                    prefix,
+                    prefix_span,
+                    true,
+                    None,
+                )
+            } else {
+                return None;
+            }
         };
     if start.elapsed() > LOCAL_SCOPE_QUERY_DEADLINE {
         return None;
@@ -479,7 +510,7 @@ pub(crate) fn completion_report_for_current_receiver_at_offset_with_external_ind
         prefix.clone(),
         prefix_span,
         None,
-        false,
+        receiver_is_static,
         MemberVisibilityContext::ExternalReceiver,
         &empty_local_index,
         workspace_index,
@@ -498,6 +529,16 @@ pub(crate) fn completion_report_for_current_receiver_at_offset_with_external_ind
         );
     }
     Some(report)
+}
+
+fn external_static_owner_has_members(
+    owner: &str,
+    workspace_index: Option<&SymbolIndex>,
+    game_data_index: Option<&SymbolIndex>,
+) -> bool {
+    layered_external_indexes(workspace_index, game_data_index)
+        .into_iter()
+        .any(|index| !IndexQuery::new(index).completion_static_members_for_type(owner).is_empty())
 }
 
 /// Runs the bounded current-revision argument-label query for one bare,
@@ -4343,6 +4384,115 @@ class ScriptComponent
             assert_eq!(report.owner_type.as_deref(), Some("Widget"));
             assert!(report.list.items.iter().any(|item| item.label == "GetName"));
         }
+    }
+
+    #[test]
+    fn current_receiver_query_resolves_externally_indexed_static_enum_members() {
+        let external = file_index_for_source(
+            r#"enum RplChannel
+{
+	Reliable,
+	Unreliable
+}
+"#,
+        )
+        .index;
+        let source = r#"class Example
+{
+	void Run()
+	{
+		RplChannel.
+	}
+}
+"#;
+        let offset = source.find("RplChannel.").unwrap() + "RplChannel.".len();
+
+        let report = completion_report_for_current_receiver_at_offset_with_external_indexes(
+            source,
+            offset,
+            None,
+            Some(&external),
+        )
+        .expect("an externally indexed enum owner should complete before foreground analysis");
+
+        assert_eq!(report.query_quality, QueryQuality::Exact);
+        assert_eq!(report.completion_context, "member");
+        assert_eq!(report.receiver_text.as_deref(), Some("RplChannel"));
+        assert_eq!(report.owner_type.as_deref(), Some("RplChannel"));
+        assert_eq!(
+            report
+                .list
+                .items
+                .iter()
+                .map(|item| item.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Reliable", "Unreliable"]
+        );
+    }
+
+    #[test]
+    fn current_receiver_query_resolves_externally_indexed_static_class_members() {
+        let external = file_index_for_source(
+            r#"class ScriptApi
+{
+	static void StaticRun();
+}
+"#,
+        )
+        .index;
+        let source = r#"class Example
+{
+	void Run()
+	{
+		ScriptApi.
+	}
+}
+"#;
+        let offset = source.find("ScriptApi.").unwrap() + "ScriptApi.".len();
+
+        let report = completion_report_for_current_receiver_at_offset_with_external_indexes(
+            source,
+            offset,
+            None,
+            Some(&external),
+        )
+        .expect("an externally indexed static class should complete before foreground analysis");
+
+        assert_eq!(report.owner_type.as_deref(), Some("ScriptApi"));
+        assert!(report.list.items.iter().any(|item| item.label == "StaticRun"));
+    }
+
+    #[test]
+    fn current_receiver_query_does_not_treat_a_visible_binding_as_a_static_owner() {
+        let external = file_index_for_source(
+            r#"enum RplChannel
+{
+	Reliable,
+	Unreliable
+}
+"#,
+        )
+        .index;
+        let source = r#"class Example
+{
+	void Run(LocalReceiver RplChannel)
+	{
+		RplChannel.
+	}
+}
+"#;
+        let offset = source.rfind("RplChannel.").unwrap() + "RplChannel.".len();
+
+        let report = completion_report_for_current_receiver_at_offset_with_external_indexes(
+            source,
+            offset,
+            None,
+            Some(&external),
+        );
+
+        let report = report.expect("the visible local binding should use its own type");
+        assert_eq!(report.owner_type.as_deref(), Some("LocalReceiver"));
+        assert!(!report.list.items.iter().any(|item| item.label == "Reliable"));
     }
 
     #[test]

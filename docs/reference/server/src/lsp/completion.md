@@ -30,7 +30,11 @@ one-or-more-step zero-argument external call path rooted in an externally
 indexed global function is also admitted when every return type can be proved
 from the captured external indexes; this preserves immediate completion both
 after the root call (`GetGame().GetPlayer...`) and through common game API
-chains such as `GetGame().GetPlayerController().`. They never
+chains such as `GetGame().GetPlayerController().`. A bare external static
+owner (`RplChannel.` or another indexed enum/class) is also admitted when the
+same bounded facts prove no visible local, parameter, or field binding shadows
+that name; the response then contains only its externally indexed static
+members. They never
 call `file_index_for_source`, construct `SemanticFile`/`SymbolIndex`/
 `LexicalScopeModel` from document text, walk a CST root, or read prior document
 analysis on the request thread. The receiver query captures workspace/game-data
