@@ -10,6 +10,7 @@ use crate::ast::{
     TextValue,
 };
 use crate::lexer::TextSpan;
+use crate::syntax::Parse;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -144,7 +145,12 @@ pub struct SemanticBuildStats {
 }
 
 impl SemanticFile {
-    pub fn build(source: &str, ast: &AstSourceFile<'_, '_>) -> Self {
+    /// Builds compiler semantic facts directly from parser output.  The
+    /// declaration facade stays an implementation detail: production callers
+    /// do not construct an AST-shaped semantic input or retain a second
+    /// semantic representation between parsing and this build.
+    pub fn build(source: &str, parse: &Parse) -> Self {
+        let ast = AstSourceFile::new(source, parse);
         let mut builder = SemanticFileBuilder {
             source,
             declarations: Vec::new(),
@@ -965,11 +971,11 @@ fn doc_comments(values: Vec<crate::ast::DocComment<'_>>) -> Vec<SemanticDocComme
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ast::AstSourceFile, parser::parse_source};
+    use crate::parser::parse_source;
 
     fn semantic(source: &str) -> SemanticFile {
         let parse = parse_source(source);
-        SemanticFile::build(source, &AstSourceFile::new(source, &parse))
+        SemanticFile::build(source, &parse)
     }
 
     #[test]

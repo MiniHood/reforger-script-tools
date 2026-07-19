@@ -1583,7 +1583,7 @@ void Start();
 
         let parse = parse_source(source);
         assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
-        let semantic_file = SemanticFile::build(source, &AstSourceFile::new(source, &parse));
+        let semantic_file = SemanticFile::build(source, &parse);
         let mut semantic = SymbolIndex::default();
         semantic.add_semantic_file(&semantic_file, metadata);
 
@@ -1627,7 +1627,7 @@ void Start();
 "#;
         let metadata = SourceFileMetadata::unknown();
         let parse = parse_source(source);
-        let semantic_file = SemanticFile::build(source, &AstSourceFile::new(source, &parse));
+        let semantic_file = SemanticFile::build(source, &parse);
 
         let mut from_semantic_file = SymbolIndex::default();
         from_semantic_file.add_semantic_file(&semantic_file, metadata.clone());
@@ -1651,7 +1651,7 @@ void Start();
         let source =
             include_str!("../../tools/fixtures/index/contribution_public_ids_after_local.c");
         let parse = parse_source(source);
-        let semantic_file = SemanticFile::build(source, &AstSourceFile::new(source, &parse));
+        let semantic_file = SemanticFile::build(source, &parse);
         let contribution = semantic_file.contribution();
         let mut index = SymbolIndex::default();
         index

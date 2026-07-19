@@ -1,5 +1,4 @@
 use crate::analysis_runtime::DocumentSnapshot;
-use crate::ast::AstSourceFile;
 use crate::index::SymbolIndex;
 use crate::lexer::{lex, Token};
 use crate::model::SourceFileMetadata;
@@ -386,9 +385,8 @@ pub(crate) fn file_index_for_source_with_timings(
     let parse_ms = parse_start.elapsed().as_millis();
     let parse_diagnostics = parse.diagnostics.len();
     let diagnostics = parse.diagnostics.clone();
-    let ast = AstSourceFile::new(source, &parse);
     let catalog_start = Instant::now();
-    let semantic_file = SemanticFile::build(source, &ast);
+    let semantic_file = SemanticFile::build(source, &parse);
     let catalog_ms = catalog_start.elapsed().as_millis();
     let index_start = Instant::now();
     let mut index = SymbolIndex::default();

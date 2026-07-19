@@ -1,4 +1,3 @@
-use crate::ast::AstSourceFile;
 use crate::index::SymbolIndex;
 use crate::lexer::TextSpan;
 use crate::model::{source_category_for_path, SourceFileMetadata, SourceKind};
@@ -152,8 +151,7 @@ fn build_file(
     summary.timings.parse += parse_start.elapsed();
 
     let ast_model_catalog_start = Instant::now();
-    let ast = AstSourceFile::new(&source, &parse);
-    let semantic_file = SemanticFile::build(&source, &ast);
+    let semantic_file = SemanticFile::build(&source, &parse);
     semantic_file.contribution().validate().map_err(|error| {
         format!(
             "Invalid semantic contribution for {}: {error:?}",
@@ -401,7 +399,6 @@ fn collect_script_files(folder: &Path, files: &mut Vec<PathBuf>) -> Result<(), S
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::AstSourceFile;
     use crate::model::{
         SourceCategory, SymbolKind, SOURCE_PRIORITY_GAME_DATA, SOURCE_PRIORITY_WORKSPACE,
     };
@@ -641,8 +638,7 @@ mod tests {
         .unwrap();
 
         let parse = parse_source(source);
-        let ast = AstSourceFile::new(source, &parse);
-        let semantic_file = SemanticFile::build(source, &ast);
+        let semantic_file = SemanticFile::build(source, &parse);
         let mut expected = SymbolIndex::default();
         expected
             .add_file_contribution(

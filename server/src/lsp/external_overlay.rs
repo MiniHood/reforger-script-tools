@@ -1,5 +1,4 @@
 use super::{format_paths, LspLogger, LspServerOptions};
-use crate::ast::AstSourceFile;
 use crate::index::SymbolIndex;
 use crate::index_cache::{
     load_or_build_game_data_index_with_progress, GameDataIndexCacheConfig, RuntimeIndexSummary,
@@ -649,8 +648,7 @@ fn normalize_workspace_roots(roots: &[PathBuf]) -> NormalizedWorkspaceRoots {
 
 fn build_workspace_file_index(root: &Path, file: &Path, source: &str) -> WorkspaceIndexedFile {
     let parse = parse_source(source);
-    let ast = AstSourceFile::new(source, &parse);
-    let semantic_file = SemanticFile::build(source, &ast);
+    let semantic_file = SemanticFile::build(source, &parse);
     // Workspace publication retains only the versioned public projection.
     // `workspace_aggregate` reconstructs a query index from these validated
     // compiler-owned facts when it publishes the workspace generation.
