@@ -39,6 +39,7 @@ const OVERRIDE_QUERY_MAX_WINDOW_BYTES: usize = LOCAL_SCOPE_QUERY_MAX_WINDOW_BYTE
 const LEXICAL_CONTEXT_RECOVERY_MAX_SOURCE_BYTES: usize = 128 * 1024;
 const LOCAL_SCOPE_QUERY_DEADLINE: Duration = Duration::from_millis(50);
 const COMMAND_TRIGGER_PARAMETER_HINTS: &str = "editor.action.triggerParameterHints";
+const COMMAND_TRIGGER_SUGGEST: &str = "editor.action.triggerSuggest";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LspCompletionList {
@@ -3379,7 +3380,7 @@ fn completion_item_for_candidate(
         .as_ref()
         .map(|render| (render.insert_text.clone(), Some(2)))
         .unwrap_or_else(|| (label.clone(), None));
-    let command = callable.as_ref().map(|_| trigger_parameter_hints_command());
+    let command = callable.as_ref().map(|render| render.follow_up_command.clone());
     let documentation = completion_documentation(candidate, callable.as_ref());
     let required_parameter_count = callable
         .as_ref()
@@ -3438,13 +3439,13 @@ fn callable_completion_render(
             let signature = candidate.constructor_signature.as_deref()?;
             let call = callable_signature_parts(label, signature)?;
             if let Some(insert_text) = rpl_rpc_attribute_template(label, &call, false) {
-                return Some(CallableCompletionRender { call, insert_text });
+                return Some(CallableCompletionRender::trigger_suggest(call, insert_text));
             }
             let insert = callable_insert_text_with_context(label, &call, Some(render_context));
-            return Some(CallableCompletionRender {
+            return Some(CallableCompletionRender::trigger_parameter_hints(
                 call,
-                insert_text: insert.text,
-            });
+                insert.text,
+            ));
         }
         SymbolKind::Class
             if insert_context == CompletionInsertContext::AttributeShorthand
@@ -3453,20 +3454,17 @@ fn callable_completion_render(
             let signature = candidate.constructor_signature.as_deref()?;
             let call = callable_signature_parts(label, signature)?;
             if let Some(insert_text) = rpl_rpc_attribute_template(label, &call, true) {
-                return Some(CallableCompletionRender { call, insert_text });
+                return Some(CallableCompletionRender::trigger_suggest(call, insert_text));
             }
             let insert = callable_insert_text_with_context(label, &call, Some(render_context));
             let insert_text = format!("[{}]", insert.text);
-            return Some(CallableCompletionRender { call, insert_text });
+            return Some(CallableCompletionRender::trigger_parameter_hints(call, insert_text));
         }
         _ => return None,
     };
     let call = callable_signature_parts(label, signature)?;
     let insert = callable_insert_text_with_context(label, &call, Some(render_context));
-    Some(CallableCompletionRender {
-        call,
-        insert_text: insert.text,
-    })
+    Some(CallableCompletionRender::trigger_parameter_hints(call, insert.text))
 }
 
 fn is_attribute_like_completion_candidate(candidate: &EditorCompletionCandidate) -> bool {
@@ -3477,6 +3475,25 @@ fn is_attribute_like_completion_candidate(candidate: &EditorCompletionCandidate)
 struct CallableCompletionRender {
     call: CallableSignatureParts,
     insert_text: String,
+    follow_up_command: LspCommand,
+}
+
+impl CallableCompletionRender {
+    fn trigger_parameter_hints(call: CallableSignatureParts, insert_text: String) -> Self {
+        Self {
+            call,
+            insert_text,
+            follow_up_command: trigger_parameter_hints_command(),
+        }
+    }
+
+    fn trigger_suggest(call: CallableSignatureParts, insert_text: String) -> Self {
+        Self {
+            call,
+            insert_text,
+            follow_up_command: trigger_suggest_command(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -3504,11 +3521,11 @@ fn rpl_rpc_attribute_template(
         && callable_type_owner(&required[0].type_and_modifiers).as_deref() == Some("RplChannel")
         && callable_type_owner(&required[1].type_and_modifiers).as_deref() == Some("RplRcver"))
     .then(|| {
-        // Keep the final snippet cursor inside the call. The normal completion
-        // command can then open signature help against the original constructor
-        // (including optional condition/custom-condition inputs) while the two
-        // engine-default enum arguments remain prefilled.
-        let body = "RplRpc(RplChannel.Reliable, RplRcver.Server$0)";
+        // Selecting a prefilled enum member lets the first typed character
+        // replace it. Triggering suggestions then resolves against the enum
+        // receiver rather than treating the completed annotation as a finished
+        // top-level declaration.
+        let body = "RplRpc(RplChannel.${1:Reliable}, RplRcver.${2:Server})";
         if include_brackets {
             format!("[{body}]")
         } else {
@@ -3568,6 +3585,13 @@ fn trigger_parameter_hints_command() -> LspCommand {
     LspCommand {
         title: "Trigger Parameter Hints".to_string(),
         command: COMMAND_TRIGGER_PARAMETER_HINTS.to_string(),
+    }
+}
+
+fn trigger_suggest_command() -> LspCommand {
+    LspCommand {
+        title: "Trigger Suggestions".to_string(),
+        command: COMMAND_TRIGGER_SUGGEST.to_string(),
     }
 }
 
@@ -4194,7 +4218,11 @@ class ScriptComponent
             .expect("expected RplRpc attribute completion");
         assert_eq!(
             rpc.text_edit.new_text,
-            "[RplRpc(RplChannel.Reliable, RplRcver.Server$0)]"
+            "[RplRpc(RplChannel.${1:Reliable}, RplRcver.${2:Server})]"
+        );
+        assert_eq!(
+            rpc.command.as_ref().map(|command| command.command.as_str()),
+            Some("editor.action.triggerSuggest")
         );
     }
 

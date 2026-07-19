@@ -6701,19 +6701,19 @@ class RplRpc : UniqueAttribute
             .expect("expected RplRpc attribute shorthand completion");
         assert_eq!(
             item.text_edit.new_text,
-            "[RplRpc(RplChannel.Reliable, RplRcver.Server$0)]"
+            "[RplRpc(RplChannel.${1:Reliable}, RplRcver.${2:Server})]"
         );
         let wire_item = serde_json::to_value(item).unwrap();
         assert_eq!(
             wire_item["textEdit"]["newText"],
-            "[RplRpc(RplChannel.Reliable, RplRcver.Server$0)]"
+            "[RplRpc(RplChannel.${1:Reliable}, RplRcver.${2:Server})]"
         );
         assert_eq!(wire_item["insertTextFormat"], 2);
         assert_eq!(
             item.command
                 .as_ref()
                 .map(|command| command.command.as_str()),
-            Some("editor.action.triggerParameterHints")
+            Some("editor.action.triggerSuggest")
         );
         assert_eq!(item.required_parameter_count, 2);
         assert_eq!(item.optional_parameter_count, 2);
@@ -6816,9 +6816,15 @@ class RplRpc : UniqueAttribute
             .expect("expected RplRpc completion inside attribute brackets");
         assert_eq!(
             item.text_edit.new_text,
-            "RplRpc(RplChannel.Reliable, RplRcver.Server$0)"
+            "RplRpc(RplChannel.${1:Reliable}, RplRcver.${2:Server})"
         );
         assert_eq!(item.insert_text_format, Some(2));
+        assert_eq!(
+            item.command
+                .as_ref()
+                .map(|command| command.command.as_str()),
+            Some("editor.action.triggerSuggest")
+        );
     }
 
     #[test]
