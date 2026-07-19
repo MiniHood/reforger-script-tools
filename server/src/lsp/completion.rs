@@ -336,12 +336,36 @@ pub(crate) fn completion_report_for_current_override_at_offset_with_external_ind
         return None;
     }
 
-    let (mut items, source_kind_counts, origin_counts) = completion_items_for_override_candidates(
+    let (mut items, mut source_kind_counts, mut origin_counts) = completion_items_for_override_candidates(
         &candidates,
         range_for_span(source, context.prefix_span),
         &context.typed_modifiers,
         &context.prefix,
     );
+    let empty_local_index = SymbolIndex::default();
+    let source_candidates = top_level_source_completion_candidates(
+        &context.prefix,
+        EditorTopLevelCompletionMode::Type,
+        &empty_local_index,
+        workspace_index,
+        game_data_index,
+        32,
+    );
+    let insert_context = completion_insert_context(
+        source,
+        context.prefix_span.start,
+        EditorTopLevelCompletionMode::Type,
+    );
+    let (source_items, source_counts, source_origins) = completion_items_for_candidates(
+        &source_candidates,
+        range_for_span(source, context.prefix_span),
+        Some("TopLevel"),
+        insert_context,
+        Some(&context.prefix),
+        CompletionRenderContext::new(&empty_local_index, workspace_index, game_data_index),
+    );
+    merge_count_maps(&mut source_kind_counts, source_counts);
+    merge_count_maps(&mut origin_counts, source_origins);
     let mut keyword_items = keyword_completion_items(
         &context.prefix,
         range_for_span(source, context.prefix_span),
@@ -354,6 +378,7 @@ pub(crate) fn completion_report_for_current_override_at_offset_with_external_ind
         keyword_items.extend(items);
         items = keyword_items;
     }
+    items.extend(source_items);
     // This bounded query is only a contextual specialization. When neither an
     // inherited member nor a declaration keyword matches, preserve the normal
     // local/top-level completion path instead of claiming an empty override
@@ -4059,6 +4084,51 @@ mod tests {
                 None,
             )
             .is_none()
+        );
+    }
+
+    #[test]
+    fn current_override_query_merges_attribute_completion_with_override_members() {
+        let source = r#"class Child : ScriptComponent
+{
+	rpl
+}
+"#;
+        let external = file_index_for_source(
+            r#"enum RplChannel { Reliable }
+enum RplRcver { Server }
+class UniqueAttribute {}
+class RplRpc : UniqueAttribute
+{
+	void RplRpc(RplChannel channel, RplRcver rcver);
+}
+class ScriptComponent
+{
+	protected void RplLoad();
+	protected void RplSave();
+}
+"#,
+        )
+        .index;
+        let offset = source.find("\trpl").unwrap() + "\trpl".len();
+        let report = completion_report_for_current_override_at_offset_with_external_indexes(
+            source,
+            offset,
+            Some(&external),
+            None,
+        )
+        .expect("matching override and attribute candidates should share one pending response");
+
+        assert!(report.list.items.iter().any(|item| item.label == "RplLoad"));
+        let rpc = report
+            .list
+            .items
+            .iter()
+            .find(|item| item.label == "RplRpc")
+            .expect("expected RplRpc attribute completion");
+        assert_eq!(
+            rpc.text_edit.new_text,
+            "[RplRpc(RplChannel.Reliable, RplRcver.Server)]"
         );
     }
 
