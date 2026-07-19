@@ -303,12 +303,26 @@ pub(crate) fn completion_report_for_current_receiver_at_offset_with_external_ind
     {
         return None;
     }
+    let external_chain =
+        region.external_call_chain_member_context(source, offset, workspace_index, game_data_index);
     let (receiver, receiver_span, owner, prefix, prefix_span, facts) =
-        if let Some((receiver, receiver_span, owner, prefix, prefix_span)) = region
-            .external_call_chain_member_context(source, offset, workspace_index, game_data_index)
-        {
+        if let Some((receiver, receiver_span, owner, prefix, prefix_span)) = external_chain {
             (receiver, receiver_span, owner, prefix, prefix_span, None)
         } else {
+            if region.has_completed_call_receiver(source, offset) {
+                let report = lexical_top_level_fallback_report(
+                    source,
+                    &region.tokens,
+                    offset,
+                    workspace_index,
+                    game_data_index,
+                    UnavailableCompletionContext::Member,
+                );
+                return Some(unavailable_completion_report(
+                    report,
+                    "current-revision-external-call-chain-unresolved",
+                ));
+            }
             let facts = BoundedCompletionFacts::recover(source, &region, offset)?;
             let (receiver, receiver_span, prefix, prefix_span) =
                 region.simple_member_context(source, offset)?;
@@ -567,6 +581,18 @@ impl BoundedCompletionRegion {
             [workspace_index, game_data_index].into_iter().flatten(),
         )?;
         Some((receiver, receiver_span, owner, prefix, prefix_span))
+    }
+
+    fn has_completed_call_receiver(&self, source: &str, offset: usize) -> bool {
+        let prefix_span = lexical_completion_prefix_span(&self.tokens, offset);
+        let tokens = self.significant_before(prefix_span.start);
+        tokens
+            .last()
+            .is_some_and(|token| token.kind == TokenKind::Dot)
+            && tokens
+                .get(tokens.len().saturating_sub(2))
+                .is_some_and(|token| token.kind == TokenKind::RightParen)
+            && source.get(prefix_span.start..prefix_span.end).is_some()
     }
 
     fn bare_argument_context(
@@ -3736,6 +3762,56 @@ class PlayerController
     }
 
     #[test]
+    fn current_receiver_query_resolves_the_real_get_game_definition_shape() {
+        let game_data = file_index_for_source(
+            r#"class ChimeraGame
+{
+	proto external PlayerController GetPlayerController();
+}
+
+class ArmaReforgerScripted : ChimeraGame {}
+
+ArmaReforgerScripted g_ARGame;
+
+ArmaReforgerScripted GetGame()
+{
+	return g_ARGame;
+}
+
+class PlayerController
+{
+	proto external IEntity GetControlledEntity();
+}
+"#,
+        )
+        .index;
+        let source = r#"class Example
+{
+	void Run()
+	{
+		GetGame().GetPlayer
+	}
+}
+"#;
+        let offset = source.find("GetPlayer\n").unwrap() + "GetPlayer".len();
+
+        let report = completion_report_for_current_receiver_at_offset_with_external_indexes(
+            source,
+            offset,
+            None,
+            Some(&game_data),
+        )
+        .expect("a later externally indexed overload can prove the member chain");
+
+        assert_eq!(report.owner_type.as_deref(), Some("ArmaReforgerScripted"));
+        assert!(report
+            .list
+            .items
+            .iter()
+            .any(|item| item.label == "GetPlayerController"));
+    }
+
+    #[test]
     fn current_receiver_query_recovers_external_root_calls_across_multiline_lexical_context() {
         let external = file_index_for_source(
             r#"class ChimeraGame
@@ -3785,17 +3861,20 @@ ArmaReforgerScripted GetGame();
     }
 
     #[test]
-    fn current_receiver_query_declines_chained_malformed_and_static_receivers() {
+    fn current_receiver_query_labels_unresolved_completed_call_receivers() {
         let chained = "class Example { void Run(Widget value) { value.GetWidget().Get } }";
         let chained_offset = chained.find(".Get }").unwrap() + 4;
-        assert!(
+        let chained_report =
             completion_report_for_current_receiver_at_offset_with_external_indexes(
                 chained,
                 chained_offset,
                 None,
                 None,
             )
-            .is_none()
+            .expect("a completed call receiver should retain its bounded fallback reason");
+        assert_eq!(
+            chained_report.recovery_reason.as_deref(),
+            Some("current-revision-external-call-chain-unresolved")
         );
 
         let static_receiver = "class Example { void Run() { Widget.Get } }";

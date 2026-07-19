@@ -1813,6 +1813,7 @@ impl<W: Write> LspServer<W> {
                     let mut context_ms = 0u128;
                     let mut lookup_ms = 0u128;
                     let mut render_ms = 0u128;
+                    let mut cached_analysis = false;
                     let mut external_index_status = self.external_index.status_summary().status;
                     let mut external_index_layers = "none";
                     let result = params
@@ -1825,6 +1826,7 @@ impl<W: Write> LspServer<W> {
                                 external_index_status = indexes.status;
                                 external_index_layers = indexes.available_layers();
                                 let report = if document.analysis_ready() {
+                                    cached_analysis = true;
                                     completion_report_for_cached_analysis_with_external_indexes(
                                         &document.text,
                                         document.analysis(),
@@ -1911,7 +1913,7 @@ impl<W: Write> LspServer<W> {
                         log_uri,
                         bytes,
                         revision,
-                        query_quality.permits_local_facts(),
+                        cached_analysis,
                         query_quality,
                         recovery_reason,
                         completion_context,

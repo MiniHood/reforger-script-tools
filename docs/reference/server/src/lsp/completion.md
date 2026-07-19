@@ -55,6 +55,15 @@ top-level/lexical fallback tagged `member-unavailable-top-level-fallback` or
 or argument facts from an older revision. This is not an `isIncomplete` signal
 or a request for the client to retrigger completion.
 
+The normal completion log's `cached_analysis` field records whether the
+matching-revision full analysis was actually used; it is not inferred from
+query quality. When a completed call receiver is syntactically current but its
+externally indexed zero-argument chain cannot be proved, the fallback records
+`current-revision-external-call-chain-unresolved`. This keeps the response
+safe while distinguishing external-chain lookup from ordinary unavailable
+local receiver facts. It adds only bounded lexer/index work already required
+by the pending query and no source content to runtime logs.
+
 If the fixed window begins or ends inside an otherwise valid multi-line comment
 or string, a current-snapshot lexical-state recovery is allowed only for files
 up to 128KiB. It lexes that bounded snapshot once, then still restricts
