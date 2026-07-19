@@ -132,6 +132,7 @@ pub fn run_stdio(options: LspServerOptions) -> Result<(), String> {
         options,
         Some(rich_scheduler),
         Some(analysis_scheduler),
+        Some(internal_sender),
     );
     thread::spawn(move || {
         let stdin = io::stdin();
@@ -223,6 +224,7 @@ struct LspServer<W: Write> {
     external_index: ExternalIndexHandle,
     rich_scheduler: Option<RichSemanticTokensScheduler>,
     analysis_scheduler: Option<OpenDocumentAnalysisScheduler>,
+    internal_sender: Option<mpsc::Sender<ServerEvent>>,
     deferred_document_requests: BTreeMap<String, Vec<DeferredDocumentRequest>>,
     next_server_request_id: u64,
     semantic_tokens_refresh_in_flight: Option<String>,
@@ -265,6 +267,15 @@ enum ServerEvent {
         uri: String,
         revision: u64,
         reason: String,
+        elapsed_ms: u128,
+    },
+    DebugRequestReady {
+        id: Value,
+        method: &'static str,
+        uri: String,
+        revision: u64,
+        details: String,
+        result: Value,
         elapsed_ms: u128,
     },
 }
@@ -649,7 +660,7 @@ struct TextDocumentIdentifier {
 
 impl<W: Write> LspServer<W> {
     fn new(writer: W, options: LspServerOptions) -> Self {
-        Self::new_with_runtime_senders(writer, options, None, None)
+        Self::new_with_runtime_senders(writer, options, None, None, None)
     }
 
     fn new_with_runtime_senders(
@@ -657,6 +668,7 @@ impl<W: Write> LspServer<W> {
         options: LspServerOptions,
         rich_scheduler: Option<RichSemanticTokensScheduler>,
         analysis_scheduler: Option<OpenDocumentAnalysisScheduler>,
+        internal_sender: Option<mpsc::Sender<ServerEvent>>,
     ) -> Self {
         let logger = LspLogger::new(options.log_path.clone());
         let external_index = start_external_index(&options, logger.clone());
@@ -668,6 +680,7 @@ impl<W: Write> LspServer<W> {
             external_index,
             rich_scheduler,
             analysis_scheduler,
+            internal_sender,
             deferred_document_requests: BTreeMap::new(),
             next_server_request_id: 1,
             semantic_tokens_refresh_in_flight: None,
@@ -1653,6 +1666,43 @@ impl<W: Write> LspServer<W> {
                 if let Some(id) = message.id {
                     let start = Instant::now();
                     let params = parse_params::<HoverParams>(message.params, method)?;
+                    if let Some(ref params) = params {
+                        if let Some(document) = self.documents.get(&params.text_document.uri) {
+                            if let Some(sender) = self.internal_sender.clone() {
+                                let uri = params.text_document.uri.clone();
+                                let position = params.position;
+                                let revision = document.revision;
+                                let source = document.text.clone();
+                                let analysis = document.analysis.clone();
+                                let external_status = self.external_index.status_summary();
+                                let indexes = self.external_index.snapshot();
+                                thread::spawn(move || {
+                                    let report = debug_hover_report_for_cached_analysis_with_external_indexes(
+                                        &source,
+                                        &analysis,
+                                        &uri,
+                                        position,
+                                        indexes.workspace.as_deref(),
+                                        indexes.game_data.as_deref(),
+                                        Some(&external_status),
+                                    );
+                                    let hit = report.contains("Selected Symbol: yes");
+                                    let label = selected_label_from_debug_report(&report)
+                                        .unwrap_or_else(|| "<none>".to_string());
+                                    let _ = sender.send(ServerEvent::DebugRequestReady {
+                                        id,
+                                        method: DEBUG_HOVER_METHOD,
+                                        uri,
+                                        revision,
+                                        details: format!("cached_analysis=true hit={} label={}", hit, label),
+                                        result: Value::String(report),
+                                        elapsed_ms: start.elapsed().as_millis(),
+                                    });
+                                });
+                                return Ok(false);
+                            }
+                        }
+                    }
                     let mut log_uri = "<missing>".to_string();
                     let mut bytes = 0usize;
                     let mut revision = 0u64;
@@ -1705,6 +1755,65 @@ impl<W: Write> LspServer<W> {
                 if let Some(id) = message.id {
                     let start = Instant::now();
                     let params = parse_params::<HoverParams>(message.params, method)?;
+                    if let Some(ref params) = params {
+                        if let Some(document) = self.documents.get(&params.text_document.uri) {
+                            if let Some(sender) = self.internal_sender.clone() {
+                                let uri = params.text_document.uri.clone();
+                                let position = params.position;
+                                let revision = document.revision;
+                                let source = document.text.clone();
+                                let analysis = document.analysis.clone();
+                                let indexes = self.external_index.snapshot();
+                                thread::spawn(move || {
+                                    let report = completion_report_for_cached_analysis_with_external_indexes(
+                                        &source,
+                                        &analysis,
+                                        position,
+                                        indexes.workspace.as_deref(),
+                                        indexes.game_data.as_deref(),
+                                    );
+                                    let signature_report = signature_help_report_for_cached_analysis_with_external_indexes(
+                                        &source,
+                                        &analysis,
+                                        position,
+                                        indexes.workspace.as_deref(),
+                                        indexes.game_data.as_deref(),
+                                    );
+                                    let completion_context = report.completion_context.clone();
+                                    let candidate_count = report.candidate_count;
+                                    let signature_context = signature_report.context.clone()
+                                        .unwrap_or_else(|| "none".to_string());
+                                    let signature_candidate_count = signature_report.candidate_count;
+                                    let mut markdown = completion_debug_markdown(
+                                        &report,
+                                        &uri,
+                                        source.len(),
+                                        revision,
+                                        indexes.status,
+                                    );
+                                    markdown.push_str(&signature_help_debug_markdown(&signature_report));
+                                    let _ = sender.send(ServerEvent::DebugRequestReady {
+                                        id,
+                                        method: DEBUG_COMPLETION_METHOD,
+                                        uri,
+                                        revision,
+                                        details: format!(
+                                            "cached_analysis=true context={} candidates={} signature_context={} signature_candidates={} external_index_status={} external_index_layers={}",
+                                            completion_context,
+                                            candidate_count,
+                                            signature_context,
+                                            signature_candidate_count,
+                                            indexes.status,
+                                            indexes.available_layers(),
+                                        ),
+                                        result: Value::String(markdown),
+                                        elapsed_ms: start.elapsed().as_millis(),
+                                    });
+                                });
+                                return Ok(false);
+                            }
+                        }
+                    }
                     let mut log_uri = "<missing>".to_string();
                     let mut bytes = 0usize;
                     let mut revision = 0u64;
@@ -1899,6 +2008,21 @@ impl<W: Write> LspServer<W> {
                     uri, revision, reason, elapsed_ms
                 ));
                 Ok(())
+            }
+            ServerEvent::DebugRequestReady {
+                id,
+                method,
+                uri,
+                revision,
+                details,
+                result,
+                elapsed_ms,
+            } => {
+                self.log(&format!(
+                    "request {} uri={} revision={} {} async=true elapsed_ms={}",
+                    method, uri, revision, details, elapsed_ms
+                ));
+                self.respond(id, result)
             }
         }
     }
@@ -7369,6 +7493,7 @@ class Example
             LspServerOptions::default(),
             None,
             Some(scheduler),
+            None,
         );
         let uri = "file:///Scripts/PendingOutline.c";
 
@@ -7434,6 +7559,65 @@ class Example
     }
 
     #[test]
+    fn runtime_debug_hover_runs_off_the_lsp_message_loop() {
+        let (sender, receiver) = mpsc::channel();
+        let mut server = LspServer::new_with_runtime_senders(
+            Vec::new(),
+            LspServerOptions::default(),
+            None,
+            None,
+            Some(sender),
+        );
+        let uri = "file:///Scripts/AsyncDebug.c";
+        server
+            .handle_message(
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "textDocument/didOpen",
+                    "params": { "textDocument": {
+                        "uri": uri,
+                        "languageId": "enforce",
+                        "version": 1,
+                        "text": "class AsyncDebug { void Run() {} }"
+                    }}
+                }),
+                None,
+                0,
+                0,
+            )
+            .unwrap();
+        server
+            .handle_message(
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": 7,
+                    "method": "reforger/debugHover",
+                    "params": {
+                        "textDocument": { "uri": uri },
+                        "position": { "line": 0, "character": 24 }
+                    }
+                }),
+                None,
+                0,
+                0,
+            )
+            .unwrap();
+        assert!(
+            !String::from_utf8_lossy(&server.writer).contains("\"id\":7"),
+            "the main LSP loop must not wait for a debug capture"
+        );
+
+        server
+            .handle_internal_event(
+                receiver
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("debug result"),
+            )
+            .unwrap();
+        assert!(String::from_utf8_lossy(&server.writer).contains("\"id\":7"));
+    }
+
+    #[test]
     fn pending_request_receives_content_modified_when_a_new_edit_supersedes_it() {
         let (sender, _receiver) = mpsc::channel();
         let scheduler = OpenDocumentAnalysisScheduler::start(sender);
@@ -7442,6 +7626,7 @@ class Example
             LspServerOptions::default(),
             None,
             Some(scheduler),
+            None,
         );
         let uri = "file:///Scripts/SupersededRequest.c";
 

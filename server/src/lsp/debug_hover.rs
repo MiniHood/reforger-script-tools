@@ -118,7 +118,10 @@ fn debug_hover_report_for_cached_analysis_with_external_layers(
         layered_external_indexes(workspace_index, game_data_index),
     );
     let resolver_resolution = offset.and_then(|offset| resolver.resolve_at_offset(offset));
-    let hover_resolution = offset.and_then(|offset| resolver.resolve_hover_at_offset(offset));
+    let hover_resolution = resolver_resolution
+        .clone()
+        .map(HoverResolution::Identifier)
+        .or_else(|| offset.and_then(|offset| resolver.resolve_hover_at_offset(offset)));
     let candidates = offset
         .map(|offset| resolver.syntax_span_candidates_at_offset(offset))
         .unwrap_or_default();
