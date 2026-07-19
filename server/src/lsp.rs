@@ -1,4 +1,7 @@
-use crate::analysis_runtime::{AdmissionLimits, AnalysisRuntime, PositionIndex, UpsertOutcome};
+use crate::analysis_runtime::{
+    AdmissionDisposition, AdmissionLimits, AnalysisRuntime, AnalysisTask, PositionIndex, TaskClass,
+    TaskIdentity, UpsertOutcome,
+};
 use crate::index::{GlobalSymbolId, SymbolIndex};
 use crate::index_query::IndexQuery;
 use crate::lexer::TextSpan;
@@ -260,15 +263,13 @@ enum ServerEvent {
         elapsed_ms: u128,
     },
     DocumentAnalysisReady {
-        uri: String,
-        revision: u64,
+        task: TaskIdentity,
         analysis: FileIndexAnalysis,
         timings: FileIndexAnalysisTimings,
         elapsed_ms: u128,
     },
     DocumentAnalysisSkipped {
-        uri: String,
-        revision: u64,
+        task: TaskIdentity,
         reason: String,
         elapsed_ms: u128,
     },
@@ -290,10 +291,7 @@ struct DeferredDocumentRequest {
 }
 
 struct OpenDocumentAnalysisJob {
-    uri: String,
-    revision: u64,
-    source: String,
-    cancel: Arc<AtomicBool>,
+    task: AnalysisTask,
     scheduled_at: Instant,
 }
 
@@ -317,20 +315,21 @@ impl OpenDocumentAnalysisScheduler {
     fn schedule(&self, job: OpenDocumentAnalysisJob) {
         let (lock, wake) = &*self.state;
         let mut pending = lock.lock().unwrap();
-        if !pending.contains_key(&job.uri) && pending.len() >= MAX_PENDING_DOCUMENT_ANALYSIS_JOBS {
+        if !pending.contains_key(job.task.identity().uri())
+            && pending.len() >= MAX_PENDING_DOCUMENT_ANALYSIS_JOBS
+        {
             let evicted_uri = earliest_due_document_analysis_uri(&pending)
                 .expect("non-empty full scheduler has an eviction candidate");
             let evicted = pending.remove(&evicted_uri).expect("candidate is retained");
-            evicted.cancel.store(true, Ordering::Relaxed);
+            evicted.task.cancel();
             let _ = self.sender.send(ServerEvent::DocumentAnalysisSkipped {
-                uri: evicted.uri,
-                revision: evicted.revision,
+                task: evicted.task.identity().clone(),
                 reason: "scheduler-capacity-evicted".to_string(),
                 elapsed_ms: evicted.scheduled_at.elapsed().as_millis(),
             });
         }
-        if let Some(previous) = pending.insert(job.uri.clone(), job) {
-            previous.cancel.store(true, Ordering::Relaxed);
+        if let Some(previous) = pending.insert(job.task.identity().uri().to_string(), job) {
+            previous.task.cancel();
         }
         wake.notify_one();
     }
@@ -355,21 +354,20 @@ impl OpenDocumentAnalysisScheduler {
                 continue;
             };
             drop(pending);
-            if job.cancel.load(Ordering::Relaxed) {
+            if job.task.is_cancelled() {
                 continue;
             }
-            let (analysis, timings) = file_index_for_source_with_timings(&job.source);
-            let event = if job.cancel.load(Ordering::Relaxed) {
+            let (analysis, timings) =
+                file_index_for_source_with_timings(job.task.snapshot().text());
+            let event = if job.task.is_cancelled() {
                 ServerEvent::DocumentAnalysisSkipped {
-                    uri: job.uri,
-                    revision: job.revision,
+                    task: job.task.identity().clone(),
                     reason: "superseded-during-analysis".to_string(),
                     elapsed_ms: job.scheduled_at.elapsed().as_millis(),
                 }
             } else {
                 ServerEvent::DocumentAnalysisReady {
-                    uri: job.uri,
-                    revision: job.revision,
+                    task: job.task.identity().clone(),
                     analysis,
                     timings,
                     elapsed_ms: job.scheduled_at.elapsed().as_millis(),
@@ -948,7 +946,6 @@ impl<W: Write> LspServer<W> {
                     let bytes = text.len();
                     if let Some(mut previous) = self.documents.remove(&uri) {
                         previous.semantic_tokens.cancel_pending();
-                        previous.cancel_pending_analysis();
                         self.runtime.close(&uri, previous.snapshot.revision());
                     }
                     let UpsertOutcome::Accepted = self.runtime.upsert(uri.clone(), version, text)
@@ -966,21 +963,33 @@ impl<W: Write> LspServer<W> {
                     let revision = snapshot.revision();
                     if let Some(scheduler) = self.analysis_scheduler.clone() {
                         let mut document = OpenDocument::pending(snapshot);
-                        let analysis_cancel = document.mark_analysis_pending();
+                        document.mark_analysis_pending();
                         self.documents.insert(uri.clone(), document);
-                        scheduler.schedule(OpenDocumentAnalysisJob {
-                            uri: uri.clone(),
-                            revision,
-                            source: self
-                                .documents
-                                .get(&uri)
-                                .expect("pending document is immediately readable")
-                                .snapshot
-                                .text()
-                                .to_string(),
-                            cancel: analysis_cancel,
-                            scheduled_at: Instant::now(),
-                        });
+                        let request_id = self.next_server_request_id;
+                        self.next_server_request_id += 1;
+                        match self.runtime.admit(
+                            TaskClass::Semantic,
+                            self.runtime.latest(&uri).expect("accepted snapshot"),
+                            request_id,
+                            Instant::now() + Duration::from_secs(30),
+                        ) {
+                            AdmissionDisposition::Enqueued { .. } => {
+                                let task = self
+                                    .runtime
+                                    .take_next()
+                                    .expect("admitted semantic task is runnable");
+                                scheduler.schedule(OpenDocumentAnalysisJob {
+                                    task,
+                                    scheduled_at: Instant::now(),
+                                });
+                            }
+                            AdmissionDisposition::DroppedOverload { .. } => {
+                                self.documents
+                                    .get_mut(&uri)
+                                    .expect("pending document exists")
+                                    .reject_pending_analysis();
+                            }
+                        }
                         self.write_message(publish_diagnostics_message(&uri, version, "", &[]))?;
                         self.log(&format!(
                             "notification didOpen uri={} bytes={} version={} revision={} cached_analysis=false analysis_state=pending queue_ms={} analysis_elapsed_ms={}",
@@ -1070,23 +1079,41 @@ impl<W: Write> LspServer<W> {
                             .runtime
                             .latest(&uri)
                             .expect("accepted document snapshot is immediately readable");
-                        let document = self
-                            .documents
-                            .get_mut(&uri)
-                            .expect("open document exists after version check");
-                        document.replace(snapshot);
-                        let revision = document.snapshot.revision();
-                        let source = document.snapshot.text().to_string();
-                        let analysis_cancel = document.mark_analysis_pending();
+                        let revision = {
+                            let document = self
+                                .documents
+                                .get_mut(&uri)
+                                .expect("open document exists after version check");
+                            document.replace(snapshot);
+                            document.mark_analysis_pending();
+                            document.snapshot.revision()
+                        };
                         if let Some(scheduler) = self.analysis_scheduler.clone() {
                             self.discard_deferred_document_requests(&uri, revision)?;
-                            scheduler.schedule(OpenDocumentAnalysisJob {
-                                uri: uri.clone(),
-                                revision,
-                                source,
-                                cancel: analysis_cancel,
-                                scheduled_at: Instant::now(),
-                            });
+                            let request_id = self.next_server_request_id;
+                            self.next_server_request_id += 1;
+                            match self.runtime.admit(
+                                TaskClass::Semantic,
+                                self.runtime.latest(&uri).expect("accepted snapshot"),
+                                request_id,
+                                Instant::now() + Duration::from_secs(30),
+                            ) {
+                                AdmissionDisposition::Enqueued { .. } => {
+                                    let task = self
+                                        .runtime
+                                        .take_next()
+                                        .expect("admitted semantic task is runnable");
+                                    scheduler.schedule(OpenDocumentAnalysisJob {
+                                        task,
+                                        scheduled_at: Instant::now(),
+                                    });
+                                }
+                                AdmissionDisposition::DroppedOverload { .. } => self
+                                    .documents
+                                    .get_mut(&uri)
+                                    .expect("pending document exists")
+                                    .reject_pending_analysis(),
+                            }
                             self.write_message(publish_diagnostics_message(
                                 &uri,
                                 version,
@@ -1098,7 +1125,9 @@ impl<W: Write> LspServer<W> {
                                 uri, bytes, version, revision, queue_ms, coalesced_changes, superseded_changes, start.elapsed().as_millis()
                             ));
                         } else {
-                            let (analysis, timings) = file_index_for_source_with_timings(&source);
+                            let (analysis, timings) = file_index_for_source_with_timings(
+                                self.runtime.latest(&uri).expect("accepted snapshot").text(),
+                            );
                             self.log(&format!(
                                 "notification didChange uri={} bytes={} version={} revision={} cached_analysis=true document_symbols_cached=false symbols=pending parse_diagnostics={} analysis_parse_ms={} analysis_catalog_ms={} analysis_index_ms={} analysis_scope_ms={} analysis_build_ms={} queue_ms={} coalesced_changes={} superseded_changes={} analysis_elapsed_ms={}",
                                 uri,
@@ -1137,7 +1166,6 @@ impl<W: Write> LspServer<W> {
                     ));
                     if let Some(mut document) = self.documents.remove(&params.text_document.uri) {
                         document.semantic_tokens.cancel_pending();
-                        document.cancel_pending_analysis();
                         self.runtime
                             .close(&params.text_document.uri, document.snapshot.revision());
                     }
@@ -2095,29 +2123,47 @@ impl<W: Write> LspServer<W> {
                 Ok(())
             }
             ServerEvent::DocumentAnalysisReady {
-                uri,
-                revision,
+                task,
                 analysis,
                 timings,
                 elapsed_ms,
-            } => self.install_document_analysis(&uri, revision, analysis, timings, elapsed_ms),
+            } => {
+                if self.runtime.complete(&task) {
+                    self.install_document_analysis(
+                        task.uri(),
+                        task.revision(),
+                        analysis,
+                        timings,
+                        elapsed_ms,
+                    )
+                } else {
+                    self.log(&format!(
+                        "documentAnalysis discarded uri={} revision={} reason=runtime-stale elapsed_ms={}",
+                        task.uri(), task.revision(), elapsed_ms
+                    ));
+                    Ok(())
+                }
+            }
             ServerEvent::DocumentAnalysisSkipped {
-                uri,
-                revision,
+                task,
                 reason,
                 elapsed_ms,
             } => {
-                if reason == "scheduler-capacity-evicted" {
-                    if let Some(document) = self.documents.get_mut(&uri) {
-                        if document.revision == revision && !document.analysis_ready() {
+                let current = self.runtime.complete(&task);
+                if reason == "scheduler-capacity-evicted" && current {
+                    if let Some(document) = self.documents.get_mut(task.uri()) {
+                        if document.revision == task.revision() && !document.analysis_ready() {
                             document.reject_pending_analysis();
-                            self.discard_deferred_document_requests(&uri, revision)?;
+                            self.discard_deferred_document_requests(task.uri(), task.revision())?;
                         }
                     }
                 }
                 self.log(&format!(
                     "documentAnalysis skipped uri={} revision={} reason={} elapsed_ms={}",
-                    uri, revision, reason, elapsed_ms
+                    task.uri(),
+                    task.revision(),
+                    reason,
+                    elapsed_ms
                 ));
                 Ok(())
             }
@@ -7544,29 +7590,49 @@ class Example
     fn document_analysis_scheduler_keeps_only_latest_pending_revision() {
         let (sender, receiver) = mpsc::channel();
         let scheduler = OpenDocumentAnalysisScheduler::start(sender);
+        let mut runtime = AnalysisRuntime::new(AdmissionLimits::new(4, 1024));
+        assert_eq!(
+            runtime.upsert("file:///Scripts/Pending.c", 2, "class Old {}"),
+            UpsertOutcome::Accepted
+        );
+        let old = match runtime.admit(
+            TaskClass::Semantic,
+            runtime.latest("file:///Scripts/Pending.c").unwrap(),
+            1,
+            Instant::now(),
+        ) {
+            AdmissionDisposition::Enqueued { .. } => runtime.take_next().unwrap(),
+            _ => unreachable!(),
+        };
+        assert_eq!(
+            runtime.upsert("file:///Scripts/Pending.c", 3, "class Current {}"),
+            UpsertOutcome::Accepted
+        );
+        let current = match runtime.admit(
+            TaskClass::Semantic,
+            runtime.latest("file:///Scripts/Pending.c").unwrap(),
+            2,
+            Instant::now(),
+        ) {
+            AdmissionDisposition::Enqueued { .. } => runtime.take_next().unwrap(),
+            _ => unreachable!(),
+        };
         scheduler.schedule(OpenDocumentAnalysisJob {
-            uri: "file:///Scripts/Pending.c".to_string(),
-            revision: 2,
-            source: "class Old {}".to_string(),
-            cancel: Arc::new(AtomicBool::new(false)),
+            task: old,
             scheduled_at: Instant::now(),
         });
         scheduler.schedule(OpenDocumentAnalysisJob {
-            uri: "file:///Scripts/Pending.c".to_string(),
-            revision: 3,
-            source: "class Current {}".to_string(),
-            cancel: Arc::new(AtomicBool::new(false)),
+            task: current,
             scheduled_at: Instant::now(),
         });
 
-        let event = receiver
-            .recv_timeout(Duration::from_secs(2))
+        let event = (0..2)
+            .filter_map(|_| receiver.recv_timeout(Duration::from_secs(2)).ok())
+            .find(|event| matches!(event, ServerEvent::DocumentAnalysisReady { .. }))
             .expect("latest analysis result");
-
-        assert!(matches!(
-            event,
-            ServerEvent::DocumentAnalysisReady { revision: 3, .. }
-        ));
+        assert!(
+            matches!(event, ServerEvent::DocumentAnalysisReady { task, .. } if task.revision() == 2)
+        );
     }
 
     #[test]
@@ -7574,11 +7640,23 @@ class Example
         let (sender, receiver) = mpsc::channel();
         let scheduler = OpenDocumentAnalysisScheduler::start(sender);
         for index in 0..=MAX_PENDING_DOCUMENT_ANALYSIS_JOBS {
+            let mut runtime = AnalysisRuntime::new(AdmissionLimits::new(2, 1024));
+            let uri = format!("file:///Scripts/Pending{index}.c");
+            assert_eq!(
+                runtime.upsert(uri.clone(), 1, "class Pending {}"),
+                UpsertOutcome::Accepted
+            );
+            let task = match runtime.admit(
+                TaskClass::Semantic,
+                runtime.latest(&uri).unwrap(),
+                index as u64,
+                Instant::now(),
+            ) {
+                AdmissionDisposition::Enqueued { .. } => runtime.take_next().unwrap(),
+                _ => unreachable!(),
+            };
             scheduler.schedule(OpenDocumentAnalysisJob {
-                uri: format!("file:///Scripts/Pending{index}.c"),
-                revision: 1,
-                source: "class Pending {}".to_string(),
-                cancel: Arc::new(AtomicBool::new(false)),
+                task,
                 scheduled_at: Instant::now(),
             });
         }
@@ -7751,7 +7829,15 @@ class Example
                 0,
             )
             .unwrap();
-        let revision = server.documents[uri].revision;
+        let task = match server.runtime.admit(
+            TaskClass::Semantic,
+            server.runtime.latest(uri).expect("accepted snapshot"),
+            1,
+            Instant::now(),
+        ) {
+            AdmissionDisposition::Enqueued { .. } => server.runtime.take_next().unwrap(),
+            _ => unreachable!(),
+        };
         server
             .documents
             .get_mut(uri)
@@ -7759,8 +7845,7 @@ class Example
             .replace(server.runtime.latest(uri).expect("accepted snapshot"));
         server
             .handle_internal_event(ServerEvent::DocumentAnalysisSkipped {
-                uri: uri.to_string(),
-                revision,
+                task: task.identity().clone(),
                 reason: "scheduler-capacity-evicted".to_string(),
                 elapsed_ms: 0,
             })

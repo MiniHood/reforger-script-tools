@@ -14,8 +14,9 @@ messages into runtime operations and publishes only matching results.
 
 ## Current Behavior
 
-Each accepted edit creates one immutable `DocumentSnapshot`. `TaskAdmission`
-retains at most one task per URI and lane; replacement cancels the previous
+Each accepted edit creates one immutable `DocumentSnapshot` and cancels every
+retained task for that URI. `TaskAdmission` retains at most one task per URI
+and lane; replacement cancels the previous
 task, and publication succeeds only for its exact identity. `QueryQuality`
 distinguishes exact/recovery local facts from deterministic unavailable
 fallbacks, which may not use stale local state.

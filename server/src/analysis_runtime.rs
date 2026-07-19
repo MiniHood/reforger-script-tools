@@ -198,7 +198,15 @@ impl AnalysisRuntime {
         version: i32,
         text: impl Into<Arc<str>>,
     ) -> UpsertOutcome {
-        self.documents.upsert(uri, version, text)
+        let uri = uri.into();
+        let outcome = self.documents.upsert(uri.clone(), version, text);
+        // A newly accepted revision makes every retained task for its older
+        // snapshot ineligible to publish.  This is deliberately runtime
+        // ownership rather than a protocol-layer cancellation convention.
+        if outcome == UpsertOutcome::Accepted {
+            self.admission.cancel_uri(&uri);
+        }
+        outcome
     }
 
     pub fn latest(&self, uri: &str) -> Option<DocumentSnapshot> {
@@ -360,6 +368,13 @@ impl AnalysisTask {
 
     pub fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::Acquire)
+    }
+
+    /// Used only by a bounded executor when it evicts queued work.  The
+    /// runtime still owns publication: the executor must report the identity
+    /// back and [`AnalysisRuntime::complete`] decides whether it was current.
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
     }
 }
 
@@ -602,6 +617,31 @@ mod tests {
         assert!(runtime.close("file:///a.c", snapshot.revision()).is_some());
         assert!(task.is_cancelled());
         assert!(!runtime.complete(&identity));
+    }
+
+    #[test]
+    fn accepting_a_new_revision_cancels_the_previous_runtime_task() {
+        let mut runtime = AnalysisRuntime::new(AdmissionLimits::new(2, 64));
+        assert_eq!(
+            runtime.upsert("file:///a.c", 1, "class A {}"),
+            UpsertOutcome::Accepted
+        );
+        let old = match runtime.admit(
+            TaskClass::Semantic,
+            runtime.latest("file:///a.c").unwrap(),
+            1,
+            Instant::now(),
+        ) {
+            AdmissionDisposition::Enqueued { .. } => runtime.take_next().unwrap(),
+            other => panic!("unexpected admission disposition: {other:?}"),
+        };
+
+        assert_eq!(
+            runtime.upsert("file:///a.c", 2, "class B {}"),
+            UpsertOutcome::Accepted
+        );
+        assert!(old.is_cancelled());
+        assert!(!runtime.complete(old.identity()));
     }
 
     #[test]

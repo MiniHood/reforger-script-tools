@@ -19,10 +19,11 @@ features, or own document admission.
 A document cache is created from an already-accepted runtime snapshot and
 replaced only after `DocumentStore` accepts a strictly newer `didChange`
 version. In the production runtime, both an initial open and a replacement make
-the snapshot authoritative first and mark full analysis pending; a latest-wins,
-fixed-capacity worker later installs its `FileIndexAnalysis` only if it still
-matches that revision. This keeps a large initial open from blocking the LSP
-message loop. A pending document holds no placeholder parser/index/scope result,
+the snapshot authoritative first and mark full analysis pending. The LSP worker
+only executes an `AnalysisRuntime`-admitted task and reports its identity back
+before installation, so runtime cancellation is the sole authority for stale
+publication. This keeps a large initial open from blocking the LSP message loop.
+A pending document holds no placeholder parser/index/scope result,
 so a feature cannot accidentally treat an empty or old analysis as current.
 Tests without a worker may construct an immediately-ready cache
 to exercise deterministic feature projection. The analysis contains lexer
@@ -54,7 +55,8 @@ If bounded semantic admission rejects a revision, deferred semantic requests
 receive the standard content-modified response rather than remaining queued
 indefinitely. A later accepted revision is a fresh admission attempt; lexical
 tokens and lexical/top-level completion remain available for the rejected
-current revision.
+current revision. `OpenDocument` does not own a second document-analysis
+cancellation flag.
 
 ## Dependencies and Boundaries
 

@@ -28,7 +28,6 @@ pub(crate) struct OpenDocument {
     pub(crate) revision: u64,
     analysis: Option<FileIndexAnalysis>,
     analysis_timings: Option<FileIndexAnalysisTimings>,
-    analysis_cancel: Option<Arc<AtomicBool>>,
     analysis_rejected: bool,
     document_symbols: Vec<LspDocumentSymbol>,
     document_symbols_ready: bool,
@@ -48,7 +47,6 @@ impl OpenDocument {
             revision,
             analysis: Some(analysis),
             analysis_timings: Some(analysis_timings),
-            analysis_cancel: None,
             analysis_rejected: false,
             document_symbols: Vec::new(),
             document_symbols_ready: false,
@@ -71,7 +69,6 @@ impl OpenDocument {
             revision,
             analysis: None,
             analysis_timings: None,
-            analysis_cancel: None,
             analysis_rejected: false,
             document_symbols: Vec::new(),
             document_symbols_ready: false,
@@ -80,9 +77,6 @@ impl OpenDocument {
     }
 
     pub(crate) fn replace(&mut self, snapshot: DocumentSnapshot) {
-        if let Some(cancel) = self.analysis_cancel.take() {
-            cancel.store(true, Ordering::Relaxed);
-        }
         self.text = snapshot.text_arc();
         self.version = snapshot.version();
         self.revision = snapshot.revision();
@@ -111,24 +105,14 @@ impl OpenDocument {
             .expect("ready analysis timings are required by this feature path")
     }
 
-    pub(crate) fn mark_analysis_pending(&mut self) -> Arc<AtomicBool> {
+    pub(crate) fn mark_analysis_pending(&mut self) {
         self.analysis_rejected = false;
-        let cancel = Arc::new(AtomicBool::new(false));
-        self.analysis_cancel = Some(cancel.clone());
-        cancel
-    }
-
-    pub(crate) fn cancel_pending_analysis(&mut self) {
-        if let Some(cancel) = self.analysis_cancel.take() {
-            cancel.store(true, Ordering::Relaxed);
-        }
     }
 
     /// Marks the matching revision unavailable after deterministic runtime
     /// overload. Request dispatch must respond rather than retaining an
     /// unbounded deferred request that can never be replayed.
     pub(crate) fn reject_pending_analysis(&mut self) {
-        self.cancel_pending_analysis();
         self.analysis_rejected = true;
     }
 
@@ -148,7 +132,6 @@ impl OpenDocument {
         self.analysis = Some(analysis);
         self.analysis_timings = Some(analysis_timings);
         self.analysis_rejected = false;
-        self.analysis_cancel = None;
         true
     }
 
