@@ -1,3 +1,5 @@
+use crate::analysis_runtime::DocumentSnapshot;
+use crate::ast::{AstSourceFile, ClassMember, Declaration, MethodDecl};
 use crate::index::SymbolIndex;
 use crate::index_query::{
     EditorCompletionCandidate, EditorCompletionOrigin, EditorTopLevelCompletionMode, IndexQuery,
@@ -11,6 +13,7 @@ use crate::lsp::{
 };
 use crate::resolver::{CandidateSource, ReferenceCandidate, ReferenceResolver};
 use crate::symbol_display::documentation_display;
+use crate::syntax::Parse;
 use serde::Serialize;
 use std::time::{Duration, Instant};
 
@@ -185,6 +188,177 @@ pub(crate) fn signature_help_report_for_cached_analysis_with_external_indexes(
             total: total_start.elapsed(),
         },
     }
+}
+
+/// Returns the narrow signature-help projection that is safe before the
+/// current snapshot's semantic analysis is available.  It deliberately avoids
+/// resolution: only an unqualified call whose name has exactly one complete
+/// callable declaration in this current source snapshot can be shown.
+/// Receiver calls, constructors, attributes, malformed declarations, and
+/// ambiguous names require revision-matching semantic facts and return none.
+pub(crate) fn signature_help_report_for_pending_snapshot(
+    snapshot: &DocumentSnapshot,
+    parse: &Parse,
+    position: LspPosition,
+) -> LspSignatureHelpReport {
+    let total_start = Instant::now();
+    let parse_diagnostics = parse.diagnostics.len();
+    let Some(offset) =
+        snapshot
+            .positions()
+            .offset_for_position(crate::analysis_runtime::Position {
+                line: position.line,
+                character: position.character,
+            })
+    else {
+        return empty_signature_help_report(parse_diagnostics, total_start);
+    };
+    let source = snapshot.text();
+    let context_start = Instant::now();
+    let Some(context) = callable_argument_context_at_offset(source, &parse.root, offset) else {
+        let mut report = empty_signature_help_report(parse_diagnostics, total_start);
+        report.timings.context_detection = context_start.elapsed();
+        report.failure_reason = Some("not in callable argument list".to_string());
+        return report;
+    };
+    let context_elapsed = context_start.elapsed();
+    let CallableTarget::Call { callee_span } = &context.target else {
+        let mut report = empty_signature_help_report(parse_diagnostics, total_start);
+        report.timings.context_detection = context_elapsed;
+        report.context = Some(context_label(&context));
+        report.active_parameter = Some(context.argument_index);
+        report.failure_reason = Some("pending snapshot callable target unavailable".to_string());
+        return report;
+    };
+    let callee = &source[callee_span.start..callee_span.end];
+    if !is_simple_callable_name(callee) {
+        let mut report = empty_signature_help_report(parse_diagnostics, total_start);
+        report.timings.context_detection = context_elapsed;
+        report.context = Some(context_label(&context));
+        report.active_parameter = Some(context.argument_index);
+        report.failure_reason = Some("pending snapshot callable target unavailable".to_string());
+        return report;
+    }
+
+    let lookup_start = Instant::now();
+    let candidates = simple_callable_declarations(source, parse, callee);
+    let lookup_elapsed = lookup_start.elapsed();
+    let [candidate] = candidates.as_slice() else {
+        let mut report = empty_signature_help_report(parse_diagnostics, total_start);
+        report.timings.context_detection = context_elapsed;
+        report.timings.candidate_lookup = lookup_elapsed;
+        report.context = Some(context_label(&context));
+        report.active_parameter = Some(context.argument_index);
+        report.failure_reason = Some("pending snapshot callable target unavailable".to_string());
+        return report;
+    };
+
+    let render_start = Instant::now();
+    let Some(parts) = callable_signature_parts(&candidate.name, &candidate.signature) else {
+        let mut report = empty_signature_help_report(parse_diagnostics, total_start);
+        report.timings.context_detection = context_elapsed;
+        report.timings.candidate_lookup = lookup_elapsed;
+        report.timings.item_rendering = render_start.elapsed();
+        report.context = Some(context_label(&context));
+        report.active_parameter = Some(context.argument_index);
+        report.failure_reason = Some("pending snapshot callable signature unavailable".to_string());
+        return report;
+    };
+    let active_parameter = active_parameter_for_candidate(&context, &parts);
+    let signature = LspSignatureInformation {
+        label: candidate.signature.clone(),
+        documentation: None,
+        parameters: parts
+            .parameters_info
+            .iter()
+            .map(|parameter| LspParameterInformation {
+                label: parameter.raw.clone(),
+                documentation: None,
+            })
+            .collect(),
+        active_parameter: active_parameter.map(|parameter| parameter as u32),
+    };
+    let render_elapsed = render_start.elapsed();
+    LspSignatureHelpReport {
+        help: Some(LspSignatureHelp {
+            signatures: vec![signature],
+            active_signature: Some(0),
+            active_parameter: active_parameter.map(|parameter| parameter as u32),
+        }),
+        parse_diagnostics,
+        context: Some(context_label(&context)),
+        active_parameter,
+        candidate_count: 1,
+        selected_label: Some(candidate.name.clone()),
+        failure_reason: None,
+        timings: LspSignatureHelpTimings {
+            context_detection: context_elapsed,
+            candidate_lookup: lookup_elapsed,
+            item_rendering: render_elapsed,
+            total: total_start.elapsed(),
+        },
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SimpleCallableDeclaration {
+    name: String,
+    signature: String,
+}
+
+fn simple_callable_declarations(
+    source: &str,
+    parse: &Parse,
+    name: &str,
+) -> Vec<SimpleCallableDeclaration> {
+    let ast = AstSourceFile::new(source, parse);
+    ast.declaration_iter()
+        .flat_map(|declaration| match declaration {
+            Declaration::Function(method) => vec![method],
+            Declaration::Class(class) => class
+                .members()
+                .into_iter()
+                .filter_map(|member| match member {
+                    ClassMember::Method(method) => Some(method),
+                    ClassMember::Field(_) | ClassMember::Empty(_) => None,
+                })
+                .collect(),
+            Declaration::Enum(_) | Declaration::Typedef(_) | Declaration::Field(_) => Vec::new(),
+        })
+        .filter_map(simple_callable_declaration)
+        .filter(|candidate| candidate.name == name)
+        .collect()
+}
+
+fn simple_callable_declaration(method: MethodDecl<'_, '_>) -> Option<SimpleCallableDeclaration> {
+    if method.is_destructor() || !method.parameter_fragments().is_empty() {
+        return None;
+    }
+    let name = method.name()?.text().to_string();
+    let return_type = method.return_type_text()?.text().trim().to_string();
+    if return_type.is_empty() {
+        return None;
+    }
+    let parameters = method
+        .parameters()
+        .into_iter()
+        .map(|parameter| {
+            parameter
+                .text()
+                .map(|text| text.text().trim().to_string())
+                .filter(|text| !text.is_empty())
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(SimpleCallableDeclaration {
+        signature: format!("{return_type} {name}({})", parameters.join(", ")),
+        name,
+    })
+}
+
+fn is_simple_callable_name(value: &str) -> bool {
+    let mut characters = value.chars();
+    matches!(characters.next(), Some(character) if character.is_ascii_alphabetic() || character == '_')
+        && characters.all(|character| character.is_ascii_alphanumeric() || character == '_')
 }
 
 fn empty_signature_help_report(
@@ -701,6 +875,29 @@ class Example
             },
         );
         assert!(report.help.is_none());
+    }
+
+    #[test]
+    fn simple_callable_declarations_extract_complete_current_method() {
+        let source =
+            "class Example { void Current(string currentValue) {} void Test() { Current(\"\", ); } }";
+        let parse = crate::parser::parse_source(source);
+        let candidates = simple_callable_declarations(source, &parse, "Current");
+        assert_eq!(candidates.len(), 1, "diagnostics={:?}", parse.diagnostics);
+        assert_eq!(candidates[0].signature, "void Current(string currentValue)");
+    }
+
+    #[test]
+    fn pending_callable_context_selects_simple_call_name() {
+        let source =
+            "class Example { void Current(string currentValue) {} void Test() { Current(\"\", ); } }";
+        let parse = crate::parser::parse_source(source);
+        let offset = source.find("Current(\"\", ").unwrap() + "Current(\"\", ".len();
+        let context = callable_argument_context_at_offset(source, &parse.root, offset).unwrap();
+        let CallableTarget::Call { callee_span } = context.target else {
+            panic!("expected call target");
+        };
+        assert_eq!(&source[callee_span.start..callee_span.end], "Current");
     }
 
     #[test]

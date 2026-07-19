@@ -16,19 +16,26 @@ facts.
 ## Current Behavior
 
 Signature help uses cached document analysis and the shared syntax-backed
-[callable.md](callable.md) context. It resolves functions, methods,
+[callable.md](callable.md) context when matching semantic analysis is ready. It resolves functions, methods,
 constructors, `new Type(...)`, attributes, enum-typed parameters, optional
 parameters, and named arguments across local/workspace/game-data indexes.
 Each overload computes its active parameter against its own parameter list, so
 shorter candidates remain bounded. Non-call positions return no signature help.
+
+While the accepted revision is still pending semantic analysis, signature help
+responds immediately from that revision only. The fallback permits exactly one
+syntactically complete current-source callable declaration for an unqualified
+call. It does not resolve receivers, constructors, attributes, external
+symbols, recovered declarations, or ambiguous names; those cases return no
+help rather than reading a previous revision's analysis.
 
 The existing developer completion-debug path can render a bounded signature
 summary without creating a separate user-facing command.
 
 ## Dependencies and Boundaries
 
-Depends on cached analysis, callable helpers, `ReferenceResolver`, `IndexQuery`,
-`SymbolIndex`, and external snapshots. `lsp.rs` owns protocol dispatch and
+Depends on cached analysis, immutable document snapshots, callable helpers,
+`ReferenceResolver`, `IndexQuery`, `SymbolIndex`, and external snapshots. `lsp.rs` owns protocol dispatch and
 [completion.md](completion.md) owns normal suggestion presentation.
 
 ## Verification
@@ -36,7 +43,9 @@ Depends on cached analysis, callable helpers, `ReferenceResolver`, `IndexQuery`,
 Run focused signature-help/callable tests and `cargo test` from `server/`. Cover
 nested calls, constructors, attributes, optional/default parameters, named
 labels, comparison syntax, malformed calls, overload bounds, and non-call
-misses.
+misses. Pending-snapshot coverage must prove current-source signatures can
+return without semantic publication and that stale, ambiguous, and member
+targets never leak a prior analysis result.
 
 ## Future Direction
 

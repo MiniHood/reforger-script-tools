@@ -99,6 +99,7 @@ pub use semantic_tokens::{
 };
 use signature_help::{
     signature_help_debug_markdown, signature_help_report_for_cached_analysis_with_external_indexes,
+    signature_help_report_for_pending_snapshot,
 };
 pub use signature_help::{
     signature_help_report_for_source_position, LspParameterInformation, LspSignatureHelp,
@@ -397,10 +398,7 @@ fn earliest_due_document_analysis_uri(
 }
 
 fn source_backed_request_method(method: &str) -> bool {
-    matches!(
-        method,
-        "textDocument/signatureHelp" | DEBUG_HOVER_METHOD | DEBUG_COMPLETION_METHOD
-    )
+    matches!(method, DEBUG_HOVER_METHOD | DEBUG_COMPLETION_METHOD)
 }
 
 fn request_document_uri(params: Option<&Value>) -> Option<String> {
@@ -1507,14 +1505,21 @@ impl<W: Write> LspServer<W> {
                                 let indexes = self.external_index.snapshot();
                                 external_index_status = indexes.status;
                                 external_index_layers = indexes.available_layers();
-                                let report =
+                                let report = if document.analysis_ready() {
                                     signature_help_report_for_cached_analysis_with_external_indexes(
                                         &document.text,
                                         document.analysis(),
                                         params.position,
                                         indexes.workspace.as_deref(),
                                         indexes.game_data.as_deref(),
-                                    );
+                                    )
+                                } else {
+                                    signature_help_report_for_pending_snapshot(
+                                        &document.snapshot,
+                                        document.syntax(),
+                                        params.position,
+                                    )
+                                };
                                 parse_diagnostics = report.parse_diagnostics;
                                 context = report.context.unwrap_or_else(|| "<none>".to_string());
                                 active_parameter = report
@@ -1538,10 +1543,11 @@ impl<W: Write> LspServer<W> {
                         .map(|help| serde_json::to_value(help).unwrap_or(Value::Null))
                         .unwrap_or(Value::Null);
                     self.log(&format!(
-                        "request signatureHelp uri={} bytes={} revision={} cached_analysis=true context={} active_parameter={} candidates={} selected={} failure_reason={} external_index_status={} external_index_layers={} parse_diagnostics={} context_ms={} lookup_ms={} render_ms={} queue_ms={} elapsed_ms={}",
+                        "request signatureHelp uri={} bytes={} revision={} cached_analysis={} context={} active_parameter={} candidates={} selected={} failure_reason={} external_index_status={} external_index_layers={} parse_diagnostics={} context_ms={} lookup_ms={} render_ms={} queue_ms={} elapsed_ms={}",
                         log_uri,
                         bytes,
                         revision,
+                        self.documents.get(&log_uri).is_some_and(OpenDocument::analysis_ready),
                         context,
                         active_parameter,
                         candidate_count,
@@ -8020,6 +8026,156 @@ class Example
     }
 
     #[test]
+    fn pending_signature_help_uses_only_the_current_unique_simple_callable() {
+        let (sender, _receiver) = mpsc::channel();
+        let scheduler = OpenDocumentAnalysisScheduler::start(sender);
+        let mut server = LspServer::new_with_runtime_senders(
+            Vec::new(),
+            LspServerOptions::default(),
+            None,
+            Some(scheduler),
+            None,
+        );
+        let uri = "file:///Scripts/PendingSignature.c";
+        let initial = "class Example { void Stale(int oldValue) {} void Test() { Stale( } }";
+        let current =
+            "class Example { void Current(string currentValue) {} void Test() { Current(\"\", ); } }";
+        let current_position = position_after_needle(current, "Current(\"\", ");
+        server
+            .handle_message(
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "textDocument/didOpen",
+                    "params": { "textDocument": {
+                        "uri": uri,
+                        "languageId": "enforce",
+                        "version": 1,
+                        "text": initial
+                    }}
+                }),
+                None,
+                0,
+                0,
+            )
+            .unwrap();
+        server
+            .handle_message(
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "textDocument/didChange",
+                    "params": {
+                        "textDocument": { "uri": uri, "version": 2 },
+                        "contentChanges": [{ "text": current }]
+                    }
+                }),
+                None,
+                0,
+                0,
+            )
+            .unwrap();
+        assert!(!server.documents[uri].analysis_ready());
+
+        server
+            .handle_message(
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "textDocument/signatureHelp",
+                    "params": {
+                        "textDocument": { "uri": uri },
+                        "position": current_position
+                    }
+                }),
+                None,
+                0,
+                0,
+            )
+            .unwrap();
+
+        let output = String::from_utf8(server.writer).unwrap();
+        let mut reader = BufReader::new(output.as_bytes());
+        let response = loop {
+            let response = read_message(&mut reader)
+                .unwrap()
+                .expect("pending signature response");
+            if response["id"] == 1 {
+                break response;
+            }
+        };
+        assert_eq!(response["id"], 1);
+        assert_eq!(
+            response["result"]["signatures"][0]["label"], "void Current(string currentValue)",
+            "response={response}"
+        );
+        assert!(!response.to_string().contains("Stale"));
+    }
+
+    #[test]
+    fn pending_signature_help_rejects_ambiguous_or_member_calls() {
+        let (sender, _receiver) = mpsc::channel();
+        let scheduler = OpenDocumentAnalysisScheduler::start(sender);
+        let mut server = LspServer::new_with_runtime_senders(
+            Vec::new(),
+            LspServerOptions::default(),
+            None,
+            Some(scheduler),
+            None,
+        );
+        let uri = "file:///Scripts/PendingSignatureAmbiguous.c";
+        let source = "class First { void Run(int value) {} } class Second { void Run(string value) {} } class Example { void Test(First receiver) { Run( ); receiver.Run( ); } }";
+        let ambiguous_position = position_after_needle(source, "Run( ");
+        let member_position = position_after_needle(source, "receiver.Run( ");
+        server
+            .handle_message(
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "textDocument/didOpen",
+                    "params": { "textDocument": {
+                        "uri": uri,
+                        "languageId": "enforce",
+                        "version": 1,
+                        "text": source
+                    }}
+                }),
+                None,
+                0,
+                0,
+            )
+            .unwrap();
+        for (id, position) in [(1, ambiguous_position), (2, member_position)] {
+            server
+                .handle_message(
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "method": "textDocument/signatureHelp",
+                        "params": { "textDocument": { "uri": uri }, "position": position }
+                    }),
+                    None,
+                    0,
+                    0,
+                )
+                .unwrap();
+        }
+        let output = String::from_utf8(server.writer).unwrap();
+        let mut reader = BufReader::new(output.as_bytes());
+        let mut responses = BTreeMap::new();
+        while responses.len() < 2 {
+            let response = read_message(&mut reader)
+                .unwrap()
+                .expect("pending signature response");
+            if let Some(id) = response["id"].as_i64() {
+                responses.insert(id, response);
+            }
+        }
+        for id in [1, 2] {
+            let response = responses.remove(&id).unwrap();
+            assert_eq!(response["id"], id);
+            assert!(response["result"].is_null());
+        }
+    }
+
+    #[test]
     fn pending_definition_returns_only_a_current_snapshot_declaration_target() {
         let (sender, _receiver) = mpsc::channel();
         let scheduler = OpenDocumentAnalysisScheduler::start(sender);
@@ -8516,7 +8672,7 @@ class Example
     }
 
     #[test]
-    fn pending_request_receives_content_modified_when_a_new_edit_supersedes_it() {
+    fn pending_debug_request_receives_content_modified_when_a_new_edit_supersedes_it() {
         let (sender, _receiver) = mpsc::channel();
         let scheduler = OpenDocumentAnalysisScheduler::start(sender);
         let mut server = LspServer::new_with_runtime_senders(
@@ -8556,7 +8712,7 @@ class Example
             .handle_message(
                 json!({
                     "jsonrpc": "2.0", "id": 1,
-                    "method": "textDocument/hover",
+                    "method": "reforger/debugHover",
                     "params": {
                         "textDocument": { "uri": uri },
                         "position": { "line": 0, "character": 6 }

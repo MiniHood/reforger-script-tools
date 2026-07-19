@@ -78,6 +78,13 @@ top-level declaration, linked to that declaration; all references and other
 semantic targets return an empty result. These contracts preserve responsive
 navigation without presenting stale local semantic facts.
 
+Signature help is also a current-snapshot exception. Before semantic analysis
+publishes, it can return one unique, complete declaration named by an
+unqualified current-source call. Member calls, constructors, attributes,
+external symbols, recovered declarations, and ambiguous names return `null`.
+It never delays a request or combines current text with a cached semantic
+analysis from another revision.
+
 The current parser/catalog analysis is an indivisible worker operation. A newer
 revision cancels a queued job immediately and causes a running obsolete result
 to be skipped after that operation returns; the runtime log records the
