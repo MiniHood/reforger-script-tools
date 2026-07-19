@@ -26,6 +26,9 @@ pub(crate) struct OpenDocument {
     pub(crate) text: Arc<str>,
     pub(crate) version: i32,
     pub(crate) revision: u64,
+    /// Current-revision parser output, retained independently from deferred
+    /// semantic/index analysis so parser diagnostics never wait for it.
+    syntax: Parse,
     analysis: Option<FileIndexAnalysis>,
     analysis_timings: Option<FileIndexAnalysisTimings>,
     analysis_rejected: bool,
@@ -36,22 +39,12 @@ pub(crate) struct OpenDocument {
 
 impl OpenDocument {
     pub(crate) fn new(snapshot: DocumentSnapshot) -> Self {
-        let (analysis, analysis_timings) = file_index_for_source_with_timings(snapshot.text());
-        let text = snapshot.text_arc();
-        let version = snapshot.version();
         let revision = snapshot.revision();
-        Self {
-            snapshot,
-            text,
-            version,
-            revision,
-            analysis: Some(analysis),
-            analysis_timings: Some(analysis_timings),
-            analysis_rejected: false,
-            document_symbols: Vec::new(),
-            document_symbols_ready: false,
-            semantic_tokens: SemanticTokenCache::default(),
-        }
+        let mut document = Self::pending(snapshot);
+        let (analysis, analysis_timings) =
+            file_index_for_source_with_timings(document.snapshot.text());
+        assert!(document.install_analysis(revision, analysis, analysis_timings));
+        document
     }
 
     /// Creates a cache whose source snapshot is authoritative but whose
@@ -62,11 +55,13 @@ impl OpenDocument {
         let text = snapshot.text_arc();
         let version = snapshot.version();
         let revision = snapshot.revision();
+        let syntax = parse_source(snapshot.text());
         Self {
             snapshot,
             text,
             version,
             revision,
+            syntax,
             analysis: None,
             analysis_timings: None,
             analysis_rejected: false,
@@ -81,6 +76,7 @@ impl OpenDocument {
         self.version = snapshot.version();
         self.revision = snapshot.revision();
         self.snapshot = snapshot;
+        self.syntax = parse_source(self.snapshot.text());
         self.analysis = None;
         self.analysis_timings = None;
         self.analysis_rejected = false;
@@ -92,6 +88,10 @@ impl OpenDocument {
 
     pub(crate) fn analysis_ready(&self) -> bool {
         self.analysis.is_some()
+    }
+
+    pub(crate) fn syntax(&self) -> &Parse {
+        &self.syntax
     }
 
     pub(crate) fn analysis(&self) -> &FileIndexAnalysis {

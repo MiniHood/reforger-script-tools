@@ -23,11 +23,16 @@ the snapshot authoritative first and mark full analysis pending. The LSP worker
 only executes an `AnalysisRuntime`-admitted task and reports its identity back
 before installation, so runtime cancellation is the sole authority for stale
 publication. This keeps a large initial open from blocking the LSP message loop.
-A pending document holds no placeholder parser/index/scope result,
-so a feature cannot accidentally treat an empty or old analysis as current.
+A pending document immediately retains a current-revision syntax snapshot for
+parser diagnostics, but holds no placeholder semantic/index/scope result, so a
+feature cannot accidentally treat an empty or old analysis as current. Parser
+diagnostics are independent of whole-file semantic convergence; the full
+analysis later supplies only semantic/query state.
 Tests without a worker may construct an immediately-ready cache
-to exercise deterministic feature projection. The analysis contains lexer
-tokens, syntax, parse diagnostics, file index, lexical scope, and timings.
+to exercise deterministic feature projection. The full analysis contains lexer
+tokens, syntax, parse diagnostics, file index, lexical scope, and timings; its
+syntax is compatibility/query state rather than the publication authority for
+parser diagnostics.
 Outline projection is built lazily then retained for the ready revision.
 
 Semantic tokens keep separate fast and rich cache entries. Rich results are

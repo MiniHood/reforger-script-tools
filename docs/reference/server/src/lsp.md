@@ -42,10 +42,13 @@ JSON-RPC errors; invalid notifications are ignored. After `shutdown`, requests
 are rejected and `exit` terminates the process as required by the lifecycle.
 
 Open/change notifications require document versions. The server accepts only a
-strictly newer revision. `didOpen` builds the initial analysis synchronously;
-`didChange` immediately accepts text/version, clears text-derived caches, and
-schedules latest-wins analysis after a short idle delay. The completed result
-installs only for the still-current revision, then publishes parser diagnostics.
+strictly newer revision. Each accepted revision parses a syntax snapshot and
+publishes its parser diagnostics immediately. `didOpen` builds the initial
+analysis synchronously when no worker is configured; production `didChange`
+immediately accepts text/version, clears text-derived caches, and schedules
+latest-wins semantic/index analysis after a short idle delay. The completed
+result installs only for the still-current revision and never republishes parser
+diagnostics.
 Close removes the document and clears diagnostics. Repeated Outline requests
 reuse cached symbol projection for the accepted revision.
 

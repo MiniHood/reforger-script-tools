@@ -995,7 +995,19 @@ impl<W: Write> LspServer<W> {
                                     .reject_pending_analysis();
                             }
                         }
-                        self.write_message(publish_diagnostics_message(&uri, version, "", &[]))?;
+                        let diagnostics_message = {
+                            let document = self
+                                .documents
+                                .get(&uri)
+                                .expect("accepted document cache exists");
+                            publish_diagnostics_message(
+                                &uri,
+                                version,
+                                document.snapshot.text(),
+                                &document.syntax().diagnostics,
+                            )
+                        };
+                        self.write_message(diagnostics_message)?;
                         self.log(&format!(
                             "notification didOpen uri={} bytes={} version={} revision={} cached_analysis=false analysis_state=pending queue_ms={} analysis_elapsed_ms={}",
                             uri,
@@ -1015,13 +1027,13 @@ impl<W: Write> LspServer<W> {
                         let document_symbol_ms = symbol_start.elapsed().as_millis();
                         let symbol_count = document_symbol_count(&symbols);
                         document.set_document_symbols(symbols);
-                        let parse_diagnostics = document.analysis().parse_diagnostics;
+                        let parse_diagnostics = document.syntax().diagnostics.len();
                         let analysis_timings = document.analysis_timings();
                         let diagnostics_message = publish_diagnostics_message(
                             &uri,
                             version,
                             document.snapshot.text(),
-                            &document.analysis().diagnostics,
+                            &document.syntax().diagnostics,
                         );
                         self.documents.insert(uri.clone(), document);
                         self.write_message(diagnostics_message)?;
@@ -1093,6 +1105,19 @@ impl<W: Write> LspServer<W> {
                             document.mark_analysis_pending();
                             document.snapshot.revision()
                         };
+                        let diagnostics_message = {
+                            let document = self
+                                .documents
+                                .get(&uri)
+                                .expect("accepted document cache exists");
+                            publish_diagnostics_message(
+                                &uri,
+                                version,
+                                document.snapshot.text(),
+                                &document.syntax().diagnostics,
+                            )
+                        };
+                        self.write_message(diagnostics_message)?;
                         if let Some(scheduler) = self.analysis_scheduler.clone() {
                             self.discard_deferred_document_requests(&uri, revision)?;
                             let request_id = self.next_server_request_id;
@@ -1119,12 +1144,6 @@ impl<W: Write> LspServer<W> {
                                     .expect("pending document exists")
                                     .reject_pending_analysis(),
                             }
-                            self.write_message(publish_diagnostics_message(
-                                &uri,
-                                version,
-                                "",
-                                &[],
-                            ))?;
                             self.log(&format!(
                                 "notification didChange uri={} bytes={} version={} revision={} cached_analysis=false analysis_state=pending queue_ms={} coalesced_changes={} superseded_changes={} analysis_elapsed_ms={}",
                                 uri, bytes, version, revision, queue_ms, coalesced_changes, superseded_changes, start.elapsed().as_millis()
@@ -2335,14 +2354,7 @@ impl<W: Write> LspServer<W> {
         let bytes = document.text.len();
         let parse_diagnostics = document.analysis().parse_diagnostics;
         let analysis_timings = document.analysis_timings();
-        let diagnostics_message = publish_diagnostics_message(
-            uri,
-            version,
-            &document.text,
-            &document.analysis().diagnostics,
-        );
         let _ = document;
-        self.write_message(diagnostics_message)?;
         self.log(&format!(
             "documentAnalysis ready uri={} bytes={} version={} revision={} cached_analysis=true parse_diagnostics={} analysis_parse_ms={} analysis_catalog_ms={} analysis_index_ms={} analysis_scope_ms={} analysis_build_ms={} elapsed_ms={}",
             uri,
@@ -8089,7 +8101,7 @@ class Example
     }
 
     #[test]
-    fn pending_analysis_clears_previous_diagnostics_before_worker_publication() {
+    fn pending_analysis_publishes_current_parser_diagnostics_before_worker_publication() {
         let (sender, _receiver) = mpsc::channel();
         let scheduler = OpenDocumentAnalysisScheduler::start(sender);
         let mut server = LspServer::new_with_runtime_senders(
@@ -8121,7 +8133,59 @@ class Example
         let output = String::from_utf8(server.writer).unwrap();
         assert!(output.contains("\"method\":\"textDocument/publishDiagnostics\""));
         assert!(output.contains("\"version\":1"));
-        assert!(output.contains("\"diagnostics\":[]"));
+        assert!(output.contains("Reforger Script Tools parser"));
+        assert!(output.contains("\"diagnostics\":[{"));
+    }
+
+    #[test]
+    fn pending_analysis_clears_repaired_parser_diagnostics_before_worker_publication() {
+        let (sender, _receiver) = mpsc::channel();
+        let scheduler = OpenDocumentAnalysisScheduler::start(sender);
+        let mut server = LspServer::new_with_runtime_senders(
+            Vec::new(),
+            LspServerOptions::default(),
+            None,
+            Some(scheduler),
+            None,
+        );
+        let uri = "file:///Scripts/PendingDiagnosticsRepair.c";
+        for (version, text) in [(1, "class {"), (2, "class Repaired {}")] {
+            let method = if version == 1 {
+                "textDocument/didOpen"
+            } else {
+                "textDocument/didChange"
+            };
+            let params = if version == 1 {
+                json!({ "textDocument": {
+                    "uri": uri, "languageId": "enforce", "version": version, "text": text
+                }})
+            } else {
+                json!({
+                    "textDocument": { "uri": uri, "version": version },
+                    "contentChanges": [{ "text": text }]
+                })
+            };
+            server
+                .handle_message(
+                    json!({ "jsonrpc": "2.0", "method": method, "params": params }),
+                    None,
+                    0,
+                    0,
+                )
+                .unwrap();
+        }
+
+        let output = String::from_utf8(server.writer).unwrap();
+        let mut reader = BufReader::new(output.as_bytes());
+        let broken = read_message(&mut reader).unwrap().unwrap();
+        let repaired = read_message(&mut reader).unwrap().unwrap();
+        assert_eq!(broken["params"]["version"], 1);
+        assert!(!broken["params"]["diagnostics"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert_eq!(repaired["params"]["version"], 2);
+        assert_eq!(repaired["params"]["diagnostics"], json!([]));
     }
 
     #[test]

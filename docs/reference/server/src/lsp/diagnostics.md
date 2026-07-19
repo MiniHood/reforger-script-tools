@@ -17,8 +17,10 @@ Parser diagnostics retain their message and span while receiving the stable
 `reforger.parser.syntax` code and parser source label. Zero-width or
 end-of-file spans are projected to a visible nearby character where possible,
 so editor diagnostics remain selectable. Publish notifications include the
-accepted document version; close emits an empty diagnostic list to clear stale
-editor state.
+accepted document version. The LSP publishes from the parser output captured by
+the newly accepted syntax snapshot, before any deferred semantic/index analysis
+begins; later semantic completion never republishes parser diagnostics. Close
+emits an empty diagnostic list to clear stale editor state.
 
 ## Dependencies and Boundaries
 
