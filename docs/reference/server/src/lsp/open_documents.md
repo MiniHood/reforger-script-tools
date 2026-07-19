@@ -30,7 +30,10 @@ summary, and safe callable-declaration summary), UTF-16 positions, and syntax be
 diagnostics publish; only then may semantic admission begin. Until that
 installation, features use deterministic lexical fallbacks and cannot combine
 current text with old semantic facts. The full analysis later supplies
-semantic/query state only.
+semantic/query state only. Full analysis retains the immutable `SemanticFile`
+as the declaration and local-binding authority; its `SymbolIndex` and lexical
+scope are compatibility projections for existing workspace-aware feature
+adapters, not competing declaration-discovery paths.
 Tests without a worker may construct an immediately-ready cache
 to exercise deterministic feature projection. The full analysis contains lexer
 tokens, syntax, parse diagnostics, file index, lexical scope, and timings; its

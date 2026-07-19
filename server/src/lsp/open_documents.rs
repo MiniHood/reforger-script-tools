@@ -608,6 +608,10 @@ fn foreground_callable_declaration(
 pub struct FileIndexAnalysis {
     pub(crate) parse: Parse,
     pub(crate) lexer_tokens: Vec<Token>,
+    /// Immutable compiler-owned declaration and local-binding facts. The
+    /// index and lexical scope below are feature compatibility projections of
+    /// this semantic authority, never independent declaration discovery.
+    pub(crate) semantic: SemanticFile,
     pub(crate) index: SymbolIndex,
     pub(crate) scope: LexicalScopeModel,
     pub(crate) parse_diagnostics: usize,
@@ -642,7 +646,7 @@ pub(crate) fn file_index_for_source_with_timings(
     let catalog_ms = catalog_start.elapsed().as_millis();
     let index_start = Instant::now();
     let mut index = SymbolIndex::default();
-    index.add_semantic_file(
+    let local_file_id = index.add_semantic_file(
         &semantic_file,
         SourceFileMetadata {
             kind: crate::model::SourceKind::Workspace,
@@ -655,12 +659,14 @@ pub(crate) fn file_index_for_source_with_timings(
     );
     let index_ms = index_start.elapsed().as_millis();
     let scope_start = Instant::now();
-    let scope = LexicalScopeModel::from_parse_and_index(&parse, &index);
+    let scope =
+        LexicalScopeModel::from_parse_and_semantics(&parse, &semantic_file, &index, local_file_id);
     let scope_ms = scope_start.elapsed().as_millis();
     (
         FileIndexAnalysis {
             parse,
             lexer_tokens,
+            semantic: semantic_file,
             index,
             scope,
             parse_diagnostics,

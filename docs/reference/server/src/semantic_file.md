@@ -8,8 +8,8 @@ contributions; it is not an LSP feature cache or a serialized parser tree.
 
 ## Ownership
 
-`SemanticFile` consumes the typed CST facade through its zero-copy declaration
-iterator and records declaration identity, hierarchy, source/selection spans,
+`SemanticFile` consumes parser-owned typed CST declarations directly through
+`Parse::declarations` and records declaration identity, hierarchy, source/selection spans,
 modifiers, attributes, comments, signature details, callable form, parameters,
 and local bindings. File-private callable regions group each callable's
 parameters and locals for bounded future cursor queries. Its
@@ -27,8 +27,8 @@ revisions, read files, or own workspace snapshot replacement.
 
 ## Current Behavior
 
-`index_build` and workspace external-overlay ingestion construct a
-`SemanticFile` directly from `AstSourceFile`, project and validate a versioned
+`index_build`, workspace external-overlay ingestion, and open-document analysis
+construct a `SemanticFile` directly from parser output, project and validate a versioned
 `FileContribution`, then reconstruct their `SymbolIndex` through the validated
 contribution boundary without constructing `SymbolCatalog`. The projection
 preserves declaration and parameter signature facts, modifiers, documentation,

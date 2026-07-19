@@ -1,6 +1,7 @@
-use crate::index::{GlobalSymbolId, SymbolIndex};
+use crate::index::{GlobalSymbolId, SourceFileId, SymbolIndex};
 use crate::lexer::TextSpan;
 use crate::model::SymbolKind;
+use crate::semantic_file::{SemanticDeclarationKind, SemanticFile};
 use crate::syntax::{Parse, SyntaxElement, SyntaxKind, SyntaxNode};
 use std::collections::BTreeMap;
 
@@ -40,6 +41,93 @@ pub struct LexicalScopeModel {
 }
 
 impl LexicalScopeModel {
+    /// Builds lexical regions from parser CST while taking callable and local
+    /// binding facts exclusively from the compiler semantic file. `SymbolIndex`
+    /// supplies stable lookup identities for feature adapters only; it is not
+    /// consulted to discover declarations.
+    pub fn from_parse_and_semantics(
+        parse: &Parse,
+        semantic_file: &SemanticFile,
+        index: &SymbolIndex,
+        source_file_id: SourceFileId,
+    ) -> Self {
+        let mut model = Self {
+            scopes: Vec::new(),
+            symbol_scopes: BTreeMap::new(),
+            declaration_scopes: Vec::new(),
+        };
+        let root = model.push_scope(None, LexicalScopeKind::Root, parse.root.span, None);
+        let mut callable_scopes = BTreeMap::new();
+        let mut callable_nodes = Vec::new();
+
+        for declaration in semantic_file.declarations().iter().filter(|declaration| {
+            matches!(
+                declaration.kind,
+                SemanticDeclarationKind::Function
+                    | SemanticDeclarationKind::Method
+                    | SemanticDeclarationKind::Constructor
+                    | SemanticDeclarationKind::Destructor
+            )
+        }) {
+            let id = GlobalSymbolId {
+                file_id: source_file_id,
+                symbol_id: crate::model::SymbolId(declaration.id.0 as usize),
+            };
+            // Fail closed if the derived index ever drops a semantic record;
+            // do not recreate facts from the index.
+            if index.symbol(id).is_none() {
+                continue;
+            }
+            let callable_scope = model.push_scope(
+                Some(root),
+                LexicalScopeKind::Callable,
+                declaration.span,
+                Some(id),
+            );
+            callable_scopes.insert(declaration.id, callable_scope);
+            callable_nodes.push((declaration.span, callable_scope));
+        }
+
+        collect_scopes_once(&parse.root, None, &callable_nodes, &mut model);
+
+        for declaration in semantic_file.declarations() {
+            let kind = match declaration.kind {
+                SemanticDeclarationKind::Parameter => SymbolKind::Parameter,
+                SemanticDeclarationKind::LocalVariable => SymbolKind::LocalVariable,
+                _ => continue,
+            };
+            let Some(parent) = declaration.parent else {
+                continue;
+            };
+            let Some(callable_scope) = callable_scopes.get(&parent).copied() else {
+                continue;
+            };
+            let id = GlobalSymbolId {
+                file_id: source_file_id,
+                symbol_id: crate::model::SymbolId(declaration.id.0 as usize),
+            };
+            if index.symbol(id).is_none() {
+                continue;
+            }
+            let scope = match kind {
+                SymbolKind::Parameter => callable_scope,
+                SymbolKind::LocalVariable => model
+                    .declaration_scope_at(declaration.selection_span)
+                    .or_else(|| {
+                        model.innermost_scope_under_at(
+                            callable_scope,
+                            declaration.selection_span.start,
+                        )
+                    })
+                    .unwrap_or(callable_scope),
+                _ => unreachable!(),
+            };
+            model.attach_symbol(scope, id);
+        }
+
+        model
+    }
+
     pub fn from_parse_and_index(parse: &Parse, index: &SymbolIndex) -> Self {
         let mut model = Self {
             scopes: Vec::new(),
@@ -410,6 +498,7 @@ mod tests {
     use crate::ast::AstSourceFile;
     use crate::model::{SourceFileMetadata, SourceKind, SymbolCatalog};
     use crate::parser::parse_source;
+    use crate::semantic_file::SemanticFile;
 
     fn index_for(source: &str) -> (Parse, SymbolIndex) {
         let parse = parse_source(source);
@@ -429,6 +518,40 @@ mod tests {
         let mut index = SymbolIndex::default();
         index.add_catalog(&catalog);
         (parse, index)
+    }
+
+    fn semantic_index_for(source: &str) -> (Parse, SemanticFile, SymbolIndex, SourceFileId) {
+        let parse = parse_source(source);
+        let semantic = SemanticFile::build(source, &parse);
+        let mut index = SymbolIndex::default();
+        let file_id = index.add_semantic_file(
+            &semantic,
+            SourceFileMetadata {
+                kind: SourceKind::Workspace,
+                category: crate::model::SourceCategory::Workspace,
+                absolute_path: None,
+                root_path: None,
+                relative_path: None,
+                priority: crate::model::SOURCE_PRIORITY_WORKSPACE,
+            },
+        );
+        (parse, semantic, index, file_id)
+    }
+
+    #[test]
+    fn semantic_facts_authoritatively_attach_local_bindings_to_cst_scopes() {
+        let source = "class Example { void Run(int parameter) { int local; local; } }";
+        let (parse, semantic, index, file_id) = semantic_index_for(source);
+        let scopes =
+            LexicalScopeModel::from_parse_and_semantics(&parse, &semantic, &index, file_id);
+        let local_use = source.rfind("local;").expect("local use");
+        let visible = scopes.visible_symbols_named(&index, "local", local_use);
+
+        assert_eq!(visible.len(), 1);
+        assert_eq!(
+            index.symbol(visible[0]).map(|symbol| symbol.kind),
+            Some(SymbolKind::LocalVariable)
+        );
     }
 
     #[test]

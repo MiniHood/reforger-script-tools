@@ -6,8 +6,7 @@
 //! workspace snapshots.
 
 use crate::ast::{
-    AstSourceFile, ClassMember, Declaration, DocCommentKind, FieldDecl, MethodDecl, MethodKind,
-    TextValue,
+    ClassMember, Declaration, DocCommentKind, FieldDecl, MethodDecl, MethodKind, TextValue,
 };
 use crate::lexer::TextSpan;
 use crate::syntax::Parse;
@@ -145,12 +144,11 @@ pub struct SemanticBuildStats {
 }
 
 impl SemanticFile {
-    /// Builds compiler semantic facts directly from parser output.  The
-    /// declaration facade stays an implementation detail: production callers
-    /// do not construct an AST-shaped semantic input or retain a second
-    /// semantic representation between parsing and this build.
+    /// Builds compiler semantic facts directly from parser output. The typed
+    /// CST traversal is owned by `Parse`; production callers neither construct
+    /// an AST-shaped input nor retain a second semantic representation between
+    /// parsing and this build.
     pub fn build(source: &str, parse: &Parse) -> Self {
-        let ast = AstSourceFile::new(source, parse);
         let mut builder = SemanticFileBuilder {
             source,
             declarations: Vec::new(),
@@ -159,7 +157,7 @@ impl SemanticFile {
             cst_declaration_visits: 0,
             directive_contexts: DirectiveContextMap::for_source(source),
         };
-        for declaration in ast.declaration_iter() {
+        for declaration in parse.declaration_iter(source) {
             builder.cst_declaration_visits += 1;
             builder.add_declaration(declaration);
         }

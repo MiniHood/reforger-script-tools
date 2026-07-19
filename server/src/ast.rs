@@ -1,6 +1,7 @@
 use crate::lexer::{Keyword, Operator, TextSpan, Token, TokenKind};
 use crate::syntax::{Parse, SyntaxElement, SyntaxKind, SyntaxNode};
 use serde::{Deserialize, Serialize};
+use std::slice::Iter;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TextValue<'source> {
@@ -71,17 +72,47 @@ impl<'source, 'tree> AstSourceFile<'source, 'tree> {
     /// Zero-copy typed CST traversal for semantic construction. Callers that
     /// only need one coordinated pass must not first materialize a declaration
     /// vector.
-    pub fn declaration_iter(&self) -> impl Iterator<Item = Declaration<'source, 'tree>> + '_ {
-        self.parse
-            .root
-            .children
-            .iter()
-            .filter_map(|child| match child {
-                SyntaxElement::Node(node) => {
-                    declaration_from_node(self.source, &self.parse.root, node)
-                }
-                SyntaxElement::Token(_) => None,
-            })
+    pub fn declaration_iter(&self) -> ParseDeclarationIter<'source, 'tree> {
+        self.parse.declaration_iter(self.source)
+    }
+}
+
+/// Typed declaration traversal directly on parser output.
+///
+/// This is the compiler-facing CST access point.  `AstSourceFile` remains a
+/// compatibility view for older callers, but new semantic construction must
+/// consume `Parse` through this method so it cannot accidentally establish a
+/// second AST-shaped source of truth.
+impl Parse {
+    pub fn declaration_iter<'source, 'tree>(
+        &'tree self,
+        source: &'source str,
+    ) -> ParseDeclarationIter<'source, 'tree> {
+        ParseDeclarationIter {
+            source,
+            root: &self.root,
+            children: self.root.children.iter(),
+        }
+    }
+}
+
+/// Zero-copy typed declaration traversal over parser-owned CST children.
+/// The iterator retains parser/source lifetimes explicitly, allowing semantic
+/// construction to consume `Parse` directly without an AST source wrapper.
+pub struct ParseDeclarationIter<'source, 'tree> {
+    source: &'source str,
+    root: &'tree SyntaxNode,
+    children: Iter<'tree, SyntaxElement>,
+}
+
+impl<'source, 'tree> Iterator for ParseDeclarationIter<'source, 'tree> {
+    type Item = Declaration<'source, 'tree>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.children.find_map(|child| match child {
+            SyntaxElement::Node(node) => declaration_from_node(self.source, self.root, node),
+            SyntaxElement::Token(_) => None,
+        })
     }
 }
 

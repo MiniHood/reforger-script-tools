@@ -3305,6 +3305,11 @@ fn document_symbol_report_for_cached_analysis(
     source: &str,
     analysis: &FileIndexAnalysis,
 ) -> LspDocumentSymbolReport {
+    debug_assert_eq!(
+        analysis.semantic.declarations().len(),
+        analysis.index.symbols().len(),
+        "the local index must remain a complete projection of SemanticFile"
+    );
     let query = IndexQuery::new(&analysis.index);
     let positions = LspPositionIndex::new(source);
     LspDocumentSymbolReport {
