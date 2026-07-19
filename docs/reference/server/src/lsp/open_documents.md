@@ -14,9 +14,12 @@ features, or keep persistent workspace state.
 ## Current Behavior
 
 A document is created from `didOpen` text and replaced only by a strictly newer
-`didChange` version. Each accepted revision receives one `FileIndexAnalysis`
-containing lexer tokens, syntax, parse diagnostics, file index, lexical scope,
-and timings. Outline projection is built lazily then retained for that revision.
+`didChange` version. Initial open analysis is immediately ready. A replacement
+first makes its text/version/revision authoritative while marking analysis
+pending; a latest-wins worker later installs its `FileIndexAnalysis` only if it
+still matches that revision. The analysis contains lexer tokens, syntax, parse
+diagnostics, file index, lexical scope, and timings. Outline projection is
+built lazily then retained for the ready revision.
 
 Semantic tokens keep separate fast and rich cache entries. Rich results are
 valid only for the revision and external-overlay generation that produced them;
@@ -28,6 +31,11 @@ of safe full-text replacements for one URI to its newest version. That is an
 ingress optimization only: this module still sees a normal accepted version,
 performs its usual cache invalidation, and never applies a partial/ranged edit
 through that path.
+
+The ready-analysis identity is separate from the accepted document revision.
+Feature dispatch must require them to match; it may defer a request, but must
+never combine current text with an earlier analysis. Replacing or closing a
+document cancels the tracked analysis work and invalidates its caches.
 
 ## Dependencies and Boundaries
 

@@ -60,6 +60,19 @@ test("marks captures with fewer than ten completion requests as insufficient", (
   assert.match(report, /at least ten qualified completion requests/i);
 });
 
+test("separates background document analysis from foreground didChange acceptance", () => {
+  const report = runReport([
+    "[1000] notification didChange uri=file:///workspace/GC_MarkerArea.c version=7 revision=42 cached_analysis=false analysis_state=pending queue_ms=2 analysis_elapsed_ms=2",
+    "[1160] documentAnalysis ready uri=file:///workspace/GC_MarkerArea.c version=7 revision=42 analysis_catalog_ms=120 elapsed_ms=160",
+    "[1170] documentAnalysis skipped uri=file:///workspace/GC_MarkerArea.c revision=41 reason=superseded-during-analysis elapsed_ms=80",
+  ].join("\n"));
+
+  assert.match(report, /didChange total: 2 ms/);
+  assert.match(report, /Background analysis ready: 1/);
+  assert.match(report, /Background analysis ready total: 160 ms/);
+  assert.match(report, /Background analysis superseded: 1/);
+});
+
 test("does not reproduce source or completion payload fields in the report", () => {
   const report = runReport([
     "[1000] notification didChange uri=file:///workspace/GC_MarkerArea.c version=7 revision=42 text=DO_NOT_COPY analysis_elapsed_ms=120",

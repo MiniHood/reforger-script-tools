@@ -20,6 +20,8 @@ pub(crate) struct OpenDocument {
     pub(crate) revision: u64,
     pub(crate) analysis: FileIndexAnalysis,
     pub(crate) analysis_timings: FileIndexAnalysisTimings,
+    analysis_revision: u64,
+    analysis_cancel: Option<Arc<AtomicBool>>,
     document_symbols: Vec<LspDocumentSymbol>,
     document_symbols_ready: bool,
     pub(crate) semantic_tokens: SemanticTokenCache,
@@ -34,6 +36,8 @@ impl OpenDocument {
             revision,
             analysis,
             analysis_timings,
+            analysis_revision: revision,
+            analysis_cancel: None,
             document_symbols: Vec::new(),
             document_symbols_ready: false,
             semantic_tokens: SemanticTokenCache::default(),
@@ -41,14 +45,48 @@ impl OpenDocument {
     }
 
     pub(crate) fn replace(&mut self, text: String, version: i32) {
+        if let Some(cancel) = self.analysis_cancel.take() {
+            cancel.store(true, Ordering::Relaxed);
+        }
         self.text = text;
         self.version = version;
         self.revision += 1;
-        (self.analysis, self.analysis_timings) = file_index_for_source_with_timings(&self.text);
         self.document_symbols.clear();
         self.document_symbols_ready = false;
         self.semantic_tokens.cancel_pending();
         self.semantic_tokens = SemanticTokenCache::default();
+    }
+
+    pub(crate) fn analysis_ready(&self) -> bool {
+        self.analysis_revision == self.revision
+    }
+
+    pub(crate) fn mark_analysis_pending(&mut self) -> Arc<AtomicBool> {
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.analysis_cancel = Some(cancel.clone());
+        cancel
+    }
+
+    pub(crate) fn cancel_pending_analysis(&mut self) {
+        if let Some(cancel) = self.analysis_cancel.take() {
+            cancel.store(true, Ordering::Relaxed);
+        }
+    }
+
+    pub(crate) fn install_analysis(
+        &mut self,
+        revision: u64,
+        analysis: FileIndexAnalysis,
+        analysis_timings: FileIndexAnalysisTimings,
+    ) -> bool {
+        if revision != self.revision {
+            return false;
+        }
+        self.analysis = analysis;
+        self.analysis_timings = analysis_timings;
+        self.analysis_revision = revision;
+        self.analysis_cancel = None;
+        true
     }
 
     pub(crate) fn set_document_symbols(&mut self, symbols: Vec<LspDocumentSymbol>) {

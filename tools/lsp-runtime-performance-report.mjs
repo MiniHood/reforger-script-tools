@@ -300,6 +300,11 @@ function renderReport(input) {
   lines.push(`- Analysis catalog total: ${formatMs(summary.didChange.catalogMs)}`);
   lines.push(`- Analysis parse total: ${formatMs(summary.didChange.parseMs)}`);
   lines.push(`- Analysis scope total: ${formatMs(summary.didChange.scopeMs)}`);
+  lines.push(`- Background analysis ready: ${summary.documentAnalysis.readyCount}`);
+  lines.push(`- Background analysis ready total: ${formatMs(summary.documentAnalysis.readyMs)}`);
+  lines.push(`- Background analysis ready p95: ${formatMs(percentile(summary.documentAnalysis.readyElapsed, 0.95))}`);
+  lines.push(`- Background analysis superseded: ${summary.documentAnalysis.skippedCount}`);
+  lines.push(`- Background analysis superseded total: ${formatMs(summary.documentAnalysis.skippedMs)}`);
   lines.push("");
   return `${lines.join("\n")}\n`;
 }
@@ -335,6 +340,13 @@ function summarize(records) {
       parseMs: 0,
       scopeMs: 0,
     },
+    documentAnalysis: {
+      readyCount: 0,
+      readyMs: 0,
+      readyElapsed: [],
+      skippedCount: 0,
+      skippedMs: 0,
+    },
     byOperation: new Map(),
     byFile: new Map(),
   };
@@ -367,6 +379,14 @@ function summarize(records) {
       summary.didChange.catalogMs += numberField(record.fields, "analysis_catalog_ms") ?? 0;
       summary.didChange.parseMs += numberField(record.fields, "analysis_parse_ms") ?? 0;
       summary.didChange.scopeMs += numberField(record.fields, "analysis_scope_ms") ?? 0;
+    }
+    if (record.operation === "documentAnalysis ready") {
+      summary.documentAnalysis.readyCount += 1;
+      summary.documentAnalysis.readyMs += elapsed;
+      summary.documentAnalysis.readyElapsed.push(elapsed);
+    } else if (record.operation === "documentAnalysis skipped" || record.operation === "documentAnalysis discarded") {
+      summary.documentAnalysis.skippedCount += 1;
+      summary.documentAnalysis.skippedMs += elapsed;
     }
     if (record.operation === "request semanticTokens" && record.fields.mode === "fast-compute") {
       summary.fastSemanticMs += elapsed;

@@ -42,10 +42,12 @@ JSON-RPC errors; invalid notifications are ignored. After `shutdown`, requests
 are rejected and `exit` terminates the process as required by the lifecycle.
 
 Open/change notifications require document versions. The server accepts only a
-strictly newer revision, rebuilds the cached file analysis for that revision,
-and publishes parser diagnostics carrying the accepted version. Close removes
-the document and clears diagnostics. Repeated Outline requests reuse cached
-symbol projection for the accepted revision.
+strictly newer revision. `didOpen` builds the initial analysis synchronously;
+`didChange` immediately accepts text/version, clears text-derived caches, and
+schedules latest-wins analysis after a short idle delay. The completed result
+installs only for the still-current revision, then publishes parser diagnostics.
+Close removes the document and clears diagnostics. Repeated Outline requests
+reuse cached symbol projection for the accepted revision.
 
 The bounded ingress queue remains the backpressure and ordering boundary. When
 several contiguous `didChange` notifications each contain exactly one
@@ -54,6 +56,18 @@ newest version before rebuilding analysis. Ranged edits, mixed URIs, requests,
 and internal events are ordering barriers and are never merged. The dispatch
 log records queue time plus coalesced and superseded counts so a capture can
 separate queue delay from analysis work.
+
+While a current revision is pending analysis, source-backed requests are held
+by URI/revision instead of reading the prior analysis against new text. They
+replay after that exact analysis installs; a new edit or close receives the
+standard `ContentModified` response for retained requests. This keeps the
+transport responsive without exposing mismatched language facts.
+
+The current parser/catalog analysis is an indivisible worker operation. A newer
+revision cancels a queued job immediately and causes a running obsolete result
+to be skipped after that operation returns; the runtime log records the
+background elapsed time so this residual worker cost stays visible rather than
+being mistaken for ingress queue time.
 
 Feature requests combine the open document's cached file-local analysis with a
 short-lived snapshot of the workspace/game-data overlay. Rich semantic-token

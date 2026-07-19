@@ -69,8 +69,10 @@ pub use hover::{
     hover_reports_for_source_positions, hover_reports_for_source_positions_with_external,
     HoverSelectionSource, LspHover, LspHoverReport,
 };
-pub(crate) use open_documents::OpenDocument;
 pub use open_documents::{file_index_for_source, FileIndexAnalysis};
+pub(crate) use open_documents::{
+    file_index_for_source_with_timings, FileIndexAnalysisTimings, OpenDocument,
+};
 use semantic_tokens::{
     fast_semantic_tokens_for_cached_analysis,
     semantic_tokens_for_cached_analysis_with_external_indexes,
@@ -108,6 +110,8 @@ const MAX_LSP_HEADER_LINE_BYTES: usize = 8 * 1024;
 const MAX_LSP_HEADER_BYTES: usize = 32 * 1024;
 const MAX_LSP_BODY_BYTES: usize = 16 * 1024 * 1024;
 const INCOMING_EVENT_QUEUE_CAPACITY: usize = 64;
+const DOCUMENT_ANALYSIS_IDLE_DELAY_MS: u64 = 150;
+const MAX_PENDING_DOCUMENT_REQUESTS_PER_URI: usize = 32;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LspServerOptions {
     pub log_path: Option<PathBuf>,
@@ -122,8 +126,13 @@ pub fn run_stdio(options: LspServerOptions) -> Result<(), String> {
     let (incoming_sender, incoming_receiver) = mpsc::sync_channel(INCOMING_EVENT_QUEUE_CAPACITY);
     let (internal_sender, internal_receiver) = mpsc::channel();
     let rich_scheduler = RichSemanticTokensScheduler::start(internal_sender.clone());
-    let mut server =
-        LspServer::new_with_runtime_senders(stdout.lock(), options, Some(rich_scheduler));
+    let analysis_scheduler = OpenDocumentAnalysisScheduler::start(internal_sender.clone());
+    let mut server = LspServer::new_with_runtime_senders(
+        stdout.lock(),
+        options,
+        Some(rich_scheduler),
+        Some(analysis_scheduler),
+    );
     thread::spawn(move || {
         let stdin = io::stdin();
         let mut reader = BufReader::new(stdin.lock());
@@ -213,6 +222,8 @@ struct LspServer<W: Write> {
     logger: LspLogger,
     external_index: ExternalIndexHandle,
     rich_scheduler: Option<RichSemanticTokensScheduler>,
+    analysis_scheduler: Option<OpenDocumentAnalysisScheduler>,
+    deferred_document_requests: BTreeMap<String, Vec<DeferredDocumentRequest>>,
     next_server_request_id: u64,
     semantic_tokens_refresh_in_flight: Option<String>,
     semantic_tokens_refresh_dirty: bool,
@@ -243,6 +254,135 @@ enum ServerEvent {
         reason: String,
         elapsed_ms: u128,
     },
+    DocumentAnalysisReady {
+        uri: String,
+        revision: u64,
+        analysis: FileIndexAnalysis,
+        timings: FileIndexAnalysisTimings,
+        elapsed_ms: u128,
+    },
+    DocumentAnalysisSkipped {
+        uri: String,
+        revision: u64,
+        reason: String,
+        elapsed_ms: u128,
+    },
+}
+
+struct DeferredDocumentRequest {
+    revision: u64,
+    received_at: Instant,
+    value: Value,
+}
+
+struct OpenDocumentAnalysisJob {
+    uri: String,
+    revision: u64,
+    source: String,
+    cancel: Arc<AtomicBool>,
+    scheduled_at: Instant,
+}
+
+#[derive(Clone)]
+struct OpenDocumentAnalysisScheduler {
+    state: Arc<(Mutex<BTreeMap<String, OpenDocumentAnalysisJob>>, Condvar)>,
+    sender: mpsc::Sender<ServerEvent>,
+}
+
+impl OpenDocumentAnalysisScheduler {
+    fn start(sender: mpsc::Sender<ServerEvent>) -> Self {
+        let scheduler = Self {
+            state: Arc::new((Mutex::new(BTreeMap::new()), Condvar::new())),
+            sender,
+        };
+        let worker = scheduler.clone();
+        thread::spawn(move || worker.run());
+        scheduler
+    }
+
+    fn schedule(&self, job: OpenDocumentAnalysisJob) {
+        let (lock, wake) = &*self.state;
+        let mut pending = lock.lock().unwrap();
+        if let Some(previous) = pending.insert(job.uri.clone(), job) {
+            previous.cancel.store(true, Ordering::Relaxed);
+        }
+        wake.notify_one();
+    }
+
+    fn run(self) {
+        let (lock, wake) = &*self.state;
+        loop {
+            let mut pending = lock.lock().unwrap();
+            while pending.is_empty() {
+                pending = wake.wait(pending).unwrap();
+            }
+            let key = earliest_due_document_analysis_uri(&pending).unwrap();
+            let due_at =
+                pending[&key].scheduled_at + Duration::from_millis(DOCUMENT_ANALYSIS_IDLE_DELAY_MS);
+            let now = Instant::now();
+            if now < due_at {
+                let (pending_after_wait, _) = wake.wait_timeout(pending, due_at - now).unwrap();
+                pending = pending_after_wait;
+                continue;
+            }
+            let Some(job) = pending.remove(&key) else {
+                continue;
+            };
+            drop(pending);
+            if job.cancel.load(Ordering::Relaxed) {
+                continue;
+            }
+            let (analysis, timings) = file_index_for_source_with_timings(&job.source);
+            let event = if job.cancel.load(Ordering::Relaxed) {
+                ServerEvent::DocumentAnalysisSkipped {
+                    uri: job.uri,
+                    revision: job.revision,
+                    reason: "superseded-during-analysis".to_string(),
+                    elapsed_ms: job.scheduled_at.elapsed().as_millis(),
+                }
+            } else {
+                ServerEvent::DocumentAnalysisReady {
+                    uri: job.uri,
+                    revision: job.revision,
+                    analysis,
+                    timings,
+                    elapsed_ms: job.scheduled_at.elapsed().as_millis(),
+                }
+            };
+            let _ = self.sender.send(event);
+        }
+    }
+}
+
+fn earliest_due_document_analysis_uri(
+    pending: &BTreeMap<String, OpenDocumentAnalysisJob>,
+) -> Option<String> {
+    pending
+        .iter()
+        .min_by_key(|(uri, job)| (job.scheduled_at, *uri))
+        .map(|(uri, _)| uri.clone())
+}
+
+fn source_backed_request_method(method: &str) -> bool {
+    matches!(
+        method,
+        "textDocument/documentSymbol"
+            | "textDocument/hover"
+            | "textDocument/definition"
+            | "textDocument/completion"
+            | "textDocument/signatureHelp"
+            | "textDocument/semanticTokens/full"
+            | DEBUG_HOVER_METHOD
+            | DEBUG_COMPLETION_METHOD
+    )
+}
+
+fn request_document_uri(params: Option<&Value>) -> Option<String> {
+    params?
+        .get("textDocument")?
+        .get("uri")?
+        .as_str()
+        .map(str::to_string)
 }
 
 struct RichSemanticTokensJob {
@@ -509,13 +649,14 @@ struct TextDocumentIdentifier {
 
 impl<W: Write> LspServer<W> {
     fn new(writer: W, options: LspServerOptions) -> Self {
-        Self::new_with_runtime_senders(writer, options, None)
+        Self::new_with_runtime_senders(writer, options, None, None)
     }
 
     fn new_with_runtime_senders(
         writer: W,
         options: LspServerOptions,
         rich_scheduler: Option<RichSemanticTokensScheduler>,
+        analysis_scheduler: Option<OpenDocumentAnalysisScheduler>,
     ) -> Self {
         let logger = LspLogger::new(options.log_path.clone());
         let external_index = start_external_index(&options, logger.clone());
@@ -526,6 +667,8 @@ impl<W: Write> LspServer<W> {
             logger,
             external_index,
             rich_scheduler,
+            analysis_scheduler,
+            deferred_document_requests: BTreeMap::new(),
             next_server_request_id: 1,
             semantic_tokens_refresh_in_flight: None,
             semantic_tokens_refresh_dirty: false,
@@ -716,6 +859,13 @@ impl<W: Write> LspServer<W> {
             return Ok(false);
         }
 
+        if message.id.is_some()
+            && source_backed_request_method(method)
+            && self.defer_request_while_document_analysis_is_pending(&message, value.clone())?
+        {
+            return Ok(false);
+        }
+
         match method {
             "initialize" => {
                 self.log("request initialize");
@@ -784,7 +934,9 @@ impl<W: Write> LspServer<W> {
                     let revision = self.next_document_revision(&uri);
                     if let Some(mut previous) = self.documents.remove(&uri) {
                         previous.semantic_tokens.cancel_pending();
+                        previous.cancel_pending_analysis();
                     }
+                    self.discard_deferred_document_requests(&uri, revision)?;
                     let mut document = OpenDocument::new(text, version, revision);
                     let symbol_start = Instant::now();
                     let symbols =
@@ -853,34 +1005,50 @@ impl<W: Write> LspServer<W> {
                             .get_mut(&uri)
                             .expect("open document exists after version check");
                         document.replace(text, version);
-                        let parse_diagnostics = document.analysis.parse_diagnostics;
                         let revision = document.revision;
                         self.document_revisions.insert(uri.clone(), revision);
-                        let analysis_timings = document.analysis_timings;
-                        let diagnostics_message = publish_diagnostics_message(
-                            &uri,
-                            version,
-                            &document.text,
-                            &document.analysis.diagnostics,
-                        );
-                        self.write_message(diagnostics_message)?;
-                        self.log(&format!(
-                            "notification didChange uri={} bytes={} version={} revision={} cached_analysis=true document_symbols_cached=false symbols=pending parse_diagnostics={} analysis_parse_ms={} analysis_catalog_ms={} analysis_index_ms={} analysis_scope_ms={} analysis_build_ms={} queue_ms={} coalesced_changes={} superseded_changes={} analysis_elapsed_ms={}",
-                            uri,
-                            bytes,
-                            version,
-                            revision,
-                            parse_diagnostics,
-                            analysis_timings.parse_ms,
-                            analysis_timings.catalog_ms,
-                            analysis_timings.index_ms,
-                            analysis_timings.scope_ms,
-                            analysis_timings.total_ms,
-                            queue_ms,
-                            coalesced_changes,
-                            superseded_changes,
-                            start.elapsed().as_millis()
-                        ));
+                        let source = document.text.clone();
+                        let analysis_cancel = document.mark_analysis_pending();
+                        if let Some(scheduler) = self.analysis_scheduler.clone() {
+                            self.discard_deferred_document_requests(&uri, revision)?;
+                            scheduler.schedule(OpenDocumentAnalysisJob {
+                                uri: uri.clone(),
+                                revision,
+                                source,
+                                cancel: analysis_cancel,
+                                scheduled_at: Instant::now(),
+                            });
+                            self.log(&format!(
+                                "notification didChange uri={} bytes={} version={} revision={} cached_analysis=false analysis_state=pending queue_ms={} coalesced_changes={} superseded_changes={} analysis_elapsed_ms={}",
+                                uri, bytes, version, revision, queue_ms, coalesced_changes, superseded_changes, start.elapsed().as_millis()
+                            ));
+                        } else {
+                            let (analysis, timings) = file_index_for_source_with_timings(&source);
+                            self.log(&format!(
+                                "notification didChange uri={} bytes={} version={} revision={} cached_analysis=true document_symbols_cached=false symbols=pending parse_diagnostics={} analysis_parse_ms={} analysis_catalog_ms={} analysis_index_ms={} analysis_scope_ms={} analysis_build_ms={} queue_ms={} coalesced_changes={} superseded_changes={} analysis_elapsed_ms={}",
+                                uri,
+                                bytes,
+                                version,
+                                revision,
+                                analysis.parse_diagnostics,
+                                timings.parse_ms,
+                                timings.catalog_ms,
+                                timings.index_ms,
+                                timings.scope_ms,
+                                timings.total_ms,
+                                queue_ms,
+                                coalesced_changes,
+                                superseded_changes,
+                                start.elapsed().as_millis()
+                            ));
+                            self.install_document_analysis(
+                                &uri,
+                                revision,
+                                analysis,
+                                timings,
+                                start.elapsed().as_millis(),
+                            )?;
+                        }
                     }
                 }
             }
@@ -894,7 +1062,9 @@ impl<W: Write> LspServer<W> {
                     ));
                     if let Some(mut document) = self.documents.remove(&params.text_document.uri) {
                         document.semantic_tokens.cancel_pending();
+                        document.cancel_pending_analysis();
                     }
+                    self.discard_deferred_document_requests(&params.text_document.uri, 0)?;
                     self.write_message(clear_diagnostics_message(&params.text_document.uri))?;
                 }
             }
@@ -1711,7 +1881,163 @@ impl<W: Write> LspServer<W> {
                 ));
                 Ok(())
             }
+            ServerEvent::DocumentAnalysisReady {
+                uri,
+                revision,
+                analysis,
+                timings,
+                elapsed_ms,
+            } => self.install_document_analysis(&uri, revision, analysis, timings, elapsed_ms),
+            ServerEvent::DocumentAnalysisSkipped {
+                uri,
+                revision,
+                reason,
+                elapsed_ms,
+            } => {
+                self.log(&format!(
+                    "documentAnalysis skipped uri={} revision={} reason={} elapsed_ms={}",
+                    uri, revision, reason, elapsed_ms
+                ));
+                Ok(())
+            }
         }
+    }
+
+    fn defer_request_while_document_analysis_is_pending(
+        &mut self,
+        message: &RpcMessage,
+        value: Value,
+    ) -> Result<bool, String> {
+        let Some(uri) = request_document_uri(message.params.as_ref()) else {
+            return Ok(false);
+        };
+        let Some(document) = self.documents.get(&uri) else {
+            return Ok(false);
+        };
+        if document.analysis_ready() {
+            return Ok(false);
+        }
+        let revision = document.revision;
+        let pending = self
+            .deferred_document_requests
+            .entry(uri.clone())
+            .or_default();
+        if pending.len() >= MAX_PENDING_DOCUMENT_REQUESTS_PER_URI {
+            if let Some(id) = message.id.clone() {
+                self.respond_error(id, -32801, "Content modified")?;
+            }
+            self.log(&format!(
+                "request deferred rejected uri={} revision={} reason=capacity",
+                uri, revision
+            ));
+            return Ok(true);
+        }
+        pending.push(DeferredDocumentRequest {
+            revision,
+            received_at: Instant::now(),
+            value,
+        });
+        let pending_count = pending.len();
+        self.log(&format!(
+            "request deferred uri={} revision={} pending_requests={}",
+            uri, revision, pending_count
+        ));
+        Ok(true)
+    }
+
+    fn discard_deferred_document_requests(
+        &mut self,
+        uri: &str,
+        current_revision: u64,
+    ) -> Result<(), String> {
+        let Some(pending) = self.deferred_document_requests.remove(uri) else {
+            return Ok(());
+        };
+        for request in pending {
+            let message: RpcMessage = serde_json::from_value(request.value)
+                .map_err(|error| format!("Invalid deferred JSON-RPC message: {error}"))?;
+            if let Some(id) = message.id {
+                self.respond_error(id, -32801, "Content modified")?;
+            }
+        }
+        self.log(&format!(
+            "request deferred discarded uri={} current_revision={} reason=superseded",
+            uri, current_revision
+        ));
+        Ok(())
+    }
+
+    fn install_document_analysis(
+        &mut self,
+        uri: &str,
+        revision: u64,
+        analysis: FileIndexAnalysis,
+        timings: FileIndexAnalysisTimings,
+        elapsed_ms: u128,
+    ) -> Result<(), String> {
+        let Some(document) = self.documents.get_mut(uri) else {
+            self.log(&format!(
+                "documentAnalysis discarded uri={} revision={} reason=missing-document elapsed_ms={}",
+                uri, revision, elapsed_ms
+            ));
+            return Ok(());
+        };
+        if !document.install_analysis(revision, analysis, timings) {
+            let current_revision = document.revision;
+            let _ = document;
+            self.log(&format!(
+                "documentAnalysis discarded uri={} revision={} current_revision={} reason=stale elapsed_ms={}",
+                uri, revision, current_revision, elapsed_ms
+            ));
+            return Ok(());
+        }
+        let version = document.version;
+        let bytes = document.text.len();
+        let parse_diagnostics = document.analysis.parse_diagnostics;
+        let analysis_timings = document.analysis_timings;
+        let diagnostics_message = publish_diagnostics_message(
+            uri,
+            version,
+            &document.text,
+            &document.analysis.diagnostics,
+        );
+        let _ = document;
+        self.write_message(diagnostics_message)?;
+        self.log(&format!(
+            "documentAnalysis ready uri={} bytes={} version={} revision={} cached_analysis=true parse_diagnostics={} analysis_parse_ms={} analysis_catalog_ms={} analysis_index_ms={} analysis_scope_ms={} analysis_build_ms={} elapsed_ms={}",
+            uri,
+            bytes,
+            version,
+            revision,
+            parse_diagnostics,
+            analysis_timings.parse_ms,
+            analysis_timings.catalog_ms,
+            analysis_timings.index_ms,
+            analysis_timings.scope_ms,
+            analysis_timings.total_ms,
+            elapsed_ms
+        ));
+        let pending = self
+            .deferred_document_requests
+            .remove(uri)
+            .unwrap_or_default();
+        for request in pending {
+            if request.revision == revision {
+                self.handle_message(
+                    request.value,
+                    Some(request.received_at.elapsed().as_millis()),
+                    0,
+                    0,
+                )?;
+            } else {
+                let message: RpcMessage = serde_json::from_value(request.value)
+                    .map_err(|error| format!("Invalid deferred JSON-RPC message: {error}"))?;
+                if let Some(id) = message.id {
+                    self.respond_error(id, -32801, "Content modified")?;
+                }
+            }
+        }
+        Ok(())
     }
 
     fn schedule_rich_semantic_tokens(
@@ -7003,6 +7329,176 @@ class Example
         );
         assert!(coalescible_full_sync_did_change(&ranged).is_none());
         assert!(coalescible_full_sync_did_change(&multiple).is_none());
+    }
+
+    #[test]
+    fn document_analysis_scheduler_keeps_only_latest_pending_revision() {
+        let (sender, receiver) = mpsc::channel();
+        let scheduler = OpenDocumentAnalysisScheduler::start(sender);
+        scheduler.schedule(OpenDocumentAnalysisJob {
+            uri: "file:///Scripts/Pending.c".to_string(),
+            revision: 2,
+            source: "class Old {}".to_string(),
+            cancel: Arc::new(AtomicBool::new(false)),
+            scheduled_at: Instant::now(),
+        });
+        scheduler.schedule(OpenDocumentAnalysisJob {
+            uri: "file:///Scripts/Pending.c".to_string(),
+            revision: 3,
+            source: "class Current {}".to_string(),
+            cancel: Arc::new(AtomicBool::new(false)),
+            scheduled_at: Instant::now(),
+        });
+
+        let event = receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("latest analysis result");
+
+        assert!(matches!(
+            event,
+            ServerEvent::DocumentAnalysisReady { revision: 3, .. }
+        ));
+    }
+
+    #[test]
+    fn pending_document_symbol_request_replays_after_current_analysis_installs() {
+        let (sender, receiver) = mpsc::channel();
+        let scheduler = OpenDocumentAnalysisScheduler::start(sender);
+        let mut server = LspServer::new_with_runtime_senders(
+            Vec::new(),
+            LspServerOptions::default(),
+            None,
+            Some(scheduler),
+        );
+        let uri = "file:///Scripts/PendingOutline.c";
+
+        server
+            .handle_message(
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "textDocument/didOpen",
+                    "params": { "textDocument": {
+                        "uri": uri,
+                        "languageId": "enforce",
+                        "version": 1,
+                        "text": "class Initial {}"
+                    }}
+                }),
+                None,
+                0,
+                0,
+            )
+            .unwrap();
+        server
+            .handle_message(
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "textDocument/didChange",
+                    "params": {
+                        "textDocument": { "uri": uri, "version": 2 },
+                        "contentChanges": [{ "text": "class Current {}" }]
+                    }
+                }),
+                None,
+                0,
+                0,
+            )
+            .unwrap();
+        server
+            .handle_message(
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "textDocument/documentSymbol",
+                    "params": { "textDocument": { "uri": uri } }
+                }),
+                None,
+                0,
+                0,
+            )
+            .unwrap();
+        assert!(!String::from_utf8_lossy(&server.writer).contains("\"id\":1"));
+
+        server
+            .handle_internal_event(
+                receiver
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("document analysis result"),
+            )
+            .unwrap();
+
+        let output = String::from_utf8(server.writer).unwrap();
+        assert!(output.contains("\"id\":1"));
+        assert!(output.contains("\"name\":\"Current\""));
+        assert!(!output.contains("\"name\":\"Initial\""));
+    }
+
+    #[test]
+    fn pending_request_receives_content_modified_when_a_new_edit_supersedes_it() {
+        let (sender, _receiver) = mpsc::channel();
+        let scheduler = OpenDocumentAnalysisScheduler::start(sender);
+        let mut server = LspServer::new_with_runtime_senders(
+            Vec::new(),
+            LspServerOptions::default(),
+            None,
+            Some(scheduler),
+        );
+        let uri = "file:///Scripts/SupersededRequest.c";
+
+        for (method, params) in [
+            (
+                "textDocument/didOpen",
+                json!({ "textDocument": {
+                    "uri": uri, "languageId": "enforce", "version": 1, "text": "class Initial {}"
+                }}),
+            ),
+            (
+                "textDocument/didChange",
+                json!({
+                    "textDocument": { "uri": uri, "version": 2 },
+                    "contentChanges": [{ "text": "class Pending {}" }]
+                }),
+            ),
+        ] {
+            server
+                .handle_message(
+                    json!({ "jsonrpc": "2.0", "method": method, "params": params }),
+                    None,
+                    0,
+                    0,
+                )
+                .unwrap();
+        }
+        server
+            .handle_message(
+                json!({
+                    "jsonrpc": "2.0", "id": 1,
+                    "method": "textDocument/documentSymbol",
+                    "params": { "textDocument": { "uri": uri } }
+                }),
+                None,
+                0,
+                0,
+            )
+            .unwrap();
+        server
+            .handle_message(
+                json!({
+                    "jsonrpc": "2.0", "method": "textDocument/didChange",
+                    "params": {
+                        "textDocument": { "uri": uri, "version": 3 },
+                        "contentChanges": [{ "text": "class Current {}" }]
+                    }
+                }),
+                None,
+                0,
+                0,
+            )
+            .unwrap();
+
+        let output = String::from_utf8(server.writer).unwrap();
+        assert!(output.contains("\"id\":1"));
+        assert!(output.contains("\"code\":-32801"));
     }
 
     #[test]

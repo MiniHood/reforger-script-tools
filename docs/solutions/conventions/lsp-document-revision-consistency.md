@@ -75,6 +75,11 @@ the symbol response still contains the version-3 declarations
 For asynchronous work, capture the accepted internal revision at scheduling
 time and install its result only when that revision is still current.
 
+For full-file analysis during typing, accept the new text/revision first and
+mark analysis pending. A request for that revision must wait for its matching
+analysis or receive `ContentModified` when superseded; serving the previous
+analysis against current text is a revision-consistency violation.
+
 ## Examples
 
 ```text

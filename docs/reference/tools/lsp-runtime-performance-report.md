@@ -38,6 +38,11 @@ The report preserves aggregate sections and also provides two capture-oriented s
 - **Burst Comparison** attributes `didChange`, completion, queue, coalescing, and perceived-latency observations by URI and accepted document revision. Missing fixed `didChange` fields (`queue_ms`, `coalesced_changes`, `superseded_changes`, selected version, and selected revision) safely default to zero or the legacy version/revision field.
 - **Capture Evidence Quality** aggregates those revision rows by URI in the explicit report window. A file requires at least ten completion requests to be classified **Sufficient**; an **Insufficient** result is useful context but not before/after proof.
 
+When the server uses deferred open-document analysis, **Edit Analysis Latency**
+separates cheap foreground `didChange` acceptance from `documentAnalysis`
+ready/superseded worker records. Do not interpret a low `didChange` total as
+zero analysis work; compare it with the background-analysis totals.
+
 The report reads the runtime log without modifying it. It never emits source text, completion prefixes, or completion payload fields, even if legacy log records contain them.
 
 The report does not sample OS CPU directly. It uses logged elapsed timings as the first debugging pass for identifying which LSP subsystem likely caused CPU use or visible delay. When logs include `queue_ms`, completion sections separate execution time from perceived latency caused by waiting behind earlier LSP work.
