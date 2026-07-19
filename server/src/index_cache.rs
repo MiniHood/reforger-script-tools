@@ -30,6 +30,10 @@ const CACHE_INDEX_SHAPE: &str =
     "runtime-pruned:no-local-variables:detail-spans-stripped:layered-external-v1:binary-v4:string-table-v1:canonical-public-facts-v1";
 const LEGACY_CACHE_FORMAT_VERSION: u32 = 9;
 const LEGACY_CACHE_MAGIC: &[u8; 8] = b"RSTIDX09";
+const V10_CACHE_FORMAT_VERSION: u32 = 10;
+const V10_CACHE_MAGIC: &[u8; 8] = b"RSTIDX10";
+const V10_CACHE_INDEX_SHAPE: &str =
+    "runtime-pruned:no-local-variables:detail-spans-stripped:layered-external-v1:binary-v3:string-table-v1:validated-file-contributions-v1";
 const LEGACY_CACHE_INDEX_SHAPE: &str =
     "runtime-pruned:no-local-variables:detail-spans-stripped:layered-external-v1:binary-v2:string-table-v1";
 const MAX_CACHE_STRING_TABLE_ENTRIES: usize = 1_000_000;
@@ -37,6 +41,10 @@ const MAX_CACHE_RAW_STRING_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CACHE_FILE_RECORDS: usize = 1_000_000;
 const MAX_CACHE_SYMBOL_RECORDS: usize = 5_000_000;
 const MAX_CACHE_SYMBOL_LIST_ITEMS: usize = 1_000_000;
+/// v10 was intentionally larger than the canonical v11 payload because it
+/// persisted both a query graph and JSON contributions. Read no more than a
+/// plausible legacy game-data artifact before asking the allocator to hold it.
+const MAX_LEGACY_CACHE_BYTES: u64 = 128 * 1024 * 1024;
 
 #[derive(Debug)]
 pub struct GameDataIndexCacheConfig {
@@ -173,6 +181,26 @@ struct CachedConditionalBranch {
     kind: SemanticConditionalBranchKind,
     condition: Option<String>,
 }
+
+/// The former v10 payload. It is decoded only to make a one-way v11 cache
+/// replacement and is never published as a query representation.
+#[derive(Debug)]
+struct V10CachedGameDataIndex {
+    schema: String,
+    format_version: u32,
+    index_shape: String,
+    crate_version: String,
+    fingerprint: SourceFingerprint,
+    summary: CachedIndexSummary,
+    index: V10CachedSymbolIndex,
+}
+
+#[derive(Debug)]
+struct V10CachedSymbolIndex {
+    files: Vec<IndexedFile>,
+    symbols: Vec<IndexedSymbol>,
+    contributions: Vec<FileContribution>,
+}
 /// A v9 cache had the same binary records as v10 up to its indexed symbols,
 /// but no compiler-owned public contribution payload. It is read only as a
 /// one-way migration input and is never an alternate runtime representation.
@@ -194,6 +222,62 @@ struct LegacyCachedSymbolIndex {
 }
 
 impl CachedFileContribution {
+    fn from_file_contribution(
+        metadata: SourceFileMetadata,
+        contribution: FileContribution,
+    ) -> Result<Self, String> {
+        let mut symbols = Vec::with_capacity(contribution.symbols.len());
+        for symbol in contribution.symbols {
+            let Some(name) = symbol.name else {
+                return Err("v10 public contribution contains an unnamed symbol".to_string());
+            };
+            symbols.push(CachedPublicSymbol {
+                id: symbol.id,
+                parent: symbol.parent,
+                kind: symbol.kind,
+                name,
+                span: symbol.span,
+                selection_span: symbol.selection_span,
+                detail: CachedPublicSymbolDetail {
+                    type_text: symbol.detail.type_text.map(|text| text.text),
+                    return_type: symbol.detail.return_type.map(|text| text.text),
+                    base_type: symbol.detail.base_type.map(|text| text.text),
+                    default_value: symbol.detail.default_value.map(|text| text.text),
+                    enum_value: symbol.detail.enum_value.map(|text| text.text),
+                },
+                attributes: symbol
+                    .attributes
+                    .into_iter()
+                    .map(|text| text.text)
+                    .collect(),
+                modifiers: symbol.modifiers.into_iter().map(|text| text.text).collect(),
+                doc_comments: symbol
+                    .doc_comments
+                    .into_iter()
+                    .map(|comment| CachedDocComment {
+                        kind: comment.kind,
+                        text: comment.text,
+                    })
+                    .collect(),
+                conditional_context: symbol
+                    .conditional_context
+                    .into_iter()
+                    .map(|branch| CachedConditionalBranch {
+                        kind: branch.kind,
+                        condition: branch.condition.map(|text| text.text),
+                    })
+                    .collect(),
+                callable_form: symbol.callable_form,
+            });
+        }
+        Ok(Self {
+            metadata,
+            non_declaration_callable_fragments: contribution.non_declaration_callable_fragments,
+            symbols,
+        }
+        .with_contiguous_ids())
+    }
+
     fn from_indexed_file(file: &IndexedFile, symbols: &[IndexedSymbol]) -> Self {
         let public_symbols = symbols
             .iter()
@@ -432,7 +516,45 @@ impl LegacyCachedGameDataIndex {
             && self.index_shape == LEGACY_CACHE_INDEX_SHAPE
             && self.crate_version == env!("CARGO_PKG_VERSION")
             && self.fingerprint == *expected_fingerprint
-            && validate_legacy_index_records(&self.index).is_ok()
+            && validate_legacy_index_records(&self.index.files, &self.index.symbols).is_ok()
+    }
+}
+
+impl V10CachedGameDataIndex {
+    fn into_current(self) -> Result<CachedGameDataIndex, String> {
+        let files = self
+            .index
+            .files
+            .into_iter()
+            .zip(self.index.contributions)
+            .map(|(file, contribution)| {
+                CachedFileContribution::from_file_contribution(file.metadata, contribution)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(CachedGameDataIndex {
+            schema: self.schema,
+            format_version: CACHE_FORMAT_VERSION,
+            index_shape: CACHE_INDEX_SHAPE.to_string(),
+            crate_version: self.crate_version,
+            fingerprint: self.fingerprint,
+            summary: self.summary,
+            files,
+        })
+    }
+
+    fn validates_for_migration(&self, expected_fingerprint: &SourceFingerprint) -> bool {
+        self.schema == CACHE_SCHEMA
+            && self.format_version == V10_CACHE_FORMAT_VERSION
+            && self.index_shape == V10_CACHE_INDEX_SHAPE
+            && self.crate_version == env!("CARGO_PKG_VERSION")
+            && self.fingerprint == *expected_fingerprint
+            && self.index.files.len() == self.index.contributions.len()
+            && self
+                .index
+                .contributions
+                .iter()
+                .all(|contribution| contribution.validate().is_ok())
+            && validate_legacy_index_records(&self.index.files, &self.index.symbols).is_ok()
     }
 }
 
@@ -440,22 +562,21 @@ impl LegacyCachedGameDataIndex {
 /// a versioned semantic contribution. Reject instead of attempting a partial
 /// projection: a cache is disposable, while a bad external index is visible to
 /// every language feature.
-fn validate_legacy_index_records(index: &LegacyCachedSymbolIndex) -> Result<(), String> {
-    let files_by_id: BTreeMap<_, _> = index.files.iter().map(|file| (file.id, file)).collect();
-    if files_by_id.len() != index.files.len() {
+fn validate_legacy_index_records(
+    files: &[IndexedFile],
+    symbols: &[IndexedSymbol],
+) -> Result<(), String> {
+    let files_by_id: BTreeMap<_, _> = files.iter().map(|file| (file.id, file)).collect();
+    if files_by_id.len() != files.len() {
         return Err("legacy cache contains duplicate file identifiers".to_string());
     }
 
-    let symbols_by_id: BTreeMap<_, _> = index
-        .symbols
-        .iter()
-        .map(|symbol| (symbol.id, symbol))
-        .collect();
-    if symbols_by_id.len() != index.symbols.len() {
+    let symbols_by_id: BTreeMap<_, _> = symbols.iter().map(|symbol| (symbol.id, symbol)).collect();
+    if symbols_by_id.len() != symbols.len() {
         return Err("legacy cache contains duplicate symbol identifiers".to_string());
     }
 
-    for file in &index.files {
+    for file in files {
         let range_end = file
             .symbol_start
             .checked_add(file.symbol_count)
@@ -465,7 +586,7 @@ fn validate_legacy_index_records(index: &LegacyCachedSymbolIndex) -> Result<(), 
                     file.id
                 )
             })?;
-        let Some(range) = index.symbols.get(file.symbol_start..range_end) else {
+        let Some(range) = symbols.get(file.symbol_start..range_end) else {
             return Err(format!(
                 "legacy cache file {:?} has an out-of-bounds symbol range",
                 file.id
@@ -477,8 +598,7 @@ fn validate_legacy_index_records(index: &LegacyCachedSymbolIndex) -> Result<(), 
                 file.id
             ));
         }
-        let actual_count = index
-            .symbols
+        let actual_count = symbols
             .iter()
             .filter(|symbol| symbol.id.file_id == file.id)
             .count();
@@ -490,14 +610,13 @@ fn validate_legacy_index_records(index: &LegacyCachedSymbolIndex) -> Result<(), 
         }
     }
 
-    let projected_ids: BTreeMap<_, _> = index
-        .symbols
+    let projected_ids: BTreeMap<_, _> = symbols
         .iter()
         .filter(|symbol| symbol.name.is_some() && public_semantic_kind(symbol.kind).is_some())
         .map(|symbol| (symbol.id, ()))
         .collect();
 
-    for symbol in &index.symbols {
+    for symbol in symbols {
         if !files_by_id.contains_key(&symbol.id.file_id) {
             return Err(format!(
                 "legacy cache symbol {:?} references an unknown file",
@@ -648,29 +767,37 @@ pub fn load_or_build_game_data_index_with_progress(
         Ok(Some(CacheLoad::Migrated(cached))) => {
             timings.cache_read_deserialize_validate = cache_read_start.elapsed();
             progress("cache-load-hit");
-            progress("map-rebuild-start");
-            let map_rebuild_start = Instant::now();
             let summary: RuntimeIndexSummary = cached.summary.clone().into();
-            let index = cached.into_index();
-            timings.map_rebuild = map_rebuild_start.elapsed();
 
-            // The v9 bytes have already passed source-identity and structural
-            // validation. Replace them with the current contribution contract
-            // before exposing the rebuilt lookup maps to the runtime.
+            // Legacy bytes have already passed source-identity and structural
+            // validation. Replace them before reconstructing lookup maps so no
+            // legacy graph survives publication (or coexists with the output).
             progress("cache-write-start");
             let cache_write_start = Instant::now();
-            write_cached_index(&config.cache_path, &fingerprint, &summary, &index)?;
+            let migration_write = write_cached_payload(&config.cache_path, &cached);
             timings.cache_write = cache_write_start.elapsed();
-            progress("cache-write-end");
-            timings.total = total_start.elapsed();
-            return Ok(GameDataIndexCacheResult {
-                index,
-                summary,
-                cache_status: IndexCacheStatus::Loaded,
-                fingerprint,
-                timings,
-                cache_file_bytes: cache_file_bytes(&config.cache_path),
-            });
+            if migration_write.is_ok() {
+                progress("cache-write-end");
+                progress("map-rebuild-start");
+                let map_rebuild_start = Instant::now();
+                let index = cached.into_index();
+                timings.map_rebuild = map_rebuild_start.elapsed();
+                progress("map-rebuild-end");
+                timings.total = total_start.elapsed();
+                return Ok(GameDataIndexCacheResult {
+                    index,
+                    summary,
+                    cache_status: IndexCacheStatus::Loaded,
+                    fingerprint,
+                    timings,
+                    cache_file_bytes: cache_file_bytes(&config.cache_path),
+                });
+            }
+            // A cache migration is never a reason to publish the old graph or
+            // fail the language server. Discard it and take the normal source
+            // rebuild path below; a later write may succeed after a transient
+            // filesystem error is gone.
+            progress("cache-write-failed");
         }
         Ok(None) | Err(_) => {
             timings.cache_read_deserialize_validate = cache_read_start.elapsed();
@@ -738,7 +865,29 @@ fn load_cached_index(
             cache_path.display()
         )
     })?;
+    let file_bytes = file
+        .metadata()
+        .map_err(|error| {
+            format!(
+                "Failed to stat index cache {}: {error}",
+                cache_path.display()
+            )
+        })?
+        .len();
+    let mut magic = [0_u8; CACHE_MAGIC.len()];
+    file.read_exact(&mut magic).map_err(|error| {
+        format!(
+            "Failed to read index cache magic {}: {error}",
+            cache_path.display()
+        )
+    })?;
+    if (magic == *V10_CACHE_MAGIC || magic == *LEGACY_CACHE_MAGIC)
+        && file_bytes > MAX_LEGACY_CACHE_BYTES
+    {
+        return Ok(None);
+    }
     let mut bytes = Vec::new();
+    bytes.extend_from_slice(&magic);
     file.read_to_end(&mut bytes).map_err(|error| {
         format!(
             "Failed to read index cache {}: {error}",
@@ -747,20 +896,44 @@ fn load_cached_index(
     })?;
     timings.cache_file_read = read_start.elapsed();
     let decode_start = Instant::now();
-    let load = if bytes.starts_with(CACHE_MAGIC) {
-        CacheLoad::Current(decode_cached_index(&bytes).map_err(|error| {
+    let load = if magic == *CACHE_MAGIC {
+        let cached = decode_cached_index(&bytes).map_err(|error| {
             format!(
                 "Failed to decode index cache {}: {error}",
                 cache_path.display()
             )
+        })?;
+        drop(bytes);
+        CacheLoad::Current(cached)
+    } else if magic == *V10_CACHE_MAGIC {
+        let v10 = decode_v10_cached_index(&bytes).map_err(|error| {
+            format!(
+                "Failed to decode v10 index cache {}: {error}",
+                cache_path.display()
+            )
+        })?;
+        // The binary payload is no longer needed once its owned v10 graph is
+        // decoded. Do not keep it while validating/projecting the v11 facts.
+        drop(bytes);
+        if !v10.validates_for_migration(expected_fingerprint) {
+            timings.cache_decode = decode_start.elapsed();
+            timings.cache_validate = timings.cache_decode;
+            return Ok(None);
+        }
+        CacheLoad::Migrated(v10.into_current().map_err(|error| {
+            format!(
+                "Failed to project v10 index cache {} into canonical facts: {error}",
+                cache_path.display()
+            )
         })?)
-    } else if bytes.starts_with(LEGACY_CACHE_MAGIC) {
+    } else if magic == *LEGACY_CACHE_MAGIC {
         let legacy = decode_legacy_cached_index(&bytes).map_err(|error| {
             format!(
                 "Failed to decode legacy index cache {}: {error}",
                 cache_path.display()
             )
         })?;
+        drop(bytes);
         if !legacy.validates_for_migration(expected_fingerprint) {
             timings.cache_decode = decode_start.elapsed();
             timings.cache_validate = timings.cache_decode;
@@ -800,6 +973,15 @@ fn write_cached_index(
     summary: &RuntimeIndexSummary,
     index: &SymbolIndex,
 ) -> Result<(), String> {
+    let cached = CachedGameDataIndex::from_index(
+        index,
+        fingerprint.clone(),
+        CachedIndexSummary::from(summary),
+    );
+    write_cached_payload(cache_path, &cached)
+}
+
+fn write_cached_payload(cache_path: &Path, cached: &CachedGameDataIndex) -> Result<(), String> {
     if let Some(parent) = cache_path.parent() {
         fs::create_dir_all(parent).map_err(|error| {
             format!(
@@ -810,35 +992,36 @@ fn write_cached_index(
     }
 
     let temp_path = unique_cache_temp_path(cache_path);
-    let file = fs::File::create(&temp_path).map_err(|error| {
-        format!(
-            "Failed to create temporary index cache {}: {error}",
-            temp_path.display()
-        )
-    })?;
-    let cached = CachedGameDataIndex::from_index(
-        index,
-        fingerprint.clone(),
-        CachedIndexSummary::from(summary),
-    );
-    let bytes = encode_cached_index(&cached)?;
-    let mut writer = BufWriter::new(file);
-    writer.write_all(&bytes).map_err(|error| {
-        format!(
-            "Failed to write index cache {}: {error}",
-            temp_path.display()
-        )
-    })?;
-    writer.flush().map_err(|error| {
-        format!(
-            "Failed to flush index cache {}: {error}",
-            temp_path.display()
-        )
-    })?;
-    // Windows `ReplaceFileW` requires the replacement handle to be closed.
-    // Flushing alone leaves the `BufWriter` (and its file) open.
-    drop(writer);
-    replace_cache_atomically(&temp_path, cache_path)
+    let result = (|| {
+        let file = fs::File::create(&temp_path).map_err(|error| {
+            format!(
+                "Failed to create temporary index cache {}: {error}",
+                temp_path.display()
+            )
+        })?;
+        let bytes = encode_cached_index(cached)?;
+        let mut writer = BufWriter::new(file);
+        writer.write_all(&bytes).map_err(|error| {
+            format!(
+                "Failed to write index cache {}: {error}",
+                temp_path.display()
+            )
+        })?;
+        writer.flush().map_err(|error| {
+            format!(
+                "Failed to flush index cache {}: {error}",
+                temp_path.display()
+            )
+        })?;
+        // Windows `ReplaceFileW` requires the replacement handle to be closed.
+        // Flushing alone leaves the `BufWriter` (and its file) open.
+        drop(writer);
+        replace_cache_atomically(&temp_path, cache_path)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temp_path);
+    }
+    result
 }
 
 #[cfg(not(windows))]
@@ -974,6 +1157,47 @@ fn encode_legacy_cached_index(cached: &LegacyCachedGameDataIndex) -> Result<Vec<
     Ok(writer.into_bytes())
 }
 
+#[cfg(test)]
+fn encode_v10_cached_index(cached: &V10CachedGameDataIndex) -> Result<Vec<u8>, String> {
+    let runtime =
+        SymbolIndex::from_indexed_parts(cached.index.files.clone(), cached.index.symbols.clone());
+    let table_source = LegacyCachedGameDataIndex {
+        schema: cached.schema.clone(),
+        format_version: cached.format_version,
+        index_shape: cached.index_shape.clone(),
+        crate_version: cached.crate_version.clone(),
+        fingerprint: cached.fingerprint.clone(),
+        summary: cached.summary.clone(),
+        index: LegacyCachedSymbolIndex {
+            files: runtime.files().to_vec(),
+            symbols: runtime.symbols().to_vec(),
+        },
+    };
+    let string_table = CacheStringTable::from_legacy(&table_source, &runtime)?;
+    let mut writer = BinaryWriter::new(string_table);
+    writer.write_bytes(V10_CACHE_MAGIC);
+    writer.write_string_table()?;
+    writer.write_string(&cached.schema)?;
+    writer.write_u32(cached.format_version);
+    writer.write_string(&cached.index_shape)?;
+    writer.write_string(&cached.crate_version)?;
+    writer.write_fingerprint(&cached.fingerprint)?;
+    writer.write_summary(&cached.summary);
+    writer.write_vec_len(cached.index.files.len())?;
+    for file in &cached.index.files {
+        writer.write_indexed_file(file)?;
+    }
+    writer.write_vec_len(cached.index.symbols.len())?;
+    for symbol in &cached.index.symbols {
+        writer.write_indexed_symbol(symbol)?;
+    }
+    let contribution_bytes = serde_json::to_vec(&cached.index.contributions)
+        .map_err(|error| format!("Failed to encode v10 file contributions: {error}"))?;
+    writer.write_vec_len(contribution_bytes.len())?;
+    writer.write_bytes(&contribution_bytes);
+    Ok(writer.into_bytes())
+}
+
 fn decode_cached_index(bytes: &[u8]) -> Result<CachedGameDataIndex, String> {
     let mut reader = BinaryReader::new(bytes);
     let magic = reader.read_exact(CACHE_MAGIC.len())?;
@@ -1001,6 +1225,52 @@ fn decode_cached_index(bytes: &[u8]) -> Result<CachedGameDataIndex, String> {
         fingerprint,
         summary,
         files,
+    })
+}
+
+fn decode_v10_cached_index(bytes: &[u8]) -> Result<V10CachedGameDataIndex, String> {
+    let mut reader = BinaryReader::new(bytes);
+    let magic = reader.read_exact(V10_CACHE_MAGIC.len())?;
+    if magic != &V10_CACHE_MAGIC[..] {
+        return Err("v10 binary cache magic mismatch".to_string());
+    }
+    reader.read_string_table()?;
+    let schema = reader.read_string()?;
+    let format_version = reader.read_u32()?;
+    let index_shape = reader.read_string()?;
+    let crate_version = reader.read_string()?;
+    let fingerprint = reader.read_fingerprint()?;
+    let summary = reader.read_summary()?;
+    let file_count = reader.read_bounded_len("file records", MAX_CACHE_FILE_RECORDS)?;
+    let mut files = Vec::with_capacity(file_count);
+    for _ in 0..file_count {
+        files.push(reader.read_indexed_file()?);
+    }
+    let symbol_count = reader.read_bounded_len("symbol records", MAX_CACHE_SYMBOL_RECORDS)?;
+    let mut symbols = Vec::with_capacity(symbol_count);
+    for _ in 0..symbol_count {
+        symbols.push(reader.read_indexed_symbol()?);
+    }
+    let contribution_len = reader.read_bounded_len(
+        "v10 public contribution bytes",
+        usize::try_from(MAX_LEGACY_CACHE_BYTES)
+            .map_err(|_| "legacy cache byte ceiling exceeds usize".to_string())?,
+    )?;
+    let contributions = serde_json::from_slice(reader.read_exact(contribution_len)?)
+        .map_err(|error| format!("invalid v10 public file contributions: {error}"))?;
+    reader.expect_eof()?;
+    Ok(V10CachedGameDataIndex {
+        schema,
+        format_version,
+        index_shape,
+        crate_version,
+        fingerprint,
+        summary,
+        index: V10CachedSymbolIndex {
+            files,
+            symbols,
+            contributions,
+        },
     })
 }
 
@@ -1133,6 +1403,7 @@ impl CacheStringTable {
         self.insert_option_path(metadata.relative_path.as_deref())
     }
 
+    #[cfg(test)]
     fn insert_symbol(&mut self, symbol: &IndexedSymbol) -> Result<(), String> {
         self.insert_option(symbol.name.as_deref())?;
         self.insert_detail(&symbol.detail)?;
@@ -1177,6 +1448,7 @@ impl CacheStringTable {
         Ok(())
     }
 
+    #[cfg(test)]
     fn insert_detail(&mut self, detail: &IndexedSymbolDetail) -> Result<(), String> {
         self.insert_option(detail.type_text.as_deref())?;
         self.insert_option(detail.return_type_text.as_deref())?;
@@ -1291,6 +1563,7 @@ impl BinaryWriter {
         Ok(())
     }
 
+    #[cfg(test)]
     fn write_option_span(&mut self, value: Option<TextSpan>) -> Result<(), String> {
         match value {
             Some(value) => {
@@ -1307,11 +1580,13 @@ impl BinaryWriter {
         self.write_usize(span.end)
     }
 
+    #[cfg(test)]
     fn write_global_id(&mut self, id: GlobalSymbolId) -> Result<(), String> {
         self.write_usize(id.file_id.0)?;
         self.write_usize(id.symbol_id.0)
     }
 
+    #[cfg(test)]
     fn write_option_global_id(&mut self, id: Option<GlobalSymbolId>) -> Result<(), String> {
         match id {
             Some(id) => {
@@ -1367,6 +1642,7 @@ impl BinaryWriter {
         Ok(())
     }
 
+    #[cfg(test)]
     fn write_indexed_file(&mut self, file: &IndexedFile) -> Result<(), String> {
         self.write_usize(file.id.0)?;
         self.write_metadata(&file.metadata)?;
@@ -1375,6 +1651,7 @@ impl BinaryWriter {
         self.write_usize(file.non_declaration_callable_fragments)
     }
 
+    #[cfg(test)]
     fn write_detail(&mut self, detail: &IndexedSymbolDetail) -> Result<(), String> {
         self.write_option_string(detail.type_text.as_deref())?;
         self.write_option_span(detail.type_text_span)?;
@@ -1388,6 +1665,7 @@ impl BinaryWriter {
         self.write_option_span(detail.enum_value_text_span)
     }
 
+    #[cfg(test)]
     fn write_indexed_symbol(&mut self, symbol: &IndexedSymbol) -> Result<(), String> {
         self.write_global_id(symbol.id)?;
         self.write_option_global_id(symbol.parent)?;
@@ -1422,16 +1700,19 @@ impl BinaryWriter {
         Ok(())
     }
 
+    #[cfg(test)]
     fn write_attribute(&mut self, attribute: &IndexedAttribute) -> Result<(), String> {
         self.write_option_string(attribute.name.as_deref())?;
         self.write_string(&attribute.text)
     }
 
+    #[cfg(test)]
     fn write_doc_comment(&mut self, comment: &IndexedDocComment) -> Result<(), String> {
         self.write_u8(doc_comment_kind_tag(comment.kind));
         self.write_string(&comment.text)
     }
 
+    #[cfg(test)]
     fn write_conditional_branch(
         &mut self,
         branch: &IndexedConditionalBranch,
@@ -1912,6 +2193,7 @@ fn source_category_from_tag(tag: u8) -> Result<SourceCategory, String> {
     }
 }
 
+#[cfg(test)]
 fn symbol_kind_tag(kind: SymbolKind) -> u8 {
     match kind {
         SymbolKind::Class => 0,
@@ -2047,6 +2329,7 @@ fn semantic_callable_form_from_tag(tag: u8) -> Result<SemanticCallableForm, Stri
     }
 }
 
+#[cfg(test)]
 fn doc_comment_kind_tag(kind: DocCommentKind) -> u8 {
     match kind {
         DocCommentKind::Line => 0,
@@ -2062,6 +2345,7 @@ fn doc_comment_kind_from_tag(tag: u8) -> Result<DocCommentKind, String> {
     }
 }
 
+#[cfg(test)]
 fn preprocessor_branch_kind_tag(kind: PreprocessorBranchKind) -> u8 {
     match kind {
         PreprocessorBranchKind::If => 0,
@@ -2083,6 +2367,7 @@ fn preprocessor_branch_kind_from_tag(tag: u8) -> Result<PreprocessorBranchKind, 
     }
 }
 
+#[cfg(test)]
 fn callable_form_tag(form: CallableForm) -> u8 {
     match form {
         CallableForm::Implementation => 0,
@@ -2542,6 +2827,106 @@ mod tests {
     }
 
     #[test]
+    fn v10_cache_migrates_at_the_same_path_without_source_parsing() {
+        let root = test_root("v10_migration");
+        let cache = root.join("game-data-symbol-index.v9.bin");
+        let scripts = root.join("scripts");
+        let source = scripts.join("Game/Example.c");
+        let metadata = root.join("metadata.json");
+        write_file(
+            &source,
+            "class Example { int m_Value; void Run(int value); }",
+        );
+        write_file(&metadata, r#"{"commitSha":"v10-migration"}"#);
+        let config = GameDataIndexCacheConfig {
+            scripts_root: scripts.clone(),
+            cache_path: cache.clone(),
+            metadata_path: Some(metadata),
+        };
+        let cold = load_or_build_game_data_index(&config).unwrap();
+        let expected_signature = cold
+            .index
+            .callable_signature(cold.index.methods_by_owner_name("Example", "Run")[0]);
+        rewrite_cache_as_v10(&cache, |cached| cached).unwrap();
+        assert!(fs::read(&cache).unwrap().starts_with(V10_CACHE_MAGIC));
+
+        // A downloaded fingerprint is metadata-backed. Removing the source
+        // proves this result came from the v10 migration, not source parsing.
+        fs::remove_file(source).unwrap();
+        let migrated = load_or_build_game_data_index(&config).unwrap();
+        assert_eq!(migrated.cache_status, IndexCacheStatus::Loaded);
+        assert_eq!(migrated.index.classes_by_name("Example").len(), 1);
+        assert_eq!(
+            migrated
+                .index
+                .callable_signature(migrated.index.methods_by_owner_name("Example", "Run")[0]),
+            expected_signature
+        );
+        let migrated_bytes = fs::read(&cache).unwrap();
+        assert!(migrated_bytes.starts_with(CACHE_MAGIC));
+        assert!(fs::read_dir(&root).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .contains(".tmp")));
+
+        cleanup(&root);
+    }
+
+    #[test]
+    fn invalid_or_oversized_v10_cache_rebuilds_safely() {
+        let root = test_root("v10_invalid");
+        let cache = root.join("cache.bin");
+        let scripts = root.join("scripts");
+        let metadata = root.join("metadata.json");
+        write_file(&scripts.join("Example.c"), "class Example {}");
+        write_file(&metadata, r#"{"commitSha":"v10-invalid"}"#);
+        let config = GameDataIndexCacheConfig {
+            scripts_root: scripts,
+            cache_path: cache.clone(),
+            metadata_path: Some(metadata),
+        };
+        load_or_build_game_data_index(&config).unwrap();
+
+        rewrite_cache_as_v10(&cache, |mut cached| {
+            cached.fingerprint = SourceFingerprint::Downloaded {
+                scripts_root: "wrong-root".to_string(),
+                commit_sha: "stale".to_string(),
+            };
+            cached
+        })
+        .unwrap();
+        assert!(matches!(
+            load_or_build_game_data_index(&config).unwrap().cache_status,
+            IndexCacheStatus::Rebuilt { .. }
+        ));
+
+        rewrite_cache_as_v10(&cache, |cached| cached).unwrap();
+        let mut corrupt = fs::read(&cache).unwrap();
+        corrupt.truncate(V10_CACHE_MAGIC.len() + 1);
+        fs::write(&cache, corrupt).unwrap();
+        assert!(matches!(
+            load_or_build_game_data_index(&config).unwrap().cache_status,
+            IndexCacheStatus::Rebuilt { .. }
+        ));
+
+        fs::write(&cache, V10_CACHE_MAGIC).unwrap();
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&cache)
+            .unwrap()
+            .set_len(MAX_LEGACY_CACHE_BYTES + 1)
+            .unwrap();
+        assert!(matches!(
+            load_or_build_game_data_index(&config).unwrap().cache_status,
+            IndexCacheStatus::Rebuilt { .. }
+        ));
+        assert!(fs::read(&cache).unwrap().starts_with(CACHE_MAGIC));
+
+        cleanup(&root);
+    }
+
+    #[test]
     fn v9_cache_with_wrong_fingerprint_rebuilds_instead_of_migrating() {
         let root = test_root("v9_wrong_fingerprint");
         let cache = root.join("cache.bin");
@@ -2934,6 +3319,33 @@ class BaseGameModeClass : GenericEntityClass
         });
         fs::write(cache_path, encode_legacy_cached_index(&legacy)?)
             .map_err(|error| error.to_string())
+    }
+
+    fn rewrite_cache_as_v10(
+        cache_path: &Path,
+        transform: impl FnOnce(V10CachedGameDataIndex) -> V10CachedGameDataIndex,
+    ) -> Result<(), String> {
+        let current =
+            decode_cached_index(&fs::read(cache_path).map_err(|error| error.to_string())?)?;
+        let runtime = current.clone().into_index();
+        let cached = transform(V10CachedGameDataIndex {
+            schema: CACHE_SCHEMA.to_string(),
+            format_version: V10_CACHE_FORMAT_VERSION,
+            index_shape: V10_CACHE_INDEX_SHAPE.to_string(),
+            crate_version: current.crate_version,
+            fingerprint: current.fingerprint,
+            summary: current.summary,
+            index: V10CachedSymbolIndex {
+                files: runtime.files().to_vec(),
+                symbols: runtime.symbols().to_vec(),
+                contributions: current
+                    .files
+                    .iter()
+                    .map(CachedFileContribution::to_file_contribution)
+                    .collect(),
+            },
+        });
+        fs::write(cache_path, encode_v10_cached_index(&cached)?).map_err(|error| error.to_string())
     }
 
     fn write_file(path: &Path, source: &str) {
