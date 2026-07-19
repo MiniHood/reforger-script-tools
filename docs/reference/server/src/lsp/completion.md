@@ -20,10 +20,11 @@ is pending, it first maps the LSP UTF-16 position through the matching
 foreground position index when present, or directly through the immutable
 current snapshot when foreground publication is still in flight. It then uses a
 fixed 16KiB-before/2KiB-after
-current-snapshot lexer window: a `ReceiverResolutionQuery` for one bare local,
+current-snapshot lexer window: an `OverrideQuery` for a class header and direct
+base within a 17KiB before-cursor budget, a `ReceiverResolutionQuery` for one bare local,
 parameter, or field receiver, a `LocalScopeQuery` for ordinary callable-local
 prefixes, and an `ArgumentLabelQuery` for one bare externally indexed callable.
-These queries recover only brace-scoped declarations, parameter-body ownership,
+These queries recover only a proven class base, brace-scoped declarations, parameter-body ownership,
 receiver type, and call-label facts wholly proven inside that window. A
 one-or-more-step zero-argument external call path rooted in an externally
 indexed global function is also admitted when every return type can be proved

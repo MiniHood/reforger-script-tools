@@ -31,6 +31,7 @@ const MAX_COMPLETION_ITEMS: usize = 250;
 /// runtime semantic lane.
 const LOCAL_SCOPE_QUERY_MAX_WINDOW_BYTES: usize = 16 * 1024;
 const LOCAL_SCOPE_QUERY_TRAILING_BYTES: usize = 2 * 1024;
+const OVERRIDE_QUERY_MAX_WINDOW_BYTES: usize = LOCAL_SCOPE_QUERY_MAX_WINDOW_BYTES + 1024;
 /// When the fixed window begins or ends in a multi-line lexical construct, a
 /// small current snapshot may be lexed once to establish its real state. This
 /// preserves immediate externally-proven completion in normal large files
@@ -554,12 +555,21 @@ impl BoundedCompletionRegion {
 
     fn for_current_override(source: &str, offset: usize) -> Option<Self> {
         let (_, end) = Self::window_bounds(source, offset)?;
-        // At the start of a document the normal local window intentionally
-        // drops the class-header line. Override completion needs that header,
-        // so retain the bounded prefix only while it stays inside the same
-        // foreground budget. Larger files safely use the ordinary fallback.
-        (offset <= LOCAL_SCOPE_QUERY_MAX_WINDOW_BYTES).then_some(())?;
-        Self::from_window(source, 0, end)
+        let mut start = offset.saturating_sub(LOCAL_SCOPE_QUERY_MAX_WINDOW_BYTES);
+        while start < offset && !source.is_char_boundary(start) {
+            start += 1;
+        }
+        // The normal local query begins after this line because it only needs
+        // callable-local facts. Override recovery must retain the class header,
+        // so it extends to the preceding line boundary while preserving the
+        // same fixed before-cursor budget.
+        start = source
+            .get(..start)?
+            .rfind('\n')
+            .map(|newline| newline + 1)
+            .unwrap_or(0);
+        (offset.saturating_sub(start) <= OVERRIDE_QUERY_MAX_WINDOW_BYTES).then_some(())?;
+        Self::from_window(source, start, end)
     }
 
     fn window_bounds(source: &str, offset: usize) -> Option<(usize, usize)> {
@@ -3921,6 +3931,34 @@ mod tests {
                     .new_text
                     .contains("override protected void OnPostInit(IEntity owner)")
         }));
+    }
+
+    #[test]
+    fn current_override_query_keeps_a_nearby_class_header_in_a_large_file() {
+        let source = format!(
+            "{}class Child : ScriptComponent\n{{\n\ton\n}}\n",
+            "int padding;\n".repeat(2_000)
+        );
+        let external = file_index_for_source(
+            r#"class ScriptComponent
+{
+	event protected void OnPostInit(IEntity owner);
+}
+"#,
+        )
+        .index;
+        let offset = source.rfind("\ton").unwrap() + 3;
+
+        let report = completion_report_for_current_override_at_offset_with_external_indexes(
+            &source,
+            offset,
+            Some(&external),
+            None,
+        )
+        .expect("nearby class header should stay within the fixed override window");
+
+        assert_eq!(report.completion_context, "override");
+        assert!(report.list.items.iter().any(|item| item.label == "OnPostInit"));
     }
 
     #[test]
