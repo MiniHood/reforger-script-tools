@@ -1,4 +1,6 @@
+use crate::analysis_runtime::{DocumentSnapshot, Position};
 use crate::index::SymbolIndex;
+use crate::lexer::{lex, Keyword, Token, TokenKind};
 use crate::lsp::{
     file_index_for_source, offset_for_position, range_for_span, FileIndexAnalysis, LspPosition,
     LspRange,
@@ -92,6 +94,132 @@ pub fn definition_report_for_cached_analysis_with_external(
         None,
         external_index,
     )
+}
+
+/// The pending-analysis definition contract is intentionally narrower than
+/// resolver-backed navigation: only a cursor already on a syntactically proven
+/// top-level declaration may navigate to that declaration's current-snapshot
+/// name.  References, members, locals, and recovered declarations return no
+/// target rather than combining current text with an older analysis.
+pub(crate) fn definition_report_for_pending_snapshot(
+    snapshot: &DocumentSnapshot,
+    uri: &str,
+    position: LspPosition,
+    parse_diagnostics: usize,
+) -> LspDefinitionReport {
+    let Some(offset) = snapshot.positions().offset_for_position(Position {
+        line: position.line,
+        character: position.character,
+    }) else {
+        return empty_definition_report(parse_diagnostics);
+    };
+
+    let source = snapshot.text();
+    let Some((name, name_span, kind)) = lexical_top_level_declaration_at_offset(source, offset)
+    else {
+        return empty_definition_report(parse_diagnostics);
+    };
+    let range = range_for_span(source, name_span);
+    let link = LspLocationLink {
+        origin_selection_range: Some(range.clone()),
+        target_uri: uri.to_string(),
+        target_range: range.clone(),
+        target_selection_range: range,
+    };
+    LspDefinitionReport {
+        locations: vec![location_from_link(&link)],
+        links: vec![link],
+        parse_diagnostics,
+        selected_label: Some(name),
+        selected_kind: Some(kind),
+        selected_source: Some(CandidateSource::FileLocal),
+        resolver_reason: None,
+        identifier_context: None,
+        resolver_candidate_count: 1,
+    }
+}
+
+fn lexical_top_level_declaration_at_offset(
+    source: &str,
+    offset: usize,
+) -> Option<(String, crate::lexer::TextSpan, SymbolKind)> {
+    let tokens = lex(source);
+    let mut brace_depth = 0usize;
+    let mut index = 0usize;
+    while index < tokens.len() {
+        let token = tokens[index];
+        match token.kind {
+            TokenKind::LeftBrace => brace_depth += 1,
+            TokenKind::RightBrace => brace_depth = brace_depth.saturating_sub(1),
+            TokenKind::Keyword(Keyword::Class | Keyword::Enum | Keyword::Typedef)
+                if brace_depth == 0 =>
+            {
+                let declaration_kind = token.kind;
+                if let Some((name, name_token, next_index)) =
+                    lexical_top_level_declaration(&tokens, index, declaration_kind, source)
+                {
+                    if name_token.span.start <= offset && offset <= name_token.span.end {
+                        let kind = match declaration_kind {
+                            TokenKind::Keyword(Keyword::Class) => SymbolKind::Class,
+                            TokenKind::Keyword(Keyword::Enum) => SymbolKind::Enum,
+                            TokenKind::Keyword(Keyword::Typedef) => SymbolKind::Typedef,
+                            _ => unreachable!("only declaration keywords reach this branch"),
+                        };
+                        return Some((name, name_token.span, kind));
+                    }
+                    index = next_index;
+                    continue;
+                }
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    None
+}
+
+fn lexical_top_level_declaration(
+    tokens: &[Token],
+    keyword_index: usize,
+    declaration_kind: TokenKind,
+    source: &str,
+) -> Option<(String, Token, usize)> {
+    let mut index = keyword_index + 1;
+    let mut typedef_name = None;
+    while let Some(token) = tokens.get(index).copied() {
+        if token.kind.is_trivia() {
+            index += 1;
+            continue;
+        }
+        match declaration_kind {
+            TokenKind::Keyword(Keyword::Class | Keyword::Enum) => {
+                return (token.kind == TokenKind::Identifier).then(|| {
+                    (
+                        source[token.span.start..token.span.end].to_string(),
+                        token,
+                        index + 1,
+                    )
+                });
+            }
+            TokenKind::Keyword(Keyword::Typedef) => match token.kind {
+                TokenKind::Identifier => typedef_name = Some(token),
+                TokenKind::Semicolon | TokenKind::Eof => {
+                    return typedef_name.map(|name| {
+                        (
+                            source[name.span.start..name.span.end].to_string(),
+                            name,
+                            index + 1,
+                        )
+                    });
+                }
+                TokenKind::LeftBrace | TokenKind::RightBrace => return None,
+                _ => {}
+            },
+            _ => return None,
+        }
+        index += 1;
+    }
+    None
 }
 
 pub(crate) fn definition_report_for_cached_analysis_with_external_indexes(

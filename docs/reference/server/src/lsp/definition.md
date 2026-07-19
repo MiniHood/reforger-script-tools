@@ -15,11 +15,15 @@ dispatch.
 ## Current Behavior
 
 The resolver selects the candidate using file-local facts plus layered
-workspace and game-data indexes. Local targets use cached source analysis;
-external targets read source only to project stored byte spans into LSP ranges.
-The response preserves origin selection ranges and returns no result for
-ambiguous or non-symbol positions. URI generation handles local, drive-letter,
-UNC, and extended UNC paths.
+workspace and game-data indexes when matching analysis is available. Local
+targets use cached source analysis; external targets read source only to
+project stored byte spans into LSP ranges. While analysis is pending, the
+current snapshot may return only a cursor already on a lexically proven
+top-level class, enum, or typedef declaration, linking to that same current
+declaration. References, members, locals, and recovery-shaped declarations
+return no result in that state. This never joins current text to former local
+semantic facts. URI generation handles local, drive-letter, UNC, and extended
+UNC paths.
 
 ## Dependencies and Boundaries
 
@@ -30,8 +34,9 @@ rules belong in the resolver, not in this projection layer.
 ## Verification
 
 Run focused definition tests and `cargo test` from `server/`. Cover local and
-external targets, workspace-over-game-data precedence, null results, Unicode
-ranges, and Windows UNC URI forms.
+external targets, workspace-over-game-data precedence, pending current-snapshot
+declaration targets and unresolved references, null results, Unicode ranges,
+and Windows UNC URI forms.
 
 ## Future Direction
 

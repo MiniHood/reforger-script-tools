@@ -59,12 +59,15 @@ pub use completion::{
 use debug_hover::debug_hover_report_for_cached_analysis_with_external_indexes;
 pub use debug_hover::debug_hover_report_for_source_position;
 pub(crate) use debug_hover::selected_label_from_debug_report;
-use definition::definition_report_for_cached_analysis_with_external_indexes;
 pub(crate) use definition::file_uri_for_path;
 pub use definition::{
     definition_report_for_cached_analysis_with_external, definition_report_for_source_position,
     definition_report_for_source_position_with_external, LspDefinitionReport, LspLocation,
     LspLocationLink,
+};
+use definition::{
+    definition_report_for_cached_analysis_with_external_indexes,
+    definition_report_for_pending_snapshot,
 };
 use diagnostics::{clear_diagnostics_message, publish_diagnostics_message};
 pub use diagnostics::{parser_diagnostics_for_source, LspDiagnostic};
@@ -396,10 +399,7 @@ fn earliest_due_document_analysis_uri(
 fn source_backed_request_method(method: &str) -> bool {
     matches!(
         method,
-        "textDocument/definition"
-            | "textDocument/signatureHelp"
-            | DEBUG_HOVER_METHOD
-            | DEBUG_COMPLETION_METHOD
+        "textDocument/signatureHelp" | DEBUG_HOVER_METHOD | DEBUG_COMPLETION_METHOD
     )
 }
 
@@ -1789,6 +1789,7 @@ impl<W: Write> LspServer<W> {
                     let mut external_index_layers = "none";
                     let mut revision = 0u64;
                     let mut hit = false;
+                    let mut query_quality = QueryQuality::Exact;
                     let result = params
                         .and_then(|params| {
                             log_uri = params.text_document.uri;
@@ -1798,7 +1799,7 @@ impl<W: Write> LspServer<W> {
                                 let indexes = self.external_index.snapshot();
                                 external_index_status = indexes.status;
                                 external_index_layers = indexes.available_layers();
-                                let report =
+                                let report = if document.analysis_ready() {
                                     definition_report_for_cached_analysis_with_external_indexes(
                                         &document.text,
                                         document.analysis(),
@@ -1806,7 +1807,16 @@ impl<W: Write> LspServer<W> {
                                         params.position,
                                         indexes.workspace.as_deref(),
                                         indexes.game_data.as_deref(),
-                                    );
+                                    )
+                                } else {
+                                    query_quality = QueryQuality::Unavailable;
+                                    definition_report_for_pending_snapshot(
+                                        &document.snapshot,
+                                        &log_uri,
+                                        params.position,
+                                        document.syntax().diagnostics.len(),
+                                    )
+                                };
                                 parse_diagnostics = report.parse_diagnostics;
                                 hit = report.is_hit();
                                 selected_source = report
@@ -1834,10 +1844,12 @@ impl<W: Write> LspServer<W> {
                         .map(|links| serde_json::to_value(links).unwrap_or(Value::Null))
                         .unwrap_or(Value::Null);
                     self.log(&format!(
-                        "request definition uri={} bytes={} revision={} cached_analysis=true hit={} selected_source={} resolver_reason={} identifier_context={} resolver_candidates={} external_index_status={} external_index_layers={} label={} kind={} parse_diagnostics={} queue_ms={} elapsed_ms={}",
+                        "request definition uri={} bytes={} revision={} query_quality={:?} cached_analysis={} hit={} selected_source={} resolver_reason={} identifier_context={} resolver_candidates={} external_index_status={} external_index_layers={} label={} kind={} parse_diagnostics={} queue_ms={} elapsed_ms={}",
                         log_uri,
                         bytes,
                         revision,
+                        query_quality,
+                        query_quality.permits_local_facts(),
                         hit,
                         selected_source,
                         resolver_reason,
@@ -8005,6 +8017,96 @@ class Example
         let output = String::from_utf8(server.writer).unwrap();
         assert!(output.contains("\"id\":1"));
         assert!(output.contains("\"items\":["));
+    }
+
+    #[test]
+    fn pending_definition_returns_only_a_current_snapshot_declaration_target() {
+        let (sender, _receiver) = mpsc::channel();
+        let scheduler = OpenDocumentAnalysisScheduler::start(sender);
+        let mut server = LspServer::new_with_runtime_senders(
+            Vec::new(),
+            LspServerOptions::default(),
+            None,
+            Some(scheduler),
+            None,
+        );
+        let uri = "file:///Scripts/PendingDefinition.c";
+        server
+            .handle_message(
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "textDocument/didOpen",
+                    "params": { "textDocument": {
+                        "uri": uri,
+                        "languageId": "enforce",
+                        "version": 1,
+                        "text": "class Previous {}"
+                    }}
+                }),
+                None,
+                0,
+                0,
+            )
+            .unwrap();
+        server
+            .handle_message(
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "textDocument/didChange",
+                    "params": {
+                        "textDocument": { "uri": uri, "version": 2 },
+                        "contentChanges": [{ "text": "class Current {}\nCurrent value;" }]
+                    }
+                }),
+                None,
+                0,
+                0,
+            )
+            .unwrap();
+
+        for (id, line, character) in [(1, 0, 6), (2, 1, 0)] {
+            server
+                .handle_message(
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "method": "textDocument/definition",
+                        "params": {
+                            "textDocument": { "uri": uri },
+                            "position": { "line": line, "character": character }
+                        }
+                    }),
+                    None,
+                    0,
+                    0,
+                )
+                .unwrap();
+        }
+
+        let output = String::from_utf8(server.writer).unwrap();
+        let mut reader = BufReader::new(output.as_bytes());
+        let mut first = None;
+        let mut second = None;
+        while first.is_none() || second.is_none() {
+            let message = read_message(&mut reader)
+                .unwrap()
+                .expect("definition response");
+            match message["id"].as_i64() {
+                Some(1) => first = Some(message),
+                Some(2) => second = Some(message),
+                _ => {}
+            }
+        }
+        let first = first.unwrap();
+        let second = second.unwrap();
+        assert_eq!(first["id"], 1);
+        assert_eq!(first["result"][0]["targetUri"], uri);
+        assert_eq!(
+            first["result"][0]["targetSelectionRange"]["start"],
+            json!({ "line": 0, "character": 6 })
+        );
+        assert_eq!(second["id"], 2);
+        assert_eq!(second["result"], json!([]));
     }
 
     #[test]
