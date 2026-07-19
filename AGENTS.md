@@ -94,6 +94,17 @@ to the current branch with a concise, value-focused title. Do not push, open a
 PR, modify remotes, or alter branches or history unless the user explicitly
 asks for that operation.
 
+## Completion Reporting
+
+When a task is complete, the final handoff must state:
+
+1. What was worked on.
+2. What was completed, including verification performed.
+3. Any remaining work, uncertainty, or recommended next step.
+
+Do not imply that a task is fully complete when a known follow-up or required
+external validation remains.
+
 ## Verification
 
 These are repository-specific verification requirements.
