@@ -33,6 +33,20 @@ more useful than repeating broad commands that answer the same question. Code
 reviews, tests, and runtime checks each have a distinct role: they challenge a
 change, prove behavior, and validate integration respectively.
 
+## Independent review
+
+`/review` is a read-only, advisory workflow for challenging a bounded scope
+before deciding whether to change it. It prepares one evidence package and
+uses four independent lenses—architecture, correctness, performance and
+reliability, and developer experience—without sharing reviewer conclusions.
+The coordinator then combines evidence, preserves material disagreement, and
+recommends a next step; it never implements that recommendation.
+
+Use `/debug` to establish a causal chain for an observed failure and `/fix` to
+design, implement, and verify an authorized durable solution. Use `/review`
+when the goal is broad, independent scrutiny rather than diagnosis or a code
+change.
+
 ## Preserving useful history
 
 Documentation is valuable when it explains current ownership or constraints

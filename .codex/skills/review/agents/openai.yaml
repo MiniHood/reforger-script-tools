@@ -1,0 +1,4 @@
+interface:
+  display_name: "Parallel Review"
+  short_description: "Independent multi-persona code reviews"
+  default_prompt: "Use $review to independently review the selected implementation scope."
