@@ -24,6 +24,10 @@ The report summarizes logged elapsed work by operation, file/URI, one-second tim
 - current-snapshot versus unpaired foreground-response correlation
 - explicit runtime admission/overload dispositions when emitted
 - explicit rich/debug cancellation tails when emitted
+- declared foreground `QueryQuality` by feature, including missing declarations
+- rich document/external-generation identity and cancellation-marker coverage
+- source-free capture-field completeness, so legacy/defaulted fields cannot be
+  mistaken for comparable U7 evidence
 
 It accepts:
 
@@ -73,6 +77,29 @@ worker completion is not mistaken for admission.
 **Cancellation Tails** use only `cancellation_tail_ms` or `tail_ms` on a
 terminal cancellation record. Total worker elapsed time is deliberately not
 used as a tail proxy because it includes useful work before cancellation.
+
+## Query, Admission, and Rich Capture Contracts
+
+**Foreground Query Quality** counts the server-declared `Exact`,
+`RecoveryExact`, and `Unavailable` quality for feature responses that emit a
+`query_quality` field. An absent or unrecognized value remains missing; the
+report does not infer a guarantee from cache state, elapsed time, or a matching
+revision.
+
+**Admission and Overload** additionally groups explicit dispositions by lane
+and reports absent admission identity/disposition markers. It does not promote
+worker completion or a rich-overload skip into an admission record.
+
+**Rich Cancellation and Identity** requires `uri` plus `revision` for document
+identity and `external_generation` for overlay identity. Cancelled terminals
+also require a reason and a measured tail for full cancellation evidence.
+
+**Capture Field Completeness** audits only source-free marker names and counts:
+accepted snapshot identity, query-quality response identity/quality, admission
+identity/lane/disposition, and rich terminal/cancellation identity. It never
+prints source text, cursor prefixes, labels, completion items, or token data.
+Older summary sections may preserve zero-value compatibility defaults, but this
+audit intentionally flags the corresponding omitted fields.
 
 ## Dependencies and Boundaries
 

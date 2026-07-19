@@ -176,8 +176,11 @@ function renderReport(input) {
   const revisionRows = summarizeRevisionGroups(records);
   const captureRows = summarizeCaptureWindows(revisionRows);
   const snapshotQuality = summarizeSnapshotQuality(records);
+  const queryQuality = summarizeQueryQuality(records);
   const admission = summarizeAdmission(records);
   const cancellation = summarizeCancellation(records);
+  const richIdentity = summarizeRichIdentity(records);
+  const captureFields = summarizeCaptureFields(records);
 
   const lines = [];
   lines.push("# LSP Runtime Performance Report");
@@ -196,6 +199,8 @@ function renderReport(input) {
   lines.push(`- Background rich semantic-token time: ${formatMs(summary.richSemanticMs)}`);
   lines.push(`- Stale/skipped rich semantic-token records: ${summary.staleRichCount}`);
   lines.push(`- Cancelled rich semantic-token records: ${summary.cancelledRichCount}`);
+  lines.push(`- Foreground responses with declared query quality: ${queryQuality.declared} / ${queryQuality.records}`);
+  lines.push(`- Capture field gaps: ${captureFields.totalMissing}`);
   lines.push(`- First usable token observations: ${snapshotQuality.firstToken.latencies.length} / ${snapshotQuality.acceptedSnapshots}`);
   lines.push(`- First completion observations: ${snapshotQuality.firstCompletion.latencies.length} / ${snapshotQuality.acceptedSnapshots}`);
   lines.push(`- Slowest operation: ${slowRecords[0] ? `${slowRecords[0].operation} (${formatMs(slowRecords[0].elapsedMs)})` : "None"}`);
@@ -289,6 +294,20 @@ function renderReport(input) {
     ["Stale/discarded semantic publications", snapshotQuality.staleSemanticPublications],
   ]);
   lines.push("");
+  lines.push("## Foreground Query Quality");
+  lines.push("");
+  lines.push("Only feature responses that emit `query_quality` are counted. `Exact`, `RecoveryExact`, and `Unavailable` are server-declared current-snapshot guarantees; missing quality is a capture gap, not an inferred result. This section never reads source text, prefixes, labels, or payloads.");
+  lines.push("");
+  table(lines, ["Feature", "Responses", "Exact", "RecoveryExact", "Unavailable", "Missing quality", "Unpaired identity"], queryQuality.rows.map((row) => [
+    row.feature,
+    row.records,
+    row.exact,
+    row.recoveryExact,
+    row.unavailable,
+    row.missing,
+    row.unpaired,
+  ]));
+  lines.push("");
   lines.push("## Admission and Overload");
   lines.push("");
   lines.push("Admission metrics use explicit runtime disposition fields (`disposition`, `admission`, or `outcome`) or runtime admission operation names. Legacy logs without those fields are shown as unavailable; worker completion records are not treated as admission evidence.");
@@ -299,6 +318,8 @@ function renderReport(input) {
     table(lines, ["Disposition", "Count"], [
       ["Admitted", admission.admitted], ["Queued", admission.queued], ["Overloaded/rejected/dropped", admission.overloaded], ["Cancelled", admission.cancelled], ["Other", admission.other],
     ]);
+    lines.push("");
+    table(lines, ["Lane", "Records", "Missing identity/disposition"], admission.lanes.map((row) => [row.lane, row.records, row.missing]));
   }
   lines.push("");
   lines.push("## Cancellation Tails");
@@ -309,6 +330,17 @@ function renderReport(input) {
   lines.push(`- Measured tails: ${cancellation.tails.length}`);
   lines.push(`- Cancellation tail p95: ${formatMs(percentile(cancellation.tails, 0.95))}`);
   lines.push(`- Cancellation tail max: ${formatMs(maxOrZero(cancellation.tails))}`);
+  lines.push("");
+  lines.push("## Rich Cancellation and Identity");
+  lines.push("");
+  lines.push("Rich work is attributable only when its document identity (`uri` + `revision`) and external-overlay identity (`external_generation`) are logged. Cancellation is attributable only when a terminal reason is present. Missing markers are reported as evidence gaps; no text or token payload is retained.");
+  lines.push("");
+  table(lines, ["Marker", "Present", "Missing"], [
+    ["Rich document identity", richIdentity.documentIdentity, richIdentity.records - richIdentity.documentIdentity],
+    ["Rich external-generation identity", richIdentity.externalGeneration, richIdentity.records - richIdentity.externalGeneration],
+    ["Cancelled rich terminal reason", richIdentity.cancelledReason, richIdentity.cancelled - richIdentity.cancelledReason],
+    ["Cancelled rich tail", richIdentity.cancelledTail, richIdentity.cancelled - richIdentity.cancelledTail],
+  ]);
   lines.push("");
   lines.push("## Burst Comparison");
   lines.push("");
@@ -335,6 +367,17 @@ function renderReport(input) {
     row.revisionCount,
     row.completionCount,
     row.completionCount >= 10 ? "Sufficient" : "Insufficient",
+  ]));
+  lines.push("");
+  lines.push("## Capture Field Completeness");
+  lines.push("");
+  lines.push("These are source-free telemetry requirements for a comparable U7 capture. A missing field is not defaulted or inferred in this audit, even where older report summaries retain a compatibility default.");
+  lines.push("");
+  table(lines, ["Record family", "Records", "Missing markers", "Status"], captureFields.rows.map((row) => [
+    row.name,
+    row.records,
+    row.missing,
+    row.missing === 0 ? "Complete" : "Incomplete",
   ]));
   lines.push("");
   lines.push("## Edit Analysis Latency");
@@ -578,12 +621,18 @@ function snapshotKey(record) {
 }
 
 function summarizeAdmission(records) {
-  const summary = { records: 0, admitted: 0, queued: 0, overloaded: 0, cancelled: 0, other: 0 };
+  const summary = { records: 0, admitted: 0, queued: 0, overloaded: 0, cancelled: 0, other: 0, byLane: new Map() };
   for (const record of records) {
     const explicitDisposition = record.fields.disposition ?? record.fields.admission ?? record.fields.outcome;
     const admissionOperation = /(?:analysisRuntime|analysisAdmission|runtimeAdmission)/i.test(record.operation);
     if (!explicitDisposition && !admissionOperation) continue;
     summary.records += 1;
+    const lane = record.fields.lane ?? "<missing>";
+    const missing = (!explicitDisposition ? 1 : 0) + (!record.uri ? 1 : 0) + (record.revision === "" ? 1 : 0);
+    const laneRow = summary.byLane.get(lane) ?? { lane, records: 0, missing: 0 };
+    laneRow.records += 1;
+    laneRow.missing += missing;
+    summary.byLane.set(lane, laneRow);
     const disposition = String(explicitDisposition ?? record.operation).toLowerCase();
     if (disposition.includes("admit")) summary.admitted += 1;
     else if (disposition.includes("queue")) summary.queued += 1;
@@ -591,15 +640,76 @@ function summarizeAdmission(records) {
     else if (disposition.includes("cancel")) summary.cancelled += 1;
     else summary.other += 1;
   }
-  return summary;
+  return { ...summary, lanes: Array.from(summary.byLane.values()).sort((left, right) => left.lane.localeCompare(right.lane)) };
+}
+
+function summarizeQueryQuality(records) {
+  const rows = new Map();
+  for (const record of records) {
+    if (!isQualityFeatureRecord(record)) continue;
+    const feature = record.operation.slice("request ".length);
+    const row = rows.get(feature) ?? {
+      feature, records: 0, exact: 0, recoveryExact: 0, unavailable: 0, missing: 0, unpaired: 0,
+    };
+    row.records += 1;
+    const quality = String(record.fields.query_quality ?? "").toLowerCase();
+    if (quality === "exact") row.exact += 1;
+    else if (quality === "recoveryexact" || quality === "recovery-exact") row.recoveryExact += 1;
+    else if (quality === "unavailable") row.unavailable += 1;
+    else row.missing += 1;
+    if (!record.uri || record.revision === "") row.unpaired += 1;
+    rows.set(feature, row);
+  }
+  const orderedRows = Array.from(rows.values()).sort((left, right) => left.feature.localeCompare(right.feature));
+  return {
+    records: orderedRows.reduce((total, row) => total + row.records, 0),
+    declared: orderedRows.reduce((total, row) => total + row.exact + row.recoveryExact + row.unavailable, 0),
+    rows: orderedRows,
+  };
+}
+
+function isQualityFeatureRecord(record) {
+  return /^(?:request )(?:completion|hover|definition|documentSymbol)$/.test(record.operation);
+}
+
+function summarizeRichIdentity(records) {
+  const richRecords = records.filter((record) => record.operation.startsWith("semanticTokensRich "));
+  const cancelled = richRecords.filter((record) => isCancelledRecord(record));
+  return {
+    records: richRecords.length,
+    documentIdentity: richRecords.filter((record) => record.uri && record.revision !== "").length,
+    externalGeneration: richRecords.filter((record) => record.fields.external_generation !== undefined).length,
+    cancelled: cancelled.length,
+    cancelledReason: cancelled.filter((record) => record.fields.reason !== undefined).length,
+    cancelledTail: cancelled.filter((record) => numberField(record.fields, "cancellation_tail_ms") !== undefined || numberField(record.fields, "tail_ms") !== undefined).length,
+  };
+}
+
+function summarizeCaptureFields(records) {
+  const families = [
+    { name: "Accepted snapshots", records: records.filter((record) => record.operation === "notification didOpen" || record.operation === "notification didChange"), fields: ["uri", "version", "revision"] },
+    { name: "Query-quality feature responses", records: records.filter(isQualityFeatureRecord), fields: ["uri", "revision", "query_quality"] },
+    { name: "Runtime admission", records: records.filter((record) => /(?:analysisRuntime|analysisAdmission|runtimeAdmission)/i.test(record.operation) || record.fields.disposition !== undefined || record.fields.admission !== undefined || record.fields.outcome !== undefined), fields: ["uri", "revision", "lane", "disposition"] },
+    { name: "Rich semantic-token terminals", records: records.filter((record) => record.operation.startsWith("semanticTokensRich ")), fields: ["uri", "revision", "external_generation"] },
+    { name: "Cancelled rich terminals", records: records.filter((record) => record.operation.startsWith("semanticTokensRich ") && isCancelledRecord(record)), fields: ["uri", "revision", "external_generation", "reason", "cancellation_tail_ms"] },
+  ];
+  const rows = families.map((family) => ({
+    name: family.name,
+    records: family.records.length,
+    missing: family.records.reduce((total, record) => total + family.fields.filter((field) => field === "revision" ? record.revision === "" : record.fields[field] === undefined).length, 0),
+  }));
+  return { rows, totalMissing: rows.reduce((total, row) => total + row.missing, 0) };
+}
+
+function isCancelledRecord(record) {
+  return String(record.fields.reason ?? record.fields.disposition ?? record.fields.outcome ?? "").toLowerCase().includes("cancel");
 }
 
 function summarizeCancellation(records) {
   const tails = [];
   let cancelledRecords = 0;
   for (const record of records) {
-    const reason = String(record.fields.reason ?? record.fields.disposition ?? record.fields.outcome ?? "").toLowerCase();
-    if (!reason.includes("cancel")) continue;
+    if (!isCancelledRecord(record)) continue;
     cancelledRecords += 1;
     const tail = numberField(record.fields, "cancellation_tail_ms") ?? numberField(record.fields, "tail_ms");
     if (tail !== undefined) tails.push(tail);

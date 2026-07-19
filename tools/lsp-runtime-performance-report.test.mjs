@@ -111,3 +111,38 @@ test("keeps unpaired revisions distinct and parses explicit admission plus cance
   assert.match(report, /Measured tails: 1/);
   assert.match(report, /Cancellation tail p95: 12 ms/);
 });
+
+test("reports declared query quality, admission lanes, and rich identity without exposing payload data", () => {
+  const report = runReport([
+    "[1000] notification didChange uri=file:///workspace/GC_MarkerArea.c version=7 revision=42 elapsed_ms=2",
+    "[1010] request completion uri=file:///workspace/GC_MarkerArea.c revision=42 query_quality=Exact prefix=DO_NOT_COPY elapsed_ms=5",
+    "[1020] request hover uri=file:///workspace/GC_MarkerArea.c revision=42 query_quality=Unavailable label=DO_NOT_COPY elapsed_ms=5",
+    "[1030] analysisRuntime admission uri=file:///workspace/GC_MarkerArea.c revision=42 disposition=admitted lane=foreground",
+    "[1040] semanticTokensRich discarded uri=file:///workspace/GC_MarkerArea.c revision=42 external_generation=9 reason=cancelled-superseded cancellation_tail_ms=12 elapsed_ms=8",
+  ].join("\n"));
+
+  assert.match(report, /## Foreground Query Quality/);
+  assert.match(report, /completion.*1.*1.*0.*0.*0.*0/);
+  assert.match(report, /hover.*1.*0.*0.*1.*0.*0/);
+  assert.match(report, /foreground.*1.*0/);
+  assert.match(report, /Rich document identity.*1.*0/);
+  assert.match(report, /Rich external-generation identity.*1.*0/);
+  assert.match(report, /Cancelled rich tail.*1.*0/);
+  assert.doesNotMatch(report, /DO_NOT_COPY/);
+});
+
+test("flags missing capture markers instead of defaulting them", () => {
+  const report = runReport([
+    "[1000] notification didChange uri=file:///workspace/GC_MarkerArea.c revision=42 elapsed_ms=2",
+    "[1010] request completion uri=file:///workspace/GC_MarkerArea.c revision=42 elapsed_ms=5",
+    "[1020] analysisRuntime admission uri=file:///workspace/GC_MarkerArea.c revision=42 lane=foreground",
+    "[1030] semanticTokensRich discarded uri=file:///workspace/GC_MarkerArea.c revision=42 reason=cancelled-superseded elapsed_ms=8",
+  ].join("\n"));
+
+  assert.match(report, /## Capture Field Completeness/);
+  assert.match(report, /Accepted snapshots.*1.*1.*Incomplete/);
+  assert.match(report, /Query-quality feature responses.*1.*1.*Incomplete/);
+  assert.match(report, /Runtime admission.*1.*1.*Incomplete/);
+  assert.match(report, /Rich semantic-token terminals.*1.*1.*Incomplete/);
+  assert.match(report, /Cancelled rich terminals.*1.*2.*Incomplete/);
+});
