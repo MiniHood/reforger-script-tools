@@ -38,7 +38,9 @@ candidate eligibility, ranking, and rendering. The sole exception is the
 Rust-selected `RplRpc` enum snippet: its completion item invokes a registered
 extension command, which waits for VS Code's snippet selection event (or an
 already-selected placeholder matching the Rust-provided default) and then invokes
-Suggest. It does not parse text, inspect symbols, choose candidates, or use a typing-path delay. A one-second
+Suggest exactly once at the next event-loop boundary. Duplicate selection events
+cannot create a competing empty suggest request. It does not parse text, inspect
+symbols, choose candidates, or use a typing-path delay. A one-second
 cleanup timer only releases an abandoned editor transaction; it never triggers
 Suggest. While that transaction is active, the client records bounded
 command/placeholder/request/response metadata through the existing optional

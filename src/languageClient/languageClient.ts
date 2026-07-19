@@ -49,6 +49,7 @@ interface SnippetSuggestTransaction {
 	documentUri: string;
 	selectionListener: vscode.Disposable;
 	cleanupTimer: ReturnType<typeof setTimeout>;
+	suggestDispatchScheduled: boolean;
 }
 
 export function logLanguageClientStartupTiming(
@@ -698,9 +699,12 @@ function triggerSuggestAtSnippetPlaceholder(expectedSelectionText: unknown): voi
 	clearSnippetSuggestTransaction();
 	const id = ++completionTransactionSequence;
 	const documentUri = editor.document.uri.toString();
-	const tryTrigger = (candidate: vscode.TextEditor, source: 'command' | 'selection' | 'microtask'): void => {
+	const tryTrigger = (candidate: vscode.TextEditor, source: 'command' | 'selection'): void => {
 		const transaction = pendingSnippetSuggestTransaction;
 		if (!transaction || transaction.id !== id || candidate.document.uri.toString() !== documentUri) {
+			return;
+		}
+		if (transaction.suggestDispatchScheduled) {
 			return;
 		}
 		if (candidate.selections.length !== 1
@@ -713,6 +717,7 @@ function triggerSuggestAtSnippetPlaceholder(expectedSelectionText: unknown): voi
 			source,
 			selectionLength: candidate.selection.end.character - candidate.selection.start.character,
 		});
+		transaction.suggestDispatchScheduled = true;
 		transaction.selectionListener.dispose();
 		clearTimeout(transaction.cleanupTimer);
 		transaction.cleanupTimer = setTimeout(() => {
@@ -721,10 +726,15 @@ function triggerSuggestAtSnippetPlaceholder(expectedSelectionText: unknown): voi
 				clearSnippetSuggestTransaction(id);
 			}
 		}, 1_000);
-		void vscode.commands.executeCommand('editor.action.triggerSuggest').then(
-			() => diagnostic('completion.transaction.suggestDispatched', { transactionId: id }),
-			() => diagnostic('completion.transaction.suggestDispatchError', { transactionId: id }),
-		);
+		queueMicrotask(() => {
+			if (pendingSnippetSuggestTransaction?.id !== id) {
+				return;
+			}
+			void vscode.commands.executeCommand('editor.action.triggerSuggest').then(
+				() => diagnostic('completion.transaction.suggestDispatched', { transactionId: id }),
+				() => diagnostic('completion.transaction.suggestDispatchError', { transactionId: id }),
+			);
+		});
 	};
 
 	const selectionListener = vscode.window.onDidChangeTextEditorSelection(event => {
@@ -736,10 +746,15 @@ function triggerSuggestAtSnippetPlaceholder(expectedSelectionText: unknown): voi
 			clearSnippetSuggestTransaction(id);
 		}
 	}, 1_000);
-	pendingSnippetSuggestTransaction = { id, documentUri, selectionListener, cleanupTimer };
+	pendingSnippetSuggestTransaction = {
+		id,
+		documentUri,
+		selectionListener,
+		cleanupTimer,
+		suggestDispatchScheduled: false,
+	};
 	diagnostic('completion.transaction.armed', { transactionId: id });
 	tryTrigger(editor, 'command');
-	queueMicrotask(() => tryTrigger(editor, 'microtask'));
 }
 
 function clearSnippetSuggestTransaction(expectedId?: number): void {
