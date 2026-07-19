@@ -117,14 +117,15 @@ avoid duplicate named argument labels case-insensitively.
 callable insertion. When its constructor has the engine-defined required
 `RplChannel` and `RplRcver` parameters, it expands to the canonical
 request-to-server annotation with its snippet cursor retained inside the call:
-`[RplRpc(RplChannel.${1:Reliable}, RplRcver.${2:Server})]`. The selected first
-enum-member placeholder makes the next typed character replace `Reliable`, and
-the built-in `editor.action.triggerSuggest` command opens member completion for
-`RplChannel`. Tab advances to the selected `RplRcver.Server` placeholder. This
-keeps enum choices in the Rust-owned completion path instead of treating the
-annotation as a finished declaration or using generic parameter hints. The
-completion item's signature detail still documents the optional condition and
-custom-condition inputs.
+`[RplRpc(${1:RplChannel.Reliable}, ${2:RplRcver.Server})]`. Each complete enum
+expression is selected, so typing replaces it and resumes ordinary value
+completion. The built-in `editor.action.triggerSuggest` command opens the
+Rust-owned enum completion policy: qualified enum values rank first, while
+general value candidates remain below them. Every item replaces the full enum
+expression, so selecting a general value cannot form an invalid
+`RplChannel.<unrelated value>` expression. Tab advances to the selected
+`RplRcver.Server` expression. The completion item's signature detail still
+documents the optional condition and custom-condition inputs.
 The same template applies inside an already typed `[` without duplicating its
 brackets. This is deliberately signature-checked and does not infer defaults
 from enum declaration order for other attributes.

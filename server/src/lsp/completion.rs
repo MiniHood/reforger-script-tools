@@ -1968,7 +1968,7 @@ fn member_completion_report_for_indexes(
     parse_diagnostics: usize,
     owner: &str,
     receiver_text: Option<String>,
-    _receiver_span: TextSpan,
+    receiver_span: TextSpan,
     owner_type: Option<String>,
     prefix: String,
     prefix_span: TextSpan,
@@ -2005,14 +2005,31 @@ fn member_completion_report_for_indexes(
     let render_start = Instant::now();
     let render_context =
         CompletionRenderContext::new(local_index, workspace_index, game_data_index);
-    let (items, source_kind_counts, origin_counts) = completion_items_for_candidates(
-        &candidates,
-        edit_range,
-        None,
-        CompletionInsertContext::Normal,
-        Some(&prefix),
-        render_context,
-    );
+    let (items, source_kind_counts, origin_counts) = if receiver_is_static
+        && render_context.is_enum_owner(owner)
+    {
+        enum_static_completion_items_with_value_fallbacks(
+            source,
+            owner,
+            receiver_span,
+            prefix_span,
+            &prefix,
+            &candidates,
+            local_index,
+            workspace_index,
+            game_data_index,
+            render_context,
+        )
+    } else {
+        completion_items_for_candidates(
+            &candidates,
+            edit_range,
+            None,
+            CompletionInsertContext::Normal,
+            Some(&prefix),
+            render_context,
+        )
+    };
     let (items, is_incomplete) = cap_completion_items(items);
     timings.item_rendering = render_start.elapsed();
     timings.total = total_start.elapsed();
@@ -2035,6 +2052,80 @@ fn member_completion_report_for_indexes(
         failure_reason,
         timings,
     }
+}
+
+/// Enum defaults are commonly inserted as a single replaceable expression
+/// (`Owner.Member`). Keep every enum value first, but retain normal value
+/// completion beneath it. All edits replace the full expression so choosing a
+/// non-enum value cannot leave an invalid `Owner.<unrelated value>` suffix.
+#[allow(clippy::too_many_arguments)]
+fn enum_static_completion_items_with_value_fallbacks(
+    source: &str,
+    owner: &str,
+    receiver_span: TextSpan,
+    prefix_span: TextSpan,
+    prefix: &str,
+    enum_candidates: &[EditorCompletionCandidate],
+    local_index: &SymbolIndex,
+    workspace_index: Option<&SymbolIndex>,
+    game_data_index: Option<&SymbolIndex>,
+    render_context: CompletionRenderContext<'_>,
+) -> (
+    Vec<LspCompletionItem>,
+    BTreeMap<SourceKind, usize>,
+    BTreeMap<String, usize>,
+) {
+    let full_expression_span = TextSpan::new(receiver_span.start, prefix_span.end);
+    let full_expression_range = range_for_span(source, full_expression_span);
+    let (mut enum_items, mut source_kind_counts, mut origin_counts) =
+        completion_items_for_candidates(
+            enum_candidates,
+            full_expression_range.clone(),
+            None,
+            CompletionInsertContext::Normal,
+            Some(prefix),
+            render_context,
+        );
+    for (index, item) in enum_items.iter_mut().enumerate() {
+        item.label = format!("{owner}.{}", item.label);
+        item.filter_text = Some(prefix.to_string());
+        item.text_edit.new_text = format!("{owner}.{}", item.text_edit.new_text);
+        item.sort_text = Some(format!("000:enum:{index:03}:{}", item.label));
+    }
+
+    let value_candidates = top_level_source_completion_candidates(
+        "",
+        EditorTopLevelCompletionMode::Value,
+        local_index,
+        workspace_index,
+        game_data_index,
+        MAX_COMPLETION_ITEMS,
+    );
+    let (mut value_items, value_source_counts, value_origins) = completion_items_for_candidates(
+        &value_candidates,
+        full_expression_range.clone(),
+        None,
+        CompletionInsertContext::Normal,
+        Some(""),
+        render_context,
+    );
+    merge_count_maps(&mut source_kind_counts, value_source_counts);
+    merge_count_maps(&mut origin_counts, value_origins);
+    value_items.extend(keyword_completion_items(
+        "",
+        full_expression_range,
+        EditorTopLevelCompletionMode::Value,
+        false,
+    ));
+    for (index, item) in value_items.iter_mut().enumerate() {
+        // The active snippet field owns the whole default expression. Its
+        // current text must not hide otherwise valid replacement choices.
+        item.filter_text = Some(prefix.to_string());
+        item.sort_text = Some(format!("100:enum-fallback:{index:03}:{}", item.label));
+    }
+
+    enum_items.extend(value_items);
+    (enum_items, source_kind_counts, origin_counts)
 }
 
 fn completion_candidates_for_owner(
@@ -3562,11 +3653,10 @@ fn rpl_rpc_attribute_template(
         && callable_type_owner(&required[0].type_and_modifiers).as_deref() == Some("RplChannel")
         && callable_type_owner(&required[1].type_and_modifiers).as_deref() == Some("RplRcver"))
     .then(|| {
-        // Selecting a prefilled enum member lets the first typed character
-        // replace it. Triggering suggestions then resolves against the enum
-        // receiver rather than treating the completed annotation as a finished
-        // top-level declaration.
-        let body = "RplRpc(RplChannel.${1:Reliable}, RplRcver.${2:Server})";
+        // The complete default enum expressions are snippet fields. Typing
+        // replaces the whole expression; the enum completion policy keeps the
+        // other enum values first while retaining general value choices below.
+        let body = "RplRpc(${1:RplChannel.Reliable}, ${2:RplRcver.Server})";
         if include_brackets {
             format!("[{body}]")
         } else {
@@ -4259,7 +4349,7 @@ class ScriptComponent
             .expect("expected RplRpc attribute completion");
         assert_eq!(
             rpc.text_edit.new_text,
-            "[RplRpc(RplChannel.${1:Reliable}, RplRcver.${2:Server})]"
+            "[RplRpc(${1:RplChannel.Reliable}, ${2:RplRcver.Server})]"
         );
         assert_eq!(
             rpc.command.as_ref().map(|command| command.command.as_str()),
@@ -4387,13 +4477,14 @@ class ScriptComponent
     }
 
     #[test]
-    fn current_receiver_query_resolves_externally_indexed_static_enum_members() {
+    fn current_receiver_query_keeps_enum_values_first_with_value_fallbacks() {
         let external = file_index_for_source(
             r#"enum RplChannel
 {
 	Reliable,
 	Unreliable
 }
+class OtherChoice {}
 "#,
         )
         .index;
@@ -4401,11 +4492,11 @@ class ScriptComponent
 {
 	void Run()
 	{
-		RplChannel.
+		RplChannel.Reliable
 	}
 }
 "#;
-        let offset = source.find("RplChannel.").unwrap() + "RplChannel.".len();
+        let offset = source.find("RplChannel.Reliable").unwrap() + "RplChannel.Reliable".len();
 
         let report = completion_report_for_current_receiver_at_offset_with_external_indexes(
             source,
@@ -4419,14 +4510,27 @@ class ScriptComponent
         assert_eq!(report.completion_context, "member");
         assert_eq!(report.receiver_text.as_deref(), Some("RplChannel"));
         assert_eq!(report.owner_type.as_deref(), Some("RplChannel"));
+        let labels = report
+            .list
+            .items
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>();
         assert_eq!(
-            report
-                .list
-                .items
-                .iter()
-                .map(|item| item.label.as_str())
-                .collect::<Vec<_>>(),
-            vec!["Reliable", "Unreliable"]
+            labels[..2],
+            ["RplChannel.Reliable", "RplChannel.Unreliable"]
+        );
+        assert!(labels.len() > 2, "expected general values below enums: {labels:?}");
+        assert_eq!(
+            report.list.items[0].text_edit.new_text,
+            "RplChannel.Reliable"
+        );
+        assert!(
+            !report.list.items[2]
+                .text_edit
+                .new_text
+                .starts_with("RplChannel."),
+            "a general fallback must replace, not extend, the enum expression"
         );
     }
 

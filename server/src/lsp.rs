@@ -6701,12 +6701,12 @@ class RplRpc : UniqueAttribute
             .expect("expected RplRpc attribute shorthand completion");
         assert_eq!(
             item.text_edit.new_text,
-            "[RplRpc(RplChannel.${1:Reliable}, RplRcver.${2:Server})]"
+            "[RplRpc(${1:RplChannel.Reliable}, ${2:RplRcver.Server})]"
         );
         let wire_item = serde_json::to_value(item).unwrap();
         assert_eq!(
             wire_item["textEdit"]["newText"],
-            "[RplRpc(RplChannel.${1:Reliable}, RplRcver.${2:Server})]"
+            "[RplRpc(${1:RplChannel.Reliable}, ${2:RplRcver.Server})]"
         );
         assert_eq!(wire_item["insertTextFormat"], 2);
         assert_eq!(
@@ -6757,11 +6757,11 @@ class RplRpc : UniqueAttribute
             .list
             .items
             .iter()
-            .find(|item| item.label == "Reliable")
+            .find(|item| item.label == "RplChannel.Reliable")
             .expect("expected enum member completion");
-        assert_eq!(item.text_edit.new_text, "Reliable");
+        assert_eq!(item.text_edit.new_text, "RplChannel.Reliable");
         assert_eq!(item.insert_text_format, None);
-        assert_eq!(item.filter_text.as_deref(), Some("Reliable"));
+        assert_eq!(item.filter_text.as_deref(), Some(""));
         assert!(item.command.is_none());
 
         let source = r#"class Example
@@ -6779,9 +6779,9 @@ class RplRpc : UniqueAttribute
             .list
             .items
             .iter()
-            .find(|item| item.label == "Server")
+            .find(|item| item.label == "RplRcver.Server")
             .expect("expected final enum member completion");
-        assert_eq!(item.text_edit.new_text, "Server");
+        assert_eq!(item.text_edit.new_text, "RplRcver.Server");
         assert!(item.command.is_none());
     }
 
@@ -6816,7 +6816,7 @@ class RplRpc : UniqueAttribute
             .expect("expected RplRpc completion inside attribute brackets");
         assert_eq!(
             item.text_edit.new_text,
-            "RplRpc(RplChannel.${1:Reliable}, RplRcver.${2:Server})"
+            "RplRpc(${1:RplChannel.Reliable}, ${2:RplRcver.Server})"
         );
         assert_eq!(item.insert_text_format, Some(2));
         assert_eq!(
@@ -7866,10 +7866,12 @@ class Example
                 .list
                 .items
                 .iter()
+                .take(2)
                 .map(|item| (item.label.as_str(), item.kind))
                 .collect::<Vec<_>>(),
-            vec![("DEBUG", 20), ("NORMAL", 20)]
+            vec![("LogLevel.DEBUG", 20), ("LogLevel.NORMAL", 20)]
         );
+        assert!(report.list.items.len() > 2);
         assert!(report.list.items.iter().all(|item| item.command.is_none()));
     }
 
