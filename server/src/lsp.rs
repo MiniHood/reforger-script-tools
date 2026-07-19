@@ -2668,6 +2668,9 @@ impl<W: Write> LspServer<W> {
             document
                 .semantic_tokens
                 .cancel_pending_for_other_external_generation(status.generation);
+            document
+                .semantic_tokens
+                .discard_rich_for_other_external_generation(status.generation);
         }
         self.log(&format!(
             "semanticTokens external overlay changed generation={} status={} documents={} requesting_refresh=true",
@@ -4169,13 +4172,16 @@ class Example
             .rich_for_revision_and_external_generation(8, 1)
             .is_none());
 
-        let stale_generation = cache.select_or_insert_lexical(7, 2, || unreachable!());
-        assert_eq!(stale_generation.kind, TokenProjectionKind::LexicalBaseline);
-        assert_eq!(stale_generation.result_id, "reforger:7:lexical");
-
         let matching_generation = cache.select_or_insert_lexical(7, 1, || unreachable!());
         assert_eq!(matching_generation.kind, TokenProjectionKind::RichOverlay);
         assert_eq!(matching_generation.result_id, "reforger:7:rich:1");
+
+        let stale_generation = cache.select_or_insert_lexical(7, 2, || unreachable!());
+        assert_eq!(stale_generation.kind, TokenProjectionKind::LexicalBaseline);
+        assert_eq!(stale_generation.result_id, "reforger:7:lexical");
+        assert!(cache
+            .rich_for_revision_and_external_generation(7, 1)
+            .is_none());
     }
 
     #[test]

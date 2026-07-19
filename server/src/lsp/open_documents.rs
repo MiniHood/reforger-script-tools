@@ -246,6 +246,7 @@ impl SemanticTokenCache {
         {
             self.snapshot = Some(TokenSnapshot::new(revision, lexical_baseline()));
         }
+        self.discard_rich_for_other_external_generation(external_generation);
         self.snapshot
             .as_ref()
             .expect("lexical token snapshot was just installed")
@@ -329,6 +330,24 @@ impl SemanticTokenCache {
             .is_some_and(|pending_generation| pending_generation != external_generation)
         {
             self.cancel_pending();
+        }
+    }
+
+    /// An external-index generation is part of a rich overlay's identity.
+    /// Keeping an unmatched overlay would be harmless at selection time, but
+    /// dropping it here makes the cache's retained state match its publishable
+    /// state and prevents an old overlay from becoming eligible again.
+    pub(crate) fn discard_rich_for_other_external_generation(&mut self, external_generation: u64) {
+        if self.snapshot.as_ref().is_some_and(|snapshot| {
+            snapshot
+                .rich_overlay
+                .as_ref()
+                .is_some_and(|overlay| overlay.external_generation != external_generation)
+        }) {
+            self.snapshot
+                .as_mut()
+                .expect("snapshot was checked above")
+                .rich_overlay = None;
         }
     }
 }
