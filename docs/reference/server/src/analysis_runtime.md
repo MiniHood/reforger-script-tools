@@ -31,10 +31,11 @@ proven lexical/top-level candidates. A bounded exact argument-label query is
 available only for one bare resolver-proven function or method in valid current text;
 every other pending argument form remains unavailable.
 
-Full semantic analysis is admitted immediately after matching foreground
-publication: it has no idle debounce. Latest-wins cancellation and bounded
-per-URI/lane admission suppress obsolete revisions, while the reserved
-foreground worker preserves typing-path priority. Rich token refinement and
+Full semantic analysis and rich-token refinement are admitted immediately
+after their matching dependency is ready: they have no idle debounce.
+Latest-wins cancellation and bounded per-URI/lane admission suppress obsolete
+revisions, while the reserved foreground worker preserves typing-path priority.
+Rich token refinement and
 developer debug captures are admitted through
 `TaskClass::Rich`. This runtime admission is the sole retained job and snapshot
 byte capacity boundary for those jobs. The LSP's one `RuntimeWorkExecutor`

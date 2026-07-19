@@ -253,8 +253,6 @@ struct LspServer<W: Write> {
     shutdown_requested: bool,
 }
 
-const RICH_SEMANTIC_TOKENS_IDLE_DELAY_MS: u64 = 250;
-
 enum ServerEvent {
     Incoming {
         received_at: Instant,
@@ -427,14 +425,10 @@ impl RuntimeWorkJob {
     }
 
     fn due_at(&self) -> Instant {
-        let delay_ms = match self {
-            // Foreground publication is the semantic dependency boundary. Once
-            // it has completed, full analysis is immediately runnable and
-            // latest-wins cancellation prevents obsolete work from publishing.
-            Self::Foreground(_) | Self::Semantic(_) => 0,
-            Self::Rich(_) | Self::Debug(_) => RICH_SEMANTIC_TOKENS_IDLE_DELAY_MS,
-        };
-        self.scheduled_at() + Duration::from_millis(delay_ms)
+        // Every job is immediately runnable once admitted. Foreground work
+        // still wins through task-class priority and reserved capacity, while
+        // latest-wins cancellation suppresses obsolete background results.
+        self.scheduled_at()
     }
 }
 
@@ -2784,13 +2778,25 @@ impl<W: Write> LspServer<W> {
                 elapsed_ms,
             } => {
                 if self.runtime.complete(&task) {
+                    let uri = task.uri().to_string();
+                    let revision = task.revision();
                     self.install_document_analysis(
                         task.uri(),
-                        task.revision(),
+                        revision,
                         analysis,
                         timings,
                         elapsed_ms,
-                    )
+                    )?;
+                    let external_generation = self.external_index.status_summary().generation;
+                    let should_schedule_rich = self.documents.get(&uri).is_some_and(|document| {
+                        document
+                            .semantic_tokens
+                            .needs_rich_projection(revision, external_generation)
+                    });
+                    if should_schedule_rich {
+                        self.schedule_rich_semantic_tokens(&uri, revision, external_generation)?;
+                    }
+                    Ok(())
                 } else {
                     self.log(&format!(
                         "documentAnalysis discarded uri={} revision={} reason=runtime-stale elapsed_ms={}",
@@ -3955,7 +3961,7 @@ mod tests {
             &mut runtime,
             "file:///rich.c",
             1,
-            now - Duration::from_millis(RICH_SEMANTIC_TOKENS_IDLE_DELAY_MS + 1),
+            now,
         );
         let semantic = semantic_analysis_job(&mut runtime, "file:///semantic.c", 1, now);
         pending.insert(
@@ -4119,7 +4125,7 @@ mod tests {
                 &mut runtime,
                 "file:///z.c",
                 1,
-                now - Duration::from_millis(RICH_SEMANTIC_TOKENS_IDLE_DELAY_MS + 1),
+                now - Duration::from_millis(1),
             ),
         );
 
@@ -4127,6 +4133,20 @@ mod tests {
             earliest_due_pending_uri(&pending).as_deref(),
             Some("file:///z.c")
         );
+    }
+
+    #[test]
+    fn rich_work_is_runnable_without_an_idle_delay() {
+        let now = Instant::now();
+        let mut runtime = AnalysisRuntime::new(AdmissionLimits::new(1, 1));
+        let job = RuntimeWorkJob::Rich(rich_semantic_tokens_job(
+            &mut runtime,
+            "file:///rich.c",
+            1,
+            now,
+        ));
+
+        assert_eq!(job.due_at(), job.scheduled_at());
     }
 
     #[test]
@@ -8970,8 +8990,8 @@ class Example
     }
 
     #[test]
-    fn semantic_tokens_respond_lexically_while_initial_open_analysis_is_pending() {
-        let (sender, _receiver) = mpsc::channel();
+    fn semantic_tokens_pending_baseline_schedules_rich_after_analysis_completion() {
+        let (sender, receiver) = mpsc::channel();
         let scheduler = OpenDocumentAnalysisScheduler::start(sender);
         let mut server = LspServer::new_with_runtime_senders(
             Vec::new(),
@@ -9014,10 +9034,25 @@ class Example
             )
             .unwrap();
 
-        let output = String::from_utf8(server.writer).unwrap();
+        let output = String::from_utf8_lossy(&server.writer);
         assert!(output.contains("\"id\":1"));
         assert!(output.contains("\"data\":["));
         assert!(output.contains("\"resultId\":\"reforger:1:lexical\""));
+
+        let mut rich_ready = false;
+        for _ in 0..3 {
+            let event = receiver
+                .recv_timeout(Duration::from_secs(2))
+                .expect("foreground, analysis, then rich worker event");
+            rich_ready |= matches!(&event, ServerEvent::RichSemanticTokensReady { .. });
+            server.handle_internal_event(event).unwrap();
+            if rich_ready {
+                break;
+            }
+        }
+        assert!(rich_ready, "current lexical baseline must converge to rich tokens");
+        assert!(String::from_utf8_lossy(&server.writer)
+            .contains("workspace/semanticTokens/refresh"));
     }
 
     #[test]

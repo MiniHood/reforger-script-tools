@@ -53,9 +53,12 @@ and external snapshots. The lexical foreground entrypoint depends only on the
 current source and lexer output. [open_documents.md](open_documents.md) owns
 cache identity; `analysis_runtime` owns rich-task admission, latest-wins
 cancellation, and publication eligibility, including the only retained
-job/byte capacity limit. `lsp.rs`'s rich worker merely coalesces
-already-admitted work through its idle delay and executes it with the runtime
-cancellation token.
+job/byte capacity limit. `lsp.rs`'s rich worker starts immediately after
+admission and executes with the runtime cancellation token. A rich projection
+is scheduled when matching analysis completes if VS Code already requested a
+lexical baseline for that revision; it therefore converges even when the
+initial token request arrived before foreground or semantic analysis was ready.
+There is no fixed token idle delay.
 
 ## Verification
 

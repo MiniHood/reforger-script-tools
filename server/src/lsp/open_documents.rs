@@ -341,6 +341,22 @@ impl SemanticTokenCache {
             && self.pending_external_generation == Some(external_generation)
     }
 
+    /// Rich projection is useful only after VS Code has requested a lexical
+    /// baseline for this exact revision. That baseline is the refresh target.
+    pub(crate) fn needs_rich_projection(
+        &self,
+        revision: u64,
+        external_generation: u64,
+    ) -> bool {
+        self.snapshot.as_ref().is_some_and(|snapshot| {
+            snapshot.revision == revision
+                && snapshot
+                    .rich_overlay
+                    .as_ref()
+                    .is_none_or(|overlay| overlay.external_generation != external_generation)
+        }) && !self.pending_for_revision_and_external_generation(revision, external_generation)
+    }
+
     pub(crate) fn mark_pending(
         &mut self,
         revision: u64,
