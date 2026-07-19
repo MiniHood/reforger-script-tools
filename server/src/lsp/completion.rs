@@ -197,6 +197,9 @@ pub(crate) fn completion_report_for_cached_analysis_with_external_indexes(
     let Some(offset) = offset_for_position(source, position) else {
         return empty_completion_report(analysis.parse_diagnostics);
     };
+    if completion_cursor_is_in_comment(&analysis.lexer_tokens, offset) {
+        return empty_completion_report(analysis.parse_diagnostics);
+    }
     completion_report_for_offset(source, analysis, offset, workspace_index, game_data_index)
 }
 
@@ -229,6 +232,9 @@ pub(crate) fn completion_report_for_lexical_source_at_offset_with_external_index
     game_data_index: Option<&SymbolIndex>,
 ) -> LspCompletionReport {
     let Some(region) = BoundedCompletionRegion::new(source, offset) else {
+        if current_snapshot_cursor_is_in_comment(source, offset) {
+            return empty_completion_report(0);
+        }
         // The fixed window can end inside a valid multi-line comment or
         // string.  It is not safe to recover local or receiver facts without
         // lexical context, but the cursor-local identifier prefix is enough
@@ -242,6 +248,9 @@ pub(crate) fn completion_report_for_lexical_source_at_offset_with_external_index
         );
         return unavailable_completion_report(report, "invalid-or-unterminated-lexical-window");
     };
+    if completion_cursor_is_in_comment(&region.tokens, offset) {
+        return empty_completion_report(0);
+    }
     let context = unavailable_completion_context(&region.tokens, offset);
     let report = lexical_top_level_fallback_report(
         source,
@@ -266,6 +275,7 @@ pub(crate) fn completion_report_for_current_local_scope_at_offset_with_external_
 ) -> Option<LspCompletionReport> {
     let start = Instant::now();
     let region = BoundedCompletionRegion::new(source, offset)?;
+    (!completion_cursor_is_in_comment(&region.tokens, offset)).then_some(())?;
     if unavailable_completion_context(&region.tokens, offset)
         != UnavailableCompletionContext::TopLevel
     {
@@ -296,6 +306,7 @@ pub(crate) fn completion_report_for_current_override_at_offset_with_external_ind
 ) -> Option<LspCompletionReport> {
     let start = Instant::now();
     let region = BoundedCompletionRegion::for_current_override(source, offset)?;
+    (!completion_cursor_is_in_comment(&region.tokens, offset)).then_some(())?;
     let context = region.current_override_context(source, offset)?;
     if start.elapsed() > LOCAL_SCOPE_QUERY_DEADLINE {
         return None;
@@ -382,6 +393,7 @@ pub(crate) fn completion_report_for_current_receiver_at_offset_with_external_ind
 ) -> Option<LspCompletionReport> {
     let start = Instant::now();
     let region = BoundedCompletionRegion::new(source, offset)?;
+    (!completion_cursor_is_in_comment(&region.tokens, offset)).then_some(())?;
     if unavailable_completion_context(&region.tokens, offset)
         != UnavailableCompletionContext::Member
     {
@@ -469,6 +481,7 @@ pub(crate) fn completion_report_for_current_argument_labels_at_offset_with_exter
 ) -> Option<LspCompletionReport> {
     let start = Instant::now();
     let region = BoundedCompletionRegion::new(source, offset)?;
+    (!completion_cursor_is_in_comment(&region.tokens, offset)).then_some(())?;
     if unavailable_completion_context(&region.tokens, offset)
         != UnavailableCompletionContext::Argument
     {
@@ -1346,6 +1359,30 @@ fn unavailable_completion_context(
     UnavailableCompletionContext::TopLevel
 }
 
+fn completion_cursor_is_in_comment(tokens: &[Token], offset: usize) -> bool {
+    tokens.iter().any(|token| {
+        token.span.start < offset
+            && offset <= token.span.end
+            && matches!(
+                token.kind,
+                TokenKind::LineComment
+                    | TokenKind::DocLineComment
+                    | TokenKind::BlockComment
+                    | TokenKind::DocBlockComment
+                    | TokenKind::UnterminatedBlockComment
+            )
+    })
+}
+
+/// The normal bounded region intentionally rejects lexical errors. For an
+/// unfinished block comment in a bounded-size snapshot, use the same current
+/// snapshot recovery budget solely to suppress completion rather than emit a
+/// top-level fallback from comment text.
+fn current_snapshot_cursor_is_in_comment(source: &str, offset: usize) -> bool {
+    source.len() <= LEXICAL_CONTEXT_RECOVERY_MAX_SOURCE_BYTES
+        && completion_cursor_is_in_comment(&lex(source), offset)
+}
+
 fn lexical_completion_prefix_span(tokens: &[crate::lexer::Token], offset: usize) -> TextSpan {
     tokens
         .iter()
@@ -1632,6 +1669,9 @@ fn completion_report_for_offset(
     workspace_index: Option<&SymbolIndex>,
     game_data_index: Option<&SymbolIndex>,
 ) -> LspCompletionReport {
+    if completion_cursor_is_in_comment(&analysis.lexer_tokens, offset) {
+        return empty_completion_report(analysis.parse_diagnostics);
+    }
     let total_start = Instant::now();
     let context_start = Instant::now();
     let resolver = ReferenceResolver::new_with_parse_scope_and_external_indexes(
@@ -3780,6 +3820,29 @@ mod tests {
             .items
             .iter()
             .any(|item| item.label == "GetGameMode"));
+    }
+
+    #[test]
+    fn completion_suppresses_items_inside_line_and_block_comments() {
+        let external = file_index_for_source("class GetGameMode {}").index;
+        for source in [
+            "// GetGameMode",
+            "/* GetGameMode */",
+            "/* GetGameMode",
+        ] {
+            let offset = source.len();
+            let lexical = completion_report_for_lexical_source_at_offset_with_external_indexes(
+                source,
+                offset,
+                Some(&external),
+                None,
+            );
+            assert!(lexical.list.items.is_empty(), "pending completion: {source}");
+
+            let analysis = file_index_for_source(source);
+            let cached = completion_report_for_offset(source, &analysis, offset, Some(&external), None);
+            assert!(cached.list.items.is_empty(), "cached completion: {source}");
+        }
     }
 
     #[test]

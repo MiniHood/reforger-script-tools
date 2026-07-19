@@ -53,6 +53,12 @@ uses receiver/owner resolution; static owners, typedefs, enum members,
 attributes, and `new` expressions have dedicated source-backed paths once their
 current analysis is available.
 
+Completion is suppressed inside line, documentation, block, and unfinished
+block comments for both cached and pending snapshots. This check uses the
+request's existing lexer tokens; only an already-rejected bounded window may
+use the existing 128KiB current-snapshot lexical-recovery cap to recognize an
+unfinished block comment rather than fall back to top-level items.
+
 Every Rust `LspCompletionReport` carries `QueryQuality` and a recovery reason.
 `Exact` is the matching-revision analyzed path. `RecoveryExact` is reserved
 until a bounded recovery query proves candidate equivalence. `Unavailable`
