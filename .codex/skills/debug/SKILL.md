@@ -30,10 +30,16 @@ to fix the issue.
    editor events, and process transport; Rust owns language facts and LSP
    results. Do not diagnose a Rust behavior by adding TypeScript language
    logic.
-6. Form a ranked root-cause hypothesis. For uncertain links, state a prediction
+6. Review the relevant design and architecture before selecting a root cause:
+   identify duplicated language paths, broken ownership boundaries, stale-data
+   joins, lifecycle coupling, unbounded work, and abstractions that make the
+   symptom likely to recur. Compare the failing path with its authoritative
+   counterpart and distinguish a local defect from a systemic design concern.
+7. Form a ranked root-cause hypothesis. For uncertain links, state a prediction
    and test it with an independent observation.
-7. Report root cause, affected ownership boundary, the smallest regression
-   test, and a focused fix plan. Ask whether to implement if the user asked for
+8. Report root cause, affected ownership boundary, architecture/design concerns
+   (or explicitly state none found), the smallest regression test, and a focused
+   fix plan. Ask whether to implement if the user asked for
    diagnosis only.
 
 ## Log locations
