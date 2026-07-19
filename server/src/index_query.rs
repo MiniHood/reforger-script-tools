@@ -759,17 +759,17 @@ pub(crate) fn completion_name_match_rank(value: &str, prefix: &str) -> Option<u1
     if value.eq_ignore_ascii_case(prefix) {
         return Some(1);
     }
+    if starts_with_ignore_ascii_case(value, prefix) {
+        return Some(10 + completion_match_tiebreak_score(value, prefix));
+    }
     if prefix.chars().count() >= 2 {
         if let Some(score) = boundary_abbreviation_match_score(value, prefix) {
-            return Some(10 + score);
+            return Some(100 + score.min(99));
         }
-    }
-    if starts_with_ignore_ascii_case(value, prefix) {
-        return Some(100 + length_delta_score(value, prefix));
     }
     if prefix.chars().count() >= 2 {
         if let Some(score) = subsequence_match_score(value, prefix) {
-            return Some(200 + score);
+            return Some(200 + score.min(u16::MAX - 200));
         }
     }
     None
@@ -787,6 +787,10 @@ fn length_delta_score(value: &str, prefix: &str) -> u16 {
         .count()
         .saturating_sub(prefix.chars().count())
         .min(u16::MAX as usize) as u16
+}
+
+fn completion_match_tiebreak_score(value: &str, prefix: &str) -> u16 {
+    length_delta_score(value, prefix).min(89)
 }
 
 fn boundary_abbreviation_match_score(value: &str, prefix: &str) -> Option<u16> {
@@ -892,6 +896,19 @@ void ExampleFn(int value);
                 SourceKind::Workspace
             );
         }
+    }
+
+    #[test]
+    fn completion_name_match_rank_prefers_prefixes_over_fuzzy_matches() {
+        let prefix_rank = completion_name_match_rank("OnPostInit", "on")
+            .expect("expected a case-insensitive prefix match");
+        let boundary_rank = completion_name_match_rank("SCR_OrientToSeaNormalContextAction", "on")
+            .expect("expected a boundary abbreviation match");
+        let subsequence_rank =
+            completion_name_match_rank("Ocean", "on").expect("expected a subsequence match");
+
+        assert!(prefix_rank < boundary_rank);
+        assert!(boundary_rank < subsequence_rank);
     }
 
     #[test]

@@ -82,7 +82,10 @@ top-level/keyword fallback; pending requests never infer local, member, or
 argument facts without current lexical proof.
 
 Keywords are LSP-owned so language suggestions do not depend on VS Code word
-suggestions. Callable completions share [callable.md](callable.md) parameter
+suggestions. Across every completion context, exact names and case-insensitive
+prefixes rank before boundary abbreviations and subsequence matches; the score
+bands are non-overlapping so a long fuzzy name cannot outrank a direct prefix.
+Callable completions share [callable.md](callable.md) parameter
 parsing with signature help, provide snippets/follow-up commands when safe, and
 avoid duplicate named argument labels case-insensitively.
 

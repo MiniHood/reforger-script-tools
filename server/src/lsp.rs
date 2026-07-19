@@ -6076,7 +6076,7 @@ class Example
             .sort_text
             .as_deref()
             .unwrap_or("")
-            .starts_with("104:01:"));
+            .starts_with("014:01:"));
     }
 
     #[test]
@@ -7422,6 +7422,37 @@ class Example
     }
 
     #[test]
+    fn completion_ranks_short_override_prefix_before_fuzzy_global_symbols() {
+        let source = r#"class Child : ScriptComponent
+{
+	on
+}
+"#;
+        let external = file_index_for_source(
+            r#"class ScriptComponent
+{
+	event protected void OnPostInit(IEntity owner);
+}
+
+class SCR_OrientToSeaNormalContextAction {}
+"#,
+        )
+        .index;
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "\ton"),
+            Some(&external),
+        );
+
+        assert_eq!(report.completion_context, "override");
+        assert_eq!(report.prefix, "on");
+        assert_eq!(
+            report.list.items.first().map(|item| item.label.as_str()),
+            Some("OnPostInit")
+        );
+    }
+
+    #[test]
     fn completion_keeps_override_keyword_when_override_skeletons_are_available() {
         let source = r#"class Child : ScriptComponent
 {
@@ -7488,7 +7519,6 @@ class Parent
             .iter()
             .map(|item| item.label.as_str())
             .collect::<Vec<_>>();
-        assert_eq!(labels.first().copied(), Some("RplProp"));
         assert!(labels.contains(&"RplLoad"));
         assert!(labels.contains(&"RplSave"));
         assert!(labels.contains(&"RplProp"));
