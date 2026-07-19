@@ -20,6 +20,11 @@ fn parse_args() -> LspServerOptions {
                     options.log_path = Some(PathBuf::from(value));
                 }
             }
+            "--diagnostic-log" => {
+                if let Some(value) = args.next() {
+                    options.diagnostic_log_path = Some(PathBuf::from(value));
+                }
+            }
             "--game-data-scripts" => {
                 if let Some(value) = args.next() {
                     options.game_data_scripts = Some(PathBuf::from(value));
@@ -42,7 +47,7 @@ fn parse_args() -> LspServerOptions {
             }
             "--help" | "-h" => {
                 println!(
-                    "Usage: reforger_language_server [--log <path>] [--game-data-scripts <path>] [--game-data-metadata <path>] [--index-cache <path>] [--workspace-scripts <path>]..."
+                    "Usage: reforger_language_server [--log <path>] [--diagnostic-log <path>] [--game-data-scripts <path>] [--game-data-metadata <path>] [--index-cache <path>] [--workspace-scripts <path>]..."
                 );
                 std::process::exit(0);
             }

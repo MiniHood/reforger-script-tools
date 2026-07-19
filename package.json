@@ -74,6 +74,11 @@
           "type": "string",
           "default": "",
           "description": "Optional manual Reforger game data folder. Set this to either the folder containing scripts/ or the scripts/ folder itself. When set, GitHub game-data checks and downloads are skipped."
+        },
+        "reforgerScriptTools.diagnostics.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Write local extension and language-server diagnostic performance logs. Logs exclude source text and LSP payloads."
         }
       }
     },

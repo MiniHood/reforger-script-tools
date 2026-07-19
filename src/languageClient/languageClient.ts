@@ -11,6 +11,7 @@ import {
 	TransportKind,
 } from 'vscode-languageclient/node';
 import { gameDataConfig, gameDataStorage } from '../extensionConfig/gameData';
+import { diagnostic, languageServerDiagnosticPath } from '../diagnostics/diagnostics';
 import {
 	languageClientCrashHandling,
 	languageClientCommands,
@@ -70,6 +71,17 @@ export function logLanguageClientStartupTiming(
 			await fs.appendFile(logPath, `${JSON.stringify(record)}\n`, 'utf8');
 		})
 		.catch(() => undefined);
+	diagnostic(`startup.${event}`, sanitizeDiagnosticFields(fields));
+}
+
+function sanitizeDiagnosticFields(fields: Record<string, string | number | boolean | undefined>): Record<string, string | number | boolean | undefined> {
+	const safe: Record<string, string | number | boolean | undefined> = {};
+	for (const [key, value] of Object.entries(fields)) {
+		if (!key.toLowerCase().includes('path') && key !== 'uri' && key !== 'serverPath' && key !== 'message') {
+			safe[key] = value;
+		}
+	}
+	return safe;
 }
 
 export function registerLanguageClientFeatures(context: vscode.ExtensionContext): void {
@@ -196,6 +208,7 @@ function positionFromByteOffset(text: string, byteOffset: number): vscode.Positi
 }
 
 export async function deactivateLanguageClient(): Promise<void> {
+	diagnostic('languageClient.deactivate');
 	disposeClientDisposables();
 	devServerWatcher?.dispose();
 	devServerWatcher = undefined;
@@ -238,6 +251,10 @@ async function startLanguageClient(
 		'--index-cache',
 		path.join(context.globalStorageUri.fsPath, languageClientIndexCache.rootFolder, languageClientIndexCache.gameDataIndexFile),
 	];
+	const diagnosticPath = languageServerDiagnosticPath(context);
+	if (diagnosticPath) {
+		serverArgs.push('--diagnostic-log', diagnosticPath);
+	}
 	const gameDataPaths = getGameDataPaths(context);
 	if (gameDataPaths.scripts) {
 		serverArgs.push('--game-data-scripts', gameDataPaths.scripts);
@@ -308,6 +325,7 @@ async function startLanguageClient(
 			transport: 'stdio',
 		});
 		await client.start();
+		diagnostic('languageClient.started', { workspaceScriptRoots: workspaceScriptRoots.length });
 		logLanguageClientStartupTiming(context, 'languageServerInitializeResponse', {
 			serverPath,
 		});
@@ -324,6 +342,7 @@ async function startLanguageClient(
 			message,
 		});
 		vscode.window.showWarningMessage(`Reforger language server failed to start: ${message}`);
+		diagnostic('languageClient.startFailed');
 	}
 }
 
@@ -384,6 +403,7 @@ function registerHtmlHoverProvider(
 ): vscode.Disposable {
 	return vscode.languages.registerHoverProvider(languageClientDocumentSelector, {
 		provideHover: async (document, position, token) => {
+			const startedAt = Date.now();
 			try {
 				const hover = await activeClient.sendRequest<LspHoverResponse | null>(
 					'textDocument/hover',
@@ -393,10 +413,12 @@ function registerHtmlHoverProvider(
 					},
 					token,
 				);
-				return hover ? hoverFromLspResponse(hover) : null;
+			diagnostic('lsp.hover', { outcome: hover ? 'hit' : 'empty', elapsedMs: Date.now() - startedAt });
+			return hover ? hoverFromLspResponse(hover) : null;
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
-				outputChannel.debug(`HTML hover request failed for ${document.uri.toString()}: ${message}`);
+			outputChannel.debug(`HTML hover request failed for ${document.uri.toString()}: ${message}`);
+			diagnostic('lsp.hover', { outcome: 'error', elapsedMs: Date.now() - startedAt });
 				return null;
 			}
 		},
@@ -567,21 +589,25 @@ function registerWorkspaceScriptWatchers(
 
 	const flush = (): void => {
 		const entries = [...pending.entries()];
+		diagnostic('workspaceWatcher.flush', { entries: entries.length });
 		pending.clear();
 		timer = undefined;
 		void Promise.all(entries.map(async ([, entry]) => {
 			const { path: filePath, kind, sequence } = entry;
 			if (kind === 'deleted') {
 				activeClient.sendNotification(languageClientNotifications.workspaceFileDeleted, { path: filePath, sequence });
+				diagnostic('workspaceWatcher.deleted', { sequence });
 				return;
 			}
 
 			try {
 				const text = await fs.readFile(filePath, 'utf8');
 				activeClient.sendNotification(languageClientNotifications.workspaceFileChanged, { path: filePath, text, sequence });
+				diagnostic('workspaceWatcher.changed', { bytes: Buffer.byteLength(text, 'utf8'), sequence });
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				outputChannel.debug(`Workspace script change skipped for ${filePath}: ${message}`);
+				diagnostic('workspaceWatcher.readFailed', { sequence });
 			}
 		}));
 	};
@@ -658,6 +684,8 @@ async function debugHoverAtCursor(
 	context: vscode.ExtensionContext,
 	outputChannel: vscode.OutputChannel,
 ): Promise<void> {
+	const startedAt = Date.now();
+	diagnostic('command.debugHover.start');
 	const editor = vscode.window.activeTextEditor;
 	if (!editor) {
 		vscode.window.showWarningMessage('Open an Enforce script file before running hover debug.');
@@ -693,11 +721,13 @@ async function debugHoverAtCursor(
 		outputChannel.appendLine('');
 		outputChannel.appendLine(report);
 		outputChannel.show(true);
+		diagnostic('command.debugHover.complete', { elapsedMs: Date.now() - startedAt });
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		outputChannel.appendLine(`Hover debug request failed: ${message}`);
 		outputChannel.show(true);
 		vscode.window.showWarningMessage(`Hover debug request failed: ${message}`);
+		diagnostic('command.debugHover.error', { elapsedMs: Date.now() - startedAt });
 	}
 }
 
@@ -705,6 +735,8 @@ async function debugCompletionAtCursor(
 	context: vscode.ExtensionContext,
 	outputChannel: vscode.OutputChannel,
 ): Promise<void> {
+	const startedAt = Date.now();
+	diagnostic('command.debugCompletion.start');
 	const editor = vscode.window.activeTextEditor;
 	if (!editor) {
 		vscode.window.showWarningMessage('Open an Enforce script file before running completion debug.');
@@ -740,11 +772,13 @@ async function debugCompletionAtCursor(
 		outputChannel.appendLine('');
 		outputChannel.appendLine(report);
 		outputChannel.show(true);
+		diagnostic('command.debugCompletion.complete', { elapsedMs: Date.now() - startedAt });
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		outputChannel.appendLine(`Completion debug request failed: ${message}`);
 		outputChannel.show(true);
 		vscode.window.showWarningMessage(`Completion debug request failed: ${message}`);
+		diagnostic('command.debugCompletion.error', { elapsedMs: Date.now() - startedAt });
 	}
 }
 

@@ -75,6 +75,9 @@ into the TypeScript client.
   does not recreate language decisions.
 - Logs, downloaded data, metadata, and indexes stay under `globalStorageUri`,
   never in the user workspace or packaged extension files.
+- Diagnostic performance logs are separate JSONL streams owned by the extension
+  host and Rust server. They contain only bounded operational metadata, never
+  document text or LSP payloads.
 - Workbench/compiler evidence changes the project's understanding of language
   truth. It does not create a second runtime analysis path.
 

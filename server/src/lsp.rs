@@ -19,8 +19,8 @@ use serde_json::{json, Value};
 use std::cell::Cell;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, VecDeque};
-use std::fs::{self, OpenOptions};
-use std::io::{self, BufRead, BufReader, Read, Write};
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 #[cfg(test)]
 use std::path::Path;
 use std::path::PathBuf;
@@ -138,6 +138,7 @@ const MAX_BACKGROUND_RUNTIME_WORKERS: usize = 1;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LspServerOptions {
     pub log_path: Option<PathBuf>,
+    pub diagnostic_log_path: Option<PathBuf>,
     pub game_data_scripts: Option<PathBuf>,
     pub game_data_metadata: Option<PathBuf>,
     pub index_cache: Option<PathBuf>,
@@ -929,18 +930,31 @@ fn coalesce_rich_job(
 struct LspLogger {
     path: Option<PathBuf>,
     lock: Arc<Mutex<()>>,
+    diagnostic: Option<Arc<Mutex<BufWriter<File>>>>,
+    diagnostic_session: Arc<str>,
 }
 
 impl LspLogger {
-    fn new(path: Option<PathBuf>) -> Self {
+    fn new(path: Option<PathBuf>, diagnostic_path: Option<PathBuf>) -> Self {
         if let Some(log_path) = path.as_ref() {
             if let Some(parent) = log_path.parent() {
                 let _ = fs::create_dir_all(parent);
             }
         }
+        let diagnostic = diagnostic_path.and_then(|path| {
+            if let Some(parent) = path.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            if path.metadata().map(|metadata| metadata.len() > 1024 * 1024).unwrap_or(false) {
+                let _ = fs::write(&path, b"");
+            }
+            OpenOptions::new().create(true).append(true).open(path).ok().map(|file| Arc::new(Mutex::new(BufWriter::new(file))))
+        });
         Self {
             path,
             lock: Arc::new(Mutex::new(())),
+            diagnostic,
+            diagnostic_session: Arc::from(format!("{}-{}", timestamp_millis(), std::process::id())),
         }
     }
 
@@ -953,6 +967,33 @@ impl LspLogger {
         };
         if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(log_path) {
             let _ = writeln!(file, "[{}] {message}", timestamp_millis());
+        }
+    }
+
+    fn diagnostic(&self, event: &str, fields: Value) {
+        let Some(writer) = &self.diagnostic else {
+            return;
+        };
+        let Ok(mut writer) = writer.lock() else {
+            return;
+        };
+        let record = json!({
+            "timestamp": timestamp_millis(),
+            "component": "languageServer",
+            "session": self.diagnostic_session.as_ref(),
+            "event": event,
+            "fields": fields,
+        });
+        if serde_json::to_writer(&mut *writer, &record).is_ok() {
+            let _ = writer.write_all(b"\n");
+        }
+    }
+
+    fn flush_diagnostics(&self) {
+        if let Some(writer) = &self.diagnostic {
+            if let Ok(mut writer) = writer.lock() {
+                let _ = writer.flush();
+            }
         }
     }
 }
@@ -1083,7 +1124,7 @@ impl<W: Write> LspServer<W> {
         analysis_scheduler: Option<RuntimeWorkExecutor>,
         _internal_sender: Option<mpsc::Sender<ServerEvent>>,
     ) -> Self {
-        let logger = LspLogger::new(options.log_path.clone());
+        let logger = LspLogger::new(options.log_path.clone(), options.diagnostic_log_path.clone());
         let external_index = start_external_index(&options, logger.clone());
         let server = Self {
             writer,
@@ -1114,6 +1155,11 @@ impl<W: Write> LspServer<W> {
             format_paths(&options.workspace_scripts),
             server.external_index.status_summary().status
         ));
+        server.logger.diagnostic("startup", json!({
+            "gameDataConfigured": options.game_data_scripts.is_some(),
+            "workspaceRoots": options.workspace_scripts.len(),
+            "indexCacheConfigured": options.index_cache.is_some(),
+        }));
         server
     }
 
@@ -1126,6 +1172,8 @@ impl<W: Write> LspServer<W> {
             }
         }
         self.log("exit");
+        self.logger.diagnostic("shutdown", json!({"outcome": "normal"}));
+        self.logger.flush_diagnostics();
         Ok(())
     }
 
@@ -1231,6 +1279,8 @@ impl<W: Write> LspServer<W> {
             }
         }
         self.log("exit");
+        self.logger.diagnostic("shutdown", json!({"outcome": "normal"}));
+        self.logger.flush_diagnostics();
         Ok(())
     }
 
@@ -1241,6 +1291,7 @@ impl<W: Write> LspServer<W> {
         coalesced_changes: usize,
         superseded_changes: usize,
     ) -> Result<bool, String> {
+        let started_at = Instant::now();
         let message = serde_json::from_value::<RpcMessage>(value.clone())
             .map_err(|error| format!("Invalid JSON-RPC message: {error}"))?;
         let queue_ms = queue_ms.unwrap_or(0);
@@ -1248,6 +1299,13 @@ impl<W: Write> LspServer<W> {
             self.handle_semantic_tokens_refresh_response(&message)?;
             return Ok(false);
         };
+        self.logger.diagnostic("rpc.received", json!({
+            "method": method,
+            "request": message.id.is_some(),
+            "queueMs": queue_ms,
+            "coalescedChanges": coalesced_changes,
+            "supersededChanges": superseded_changes,
+        }));
 
         if self.shutdown_requested && method != "exit" {
             let error = "Server has already received shutdown";
@@ -2520,11 +2578,15 @@ impl<W: Write> LspServer<W> {
                     self.respond_error(id, -32601, &format!("Method not found: {method}"))?;
                 }
             }
-        }
-
+        };
         self.request_semantic_tokens_refresh_if_external_generation_changed()?;
-
-        Ok(self.shutdown_requested && method == "exit")
+        let should_exit = self.shutdown_requested && method == "exit";
+        self.logger.diagnostic("rpc.completed", json!({
+            "method": method,
+            "outcome": if should_exit { "exit" } else { "complete" },
+            "elapsedMs": started_at.elapsed().as_millis(),
+        }));
+        Ok(should_exit)
     }
 
     fn handle_internal_event(&mut self, event: ServerEvent) -> Result<(), String> {
@@ -8284,6 +8346,7 @@ class Example
             &mut output,
             LspServerOptions {
                 log_path: None,
+                diagnostic_log_path: None,
                 game_data_scripts: None,
                 game_data_metadata: None,
                 index_cache: None,
@@ -8481,6 +8544,7 @@ class Example
             &mut output,
             LspServerOptions {
                 log_path: Some(log_path.clone()),
+                diagnostic_log_path: None,
                 game_data_scripts: None,
                 game_data_metadata: None,
                 index_cache: None,
@@ -8587,6 +8651,7 @@ class Example
             &mut output,
             LspServerOptions {
                 log_path: Some(log_path.clone()),
+                diagnostic_log_path: None,
                 game_data_scripts: None,
                 game_data_metadata: None,
                 index_cache: None,
@@ -9827,6 +9892,7 @@ class Example
             &mut output,
             LspServerOptions {
                 log_path: None,
+                diagnostic_log_path: None,
                 game_data_scripts: None,
                 game_data_metadata: None,
                 index_cache: None,
@@ -9915,6 +9981,7 @@ class Example
             &mut output,
             LspServerOptions {
                 log_path: None,
+                diagnostic_log_path: None,
                 game_data_scripts: None,
                 game_data_metadata: None,
                 index_cache: None,
@@ -10470,6 +10537,7 @@ class Example
             &mut output,
             LspServerOptions {
                 log_path: Some(log_path.clone()),
+                diagnostic_log_path: None,
                 game_data_scripts: None,
                 game_data_metadata: None,
                 index_cache: None,
@@ -10613,6 +10681,7 @@ class Example
             &mut output,
             LspServerOptions {
                 log_path: None,
+                diagnostic_log_path: None,
                 game_data_scripts: None,
                 game_data_metadata: None,
                 index_cache: None,
@@ -10707,6 +10776,7 @@ class Example
             &mut output,
             LspServerOptions {
                 log_path: None,
+                diagnostic_log_path: None,
                 game_data_scripts: None,
                 game_data_metadata: None,
                 index_cache: None,
@@ -10803,6 +10873,7 @@ class Example
             &mut output,
             LspServerOptions {
                 log_path: None,
+                diagnostic_log_path: None,
                 game_data_scripts: None,
                 game_data_metadata: None,
                 index_cache: None,
@@ -10909,6 +10980,7 @@ class Example
             &mut output,
             LspServerOptions {
                 log_path: Some(log_path.clone()),
+                diagnostic_log_path: None,
                 game_data_scripts: None,
                 game_data_metadata: None,
                 index_cache: None,
@@ -11168,6 +11240,7 @@ class Example
             &mut output,
             LspServerOptions {
                 log_path: None,
+                diagnostic_log_path: None,
                 game_data_scripts: None,
                 game_data_metadata: None,
                 index_cache: None,
@@ -11252,6 +11325,7 @@ class Example
             &mut output,
             LspServerOptions {
                 log_path: None,
+                diagnostic_log_path: None,
                 game_data_scripts: None,
                 game_data_metadata: None,
                 index_cache: None,
@@ -11340,6 +11414,7 @@ class Example
             &mut output,
             LspServerOptions {
                 log_path: None,
+                diagnostic_log_path: None,
                 game_data_scripts: None,
                 game_data_metadata: None,
                 index_cache: None,
@@ -11550,5 +11625,22 @@ class Example
             "expected at least {expected} type-family semantic tokens text={text:?}, found {actual}: {:?}",
             report.decoded
         );
+    }
+
+    #[test]
+    fn diagnostic_log_is_structured_and_does_not_add_unprovided_source_content() {
+        let path = std::env::temp_dir().join(format!(
+            "reforger_lsp_diagnostic_{}_{}.jsonl",
+            std::process::id(),
+            timestamp_millis()
+        ));
+        let logger = LspLogger::new(None, Some(path.clone()));
+        logger.diagnostic("rpc.completed", json!({"method": "textDocument/hover", "elapsedMs": 4}));
+        logger.flush_diagnostics();
+        let record = fs::read_to_string(&path).unwrap();
+        assert!(record.contains("\"component\":\"languageServer\""));
+        assert!(record.contains("\"method\":\"textDocument/hover\""));
+        assert!(!record.contains("class Secret"));
+        let _ = fs::remove_file(path);
     }
 }

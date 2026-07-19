@@ -8,6 +8,7 @@ use crate::model::{
 };
 use crate::parser::parse_source;
 use crate::semantic_file::{FileContribution, SemanticFile};
+use serde_json::json;
 use std::collections::BTreeMap;
 use std::fs;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -286,6 +287,11 @@ pub(crate) fn start_external_index(
         return ExternalIndexHandle::missing();
     }
 
+    logger.diagnostic("externalIndex.started", json!({
+        "gameDataConfigured": options.game_data_scripts.is_some(),
+        "workspaceRoots": options.workspace_scripts.len(),
+    }));
+
     let handle = ExternalIndexHandle {
         state: Arc::new(Mutex::new(ExternalIndexState {
             status: ExternalIndexStatus::Building,
@@ -552,6 +558,13 @@ fn run_external_index_thread(
         start.elapsed().as_millis(),
         start.elapsed().as_millis()
     ));
+    logger.diagnostic("externalIndex.completed", json!({
+        "status": status.as_str(),
+        "files": summary.as_ref().map(|summary| summary.files).unwrap_or(0),
+        "symbols": summary.as_ref().map(|summary| summary.indexed_symbols).unwrap_or(0),
+        "workspaceFiles": workspace_summary.files,
+        "elapsedMs": start.elapsed().as_millis(),
+    }));
 }
 
 fn build_workspace_indexes(

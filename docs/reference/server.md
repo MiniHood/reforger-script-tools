@@ -50,6 +50,12 @@ decisions to the engine layers. External source roots and cache locations arrive
 as resolved inputs; indexing consumes them but does not discover or download
 them.
 
+When started with `--diagnostic-log`, the server writes a bounded local JSONL
+stream distinct from its developer log. It records lifecycle, JSON-RPC method,
+queue, and elapsed-time metadata without serializing source text, RPC payloads,
+or feature results. The TypeScript client owns the setting and diagnostic path;
+Rust owns the file's records and never writes extension-host events.
+
 Snapshot and admission ownership is specified in
 [analysis_runtime.md](server/src/analysis_runtime.md).
 

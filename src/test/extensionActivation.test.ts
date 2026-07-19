@@ -15,4 +15,13 @@ suite('extension activation', () => {
 		assert.ok(!commands.includes('reforger-sript-tools.completion.triggerSuggestAtSnippetPlaceholderEnd'));
 		assert.ok(!commands.includes('reforger-sript-tools.completion.jumpToNextSnippetPlaceholderAndTriggerSuggest'));
 	});
+
+	test('enables local diagnostic logging by default', () => {
+		const extension = vscode.extensions.all.find(
+			candidate => candidate.packageJSON.name === 'reforger-sript-tools',
+		);
+		assert.ok(extension, 'development extension is discoverable');
+		const properties = extension.packageJSON.contributes.configuration.properties as Record<string, { default?: unknown }>;
+		assert.strictEqual(properties['reforgerScriptTools.diagnostics.enabled'].default, true);
+	});
 });

@@ -2,6 +2,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { unzipSync } from 'fflate';
+import { diagnostic } from '../diagnostics/diagnostics';
 import {
 	gameDataCommands,
 	gameDataConfig,
@@ -81,6 +82,7 @@ export function markManualFolderWarned(manualFolder: string, warnedManualFolders
 }
 
 export function registerGameDataFeatures(context: vscode.ExtensionContext): void {
+	diagnostic('gameData.registration');
 	context.subscriptions.push(
 		vscode.commands.registerCommand(gameDataCommands.checkForUpdates, async () => {
 			await runGameDataStartupCheck(context, true);
@@ -96,6 +98,7 @@ export function registerGameDataFeatures(context: vscode.ExtensionContext): void
 }
 
 async function runGameDataStartupCheck(context: vscode.ExtensionContext, manualCommand: boolean): Promise<void> {
+	const startedAt = Date.now();
 	try {
 		const manualFolder = getManualFolderSetting();
 		if (manualFolder) {
@@ -103,6 +106,7 @@ async function runGameDataStartupCheck(context: vscode.ExtensionContext, manualC
 			if (manualCommand) {
 				vscode.window.showInformationMessage('Manual Reforger game data folder is set. GitHub checks and downloads are skipped.');
 			}
+			diagnostic('gameData.check', { mode: 'manual', outcome: 'complete', elapsedMs: Date.now() - startedAt });
 			return;
 		}
 
@@ -113,6 +117,7 @@ async function runGameDataStartupCheck(context: vscode.ExtensionContext, manualC
 			if (manualCommand) {
 				vscode.window.showInformationMessage(`Reforger game data is current: ${remote.message}.`);
 			}
+			diagnostic('gameData.check', { mode: 'downloaded', outcome: 'current', elapsedMs: Date.now() - startedAt });
 			return;
 		}
 
@@ -143,9 +148,11 @@ async function runGameDataStartupCheck(context: vscode.ExtensionContext, manualC
 			},
 		);
 		vscode.window.showInformationMessage(`Reforger game data updated: ${remote.message}.`);
+		diagnostic('gameData.check', { mode: 'downloaded', outcome: 'updated', elapsedMs: Date.now() - startedAt });
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		vscode.window.showWarningMessage(`Reforger game data update failed: ${message}`);
+		diagnostic('gameData.check', { outcome: 'error', elapsedMs: Date.now() - startedAt });
 	}
 }
 

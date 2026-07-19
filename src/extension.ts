@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { diagnostic, initializeDiagnostics } from './diagnostics/diagnostics';
 import { registerGameDataFeatures } from './gameData/gameData';
 import {
 	deactivateLanguageClient,
@@ -7,6 +8,8 @@ import {
 } from './languageClient/languageClient';
 
 export function activate(context: vscode.ExtensionContext) {
+	initializeDiagnostics(context);
+	diagnostic('activationStart');
 	logLanguageClientStartupTiming(context, 'activationStart', {
 		extensionMode: extensionModeName(context.extensionMode),
 		workspaceFolders: String(vscode.workspace.workspaceFolders?.length ?? 0),
@@ -14,9 +17,11 @@ export function activate(context: vscode.ExtensionContext) {
 	registerGameDataFeatures(context);
 	registerLanguageClientFeatures(context);
 	logLanguageClientStartupTiming(context, 'activationEnd');
+	diagnostic('activationEnd');
 }
 
 export function deactivate() {
+	diagnostic('deactivation');
 	return deactivateLanguageClient();
 }
 
