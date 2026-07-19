@@ -31,6 +31,11 @@ const MAX_COMPLETION_ITEMS: usize = 250;
 /// runtime semantic lane.
 const LOCAL_SCOPE_QUERY_MAX_WINDOW_BYTES: usize = 16 * 1024;
 const LOCAL_SCOPE_QUERY_TRAILING_BYTES: usize = 2 * 1024;
+/// When the fixed window begins or ends in a multi-line lexical construct, a
+/// small current snapshot may be lexed once to establish its real state. This
+/// preserves immediate externally-proven completion in normal large files
+/// without making foreground requests scale without bound.
+const LEXICAL_CONTEXT_RECOVERY_MAX_SOURCE_BYTES: usize = 128 * 1024;
 const LOCAL_SCOPE_QUERY_DEADLINE: Duration = Duration::from_millis(50);
 const COMMAND_TRIGGER_PARAMETER_HINTS: &str = "editor.action.triggerParameterHints";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -441,6 +446,12 @@ struct BoundedCompletionRegion {
 
 impl BoundedCompletionRegion {
     fn new(source: &str, offset: usize) -> Option<Self> {
+        let (start, end) = Self::window_bounds(source, offset)?;
+        Self::from_window(source, start, end)
+            .or_else(|| Self::from_current_snapshot_context(source, start, end))
+    }
+
+    fn window_bounds(source: &str, offset: usize) -> Option<(usize, usize)> {
         if offset > source.len() || !source.is_char_boundary(offset) {
             return None;
         }
@@ -455,11 +466,22 @@ impl BoundedCompletionRegion {
         while end > offset && !source.is_char_boundary(end) {
             end -= 1;
         }
+        Some((start, end))
+    }
+
+    fn from_window(source: &str, start: usize, end: usize) -> Option<Self> {
         let mut tokens = lex(source.get(start..end)?);
         for token in &mut tokens {
             token.span.start += start;
             token.span.end += start;
         }
+        (!tokens.iter().any(|token| token.kind.is_error())).then_some(Self { tokens })
+    }
+
+    fn from_current_snapshot_context(source: &str, start: usize, end: usize) -> Option<Self> {
+        (source.len() <= LEXICAL_CONTEXT_RECOVERY_MAX_SOURCE_BYTES).then_some(())?;
+        let mut tokens = lex(source);
+        tokens.retain(|token| token.span.start < end && token.span.end > start);
         (!tokens.iter().any(|token| token.kind.is_error())).then_some(Self { tokens })
     }
 
@@ -3442,12 +3464,12 @@ mod tests {
             None,
         );
 
-        assert!(BoundedCompletionRegion::new(&source, offset).is_none());
+        assert!(BoundedCompletionRegion::new(&source, offset).is_some());
         assert_eq!(report.prefix, "getga");
         assert_eq!(report.query_quality, QueryQuality::Unavailable);
         assert_eq!(
             report.recovery_reason.as_deref(),
-            Some("invalid-or-unterminated-lexical-window")
+            Some("current-revision-local-facts-pending")
         );
         assert!(report
             .list
@@ -3711,6 +3733,55 @@ class PlayerController
             .items
             .iter()
             .any(|item| item.label == "GetControlledEntity"));
+    }
+
+    #[test]
+    fn current_receiver_query_recovers_external_root_calls_across_multiline_lexical_context() {
+        let external = file_index_for_source(
+            r#"class ChimeraGame
+{
+	proto external PlayerController GetPlayerController();
+}
+
+class ArmaReforgerScripted : ChimeraGame {}
+ArmaReforgerScripted GetGame();
+"#,
+        )
+        .index;
+        let mut source = "void Padding() {}\n".repeat(1_100);
+        source.push_str("class Example { void Run() { GetGame().GetPlayer\n/*");
+        source.push_str(&"comment ".repeat(400));
+        source.push_str("*/\n} }\n");
+        let offset = source.find("GetPlayer\n").unwrap() + "GetPlayer".len();
+
+        let report = completion_report_for_current_receiver_at_offset_with_external_indexes(
+            &source,
+            offset,
+            None,
+            Some(&external),
+        )
+        .expect("current lexical context should recover an externally proven root call");
+
+        assert_eq!(report.query_quality, QueryQuality::Exact);
+        assert_eq!(report.receiver_text.as_deref(), Some("GetGame()"));
+        assert_eq!(report.owner_type.as_deref(), Some("ArmaReforgerScripted"));
+        assert!(report
+            .list
+            .items
+            .iter()
+            .any(|item| item.label == "GetPlayerController"));
+    }
+
+    #[test]
+    fn oversized_ambiguous_lexical_windows_keep_the_safe_fallback() {
+        let mut source = "void Padding() {}\n".repeat(15_000);
+        source.push_str("GetGame().GetPlayer\n/*");
+        source.push_str(&"comment ".repeat(400));
+        source.push_str("*/\n");
+        let offset = source.find("GetPlayer\n").unwrap() + "GetPlayer".len();
+
+        assert!(source.len() > LEXICAL_CONTEXT_RECOVERY_MAX_SOURCE_BYTES);
+        assert!(BoundedCompletionRegion::new(&source, offset).is_none());
     }
 
     #[test]
