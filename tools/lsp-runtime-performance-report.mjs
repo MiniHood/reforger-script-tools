@@ -181,6 +181,7 @@ function renderReport(input) {
   const cancellation = summarizeCancellation(records);
   const richIdentity = summarizeRichIdentity(records);
   const captureFields = summarizeCaptureFields(records);
+  const externalCache = summarizeExternalCache(records);
 
   const lines = [];
   lines.push("# LSP Runtime Performance Report");
@@ -204,6 +205,22 @@ function renderReport(input) {
   lines.push(`- First usable token observations: ${snapshotQuality.firstToken.latencies.length} / ${snapshotQuality.acceptedSnapshots}`);
   lines.push(`- First completion observations: ${snapshotQuality.firstCompletion.latencies.length} / ${snapshotQuality.acceptedSnapshots}`);
   lines.push(`- Slowest operation: ${slowRecords[0] ? `${slowRecords[0].operation} (${formatMs(slowRecords[0].elapsedMs)})` : "None"}`);
+  lines.push("");
+  lines.push("## External Game-Data Cache");
+  lines.push("");
+  lines.push("Ready-state telemetry is source-free: it records only cache lifecycle, index counts, byte size, and timings. A missing byte count remains visible as unavailable rather than being inferred.");
+  lines.push("");
+  if (externalCache.rows.length === 0) {
+    lines.push("No game-data ready records were present in this capture.");
+  } else {
+    table(lines, ["Cache status", "Files", "Symbols", "Cache bytes", "Cache total"], externalCache.rows.map((row) => [
+      row.status,
+      row.files,
+      row.symbols,
+      row.cacheBytes === undefined ? "Unavailable" : formatBytes(row.cacheBytes),
+      formatMs(row.cacheTotalMs),
+    ]));
+  }
   lines.push("");
   lines.push("## Interpretation");
   lines.push("");
@@ -701,6 +718,20 @@ function summarizeCaptureFields(records) {
   return { rows, totalMissing: rows.reduce((total, row) => total + row.missing, 0) };
 }
 
+function summarizeExternalCache(records) {
+  return {
+    rows: records
+      .filter((record) => record.operation === "externalIndex gameData ready")
+      .map((record) => ({
+        status: record.fields.cache_status ?? "<missing>",
+        files: numberField(record.fields, "files") ?? 0,
+        symbols: numberField(record.fields, "symbols") ?? 0,
+        cacheBytes: numberField(record.fields, "cache_file_bytes"),
+        cacheTotalMs: numberField(record.fields, "cache_total_ms") ?? record.elapsedMs,
+      })),
+  };
+}
+
 function isCancelledRecord(record) {
   return String(record.fields.reason ?? record.fields.disposition ?? record.fields.outcome ?? "").toLowerCase().includes("cancel");
 }
@@ -838,6 +869,12 @@ function formatMs(value) {
     return "";
   }
   return `${Math.round(value)} ms`;
+}
+
+function formatBytes(value) {
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KiB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MiB`;
 }
 
 function maxOrZero(values) {

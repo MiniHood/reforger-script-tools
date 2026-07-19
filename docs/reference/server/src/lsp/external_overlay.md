@@ -25,7 +25,11 @@ script files, rejects directory links, and uses lexical normalized absolute
 paths as identity. Change and deletion notifications carry per-path sequences;
 older events cannot resurrect or roll back newer workspace state. Status and
 phase markers make cache/index startup failures observable without moving
-indexing work into the client.
+indexing work into the client. Every successful `externalIndex gameData ready`
+record includes the source-free `cache_file_bytes` field. It is emitted for
+cold rebuilds, current cache loads, and legacy-cache migrations after the
+atomically written current cache is on disk. The runtime performance report may
+consume that field, but it never reads or reproduces source contents.
 
 Each workspace-file entry retains the validated, versioned public
 `FileContribution` that admitted it. Its `SymbolIndex` is a query projection

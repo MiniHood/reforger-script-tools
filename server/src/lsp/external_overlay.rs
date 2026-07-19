@@ -424,12 +424,13 @@ fn run_external_index_thread(
                 let cache_detail = result.cache_status.detail().map(str::to_string);
                 let fingerprint = result.fingerprint.summary();
                 logger.log(&format!(
-                "externalIndex gameData ready cache_status={} cache_detail={} files={} symbols={} parse_diagnostics={} cache_file_read_ms={} cache_decode_ms={} cache_validate_ms={} cache_map_rebuild_ms={} cache_total_ms={} elapsed_ms={}",
+                "externalIndex gameData ready cache_status={} cache_detail={} files={} symbols={} parse_diagnostics={} cache_file_bytes={} cache_file_read_ms={} cache_decode_ms={} cache_validate_ms={} cache_map_rebuild_ms={} cache_total_ms={} elapsed_ms={}",
                 cache_status,
                 cache_detail.as_deref().unwrap_or("<none>"),
                 result.summary.files,
                 result.summary.indexed_symbols,
                 result.summary.parse_diagnostics,
+                result.cache_file_bytes.map(|bytes| bytes.to_string()).as_deref().unwrap_or("<unavailable>"),
                 result.timings.cache_file_read.as_millis(),
                 result.timings.cache_decode.as_millis(),
                 result.timings.cache_validate.as_millis(),

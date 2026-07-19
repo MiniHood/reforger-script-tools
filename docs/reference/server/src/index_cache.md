@@ -16,7 +16,7 @@ The existing-path `RSTIDX10` binary-v3 cache is a one-way compatibility input du
 
 Persisted game-data indexes omit external `LocalVariable` symbols and source-only detail spans, but retain parameters, callable signatures, docs, attributes, modifiers, declarations, conditional context, provenance, and copied detail text. Any magic/schema/version/index-shape/crate-version/fingerprint/decode mismatch rebuilds and replaces the cache. All length-prefixed decoding is bounded before allocation; after decoding a legacy cache, its raw bytes are released before validation or v11 replacement. Corrupt or partial data is a rebuild trigger, never source truth.
 
-Operations expose phase timings and may emit startup-only progress through an LSP callback. Cache reports measure baseline, composition, and duplicate-string evidence.
+Operations expose phase timings and may emit startup-only progress through an LSP callback. A successful game-data ready record reports the source-free on-disk `cache_file_bytes` after cold rebuild, warm load, or legacy migration. Cache reports measure baseline, composition, and duplicate-string evidence; the production-corpus release target is at most 30 MiB, with a 32 MiB regression ceiling pending an explicit revised target.
 
 ## Dependencies and Boundaries
 

@@ -82,6 +82,19 @@ test("does not reproduce source or completion payload fields in the report", () 
   assert.doesNotMatch(report, /DO_NOT_COPY/);
 });
 
+test("reports source-free game-data cache bytes for rebuilt, loaded, and migrated indexes", () => {
+  const report = runReport([
+    "[1000] externalIndex gameData ready cache_status=rebuilt cache_detail=cache-missing files=6495 symbols=143145 cache_file_bytes=29360128 cache_total_ms=17000 elapsed_ms=17000 source=DO_NOT_COPY",
+    "[2000] externalIndex gameData ready cache_status=loaded cache_detail=<none> files=6495 symbols=143145 cache_file_bytes=29360128 cache_total_ms=800 elapsed_ms=800 source=DO_NOT_COPY",
+    "[3000] externalIndex gameData ready cache_status=loaded cache_detail=migrated-v10 files=6495 symbols=143145 cache_file_bytes=29360128 cache_total_ms=1200 elapsed_ms=1200 source=DO_NOT_COPY",
+  ].join("\n"));
+
+  assert.match(report, /## External Game-Data Cache/);
+  assert.match(report, /rebuilt.*6495.*143145.*28\.0 MiB.*17000 ms/);
+  assert.match(report, /loaded.*6495.*143145.*28\.0 MiB.*800 ms/);
+  assert.doesNotMatch(report, /DO_NOT_COPY/);
+});
+
 test("correlates first current-snapshot token and completion responses without payload data", () => {
   const report = runReport([
     "[1000] notification didChange uri=file:///workspace/GC_MarkerArea.c version=7 revision=42 cached_analysis=false analysis_state=pending elapsed_ms=2",

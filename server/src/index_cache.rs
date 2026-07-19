@@ -2588,6 +2588,68 @@ mod tests {
     }
 
     #[test]
+    fn canonical_codec_is_materially_smaller_than_v10_without_json_or_duplicate_strings() {
+        let root = test_root("canonical_codec_size");
+        let cache = root.join("cache.bin");
+        let scripts = root.join("scripts");
+        let metadata = root.join("metadata.json");
+        let repeated_type = "CacheSizeSentinel";
+        write_file(
+            &scripts.join("Game/First.c"),
+            "class CacheSizeSentinel {}\nclass First { CacheSizeSentinel Make(CacheSizeSentinel value); }",
+        );
+        write_file(
+            &scripts.join("Game/Second.c"),
+            "class Second { CacheSizeSentinel Make(CacheSizeSentinel value); }",
+        );
+        write_file(
+            &scripts.join("Game/Third.c"),
+            "class Third { CacheSizeSentinel Make(CacheSizeSentinel value); }",
+        );
+        write_file(&metadata, r#"{"commitSha":"canonical-codec-size"}"#);
+
+        load_or_build_game_data_index(&GameDataIndexCacheConfig {
+            scripts_root: scripts,
+            cache_path: cache.clone(),
+            metadata_path: Some(metadata),
+        })
+        .unwrap();
+        let v11_bytes = fs::read(&cache).unwrap();
+        let current = decode_cached_index(&v11_bytes).unwrap();
+        let runtime = current.clone().into_index();
+        let v10 = V10CachedGameDataIndex {
+            schema: CACHE_SCHEMA.to_string(),
+            format_version: V10_CACHE_FORMAT_VERSION,
+            index_shape: V10_CACHE_INDEX_SHAPE.to_string(),
+            crate_version: current.crate_version.clone(),
+            fingerprint: current.fingerprint.clone(),
+            summary: current.summary.clone(),
+            index: V10CachedSymbolIndex {
+                files: runtime.files().to_vec(),
+                symbols: runtime.symbols().to_vec(),
+                contributions: current
+                    .files
+                    .iter()
+                    .map(CachedFileContribution::to_file_contribution)
+                    .collect(),
+            },
+        };
+        let v10_bytes = encode_v10_cached_index(&v10).unwrap();
+
+        assert!(
+            v11_bytes.len() * 4 <= v10_bytes.len() * 3,
+            "canonical v11 cache ({}) must be at least 25% smaller than equivalent v10 ({})",
+            v11_bytes.len(),
+            v10_bytes.len()
+        );
+        assert_eq!(count_subslice(&v11_bytes, repeated_type.as_bytes()), 1);
+        assert_eq!(count_subslice(&v11_bytes, b"\"schema_version\""), 0);
+        assert!(count_subslice(&v10_bytes, b"\"schema_version\"") > 0);
+
+        cleanup(&root);
+    }
+
+    #[test]
     fn cache_rebuilds_when_commit_changes() {
         let root = test_root("commit_changes");
         let cache = root.join("cache.json");
@@ -3357,5 +3419,12 @@ class BaseGameModeClass : GenericEntityClass
 
     fn cleanup(path: &Path) {
         let _ = fs::remove_dir_all(path);
+    }
+
+    fn count_subslice(bytes: &[u8], needle: &[u8]) -> usize {
+        bytes
+            .windows(needle.len())
+            .filter(|window| *window == needle)
+            .count()
     }
 }
