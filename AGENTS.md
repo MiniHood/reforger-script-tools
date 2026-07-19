@@ -1,114 +1,160 @@
 # AGENTS.md
 
-## Purpose
+## Mission
 
-Build Reforger Script Tools as a high-fidelity Enfusion Script toolchain. Optimize for correct language understanding, reliable editor behavior, and a durable path to a complete parser, semantic model, index, and language server. Do not choose shortcuts that make that target worse.
+Build Reforger Script Tools as a high-fidelity Enfusion Script toolchain. Favor
+correct language understanding, reliable editor behavior, and a durable path to
+a complete parser, semantic model, index, and language server. Do not take a
+shortcut that makes that destination worse.
 
-## Architecture Policy
+## Architecture
 
-The canonical runtime flow is documented in [docs/reference/architecture.md](docs/reference/architecture.md). Keep these ownership boundaries intact:
+The canonical runtime flow is in [docs/reference/architecture.md](docs/reference/architecture.md).
+Keep these boundaries intact.
 
-- VS Code TypeScript is the extension shell: activation, commands, settings, UI glue, process lifecycle, editor events, and LSP transport.
-- Rust is the language engine: lexing, parsing, syntax/AST, semantic model, indexing, diagnostics, formatting, and LSP request handling.
-- Workbench/compiler behavior is the final authority for Enfusion Script behavior. It is validation authority, not the extension's language server.
-- Game-data acquisition and source resolution belong in `src/gameData/`; parsing or semantic modeling does not.
-- Language-client process management and protocol bridging belong in `src/languageClient/`; language intelligence does not.
-- Use one authoritative implementation path for each feature. Temporary migration paths require an explicit removal plan.
-- Keep extension activation fast. Expensive analysis belongs in the Rust server or a background process.
+- VS Code TypeScript is the extension shell: activation, commands, settings,
+  UI glue, process lifecycle, editor events, and LSP transport.
+- Rust is the language engine: lexing, parsing, syntax/AST, semantic model,
+  indexing, diagnostics, formatting, and LSP request handling.
+- Workbench/compiler behavior is the authority for Enfusion Script behavior;
+  it validates language truth but is not the extension's language server.
+- Game-data acquisition and source resolution belong in `src/gameData/`.
+- Language-client process management and protocol bridging belong in
+  `src/languageClient/`.
+- `src/extension.ts` wires top-level services only. It must not gain language
+  intelligence, parser, indexer, downloader, or Workbench logic.
+- `src/extensionConfig/` owns extension-facing IDs, keys, names, defaults, and
+  thresholds. Do not scatter magic strings.
+- `server/` owns the Rust language engine. Keep compiler-style responsibilities
+  separate as the engine gains layers.
+- `tools/` is developer/Codex tooling only, never an extension runtime
+  dependency.
+- Use one authoritative implementation path for each feature. A temporary
+  migration path requires a removal condition and must not become permanent.
+- Keep extension activation fast; expensive analysis belongs in Rust or a
+  background process.
 
-Marketplace installs must be self-contained. Never require end users to install Rust, Cargo, Node.js, npm packages, an LSP server, or another helper tool. Runtime dependencies must be bundled or acquired through extension-owned flows without manual setup.
+Marketplace installs must be self-contained. End users must not need Rust,
+Cargo, Node.js, npm packages, a separately installed LSP server, or another
+manual helper dependency.
 
-## Reforger Truth Policy
+## Reforger Truth
 
-Before reasoning about or changing Arma Reforger, Workbench, Enfusion Script, game data, source-backed APIs, fixtures, parser/model/index behavior, diagnostics, formatting, or LSP language features, invoke the `reforger` skill.
+Before reasoning about or changing Enfusion Script behavior, Workbench, game
+data, fixtures, parser/model/index behavior, diagnostics, formatting, or LSP
+language features, invoke the `reforger` skill.
 
-Use this evidence order:
+Use evidence in this order:
 
 1. Workbench/compiler behavior when available.
 2. Official Reforger documentation.
 3. Extracted APIs and verified game-data records.
-4. Source samples and fixtures, labeled by confidence.
+4. Source samples and fixtures, labelled by confidence.
 
-Do not infer Enfusion behavior from C#, Unity, Unreal, Arma 3, SQF, or generic scripting-language conventions.
+Never infer Enfusion behavior from C#, Unity, Unreal, Arma 3, SQF, or generic
+scripting-language conventions.
 
-## Source And State Boundaries
-
-- `src/extension.ts` wires top-level services only. Do not add parser, indexer, Workbench, downloader, or feature logic there.
-- `src/extensionConfig/` owns extension-facing IDs, keys, names, defaults, and thresholds. Do not scatter magic strings.
-- `server/` owns the Rust language engine. Organize it by compiler-style responsibility when introducing new layers.
-- `tools/` is developer/Codex tooling only and must not become an extension runtime dependency.
-- `tools/fixtures/` contains small language-tooling examples and states whether each is Workbench-confirmed, source-derived, or speculative.
-- `context.globalState` holds small durable flags. `context.globalStorageUri` holds downloaded data, caches, metadata, and logs. Do not write runtime state into source files.
-- Logs must be optional, centrally owned, concise, and outside the workspace source tree. Check `globalStorageUri/logs/hover-debug/latest.md` first for hover-selection investigations.
-
-## Design And Implementation Policy
+## Design Rules
 
 - Prefer full-fidelity parsing and precise semantic data over text matching.
-- Prefer small verified vertical slices over broad rewrites.
-- Preserve current working behavior unless the task explicitly changes it.
-- Do not add managers, registries, wrappers, settings, or validation layers without a current concrete need.
+- Prefer small, verified vertical slices over broad speculative rewrites.
+- Preserve working behavior unless the task intentionally changes it.
+- Do not add managers, registries, wrappers, settings, or validation layers
+  without a current, concrete need.
 - Keep TypeScript typed, thin, deterministic, and editor-facing.
-- Use structured parsers and data models for language features; do not introduce temporary TypeScript language logic that competes with Rust.
-- Treat user settings as intentional user controls. Keep internal consent and bookkeeping out of `package.json` settings unless users must configure them.
+- Do not introduce TypeScript language logic that competes with Rust.
+- Treat user settings as intentional controls; do not expose internal consent
+  or bookkeeping as settings.
+- Runtime state belongs under `globalStorageUri`; `globalState` contains only
+  small durable flags. Never write runtime state into source files.
+- Logs are optional, centrally owned, concise, and outside the workspace source
+  tree. For hover-selection work, inspect
+  `globalStorageUri/logs/hover-debug/latest.md` first.
 
-## Documentation Policy
+## Documentation
 
-`AGENTS.md` is strict policy. Follow the authoritative [documentation procedure](docs/documentation.md) for creating, updating, retiring, and verifying documentation. [docs/reference/architecture.md](docs/reference/architecture.md) is the architecture overview; [docs/agent-workflow.md](docs/agent-workflow.md) explains the rationale behind this workflow.
+`AGENTS.md` is strict policy. Follow [docs/documentation.md](docs/documentation.md)
+for document lifecycle and verification. [docs/reference/architecture.md](docs/reference/architecture.md)
+owns cross-layer architecture. [docs/agent-workflow.md](docs/agent-workflow.md)
+owns workflow rationale. `docs/reference/` owns current subsystem context;
+`docs/plans/` owns CE planning artifacts; `docs/solutions/` owns reusable
+resolved-problem learnings.
 
-Use [source references](docs/reference/) for current source and subsystem context, [plans](docs/plans/) for historical CE planning artifacts, and the [solution store](docs/solutions/) for reusable resolved-problem learnings. Search relevant solutions before revisiting a documented design or implementation problem.
+Before changing a non-trivial or architecture-sensitive source file, read its
+matching active reference page in full when one exists, plus any related page
+that defines a boundary involved in the change. Update or create the matching
+reference page when ownership, behavior, boundaries, or future direction
+changes. Do not create reference pages for generated output, dependencies, or
+trivial metadata. Replace harmful legacy documentation when current source,
+accepted policy, user direction, or a CE artifact supports the replacement.
 
-Before changing a non-trivial or architecture-sensitive source file, read its matching active reference page in full when it exists. Read related reference pages when they define a boundary involved in the change. Create or update the matching page when ownership, behavior, boundaries, or future direction changes.
+## Continuous Plan Execution
 
-Do not create reference pages for generated output, build artifacts, dependencies, or trivial metadata changes. Rewrite or remove harmful legacy documentation when current source, accepted policy, explicit user direction, or a current CE artifact supports the change; preserve useful replacement context in the correct owner.
+An approved plan is standing authorization to implement its entire stated
+scope. When the user asks to execute, complete, finish, or work through a plan,
+work every implementation unit, required verification, documentation update,
+review/fix cycle, commit, and push until the plan is finished.
 
-## Workflow And Git Policy
+Do not stop at checkpoints. Discovery, a partial implementation, a test pass,
+a review finding, an agent result, a commit, a documentation update, or a
+milestone is not a completion condition. After each one, reconcile the result
+against the plan and immediately execute the next unblocked step.
 
-Use Compound Engineering for non-trivial or ambiguous work when available: `ce-brainstorm` settles scope, `ce-plan` creates implementation-ready slices, and the matching CE execution, debug, review, or shipping skill handles the task. Do not mutate plan progress during execution.
+A later question about status, review results, design, or progress does not
+replace, pause, narrow, or complete the active plan. Answer it concisely, then
+continue the plan in the same turn. A report-only CE skill limits edits only
+while that review runs; it does not revoke the authorization to resume the
+existing work afterward.
 
-## Execution Completion Policy
+Ask the user only when continuing needs information or authority not supplied
+by the plan: a material scope/product/design decision, destructive or external
+action outside scope, unavailable credentials/access, conflicting working-tree
+ownership, or evidence that invalidates a plan decision. State the concrete
+evidence and the smallest decision needed. Large scope, uncertainty that can be
+investigated locally, failures that can be repaired, and intermediate design
+questions are not reasons to stop.
 
-When the user asks to execute a plan, continue through every implementation
-unit, verification step, required documentation update, and shipping step. Do
-not send a final answer, status handoff, or progress summary while planned work
-remains unless the user asks for status, a genuine blocker requires user
-authority or a material design decision, or continuing would violate a safety
-constraint.
+Before ending plan work, perform this terminal check: every unit is implemented,
+verified, documented, reviewed, committed, and pushed; or the user explicitly
+deferred it; or a genuine blocker was reported with evidence. If any unit
+remains, continue work. Never present unfinished plan work as completed.
 
-Before finalizing, reconcile the plan against the working tree: every unit is
-completed, explicitly deferred with user approval, or blocked with concrete
-evidence; required verification has passed or has a recorded exception;
-required documentation is complete; and the task-scoped diff is reviewed and
-committed. Attempt the commit; report authentication
-failure only after the commit exists. A completed batch is not completion.
-Keep working rather than offering next steps or summarizing unfinished work.
+## Workflow and Git
 
-## Compound Engineering Loop
+Use Compound Engineering for non-trivial or ambiguous work when available:
+`ce-brainstorm` resolves scope, `ce-plan` creates implementation-ready slices,
+`ce-work` executes, `ce-code-review` reviews changed behavior, and
+`ce-compound` records durable learnings. Do not mutate CE plan progress during
+execution; derive progress from the working tree and verification evidence.
 
-For non-trivial work, follow Plan -> Work -> Review -> Compound. Use the
-matching installed Compound Engineering skill for each stage: `ce-brainstorm`
-for unresolved product scope, `ce-plan` for implementation-ready work,
-`ce-work` for execution, `ce-code-review` for changed behavior, and
-`ce-compound` when a solved problem or durable convention would help future
-work. Do not substitute a status summary for any required stage.
+Use parallel agents only for independent bounded work with disjoint file
+ownership or read-only review/research. Keep dependent edits, integration,
+verification, commits, and pushes under one owner.
 
-Use parallel agents only for independent, bounded work with disjoint file
-ownership or read-only review/research. Keep dependent edits, final synthesis,
-verification, commits, and pushes under one owner. When an agent failure or
-repeated workflow mistake reveals a missing guardrail, encode the correction in
-the appropriate policy, procedure, test, or solution rather than relying on a
-future reminder.
+After an implementation task is fully verified and the terminal check passes,
+commit and push task-scoped changes to the current branch without a separate
+Git instruction. Stage only attributable changes; do not absorb unrelated
+pre-existing work. Use a clear value-communicating commit message. Never
+force-push or alter remotes, branches, or history without explicit user
+authorization. If the branch is unclear, verification fails, the push is
+rejected, or changes cannot be separated safely, report that blocker.
 
-After completing an implementation task and its required verification, commit and push the task-scoped changes to the current branch without waiting for a separate Git instruction. Use a clear, value-communicating commit message. Before committing, inspect the working tree and stage only changes attributable to the completed task; do not absorb unrelated pre-existing edits. Do not force-push, alter remotes, or create, switch, merge, rebase, reset, delete, or rewrite branches/history unless the user explicitly requests it. If verification fails, the target branch is unclear, the push is rejected, or the working tree cannot be safely separated by task, report the blocker instead of pushing. Review and trust project hooks through Codex's normal flow; never bypass hook trust.
+## Verification
 
-## Verification Policy
+Before completing a source-changing task:
 
-Before finalizing work:
-
-1. Inspect the current repository state and read related source/reference documentation.
+1. Inspect repository state and relevant source/reference documentation.
 2. Confirm the smallest intended slice and avoid unrelated edits.
-3. Define the smallest non-overlapping verification set before editing, then run it once after the final change. Do not run commands that a selected final command already includes: `npm test` includes its type, lint, compile, and extension-test prerequisites. Run Rust checks from `server/`.
-4. Validate Reforger-language claims with Workbench/compiler behavior whenever available.
-5. For Rust language-server, server-binary, or language-client lifecycle changes, force a fresh language-server process when required so validation cannot use stale code. After completed extension work, reload the active extension/development host so it picks up the packaged build.
-6. Update matching documentation where required and record verification plus remaining uncertainty.
+3. Define the smallest non-overlapping verification set before editing; run it
+   after the final change. Do not duplicate checks covered by a selected final
+   command.
+4. Validate Reforger language claims with Workbench/compiler behavior whenever
+   available.
+5. For Rust server, server-binary, or language-client lifecycle changes, force
+   a fresh language-server process when necessary. Reload the active extension
+   host after completed extension work so it uses the packaged build.
+6. Update required documentation and record verification plus remaining
+   uncertainty.
 
-For docs-only work, `git diff --check` plus manual link/path review is sufficient when no source, package, build, or runtime behavior changed.
+For documentation-only work, `git diff --check` plus manual link/path review
+is sufficient when no source, package, build, or runtime behavior changed.
