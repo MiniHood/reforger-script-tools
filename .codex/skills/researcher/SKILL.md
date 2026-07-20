@@ -51,6 +51,36 @@ state, or external systems. Generated evidence journals under
 `tools/reports/research/<run-id>/` are the sole exception. A user must invoke
 `/fix`, `/opsx:propose`, or explicitly request implementation after the brief.
 
+## Preserve Research Across Context Compaction
+
+Treat the research directory as the durable evidence ledger for the run, not
+as disposable agent scratch space. Conversation compaction may omit source
+locations, failed searches, counterexamples, and persona reasoning; the ledger
+must preserve enough detail to re-check the synthesis without relying on the
+conversation transcript.
+
+Create and retain these generated files for every run:
+
+- `manifest.md`: the immutable evidence package, roster decision, source
+  boundaries, snapshot identities, exclusions, and journal inventory.
+- `<persona>.md`: each persona's independently written report, including a
+  no-finding or unavailable report when applicable.
+- `synthesis.md`: the final evidence-ID map, options, independent assessment,
+  decision status, and recommended next step shown to the user.
+
+Use stable evidence IDs in `synthesis.md`; do not renumber an existing ID when
+adding later evidence. Link every final option and recommendation to those IDs
+and the contributing personas. The user-facing brief may be compact, but it
+must name the research directory and say that the ledger contains the full
+provenance.
+
+These are generated, ignored investigation artifacts, not product
+documentation. Retain them while a related change, fix, or review is active.
+When a decision becomes durable, capture its decisive rationale in the
+appropriate OpenSpec artifact or reference document; after the related change
+is archived or superseded, prune obsolete journals according to repository
+maintenance practice. Never delete another active investigation's journal.
+
 ## Build an Evidence Package
 
 1. Read `AGENTS.md`, `git status --short`, and the stated question. In `local`
@@ -152,6 +182,11 @@ identities, findings, or a preferred conclusion. If capacity delays a persona,
 launch it when capacity frees and disclose the delay. Mark an unavailable
 persona as incomplete rather than substituting an unlabelled conclusion.
 
+Before fan-out, write `manifest.md`. Update it when a persona is delayed,
+unavailable, or supplies post-snapshot evidence, while preserving the original
+snapshot facts. After synthesis, write the complete final brief to
+`synthesis.md` before replying to the user.
+
 A persona is unavailable when it fails, is interrupted, returns a malformed
 report, or has neither a final report nor a journal update after two coordinator
 wait intervals. Retain any journal, record the reason, and synthesize a clearly
@@ -196,6 +231,10 @@ After all researchers finish or are unavailable:
    otherwise recommend the smallest decisive investigation. A follow-up
    `/review` remains the separate option for a full independent persona review
    before a high-risk decision.
+8. State one decision status: **Ready for a proposal/fix**, **Ready to
+   implement**, **Needs decisive validation**, or **Exploratory only**. A
+   suggestion with a material unproven language, platform, or live-editor
+   assumption is never "Ready to implement" merely because it ranks first.
 
 Use this output format:
 
@@ -223,13 +262,17 @@ evidence, and saturation/stopping rationale>
 ## Independent Assessment
 <what the main thread accepts, rejects, or reframes, and why>
 
+## Decision Status
+<Ready for a proposal/fix, Ready to implement, Needs decisive validation, or
+Exploratory only; name the gating evidence when not ready>
+
 ## Unknowns and Follow-up Research
 - ...
 
 ## Recommended Next Step
 <one evidence-backed action, or the smallest decisive investigation>
 
-No implementation was performed; generated research evidence was recorded.
+No implementation was performed. Full evidence provenance: `<journal path>`.
 ```
 
 Do not overstate certainty. Preserve disagreements and explicitly state when

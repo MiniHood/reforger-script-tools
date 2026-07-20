@@ -35,7 +35,10 @@ counterexample.
   citing it; label any mismatch or later discovery as post-snapshot evidence.
   Do not ask another persona to validate your conclusion.
 - Update the assigned journal after each completed evidence slice. The journal
-  is a progress trace, not a shared discussion channel.
+  is a durable evidence record through conversation compaction, not a shared
+  discussion channel. Include sources checked, failed/empty searches that
+  materially bound the conclusion, counterexamples, and snapshot identity
+  details needed to audit every claim.
 
 ## Return format
 

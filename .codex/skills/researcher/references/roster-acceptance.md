@@ -16,8 +16,10 @@ semantics, not the truth of a researched topic.
 | Narrow relevance | A question with only two material local lenses | Coordinator records every materially considered specialist and runs only those two. |
 | Unavailable persona | A selected persona is interrupted, malformed, or has no journal/final report after two waits | Its reason and journal status are retained; the synthesized brief is explicitly partial. |
 | Evidence snapshot | A repository changes during a research run | Final brief records clean revisions or dirty/untracked file fingerprints; changed/later reads are labelled post-snapshot rather than merged states. |
+| Compaction resilience | A completed research conversation is compacted before a follow-up question | `manifest.md`, every persona report, and `synthesis.md` let the coordinator recover source locations, evidence IDs, disagreements, and the decision gate without relying on the prior transcript. |
 | Auto depth | `depth:auto` on a bounded question | Smallest sufficient roster and search run; final brief states its saturation rationale. |
 | Full depth | `depth:full` on the same question | Every material source-compatible lens is considered; capacity delays, competing directions/counterexamples, and exclusions are recorded. |
 | Curiosity stop | A tempting first fix appears early | Research continues through a credible challenge and reports why it was accepted or rejected before synthesis. |
 | Durable option | Evidence supports one complete durable design and one temporary mitigation | Durable target ranks first; each option has favorability, evidence IDs, ranking rationale, and mitigation removal condition. |
 | One viable option | Evidence rejects all alternatives | Brief presents one viable option with favorability and evidence IDs, and explains why alternatives were unsupported. |
+| Decision gate | The leading option requires uncollected Workbench, platform, or live-editor evidence | Brief marks **Needs decisive validation**, identifies the smallest missing proof, and does not imply implementation readiness. |
