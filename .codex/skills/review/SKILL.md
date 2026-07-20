@@ -89,9 +89,16 @@ synthesize only completed reports, disclose incomplete coverage and the absent
 lens, and label the result a partial review. Do not silently retry with a
 different persona or describe a partial review as complete.
 
+While reviewers are active, report only operational status when necessary.
+Do not reveal, summarize, rank, debate, or act on any individual finding. Wait
+until every selected reviewer has completed or is formally unavailable before
+publishing the single synthesized review result. Do not edit, implement, commit,
+or otherwise change project state during the review; a user must start a
+separate follow-up action after the final report to authorize a fix.
+
 ## 3. Synthesize, do not debate
 
-After all final reports arrive:
+Only after all selected reviewers have completed or are formally unavailable:
 
 1. Reject findings without priority, confidence, evidence, impact, durable
    direction, and validation. Assign stable IDs.

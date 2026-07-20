@@ -54,6 +54,12 @@ explicit disposition for every unresolved P1-P3 finding. If a selected
 reviewer cannot return a conforming report, the result explicitly reports
 partial coverage rather than implying a complete review.
 
+The coordinator waits for every selected reviewer to complete or become
+formally unavailable before presenting one synthesized report. While a review
+is active, it may provide operational status but must not disclose individual
+findings, implement recommendations, commit, or otherwise change project
+state. A fix requires a separate user-authorized action after the review.
+
 To request specialists directly, pass comma-separated canonical names in a
 `personas:` token. For example,
 `/review <scope> personas:language-fidelity,verification-observability` retains
