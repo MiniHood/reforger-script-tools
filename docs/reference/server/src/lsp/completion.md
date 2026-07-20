@@ -60,6 +60,11 @@ preserves source-backed precedence, and caps output at 250 items. Member access
 uses receiver/owner resolution; static owners, typedefs, enum members,
 attributes, and `new` expressions have dedicated source-backed paths once their
 current analysis is available.
+For a pending static class owner, candidates remain limited to the captured
+workspace/game-data static-member indexes. The bounded current-source member
+recovery deliberately does not augment that list because it cannot prove
+member modifiers; this prevents instance members from leaking into `Type.`
+completion before foreground analysis publishes.
 
 Completion is suppressed inside line, documentation, block, and unfinished
 block comments for both cached and pending snapshots. This check uses the

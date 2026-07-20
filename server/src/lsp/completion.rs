@@ -573,22 +573,27 @@ pub(crate) fn completion_report_for_current_receiver_at_offset_with_external_ind
     );
     if let Some(facts) = facts {
         let facts_region = class_region.as_ref().unwrap_or(&region);
-        if receiver_is_static
-            && CompletionRenderContext::new(&empty_local_index, workspace_index, game_data_index)
+        if receiver_is_static {
+            if CompletionRenderContext::new(&empty_local_index, workspace_index, game_data_index)
                 .is_enum_owner(&owner)
-        {
-            facts.append_current_enum_value_items(
-                source,
-                facts_region,
-                offset,
-                &owner,
-                receiver_span,
-                prefix_span,
-                &prefix,
-                workspace_index,
-                game_data_index,
-                &mut report,
-            );
+            {
+                facts.append_current_enum_value_items(
+                    source,
+                    facts_region,
+                    offset,
+                    &owner,
+                    receiver_span,
+                    prefix_span,
+                    &prefix,
+                    workspace_index,
+                    game_data_index,
+                    &mut report,
+                );
+            }
+            // Static-owner completion is authoritative from the captured
+            // indexes. The bounded current-source member recovery has no
+            // modifier model, so applying it here would leak instance methods
+            // into `Type.` while foreground analysis is pending.
         } else {
             facts.append_current_member_items(
                 source,
@@ -5121,12 +5126,23 @@ class Example
         let external = file_index_for_source(
             r#"class ScriptApi
 {
+	static int s_Value;
 	static void StaticRun();
+	int m_Value;
+	void InstanceRun();
 }
 "#,
         )
         .index;
-        let source = r#"class Example
+        let source = r#"class ScriptApi
+{
+	static int s_Value;
+	static void StaticRun();
+	int m_Value;
+	void InstanceRun();
+}
+
+class Example
 {
 	void Run()
 	{
@@ -5145,7 +5161,16 @@ class Example
         .expect("an externally indexed static class should complete before foreground analysis");
 
         assert_eq!(report.owner_type.as_deref(), Some("ScriptApi"));
+        assert!(report.list.items.iter().any(|item| item.label == "s_Value"));
         assert!(report.list.items.iter().any(|item| item.label == "StaticRun"));
+        assert!(
+            !report.list.items.iter().any(|item| item.label == "m_Value"),
+            "a static owner must not expose instance fields"
+        );
+        assert!(
+            !report.list.items.iter().any(|item| item.label == "InstanceRun"),
+            "a static owner must not expose instance methods"
+        );
     }
 
     #[test]
