@@ -33,8 +33,9 @@ after the root call (`GetGame().GetPlayer...`) and through common game API
 chains such as `GetGame().GetPlayerController().`. A bare external static
 owner (`RplChannel.` or another indexed enum/class) is also admitted when the
 same bounded facts prove no visible local, parameter, or field binding shadows
-that name; the response then contains only its externally indexed static
-members. They never
+that name. For a static enum expression, it uses the existing bounded
+class-header window to rank current visible locals and parameters, current-class
+methods, and immutable inherited members beneath the enum values. It never
 call `file_index_for_source`, construct `SemanticFile`/`SymbolIndex`/
 `LexicalScopeModel` from document text, walk a CST root, or read prior document
 analysis on the request thread. The receiver query captures workspace/game-data
@@ -125,9 +126,10 @@ placeholder. That specialized list contains the qualified enum members in
 deterministic order, then the ordinary contextual value fallback candidates:
 visible locals and parameters, containing-class and inherited members,
 top-level symbols, and keywords. Its analyzed path reuses the normal value
-candidate collector so ranking does not hide valid scope. Its pending path
-retains only bounded current-snapshot or immutable external facts and never
-merges stale locals. Every item replaces the complete selected expression with
+candidate collector so ranking does not hide valid scope. Its pending path uses
+the bounded current-snapshot class window for provable locals and current-class
+members plus immutable inherited facts; it never merges stale locals. Every
+item replaces the complete selected expression with
 an ordinary LSP text edit. It never emits a member-only insert range paired with an earlier-starting
 full-expression replace range: VS Code requires every `InsertReplaceEdit`
 insert range to start with and remain a prefix of its replace range. Choosing

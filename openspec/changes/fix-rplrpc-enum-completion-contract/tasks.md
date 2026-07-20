@@ -1,7 +1,7 @@
 ## 1. Completion edit contract
 
 - [x] 1.1 Add regression tests that enforce valid insert/replace range relationships and enum-first fallback candidates across attributes, calls, and constructors.
-- [x] 1.2 Render the shared static-enum completion list with valid full-expression edits and retain the complete normal contextual fallback candidates.
+- [x] 1.2 Render the shared static-enum completion list with valid full-expression edits and retain the complete normal contextual fallback candidates, including the bounded current-snapshot path used by immediate snippet completion.
 
 ## 2. Bridge contract and diagnostics
 

@@ -473,6 +473,7 @@ pub(crate) fn completion_report_for_current_receiver_at_offset_with_external_ind
     }
     let external_chain =
         region.external_call_chain_member_context(source, offset, workspace_index, game_data_index);
+    let mut class_region = None;
     let (receiver, receiver_span, owner, prefix, prefix_span, receiver_is_static, facts) =
         if let Some((receiver, receiver_span, owner, prefix, prefix_span)) = external_chain {
             (
@@ -517,6 +518,19 @@ pub(crate) fn completion_report_for_current_receiver_at_offset_with_external_ind
                 workspace_index,
                 game_data_index,
             ) {
+                // Static enum completion also needs the enclosing class
+                // header to recover current and inherited value candidates.
+                // Reuse the bounded override window rather than reading any
+                // previous analysis or delaying the request.
+                class_region = BoundedCompletionRegion::for_current_override(source, offset);
+                let class_facts = BoundedCompletionFacts::recover(
+                    source,
+                    class_region.as_ref()?,
+                    offset,
+                )?;
+                if class_facts.visible_type(&receiver).is_some() {
+                    return None;
+                }
                 // The current bounded facts prove no local/parameter/field
                 // binding shadows this name. Static candidates therefore come
                 // solely from immutable external indexes and remain safe while
@@ -528,7 +542,7 @@ pub(crate) fn completion_report_for_current_receiver_at_offset_with_external_ind
                     prefix,
                     prefix_span,
                     true,
-                    None,
+                    Some(class_facts),
                 )
             } else {
                 return None;
@@ -558,14 +572,33 @@ pub(crate) fn completion_report_for_current_receiver_at_offset_with_external_ind
         start,
     );
     if let Some(facts) = facts {
-        facts.append_current_member_items(
-            source,
-            &region,
-            &owner,
-            &prefix,
-            prefix_span,
-            &mut report,
-        );
+        let facts_region = class_region.as_ref().unwrap_or(&region);
+        if receiver_is_static
+            && CompletionRenderContext::new(&empty_local_index, workspace_index, game_data_index)
+                .is_enum_owner(&owner)
+        {
+            facts.append_current_enum_value_items(
+                source,
+                facts_region,
+                offset,
+                &owner,
+                receiver_span,
+                prefix_span,
+                &prefix,
+                workspace_index,
+                game_data_index,
+                &mut report,
+            );
+        } else {
+            facts.append_current_member_items(
+                source,
+                facts_region,
+                &owner,
+                &prefix,
+                prefix_span,
+                &mut report,
+            );
+        }
     }
     Some(report)
 }
@@ -1202,6 +1235,149 @@ impl BoundedCompletionFacts {
         };
     }
 
+    /// Adds only facts proved from the current bounded snapshot to a pending
+    /// static-enum expression. This keeps the snippet-triggered request
+    /// useful before whole-file analysis finishes without joining the current
+    /// text to local declarations from an older revision.
+    #[allow(clippy::too_many_arguments)]
+    fn append_current_enum_value_items(
+        &self,
+        source: &str,
+        region: &BoundedCompletionRegion,
+        offset: usize,
+        enum_owner: &str,
+        receiver_span: TextSpan,
+        prefix_span: TextSpan,
+        prefix: &str,
+        workspace_index: Option<&SymbolIndex>,
+        game_data_index: Option<&SymbolIndex>,
+        report: &mut LspCompletionReport,
+    ) {
+        let full_expression_span = TextSpan::new(receiver_span.start, prefix_span.end);
+        let full_expression_range = range_for_span(source, full_expression_span);
+        let full_expression_filter = format!("{enum_owner}.{prefix}");
+        let mut items = self
+            .visible_declarations()
+            .into_iter()
+            .filter(|declaration| candidate_matches_prefix_name(&declaration.name, ""))
+            .map(|declaration| {
+                bounded_completion_item(
+                    source,
+                    full_expression_span,
+                    declaration.name.clone(),
+                    Some(declaration.owner_type.clone()),
+                    6,
+                )
+            })
+            .collect::<Vec<_>>();
+
+        if let Some((class_name, base_type)) = self.enclosing_class_context(source, region, offset) {
+            items.extend(
+                Self::class_member_names(source, region, &class_name)
+                    .into_iter()
+                    .map(|name| {
+                        bounded_completion_item(
+                            source,
+                            full_expression_span,
+                            name,
+                            Some(class_name.clone()),
+                            2,
+                        )
+                    }),
+            );
+
+            if let Some(base_type) = base_type {
+                let empty_local_index = SymbolIndex::default();
+                let render_context = CompletionRenderContext::new(
+                    &empty_local_index,
+                    workspace_index,
+                    game_data_index,
+                );
+                let mut inherited = Vec::new();
+                for owner in external_completion_owners(
+                    &base_type,
+                    workspace_index,
+                    game_data_index,
+                ) {
+                    if let Some(index) = workspace_index {
+                        inherited.extend(completion_candidates_for_owner(index, &owner, false));
+                    }
+                    if let Some(index) = game_data_index {
+                        inherited.extend(completion_candidates_for_owner(index, &owner, false));
+                    }
+                }
+                let inherited = combine_completion_candidates(inherited);
+                let (inherited_items, source_counts, origin_counts) = completion_items_for_candidates(
+                    &inherited,
+                    full_expression_range,
+                    None,
+                    CompletionInsertContext::Normal,
+                    Some(""),
+                    render_context,
+                );
+                merge_count_maps(&mut report.source_kind_counts, source_counts);
+                merge_count_maps(&mut report.origin_counts, origin_counts);
+                items.extend(inherited_items);
+            }
+        }
+
+        if items.is_empty() {
+            return;
+        }
+        for (index, item) in items.iter_mut().enumerate() {
+            item.filter_text = Some(full_expression_filter.clone());
+            item.sort_text = Some(format!("100:enum-fallback:{index:03}:{}", item.label));
+        }
+        items.extend(std::mem::take(&mut report.list.items));
+        let mut seen = BTreeSet::new();
+        items.retain(|item| {
+            seen.insert((
+                item.label.to_ascii_lowercase(),
+                item.text_edit.new_text.clone(),
+            ))
+        });
+        let (items, is_incomplete) = cap_completion_items(items);
+        report.candidate_count = items.len();
+        report.list = LspCompletionList {
+            is_incomplete,
+            items,
+        };
+    }
+
+    fn enclosing_class_context(
+        &self,
+        source: &str,
+        region: &BoundedCompletionRegion,
+        offset: usize,
+    ) -> Option<(String, Option<String>)> {
+        let tokens = region.significant_before(offset);
+        let mut class_bodies = BTreeMap::new();
+        for (index, token) in tokens.iter().enumerate() {
+            if !matches!(token.kind, TokenKind::Keyword(Keyword::Class))
+                || tokens.get(index + 1)?.kind != TokenKind::Identifier
+            {
+                continue;
+            }
+            let name = source
+                .get(tokens[index + 1].span.start..tokens[index + 1].span.end)?
+                .to_string();
+            let header = &tokens[index + 2..];
+            let body_index = header.iter().position(|token| token.kind == TokenKind::LeftBrace)?;
+            let base_type = header[..body_index]
+                .windows(2)
+                .find(|window| {
+                    window[0].kind == TokenKind::Colon && window[1].kind == TokenKind::Identifier
+                })
+                .and_then(|window| source.get(window[1].span.start..window[1].span.end))
+                .map(str::to_string);
+            class_bodies.insert(header[body_index].span.start, (name, base_type));
+        }
+        self.cursor_scope
+            .iter()
+            .rev()
+            .find_map(|scope_start| class_bodies.remove(scope_start))
+    }
+
     fn class_member_names(
         source: &str,
         region: &BoundedCompletionRegion,
@@ -1213,17 +1389,23 @@ impl BoundedCompletionFacts {
             .copied()
             .filter(|token| !token.kind.is_trivia() && token.kind != TokenKind::Eof)
             .collect::<Vec<_>>();
-        let class_index = tokens.windows(3).position(|window| {
+        let class_index = tokens.windows(2).position(|window| {
             matches!(window[0].kind, TokenKind::Keyword(Keyword::Class))
                 && source.get(window[1].span.start..window[1].span.end) == Some(owner)
-                && window[2].kind == TokenKind::LeftBrace
         });
         let Some(class_index) = class_index else {
             return Vec::new();
         };
+        let Some(body_offset) = tokens[class_index + 2..]
+            .iter()
+            .position(|token| token.kind == TokenKind::LeftBrace)
+        else {
+            return Vec::new();
+        };
+        let body_index = class_index + 2 + body_offset;
         let mut depth = 1usize;
         let mut names = Vec::new();
-        for window in tokens[class_index + 3..].windows(3) {
+        for window in tokens[body_index + 1..].windows(3) {
             match window[0].kind {
                 TokenKind::LeftBrace => depth += 1,
                 TokenKind::RightBrace => {
@@ -4702,6 +4884,62 @@ class Constructed
             assert!(labels.len() > 2, "expected normal fallbacks for {source}: {labels:?}");
             assert!(report.list.items.iter().all(|item| item.text_edit.replace_range.is_none()));
         }
+    }
+
+    #[test]
+    fn current_receiver_query_ranks_current_values_for_a_static_enum_without_analysis() {
+        let external = file_index_for_source(
+            r#"enum RplChannel
+{
+	Reliable,
+	Unreliable
+}
+class ScriptComponent
+{
+	void OnPostInit(IEntity owner);
+}
+"#,
+        )
+        .index;
+        let source = r#"class Example : ScriptComponent
+{
+	int m_Field;
+	void CurrentMethod();
+	void Run(IEntity owner)
+	{
+		int localValue;
+		RplChannel.Reliable
+	}
+}
+"#;
+        let needle = "RplChannel.Reliable";
+        let offset = source.find(needle).unwrap() + needle.len();
+
+        let report = completion_report_for_current_receiver_at_offset_with_external_indexes(
+            source,
+            offset,
+            Some(&external),
+            None,
+        )
+        .expect("the current bounded enum query should complete");
+        let labels = report
+            .list
+            .items
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(labels[..2], ["RplChannel.Reliable", "RplChannel.Unreliable"]);
+        for label in ["localValue", "owner", "m_Field", "CurrentMethod", "OnPostInit"] {
+            assert!(
+                labels.contains(&label),
+                "pending enum fallback must retain {label}: {labels:?}"
+            );
+        }
+        assert!(report.list.items.iter().all(|item| {
+            item.filter_text.as_deref() == Some("RplChannel.Reliable")
+                && item.text_edit.replace_range.is_none()
+        }));
     }
 
     #[test]
