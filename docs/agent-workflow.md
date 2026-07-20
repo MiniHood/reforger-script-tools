@@ -80,6 +80,20 @@ design, implement, and verify an authorized durable solution. Use `/review`
 when the goal is broad, independent scrutiny rather than diagnosis or a code
 change.
 
+## Parallel research
+
+`/researcher` is the evidence-gathering companion to `/review`. It is used
+before a decision when the question benefits from independent game-data/source
+examples, codebase investigation, external practice, or option comparison. It
+is read-only and produces a bounded research brief with evidence quality,
+options, concrete action items, and the smallest recommended next step. For
+Enfusion questions, game API/example research uses at least five independent
+examples and expands across owners when the question asks about broad
+applicability; online research cites direct sources and distinguishes an
+observed outside practice from a repository recommendation. Research does not
+implement its conclusion: use `/fix` or an OpenSpec proposal once a direction
+is chosen.
+
 ## Development-host continuity
 
 An Extension Development Host is part of the developer's live debugging
