@@ -556,16 +556,21 @@ interface LspTextEdit {
 
 function registerSemicolonAfterEnter(): vscode.Disposable {
 	return vscode.workspace.onDidChangeTextDocument(event => {
-		if (event.document.languageId !== languageClientLanguage.id || !isSinglePlainEnter(event.contentChanges)) {
+		if (event.document.languageId !== languageClientLanguage.id) {
+			return;
+		}
+		if (!isSinglePlainEnter(event.contentChanges)) {
 			return;
 		}
 		const editor = vscode.window.activeTextEditor;
 		if (!editor || editor.document.uri.toString() !== event.document.uri.toString() || editor.selections.length !== 1
 			|| !editor.selection.isEmpty) {
+			diagnostic('formatting.semicolon.enter', { outcome: 'rejectedEditorState' });
 			return;
 		}
 		const version = event.document.version;
 		const position = editor.selection.active;
+		diagnostic('formatting.semicolon.enter', { outcome: 'admitted', version });
 		queueMicrotask(() => {
 			void applySemicolonAfterEnter(event.document, version, position);
 		});
@@ -586,6 +591,7 @@ async function applySemicolonAfterEnter(
 	const activeClient = client;
 	const editor = vscode.window.activeTextEditor;
 	if (!activeClient || !editor || document.version !== version || !hasSingleEmptyCaretAt(document, position)) {
+		diagnostic('formatting.semicolon.enter', { outcome: 'staleBeforeRequest', version });
 		return;
 	}
 	try {
@@ -600,14 +606,17 @@ async function applySemicolonAfterEnter(
 			},
 		);
 		if (document.version !== version || !hasSingleEmptyCaretAt(document, position)) {
+			diagnostic('formatting.semicolon.enter', { outcome: 'staleResponse', version });
 			return;
 		}
-		await editor.edit(
+		const applied = await editor.edit(
 			editBuilder => edits.forEach(edit => editBuilder.replace(rangeFromLsp(edit.range), edit.newText)),
 			{ undoStopBefore: false, undoStopAfter: false },
 		);
+		diagnostic('formatting.semicolon.enter', { outcome: applied ? 'applied' : 'editRejected', version, edits: edits.length });
 	} catch {
 		// A typing assist must never surface transport failures while the user edits.
+		diagnostic('formatting.semicolon.enter', { outcome: 'requestError', version });
 	}
 }
 
