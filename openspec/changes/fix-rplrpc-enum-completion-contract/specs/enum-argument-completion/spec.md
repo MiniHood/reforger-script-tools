@@ -35,6 +35,19 @@ or retry loop.
   `RplRcver` field, then releases it after the final response, cancellation,
   or bounded expiry
 
+### Requirement: Generic enum callable parity
+For methods, constructors, and attribute constructors, completion SHALL retain
+every required parameter in signature order. Each required enum parameter SHALL
+produce a Rust-authored selected enum field in the bridge sequence; a later
+enum parameter or a required non-enum parameter SHALL NOT truncate the
+invocation.
+
+#### Scenario: Multiple enum parameters
+- **WHEN** completion inserts a callable with `FirstChoice first`,
+  `SecondChoice second`, and `int count` as required parameters
+- **THEN** the snippet contains all three fields and the bridge sequence is
+  `FirstChoice.` followed by `SecondChoice.`
+
 ### Requirement: Completion boundary verification
 The project SHALL verify the RplRpc snippet-to-editor completion boundary with
 wire-level range tests and a documented fresh Extension Development Host

@@ -40,8 +40,8 @@ const LEXICAL_CONTEXT_RECOVERY_MAX_SOURCE_BYTES: usize = 128 * 1024;
 const LOCAL_SCOPE_QUERY_DEADLINE: Duration = Duration::from_millis(50);
 const COMMAND_TRIGGER_PARAMETER_HINTS: &str = "editor.action.triggerParameterHints";
 /// A VS Code UI bridge registered by the extension. Rust decides when an
-/// `RplRpc` template needs enum completion; the client waits for snippet mode
-/// to select the placeholder before dispatching Suggest.
+/// callable template needs enum completion; the client waits for snippet mode
+/// to select each Rust-authored placeholder before dispatching Suggest.
 const COMMAND_TRIGGER_SUGGEST_AT_SNIPPET_PLACEHOLDER: &str =
     "reforger-sript-tools.completion.triggerSuggestAtSnippetPlaceholder";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -3859,19 +3859,16 @@ fn callable_completion_render(
             let signature = candidate.constructor_signature.as_deref()?;
             let call = callable_signature_parts(label, signature)?;
             if let Some(insert_text) = rpl_rpc_attribute_template(label, &call, false) {
-                return Some(
-                    CallableCompletionRender::trigger_suggest_at_snippet_placeholders(
-                        call,
-                        insert_text,
-                        rpl_rpc_enum_placeholder_defaults(),
-                    ),
-                );
+                return Some(CallableCompletionRender::from_insert(
+                    call,
+                    CallableInsertText {
+                        text: insert_text,
+                        enum_placeholder_defaults: rpl_rpc_enum_placeholder_defaults(),
+                    },
+                ));
             }
             let insert = callable_insert_text_with_context(label, &call, Some(render_context));
-            return Some(CallableCompletionRender::trigger_parameter_hints(
-                call,
-                insert.text,
-            ));
+            return Some(CallableCompletionRender::from_insert(call, insert));
         }
         SymbolKind::Class
             if insert_context == CompletionInsertContext::AttributeShorthand
@@ -3880,23 +3877,23 @@ fn callable_completion_render(
             let signature = candidate.constructor_signature.as_deref()?;
             let call = callable_signature_parts(label, signature)?;
             if let Some(insert_text) = rpl_rpc_attribute_template(label, &call, true) {
-                return Some(
-                    CallableCompletionRender::trigger_suggest_at_snippet_placeholders(
-                        call,
-                        insert_text,
-                        rpl_rpc_enum_placeholder_defaults(),
-                    ),
-                );
+                return Some(CallableCompletionRender::from_insert(
+                    call,
+                    CallableInsertText {
+                        text: insert_text,
+                        enum_placeholder_defaults: rpl_rpc_enum_placeholder_defaults(),
+                    },
+                ));
             }
-            let insert = callable_insert_text_with_context(label, &call, Some(render_context));
-            let insert_text = format!("[{}]", insert.text);
-            return Some(CallableCompletionRender::trigger_parameter_hints(call, insert_text));
+            let mut insert = callable_insert_text_with_context(label, &call, Some(render_context));
+            insert.text = format!("[{}]", insert.text);
+            return Some(CallableCompletionRender::from_insert(call, insert));
         }
         _ => return None,
     };
     let call = callable_signature_parts(label, signature)?;
     let insert = callable_insert_text_with_context(label, &call, Some(render_context));
-    Some(CallableCompletionRender::trigger_parameter_hints(call, insert.text))
+    Some(CallableCompletionRender::from_insert(call, insert))
 }
 
 fn is_attribute_like_completion_candidate(candidate: &EditorCompletionCandidate) -> bool {
@@ -3911,6 +3908,18 @@ struct CallableCompletionRender {
 }
 
 impl CallableCompletionRender {
+    fn from_insert(call: CallableSignatureParts, insert: CallableInsertText) -> Self {
+        if insert.enum_placeholder_defaults.is_empty() {
+            Self::trigger_parameter_hints(call, insert.text)
+        } else {
+            Self::trigger_suggest_at_snippet_placeholders(
+                call,
+                insert.text,
+                insert.enum_placeholder_defaults,
+            )
+        }
+    }
+
     fn trigger_parameter_hints(call: CallableSignatureParts, insert_text: String) -> Self {
         Self {
             call,
@@ -3940,6 +3949,10 @@ fn callable_insert_text(label: &str, call: &CallableSignatureParts) -> String {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CallableInsertText {
     text: String,
+    /// Complete selected snippet-field text for every required enum parameter,
+    /// in source signature order. Rust determines this from indexed type facts;
+    /// the TypeScript bridge only observes the selected fields and opens Suggest.
+    enum_placeholder_defaults: Vec<String>,
 }
 
 /// `RplRpc` has two required enum arguments but the engine's canonical RPC
@@ -3994,23 +4007,22 @@ fn callable_insert_text_with_context(
     if call.parameters_info.is_empty() {
         return CallableInsertText {
             text: format!("{label}()"),
+            enum_placeholder_defaults: Vec::new(),
         };
     }
     if required.is_empty() {
         return CallableInsertText {
             text: format!("{label}($0)"),
+            enum_placeholder_defaults: Vec::new(),
         };
     }
 
-    let mut enum_placeholder_seen = false;
+    let mut enum_placeholder_defaults = Vec::new();
     let mut arguments = Vec::new();
     for (index, parameter) in required.iter().enumerate() {
         let argument = if let Some(owner) = enum_parameter_owner(parameter, render_context) {
-            if enum_placeholder_seen {
-                break;
-            }
-            enum_placeholder_seen = true;
             let placeholder = format!("{owner}.");
+            enum_placeholder_defaults.push(placeholder.clone());
             format!(
                 "${{{}:{}}}",
                 index + 1,
@@ -4029,6 +4041,7 @@ fn callable_insert_text_with_context(
     let arguments = arguments.join(", ");
     CallableInsertText {
         text: format!("{label}({arguments})"),
+        enum_placeholder_defaults,
     }
 }
 
@@ -5453,6 +5466,32 @@ ArmaReforgerScripted GetGame();
         );
         assert_eq!(call.required_parameter_count(), 2);
         assert_eq!(call.optional_parameter_count(), 0);
+    }
+
+    #[test]
+    fn callable_snippets_preserve_every_required_enum_parameter_in_signature_order() {
+        let enum_index = file_index_for_source(
+            r#"enum FirstChoice { First }
+enum SecondChoice { Second }"#,
+        )
+        .index;
+        let render_context = CompletionRenderContext::new(&enum_index, None, None);
+        let call = callable_signature_parts(
+            "Run",
+            "Example.Run(FirstChoice first, SecondChoice second, int count) -> void",
+        )
+        .unwrap();
+
+        let insert = callable_insert_text_with_context("Run", &call, Some(render_context));
+
+        assert_eq!(
+            insert.text,
+            "Run(${1:FirstChoice.}, ${2:SecondChoice.}, ${3:count})"
+        );
+        assert_eq!(
+            insert.enum_placeholder_defaults,
+            vec!["FirstChoice.".to_string(), "SecondChoice.".to_string()]
+        );
     }
 
     #[test]

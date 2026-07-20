@@ -967,7 +967,7 @@ function wrapBridgeCompletionCommands(
 	for (const item of items) {
 		const originalCommand = item.command;
 		item.command = {
-			title: 'Advance RplRpc snippet placeholder',
+			title: 'Advance enum snippet placeholder',
 			command: languageClientCommands.advanceSnippetPlaceholderAfterAccept,
 			arguments: [transactionId, originalCommand],
 		};

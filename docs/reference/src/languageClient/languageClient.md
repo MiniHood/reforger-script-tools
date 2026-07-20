@@ -37,7 +37,8 @@ The package contribution activates the extension directly for the hover and comp
 Rust owns the completion contract, including current-document admission,
 context, candidate eligibility, ranking, and rendering. TypeScript ordinarily
 does not invoke VS Code Suggest for document edits. It has two narrow,
-protocol-driven UI exceptions: the Rust-selected `RplRpc` enum snippet, and a
+protocol-driven UI exceptions: Rust-authored selected enum fields from a
+callable snippet, and a
 refreshable empty LSP completion response followed by a deletion in the same
 active Enforce document. The latter exists because VS Code can receive the
 fresh shorter-prefix response after Backspace without reopening its native
@@ -45,11 +46,14 @@ widget. The client records only the response's `isIncomplete`/empty shape and
 the editor's deletion event; it does not read source text, classify symbols,
 choose candidates, or use a typing-path delay. It clears the marker before it
 dispatches Suggest, so each empty response can cause at most one recovery
-request. The snippet bridge still waits for each exact Rust-authored selected
-enum default and invokes Suggest once per placeholder at the next event-loop
-boundary; duplicate events and duplicate responses cannot create a competing
-request. A 30-second cleanup timer only releases an abandoned snippet
-transaction; it never triggers Suggest. While those transactions are active,
+request. The snippet bridge waits for each exact Rust-authored selected enum
+field and invokes Suggest once per field at the next event-loop boundary;
+duplicate events and duplicate responses cannot create a competing request.
+Rust supplies the fields in callable-signature order for every required enum
+parameter. `RplRpc` is the only case that supplies verified complete enum
+defaults rather than generic `EnumOwner.` fields. A 30-second cleanup timer
+only releases an abandoned snippet transaction; it never triggers Suggest.
+While those transactions are active,
 the client records bounded command/placeholder/request/response metadata
 through the existing optional diagnostic logger. Response metadata includes
 bounded completion-range shape counts, validity of any converted
@@ -62,8 +66,9 @@ While the bridge transaction is active, the client wraps only that response's
 completion-item commands. VS Code runs an item command after applying its
 completion edit, so the wrapper preserves any original command and then invokes
 the built-in next-snippet-placeholder command. Accepting an enum suggestion
-therefore selects the next RplRpc argument immediately; it does not consume a
-second Tab. Manually typed values retain normal VS Code snippet navigation.
+therefore selects the next callable enum argument immediately; it does not
+consume a second Tab. Manually typed values retain normal VS Code snippet
+navigation.
 
 Until the RplRpc multi-placeholder journey has been proven in a freshly loaded
 Extension Development Host, that metadata also carries a temporary trace

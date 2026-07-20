@@ -6970,6 +6970,122 @@ class Example
     }
 
     #[test]
+    fn callable_enum_placeholders_cover_methods_constructors_and_attributes() {
+        let enum_declarations = r#"enum FirstChoice { First }
+enum SecondChoice { Second }
+"#;
+
+        let method_source = format!(
+            r#"{enum_declarations}
+class Example
+{{
+	void UseChoices(FirstChoice first, SecondChoice second, int count);
+	void Run()
+	{{
+		UseCho
+	}}
+}}
+"#,
+        );
+        let report = completion_report_for_source_position_with_external(
+            &method_source,
+            position_after_needle(&method_source, "UseCho"),
+            None,
+        );
+        let method = report
+            .list
+            .items
+            .iter()
+            .find(|item| item.label == "UseChoices")
+            .unwrap();
+        assert_eq!(
+            method.text_edit.new_text,
+            "UseChoices(${1:FirstChoice.}, ${2:SecondChoice.}, ${3:count})"
+        );
+        assert_eq!(
+            method
+                .command
+                .as_ref()
+                .and_then(|command| command.arguments.as_ref()),
+            Some(&vec!["FirstChoice.".to_string(), "SecondChoice.".to_string()])
+        );
+
+        let constructor_source = format!(
+            r#"{enum_declarations}
+class Widget
+{{
+	void Widget(FirstChoice first, SecondChoice second, int count);
+}}
+class Example
+{{
+	void Run()
+	{{
+		Widget widget = new Widg
+	}}
+}}
+"#,
+        );
+        let report = completion_report_for_source_position_with_external(
+            &constructor_source,
+            position_after_needle(&constructor_source, "new Widg"),
+            None,
+        );
+        let constructor = report
+            .list
+            .items
+            .iter()
+            .find(|item| item.label == "Widget")
+            .unwrap();
+        assert_eq!(
+            constructor.text_edit.new_text,
+            "Widget(${1:FirstChoice.}, ${2:SecondChoice.}, ${3:count})"
+        );
+        assert_eq!(
+            constructor
+                .command
+                .as_ref()
+                .and_then(|command| command.arguments.as_ref()),
+            Some(&vec!["FirstChoice.".to_string(), "SecondChoice.".to_string()])
+        );
+
+        let attribute_source = format!(
+            r#"{enum_declarations}
+class UniqueAttribute {{}}
+class ChoiceAttribute : UniqueAttribute
+{{
+	void ChoiceAttribute(FirstChoice first, SecondChoice second, int count);
+}}
+class Example
+{{
+	cho int m_Value;
+}}
+"#,
+        );
+        let report = completion_report_for_source_position_with_external(
+            &attribute_source,
+            position_after_needle(&attribute_source, "cho"),
+            None,
+        );
+        let attribute = report
+            .list
+            .items
+            .iter()
+            .find(|item| item.label == "ChoiceAttribute")
+            .unwrap();
+        assert_eq!(
+            attribute.text_edit.new_text,
+            "[ChoiceAttribute(${1:FirstChoice.}, ${2:SecondChoice.}, ${3:count})]"
+        );
+        assert_eq!(
+            attribute
+                .command
+                .as_ref()
+                .and_then(|command| command.arguments.as_ref()),
+            Some(&vec!["FirstChoice.".to_string(), "SecondChoice.".to_string()])
+        );
+    }
+
+    #[test]
     fn completion_hides_already_supplied_parameter_labels() {
         let source = r#"class Example
 {

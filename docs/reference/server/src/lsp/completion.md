@@ -121,6 +121,17 @@ Callable completions share [callable.md](callable.md) parameter
 parsing with signature help, provide snippets/follow-up commands when safe, and
 avoid duplicate named argument labels case-insensitively.
 
+For functions, methods, constructors, and attribute constructors, every
+required parameter remains a snippet field in signature order. When an
+indexed parameter type is an enum, Rust inserts a selected `EnumOwner.` field
+and attaches the complete ordered enum-field sequence to the normal completion
+command. The TypeScript bridge observes only those Rust-authored selected
+fields and opens Suggest for each in turn; it never infers a type or parameter
+from document text. This is shared callable behavior, so a second enum (or a
+required parameter after it) cannot truncate the inserted invocation. The
+shared static-enum renderer ranks qualified enum members first, normal value
+candidates next, and keywords last for each selected field.
+
 `RplRpc` attribute shorthand is a verified exception to placeholder-only
 callable insertion. When its constructor has the engine-defined required
 `RplChannel` and `RplRcver` parameters, it expands to the canonical

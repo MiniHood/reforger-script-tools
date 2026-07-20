@@ -7,6 +7,7 @@
 
 - [x] 2.1 Add bounded client-side protocol-boundary diagnostics without logging source or full completion payloads, including multi-placeholder bridge progression.
 - [x] 2.2 Add a cross-layer bridge-command contract check and update command ownership as needed.
+- [x] 2.3 Generalize Rust-authored enum placeholder sequencing across methods, constructors, and attribute constructors without generalizing RplRpc defaults.
 
 ## 3. Documentation and verification
 
