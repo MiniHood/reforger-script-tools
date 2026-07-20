@@ -80,6 +80,15 @@ design, implement, and verify an authorized durable solution. Use `/review`
 when the goal is broad, independent scrutiny rather than diagnosis or a code
 change.
 
+## Next-task discovery
+
+`/next` first continues a clear unfinished user-authorized task. When no such
+continuation exists, it does not invent a topic from a quick scan: it asks
+`/researcher` to explore bounded opportunities and alternatives, then asks
+`/review` to independently challenge the strongest candidate without receiving
+the research ranking. Only their combined evidence can produce a recommended
+new task; unresolved evidence becomes the recommended investigation instead.
+
 ## Parallel research
 
 `/researcher` is the evidence-gathering companion to `/review`. It is used
