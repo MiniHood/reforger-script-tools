@@ -575,7 +575,7 @@ function registerSemicolonAfterEnter(): vscode.Disposable {
 			version: event.document.version,
 			preEnterPosition: change.range.start,
 			position,
-			caretReady: hasSingleEmptyCaretAt(event.document, position),
+			caretReady: hasSingleEmptyCaretAt(event.document, position, event.document.version),
 		};
 		pending = transaction;
 		queueMicrotask(() => {
@@ -596,14 +596,14 @@ function registerSemicolonAfterEnter(): vscode.Disposable {
 			pending = undefined;
 			return;
 		}
-		if (hasSingleEmptyCaretAt(transaction.document, transaction.position)) {
+		if (hasSingleEmptyCaretAt(transaction.document, transaction.position, transaction.version)) {
 			transaction.caretReady = true;
 			void applyPendingSemicolonEdit(transaction, () => pending === transaction, () => {
 				pending = undefined;
 			});
 			return;
 		}
-		if (!hasSingleEmptyCaretAt(transaction.document, transaction.preEnterPosition)) {
+		if (!hasSingleEmptyCaretAt(transaction.document, transaction.preEnterPosition, transaction.version)) {
 			diagnostic('formatting.semicolon.enter', { outcome: 'caretMoved', version: transaction.version });
 			pending = undefined;
 		}
@@ -698,7 +698,7 @@ async function applyPendingSemicolonEdit(
 		return;
 	}
 	if (!isCurrent() || transaction.document.version !== transaction.version
-		|| !hasSingleEmptyCaretAt(transaction.document, transaction.position)) {
+		|| !hasSingleEmptyCaretAt(transaction.document, transaction.position, transaction.version)) {
 		diagnostic('formatting.semicolon.enter', { outcome: 'staleResponse', version: transaction.version, reason: 'caretMoved' });
 		clear();
 		return;
@@ -720,12 +720,35 @@ async function applyPendingSemicolonEdit(
 	clear();
 }
 
-function hasSingleEmptyCaretAt(document: vscode.TextDocument, position: vscode.Position): boolean {
+export function isCurrentSingleSemicolonCaret(
+	documentVersion: number,
+	expectedVersion: number,
+	selectionCount: number,
+	selectionIsEmpty: boolean,
+	selectionActive: vscode.Position,
+	expectedPosition: vscode.Position,
+): boolean {
+	return documentVersion === expectedVersion
+		&& selectionCount === 1
+		&& selectionIsEmpty
+		&& selectionActive.isEqual(expectedPosition);
+}
+
+function hasSingleEmptyCaretAt(
+	document: vscode.TextDocument,
+	position: vscode.Position,
+	expectedVersion: number,
+): boolean {
 	const editor = vscode.window.activeTextEditor;
 	return editor?.document.uri.toString() === document.uri.toString()
-		&& editor.selections.length === 1
-		&& editor.selection.isEmpty
-		&& editor.selection.active.isEqual(position);
+		&& isCurrentSingleSemicolonCaret(
+			document.version,
+			expectedVersion,
+			editor.selections.length,
+			editor.selection.isEmpty,
+			editor.selection.active,
+			position,
+		);
 }
 
 function hoverFromLspResponse(hover: LspHoverResponse): vscode.Hover | null {

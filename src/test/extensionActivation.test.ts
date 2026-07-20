@@ -3,7 +3,7 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { languageClientCommands } from '../extensionConfig/languageClient';
-import { semicolonAfterEnterPosition } from '../languageClient/languageClient';
+import { isCurrentSingleSemicolonCaret, semicolonAfterEnterPosition } from '../languageClient/languageClient';
 
 suite('extension activation', () => {
 	test('registers editor-facing commands', async () => {
@@ -73,6 +73,29 @@ suite('extension activation', () => {
 			rangeLength: 1,
 			text: '\n',
 		} as vscode.TextDocumentContentChangeEvent]), undefined);
+
+		const plainEnter = {
+			range: new vscode.Range(0, 0, 0, 0),
+			rangeLength: 0,
+			text: '\n',
+		} as vscode.TextDocumentContentChangeEvent;
+		assert.strictEqual(semicolonAfterEnterPosition([plainEnter, plainEnter]), undefined);
+		assert.strictEqual(semicolonAfterEnterPosition([{
+			...plainEnter,
+			text: '\ntext',
+		}]), undefined);
+	});
+
+	test('applies a semicolon response only at the original single caret and revision', () => {
+		const position = new vscode.Position(8, 4);
+		assert.strictEqual(isCurrentSingleSemicolonCaret(12, 12, 1, true, position, position), true);
+		assert.strictEqual(isCurrentSingleSemicolonCaret(13, 12, 1, true, position, position), false);
+		assert.strictEqual(isCurrentSingleSemicolonCaret(12, 12, 2, true, position, position), false);
+		assert.strictEqual(isCurrentSingleSemicolonCaret(12, 12, 1, false, position, position), false);
+		assert.strictEqual(
+			isCurrentSingleSemicolonCaret(12, 12, 1, true, new vscode.Position(8, 5), position),
+			false,
+		);
 	});
 
 	test('enables local diagnostic logging by default', () => {

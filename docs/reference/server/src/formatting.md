@@ -25,6 +25,12 @@ multi-caret edits, and selections all produce no edit. The classifier is
 bounded to 64 KiB and does not consult semantic/index/workspace data or
 schedule analysis work.
 
+Value-return support is additionally limited to complete value-expression
+tokens. It rejects control keywords, adjacent primary values, and incomplete
+`new Type(...)` construction. Separately, standalone call statements must end
+in a call rather than a bare member or index access. These checks do not treat
+delimiter balance alone as proof that a user has finished an expression.
+
 The parser preserves declarations, bodies, expressions, attributes,
 comments/trivia, loops, and switch structure needed for a conservative future
 formatter.

@@ -105,7 +105,7 @@ fn is_complete_call_expression(tokens: &[Token]) -> bool {
         return false;
     }
     index += 1;
-    let mut saw_call = false;
+    let mut ends_with_call = false;
 
     while index < tokens.len() {
         match tokens[index].kind {
@@ -118,25 +118,27 @@ fn is_complete_call_expression(tokens: &[Token]) -> bool {
                     return false;
                 }
                 index += 1;
+                ends_with_call = false;
             }
             TokenKind::LeftParen => {
                 let Some(next) = consume_balanced(tokens, index, TokenKind::RightParen) else {
                     return false;
                 };
-                saw_call = true;
                 index = next;
+                ends_with_call = true;
             }
             TokenKind::LeftBracket => {
                 let Some(next) = consume_balanced(tokens, index, TokenKind::RightBracket) else {
                     return false;
                 };
                 index = next;
+                ends_with_call = false;
             }
             _ => return false,
         }
     }
 
-    saw_call
+    ends_with_call
 }
 
 fn is_receiver_start(kind: Option<TokenKind>) -> bool {
@@ -153,7 +155,151 @@ fn is_complete_value_return_statement(tokens: &[Token]) -> bool {
     let Some(end) = consume_initializer(tokens, 1) else {
         return false;
     };
-    end == tokens.len()
+    end == tokens.len() && is_complete_value_expression(&tokens[1..])
+}
+
+/// Return values are deliberately stricter than a merely balanced token
+/// sequence. This bounded lexical check rejects control keywords and adjacent
+/// primary values (for example `owner GetOwner()`), which are not a complete
+/// Enforce expression and therefore must not receive an automatic edit.
+fn is_complete_value_expression(tokens: &[Token]) -> bool {
+    let Some(first) = tokens.first() else {
+        return false;
+    };
+    if !can_start_value_expression(first.kind) || !has_only_complete_new_expressions(tokens) {
+        return false;
+    }
+    for (index, token) in tokens.iter().enumerate() {
+        let kind = token.kind;
+        if !(is_value_expression_token(kind) || is_new_type_keyword(tokens, index)) {
+            return false;
+        }
+        if let Some(next) = tokens.get(index + 1) {
+            if can_end_value_expression(kind)
+                && can_start_value_expression(next.kind)
+                && next.kind != TokenKind::LeftParen
+            {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// Primitive keywords can only participate in a returned expression as type
+/// arguments of a `new Type<...>(...)` construction. Scanning back to the
+/// construction keyword is bounded by the already-small physical line.
+fn is_new_type_keyword(tokens: &[Token], index: usize) -> bool {
+    if !matches!(
+        tokens[index].kind,
+        TokenKind::Keyword(
+            Keyword::Int
+                | Keyword::Float
+                | Keyword::Bool
+                | Keyword::String
+                | Keyword::Vector
+                | Keyword::Typename
+        )
+    ) {
+        return false;
+    }
+    for token in tokens[..index].iter().rev() {
+        match token.kind {
+            TokenKind::Keyword(Keyword::New) => return true,
+            TokenKind::Operator(Operator::Less | Operator::Greater | Operator::GreaterGreater) => {}
+            TokenKind::Operator(_)
+            | TokenKind::LeftParen
+            | TokenKind::RightParen
+            | TokenKind::LeftBracket
+            | TokenKind::RightBracket
+            | TokenKind::LeftBrace
+            | TokenKind::RightBrace => return false,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// `new Type` is syntactically unfinished until its constructor argument list
+/// closes.  Keep this explicit instead of relying on generic delimiter balance
+/// so the typing assist remains fail-closed around construction expressions.
+fn has_only_complete_new_expressions(tokens: &[Token]) -> bool {
+    let mut index = 0;
+    while index < tokens.len() {
+        if tokens[index].kind != TokenKind::Keyword(Keyword::New) {
+            index += 1;
+            continue;
+        }
+        index += 1;
+        if !matches!(
+            tokens.get(index).map(|token| token.kind),
+            Some(TokenKind::Identifier)
+        ) {
+            return false;
+        }
+        index += 1;
+        let Some(next) = consume_generic_arguments(tokens, index) else {
+            return false;
+        };
+        index = next;
+        if tokens.get(index).map(|token| token.kind) != Some(TokenKind::LeftParen) {
+            return false;
+        }
+        let Some(next) = consume_balanced(tokens, index, TokenKind::RightParen) else {
+            return false;
+        };
+        index = next;
+    }
+    true
+}
+
+fn is_value_expression_token(kind: TokenKind) -> bool {
+    !matches!(kind, TokenKind::Keyword(keyword) if !matches!(
+        keyword,
+        Keyword::This | Keyword::Super | Keyword::True | Keyword::False | Keyword::Null | Keyword::New
+    ))
+}
+
+fn can_start_value_expression(kind: TokenKind) -> bool {
+    matches!(
+        kind,
+        TokenKind::Identifier
+            | TokenKind::Number
+            | TokenKind::String
+            | TokenKind::LeftParen
+            | TokenKind::LeftBrace
+            | TokenKind::Keyword(
+                Keyword::This
+                    | Keyword::Super
+                    | Keyword::True
+                    | Keyword::False
+                    | Keyword::Null
+                    | Keyword::New
+            )
+            | TokenKind::Operator(
+                Operator::Plus
+                    | Operator::Minus
+                    | Operator::Bang
+                    | Operator::Tilde
+                    | Operator::PlusPlus
+                    | Operator::MinusMinus
+            )
+    )
+}
+
+fn can_end_value_expression(kind: TokenKind) -> bool {
+    matches!(
+        kind,
+        TokenKind::Identifier
+            | TokenKind::Number
+            | TokenKind::String
+            | TokenKind::RightParen
+            | TokenKind::RightBracket
+            | TokenKind::RightBrace
+            | TokenKind::Keyword(
+                Keyword::This | Keyword::Super | Keyword::True | Keyword::False | Keyword::Null
+            )
+    )
 }
 
 /// Recognizes a complete typed variable declaration without resolving its
@@ -179,17 +325,26 @@ fn is_complete_variable_declaration(tokens: &[Token]) -> bool {
     index = next;
 
     loop {
-        if !matches!(tokens.get(index).map(|token| token.kind), Some(TokenKind::Identifier)) {
+        if !matches!(
+            tokens.get(index).map(|token| token.kind),
+            Some(TokenKind::Identifier)
+        ) {
             return false;
         }
         index += 1;
-        while matches!(tokens.get(index).map(|token| token.kind), Some(TokenKind::LeftBracket)) {
+        while matches!(
+            tokens.get(index).map(|token| token.kind),
+            Some(TokenKind::LeftBracket)
+        ) {
             let Some(next) = consume_balanced(tokens, index, TokenKind::RightBracket) else {
                 return false;
             };
             index = next;
         }
-        if matches!(tokens.get(index).map(|token| token.kind), Some(TokenKind::Operator(Operator::Equal))) {
+        if matches!(
+            tokens.get(index).map(|token| token.kind),
+            Some(TokenKind::Operator(Operator::Equal))
+        ) {
             index += 1;
             let Some(next) = consume_initializer(tokens, index) else {
                 return false;
@@ -261,14 +416,20 @@ fn consume_initializer(tokens: &[Token], mut index: usize) -> Option<usize> {
         }
         index += 1;
     }
-    if index == start || !closes.is_empty() || ends_in_incomplete_expression(tokens[start..index].last()?.kind) {
+    if index == start
+        || !closes.is_empty()
+        || ends_in_incomplete_expression(tokens[start..index].last()?.kind)
+    {
         return None;
     }
     Some(index)
 }
 
 fn ends_in_incomplete_expression(kind: TokenKind) -> bool {
-    matches!(kind, TokenKind::Dot | TokenKind::Question | TokenKind::Colon | TokenKind::Operator(_))
+    matches!(
+        kind,
+        TokenKind::Dot | TokenKind::Question | TokenKind::Colon | TokenKind::Operator(_)
+    )
 }
 
 fn consume_balanced(tokens: &[Token], start: usize, close: TokenKind) -> Option<usize> {
@@ -322,7 +483,9 @@ mod tests {
             "SCR_OutfitFactionData currentData = outfitDataArray[i]\n",
             "int number = 44 // keep this\n",
         ] {
-            let expected = source.find(" //").unwrap_or_else(|| source.find('\n').unwrap());
+            let expected = source
+                .find(" //")
+                .unwrap_or_else(|| source.find('\n').unwrap());
             assert_eq!(insertion(source), Some(expected), "{source:?}");
         }
     }
@@ -333,10 +496,14 @@ mod tests {
             "return owner\n",
             "return GetOwner()\n",
             "return new GRAY_TEST2()\n",
+            "return new array<int>()\n",
+            "return GetOwner().m_Name\n",
             "return owner == GetOwner() ? owner : null\n",
             "return owner // keep this\n",
         ] {
-            let expected = source.find(" //").unwrap_or_else(|| source.find('\n').unwrap());
+            let expected = source
+                .find(" //")
+                .unwrap_or_else(|| source.find('\n').unwrap());
             assert_eq!(insertion(source), Some(expected), "{source:?}");
         }
     }
@@ -362,6 +529,15 @@ mod tests {
             "return owner.\n",
             "return GetOwner(\n",
             "return owner +\n",
+            "return if\n",
+            "return owner GetOwner()\n",
+            "return owner new GRAY_TEST2()\n",
+            "return owner < int\n",
+            "return new\n",
+            "return new GRAY_TEST2\n",
+            "Run().member\n",
+            "Run()[0]\n",
+            "Run().member[0]\n",
             "value = Run()\n",
             "int\n",
             "GRAY_TEST2\n",
