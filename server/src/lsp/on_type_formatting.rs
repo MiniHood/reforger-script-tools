@@ -5,9 +5,10 @@ const MAX_ON_TYPE_SOURCE_BYTES: usize = 64 * 1024;
 /// Finds the byte offset where a semicolon can be inserted after Enter.
 ///
 /// This is intentionally a narrow typing assist rather than a formatter. It
-/// only accepts a complete standalone call/member-call or typed variable
-/// declaration on the physical line before the cursor. Every uncertain,
-/// malformed, or unsupported shape is a no-edit result.
+/// only accepts a complete standalone call/member-call, typed variable
+/// declaration, or value-return statement on the physical line before the
+/// cursor. Every uncertain, malformed, or unsupported shape is a no-edit
+/// result.
 pub(super) fn semicolon_insertion_offset(source: &str, cursor: usize) -> Option<usize> {
     if source.len() > MAX_ON_TYPE_SOURCE_BYTES || cursor > source.len() {
         return None;
@@ -65,7 +66,8 @@ pub(super) fn semicolon_insertion_offset(source: &str, cursor: usize) -> Option<
             .iter()
             .any(|token| token.kind.is_error() || token.kind == TokenKind::Semicolon)
         || !(is_complete_call_expression(&code_tokens)
-            || is_complete_variable_declaration(&code_tokens))
+            || is_complete_variable_declaration(&code_tokens)
+            || is_complete_value_return_statement(&code_tokens))
     {
         return None;
     }
@@ -142,6 +144,16 @@ fn is_receiver_start(kind: Option<TokenKind>) -> bool {
         kind,
         Some(TokenKind::Identifier) | Some(TokenKind::Keyword(Keyword::This | Keyword::Super))
     )
+}
+
+fn is_complete_value_return_statement(tokens: &[Token]) -> bool {
+    if tokens.first().map(|token| token.kind) != Some(TokenKind::Keyword(Keyword::Return)) {
+        return false;
+    }
+    let Some(end) = consume_initializer(tokens, 1) else {
+        return false;
+    };
+    end == tokens.len()
 }
 
 /// Recognizes a complete typed variable declaration without resolving its
@@ -316,6 +328,20 @@ mod tests {
     }
 
     #[test]
+    fn inserts_after_complete_value_return_statements() {
+        for source in [
+            "return owner\n",
+            "return GetOwner()\n",
+            "return new GRAY_TEST2()\n",
+            "return owner == GetOwner() ? owner : null\n",
+            "return owner // keep this\n",
+        ] {
+            let expected = source.find(" //").unwrap_or_else(|| source.find('\n').unwrap());
+            assert_eq!(insertion(source), Some(expected), "{source:?}");
+        }
+    }
+
+    #[test]
     fn inserts_before_a_trailing_line_comment() {
         let source = "Run() // keep this\n";
         assert_eq!(insertion(source), Some("Run()".len()));
@@ -332,7 +358,10 @@ mod tests {
             "Run(\n",
             "GetGame().\n",
             "Run();\n",
-            "return Run()\n",
+            "return\n",
+            "return owner.\n",
+            "return GetOwner(\n",
+            "return owner +\n",
             "value = Run()\n",
             "int\n",
             "GRAY_TEST2\n",
