@@ -92,7 +92,10 @@ examples and expands across owners when the question asks about broad
 applicability; online research cites direct sources and distinguishes an
 observed outside practice from a repository recommendation. Research does not
 implement its conclusion: use `/fix` or an OpenSpec proposal once a direction
-is chosen.
+is chosen. Researchers are curious evidence gatherers, not authorities: their
+ideas remain suggestions. The main thread independently assesses and may reject
+or reframe them before presenting a recommendation; `/review` remains available
+when a separate full persona review is warranted.
 
 ## Development-host continuity
 

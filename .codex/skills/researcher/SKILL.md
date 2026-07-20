@@ -6,8 +6,11 @@ description: Run parallel, independent research on Reforger Script Tools ideas, 
 # Parallel Research
 
 Investigate a question broadly enough to make a decision, without silently
-turning research into implementation. The output is a practical research brief,
-not a generic list of ideas.
+turning research into implementation. Researchers are curious evidence seekers:
+they should follow promising contradictions, alternatives, and gaps rather than
+defending a preferred solution. Their conclusions are advisory suggestions, not
+orders, commitments, or a guarantee that the main thread will follow them.
+The output is a practical research brief, not a generic list of ideas.
 
 ## Input and Scope
 
@@ -87,8 +90,10 @@ launch it when capacity frees and disclose the delay. Mark an unavailable
 persona as incomplete rather than substituting an unlabelled conclusion.
 
 Require each researcher to distinguish facts, inferences, examples, source
-quality, uncertainties, options, and validation. They must not implement,
-message agents, or read peer journals.
+quality, uncertainties, options, and validation. Ask curious questions, seek
+counterexamples, and report where an apparently attractive option does not fit.
+They must not implement, message agents, read peer journals, or present a
+recommendation as an instruction.
 
 After all researchers finish or are unavailable:
 
@@ -98,8 +103,14 @@ After all researchers finish or are unavailable:
    risk, architectural fit, performance implications, and proof needed.
 3. Turn the strongest evidence into concrete action items. Include discovery
    work when evidence is not sufficient for a safe change.
-4. Recommend one next action only when the evidence supports it; otherwise
-   recommend the smallest decisive investigation.
+4. Perform an independent main-thread assessment. Re-check the question against
+   the repository's constraints and evidence without treating researcher
+   suggestions as instructions. Explicitly accept, reject, or reframe the
+   leading suggestions and identify any missing trade-off.
+5. Recommend one next action only when the independent assessment supports it;
+   otherwise recommend the smallest decisive investigation. A follow-up
+   `/review` remains the separate option for a full independent persona review
+   before a high-risk decision.
 
 Use this output format:
 
@@ -121,6 +132,9 @@ Use this output format:
 ## Concrete Action Items
 1. ...
 
+## Independent Assessment
+<what the main thread accepts, rejects, or reframes, and why>
+
 ## Unknowns and Follow-up Research
 - ...
 
@@ -131,4 +145,6 @@ No implementation was performed; generated research evidence was recorded.
 ```
 
 Do not overstate certainty. Preserve disagreements and explicitly state when
-Workbench/compiler or live-editor validation is required.
+Workbench/compiler or live-editor validation is required. The final
+recommendation remains advice for the user; never imply that research output
+authorizes implementation.
