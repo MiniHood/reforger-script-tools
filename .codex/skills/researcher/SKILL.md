@@ -28,7 +28,7 @@ open question; otherwise make and state a bounded assumption.
 
 `depth:auto` uses the smallest source-compatible roster and evidence search
 that can reach a justified stopping condition. `depth:full` expands to every
-material source-compatible lens up to the four-person cap, explores at least
+material source-compatible lens, explores at least
 one credible competing direction and counterexample for each leading direction,
 and records why any remaining lens or corpus was not pursued. Full depth does
 not manufacture irrelevant personas or weak alternatives.
@@ -74,7 +74,8 @@ state, or external systems. Generated evidence journals under
 
 ## Select Independent Personas
 
-Select one to four source-compatible personas in `auto` mode. With `local` or
+Select every source-compatible persona in `auto` mode that can materially
+change the decision. With `local` or
 `both`, start with Codebase and Architecture; with `online`, start with Online
 Research. Add only a lens that can materially change the decision: Game API &
 Examples for Enfusion/game-data scope, Online Research when external practice
@@ -84,9 +85,10 @@ interaction, or Verification for a reproduction/proof gap. A justified
 one- or two-persona roster is preferable to performative coverage.
 
 Explicit `personas:` retains source-compatible Codebase and Architecture;
-`personas-only:` uses exactly the named source-compatible roster. If the
-resulting roster exceeds four, request a narrower roster or split it into a
-named follow-up pass before fan-out. Never silently omit a requested lens.
+`personas-only:` uses exactly the named source-compatible roster. Never
+silently omit a requested or materially relevant lens because of a numeric
+cap. If runtime capacity delays a selected persona, launch it when capacity
+frees and disclose the delay or partial coverage.
 State selected, displaced, and source-ineligible personas with reasons. Also
 record every materially considered but unselected persona and its reason; do
 not imply complete coverage from the selected roster alone.
