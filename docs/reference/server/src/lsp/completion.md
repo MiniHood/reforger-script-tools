@@ -74,8 +74,15 @@ records the deterministic pending contract and its reason in request/debug
 logs. Pending member and argument positions deliberately return a
 top-level/lexical fallback tagged `member-unavailable-top-level-fallback` or
 `argument-unavailable-top-level-fallback`; they never expose receiver, local,
-or argument facts from an older revision. This is not an `isIncomplete` signal
-or a request for the client to retrigger completion.
+or argument facts from an older revision. This is not a semantic-pending
+`isIncomplete` signal or a request for the client to retry stale analysis.
+
+A completion query that has legitimately filtered all candidates returns an
+empty but `isIncomplete` list. This is an editor-refresh contract: VS Code must
+ask Rust again when the user erases an unmatched prefix, because the current
+empty widget cannot recover `RplRpc` or another shorter-prefix result locally.
+Deliberately suppressed or unsupported contexts use the separate completed
+empty-list path, so they do not keep Suggest alive or add typing-path work.
 
 The normal completion log's `foreground_ready` and `cached_analysis` fields
 separately record position-index availability and whether matching-revision full

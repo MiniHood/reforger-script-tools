@@ -11004,7 +11004,7 @@ class Example
         assert!(output_text.contains("\"label\":\"WorkspaceMethod\""));
         assert!(output_text.contains(&target_uri));
         assert!(output_text.contains(
-            "{\"id\":5,\"jsonrpc\":\"2.0\",\"result\":{\"isIncomplete\":false,\"items\":[]}}"
+            "{\"id\":5,\"jsonrpc\":\"2.0\",\"result\":{\"isIncomplete\":true,\"items\":[]}}"
         ));
         assert!(output_text.contains("{\"id\":6,\"jsonrpc\":\"2.0\",\"result\":null}"));
 

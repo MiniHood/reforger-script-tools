@@ -3729,7 +3729,11 @@ fn cap_completion_items(mut items: Vec<LspCompletionItem>) -> (Vec<LspCompletion
             .cmp(right.sort_text.as_deref().unwrap_or(right.label.as_str()))
             .then_with(|| left.label.cmp(&right.label))
     });
-    let is_incomplete = items.len() >= MAX_COMPLETION_ITEMS;
+    // A query-derived empty list must remain refreshable. VS Code otherwise
+    // treats it as final, so erasing an unmatched prefix never asks Rust for
+    // the now-matching candidates. Deliberately suppressed contexts bypass
+    // this helper through `empty_completion_list` and stay complete.
+    let is_incomplete = items.is_empty() || items.len() >= MAX_COMPLETION_ITEMS;
     if is_incomplete {
         items.truncate(MAX_COMPLETION_ITEMS);
     }
@@ -4919,6 +4923,15 @@ class Constructed
             assert!(labels.len() > 2, "expected normal fallbacks for {source}: {labels:?}");
             assert!(report.list.items.iter().all(|item| item.text_edit.replace_range.is_none()));
         }
+    }
+
+    #[test]
+    fn filtered_empty_completion_list_requests_refresh_after_erasing() {
+        let (items, is_incomplete) = cap_completion_items(Vec::new());
+
+        assert!(items.is_empty());
+        assert!(is_incomplete);
+        assert!(!empty_completion_list().is_incomplete);
     }
 
     #[test]
