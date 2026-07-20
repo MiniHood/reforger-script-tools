@@ -60,6 +60,14 @@ is active, it may provide operational status but must not disclose individual
 findings, implement recommendations, commit, or otherwise change project
 state. A fix requires a separate user-authorized action after the review.
 
+Roster requests are deterministic: an explicit `personas:` selection controls
+specialists while `depth:` controls thoroughness; `personas-only:` is the only
+form that omits core reviewers. Ambiguous tokens require clarification. When
+more than two specialists fit, the coordinator ranks direct scope ownership,
+explicit user concern, then demonstrated failure or release risk and records
+any displaced lens. A reviewer without a report or journal progress after two
+coordinator wait intervals becomes unavailable and produces a partial review.
+
 To request specialists directly, pass comma-separated canonical names in a
 `personas:` token. For example,
 `/review <scope> personas:language-fidelity,verification-observability` retains

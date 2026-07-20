@@ -11,7 +11,12 @@ evidence journals under `tools/reports/review/` are the sole exception.
 
 ## 1. Establish the review package
 
-1. Parse `depth:auto` (default), `depth:full`, and optional `personas:` tokens.
+1. Parse one optional `depth:auto` (default) or `depth:full` token and one
+   optional comma-separated `personas:` or `personas-only:` token. Reject
+   duplicate, malformed, or unknown tokens and request clarification before
+   fan-out. A valid explicit persona token determines specialists; depth then
+   determines thoroughness only. `personas:` retains Correctness and
+   Architecture; only `personas-only:` omits them.
    The catalog is Correctness, Architecture, Performance & Reliability,
    Developer Experience, Language Fidelity, and Verification & Observability.
    In auto mode select Correctness and Architecture, then add at most two
@@ -20,10 +25,13 @@ evidence journals under `tools/reports/review/` are the sole exception.
    semantic, formatting, language-feature, Workbench, game-data, or API-truth
    work. Select Verification & Observability for defects, tests, fixtures,
    logs, diagnostics, reproducibility, lifecycle, or scheduler claims. Cap the
-   roster at four and state why each persona was selected or skipped. Full is
+   roster at four and state why each persona was selected or skipped. When more
+   than two specialists are relevant, rank direct scope ownership first, then
+   explicit user concern, then demonstrated failure or release risk; record
+   every displaced relevant specialist and its ranking reason. Full is
    the deepest bounded review: core plus the two most relevant specialists.
-   Explicit personas select the named lenses; retain the core unless the user
-   explicitly asks a narrow persona-only review. If the resulting explicit
+   Explicit `personas:` selections retain the core; `personas-only:` is the
+   narrow explicit form. If the resulting explicit
    roster exceeds four, request a narrower roster or a second review rather
    than silently omitting a persona.
    Canonical explicit values are `architecture`, `correctness`,
@@ -84,7 +92,9 @@ coordinator itself occupies one of four agent slots, expect three reviewers to
 start immediately and the fourth to begin after a slot is released.
 
 If a selected reviewer fails, is interrupted, or does not return a conforming
-report, retain any journal it produced and mark that persona unavailable. Then
+report, retain any journal it produced and mark that persona unavailable. A
+reviewer with neither a final report nor a journal progress update after two
+coordinator wait intervals is also unavailable. Then
 synthesize only completed reports, disclose incomplete coverage and the absent
 lens, and label the result a partial review. Do not silently retry with a
 different persona or describe a partial review as complete.
