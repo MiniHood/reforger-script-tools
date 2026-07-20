@@ -37,14 +37,23 @@ snippet field. A new custom request or TypeScript completion implementation
 would add parallel protocol/semantic paths without evidence that a valid LSP
 edit cannot meet the required experience, so it is rejected for this change.
 
-### Keep the normal value fallback beneath enum members
+### Reuse the normal contextual value fallback beneath enum members
 
 The selected first RplRpc argument is `RplChannel`. The shared static-enum
 renderer SHALL place its qualified enum members first and retain the normal
-top-level value and keyword fallback candidates beneath them. Every item uses
-the same complete `Owner.Member` edit range, so accepting a fallback replaces
-the selected expression rather than producing an invalid qualified expression.
-Typing replaces the selected field and resumes ordinary completion.
+contextual value candidates beneath them: visible locals and parameters,
+containing-class and inherited members, top-level symbols, and keywords. The
+member path SHALL reuse the same analyzed-snapshot candidate collector as
+ordinary value completion rather than reconstructing a top-level-only list.
+Every item uses the same complete `Owner.Member` edit range, so accepting a
+fallback replaces the selected expression rather than producing an invalid
+qualified expression. Typing replaces the selected field and resumes ordinary
+completion.
+
+The pending current-snapshot receiver query has no matching whole-file scope
+model and SHALL continue to admit only bounded current or immutable external
+facts. It must not merge locals or members from an older analysis merely to
+fill this fallback list.
 
 ### Test and diagnose the editor boundary proportionally
 

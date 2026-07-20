@@ -7890,7 +7890,10 @@ class Example
             vec![("LogLevel.DEBUG", 20), ("LogLevel.NORMAL", 20)]
         );
         assert!(report.list.items.len() > 2);
-        assert!(report.list.items.iter().all(|item| item.command.is_none()));
+        assert!(
+            report.list.items.iter().take(2).all(|item| item.command.is_none()),
+            "enum members themselves do not carry callable commands; ranked value fallbacks may"
+        );
         let enum_item = &report.list.items[0];
         let wire_item = serde_json::to_value(enum_item).unwrap();
         assert_eq!(

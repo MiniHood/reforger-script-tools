@@ -122,9 +122,13 @@ expression is selected, so typing replaces it and resumes ordinary value
 completion. The extension-owned, event-driven snippet-placeholder bridge opens
 the Rust-owned enum completion policy only after VS Code has selected the
 placeholder. That specialized list contains the qualified enum members in
-deterministic order, then the ordinary value and keyword fallback candidates;
-every item replaces the complete selected expression with an ordinary LSP text
-edit. It never emits a member-only insert range paired with an earlier-starting
+deterministic order, then the ordinary contextual value fallback candidates:
+visible locals and parameters, containing-class and inherited members,
+top-level symbols, and keywords. Its analyzed path reuses the normal value
+candidate collector so ranking does not hide valid scope. Its pending path
+retains only bounded current-snapshot or immutable external facts and never
+merges stale locals. Every item replaces the complete selected expression with
+an ordinary LSP text edit. It never emits a member-only insert range paired with an earlier-starting
 full-expression replace range: VS Code requires every `InsertReplaceEdit`
 insert range to start with and remain a prefix of its replace range. Choosing
 a fallback replaces rather than extends the selected enum expression. Tab advances to the selected

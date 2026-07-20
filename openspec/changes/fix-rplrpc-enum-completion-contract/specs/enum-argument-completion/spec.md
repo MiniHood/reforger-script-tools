@@ -13,14 +13,15 @@ the replace range start and MUST be a prefix of the replace range.
 
 ### Requirement: Enum-specific RplRpc suggestions
 The RplRpc first-argument follow-up completion SHALL present qualified
-`RplChannel` members in deterministic enum-first order and SHALL retain normal
-value and keyword candidates beneath them. Every candidate SHALL replace the
-complete selected enum expression when accepted.
+`RplChannel` members in deterministic enum-first order and SHALL retain the
+normal contextual value candidates beneath them: visible locals and
+parameters, containing-class members, top-level symbols, and keywords. Every
+candidate SHALL replace the complete selected enum expression when accepted.
 
 #### Scenario: RplRpc channel selection
 - **WHEN** the user accepts RplRpc and the first enum field is selected
 - **THEN** `RplChannel.Reliable` and `RplChannel.Unreliable` are available
-  before normal value and keyword alternatives
+  before normal contextual value and keyword alternatives
 
 ### Requirement: Responsive snippet-to-Suggest bridge
 The extension SHALL dispatch at most one Suggest request after the expected

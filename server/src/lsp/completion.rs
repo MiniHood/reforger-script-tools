@@ -551,6 +551,7 @@ pub(crate) fn completion_report_for_current_receiver_at_offset_with_external_ind
         receiver_is_static,
         MemberVisibilityContext::ExternalReceiver,
         &empty_local_index,
+        None,
         workspace_index,
         game_data_index,
         LspCompletionTimings::default(),
@@ -1867,6 +1868,7 @@ fn completion_report_for_offset(
             receiver_is_static,
             visibility,
             &analysis.index,
+            Some((analysis, offset)),
             workspace_index,
             game_data_index,
             LspCompletionTimings {
@@ -2016,6 +2018,7 @@ fn member_completion_report_for_indexes(
     receiver_is_static: bool,
     visibility: MemberVisibilityContext,
     local_index: &SymbolIndex,
+    value_fallback_context: Option<(&FileIndexAnalysis, usize)>,
     workspace_index: Option<&SymbolIndex>,
     game_data_index: Option<&SymbolIndex>,
     mut timings: LspCompletionTimings,
@@ -2048,6 +2051,33 @@ fn member_completion_report_for_indexes(
     let (items, source_kind_counts, origin_counts) = if receiver_is_static
         && render_context.is_enum_owner(owner)
     {
+        // An enum field is still an expression position. Reuse the same
+        // contextual value collection as ordinary unqualified completion so
+        // enum-first ranking never turns into enum-only filtering. Pending
+        // receiver recovery deliberately has no whole-file analysis here and
+        // therefore retains its safe external/top-level fallback only.
+        let value_fallback_candidates = value_fallback_context.map_or_else(
+            || {
+                top_level_source_completion_candidates(
+                    "",
+                    EditorTopLevelCompletionMode::Value,
+                    local_index,
+                    workspace_index,
+                    game_data_index,
+                    MAX_COMPLETION_ITEMS,
+                )
+            },
+            |(analysis, offset)| {
+                contextual_value_completion_candidates(
+                    analysis,
+                    "",
+                    offset,
+                    local_index,
+                    workspace_index,
+                    game_data_index,
+                )
+            },
+        );
         enum_static_completion_items(
             source,
             owner,
@@ -2055,9 +2085,7 @@ fn member_completion_report_for_indexes(
             prefix_span,
             &prefix,
             &candidates,
-            local_index,
-            workspace_index,
-            game_data_index,
+            &value_fallback_candidates,
             render_context,
         )
     } else {
@@ -2107,9 +2135,7 @@ fn enum_static_completion_items(
     prefix_span: TextSpan,
     prefix: &str,
     enum_candidates: &[EditorCompletionCandidate],
-    local_index: &SymbolIndex,
-    workspace_index: Option<&SymbolIndex>,
-    game_data_index: Option<&SymbolIndex>,
+    value_fallback_candidates: &[EditorCompletionCandidate],
     render_context: CompletionRenderContext<'_>,
 ) -> (
     Vec<LspCompletionItem>,
@@ -2138,16 +2164,8 @@ fn enum_static_completion_items(
         item.sort_text = Some(format!("000:enum:{index:03}:{}", item.label));
     }
 
-    let value_candidates = top_level_source_completion_candidates(
-        "",
-        EditorTopLevelCompletionMode::Value,
-        local_index,
-        workspace_index,
-        game_data_index,
-        MAX_COMPLETION_ITEMS,
-    );
     let (mut value_items, value_source_counts, value_origins) = completion_items_for_candidates(
-        &value_candidates,
+        value_fallback_candidates,
         range_for_span(source, full_expression_span),
         None,
         CompletionInsertContext::Normal,
@@ -2711,50 +2729,26 @@ fn top_level_completion_report_for_indexes(
         };
     }
 
-    if mode == EditorTopLevelCompletionMode::Value {
-        candidates.extend(scoped_value_completion_candidates(
-            analysis, &prefix, offset,
+    let candidates = if mode == EditorTopLevelCompletionMode::Value {
+        contextual_value_completion_candidates(
+            analysis,
+            &prefix,
+            offset,
+            local_index,
+            workspace_index,
+            game_data_index,
+        )
+    } else {
+        candidates.extend(top_level_source_completion_candidates(
+            &prefix,
+            mode,
+            local_index,
+            workspace_index,
+            game_data_index,
+            MAX_COMPLETION_ITEMS + 1,
         ));
-        if let Some(class_name) = containing_class_name(local_index, offset) {
-            for owner in containing_class_completion_owners(
-                local_index,
-                workspace_index,
-                game_data_index,
-                &class_name,
-            ) {
-                candidates.extend(prefixed_candidates(
-                    completion_candidates_for_owner(local_index, &owner, false),
-                    &prefix,
-                ));
-                if let Some(external_index) = workspace_index {
-                    candidates.extend(prefixed_candidates(
-                        completion_candidates_for_owner(external_index, &owner, false),
-                        &prefix,
-                    ));
-                }
-                if let Some(external_index) = game_data_index {
-                    candidates.extend(prefixed_candidates(
-                        completion_candidates_for_owner(external_index, &owner, false),
-                        &prefix,
-                    ));
-                }
-            }
-        }
-    }
-
-    candidates.extend(top_level_source_completion_candidates(
-        &prefix,
-        mode,
-        local_index,
-        workspace_index,
-        game_data_index,
-        MAX_COMPLETION_ITEMS + 1,
-    ));
-    candidates = candidates
-        .into_iter()
-        .filter(|candidate| !is_current_prefix_self_candidate(candidate, &prefix, offset))
-        .collect();
-    let candidates = combine_completion_candidates(candidates);
+        combine_completion_candidates(candidates)
+    };
     timings.candidate_lookup = lookup_start.elapsed();
 
     let edit_range = range_for_span(source, prefix_span);
@@ -2824,6 +2818,59 @@ fn top_level_source_completion_candidates(
         );
     }
     candidates
+}
+
+/// Collects the normal value-completion universe for a matching-revision
+/// analysis. The enum member renderer reuses this exact collector so enum
+/// ranking cannot discard locals or containing-class members.
+fn contextual_value_completion_candidates(
+    analysis: &FileIndexAnalysis,
+    prefix: &str,
+    offset: usize,
+    local_index: &SymbolIndex,
+    workspace_index: Option<&SymbolIndex>,
+    game_data_index: Option<&SymbolIndex>,
+) -> Vec<EditorCompletionCandidate> {
+    let mut candidates = scoped_value_completion_candidates(analysis, prefix, offset);
+    if let Some(class_name) = containing_class_name(local_index, offset) {
+        for owner in containing_class_completion_owners(
+            local_index,
+            workspace_index,
+            game_data_index,
+            &class_name,
+        ) {
+            candidates.extend(prefixed_candidates(
+                completion_candidates_for_owner(local_index, &owner, false),
+                prefix,
+            ));
+            if let Some(external_index) = workspace_index {
+                candidates.extend(prefixed_candidates(
+                    completion_candidates_for_owner(external_index, &owner, false),
+                    prefix,
+                ));
+            }
+            if let Some(external_index) = game_data_index {
+                candidates.extend(prefixed_candidates(
+                    completion_candidates_for_owner(external_index, &owner, false),
+                    prefix,
+                ));
+            }
+        }
+    }
+    candidates.extend(top_level_source_completion_candidates(
+        prefix,
+        EditorTopLevelCompletionMode::Value,
+        local_index,
+        workspace_index,
+        game_data_index,
+        MAX_COMPLETION_ITEMS + 1,
+    ));
+    combine_completion_candidates(
+        candidates
+            .into_iter()
+            .filter(|candidate| !is_current_prefix_self_candidate(candidate, prefix, offset))
+            .collect(),
+    )
 }
 
 fn merge_count_maps<K: Ord>(target: &mut BTreeMap<K, usize>, source: BTreeMap<K, usize>) {
@@ -4654,6 +4701,55 @@ class Constructed
             assert_eq!(labels[..2], ["Channel.Reliable", "Channel.Unreliable"]);
             assert!(labels.len() > 2, "expected normal fallbacks for {source}: {labels:?}");
             assert!(report.list.items.iter().all(|item| item.text_edit.replace_range.is_none()));
+        }
+    }
+
+    #[test]
+    fn static_enum_completion_ranks_enum_members_without_hiding_contextual_values() {
+        let source = r#"enum Channel
+{
+	Reliable,
+	Unreliable
+}
+
+class Example
+{
+	int m_ClassValue;
+
+	void Helper();
+
+	void Run(int parameter)
+	{
+		int localValue;
+		Channel.Reliable
+	}
+}
+"#;
+        let needle = "Channel.Reliable";
+        let offset = source.find(needle).unwrap() + needle.len();
+        let position = range_for_span(source, TextSpan::new(0, offset)).end;
+
+        let report = completion_report_for_source_position_with_external(source, position, None);
+        let labels = report
+            .list
+            .items
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(labels[..2], ["Channel.Reliable", "Channel.Unreliable"]);
+        for label in ["localValue", "parameter", "m_ClassValue", "Helper"] {
+            assert!(
+                labels.contains(&label),
+                "enum fallback must retain {label}: {labels:?}"
+            );
+        }
+        for item in &report.list.items {
+            assert_eq!(item.filter_text.as_deref(), Some("Channel.Reliable"));
+            assert!(
+                item.text_edit.replace_range.is_none(),
+                "the full-expression edit must remain an ordinary text edit"
+            );
         }
     }
 
