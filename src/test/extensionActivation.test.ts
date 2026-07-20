@@ -55,4 +55,13 @@ suite('extension activation', () => {
 		const properties = extension.packageJSON.contributes.configuration.properties as Record<string, { default?: unknown }>;
 		assert.strictEqual(properties['reforgerScriptTools.diagnostics.enabled'].default, true);
 	});
+
+	test('enables on-type formatting by default for Enforce documents', () => {
+		const extension = vscode.extensions.all.find(
+			candidate => candidate.packageJSON.name === 'reforger-sript-tools',
+		);
+		assert.ok(extension, 'development extension is discoverable');
+		const defaults = extension.packageJSON.contributes.configurationDefaults as Record<string, Record<string, unknown>>;
+		assert.strictEqual(defaults['[enforce]']['editor.formatOnType'], true);
+	});
 });

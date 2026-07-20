@@ -41,6 +41,7 @@
     "configurationDefaults": {
       "[enforce]": {
         "editor.bracketPairColorization.enabled": false,
+        "editor.formatOnType": true,
         "editor.quickSuggestions": {
           "other": "on",
           "comments": "off",
