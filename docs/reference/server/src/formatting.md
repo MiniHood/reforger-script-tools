@@ -14,8 +14,8 @@ The current first slice is a Rust `textDocument/onTypeFormatting` semicolon
 assist in `server/src/lsp/on_type_formatting.rs`. A thin extension document
 change bridge admits exactly one plain Enter edit and forwards its current
 revision and caret. Rust adds a single zero-width `;` edit only when the
-preceding physical line is a complete standalone call/member-call expression.
-It inserts before a trailing `//` comment.
+preceding physical line is a complete standalone call/member-call expression or
+typed variable declaration. It inserts before a trailing `//` comment.
 
 The assist is deliberately fail-closed. Controls, callable declarations and
 constructors, attributes, existing semicolons, incomplete expressions,

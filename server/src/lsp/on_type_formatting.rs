@@ -1,13 +1,13 @@
-use crate::lexer::{lex, Keyword, Token, TokenKind};
+use crate::lexer::{lex, Keyword, Operator, Token, TokenKind};
 
 const MAX_ON_TYPE_SOURCE_BYTES: usize = 64 * 1024;
 
 /// Finds the byte offset where a semicolon can be inserted after Enter.
 ///
 /// This is intentionally a narrow typing assist rather than a formatter. It
-/// only accepts a complete standalone call/member-call on the physical line
-/// before the cursor. Every uncertain, malformed, or unsupported shape is a
-/// no-edit result.
+/// only accepts a complete standalone call/member-call or typed variable
+/// declaration on the physical line before the cursor. Every uncertain,
+/// malformed, or unsupported shape is a no-edit result.
 pub(super) fn semicolon_insertion_offset(source: &str, cursor: usize) -> Option<usize> {
     if source.len() > MAX_ON_TYPE_SOURCE_BYTES || cursor > source.len() {
         return None;
@@ -64,7 +64,8 @@ pub(super) fn semicolon_insertion_offset(source: &str, cursor: usize) -> Option<
         || code_tokens
             .iter()
             .any(|token| token.kind.is_error() || token.kind == TokenKind::Semicolon)
-        || !is_complete_call_expression(&code_tokens)
+        || !(is_complete_call_expression(&code_tokens)
+            || is_complete_variable_declaration(&code_tokens))
     {
         return None;
     }
@@ -143,6 +144,121 @@ fn is_receiver_start(kind: Option<TokenKind>) -> bool {
     )
 }
 
+/// Recognizes a complete typed variable declaration without resolving its
+/// type. A `Type name` shape is unambiguously a declaration in statement
+/// position; callable headers and controls cannot satisfy this grammar.
+fn is_complete_variable_declaration(tokens: &[Token]) -> bool {
+    let mut index = 0;
+    while matches!(
+        tokens.get(index).map(|token| token.kind),
+        Some(TokenKind::Keyword(
+            Keyword::Const | Keyword::Ref | Keyword::Notnull | Keyword::Autoptr | Keyword::Owned
+        ))
+    ) {
+        index += 1;
+    }
+    if !is_local_type_start(tokens.get(index).map(|token| token.kind)) {
+        return false;
+    }
+    index += 1;
+    let Some(next) = consume_generic_arguments(tokens, index) else {
+        return false;
+    };
+    index = next;
+
+    loop {
+        if !matches!(tokens.get(index).map(|token| token.kind), Some(TokenKind::Identifier)) {
+            return false;
+        }
+        index += 1;
+        while matches!(tokens.get(index).map(|token| token.kind), Some(TokenKind::LeftBracket)) {
+            let Some(next) = consume_balanced(tokens, index, TokenKind::RightBracket) else {
+                return false;
+            };
+            index = next;
+        }
+        if matches!(tokens.get(index).map(|token| token.kind), Some(TokenKind::Operator(Operator::Equal))) {
+            index += 1;
+            let Some(next) = consume_initializer(tokens, index) else {
+                return false;
+            };
+            index = next;
+        }
+        if index == tokens.len() {
+            return true;
+        }
+        if tokens.get(index).map(|token| token.kind) != Some(TokenKind::Comma) {
+            return false;
+        }
+        index += 1;
+    }
+}
+
+fn is_local_type_start(kind: Option<TokenKind>) -> bool {
+    matches!(
+        kind,
+        Some(TokenKind::Identifier)
+            | Some(TokenKind::Keyword(
+                Keyword::Int
+                    | Keyword::Float
+                    | Keyword::Bool
+                    | Keyword::String
+                    | Keyword::Vector
+                    | Keyword::Typename
+                    | Keyword::Auto
+            ))
+    )
+}
+
+fn consume_generic_arguments(tokens: &[Token], mut index: usize) -> Option<usize> {
+    if tokens.get(index).map(|token| token.kind) != Some(TokenKind::Operator(Operator::Less)) {
+        return Some(index);
+    }
+    let mut depth = 0usize;
+    while let Some(token) = tokens.get(index) {
+        match token.kind {
+            TokenKind::Operator(Operator::Less) => depth += 1,
+            TokenKind::Operator(Operator::Greater) => depth = depth.checked_sub(1)?,
+            TokenKind::Operator(Operator::GreaterGreater) => depth = depth.checked_sub(2)?,
+            TokenKind::LeftParen | TokenKind::LeftBracket | TokenKind::LeftBrace => return None,
+            _ => {}
+        }
+        index += 1;
+        if depth == 0 {
+            return Some(index);
+        }
+    }
+    None
+}
+
+fn consume_initializer(tokens: &[Token], mut index: usize) -> Option<usize> {
+    let start = index;
+    let mut closes = Vec::new();
+    while let Some(token) = tokens.get(index) {
+        match token.kind {
+            TokenKind::LeftParen => closes.push(TokenKind::RightParen),
+            TokenKind::LeftBracket => closes.push(TokenKind::RightBracket),
+            TokenKind::LeftBrace => closes.push(TokenKind::RightBrace),
+            TokenKind::RightParen | TokenKind::RightBracket | TokenKind::RightBrace => {
+                if token.kind != closes.pop()? {
+                    return None;
+                }
+            }
+            TokenKind::Comma if closes.is_empty() => break,
+            _ => {}
+        }
+        index += 1;
+    }
+    if index == start || !closes.is_empty() || ends_in_incomplete_expression(tokens[start..index].last()?.kind) {
+        return None;
+    }
+    Some(index)
+}
+
+fn ends_in_incomplete_expression(kind: TokenKind) -> bool {
+    matches!(kind, TokenKind::Dot | TokenKind::Question | TokenKind::Colon | TokenKind::Operator(_))
+}
+
 fn consume_balanced(tokens: &[Token], start: usize, close: TokenKind) -> Option<usize> {
     let mut stack = vec![close];
     let mut index = start + 1;
@@ -184,6 +300,22 @@ mod tests {
     }
 
     #[test]
+    fn inserts_after_complete_variable_declarations() {
+        for source in [
+            "GRAY_TEST2 test44\n",
+            "int testnum = 44\n",
+            "ref array<ref SCR_EntityBudgetValue> budgetCosts\n",
+            "vector debugPoints[4]\n",
+            "int first = 1, second = Other()\n",
+            "SCR_OutfitFactionData currentData = outfitDataArray[i]\n",
+            "int number = 44 // keep this\n",
+        ] {
+            let expected = source.find(" //").unwrap_or_else(|| source.find('\n').unwrap());
+            assert_eq!(insertion(source), Some(expected), "{source:?}");
+        }
+    }
+
+    #[test]
     fn inserts_before_a_trailing_line_comment() {
         let source = "Run() // keep this\n";
         assert_eq!(insertion(source), Some("Run()".len()));
@@ -202,6 +334,13 @@ mod tests {
             "Run();\n",
             "return Run()\n",
             "value = Run()\n",
+            "int\n",
+            "GRAY_TEST2\n",
+            "int testnum =\n",
+            "int testnum = Other(\n",
+            "void Run\n",
+            "int Run()\n",
+            "int first = 1,\n",
             "// Run()\n",
             "\"Run()\"\n",
             "#ifdef Run\n",
