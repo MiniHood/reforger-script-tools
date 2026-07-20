@@ -1,16 +1,31 @@
-# server/src/formatting.rs
+# server/src/formatting.md
 
 ## Purpose
 
-Records the architecture boundary for a future Rust-side formatter and typing-assist system.
+Records the Rust-owned formatting and typing-assist boundary.
 
 ## Ownership
 
-Formatting belongs in the Rust language engine and consumes lexer/parser/AST/model facts. TypeScript only exposes LSP capabilities, commands, settings, and keybindings. The future formatting core owns safe layout edits; completion owns symbol/template choice and signature help owns callable explanation.
+Formatting belongs in the Rust language engine and consumes lexer/parser/AST/model facts. TypeScript only exposes LSP capabilities, commands, settings, and keybindings. The formatting core owns safe layout edits; completion owns symbol/template choice and signature help owns callable explanation.
 
 ## Current Behavior
 
-No formatter is implemented. The parser currently preserves declarations, bodies, expressions, attributes, comments/trivia, loops, and switch structure needed for a conservative future formatter.
+The current first slice is a Rust `textDocument/onTypeFormatting` semicolon
+assist in `server/src/lsp/on_type_formatting.rs`. It adds a single zero-width
+`;` edit only after Enter when the preceding physical line is a complete
+standalone call/member-call expression. It inserts before a trailing `//`
+comment.
+
+The assist is deliberately fail-closed. Controls, callable declarations and
+constructors, attributes, existing semicolons, incomplete expressions,
+strings/comments, directives, brace bodies, malformed source, large snapshots,
+multi-caret edits, and selections all produce no edit. The classifier is
+bounded to 64 KiB and does not consult semantic/index/workspace data or
+schedule analysis work.
+
+The parser preserves declarations, bodies, expressions, attributes,
+comments/trivia, loops, and switch structure needed for a conservative future
+formatter.
 
 The planned feature surfaces are document/range formatting, on-type edits, typing assists, comment/Doxygen formatting, and formatting of already-inserted completion snippets. They share syntax-aware context rather than implementing separate text rewrite systems.
 
@@ -24,8 +39,14 @@ Generated/read-only sources require explicit policy before mutation. Documentati
 
 ## Verification
 
-No formatter verification exists yet. A future slice must define parser-backed edit safety cases, source-derived/Workbench-confirmed style evidence, idempotence, malformed-source behavior, and LSP edit projection tests before enabling edits.
+The semicolon assist has table-driven safety cases for valid calls, member
+calls, comments, CRLF/UTF-16, controls, declarations, malformed expressions,
+comments/strings, directives, and large input. A future broader formatter must
+define parser-backed edit safety cases, idempotence, malformed-source behavior,
+and LSP edit projection tests before enabling edits.
 
 ## Future Direction
 
-Design a small verified vertical slice before adding implementation: conservative document formatting or a single unambiguous on-type edit. Keep completion, signature help, formatting, and documentation generation as distinct owners.
+Keep completion, signature help, formatting, and documentation generation as
+distinct owners. Future full formatting needs a parser-backed model; the
+semicolon assist is intentionally not a general formatter.

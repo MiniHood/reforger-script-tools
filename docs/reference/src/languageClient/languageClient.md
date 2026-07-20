@@ -80,6 +80,16 @@ trace before release.
 
 Rust completion items may still use VS Code's built-in parameter-hints command after ordinary callable insertion.
 
+The client also owns the editor admission for one Rust-authored semicolon
+typing assist. Its on-type provider is registered only for Enter and honors
+`editor.formatOnType`. It rejects nonempty selections and multiple carets,
+then forwards the URI, captured version, UTF-16 position, trigger, and
+formatting options through the standard `textDocument/onTypeFormatting` request.
+It never reads or classifies source text. If the document changed while Rust
+was responding, it drops the response. Rust intentionally does not advertise a
+second automatic provider, avoiding duplicate edits while preserving a single
+editor safety gate.
+
 ## Dependencies and Boundaries
 
 Uses VS Code APIs, Node path/filesystem APIs, `vscode-languageclient`, and extension config constants. It must not parse Enfusion Script, build indexes, inspect symbols, or implement language features directly.

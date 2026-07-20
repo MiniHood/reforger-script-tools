@@ -39,6 +39,7 @@ mod external_overlay;
 mod hover;
 mod hover_render;
 mod open_documents;
+mod on_type_formatting;
 mod semantic_tokens;
 mod signature_help;
 
@@ -121,6 +122,7 @@ const SIGNATURE_HELP_TRIGGER_CHARACTERS: &[&str] = &[
 const SIGNATURE_HELP_RETRIGGER_CHARACTERS: &[&str] = SIGNATURE_HELP_TRIGGER_CHARACTERS;
 const DEBUG_HOVER_METHOD: &str = "reforger/debugHover";
 const DEBUG_COMPLETION_METHOD: &str = "reforger/debugCompletion";
+const ON_TYPE_FORMATTING_METHOD: &str = "textDocument/onTypeFormatting";
 const WORKSPACE_FILE_CHANGED_METHOD: &str = "reforger/workspaceFileChanged";
 const WORKSPACE_FILE_DELETED_METHOD: &str = "reforger/workspaceFileDeleted";
 const MAX_LSP_HEADER_LINE_BYTES: usize = 8 * 1024;
@@ -1116,6 +1118,19 @@ struct HoverParams {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OnTypeFormattingParams {
+    text_document: TextDocumentIdentifier,
+    position: LspPosition,
+    ch: String,
+    /// VS Code captures this before forwarding the standard on-type request.
+    /// It is an extension field used solely to reject a stale editor result.
+    version: i32,
+    #[serde(rename = "options")]
+    _options: Value,
+}
+
+#[derive(Debug, Deserialize)]
 struct TextDocumentIdentifier {
     uri: String,
 }
@@ -1993,6 +2008,61 @@ impl<W: Write> LspServer<W> {
                         lookup_ms,
                         render_ms,
                         queue_ms,
+                        start.elapsed().as_millis()
+                    ));
+                    self.respond(id, result)?;
+                }
+            }
+            ON_TYPE_FORMATTING_METHOD => {
+                if let Some(id) = message.id {
+                    let start = Instant::now();
+                    let params = parse_params::<OnTypeFormattingParams>(message.params, method)?;
+                    let mut log_uri = "<missing>".to_string();
+                    let mut bytes = 0usize;
+                    let mut version = -1i32;
+                    let mut outcome = "no_edit";
+                    let result = params
+                        .and_then(|params| {
+                            log_uri = params.text_document.uri;
+                            version = params.version;
+                            if params.ch != "\n" || params.position.line == 0 {
+                                outcome = "unsupported_trigger";
+                                return None;
+                            }
+                            let document = self.documents.get(&log_uri)?;
+                            bytes = document.text.len();
+                            if document.version != params.version {
+                                outcome = "stale_version";
+                                return None;
+                            }
+                            let cursor = offset_for_position(&document.text, params.position)?;
+                            let insertion = on_type_formatting::semicolon_insertion_offset(
+                                &document.text,
+                                cursor,
+                            )?;
+                            let line_start = document.text[..insertion]
+                                .rfind('\n')
+                                .map_or(0, |newline| newline + 1);
+                            let character: u32 = document.text[line_start..insertion]
+                                .chars()
+                                .map(|character| character.len_utf16() as u32)
+                                .sum();
+                            outcome = "semicolon";
+                            Some(json!([{
+                                "range": {
+                                    "start": { "line": params.position.line - 1, "character": character },
+                                    "end": { "line": params.position.line - 1, "character": character }
+                                },
+                                "newText": ";"
+                            }]))
+                        })
+                        .unwrap_or_else(|| json!([]));
+                    self.log(&format!(
+                        "request onTypeFormatting uri={} bytes={} version={} outcome={} elapsed_ms={}",
+                        log_uri,
+                        bytes,
+                        version,
+                        outcome,
                         start.elapsed().as_millis()
                     ));
                     self.respond(id, result)?;
@@ -3928,6 +3998,7 @@ fn validate_message_params(method: &str, params: &Option<Value>) -> Result<(), S
         | "textDocument/signatureHelp"
         | DEBUG_HOVER_METHOD
         | DEBUG_COMPLETION_METHOD => validate_params::<HoverParams>(params, method),
+        ON_TYPE_FORMATTING_METHOD => validate_params::<OnTypeFormattingParams>(params, method),
         _ => Ok(()),
     }
 }
@@ -9592,6 +9663,62 @@ class Example
         server.cancel_deferred_semantic_token_request(&json!(11));
         assert!(!server.deferred_semantic_token_requests.contains_key(uri));
         assert!(server.writer.is_empty());
+    }
+
+    #[test]
+    fn on_type_formatting_returns_one_semicolon_edit_only_for_the_current_version() {
+        let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
+        let uri = "file:///Scripts/OnTypeFormatting.c";
+        server
+            .handle_message(
+                json!({ "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+                    "textDocument": {
+                        "uri": uri,
+                        "languageId": "enforce",
+                        "version": 1,
+                        "text": "void Run() {\n\tGetGame()\n}"
+                    }
+                }}),
+                None,
+                0,
+                0,
+            )
+            .unwrap();
+        server.writer.clear();
+        server
+            .handle_message(
+                json!({ "jsonrpc": "2.0", "id": 1, "method": ON_TYPE_FORMATTING_METHOD, "params": {
+                    "textDocument": { "uri": uri },
+                    "position": { "line": 2, "character": 0 },
+                    "ch": "\n",
+                    "version": 1,
+                    "options": { "tabSize": 4, "insertSpaces": false }
+                }}),
+                None,
+                0,
+                0,
+            )
+            .unwrap();
+        let output = String::from_utf8_lossy(&server.writer);
+        assert!(output.contains("\"newText\":\";\""), "{output}");
+        assert!(output.contains("\"character\":10,\"line\":1"), "{output}");
+
+        server.writer.clear();
+        server
+            .handle_message(
+                json!({ "jsonrpc": "2.0", "id": 2, "method": ON_TYPE_FORMATTING_METHOD, "params": {
+                    "textDocument": { "uri": uri },
+                    "position": { "line": 2, "character": 0 },
+                    "ch": "\n",
+                    "version": 2,
+                    "options": { "tabSize": 4, "insertSpaces": false }
+                }}),
+                None,
+                0,
+                0,
+            )
+            .unwrap();
+        assert!(String::from_utf8_lossy(&server.writer).contains("\"result\":[]"));
     }
 
     #[test]

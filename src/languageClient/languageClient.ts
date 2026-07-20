@@ -134,6 +134,7 @@ export function registerLanguageClientFeatures(context: vscode.ExtensionContext)
 	context.subscriptions.push(outputChannel);
 	context.subscriptions.push(debugOutputChannel);
 	context.subscriptions.push(completionDebugOutputChannel);
+	context.subscriptions.push(registerSemicolonOnTypeFormattingProvider());
 	context.subscriptions.push(registerEmptyCompletionRefresh());
 	context.subscriptions.push(vscode.commands.registerCommand(
 		languageClientCommands.debugHoverAtCursor,
@@ -546,6 +547,60 @@ interface LspRange {
 interface LspPosition {
 	line: number;
 	character: number;
+}
+
+interface LspTextEdit {
+	range: LspRange;
+	newText: string;
+}
+
+function registerSemicolonOnTypeFormattingProvider(): vscode.Disposable {
+	return vscode.languages.registerOnTypeFormattingEditProvider(
+		languageClientDocumentSelector,
+		{
+			provideOnTypeFormattingEdits: async (document, position, ch, options, token) => {
+				if (ch !== '\n'
+					|| !vscode.workspace.getConfiguration('editor', document.uri).get<boolean>('formatOnType', false)
+					|| !hasSingleEmptyCaretAt(document, position)) {
+					return [];
+				}
+
+				const activeClient = client;
+				if (!activeClient) {
+					return [];
+				}
+				const version = document.version;
+				try {
+					const edits = await activeClient.sendRequest<LspTextEdit[]>(
+						languageClientRequests.onTypeFormatting,
+						{
+							textDocument: { uri: document.uri.toString() },
+							position: { line: position.line, character: position.character },
+							ch,
+							version,
+							options: { tabSize: options.tabSize, insertSpaces: options.insertSpaces },
+						},
+						token,
+					);
+					if (document.version !== version || !hasSingleEmptyCaretAt(document, position)) {
+						return [];
+					}
+					return edits.map(edit => new vscode.TextEdit(rangeFromLsp(edit.range), edit.newText));
+				} catch {
+					return [];
+				}
+			},
+		},
+		'\n',
+	);
+}
+
+function hasSingleEmptyCaretAt(document: vscode.TextDocument, position: vscode.Position): boolean {
+	const editor = vscode.window.activeTextEditor;
+	return editor?.document.uri.toString() === document.uri.toString()
+		&& editor.selections.length === 1
+		&& editor.selection.isEmpty
+		&& editor.selection.active.isEqual(position);
 }
 
 function hoverFromLspResponse(hover: LspHoverResponse): vscode.Hover | null {

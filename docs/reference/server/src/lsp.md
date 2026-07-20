@@ -112,6 +112,14 @@ The module exposes bounded developer-only debug requests and wires workspace
 file-change notifications to the external overlay. It is deliberately a small
 dispatcher, not a general application framework.
 
+`textDocument/onTypeFormatting` is handled as a Rust-owned, standard-shape
+request for the semicolon typing assist. The extension manually registers the
+single VS Code provider so it can reject selections and multiple carets before
+transport; the server intentionally does not advertise an automatic
+on-type-formatting capability that could create a competing provider. The
+request carries the captured document version as an extension field and Rust
+returns no edits unless it exactly matches the installed immutable snapshot.
+
 ## Dependencies and Boundaries
 
 Depends on `serde`/`serde_json`, the parser/model/index stack, and
