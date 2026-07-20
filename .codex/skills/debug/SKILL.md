@@ -35,9 +35,20 @@ to fix the issue.
    joins, lifecycle coupling, unbounded work, and abstractions that make the
    symptom likely to recur. Compare the failing path with its authoritative
    counterpart and distinguish a local defect from a systemic design concern.
-7. Form a ranked root-cause hypothesis. For uncertain links, state a prediction
+7. When the diagnosis may be systemic, invoke `/review` as a read-only
+   independent check before settling on a fix. It is useful when the symptom
+   crosses TypeScript/Rust/runtime boundaries, has survived more than one
+   attempted fix, recurs across files or features, exposes a performance or
+   lifecycle trade-off, or the logs prove the failing layer but not why that
+   layer failed. Give reviewers the smallest explicit scope and relevant log
+   window; select `verification-observability` for missing evidence and add
+   the owning specialist such as `architecture`, `performance-reliability`,
+   or `language-fidelity`. Do not invoke reviewers for a clearly local,
+   directly reproducible defect with an already-proven causal chain. Treat the
+   review as advisory evidence, not as a replacement for the debug result.
+8. Form a ranked root-cause hypothesis. For uncertain links, state a prediction
    and test it with an independent observation.
-8. Report root cause, affected ownership boundary, architecture/design concerns
+9. Report root cause, affected ownership boundary, architecture/design concerns
    (or explicitly state none found), the smallest regression test, and a focused
    fix plan. Ask whether to implement if the user asked for
    diagnosis only.
