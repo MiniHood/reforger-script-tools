@@ -562,17 +562,9 @@ function registerSemicolonAfterEnter(): vscode.Disposable {
 		if (!isSinglePlainEnter(event.contentChanges)) {
 			return;
 		}
-		const editor = vscode.window.activeTextEditor;
-		if (!editor || editor.document.uri.toString() !== event.document.uri.toString() || editor.selections.length !== 1
-			|| !editor.selection.isEmpty) {
-			diagnostic('formatting.semicolon.enter', { outcome: 'rejectedEditorState' });
-			return;
-		}
 		const version = event.document.version;
-		const position = editor.selection.active;
-		diagnostic('formatting.semicolon.enter', { outcome: 'admitted', version });
 		queueMicrotask(() => {
-			void applySemicolonAfterEnter(event.document, version, position);
+			void applySemicolonAfterEnter(event.document, version);
 		});
 	});
 }
@@ -586,14 +578,16 @@ function isSinglePlainEnter(changes: readonly vscode.TextDocumentContentChangeEv
 async function applySemicolonAfterEnter(
 	document: vscode.TextDocument,
 	version: number,
-	position: vscode.Position,
 ): Promise<void> {
 	const activeClient = client;
 	const editor = vscode.window.activeTextEditor;
-	if (!activeClient || !editor || document.version !== version || !hasSingleEmptyCaretAt(document, position)) {
-		diagnostic('formatting.semicolon.enter', { outcome: 'staleBeforeRequest', version });
+	if (!activeClient || !editor || editor.document.uri.toString() !== document.uri.toString()
+		|| document.version !== version || editor.selections.length !== 1 || !editor.selection.isEmpty) {
+		diagnostic('formatting.semicolon.enter', { outcome: 'rejectedEditorState', version });
 		return;
 	}
+	const position = editor.selection.active;
+	diagnostic('formatting.semicolon.enter', { outcome: 'admitted', version, line: position.line, character: position.character });
 	try {
 		const edits = await activeClient.sendRequest<LspTextEdit[]>(
 			languageClientRequests.onTypeFormatting,
