@@ -45,11 +45,18 @@ let firstSemanticTokenTimingLogged = false;
 let completionTransactionSequence = 0;
 let pendingSnippetSuggestTransaction: SnippetSuggestTransaction | undefined;
 
+// TEMPORARY: release-gated forensic trace for the RplRpc multi-placeholder
+// bridge. OpenSpec task 3.3 tracks removing this once live editor behavior is
+// proven. It records only counts, lengths, and state transitions.
+const snippetSuggestTraceVersion = 3;
+const maxSnippetSuggestSelectionProbes = 8;
+
 interface SnippetSuggestTransaction {
 	id: number;
 	documentUri: string;
 	expectedSelectionTexts: readonly string[];
 	nextPlaceholderIndex: number;
+	selectionProbeCount: number;
 	selectionListener: vscode.Disposable;
 	cleanupTimer: ReturnType<typeof setTimeout>;
 	suggestDispatchScheduled: boolean;
@@ -694,6 +701,10 @@ function registerWorkspaceScriptWatchers(
 }
 
 function triggerSuggestAtSnippetPlaceholder(...expectedSelectionTexts: unknown[]): void {
+	diagnostic('completion.transaction.commandReceived', {
+		traceVersion: snippetSuggestTraceVersion,
+		placeholderCount: expectedSelectionTexts.length,
+	});
 	if (expectedSelectionTexts.length === 0
 		|| expectedSelectionTexts.some(text => typeof text !== 'string' || text.length === 0)) {
 		diagnostic('completion.transaction.ignored', { reason: 'invalidPlaceholderArgument' });
@@ -718,9 +729,24 @@ function triggerSuggestAtSnippetPlaceholder(...expectedSelectionTexts: unknown[]
 			return;
 		}
 		const expectedText = transaction.expectedSelectionTexts[transaction.nextPlaceholderIndex];
-		if (candidate.selections.length !== 1
-			|| candidate.selection.isEmpty
-			|| candidate.document.getText(candidate.selection) !== expectedText) {
+		const selectionCount = candidate.selections.length;
+		const selectionLength = candidate.selection.end.character - candidate.selection.start.character;
+		const matchesExpected = selectionCount === 1
+			&& !candidate.selection.isEmpty
+			&& candidate.document.getText(candidate.selection) === expectedText;
+		if (!matchesExpected) {
+			if (transaction.selectionProbeCount < maxSnippetSuggestSelectionProbes) {
+				transaction.selectionProbeCount += 1;
+				diagnostic('completion.transaction.selectionIgnored', {
+					transactionId: id,
+					source,
+					placeholderIndex: transaction.nextPlaceholderIndex,
+					selectionCount,
+					selectionLength,
+					expectedLength: expectedText.length,
+					probeCount: transaction.selectionProbeCount,
+				});
+			}
 			return;
 		}
 		diagnostic('completion.transaction.placeholderObserved', {
@@ -728,7 +754,7 @@ function triggerSuggestAtSnippetPlaceholder(...expectedSelectionTexts: unknown[]
 			source,
 			placeholderIndex: transaction.nextPlaceholderIndex,
 			placeholderCount: transaction.expectedSelectionTexts.length,
-			selectionLength: candidate.selection.end.character - candidate.selection.start.character,
+			selectionLength,
 		});
 		transaction.suggestDispatchScheduled = true;
 		transaction.awaitingCompletionResponse = true;
@@ -752,6 +778,7 @@ function triggerSuggestAtSnippetPlaceholder(...expectedSelectionTexts: unknown[]
 		documentUri,
 		expectedSelectionTexts: expectedSelectionTextSequence,
 		nextPlaceholderIndex: 0,
+		selectionProbeCount: 0,
 		selectionListener,
 		cleanupTimer: setTimeout(() => undefined, 0),
 		suggestDispatchScheduled: false,
@@ -760,6 +787,7 @@ function triggerSuggestAtSnippetPlaceholder(...expectedSelectionTexts: unknown[]
 	resetSnippetSuggestTransactionTimeout(pendingSnippetSuggestTransaction, 'placeholderNotObserved');
 	diagnostic('completion.transaction.armed', {
 		transactionId: id,
+		traceVersion: snippetSuggestTraceVersion,
 		placeholderCount: expectedSelectionTextSequence.length,
 	});
 	tryTrigger(editor, 'command');

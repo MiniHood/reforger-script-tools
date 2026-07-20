@@ -51,6 +51,14 @@ payloads. This separates an absent response from an invalid protocol edit,
 while fresh Extension Development Host verification remains the authority for
 native widget visibility.
 
+Until the RplRpc multi-placeholder journey has been proven in a freshly loaded
+Extension Development Host, that metadata also carries a temporary trace
+version plus at most eight same-document rejected selection probes per
+transaction. The probes record only counts, selected and expected lengths, and
+the expected placeholder index—never source or selection text. OpenSpec change
+`fix-rplrpc-enum-completion-contract` task 3.3 requires removing this forensic
+trace before release.
+
 Rust completion items may still use VS Code's built-in parameter-hints command after ordinary callable insertion.
 
 ## Dependencies and Boundaries

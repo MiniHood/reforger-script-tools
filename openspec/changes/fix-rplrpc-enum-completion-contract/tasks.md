@@ -12,3 +12,4 @@
 
 - [x] 3.1 Update the completion and language-client reference contracts.
 - [ ] 3.2 Run focused and complete Rust/extension checks, validate a fresh Extension Development Host journey, and record results.
+- [ ] 3.3 Remove the temporary RplRpc snippet-bridge forensic trace before release after a freshly loaded Extension Development Host proves the multi-placeholder lifecycle.

@@ -38,6 +38,7 @@ suite('extension activation', () => {
 		);
 		assert.ok(clientSource.includes('expectedSelectionTexts'));
 		assert.ok(clientSource.includes('advanceSnippetSuggestTransaction'));
+		assert.ok(clientSource.includes('snippetSuggestTraceVersion'));
 	});
 
 	test('enables local diagnostic logging by default', () => {
