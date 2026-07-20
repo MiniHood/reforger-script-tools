@@ -134,7 +134,7 @@ export function registerLanguageClientFeatures(context: vscode.ExtensionContext)
 	context.subscriptions.push(outputChannel);
 	context.subscriptions.push(debugOutputChannel);
 	context.subscriptions.push(completionDebugOutputChannel);
-	context.subscriptions.push(registerSemicolonOnTypeFormattingProvider());
+	context.subscriptions.push(registerSemicolonAfterEnter());
 	context.subscriptions.push(registerEmptyCompletionRefresh());
 	context.subscriptions.push(vscode.commands.registerCommand(
 		languageClientCommands.debugHoverAtCursor,
@@ -554,45 +554,61 @@ interface LspTextEdit {
 	newText: string;
 }
 
-function registerSemicolonOnTypeFormattingProvider(): vscode.Disposable {
-	return vscode.languages.registerOnTypeFormattingEditProvider(
-		languageClientDocumentSelector,
-		{
-			provideOnTypeFormattingEdits: async (document, position, ch, options, token) => {
-				if (ch !== '\n'
-					|| !vscode.workspace.getConfiguration('editor', document.uri).get<boolean>('formatOnType', false)
-					|| !hasSingleEmptyCaretAt(document, position)) {
-					return [];
-				}
+function registerSemicolonAfterEnter(): vscode.Disposable {
+	return vscode.workspace.onDidChangeTextDocument(event => {
+		if (event.document.languageId !== languageClientLanguage.id || !isSinglePlainEnter(event.contentChanges)) {
+			return;
+		}
+		const editor = vscode.window.activeTextEditor;
+		if (!editor || editor.document.uri.toString() !== event.document.uri.toString() || editor.selections.length !== 1
+			|| !editor.selection.isEmpty) {
+			return;
+		}
+		const version = event.document.version;
+		const position = editor.selection.active;
+		queueMicrotask(() => {
+			void applySemicolonAfterEnter(event.document, version, position);
+		});
+	});
+}
 
-				const activeClient = client;
-				if (!activeClient) {
-					return [];
-				}
-				const version = document.version;
-				try {
-					const edits = await activeClient.sendRequest<LspTextEdit[]>(
-						languageClientRequests.onTypeFormatting,
-						{
-							textDocument: { uri: document.uri.toString() },
-							position: { line: position.line, character: position.character },
-							ch,
-							version,
-							options: { tabSize: options.tabSize, insertSpaces: options.insertSpaces },
-						},
-						token,
-					);
-					if (document.version !== version || !hasSingleEmptyCaretAt(document, position)) {
-						return [];
-					}
-					return edits.map(edit => new vscode.TextEdit(rangeFromLsp(edit.range), edit.newText));
-				} catch {
-					return [];
-				}
+function isSinglePlainEnter(changes: readonly vscode.TextDocumentContentChangeEvent[]): boolean {
+	return changes.length === 1
+		&& changes[0].rangeLength === 0
+		&& /^\r?\n[\t ]*$/.test(changes[0].text);
+}
+
+async function applySemicolonAfterEnter(
+	document: vscode.TextDocument,
+	version: number,
+	position: vscode.Position,
+): Promise<void> {
+	const activeClient = client;
+	const editor = vscode.window.activeTextEditor;
+	if (!activeClient || !editor || document.version !== version || !hasSingleEmptyCaretAt(document, position)) {
+		return;
+	}
+	try {
+		const edits = await activeClient.sendRequest<LspTextEdit[]>(
+			languageClientRequests.onTypeFormatting,
+			{
+				textDocument: { uri: document.uri.toString() },
+				position: { line: position.line, character: position.character },
+				ch: '\n',
+				version,
+				options: { tabSize: editor.options.tabSize, insertSpaces: editor.options.insertSpaces },
 			},
-		},
-		'\n',
-	);
+		);
+		if (document.version !== version || !hasSingleEmptyCaretAt(document, position)) {
+			return;
+		}
+		await editor.edit(
+			editBuilder => edits.forEach(edit => editBuilder.replace(rangeFromLsp(edit.range), edit.newText)),
+			{ undoStopBefore: false, undoStopAfter: false },
+		);
+	} catch {
+		// A typing assist must never surface transport failures while the user edits.
+	}
 }
 
 function hasSingleEmptyCaretAt(document: vscode.TextDocument, position: vscode.Position): boolean {

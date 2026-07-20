@@ -113,12 +113,14 @@ file-change notifications to the external overlay. It is deliberately a small
 dispatcher, not a general application framework.
 
 `textDocument/onTypeFormatting` is handled as a Rust-owned, standard-shape
-request for the semicolon typing assist. The extension manually registers the
-single VS Code provider so it can reject selections and multiple carets before
-transport; the server intentionally does not advertise an automatic
-on-type-formatting capability that could create a competing provider. The
-request carries the captured document version as an extension field and Rust
-returns no edits unless it exactly matches the installed immutable snapshot.
+request for the semicolon typing assist. The extension forwards one plain
+Enter document-change event after its document synchronization listener has
+run; it rejects selections, multiple carets, replacement edits, and any other
+text change before transport. The server intentionally does not advertise an
+automatic on-type-formatting capability because VS Code did not reliably invoke
+the provider in the active editor. The request carries the captured document
+version as an extension field and Rust returns no edits unless it exactly
+matches the installed immutable snapshot.
 
 ## Dependencies and Boundaries
 

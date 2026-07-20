@@ -45,6 +45,10 @@ suite('extension activation', () => {
 		assert.ok(clientSource.includes('isRefreshableEmptyCompletion'));
 		assert.ok(clientSource.includes('completionLifecycleTraceForDocument'));
 		assert.ok(clientSource.includes('snippetSuggestTraceVersion'));
+		assert.ok(clientSource.includes('registerSemicolonAfterEnter'));
+		assert.ok(clientSource.includes('isSinglePlainEnter'));
+		assert.ok(clientSource.includes('queueMicrotask'));
+		assert.ok(!clientSource.includes('registerOnTypeFormattingEditProvider'));
 	});
 
 	test('enables local diagnostic logging by default', () => {
@@ -56,12 +60,4 @@ suite('extension activation', () => {
 		assert.strictEqual(properties['reforgerScriptTools.diagnostics.enabled'].default, true);
 	});
 
-	test('enables on-type formatting by default for Enforce documents', () => {
-		const extension = vscode.extensions.all.find(
-			candidate => candidate.packageJSON.name === 'reforger-sript-tools',
-		);
-		assert.ok(extension, 'development extension is discoverable');
-		const defaults = extension.packageJSON.contributes.configurationDefaults as Record<string, Record<string, unknown>>;
-		assert.strictEqual(defaults['[enforce]']['editor.formatOnType'], true);
-	});
 });

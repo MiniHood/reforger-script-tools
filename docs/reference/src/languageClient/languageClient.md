@@ -81,14 +81,16 @@ trace before release.
 Rust completion items may still use VS Code's built-in parameter-hints command after ordinary callable insertion.
 
 The client also owns the editor admission for one Rust-authored semicolon
-typing assist. Its on-type provider is registered only for Enter and honors
-`editor.formatOnType`. It rejects nonempty selections and multiple carets,
-then forwards the URI, captured version, UTF-16 position, trigger, and
-formatting options through the standard `textDocument/onTypeFormatting` request.
-It never reads or classifies source text. If the document changed while Rust
-was responding, it drops the response. Rust intentionally does not advertise a
-second automatic provider, avoiding duplicate edits while preserving a single
-editor safety gate.
+typing assist. A document-change bridge accepts only a single plain Enter
+insertion with one empty active caret; it rejects replacements, multicaret
+edits, selections, and non-Enter changes. It queues one microtask so the
+language client's matching `didChange` is published before forwarding the URI,
+captured version, UTF-16 position, trigger, and formatting options through the
+standard `textDocument/onTypeFormatting` request. It never reads or classifies
+source text. If the document or caret changed while Rust was responding, it
+drops the response; otherwise it applies Rust's returned edits without adding
+an undo stop. Rust does not advertise a competing automatic provider because
+VS Code did not reliably invoke it in the active editor.
 
 ## Dependencies and Boundaries
 
