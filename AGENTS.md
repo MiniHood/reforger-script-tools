@@ -81,12 +81,12 @@ owns workflow rationale. `docs/reference/` owns current subsystem context;
 
 ### Research and review journals
 
-Use a journal under `tools/reports/research/` only when it is directly relevant
-to the active scope or an explicit user follow-up. Read its manifest and
-synthesis first, then only the supporting persona report needed for the
-decision. Treat journals as advisory evidence and provenance, never as a
-replacement for current source, active reference docs, Workbench/compiler
-truth, or user direction.
+Use a journal under `tools/reports/review/` or `tools/reports/research/` only
+when it is directly relevant to the active scope or an explicit user follow-up.
+Read its manifest and synthesis first, then only the supporting persona report
+needed for the decision. Treat journals as advisory evidence and provenance,
+never as a replacement for current source, active reference docs,
+Workbench/compiler truth, or user direction.
 
 Before relying on a journal, compare its recorded base revision, dirty-file
 exclusions, and source identities with the current task. A journal is stale
