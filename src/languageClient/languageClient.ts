@@ -126,6 +126,11 @@ export function registerLanguageClientFeatures(context: vscode.ExtensionContext)
 		(...expectedSelectionTexts: unknown[]) => triggerSuggestAtSnippetPlaceholder(...expectedSelectionTexts),
 	));
 	context.subscriptions.push(vscode.commands.registerCommand(
+		languageClientCommands.advanceSnippetPlaceholderAfterAccept,
+		(transactionId: unknown, originalCommand: unknown) =>
+			advanceSnippetPlaceholderAfterAccept(transactionId, originalCommand),
+	));
+	context.subscriptions.push(vscode.commands.registerCommand(
 		languageClientCommands.openSymbolLocation,
 		(args: unknown) => openSymbolLocation(args),
 	));
@@ -336,6 +341,7 @@ async function startLanguageClient(
 							elapsedMs: Date.now() - startedAt,
 							...presentation,
 						});
+						wrapBridgeCompletionCommands(result, transaction.id);
 						advanceSnippetSuggestTransaction(transaction.id);
 					}
 					return result;
@@ -791,6 +797,64 @@ function triggerSuggestAtSnippetPlaceholder(...expectedSelectionTexts: unknown[]
 		placeholderCount: expectedSelectionTextSequence.length,
 	});
 	tryTrigger(editor, 'command');
+}
+
+function wrapBridgeCompletionCommands(
+	result: vscode.CompletionList | readonly vscode.CompletionItem[] | null | undefined,
+	transactionId: number,
+): void {
+	const items = !result ? [] : ('items' in result ? result.items : result);
+	for (const item of items) {
+		const originalCommand = item.command;
+		item.command = {
+			title: 'Advance RplRpc snippet placeholder',
+			command: languageClientCommands.advanceSnippetPlaceholderAfterAccept,
+			arguments: [transactionId, originalCommand],
+		};
+	}
+}
+
+async function advanceSnippetPlaceholderAfterAccept(
+	transactionId: unknown,
+	originalCommand: unknown,
+): Promise<void> {
+	if (isVscodeCommand(originalCommand)) {
+		await vscode.commands.executeCommand(
+			originalCommand.command,
+			...(originalCommand.arguments ?? []),
+		);
+	}
+
+	const transaction = pendingSnippetSuggestTransaction;
+	if (typeof transactionId !== 'number'
+		|| transaction?.id !== transactionId
+		|| transaction.nextPlaceholderIndex >= transaction.expectedSelectionTexts.length) {
+		return;
+	}
+
+	diagnostic('completion.transaction.accepted', {
+		transactionId,
+		placeholderIndex: transaction.nextPlaceholderIndex - 1,
+	});
+	try {
+		await vscode.commands.executeCommand('jumpToNextSnippetPlaceholder');
+		diagnostic('completion.transaction.nextPlaceholderDispatched', {
+			transactionId,
+			placeholderIndex: transaction.nextPlaceholderIndex,
+		});
+	} catch {
+		diagnostic('completion.transaction.nextPlaceholderDispatchError', {
+			transactionId,
+			placeholderIndex: transaction.nextPlaceholderIndex,
+		});
+	}
+}
+
+function isVscodeCommand(value: unknown): value is vscode.Command {
+	return typeof value === 'object'
+		&& value !== null
+		&& 'command' in value
+		&& typeof value.command === 'string';
 }
 
 function advanceSnippetSuggestTransaction(id: number): void {

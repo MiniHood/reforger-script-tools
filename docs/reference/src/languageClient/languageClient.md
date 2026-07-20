@@ -51,6 +51,13 @@ payloads. This separates an absent response from an invalid protocol edit,
 while fresh Extension Development Host verification remains the authority for
 native widget visibility.
 
+While the bridge transaction is active, the client wraps only that response's
+completion-item commands. VS Code runs an item command after applying its
+completion edit, so the wrapper preserves any original command and then invokes
+the built-in next-snippet-placeholder command. Accepting an enum suggestion
+therefore selects the next RplRpc argument immediately; it does not consume a
+second Tab. Manually typed values retain normal VS Code snippet navigation.
+
 Until the RplRpc multi-placeholder journey has been proven in a freshly loaded
 Extension Development Host, that metadata also carries a temporary trace
 version plus at most eight same-document rejected selection probes per

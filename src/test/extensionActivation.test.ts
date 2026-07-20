@@ -16,6 +16,7 @@ suite('extension activation', () => {
 		assert.ok(commands.includes(languageClientCommands.debugHoverAtCursor));
 		assert.ok(commands.includes(languageClientCommands.debugCompletionAtCursor));
 		assert.ok(commands.includes(languageClientCommands.triggerSuggestAtSnippetPlaceholder));
+		assert.ok(commands.includes(languageClientCommands.advanceSnippetPlaceholderAfterAccept));
 		const contributedCommands = extension.packageJSON.contributes.commands as Array<{ command: string }>;
 		assert.ok(contributedCommands.some(command =>
 			command.command === languageClientCommands.triggerSuggestAtSnippetPlaceholder));
@@ -38,6 +39,8 @@ suite('extension activation', () => {
 		);
 		assert.ok(clientSource.includes('expectedSelectionTexts'));
 		assert.ok(clientSource.includes('advanceSnippetSuggestTransaction'));
+		assert.ok(clientSource.includes('wrapBridgeCompletionCommands'));
+		assert.ok(clientSource.includes('jumpToNextSnippetPlaceholder'));
 		assert.ok(clientSource.includes('snippetSuggestTraceVersion'));
 	});
 
