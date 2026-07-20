@@ -1183,6 +1183,7 @@ impl BoundedCompletionFacts {
                 item.text_edit.new_text.clone(),
             ))
         });
+        add_return_separator_to_completion_items(source, prefix_span, &mut items);
         let (items, is_incomplete) = cap_completion_items(items);
         LspCompletionReport {
             candidate_count: items.len(),
@@ -1344,6 +1345,7 @@ impl BoundedCompletionFacts {
                 item.text_edit.new_text.clone(),
             ))
         });
+        add_return_separator_to_completion_items(source, prefix_span, &mut items);
         let (items, is_incomplete) = cap_completion_items(items);
         report.candidate_count = items.len();
         report.list = LspCompletionList {
@@ -1781,6 +1783,7 @@ fn top_level_fallback_report_for_prefix_span(
         EditorTopLevelCompletionMode::Value,
         false,
     ));
+    add_return_separator_to_completion_items(source, prefix_span, &mut items);
     let (items, is_incomplete) = cap_completion_items(items);
     let mut report = LspCompletionReport {
         candidate_count: items.len(),
@@ -2962,6 +2965,9 @@ fn top_level_completion_report_for_indexes(
         keyword_items.extend(items);
         items = keyword_items;
     }
+    if mode == EditorTopLevelCompletionMode::Value {
+        add_return_separator_to_completion_items(source, prefix_span, &mut items);
+    }
     let (items, is_incomplete) = cap_completion_items(items);
     timings.item_rendering = render_start.elapsed();
     timings.total = total_start.elapsed();
@@ -3008,6 +3014,34 @@ fn top_level_source_completion_candidates(
         );
     }
     candidates
+}
+
+/// A value completion immediately after `return` must supply the required
+/// separator because its zero-width edit cannot otherwise distinguish
+/// `return owner` from `returnowner`.
+fn completion_immediately_follows_return(source: &str, prefix_span: TextSpan) -> bool {
+    let prefix_start = prefix_span.start;
+    let Some(previous) = lex(&source[..prefix_start])
+        .into_iter()
+        .filter(|token| !token.kind.is_trivia() && token.kind != TokenKind::Eof)
+        .last()
+    else {
+        return false;
+    };
+    previous.kind == TokenKind::Keyword(Keyword::Return)
+        && previous.span.end == prefix_start
+}
+
+fn add_return_separator_to_completion_items(
+    source: &str,
+    prefix_span: TextSpan,
+    items: &mut [LspCompletionItem],
+) {
+    if completion_immediately_follows_return(source, prefix_span) {
+        for item in items {
+            item.text_edit.new_text.insert(0, ' ');
+        }
+    }
 }
 
 /// Collects the normal value-completion universe for a matching-revision
@@ -5441,6 +5475,27 @@ ArmaReforgerScripted GetGame();
         );
 
         assert!(items.is_empty());
+    }
+
+    #[test]
+    fn value_completion_after_return_inserts_the_required_separator() {
+        let source = "return";
+        let prefix_span = TextSpan::new(source.len(), source.len());
+        assert!(completion_immediately_follows_return(source, prefix_span));
+        let mut items = keyword_completion_items(
+            "",
+            range_for_span(source, prefix_span),
+            EditorTopLevelCompletionMode::Value,
+            false,
+        );
+        add_return_separator_to_completion_items(source, prefix_span, &mut items);
+        assert!(items
+            .iter()
+            .all(|item| item.text_edit.new_text.starts_with(' ')));
+        assert!(!completion_immediately_follows_return(
+            "return ",
+            TextSpan::new("return ".len(), "return ".len()),
+        ));
     }
 
     #[test]

@@ -107,4 +107,13 @@ suite('extension activation', () => {
 		assert.strictEqual(properties['reforgerScriptTools.diagnostics.enabled'].default, true);
 	});
 
+	test('keeps Enter available for line breaks in Enforce suggestions', () => {
+		const extension = vscode.extensions.all.find(
+			candidate => candidate.packageJSON.name === 'reforger-sript-tools',
+		);
+		assert.ok(extension, 'development extension is discoverable');
+		const defaults = extension.packageJSON.contributes.configurationDefaults as Record<string, Record<string, unknown>>;
+		assert.strictEqual(defaults['[enforce]']['editor.acceptSuggestionOnEnter'], 'off');
+	});
+
 });
