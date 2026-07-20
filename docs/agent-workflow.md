@@ -82,12 +82,13 @@ change.
 
 ## Next-task discovery
 
-`/next` first continues a clear unfinished user-authorized task. When no such
-continuation exists, it does not invent a topic from a quick scan: it asks
-`/researcher` to explore bounded opportunities and alternatives, then asks
-`/review` to independently challenge the strongest candidate without receiving
-the research ranking. Only their combined evidence can produce a recommended
-new task; unresolved evidence becomes the recommended investigation instead.
+`/next` is a thin router. It continues a clear unfinished user-authorized task,
+sends verified or accepted defects to `/fix`, and sends a clear but uncertain
+candidate to `/review`. Only when no candidate exists does it ask `/researcher`
+to explore bounded opportunities, then asks `/review` to independently
+challenge the strongest candidate without receiving the research ranking.
+Unresolved evidence becomes the recommended investigation instead of invented
+work.
 
 ## Parallel research
 

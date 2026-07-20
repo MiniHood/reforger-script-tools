@@ -1,4 +1,4 @@
 interface:
   display_name: "Next Task"
-  short_description: "Continue or research the next task"
-  default_prompt: "Use $next to continue the most relevant unfinished task or identify the best next task."
+  short_description: "Route the next task to the right workflow"
+  default_prompt: "Use $next to continue work or route the best next task."
