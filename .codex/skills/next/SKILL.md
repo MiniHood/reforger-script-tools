@@ -5,9 +5,10 @@ description: Continue the most relevant unfinished Reforger Script Tools task fr
 
 # Continue the Next Task
 
-Treat the current conversation as the primary backlog. Do not switch topics
-until checking whether the prior task left an explicit next step, residual, or
-required validation.
+Treat the current conversation as the primary backlog. Preserve the active
+topic until the user explicitly pivots, the topic is completed, or its smallest
+decisive next investigation is reported. Do not let an older active OpenSpec
+change silently replace the most recent significant user-directed thread.
 
 ## Route Work
 
@@ -17,10 +18,31 @@ handoff, explicit user requests, active OpenSpec tasks, current Git status, and
 already-established tests, logs, or review residuals. Do not repeat deep work
 that `/fix`, `/review`, or `/researcher` owns.
 
-Route in this order:
+Select the active thread before routing:
 
-1. **Clear unfinished request or OpenSpec task:** continue it through its
-   owning workflow.
+1. **Explicit current direction wins.** A user says what to work on next,
+   continues a named feature, answers a question about the current feature, or
+   invokes `/next` immediately after a handoff with a stated next step. Treat
+   that topic as active even if an unrelated OpenSpec change has unfinished
+   tasks.
+2. **Recent significant continuation follows.** When the latest completed
+   work left a concrete residual, validation gate, or recommended smallest
+   investigation, keep that topic active. A research conclusion that says
+   "needs decisive validation" is unfinished feature work, not permission to
+   jump to a different backlog item.
+3. **OpenSpec is contextual, not a global override.** Prefer an active
+   OpenSpec change only when the user named it, it is clearly the active
+   thread, or it is the direct accepted continuation of the recent work. An
+   older incomplete change is a candidate only after the current thread is
+   complete, blocked, or explicitly deprioritized.
+4. **Resolve a true tie by value and evidence.** Compare only the current
+   thread and materially related candidates; never enumerate a broad backlog
+   merely to find work.
+
+Route the selected active thread in this order:
+
+1. **Clear unfinished request or linked OpenSpec task:** continue it through
+   its owning workflow.
 2. **Open defect:** when context contains a verified failing test, debug root
    cause, unresolved P1-P3 review item, explicit bug report, or an accepted
    residual that needs correction, invoke `/fix`. Pass the concrete symptom,
@@ -42,6 +64,13 @@ Keep unrelated dirty work out of scope. Research and review are discovery and
 challenge stages, not authorization to implement. If they disagree or leave a
 decisive unknown, route to the smallest missing investigation rather than
 inventing work to keep momentum.
+
+For example, after research identifies a Workbench/compiler matrix as the
+smallest decisive prerequisite for a named feature, `/next` selects that
+matrixâ€”not an unrelated incomplete OpenSpec task. If completing the selected
+step needs a user-controlled external editor/session, report the exact matrix
+and ask for the needed observation; do not claim the feature is complete or
+substitute unrelated implementation work.
 
 Create one concrete recommended next task before prompting the user or
 suggesting a topic change. State the routing evidence, research favorability
