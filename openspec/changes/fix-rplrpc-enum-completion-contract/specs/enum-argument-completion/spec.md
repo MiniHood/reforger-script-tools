@@ -24,14 +24,16 @@ candidate SHALL replace the complete selected enum expression when accepted.
   before normal contextual value and keyword alternatives
 
 ### Requirement: Responsive snippet-to-Suggest bridge
-The extension SHALL dispatch at most one Suggest request after the expected
-RplRpc snippet selection becomes active and SHALL not add a typing-path delay
+The extension SHALL dispatch one Suggest request for each expected RplRpc enum
+snippet selection in Rust-authored order and SHALL not add a typing-path delay
 or retry loop.
 
 #### Scenario: Selected field dispatch
 - **WHEN** VS Code selects the expected RplRpc first placeholder
-- **THEN** the extension dispatches one Suggest request and releases the
-  temporary transaction after its response, cancellation, or bounded expiry
+- **THEN** the extension dispatches one Suggest request for the selected
+  `RplChannel` field, retains the temporary transaction for the selected
+  `RplRcver` field, then releases it after the final response, cancellation,
+  or bounded expiry
 
 ### Requirement: Completion boundary verification
 The project SHALL verify the RplRpc snippet-to-editor completion boundary with

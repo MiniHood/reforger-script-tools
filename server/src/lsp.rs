@@ -6723,7 +6723,7 @@ class RplRpc : UniqueAttribute
                 .as_ref()
                 .and_then(|command| command.arguments.as_ref())
                 .map(|arguments| arguments.iter().map(String::as_str).collect::<Vec<_>>()),
-            Some(vec!["RplChannel.Reliable"])
+            Some(vec!["RplChannel.Reliable", "RplRcver.Server"])
         );
         assert_eq!(item.required_parameter_count, 2);
         assert_eq!(item.optional_parameter_count, 2);

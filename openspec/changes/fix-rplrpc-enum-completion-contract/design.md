@@ -12,7 +12,7 @@ so the protocol item is invalid at the editor boundary.
 
 - Emit only editor-valid completion edit ranges.
 - Keep Rust authoritative for enum candidate selection, ranking, and edits.
-- Keep the TypeScript bridge event-driven, single-dispatch, and free of
+- Keep the TypeScript bridge event-driven, one-dispatch-per-authored-placeholder, and free of
   language parsing or completion policy.
 - Prove the wire invariant and the RplRpc user journey with focused coverage.
 
@@ -63,11 +63,15 @@ the visible suggestion journey. Bounded client diagnostics may record range
 shapes and filter metadata for the first items, but must not log source text or
 full completion payloads.
 
-### Treat the bridge command as a cross-layer protocol contract
+### Treat the bridge command as a cross-layer placeholder-sequence contract
 
 The Rust-emitted command remains necessary for UI invocation, while TypeScript
-continues to own registration and execution. Tests SHALL prevent drift between
-the emitted command, extension configuration, and manifest contribution.
+continues to own registration and execution. For a multi-enum snippet it SHALL
+carry the ordered selected placeholder defaults. TypeScript SHALL dispatch once
+for each observed default and retain the transaction through the final field;
+it must not parse document text or infer parameter types. Tests SHALL prevent
+drift between the emitted command, extension configuration, and manifest
+contribution.
 
 ## Risks / Trade-offs
 

@@ -36,13 +36,13 @@ Ordinary document edits never cause TypeScript to invoke VS Code Suggest. Rust
 owns the completion contract, including current-document admission, context,
 candidate eligibility, ranking, and rendering. The sole exception is the
 Rust-selected `RplRpc` enum snippet: its completion item invokes a registered
-extension command, which waits for VS Code's snippet selection event (or an
-already-selected placeholder matching the Rust-provided default) and then invokes
-Suggest exactly once at the next event-loop boundary. Duplicate selection events
-cannot create a competing request. It does not parse text, inspect symbols,
-choose candidates, or use a typing-path delay. A one-second
-cleanup timer only releases an abandoned editor transaction; it never triggers
-Suggest. While that transaction is active, the client records bounded
+extension command, which supplies the Rust-authored ordered selected enum
+defaults. The client waits for each exact VS Code snippet selection and invokes
+Suggest once per placeholder at the next event-loop boundary; duplicate events
+and duplicate responses cannot create a competing request. It does not parse
+text, inspect symbols, choose candidates, or use a typing-path delay. A
+30-second cleanup timer only releases an abandoned editor transaction; it never
+triggers Suggest. While that transaction is active, the client records bounded
 command/placeholder/request/response metadata through the existing optional
 diagnostic logger. Response metadata includes bounded completion-range shape
 counts, validity of any converted insert/replace pairs, and filter-text

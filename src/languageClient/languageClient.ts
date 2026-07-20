@@ -14,6 +14,7 @@ import { gameDataConfig, gameDataStorage } from '../extensionConfig/gameData';
 import { diagnostic, languageServerDiagnosticPath } from '../diagnostics/diagnostics';
 import {
 	languageClientCrashHandling,
+	languageClientCompletion,
 	languageClientCommands,
 	languageClientDocumentSelector,
 	languageClientIndexCache,
@@ -47,9 +48,12 @@ let pendingSnippetSuggestTransaction: SnippetSuggestTransaction | undefined;
 interface SnippetSuggestTransaction {
 	id: number;
 	documentUri: string;
+	expectedSelectionTexts: readonly string[];
+	nextPlaceholderIndex: number;
 	selectionListener: vscode.Disposable;
 	cleanupTimer: ReturnType<typeof setTimeout>;
 	suggestDispatchScheduled: boolean;
+	awaitingCompletionResponse: boolean;
 }
 
 export function logLanguageClientStartupTiming(
@@ -112,7 +116,7 @@ export function registerLanguageClientFeatures(context: vscode.ExtensionContext)
 	));
 	context.subscriptions.push(vscode.commands.registerCommand(
 		languageClientCommands.triggerSuggestAtSnippetPlaceholder,
-		(expectedSelectionText: unknown) => triggerSuggestAtSnippetPlaceholder(expectedSelectionText),
+		(...expectedSelectionTexts: unknown[]) => triggerSuggestAtSnippetPlaceholder(...expectedSelectionTexts),
 	));
 	context.subscriptions.push(vscode.commands.registerCommand(
 		languageClientCommands.openSymbolLocation,
@@ -315,7 +319,8 @@ async function startLanguageClient(
 				const startedAt = Date.now();
 				try {
 					const result = await next(document, position, completionContext, token);
-					if (transaction?.documentUri === document.uri.toString()) {
+					if (transaction?.documentUri === document.uri.toString()
+						&& transaction.awaitingCompletionResponse) {
 						const presentation = completionPresentationMetadata(result);
 						diagnostic('completion.transaction.response', {
 							transactionId: transaction.id,
@@ -324,11 +329,12 @@ async function startLanguageClient(
 							elapsedMs: Date.now() - startedAt,
 							...presentation,
 						});
-						clearSnippetSuggestTransaction(transaction.id);
+						advanceSnippetSuggestTransaction(transaction.id);
 					}
 					return result;
 				} catch (error) {
-					if (transaction?.documentUri === document.uri.toString()) {
+					if (transaction?.documentUri === document.uri.toString()
+						&& transaction.awaitingCompletionResponse) {
 						diagnostic('completion.transaction.responseError', {
 							transactionId: transaction.id,
 							triggerKind: completionContext.triggerKind,
@@ -687,11 +693,13 @@ function registerWorkspaceScriptWatchers(
 	return disposables;
 }
 
-function triggerSuggestAtSnippetPlaceholder(expectedSelectionText: unknown): void {
-	if (typeof expectedSelectionText !== 'string' || expectedSelectionText.length === 0) {
+function triggerSuggestAtSnippetPlaceholder(...expectedSelectionTexts: unknown[]): void {
+	if (expectedSelectionTexts.length === 0
+		|| expectedSelectionTexts.some(text => typeof text !== 'string' || text.length === 0)) {
 		diagnostic('completion.transaction.ignored', { reason: 'invalidPlaceholderArgument' });
 		return;
 	}
+	const expectedSelectionTextSequence = expectedSelectionTexts as string[];
 	const editor = vscode.window.activeTextEditor;
 	if (!editor || editor.document.languageId !== languageClientLanguage.id) {
 		diagnostic('completion.transaction.ignored', { reason: 'noActiveEnforceEditor' });
@@ -706,28 +714,25 @@ function triggerSuggestAtSnippetPlaceholder(expectedSelectionText: unknown): voi
 		if (!transaction || transaction.id !== id || candidate.document.uri.toString() !== documentUri) {
 			return;
 		}
-		if (transaction.suggestDispatchScheduled) {
+		if (transaction.suggestDispatchScheduled || transaction.awaitingCompletionResponse) {
 			return;
 		}
+		const expectedText = transaction.expectedSelectionTexts[transaction.nextPlaceholderIndex];
 		if (candidate.selections.length !== 1
 			|| candidate.selection.isEmpty
-			|| candidate.document.getText(candidate.selection) !== expectedSelectionText) {
+			|| candidate.document.getText(candidate.selection) !== expectedText) {
 			return;
 		}
 		diagnostic('completion.transaction.placeholderObserved', {
 			transactionId: id,
 			source,
+			placeholderIndex: transaction.nextPlaceholderIndex,
+			placeholderCount: transaction.expectedSelectionTexts.length,
 			selectionLength: candidate.selection.end.character - candidate.selection.start.character,
 		});
 		transaction.suggestDispatchScheduled = true;
-		transaction.selectionListener.dispose();
-		clearTimeout(transaction.cleanupTimer);
-		transaction.cleanupTimer = setTimeout(() => {
-			if (pendingSnippetSuggestTransaction?.id === id) {
-				diagnostic('completion.transaction.abandoned', { transactionId: id, reason: 'completionResponseNotObserved' });
-				clearSnippetSuggestTransaction(id);
-			}
-		}, 1_000);
+		transaction.awaitingCompletionResponse = true;
+		resetSnippetSuggestTransactionTimeout(transaction, 'completionResponseNotObserved');
 		queueMicrotask(() => {
 			if (pendingSnippetSuggestTransaction?.id !== id) {
 				return;
@@ -742,21 +747,59 @@ function triggerSuggestAtSnippetPlaceholder(expectedSelectionText: unknown): voi
 	const selectionListener = vscode.window.onDidChangeTextEditorSelection(event => {
 		tryTrigger(event.textEditor, 'selection');
 	});
-	const cleanupTimer = setTimeout(() => {
-		if (pendingSnippetSuggestTransaction?.id === id) {
-			diagnostic('completion.transaction.abandoned', { transactionId: id, reason: 'placeholderNotObserved' });
-			clearSnippetSuggestTransaction(id);
-		}
-	}, 1_000);
 	pendingSnippetSuggestTransaction = {
 		id,
 		documentUri,
+		expectedSelectionTexts: expectedSelectionTextSequence,
+		nextPlaceholderIndex: 0,
 		selectionListener,
-		cleanupTimer,
+		cleanupTimer: setTimeout(() => undefined, 0),
 		suggestDispatchScheduled: false,
+		awaitingCompletionResponse: false,
 	};
-	diagnostic('completion.transaction.armed', { transactionId: id });
+	resetSnippetSuggestTransactionTimeout(pendingSnippetSuggestTransaction, 'placeholderNotObserved');
+	diagnostic('completion.transaction.armed', {
+		transactionId: id,
+		placeholderCount: expectedSelectionTextSequence.length,
+	});
 	tryTrigger(editor, 'command');
+}
+
+function advanceSnippetSuggestTransaction(id: number): void {
+	const transaction = pendingSnippetSuggestTransaction;
+	if (!transaction || transaction.id !== id) {
+		return;
+	}
+	transaction.suggestDispatchScheduled = false;
+	transaction.awaitingCompletionResponse = false;
+	transaction.nextPlaceholderIndex += 1;
+	if (transaction.nextPlaceholderIndex >= transaction.expectedSelectionTexts.length) {
+		clearSnippetSuggestTransaction(id);
+		return;
+	}
+	resetSnippetSuggestTransactionTimeout(transaction, 'nextPlaceholderNotObserved');
+	diagnostic('completion.transaction.awaitingNextPlaceholder', {
+		transactionId: id,
+		placeholderIndex: transaction.nextPlaceholderIndex,
+		placeholderCount: transaction.expectedSelectionTexts.length,
+	});
+}
+
+function resetSnippetSuggestTransactionTimeout(
+	transaction: SnippetSuggestTransaction,
+	reason: string,
+): void {
+	clearTimeout(transaction.cleanupTimer);
+	transaction.cleanupTimer = setTimeout(() => {
+		if (pendingSnippetSuggestTransaction?.id === transaction.id) {
+			diagnostic('completion.transaction.abandoned', {
+				transactionId: transaction.id,
+				placeholderIndex: transaction.nextPlaceholderIndex,
+				reason,
+			});
+			clearSnippetSuggestTransaction(transaction.id);
+		}
+	}, languageClientCompletion.snippetSuggestTransactionTimeoutMs);
 }
 
 function clearSnippetSuggestTransaction(expectedId?: number): void {

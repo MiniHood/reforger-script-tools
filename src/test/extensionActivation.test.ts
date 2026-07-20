@@ -31,6 +31,13 @@ suite('extension activation', () => {
 			'utf8',
 		);
 		assert.ok(completionSource.includes(languageClientCommands.triggerSuggestAtSnippetPlaceholder));
+		assert.ok(completionSource.includes('RPL_RPC_ENUM_PLACEHOLDER_DEFAULTS'));
+		const clientSource = await fs.readFile(
+			path.join(extension.extensionPath, 'src', 'languageClient', 'languageClient.ts'),
+			'utf8',
+		);
+		assert.ok(clientSource.includes('expectedSelectionTexts'));
+		assert.ok(clientSource.includes('advanceSnippetSuggestTransaction'));
 	});
 
 	test('enables local diagnostic logging by default', () => {

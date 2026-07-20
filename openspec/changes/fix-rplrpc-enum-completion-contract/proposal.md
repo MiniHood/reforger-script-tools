@@ -8,8 +8,8 @@ VS Code client preserves unchanged and can reject during presentation.
 ## What Changes
 
 - Make enum completion edits obey VS Code's insert/replace range invariant.
-- Preserve the canonical `RplRpc` snippet, single event-driven Suggest
-  dispatch, and no-delay typing behavior.
+- Preserve the canonical `RplRpc` snippet, event-driven Suggest dispatch for
+  each authored enum placeholder, and no-delay typing behavior.
 - Keep enum members first while retaining the complete normal value fallback
   set below them: visible locals, containing-class members, top-level symbols,
   and keywords.

@@ -3856,9 +3856,10 @@ fn callable_completion_render(
             let call = callable_signature_parts(label, signature)?;
             if let Some(insert_text) = rpl_rpc_attribute_template(label, &call, false) {
                 return Some(
-                    CallableCompletionRender::trigger_suggest_at_snippet_placeholder(
+                    CallableCompletionRender::trigger_suggest_at_snippet_placeholders(
                         call,
                         insert_text,
+                        rpl_rpc_enum_placeholder_defaults(),
                     ),
                 );
             }
@@ -3876,9 +3877,10 @@ fn callable_completion_render(
             let call = callable_signature_parts(label, signature)?;
             if let Some(insert_text) = rpl_rpc_attribute_template(label, &call, true) {
                 return Some(
-                    CallableCompletionRender::trigger_suggest_at_snippet_placeholder(
+                    CallableCompletionRender::trigger_suggest_at_snippet_placeholders(
                         call,
                         insert_text,
+                        rpl_rpc_enum_placeholder_defaults(),
                     ),
                 );
             }
@@ -3913,14 +3915,15 @@ impl CallableCompletionRender {
         }
     }
 
-    fn trigger_suggest_at_snippet_placeholder(
+    fn trigger_suggest_at_snippet_placeholders(
         call: CallableSignatureParts,
         insert_text: String,
+        placeholder_defaults: Vec<String>,
     ) -> Self {
         Self {
             call,
             insert_text,
-            follow_up_command: trigger_suggest_at_snippet_placeholder_command(),
+            follow_up_command: trigger_suggest_at_snippet_placeholder_command(placeholder_defaults),
         }
     }
 }
@@ -3953,13 +3956,29 @@ fn rpl_rpc_attribute_template(
         // The complete default enum expressions are snippet fields. Typing
         // replaces the whole expression; the shared enum completion policy
         // ranks enum values first and retains normal value choices below.
-        let body = "RplRpc(${1:RplChannel.Reliable}, ${2:RplRcver.Server})";
+        let body = format!(
+            "RplRpc(${{1:{}}}, ${{2:{}}})",
+            RPL_RPC_ENUM_PLACEHOLDER_DEFAULTS[0],
+            RPL_RPC_ENUM_PLACEHOLDER_DEFAULTS[1],
+        );
         if include_brackets {
             format!("[{body}]")
         } else {
-            body.to_string()
+            body
         }
     })
+}
+
+const RPL_RPC_ENUM_PLACEHOLDER_DEFAULTS: [&str; 2] = [
+    "RplChannel.Reliable",
+    "RplRcver.Server",
+];
+
+fn rpl_rpc_enum_placeholder_defaults() -> Vec<String> {
+    RPL_RPC_ENUM_PLACEHOLDER_DEFAULTS
+        .into_iter()
+        .map(str::to_string)
+        .collect()
 }
 
 fn callable_insert_text_with_context(
@@ -4017,13 +4036,14 @@ fn trigger_parameter_hints_command() -> LspCommand {
     }
 }
 
-fn trigger_suggest_at_snippet_placeholder_command() -> LspCommand {
+fn trigger_suggest_at_snippet_placeholder_command(placeholder_defaults: Vec<String>) -> LspCommand {
     LspCommand {
         title: "Trigger enum suggestions".to_string(),
         command: COMMAND_TRIGGER_SUGGEST_AT_SNIPPET_PLACEHOLDER.to_string(),
-        // The extension uses this exact value only to recognize VS Code's
-        // selected snippet field. It never parses or classifies source text.
-        arguments: Some(vec!["RplChannel.Reliable".to_string()]),
+        // The extension uses this ordered sequence only to recognize VS
+        // Code's selected snippet fields. It never parses or classifies
+        // source text, symbols, or parameters.
+        arguments: Some(placeholder_defaults),
     }
 }
 
@@ -4655,6 +4675,13 @@ class ScriptComponent
         assert_eq!(
             rpc.command.as_ref().map(|command| command.command.as_str()),
             Some("reforger-sript-tools.completion.triggerSuggestAtSnippetPlaceholder")
+        );
+        assert_eq!(
+            rpc.command
+                .as_ref()
+                .and_then(|command| command.arguments.as_ref())
+                .map(|arguments| arguments.iter().map(String::as_str).collect::<Vec<_>>()),
+            Some(vec!["RplChannel.Reliable", "RplRcver.Server"])
         );
     }
 

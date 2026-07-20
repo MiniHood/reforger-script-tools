@@ -11,6 +11,12 @@ export const languageClientCrashHandling = {
 	finalCrashMessage: 'Reforger Script Tools Language Server Crashed',
 } as const;
 
+export const languageClientCompletion = {
+	// Cleanup only: it never delays or triggers completion. Keep a multi-field
+	// snippet transaction alive long enough for a person to choose each value.
+	snippetSuggestTransactionTimeoutMs: 30_000,
+} as const;
+
 export const languageClientCommands = {
 	debugHoverAtCursor: 'reforger-sript-tools.debug.hoverAtCursor',
 	debugCompletionAtCursor: 'reforger-sript-tools.debug.completionAtCursor',

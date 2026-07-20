@@ -121,8 +121,9 @@ request-to-server annotation with its snippet cursor retained inside the call:
 `[RplRpc(${1:RplChannel.Reliable}, ${2:RplRcver.Server})]`. Each complete enum
 expression is selected, so typing replaces it and resumes ordinary value
 completion. The extension-owned, event-driven snippet-placeholder bridge opens
-the Rust-owned enum completion policy only after VS Code has selected the
-placeholder. That specialized list contains the qualified enum members in
+the Rust-owned enum completion policy after VS Code selects each Rust-authored
+enum placeholder in sequence: first `RplChannel.Reliable`, then
+`RplRcver.Server`. That specialized list contains the qualified enum members in
 deterministic order, then the ordinary contextual value fallback candidates:
 visible locals and parameters, containing-class and inherited members,
 top-level symbols, and keywords. Its analyzed path reuses the normal value
