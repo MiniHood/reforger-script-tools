@@ -133,7 +133,9 @@ item replaces the complete selected expression with
 an ordinary LSP text edit. It never emits a member-only insert range paired with an earlier-starting
 full-expression replace range: VS Code requires every `InsertReplaceEdit`
 insert range to start with and remain a prefix of its replace range. Choosing
-a fallback replaces rather than extends the selected enum expression. Tab advances to the selected
+a fallback replaces rather than extends the selected enum expression. Enum
+members rank first, real value and callable candidates rank next, and keywords
+always occupy the final fallback band. Tab advances to the selected
 `RplRcver.Server` expression. The completion item's signature detail still
 documents the optional condition and custom-condition inputs.
 The same template applies inside an already typed `[` without duplicating its

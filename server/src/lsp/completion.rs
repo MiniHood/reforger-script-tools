@@ -1329,6 +1329,14 @@ impl BoundedCompletionFacts {
             item.sort_text = Some(format!("100:enum-fallback:{index:03}:{}", item.label));
         }
         items.extend(std::mem::take(&mut report.list.items));
+        for (index, item) in items.iter_mut().enumerate() {
+            if item.kind == 14 {
+                // The initial static-enum report already contains keywords.
+                // They are valid fallbacks, but the immediate current-snapshot
+                // values recovered above must outrank them.
+                item.sort_text = Some(format!("900:enum-keyword:{index:03}:{}", item.label));
+            }
+        }
         let mut seen = BTreeSet::new();
         items.retain(|item| {
             seen.insert((
@@ -4934,6 +4942,18 @@ class ScriptComponent
             assert!(
                 labels.contains(&label),
                 "pending enum fallback must retain {label}: {labels:?}"
+            );
+        }
+        let first_keyword = report
+            .list
+            .items
+            .iter()
+            .position(|item| item.kind == 14)
+            .expect("the normal keyword fallback remains available");
+        for label in ["localValue", "owner", "m_Field", "CurrentMethod", "OnPostInit"] {
+            assert!(
+                labels.iter().position(|candidate| *candidate == label).unwrap() < first_keyword,
+                "current value {label} must rank before keywords: {labels:?}"
             );
         }
         assert!(report.list.items.iter().all(|item| {
