@@ -46,6 +46,8 @@ let completionTransactionSequence = 0;
 let pendingSnippetSuggestTransaction: SnippetSuggestTransaction | undefined;
 let pendingEmptyCompletionRefresh: EmptyCompletionRefresh | undefined;
 let latestEditorDocumentChange: EditorDocumentChange | undefined;
+const completionLifecycleTraceLimit = 80;
+const completionLifecycleTrace: CompletionLifecycleTraceEvent[] = [];
 
 // TEMPORARY: release-gated forensic trace for the RplRpc multi-placeholder
 // bridge. OpenSpec task 3.3 tracks removing this once live editor behavior is
@@ -74,6 +76,12 @@ interface EditorDocumentChange {
 	documentUri: string;
 	version: number;
 	hasDeletion: boolean;
+}
+
+interface CompletionLifecycleTraceEvent {
+	documentUri: string;
+	event: string;
+	fields: Record<string, string | number | boolean | undefined>;
 }
 
 export function logLanguageClientStartupTiming(
@@ -344,8 +352,20 @@ async function startLanguageClient(
 				const transaction = pendingSnippetSuggestTransaction;
 				const requestVersion = document.version;
 				const startedAt = Date.now();
+				recordCompletionLifecycle(document.uri.toString(), 'request', {
+					requestVersion,
+					triggerKind: completionContext.triggerKind,
+				});
 				try {
 					const result = await next(document, position, completionContext, token);
+					recordCompletionLifecycle(document.uri.toString(), 'response', {
+						requestVersion,
+						currentVersion: document.version,
+						triggerKind: completionContext.triggerKind,
+						itemCount: completionItemCount(result),
+						isIncomplete: isCompletionListIncomplete(result),
+						elapsedMs: Date.now() - startedAt,
+					});
 					armEmptyCompletionRefresh(document, requestVersion, result);
 					if (transaction?.documentUri === document.uri.toString()
 						&& transaction.awaitingCompletionResponse) {
@@ -362,6 +382,11 @@ async function startLanguageClient(
 					}
 					return result;
 				} catch (error) {
+					recordCompletionLifecycle(document.uri.toString(), 'responseError', {
+						requestVersion,
+						triggerKind: completionContext.triggerKind,
+						elapsedMs: Date.now() - startedAt,
+					});
 					if (transaction?.documentUri === document.uri.toString()
 						&& transaction.awaitingCompletionResponse) {
 						diagnostic('completion.transaction.responseError', {
@@ -726,6 +751,16 @@ function registerEmptyCompletionRefresh(): vscode.Disposable {
 	return vscode.workspace.onDidChangeTextDocument(event => {
 		const documentUri = event.document.uri.toString();
 		const hasDeletion = event.contentChanges.some(change => change.rangeLength > change.text.length);
+		if (event.document.languageId === languageClientLanguage.id) {
+			recordCompletionLifecycle(documentUri, 'documentChange', {
+				version: event.document.version,
+				changeCount: event.contentChanges.length,
+				hasDeletion,
+				insertedCharacters: event.contentChanges.reduce((total, change) => total + change.text.length, 0),
+				deletedCharacters: event.contentChanges.reduce((total, change) => total + change.rangeLength, 0),
+				activeDocument: isActiveEnforceDocument(event.document),
+			});
+		}
 		latestEditorDocumentChange = {
 			documentUri,
 			version: event.document.version,
@@ -738,6 +773,9 @@ function registerEmptyCompletionRefresh(): vscode.Disposable {
 		}
 		pendingEmptyCompletionRefresh = undefined;
 		if (!hasDeletion || !isActiveEnforceDocument(event.document)) {
+			recordCompletionLifecycle(documentUri, 'emptyRefreshCancelled', {
+				reason: hasDeletion ? 'inactiveDocument' : 'nonDeletion',
+			});
 			diagnostic('completion.emptyRefresh.cancelled', {
 				reason: hasDeletion ? 'inactiveDocument' : 'nonDeletion',
 			});
@@ -769,6 +807,7 @@ function armEmptyCompletionRefresh(
 		return;
 	}
 	pendingEmptyCompletionRefresh = { documentUri, requestVersion };
+	recordCompletionLifecycle(documentUri, 'emptyRefreshArmed', { requestVersion });
 	diagnostic('completion.emptyRefresh.armed', { requestVersion });
 }
 
@@ -782,21 +821,47 @@ function isRefreshableEmptyCompletion(
 		&& result.isIncomplete === true;
 }
 
+function isCompletionListIncomplete(
+	result: vscode.CompletionList | readonly vscode.CompletionItem[] | null | undefined,
+): boolean {
+	return result !== null && result !== undefined && 'items' in result && result.isIncomplete === true;
+}
+
+function recordCompletionLifecycle(
+	documentUri: string,
+	event: string,
+	fields: Record<string, string | number | boolean | undefined>,
+): void {
+	completionLifecycleTrace.push({ documentUri, event, fields });
+	if (completionLifecycleTrace.length > completionLifecycleTraceLimit) {
+		completionLifecycleTrace.shift();
+	}
+	diagnostic(`completion.lifecycle.${event}`, fields);
+}
+
 function isActiveEnforceDocument(document: vscode.TextDocument): boolean {
 	return document.languageId === languageClientLanguage.id
 		&& vscode.window.activeTextEditor?.document.uri.toString() === document.uri.toString();
 }
 
 function dispatchEmptyCompletionRefresh(document: vscode.TextDocument, source: 'deletion' | 'staleEmptyResponseAfterDeletion'): void {
+	recordCompletionLifecycle(document.uri.toString(), 'emptyRefreshDispatchRequested', { source });
 	diagnostic('completion.emptyRefresh.dispatched', { source });
 	queueMicrotask(() => {
 		if (!isActiveEnforceDocument(document)) {
+			recordCompletionLifecycle(document.uri.toString(), 'emptyRefreshCancelled', { reason: 'activeEditorChanged' });
 			diagnostic('completion.emptyRefresh.cancelled', { reason: 'activeEditorChanged' });
 			return;
 		}
 		void vscode.commands.executeCommand('editor.action.triggerSuggest').then(
-			() => diagnostic('completion.emptyRefresh.suggestDispatched', { source }),
-			() => diagnostic('completion.emptyRefresh.suggestDispatchError', { source }),
+			() => {
+				recordCompletionLifecycle(document.uri.toString(), 'emptyRefreshSuggestDispatched', { source });
+				diagnostic('completion.emptyRefresh.suggestDispatched', { source });
+			},
+			() => {
+				recordCompletionLifecycle(document.uri.toString(), 'emptyRefreshSuggestDispatchError', { source });
+				diagnostic('completion.emptyRefresh.suggestDispatchError', { source });
+			},
 		);
 	});
 }
@@ -1176,7 +1241,8 @@ async function debugCompletionAtCursor(
 
 	try {
 		const report = await activeClient.sendRequest<string>(languageClientRequests.debugCompletion, params);
-		const reportPath = await writeCompletionDebugReport(context, editor, position, report);
+		const lifecycleTrace = completionLifecycleTraceForDocument(editor.document.uri.toString());
+		const reportPath = await writeCompletionDebugReport(context, editor, position, `${lifecycleTrace}\n\n---\n\n${report}`);
 		outputChannel.clear();
 		outputChannel.appendLine(`Completion debug report written to: ${reportPath}`);
 		outputChannel.appendLine('');
@@ -1190,6 +1256,29 @@ async function debugCompletionAtCursor(
 		vscode.window.showWarningMessage(`Completion debug request failed: ${message}`);
 		diagnostic('command.debugCompletion.error', { elapsedMs: Date.now() - startedAt });
 	}
+}
+
+function completionLifecycleTraceForDocument(documentUri: string): string {
+	const events = completionLifecycleTrace.filter(event => event.documentUri === documentUri);
+	const lines = [
+		'## Extension Completion Lifecycle Trace (temporary)',
+		'',
+		'Bounded to the latest 80 Enforce events in this extension host. It records no source text, cursor text, or completion payloads.',
+		'',
+	];
+	if (events.length === 0) {
+		lines.push('No lifecycle events were captured for this document.');
+		return lines.join('\n');
+	}
+	lines.push('| Event | Fields |', '| --- | --- |');
+	for (const event of events) {
+		const fields = Object.entries(event.fields)
+			.filter(([, value]) => value !== undefined)
+			.map(([key, value]) => `${key}=${String(value)}`)
+			.join(', ');
+		lines.push(`| ${event.event} | ${fields || '<none>'} |`);
+	}
+	return lines.join('\n');
 }
 
 async function writeHoverDebugReport(
