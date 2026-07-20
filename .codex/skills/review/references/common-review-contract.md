@@ -6,9 +6,10 @@ evidence. Complete small evidence slices; do not expose raw private reasoning.
 
 ## Rules
 
-- Remain read-only. Do not edit files, change Git state, contact external
-  systems, spawn agents, or message other agents.
-- Read `AGENTS.md` and supplied owning documentation before judging a boundary.
+- Remain read-only. Do not edit source, planning artifacts, configuration,
+  Git state, or external systems; do not spawn agents or message other agents.
+  The supplied generated journal is the sole file-edit exception.
+- Read supplied `AGENTS.md` and owning documentation before judging a boundary.
 - Prefer concrete evidence: file and symbol, test, log, documented contract, or
   reproducible path. Do not report generic advice.
 - Separate facts, inferences, and unknowns. State no meaningful finding when

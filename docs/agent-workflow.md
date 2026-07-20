@@ -37,14 +37,20 @@ change, prove behavior, and validate integration respectively.
 
 `/review` is a read-only, advisory workflow for challenging a bounded scope
 before deciding whether to change it. It prepares one evidence package and
-uses four independent lenses—architecture, correctness, performance and
-reliability, and developer experience—without sharing reviewer conclusions.
-The coordinator then combines evidence, preserves material disagreement, and
-recommends a next step; it never implements that recommendation.
+uses a relevant roster from four independent lenses: architecture, correctness,
+performance and reliability, and developer experience, without sharing reviewer
+conclusions. Correctness and architecture are the default core; the other
+lenses are selected for relevant risk surfaces, or all four can be requested
+for a full review. The coordinator then combines evidence, preserves material
+disagreement, and recommends a next step; it never implements that
+recommendation.
 
 Deep review records concise generated evidence slices and a coverage verdict.
-Its final report uses P1-P4 priorities, independent confidence, and an explicit
-disposition for every unresolved P1-P3 finding.
+Its final report uses one deduplicated, priority-ordered findings table with
+evidence, impact, next step, confidence, and contributing reviewers, plus an
+explicit disposition for every unresolved P1-P3 finding. If a selected
+reviewer cannot return a conforming report, the result explicitly reports
+partial coverage rather than implying a complete review.
 
 Use `/debug` to establish a causal chain for an observed failure and `/fix` to
 design, implement, and verify an authorized durable solution. Use `/review`

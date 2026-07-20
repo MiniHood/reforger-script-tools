@@ -1,6 +1,6 @@
 ---
 name: review
-description: Run an evidence-based, read-only review of a Reforger Script Tools scope using four independent personas—architecture, correctness, performance and reliability, and developer experience—and synthesize their findings. Use when the user invokes /review, asks for an independent code or architecture review, or wants multi-perspective review before deciding on a fix.
+description: Run an evidence-based, read-only review of a Reforger Script Tools scope using a relevant roster of independent architecture, correctness, performance and reliability, and developer-experience personas, then synthesize their findings. Use when the user invokes /review, asks for an independent code or architecture review, or wants multi-perspective review before deciding on a fix.
 ---
 
 # Parallel Review
@@ -11,15 +11,24 @@ evidence journals under `tools/reports/review/` are the sole exception.
 
 ## 1. Establish the review package
 
-1. Read `AGENTS.md`, `git status --short`, and the explicit user scope.
-2. If scope is explicit, include only its direct implementation, owning
+1. Parse `depth:auto` (default), `depth:full`, and optional `personas:` tokens.
+   The initial catalog is Correctness, Architecture, Performance & Reliability,
+   and Developer Experience. In auto mode select Correctness and Architecture,
+   then select specialists only when changed paths, requirements, or risk
+   surfaces make their lens relevant; cap the roster at four. State why each
+   persona was selected or skipped. Full selects all four. Explicit personas
+   select the named lenses; retain the core unless the user explicitly asks a
+   narrow persona-only review.
+2. Read `AGENTS.md`, `git status --short`, and the explicit user scope.
+3. If scope is explicit, include only its direct implementation, owning
    reference documentation, relevant tests, and bounded recent diagnostics.
-3. If scope is absent or broad, infer the smallest defensible scope from
+4. If scope is absent or broad, infer the smallest defensible scope from
    current changed files, the active OpenSpec change, and their owning docs.
    State the selected scope and material omissions before reviewing.
-4. Prepare and disclose one immutable review contract: scope/base, intent,
+5. Prepare and disclose one immutable review contract: scope/base, intent,
    requirements, symbols/callers, tests, docs, diagnostics, exclusions, and
-   unknowns. Do not include the coordinator's diagnosis or recommendations.
+   unknowns. Include `AGENTS.md` and every relevant owning reference page in
+   the package. Do not include the coordinator's diagnosis or recommendations.
 
 For Enfusion Script, Workbench, or game API claims, invoke `reforger` and give
 every reviewer the verified API/source evidence rather than an unsupported
@@ -27,15 +36,15 @@ claim.
 
 ## 2. Load contracts and fan out independently
 
-Read [common-review-contract.md](references/common-review-contract.md) and all
-four persona contracts:
+Read [common-review-contract.md](references/common-review-contract.md) and the
+contracts for selected personas:
 
 - [architecture.md](references/architecture.md)
 - [correctness.md](references/correctness.md)
 - [performance-reliability.md](references/performance-reliability.md)
 - [developer-experience.md](references/developer-experience.md)
 
-Create a unique run ID. Launch all four reviewer sub-agents concurrently when capacity permits. Each
+Create a unique run ID. Launch all selected reviewer sub-agents concurrently when capacity permits. Each
 call MUST use `fork_turns: "none"`. Give each agent only:
 
 - its persona contract;
@@ -51,12 +60,18 @@ another persona's identity, status, output, or any review artifact from a
 previous run. Instruct every reviewer to remain read-only, not spawn or message
 agents, and return only its final structured report.
 
-If capacity prevents all four from starting, start the available reviewers
-without delay and launch each remaining persona when a slot becomes available.
+If capacity prevents all selected reviewers from starting, start the available
+reviewers without delay and launch each remaining persona when a slot becomes available.
 Use the exact same evidence package for delayed reviewers. Record this as a
 capacity limitation; never omit a reviewer silently. In runtimes where the
 coordinator itself occupies one of four agent slots, expect three reviewers to
 start immediately and the fourth to begin after a slot is released.
+
+If a selected reviewer fails, is interrupted, or does not return a conforming
+report, retain any journal it produced and mark that persona unavailable. Then
+synthesize only completed reports, disclose incomplete coverage and the absent
+lens, and label the result a partial review. Do not silently retry with a
+different persona or describe a partial review as complete.
 
 ## 3. Synthesize, do not debate
 
@@ -83,17 +98,15 @@ Return this format:
 <reviewed paths, evidence, and material exclusions>
 
 ## Coverage
-<personas run; disclose capacity-limited scheduling if applicable>
+<selected personas, those completed, those unavailable, and capacity-limited scheduling if applicable>
 
 ## Strengths
 - ...
 
 ## Findings
-- [P1-P4 | confidence] P2-01: Title
-  - Evidence: ...
-  - Impact: ...
-  - Durable direction: ...
-  - Validation: ...
+| Priority | ID | Finding | Evidence | Impact | Next Step | Confidence | Reviewers |
+|---|---|---|---|---|---|---|---|
+| P2 | P2-01 | ... | `path:symbol` | ... | Fix now / planned task / needs evidence | High | Correctness, Architecture |
 
 ## Disagreements and Unknowns
 - ...
@@ -104,7 +117,8 @@ Return this format:
 ## Recommended Next Step
 <one concrete, evidence-backed action>
 
-No files were changed; this review is advisory.
+No source, configuration, Git, runtime, or external state changed; generated
+review evidence was recorded. This review is advisory.
 ```
 
 Do not implement the recommendation. If the user wants a change, direct them
