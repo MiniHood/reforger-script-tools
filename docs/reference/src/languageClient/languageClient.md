@@ -32,24 +32,29 @@ The module also registers `Reforger Script Tools: Debug Hover At Cursor` and `Re
 
 The package contribution activates the extension directly for the hover and completion debug commands. `Ctrl+F1` is scoped to Enforce editor text focus. `Ctrl+F2` is scoped to Enforce editor text focus and to the visible suggest widget, so completion troubleshooting can be run while autocomplete owns focus.
 
-Ordinary document edits never cause TypeScript to invoke VS Code Suggest. Rust
-owns the completion contract, including current-document admission, context,
-candidate eligibility, ranking, and rendering. The sole exception is the
-Rust-selected `RplRpc` enum snippet: its completion item invokes a registered
-extension command, which supplies the Rust-authored ordered selected enum
-defaults. The client waits for each exact VS Code snippet selection and invokes
-Suggest once per placeholder at the next event-loop boundary; duplicate events
-and duplicate responses cannot create a competing request. It does not parse
-text, inspect symbols, choose candidates, or use a typing-path delay. A
-30-second cleanup timer only releases an abandoned editor transaction; it never
-triggers Suggest. While that transaction is active, the client records bounded
-command/placeholder/request/response metadata through the existing optional
-diagnostic logger. Response metadata includes bounded completion-range shape
-counts, validity of any converted insert/replace pairs, and filter-text
-lengths for at most three items; it never records source text or completion
-payloads. This separates an absent response from an invalid protocol edit,
-while fresh Extension Development Host verification remains the authority for
-native widget visibility.
+Rust owns the completion contract, including current-document admission,
+context, candidate eligibility, ranking, and rendering. TypeScript ordinarily
+does not invoke VS Code Suggest for document edits. It has two narrow,
+protocol-driven UI exceptions: the Rust-selected `RplRpc` enum snippet, and a
+refreshable empty LSP completion response followed by a deletion in the same
+active Enforce document. The latter exists because VS Code can receive the
+fresh shorter-prefix response after Backspace without reopening its native
+widget. The client records only the response's `isIncomplete`/empty shape and
+the editor's deletion event; it does not read source text, classify symbols,
+choose candidates, or use a typing-path delay. It clears the marker before it
+dispatches Suggest, so each empty response can cause at most one recovery
+request. The snippet bridge still waits for each exact Rust-authored selected
+enum default and invokes Suggest once per placeholder at the next event-loop
+boundary; duplicate events and duplicate responses cannot create a competing
+request. A 30-second cleanup timer only releases an abandoned snippet
+transaction; it never triggers Suggest. While those transactions are active,
+the client records bounded command/placeholder/request/response metadata
+through the existing optional diagnostic logger. Response metadata includes
+bounded completion-range shape counts, validity of any converted
+insert/replace pairs, and filter-text lengths for at most three items; it never
+records source text or completion payloads. This separates an absent response
+from an invalid protocol edit, while fresh Extension Development Host
+verification remains the authority for native widget visibility.
 
 While the bridge transaction is active, the client wraps only that response's
 completion-item commands. VS Code runs an item command after applying its

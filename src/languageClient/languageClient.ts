@@ -44,6 +44,8 @@ let firstDocumentOpenTimingLogged = false;
 let firstSemanticTokenTimingLogged = false;
 let completionTransactionSequence = 0;
 let pendingSnippetSuggestTransaction: SnippetSuggestTransaction | undefined;
+let pendingEmptyCompletionRefresh: EmptyCompletionRefresh | undefined;
+let latestEditorDocumentChange: EditorDocumentChange | undefined;
 
 // TEMPORARY: release-gated forensic trace for the RplRpc multi-placeholder
 // bridge. OpenSpec task 3.3 tracks removing this once live editor behavior is
@@ -61,6 +63,17 @@ interface SnippetSuggestTransaction {
 	cleanupTimer: ReturnType<typeof setTimeout>;
 	suggestDispatchScheduled: boolean;
 	awaitingCompletionResponse: boolean;
+}
+
+interface EmptyCompletionRefresh {
+	documentUri: string;
+	requestVersion: number;
+}
+
+interface EditorDocumentChange {
+	documentUri: string;
+	version: number;
+	hasDeletion: boolean;
 }
 
 export function logLanguageClientStartupTiming(
@@ -113,6 +126,7 @@ export function registerLanguageClientFeatures(context: vscode.ExtensionContext)
 	context.subscriptions.push(outputChannel);
 	context.subscriptions.push(debugOutputChannel);
 	context.subscriptions.push(completionDebugOutputChannel);
+	context.subscriptions.push(registerEmptyCompletionRefresh());
 	context.subscriptions.push(vscode.commands.registerCommand(
 		languageClientCommands.debugHoverAtCursor,
 		() => debugHoverAtCursor(context, debugOutputChannel),
@@ -328,9 +342,11 @@ async function startLanguageClient(
 			provideHover: () => null,
 			provideCompletionItem: async (document, position, completionContext, token, next) => {
 				const transaction = pendingSnippetSuggestTransaction;
+				const requestVersion = document.version;
 				const startedAt = Date.now();
 				try {
 					const result = await next(document, position, completionContext, token);
+					armEmptyCompletionRefresh(document, requestVersion, result);
 					if (transaction?.documentUri === document.uri.toString()
 						&& transaction.awaitingCompletionResponse) {
 						const presentation = completionPresentationMetadata(result);
@@ -704,6 +720,85 @@ function registerWorkspaceScriptWatchers(
 	}
 
 	return disposables;
+}
+
+function registerEmptyCompletionRefresh(): vscode.Disposable {
+	return vscode.workspace.onDidChangeTextDocument(event => {
+		const documentUri = event.document.uri.toString();
+		const hasDeletion = event.contentChanges.some(change => change.rangeLength > change.text.length);
+		latestEditorDocumentChange = {
+			documentUri,
+			version: event.document.version,
+			hasDeletion,
+		};
+
+		const refresh = pendingEmptyCompletionRefresh;
+		if (!refresh || refresh.documentUri !== documentUri || event.document.version <= refresh.requestVersion) {
+			return;
+		}
+		pendingEmptyCompletionRefresh = undefined;
+		if (!hasDeletion || !isActiveEnforceDocument(event.document)) {
+			diagnostic('completion.emptyRefresh.cancelled', {
+				reason: hasDeletion ? 'inactiveDocument' : 'nonDeletion',
+			});
+			return;
+		}
+		dispatchEmptyCompletionRefresh(event.document, 'deletion');
+	});
+}
+
+function armEmptyCompletionRefresh(
+	document: vscode.TextDocument,
+	requestVersion: number,
+	result: vscode.CompletionList | readonly vscode.CompletionItem[] | null | undefined,
+): void {
+	if (!isRefreshableEmptyCompletion(result)) {
+		if (pendingEmptyCompletionRefresh?.documentUri === document.uri.toString()) {
+			pendingEmptyCompletionRefresh = undefined;
+		}
+		return;
+	}
+
+	const documentUri = document.uri.toString();
+	const latestChange = latestEditorDocumentChange;
+	if (latestChange?.documentUri === documentUri
+		&& latestChange.version > requestVersion
+		&& latestChange.hasDeletion
+		&& isActiveEnforceDocument(document)) {
+		dispatchEmptyCompletionRefresh(document, 'staleEmptyResponseAfterDeletion');
+		return;
+	}
+	pendingEmptyCompletionRefresh = { documentUri, requestVersion };
+	diagnostic('completion.emptyRefresh.armed', { requestVersion });
+}
+
+function isRefreshableEmptyCompletion(
+	result: vscode.CompletionList | readonly vscode.CompletionItem[] | null | undefined,
+): result is vscode.CompletionList {
+	return result !== null
+		&& result !== undefined
+		&& 'items' in result
+		&& result.items.length === 0
+		&& result.isIncomplete === true;
+}
+
+function isActiveEnforceDocument(document: vscode.TextDocument): boolean {
+	return document.languageId === languageClientLanguage.id
+		&& vscode.window.activeTextEditor?.document.uri.toString() === document.uri.toString();
+}
+
+function dispatchEmptyCompletionRefresh(document: vscode.TextDocument, source: 'deletion' | 'staleEmptyResponseAfterDeletion'): void {
+	diagnostic('completion.emptyRefresh.dispatched', { source });
+	queueMicrotask(() => {
+		if (!isActiveEnforceDocument(document)) {
+			diagnostic('completion.emptyRefresh.cancelled', { reason: 'activeEditorChanged' });
+			return;
+		}
+		void vscode.commands.executeCommand('editor.action.triggerSuggest').then(
+			() => diagnostic('completion.emptyRefresh.suggestDispatched', { source }),
+			() => diagnostic('completion.emptyRefresh.suggestDispatchError', { source }),
+		);
+	});
 }
 
 function triggerSuggestAtSnippetPlaceholder(...expectedSelectionTexts: unknown[]): void {

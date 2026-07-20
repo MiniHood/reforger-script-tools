@@ -41,6 +41,8 @@ suite('extension activation', () => {
 		assert.ok(clientSource.includes('advanceSnippetSuggestTransaction'));
 		assert.ok(clientSource.includes('wrapBridgeCompletionCommands'));
 		assert.ok(clientSource.includes('jumpToNextSnippetPlaceholder'));
+		assert.ok(clientSource.includes('registerEmptyCompletionRefresh'));
+		assert.ok(clientSource.includes('isRefreshableEmptyCompletion'));
 		assert.ok(clientSource.includes('snippetSuggestTraceVersion'));
 	});
 
