@@ -26,6 +26,19 @@ Valid personas are `game-api-examples`, `online-research`, `codebase`,
 tokens. If the question is too vague to establish a useful boundary, ask one
 open question; otherwise make and state a bounded assumption.
 
+`sources:` is a hard evidence boundary, not a preference:
+
+- `local`: use repository files, supplied logs, extracted data, and local
+  tools only. Do not select Online Research or browse the web.
+- `online`: use direct external sources only for substantive research evidence.
+  Read `AGENTS.md` and Git status solely to enforce repository policy; do not
+  inspect local implementation, logs, game data, or fixtures as evidence.
+- `both`: use each eligible source deliberately and label its origin.
+
+Reject an explicit persona that requires a forbidden source instead of silently
+weakening the selected mode. In `online` mode, only Online Research is eligible;
+use `sources:both` when a question also needs project-specific evidence.
+
 Research is read-only. Do not edit source, settings, planning artifacts, Git
 state, or external systems. Generated evidence journals under
 `tools/reports/research/<run-id>/` are the sole exception. A user must invoke
@@ -33,29 +46,37 @@ state, or external systems. Generated evidence journals under
 
 ## Build an Evidence Package
 
-1. Read `AGENTS.md`, `git status --short`, the stated question, relevant
-   reference pages, active OpenSpec artifacts, and the smallest direct code
-   paths.
-2. State the research contract: question, decision it supports, included
+1. Read `AGENTS.md`, `git status --short`, and the stated question. In `local`
+   or `both` mode, then read relevant reference pages, active OpenSpec
+   artifacts, and the smallest direct code paths; in `online` mode, keep local
+   reading to policy/status control-plane facts only.
+2. Pin one immutable evidence package: run ID, base commit (or `unborn`), Git
+   status summary, source mode, supplied paths/sources, constraints,
+   exclusions, and unknowns. Label any later evidence as post-snapshot.
+3. State the research contract: question, decision it supports, included
    surfaces, constraints, existing evidence, exclusions, and unknowns.
-3. For Enfusion/Workbench/game-data questions, invoke `reforger` before
+4. For Enfusion/Workbench/game-data questions, invoke `reforger` before
    researching language or API truth. Give agents verified game-data signatures
    and source examples, not assumed behavior.
-4. Use current local logs or reports only when they directly answer the
+5. Use current local logs or reports only when they directly answer the
    question. Treat logs as observations, not ground truth.
 
 ## Select Independent Personas
 
-Select three or four personas in `auto` mode. Start with Codebase and
-Architecture, then add Game API & Examples for Enfusion/game-data scope,
-Online Research when external practice can inform the decision, Language
-Semantics for language truth, Performance & Reliability for typing/runtime
-cost, Developer Experience for editor interaction, or Verification for a
-reproduction/proof gap. Choose only lenses that can materially change the
-decision and state selected and displaced relevant personas. Explicit
-`personas:` retains Codebase and Architecture; `personas-only:` uses exactly
-the named roster. Never exceed four in one run; split a larger request into a
-follow-up research pass.
+Select one to four source-compatible personas in `auto` mode. With `local` or
+`both`, start with Codebase and Architecture; with `online`, start with Online
+Research. Add only a lens that can materially change the decision: Game API &
+Examples for Enfusion/game-data scope, Online Research when external practice
+can inform the decision, Language Semantics for language truth, Performance &
+Reliability for typing/runtime cost, Developer Experience for editor
+interaction, or Verification for a reproduction/proof gap. A justified
+one- or two-persona roster is preferable to performative coverage.
+
+Explicit `personas:` retains source-compatible Codebase and Architecture;
+`personas-only:` uses exactly the named source-compatible roster. If the
+resulting roster exceeds four, request a narrower roster or split it into a
+named follow-up pass before fan-out. Never silently omit a requested lens.
+State selected, displaced, and source-ineligible personas with reasons.
 
 Persona contracts are intentionally distinct. Read the common contract and the
 selected persona files before fan-out; give each agent only its own contract:
@@ -75,24 +96,36 @@ and deliverable. Do not flatten the roster into generic code reviews. A
 persona may identify an adjacent concern, but must hand it off as a question
 for the appropriate lens instead of duplicating its investigation.
 
+After changing source-mode, roster, partial-coverage, evidence-package, or
+synthesis behavior, run the bounded scenarios in
+[Researcher Contract Acceptance](references/roster-acceptance.md).
+
 For game-example research, count independent examples rather than repeated
 occurrences of one pattern. If the user asks whether a pattern applies broadly,
 expand across subsystems/owners until the evidence is representative or the
 search is saturated. Never claim universality from a small sample.
 
-For online research, use the web tool. Prefer primary documentation, official
-repositories, standards, maintainer statements, and release notes. Cite every
-external claim with a direct link. Separate an observed practice from a
-recommendation for this repository.
+When Online Research is selected in a source mode that permits it, use the web
+tool. Prefer primary documentation, official repositories, standards,
+maintainer statements, and release notes. Cite every external claim with a
+direct link. Separate an observed practice from a recommendation for this
+repository.
 
 ## Fan Out and Synthesize
 
 Create a unique run ID. Launch selected researchers independently with
-`fork_turns: "none"` when capacity permits. Give each only its persona contract,
-the shared evidence package, and its own journal path. Do not provide peer
+`fork_turns: "none"` when capacity permits. Give each its persona contract,
+the common contract, the immutable evidence package, source-mode allowance,
+and its own journal path. Do not provide peer
 identities, findings, or a preferred conclusion. If capacity delays a persona,
 launch it when capacity frees and disclose the delay. Mark an unavailable
 persona as incomplete rather than substituting an unlabelled conclusion.
+
+A persona is unavailable when it fails, is interrupted, returns a malformed
+report, or has neither a final report nor a journal update after two coordinator
+wait intervals. Retain any journal, record the reason, and synthesize a clearly
+labelled partial brief from completed reports; do not silently retry with a
+different persona.
 
 Require each researcher to distinguish facts, inferences, examples, source
 quality, uncertainties, options, and validation. Ask curious questions, seek
@@ -102,17 +135,25 @@ recommendation as an instruction.
 
 After all researchers finish or are unavailable:
 
-1. Deduplicate evidence by underlying question, retaining source quality and
+1. Report coverage: selected, completed, delayed, unavailable with reason,
+   source mode, actual source classes, base revision, post-snapshot evidence,
+   and material exclusions.
+2. Deduplicate evidence by underlying question, retaining source quality and
    disagreements.
-2. Build two to four viable options. For each, state expected benefit, cost,
-   risk, architectural fit, performance implications, and proof needed.
-3. Turn the strongest evidence into concrete action items. Include discovery
+3. Build one to four viable options. Rank a durable target state first whenever
+   evidence supports it. A workaround is allowed only when explicitly labelled
+   temporary, with its limitation, cost of delay, and concrete removal
+   condition; never present it as equivalent to the durable option merely
+   because it is cheaper. If only one option is evidence-supported, say so and
+   explain why alternatives were rejected.
+4. Turn the strongest evidence into concrete action items. Include discovery
    work when evidence is not sufficient for a safe change.
-4. Perform an independent main-thread assessment. Re-check the question against
+5. Perform an independent main-thread assessment. Re-check the question against
    the repository's constraints and evidence without treating researcher
    suggestions as instructions. Explicitly accept, reject, or reframe the
-   leading suggestions and identify any missing trade-off.
-5. Recommend one next action only when the independent assessment supports it;
+   leading suggestions, including why a durable direction outweighs or does not
+   outweigh a temporary mitigation.
+6. Recommend one next action only when the independent assessment supports it;
    otherwise recommend the smallest decisive investigation. A follow-up
    `/review` remains the separate option for a full independent persona review
    before a high-risk decision.
@@ -124,15 +165,17 @@ Use this output format:
 <decision being supported>
 
 ## Scope and Coverage
-<sources, personas, examples found, exclusions, unavailable lenses>
+<source mode, actual source classes, base revision, selected/completed/delayed/
+unavailable personas with reasons, examples found, exclusions, post-snapshot
+evidence>
 
 ## Evidence
 | Topic | Evidence | Source Quality | What It Means |
 |---|---|---|---|
 
 ## Options
-| Option | Benefits | Costs / Risks | Fit | Validation |
-|---|---|---|---|---|
+| Option | Durable or temporary | Benefits | Costs / Risks | Fit | Validation |
+|---|---|---|---|---|---|
 
 ## Concrete Action Items
 1. ...

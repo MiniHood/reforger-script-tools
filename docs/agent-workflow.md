@@ -86,7 +86,11 @@ change.
 before a decision when the question benefits from independent game-data/source
 examples, codebase investigation, external practice, or option comparison. It
 is read-only and produces a bounded research brief with evidence quality,
-options, concrete action items, and the smallest recommended next step. For
+options, concrete action items, and the smallest recommended next step. Its
+`sources:` mode is a hard evidence boundary, its brief records the source mix
+and base revision, and incomplete personas produce explicitly partial coverage.
+Research ranks a supported durable target state above a temporary workaround;
+any mitigation must disclose its limitation and removal condition. For
 Enfusion questions, game API/example research uses at least five independent
 examples and expands across owners when the question asks about broad
 applicability; online research cites direct sources and distinguishes an

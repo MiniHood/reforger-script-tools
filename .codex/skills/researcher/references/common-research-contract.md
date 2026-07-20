@@ -24,9 +24,12 @@ counterexample.
 ## Independence and conduct
 
 - Remain read-only. Do not edit, run a format/fix command, alter Git state,
-  contact external systems, spawn agents, or read peer journals.
-- Use only the supplied evidence package and your assigned journal path. Do
-  not ask another persona to validate your conclusion.
+  spawn agents, or read peer journals. Read-only web research is permitted
+  only when the coordinator's declared source mode allows it.
+- Use the supplied evidence package plus only the evidence acquisition allowed
+  by the coordinator's declared source mode. Record every acquired source and
+  its class; label post-snapshot evidence. Do not ask another persona to
+  validate your conclusion.
 - Update the assigned journal after each completed evidence slice. The journal
   is a progress trace, not a shared discussion channel.
 
