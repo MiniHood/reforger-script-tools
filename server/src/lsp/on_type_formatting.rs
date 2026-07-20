@@ -152,6 +152,11 @@ fn is_complete_value_return_statement(tokens: &[Token]) -> bool {
     if tokens.first().map(|token| token.kind) != Some(TokenKind::Keyword(Keyword::Return)) {
         return false;
     }
+    // A bare return is already a complete statement; `;` is the only
+    // syntactically reasonable completion after Enter.
+    if tokens.len() == 1 {
+        return true;
+    }
     let Some(end) = consume_initializer(tokens, 1) else {
         return false;
     };
@@ -494,12 +499,14 @@ mod tests {
     fn inserts_after_complete_value_return_statements() {
         for source in [
             "return owner\n",
+            "return\n",
             "return GetOwner()\n",
             "return new GRAY_TEST2()\n",
             "return new array<int>()\n",
             "return GetOwner().m_Name\n",
             "return owner == GetOwner() ? owner : null\n",
             "return owner // keep this\n",
+            "return // keep this\n",
         ] {
             let expected = source
                 .find(" //")
@@ -525,7 +532,6 @@ mod tests {
             "Run(\n",
             "GetGame().\n",
             "Run();\n",
-            "return\n",
             "return owner.\n",
             "return GetOwner(\n",
             "return owner +\n",
