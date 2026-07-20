@@ -37,11 +37,13 @@ change, prove behavior, and validate integration respectively.
 
 `/review` is a read-only, advisory workflow for challenging a bounded scope
 before deciding whether to change it. It prepares one evidence package and
-uses a relevant roster from four independent lenses: architecture, correctness,
-performance and reliability, and developer experience, without sharing reviewer
-conclusions. Correctness and architecture are the default core; the other
-lenses are selected for relevant risk surfaces, or all four can be requested
-for a full review. The coordinator then combines evidence, preserves material
+uses a relevant roster from six independent lenses: architecture, correctness,
+performance and reliability, developer experience, language fidelity, and
+verification and observability, without sharing reviewer conclusions.
+Correctness and architecture are the default core; the other lenses are
+selected for relevant risk surfaces. A review runs no more than four personas:
+full depth means the core plus the two most relevant specialists, not every
+catalog entry. The coordinator then combines evidence, preserves material
 disagreement, and recommends a next step; it never implements that
 recommendation.
 

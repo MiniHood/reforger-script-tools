@@ -12,13 +12,20 @@ evidence journals under `tools/reports/review/` are the sole exception.
 ## 1. Establish the review package
 
 1. Parse `depth:auto` (default), `depth:full`, and optional `personas:` tokens.
-   The initial catalog is Correctness, Architecture, Performance & Reliability,
-   and Developer Experience. In auto mode select Correctness and Architecture,
-   then select specialists only when changed paths, requirements, or risk
-   surfaces make their lens relevant; cap the roster at four. State why each
-   persona was selected or skipped. Full selects all four. Explicit personas
-   select the named lenses; retain the core unless the user explicitly asks a
-   narrow persona-only review.
+   The catalog is Correctness, Architecture, Performance & Reliability,
+   Developer Experience, Language Fidelity, and Verification & Observability.
+   In auto mode select Correctness and Architecture, then add at most two
+   specialists when changed paths, requirements, or risk surfaces make their
+   lens relevant. Select Language Fidelity for Enfusion syntax, parser,
+   semantic, formatting, language-feature, Workbench, game-data, or API-truth
+   work. Select Verification & Observability for defects, tests, fixtures,
+   logs, diagnostics, reproducibility, lifecycle, or scheduler claims. Cap the
+   roster at four and state why each persona was selected or skipped. Full is
+   the deepest bounded review: core plus the two most relevant specialists.
+   Explicit personas select the named lenses; retain the core unless the user
+   explicitly asks a narrow persona-only review. If the resulting explicit
+   roster exceeds four, request a narrower roster or a second review rather
+   than silently omitting a persona.
 2. Read `AGENTS.md`, `git status --short`, and the explicit user scope.
 3. If scope is explicit, include only its direct implementation, owning
    reference documentation, relevant tests, and bounded recent diagnostics.
@@ -43,6 +50,8 @@ contracts for selected personas:
 - [correctness.md](references/correctness.md)
 - [performance-reliability.md](references/performance-reliability.md)
 - [developer-experience.md](references/developer-experience.md)
+- [language-fidelity.md](references/language-fidelity.md)
+- [verification-observability.md](references/verification-observability.md)
 
 Create a unique run ID. Launch all selected reviewer sub-agents concurrently when capacity permits. Each
 call MUST use `fork_turns: "none"`. Give each agent only:
