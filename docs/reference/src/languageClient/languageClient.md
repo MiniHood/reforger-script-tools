@@ -83,4 +83,10 @@ Startup timing logging must stay concise and protocol-boundary focused. It may r
 
 ## Verification
 
-Run `npm test`. For client lifecycle, watcher, or server-launch changes, compile the Rust server, force a fresh language-server process in an Extension Development Host, and inspect the relevant global-storage log or debug report.
+Run `npm test`. For client lifecycle, watcher, or server-launch changes,
+compile the Rust server, then reload the existing active Extension Development
+Host in place and inspect the relevant global-storage log or debug report. Do
+not open a replacement `--extensionDevelopmentPath` window or close the user's
+host: that loses debug-session state and is not live verification of the
+existing session. If the available tools cannot send an in-place reload command,
+record live-host validation as pending.

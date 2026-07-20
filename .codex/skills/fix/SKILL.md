@@ -55,13 +55,15 @@ the evidence proves they are needed.
 1. Run the focused regression test, then the smallest complete affected suite.
 2. For Rust server, binary, or language-client changes, run `cargo test`, then
    run `npm run compile` to stop any active development server and replace the
-   bundled development binary. After a successful build, force the active
-   Extension Development Host to reload so it starts a fresh server process
-   from that binary; use the available VS Code reload command rather than
-   asking the user to perform a manual refresh. For extension-only changes,
-   also reload the active Extension Development Host after typecheck, lint,
-   and relevant extension tests. Do not report live verification until the
-   refreshed host has received the rebuilt extension.
+   bundled development binary. After a successful build, reload the existing
+   active Extension Development Host in place so it starts a fresh server
+   process from that binary; use an available VS Code reload command when it
+   can target that host. Never open a replacement `--extensionDevelopmentPath`
+   window or close the user's host as a substitute, because that loses the
+   debug-session UI and state. For extension-only changes, also reload the
+   existing host after typecheck, lint, and relevant extension tests. If the
+   available tools cannot perform an in-place reload, report live verification
+   as pending rather than implying it occurred.
 3. Run `git diff --check`; inspect the final diff for scope, duplicated paths,
    and unrelated user edits. Commit only attributable changes after coherent
    verification. Do not push or open a PR without explicit authorization.

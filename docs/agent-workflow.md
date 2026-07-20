@@ -80,6 +80,17 @@ design, implement, and verify an authorized durable solution. Use `/review`
 when the goal is broad, independent scrutiny rather than diagnosis or a code
 change.
 
+## Development-host continuity
+
+An Extension Development Host is part of the developer's live debugging
+context, not a disposable test window. After an extension rebuild, reload the
+existing host in place when an automation surface can target it. Do not launch
+a new `--extensionDevelopmentPath` window, close VS Code, or replace the host:
+those actions lose debug-menu state and do not prove the active session loaded
+the rebuilt extension. When in-place reload cannot be controlled from the
+available tools, report the build and automated checks separately from pending
+live-host verification.
+
 ## Preserving useful history
 
 Documentation is valuable when it explains current ownership or constraints

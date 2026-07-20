@@ -119,8 +119,12 @@ Before completing a source-changing task:
 4. Validate Reforger language claims with Workbench/compiler behavior whenever
    available.
 5. For Rust server, server-binary, or language-client lifecycle changes, force
-   a fresh language-server process when necessary. Reload the active extension
-   host after completed extension work so it uses the packaged build.
+   a fresh language-server process when necessary. Reload the existing active
+   Extension Development Host in place after completed extension work so it
+   uses the rebuilt extension while preserving its debug-session UI and state.
+   Never launch a replacement VS Code window or close the user's host as a
+   substitute for reload. If available automation cannot target the existing
+   host, report the build as complete but live verification as pending.
 6. Update required documentation and record verification plus remaining
    uncertainty.
 

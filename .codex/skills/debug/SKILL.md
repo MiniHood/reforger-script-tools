@@ -75,8 +75,11 @@ After authorization, add or strengthen the narrowest regression test before
 changing behavior. Preserve current document revision safety: never combine
 current document text with prior local semantic facts. For Rust server changes,
 run the focused test and `cargo test`; for extension changes, run `npm test`
-and lint. Rebuild and reload the development extension host when the active
-server binary or client lifecycle changes.
+and lint. Rebuild and reload the existing active Extension Development Host in
+place when the active server binary or client lifecycle changes. Never open a
+replacement `--extensionDevelopmentPath` window or close VS Code as a reload
+substitute: preserve the user's debug-session UI and state. If no available
+automation can target the existing host, report live verification as pending.
 
 ## Handoff
 
