@@ -121,12 +121,13 @@ request-to-server annotation with its snippet cursor retained inside the call:
 expression is selected, so typing replaces it and resumes ordinary value
 completion. The extension-owned, event-driven snippet-placeholder bridge opens
 the Rust-owned enum completion policy only after VS Code has selected the
-placeholder: qualified enum values rank first, while
-general value candidates remain below them. These items use the LSP
-`InsertReplaceEdit` form: their insert range is the active enum-member word so
-VS Code can display and filter the menu normally, while their replace range is
-the complete enum expression. Selecting a general value therefore cannot form
-an invalid `RplChannel.<unrelated value>` expression. Tab advances to the selected
+placeholder. That specialized list contains the qualified enum members in
+deterministic order, then the ordinary value and keyword fallback candidates;
+every item replaces the complete selected expression with an ordinary LSP text
+edit. It never emits a member-only insert range paired with an earlier-starting
+full-expression replace range: VS Code requires every `InsertReplaceEdit`
+insert range to start with and remain a prefix of its replace range. Choosing
+a fallback replaces rather than extends the selected enum expression. Tab advances to the selected
 `RplRcver.Server` expression. The completion item's signature detail still
 documents the optional condition and custom-condition inputs.
 The same template applies inside an already typed `[` without duplicating its

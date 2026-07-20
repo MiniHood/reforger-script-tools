@@ -1,5 +1,8 @@
 import * as assert from 'node:assert';
+import * as fs from 'node:fs/promises';
+import * as path from 'node:path';
 import * as vscode from 'vscode';
+import { languageClientCommands } from '../extensionConfig/languageClient';
 
 suite('extension activation', () => {
 	test('registers editor-facing commands', async () => {
@@ -10,12 +13,24 @@ suite('extension activation', () => {
 		await extension.activate();
 
 		const commands = await vscode.commands.getCommands(true);
-		assert.ok(commands.includes('reforger-sript-tools.debug.hoverAtCursor'));
-		assert.ok(commands.includes('reforger-sript-tools.debug.completionAtCursor'));
-		assert.ok(commands.includes('reforger-sript-tools.completion.triggerSuggestAtSnippetPlaceholder'));
+		assert.ok(commands.includes(languageClientCommands.debugHoverAtCursor));
+		assert.ok(commands.includes(languageClientCommands.debugCompletionAtCursor));
+		assert.ok(commands.includes(languageClientCommands.triggerSuggestAtSnippetPlaceholder));
 		const contributedCommands = extension.packageJSON.contributes.commands as Array<{ command: string }>;
 		assert.ok(contributedCommands.some(command =>
-			command.command === 'reforger-sript-tools.completion.triggerSuggestAtSnippetPlaceholder'));
+			command.command === languageClientCommands.triggerSuggestAtSnippetPlaceholder));
+	});
+
+	test('keeps the Rust snippet bridge command aligned with the extension contract', async () => {
+		const extension = vscode.extensions.all.find(
+			candidate => candidate.packageJSON.name === 'reforger-sript-tools',
+		);
+		assert.ok(extension, 'development extension is discoverable');
+		const completionSource = await fs.readFile(
+			path.join(extension.extensionPath, 'server', 'src', 'lsp', 'completion.rs'),
+			'utf8',
+		);
+		assert.ok(completionSource.includes(languageClientCommands.triggerSuggestAtSnippetPlaceholder));
 	});
 
 	test('enables local diagnostic logging by default', () => {

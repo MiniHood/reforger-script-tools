@@ -316,11 +316,13 @@ async function startLanguageClient(
 				try {
 					const result = await next(document, position, completionContext, token);
 					if (transaction?.documentUri === document.uri.toString()) {
+						const presentation = completionPresentationMetadata(result);
 						diagnostic('completion.transaction.response', {
 							transactionId: transaction.id,
 							triggerKind: completionContext.triggerKind,
 							itemCount: completionItemCount(result),
 							elapsedMs: Date.now() - startedAt,
+							...presentation,
 						});
 						clearSnippetSuggestTransaction(transaction.id);
 					}
@@ -772,6 +774,54 @@ function completionItemCount(result: vscode.CompletionList | readonly vscode.Com
 		return 0;
 	}
 	return 'items' in result ? result.items.length : result.length;
+}
+
+function completionPresentationMetadata(
+	result: vscode.CompletionList | readonly vscode.CompletionItem[] | null | undefined,
+): Record<string, string | number> {
+	const items = !result ? [] : ('items' in result ? result.items : result);
+	let plainRangeCount = 0;
+	let insertReplaceRangeCount = 0;
+	let invalidInsertReplaceRangeCount = 0;
+	const firstRangeKinds: string[] = [];
+	const firstFilterTextLengths: string[] = [];
+
+	for (const item of items) {
+		const range = item.range;
+		if (!range) {
+			continue;
+		}
+		if (range instanceof vscode.Range) {
+			plainRangeCount += 1;
+			if (firstRangeKinds.length < 3) {
+				firstRangeKinds.push('plain');
+				firstFilterTextLengths.push(String(item.filterText?.length ?? 0));
+			}
+			continue;
+		}
+
+		insertReplaceRangeCount += 1;
+		if (!validInsertReplaceRange(range.inserting, range.replacing)) {
+			invalidInsertReplaceRangeCount += 1;
+		}
+		if (firstRangeKinds.length < 3) {
+			firstRangeKinds.push('insertReplace');
+			firstFilterTextLengths.push(String(item.filterText?.length ?? 0));
+		}
+	}
+
+	return {
+		plainRangeCount,
+		insertReplaceRangeCount,
+		invalidInsertReplaceRangeCount,
+		firstRangeKinds: firstRangeKinds.join(','),
+		firstFilterTextLengths: firstFilterTextLengths.join(','),
+	};
+}
+
+function validInsertReplaceRange(inserting: vscode.Range, replacing: vscode.Range): boolean {
+	return inserting.start.isEqual(replacing.start)
+		&& inserting.end.isBeforeOrEqual(replacing.end);
 }
 
 function workspaceWatcherPathKey(filePath: string): string {

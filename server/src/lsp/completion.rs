@@ -116,6 +116,10 @@ impl Serialize for LspTextEdit {
             serializer.serialize_map(Some(if self.replace_range.is_some() { 3 } else { 2 }))?;
         map.serialize_entry("newText", &self.new_text)?;
         if let Some(replace_range) = &self.replace_range {
+            assert!(
+                insert_replace_ranges_are_valid(&self.range, replace_range),
+                "LSP InsertReplaceEdit insert range must share the replace range start and remain its prefix"
+            );
             map.serialize_entry("insert", &self.range)?;
             map.serialize_entry("replace", replace_range)?;
         } else {
@@ -123,6 +127,11 @@ impl Serialize for LspTextEdit {
         }
         map.end()
     }
+}
+
+fn insert_replace_ranges_are_valid(insert: &LspRange, replace: &LspRange) -> bool {
+    insert.start == replace.start
+        && (insert.end.line, insert.end.character) <= (replace.end.line, replace.end.character)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2039,7 +2048,7 @@ fn member_completion_report_for_indexes(
     let (items, source_kind_counts, origin_counts) = if receiver_is_static
         && render_context.is_enum_owner(owner)
     {
-        enum_static_completion_items_with_value_fallbacks(
+        enum_static_completion_items(
             source,
             owner,
             receiver_span,
@@ -2085,14 +2094,13 @@ fn member_completion_report_for_indexes(
     }
 }
 
-/// Enum defaults are commonly inserted as a single replaceable expression
-/// (`Owner.Member`). Keep every enum value first, but retain normal value
-/// completion beneath it. The LSP `insert` range remains the active member
-/// word, while `replace` covers the full expression. This lets clients show
-/// and filter the list normally yet safely replace `Owner.Member` when a
-/// general value is selected.
+/// Static enum values rank before normal value fallbacks, and every item
+/// replaces the complete `Owner.Member` expression. A completion edit's
+/// filter range and replacement range must describe the same valid VS Code
+/// range contract; an insert range cannot begin inside a replace range that
+/// starts earlier.
 #[allow(clippy::too_many_arguments)]
-fn enum_static_completion_items_with_value_fallbacks(
+fn enum_static_completion_items(
     source: &str,
     owner: &str,
     receiver_span: TextSpan,
@@ -2110,21 +2118,23 @@ fn enum_static_completion_items_with_value_fallbacks(
 ) {
     let full_expression_span = TextSpan::new(receiver_span.start, prefix_span.end);
     let full_expression_range = range_for_span(source, full_expression_span);
-    let insert_range = range_for_span(source, prefix_span);
     let (mut enum_items, mut source_kind_counts, mut origin_counts) =
         completion_items_for_candidates(
             enum_candidates,
-            insert_range.clone(),
+            full_expression_range,
             None,
             CompletionInsertContext::Normal,
             Some(prefix),
             render_context,
         );
+    let full_expression_filter = format!("{owner}.{prefix}");
     for (index, item) in enum_items.iter_mut().enumerate() {
         item.label = format!("{owner}.{}", item.label);
-        item.filter_text = Some(prefix.to_string());
+        // The selected snippet field contains the complete expression. Give
+        // all enum values the same current-expression filter text so VS Code
+        // presents the enum choice set before the user types a replacement.
+        item.filter_text = Some(full_expression_filter.clone());
         item.text_edit.new_text = format!("{owner}.{}", item.text_edit.new_text);
-        item.text_edit.replace_range = Some(full_expression_range.clone());
         item.sort_text = Some(format!("000:enum:{index:03}:{}", item.label));
     }
 
@@ -2138,7 +2148,7 @@ fn enum_static_completion_items_with_value_fallbacks(
     );
     let (mut value_items, value_source_counts, value_origins) = completion_items_for_candidates(
         &value_candidates,
-        insert_range.clone(),
+        range_for_span(source, full_expression_span),
         None,
         CompletionInsertContext::Normal,
         Some(""),
@@ -2148,15 +2158,12 @@ fn enum_static_completion_items_with_value_fallbacks(
     merge_count_maps(&mut origin_counts, value_origins);
     value_items.extend(keyword_completion_items(
         "",
-        insert_range,
+        range_for_span(source, full_expression_span),
         EditorTopLevelCompletionMode::Value,
         false,
     ));
     for (index, item) in value_items.iter_mut().enumerate() {
-        // The active snippet field owns the whole default expression. Its
-        // current text must not hide otherwise valid replacement choices.
-        item.filter_text = Some(prefix.to_string());
-        item.text_edit.replace_range = Some(full_expression_range.clone());
+        item.filter_text = Some(full_expression_filter.clone());
         item.sort_text = Some(format!("100:enum-fallback:{index:03}:{}", item.label));
     }
 
@@ -3707,8 +3714,8 @@ fn rpl_rpc_attribute_template(
         && callable_type_owner(&required[1].type_and_modifiers).as_deref() == Some("RplRcver"))
     .then(|| {
         // The complete default enum expressions are snippet fields. Typing
-        // replaces the whole expression; the enum completion policy keeps the
-        // other enum values first while retaining general value choices below.
+        // replaces the whole expression; the shared enum completion policy
+        // ranks enum values first and retains normal value choices below.
         let body = "RplRpc(${1:RplChannel.Reliable}, ${2:RplRcver.Server})";
         if include_brackets {
             format!("[{body}]")
@@ -4534,7 +4541,7 @@ class ScriptComponent
     }
 
     #[test]
-    fn current_receiver_query_keeps_enum_values_first_with_value_fallbacks() {
+    fn current_receiver_query_uses_valid_full_expression_edits_for_enum_values() {
         let external = file_index_for_source(
             r#"enum RplChannel
 {
@@ -4577,18 +4584,95 @@ class OtherChoice {}
             labels[..2],
             ["RplChannel.Reliable", "RplChannel.Unreliable"]
         );
-        assert!(labels.len() > 2, "expected general values below enums: {labels:?}");
+        assert!(labels.len() > 2, "expected normal value fallbacks: {labels:?}");
         assert_eq!(
             report.list.items[0].text_edit.new_text,
             "RplChannel.Reliable"
         );
+        for item in &report.list.items {
+            assert_eq!(item.filter_text.as_deref(), Some("RplChannel.Reliable"));
+            assert_eq!(item.text_edit.range.start.character, 2);
+            assert_eq!(item.text_edit.range.end.character, 21);
+            assert!(
+                item.text_edit.replace_range.is_none(),
+                "the full-expression edit must not serialize an invalid InsertReplaceEdit"
+            );
+        }
         assert!(
             !report.list.items[2]
                 .text_edit
                 .new_text
                 .starts_with("RplChannel."),
-            "a general fallback must replace, not extend, the enum expression"
+            "a normal fallback must replace rather than extend the enum expression"
         );
+    }
+
+    #[test]
+    fn static_enum_completion_keeps_value_fallbacks_in_attribute_call_and_constructor_contexts() {
+        let external = file_index_for_source(
+            r#"enum Channel
+{
+	Reliable,
+	Unreliable
+}
+class AttributeTarget : UniqueAttribute
+{
+	void AttributeTarget(Channel channel);
+}
+class Receiver
+{
+	void Receive(Channel channel);
+}
+class Constructed
+{
+	void Constructed(Channel channel);
+}
+"#,
+        )
+        .index;
+        let contexts = [
+            "[AttributeTarget(Channel.Reliable)] class Example {}",
+            "class Example { void Run() { Receiver.Receive(Channel.Reliable); } }",
+            "class Example { void Run() { new Constructed(Channel.Reliable); } }",
+        ];
+
+        for source in contexts {
+            let needle = "Channel.Reliable";
+            let offset = source.find(needle).unwrap() + needle.len();
+            let position = range_for_span(source, TextSpan::new(0, offset)).end;
+            let report = completion_report_for_source_position_with_external(
+                source,
+                position,
+                Some(&external),
+            );
+            let labels = report
+                .list
+                .items
+                .iter()
+                .map(|item| item.label.as_str())
+                .collect::<Vec<_>>();
+            assert_eq!(labels[..2], ["Channel.Reliable", "Channel.Unreliable"]);
+            assert!(labels.len() > 2, "expected normal fallbacks for {source}: {labels:?}");
+            assert!(report.list.items.iter().all(|item| item.text_edit.replace_range.is_none()));
+        }
+    }
+
+    #[test]
+    fn insert_replace_edits_require_a_shared_start_and_prefix_insert_range() {
+        let insert = LspRange {
+            start: LspPosition { line: 0, character: 4 },
+            end: LspPosition { line: 0, character: 7 },
+        };
+        let replace = LspRange {
+            start: LspPosition { line: 0, character: 4 },
+            end: LspPosition { line: 0, character: 12 },
+        };
+        assert!(insert_replace_ranges_are_valid(&insert, &replace));
+        let invalid_insert = LspRange {
+            start: LspPosition { line: 0, character: 8 },
+            end: LspPosition { line: 0, character: 12 },
+        };
+        assert!(!insert_replace_ranges_are_valid(&invalid_insert, &replace));
     }
 
     #[test]

@@ -39,13 +39,17 @@ Rust-selected `RplRpc` enum snippet: its completion item invokes a registered
 extension command, which waits for VS Code's snippet selection event (or an
 already-selected placeholder matching the Rust-provided default) and then invokes
 Suggest exactly once at the next event-loop boundary. Duplicate selection events
-cannot create a competing empty suggest request. It does not parse text, inspect
-symbols, choose candidates, or use a typing-path delay. A one-second
+cannot create a competing request. It does not parse text, inspect symbols,
+choose candidates, or use a typing-path delay. A one-second
 cleanup timer only releases an abandoned editor transaction; it never triggers
 Suggest. While that transaction is active, the client records bounded
 command/placeholder/request/response metadata through the existing optional
-diagnostic logger, allowing a missing UI widget to be separated from an absent
-LSP response without recording source text or completion payloads.
+diagnostic logger. Response metadata includes bounded completion-range shape
+counts, validity of any converted insert/replace pairs, and filter-text
+lengths for at most three items; it never records source text or completion
+payloads. This separates an absent response from an invalid protocol edit,
+while fresh Extension Development Host verification remains the authority for
+native widget visibility.
 
 Rust completion items may still use VS Code's built-in parameter-hints command after ordinary callable insertion.
 
