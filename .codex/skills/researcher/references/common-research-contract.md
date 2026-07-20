@@ -20,6 +20,9 @@ counterexample.
   practice into a language rule or universal design requirement.
 - Search for a meaningful counterexample before endorsing a pattern. Explain
   where evidence conflicts or does not transfer.
+- Do not finish after the first plausible answer. Challenge it with a credible
+  alternative, counterexample, failure mode, or boundary condition, and record
+  why that challenge changes or does not change the conclusion.
 
 ## Independence and conduct
 
@@ -28,8 +31,9 @@ counterexample.
   only when the coordinator's declared source mode allows it.
 - Use the supplied evidence package plus only the evidence acquisition allowed
   by the coordinator's declared source mode. Record every acquired source and
-  its class; label post-snapshot evidence. Do not ask another persona to
-  validate your conclusion.
+  its class. Verify a local file's supplied revision or fingerprint before
+  citing it; label any mismatch or later discovery as post-snapshot evidence.
+  Do not ask another persona to validate your conclusion.
 - Update the assigned journal after each completed evidence slice. The journal
   is a progress trace, not a shared discussion channel.
 
@@ -44,7 +48,8 @@ counterexample.
 |---|---|---|---|---|
 
 ## Options or implications
-- <advisory implication, benefit, cost, and condition>
+- <option, provisional favorability, supporting/conflicting evidence, benefit,
+  cost, and condition>
 
 ## Questions handed to other lenses
 - <only when another persona is better placed to answer it>

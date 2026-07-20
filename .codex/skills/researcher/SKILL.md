@@ -26,6 +26,13 @@ Valid personas are `game-api-examples`, `online-research`, `codebase`,
 tokens. If the question is too vague to establish a useful boundary, ask one
 open question; otherwise make and state a bounded assumption.
 
+`depth:auto` uses the smallest source-compatible roster and evidence search
+that can reach a justified stopping condition. `depth:full` expands to every
+material source-compatible lens up to the four-person cap, explores at least
+one credible competing direction and counterexample for each leading direction,
+and records why any remaining lens or corpus was not pursued. Full depth does
+not manufacture irrelevant personas or weak alternatives.
+
 `sources:` is a hard evidence boundary, not a preference:
 
 - `local`: use repository files, supplied logs, extracted data, and local
@@ -52,7 +59,11 @@ state, or external systems. Generated evidence journals under
    reading to policy/status control-plane facts only.
 2. Pin one immutable evidence package: run ID, base commit (or `unborn`), Git
    status summary, source mode, supplied paths/sources, constraints,
-   exclusions, and unknowns. Label any later evidence as post-snapshot.
+   exclusions, and unknowns. For each supplied local file, record its path,
+   Git revision when clean, or SHA-256 content fingerprint when dirty or
+   untracked. Before citing a local file, verify the recorded identity; label a
+   changed or newly read file as post-snapshot evidence rather than merging it
+   into the baseline.
 3. State the research contract: question, decision it supports, included
    surfaces, constraints, existing evidence, exclusions, and unknowns.
 4. For Enfusion/Workbench/game-data questions, invoke `reforger` before
@@ -76,7 +87,9 @@ Explicit `personas:` retains source-compatible Codebase and Architecture;
 `personas-only:` uses exactly the named source-compatible roster. If the
 resulting roster exceeds four, request a narrower roster or split it into a
 named follow-up pass before fan-out. Never silently omit a requested lens.
-State selected, displaced, and source-ineligible personas with reasons.
+State selected, displaced, and source-ineligible personas with reasons. Also
+record every materially considered but unselected persona and its reason; do
+not imply complete coverage from the selected roster alone.
 
 Persona contracts are intentionally distinct. Read the common contract and the
 selected persona files before fan-out; give each agent only its own contract:
@@ -111,6 +124,22 @@ maintainer statements, and release notes. Cite every external claim with a
 direct link. Separate an observed practice from a recommendation for this
 repository.
 
+## Remain Curious Until Evidence Saturates
+
+Do not stop after finding the first plausible solution. Treat it as a working
+hypothesis. Each selected researcher must seek a credible alternative,
+counterexample, failure mode, or condition under which the leading direction
+does not fit. Explore adjacent implementations or source corpora when that can
+materially change the decision.
+
+Stop only when the coordinator can state all of the following: selected lenses
+examined the leading hypothesis and its meaningful challenge; new evidence is
+mostly confirmatory or the remaining uncertainty requires a different authority
+(such as Workbench, a live editor, or user decision); rejected directions have
+an evidence-backed reason; and no unexamined material lens remains. If those
+conditions are not met, report incomplete research and recommend the smallest
+decisive next investigation instead of a premature solution.
+
 ## Fan Out and Synthesize
 
 Create a unique run ID. Launch selected researchers independently with
@@ -136,24 +165,32 @@ recommendation as an instruction.
 After all researchers finish or are unavailable:
 
 1. Report coverage: selected, completed, delayed, unavailable with reason,
-   source mode, actual source classes, base revision, post-snapshot evidence,
-   and material exclusions.
-2. Deduplicate evidence by underlying question, retaining source quality and
-   disagreements.
+   materially considered but unselected personas, source mode, actual source
+   classes, base revision, local file identities, post-snapshot evidence,
+   saturation rationale, and material exclusions.
+2. Assign stable evidence IDs and deduplicate by underlying question, retaining
+   source quality, persona, source class, and disagreements.
 3. Build one to four viable options. Rank a durable target state first whenever
    evidence supports it. A workaround is allowed only when explicitly labelled
    temporary, with its limitation, cost of delay, and concrete removal
    condition; never present it as equivalent to the durable option merely
    because it is cheaper. If only one option is evidence-supported, say so and
    explain why alternatives were rejected.
-4. Turn the strongest evidence into concrete action items. Include discovery
+4. Give every option a favorability: **Strongly favored**, **Favored**,
+   **Conditional**, or **Not favored**. Cite its supporting and conflicting
+   evidence IDs with persona/source-class provenance, then state the ranking
+   rationale across language correctness, architecture, performance,
+   developer experience, delivery risk, and proof burden as applicable. The
+   rank is a transparent synthesis of independent evidence, not a vote or an
+   instruction from a researcher.
+5. Turn the strongest evidence into concrete action items. Include discovery
    work when evidence is not sufficient for a safe change.
-5. Perform an independent main-thread assessment. Re-check the question against
+6. Perform an independent main-thread assessment. Re-check the question against
    the repository's constraints and evidence without treating researcher
    suggestions as instructions. Explicitly accept, reject, or reframe the
    leading suggestions, including why a durable direction outweighs or does not
    outweigh a temporary mitigation.
-6. Recommend one next action only when the independent assessment supports it;
+7. Recommend one next action only when the independent assessment supports it;
    otherwise recommend the smallest decisive investigation. A follow-up
    `/review` remains the separate option for a full independent persona review
    before a high-risk decision.
@@ -166,16 +203,17 @@ Use this output format:
 
 ## Scope and Coverage
 <source mode, actual source classes, base revision, selected/completed/delayed/
-unavailable personas with reasons, examples found, exclusions, post-snapshot
-evidence>
+unavailable personas with reasons, materially considered but unselected
+personas, examples found, exclusions, local file identities, post-snapshot
+evidence, and saturation/stopping rationale>
 
 ## Evidence
-| Topic | Evidence | Source Quality | What It Means |
-|---|---|---|---|
+| ID | Topic | Evidence | Persona / Source Class | Source Quality | What It Means |
+|---|---|---|---|---|---|
 
 ## Options
-| Option | Durable or temporary | Benefits | Costs / Risks | Fit | Validation |
-|---|---|---|---|---|---|
+| Rank / Favorability | Option | Durable or temporary | Supporting / Conflicting Evidence | Ranking Rationale | Benefits | Costs / Risks | Fit | Validation |
+|---|---|---|---|---|---|---|---|---|
 
 ## Concrete Action Items
 1. ...
