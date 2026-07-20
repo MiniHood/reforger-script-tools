@@ -1,6 +1,6 @@
 ---
 name: review
-description: Run an evidence-based, read-only review of a Reforger Script Tools scope using a relevant roster of independent architecture, correctness, performance and reliability, and developer-experience personas, then synthesize their findings. Use when the user invokes /review, asks for an independent code or architecture review, or wants multi-perspective review before deciding on a fix.
+description: Run an evidence-based, read-only review of a Reforger Script Tools scope using a relevant roster of Architecture, Correctness, Performance & Reliability, Developer Experience, Language Fidelity, and Verification & Observability personas, then synthesize their findings. Use when the user invokes /review, asks for an independent code or architecture review, or wants multi-perspective review before deciding on a fix.
 ---
 
 # Parallel Review
@@ -26,6 +26,13 @@ evidence journals under `tools/reports/review/` are the sole exception.
    explicitly asks a narrow persona-only review. If the resulting explicit
    roster exceeds four, request a narrower roster or a second review rather
    than silently omitting a persona.
+   Canonical explicit values are `architecture`, `correctness`,
+   `performance-reliability`, `developer-experience`, `language-fidelity`, and
+   `verification-observability`, supplied as a comma-separated token. For
+   example, `/review <scope> personas:language-fidelity,verification-observability`
+   runs the core plus both named specialists. To split an over-cap review, run
+   a focused follow-up with the omitted specialist rather than weakening the
+   first review's coverage claim.
 2. Read `AGENTS.md`, `git status --short`, and the explicit user scope.
 3. If scope is explicit, include only its direct implementation, owning
    reference documentation, relevant tests, and bounded recent diagnostics.
@@ -132,3 +139,11 @@ review evidence was recorded. This review is advisory.
 
 Do not implement the recommendation. If the user wants a change, direct them
 to `/fix`, an OpenSpec proposal, or an explicit implementation request.
+
+## 4. Validate roster behavior after a contract change
+
+When changing persona selection, cap, or partial-coverage behavior, execute
+the bounded scenarios in [roster-acceptance.md](references/roster-acceptance.md).
+Record the selected, skipped, unavailable, and completed personas plus the
+observed outcome in the final validation handoff. This is a documentation
+workflow check, not a replacement for reviewing the actual change scope.

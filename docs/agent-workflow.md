@@ -54,6 +54,13 @@ explicit disposition for every unresolved P1-P3 finding. If a selected
 reviewer cannot return a conforming report, the result explicitly reports
 partial coverage rather than implying a complete review.
 
+To request specialists directly, pass comma-separated canonical names in a
+`personas:` token. For example,
+`/review <scope> personas:language-fidelity,verification-observability` retains
+the core reviewers and adds those two specialists. If a requested roster would
+exceed four, split the omitted lens into a focused follow-up review; the
+coordinator must not silently drop it.
+
 Use `/debug` to establish a causal chain for an observed failure and `/fix` to
 design, implement, and verify an authorized durable solution. Use `/review`
 when the goal is broad, independent scrutiny rather than diagnosis or a code
