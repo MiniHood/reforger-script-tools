@@ -57,18 +57,23 @@ decision and state selected and displaced relevant personas. Explicit
 the named roster. Never exceed four in one run; split a larger request into a
 follow-up research pass.
 
-Persona contracts:
+Persona contracts are intentionally distinct. Read the common contract and the
+selected persona files before fan-out; give each agent only its own contract:
 
-| Persona | Investigates | Required output |
-|---|---|---|
-| Game API & Examples | Extracted APIs, game source, real usage patterns | At least five distinct relevant examples; for broad claims, seek 10+ across different owners or use cases, then report saturation and gaps. |
-| Online Research | Official docs, upstream projects, standards, maintainer guidance, comparable tools | Direct links, source quality, date/context, and what transfers or does not transfer to this project. |
-| Codebase | Current implementation, callers, tests, logs, active changes | Ownership map, concrete integration points, and existing reusable mechanisms. |
-| Architecture | Boundaries, authority, lifecycle, evolution cost | Durable design constraints and rejected coupling. |
-| Language Semantics | Parser/model behavior and language truth | Verified rules versus inference; required compiler/Workbench checks. |
-| Performance & Reliability | Typing path, memory, concurrency, cancellation, error modes | Cost model, measurable risks, and a bounded validation plan. |
-| Developer Experience | User flow, discoverability, editor behavior | Expected interaction, failure modes, and acceptance examples. |
-| Verification | Reproduction, fixtures, diagnostics, testability | Minimal proof plan and remaining observability gaps. |
+- [Common research contract](references/common-research-contract.md)
+- [Game API & Examples](references/game-api-examples.md)
+- [Online Research](references/online-research.md)
+- [Codebase](references/codebase.md)
+- [Architecture](references/architecture.md)
+- [Language Semantics](references/language-semantics.md)
+- [Performance & Reliability](references/performance-reliability.md)
+- [Developer Experience](references/developer-experience.md)
+- [Verification](references/verification.md)
+
+The contract defines the lens, evidence threshold, counter-evidence to seek,
+and deliverable. Do not flatten the roster into generic code reviews. A
+persona may identify an adjacent concern, but must hand it off as a question
+for the appropriate lens instead of duplicating its investigation.
 
 For game-example research, count independent examples rather than repeated
 occurrences of one pattern. If the user asks whether a pattern applies broadly,
