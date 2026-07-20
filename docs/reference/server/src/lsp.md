@@ -120,7 +120,8 @@ text change before transport. The server intentionally does not advertise an
 automatic on-type-formatting capability because VS Code did not reliably invoke
 the provider in the active editor. The request carries the captured document
 version as an extension field and Rust returns no edits unless it exactly
-matches the installed immutable snapshot.
+matches the installed immutable snapshot. Its concise request log records the
+version, UTF-16 request position, outcome, and elapsed time, never source text.
 
 ## Dependencies and Boundaries
 

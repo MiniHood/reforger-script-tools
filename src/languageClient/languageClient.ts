@@ -555,18 +555,80 @@ interface LspTextEdit {
 }
 
 function registerSemicolonAfterEnter(): vscode.Disposable {
-	return vscode.workspace.onDidChangeTextDocument(event => {
+	let pending: SemicolonEnterTransaction | undefined;
+	const documentChanges = vscode.workspace.onDidChangeTextDocument(event => {
+		if (pending && pending.document.uri.toString() === event.document.uri.toString()
+			&& event.document.version > pending.version) {
+			diagnostic('formatting.semicolon.enter', { outcome: 'superseded', version: pending.version });
+			pending = undefined;
+		}
 		if (event.document.languageId !== languageClientLanguage.id) {
 			return;
 		}
-		if (!isSinglePlainEnter(event.contentChanges)) {
+		const position = semicolonAfterEnterPosition(event.contentChanges);
+		if (!position) {
 			return;
 		}
-		const version = event.document.version;
+		const change = event.contentChanges[0];
+		const transaction: SemicolonEnterTransaction = {
+			document: event.document,
+			version: event.document.version,
+			preEnterPosition: change.range.start,
+			position,
+			caretReady: hasSingleEmptyCaretAt(event.document, position),
+		};
+		pending = transaction;
 		queueMicrotask(() => {
-			void applySemicolonAfterEnter(event.document, version);
+			if (pending === transaction) {
+				void requestSemicolonAfterEnter(transaction, () => pending === transaction, () => {
+					pending = undefined;
+				});
+			}
 		});
 	});
+	const selectionChanges = vscode.window.onDidChangeTextEditorSelection(event => {
+		const transaction = pending;
+		if (!transaction || event.textEditor.document.uri.toString() !== transaction.document.uri.toString()) {
+			return;
+		}
+		if (transaction.document.version !== transaction.version) {
+			diagnostic('formatting.semicolon.enter', { outcome: 'superseded', version: transaction.version });
+			pending = undefined;
+			return;
+		}
+		if (hasSingleEmptyCaretAt(transaction.document, transaction.position)) {
+			transaction.caretReady = true;
+			void applyPendingSemicolonEdit(transaction, () => pending === transaction, () => {
+				pending = undefined;
+			});
+			return;
+		}
+		if (!hasSingleEmptyCaretAt(transaction.document, transaction.preEnterPosition)) {
+			diagnostic('formatting.semicolon.enter', { outcome: 'caretMoved', version: transaction.version });
+			pending = undefined;
+		}
+	});
+	return vscode.Disposable.from(documentChanges, selectionChanges);
+}
+
+interface SemicolonEnterTransaction {
+	document: vscode.TextDocument;
+	version: number;
+	preEnterPosition: vscode.Position;
+	position: vscode.Position;
+	caretReady: boolean;
+	edits?: LspTextEdit[];
+}
+
+export function semicolonAfterEnterPosition(
+	changes: readonly vscode.TextDocumentContentChangeEvent[],
+): vscode.Position | undefined {
+	if (!isSinglePlainEnter(changes)) {
+		return undefined;
+	}
+	const change = changes[0];
+	const newline = change.text.lastIndexOf('\n');
+	return new vscode.Position(change.range.start.line + 1, change.text.length - newline - 1);
 }
 
 function isSinglePlainEnter(changes: readonly vscode.TextDocumentContentChangeEvent[]): boolean {
@@ -575,43 +637,87 @@ function isSinglePlainEnter(changes: readonly vscode.TextDocumentContentChangeEv
 		&& /^\r?\n[\t ]*$/.test(changes[0].text);
 }
 
-async function applySemicolonAfterEnter(
-	document: vscode.TextDocument,
-	version: number,
+async function requestSemicolonAfterEnter(
+	transaction: SemicolonEnterTransaction,
+	isCurrent: () => boolean,
+	clear: () => void,
 ): Promise<void> {
 	const activeClient = client;
 	const editor = vscode.window.activeTextEditor;
-	if (!activeClient || !editor || editor.document.uri.toString() !== document.uri.toString()
-		|| document.version !== version || editor.selections.length !== 1 || !editor.selection.isEmpty) {
-		diagnostic('formatting.semicolon.enter', { outcome: 'rejectedEditorState', version });
+	if (!activeClient || !editor || editor.document.uri.toString() !== transaction.document.uri.toString()
+		|| transaction.document.version !== transaction.version) {
+		diagnostic('formatting.semicolon.enter', { outcome: 'rejectedEditorState', version: transaction.version });
+		clear();
 		return;
 	}
-	const position = editor.selection.active;
-	diagnostic('formatting.semicolon.enter', { outcome: 'admitted', version, line: position.line, character: position.character });
+	diagnostic('formatting.semicolon.enter', {
+		outcome: 'admitted',
+		version: transaction.version,
+		line: transaction.position.line,
+		character: transaction.position.character,
+	});
 	try {
 		const edits = await activeClient.sendRequest<LspTextEdit[]>(
 			languageClientRequests.onTypeFormatting,
 			{
-				textDocument: { uri: document.uri.toString() },
-				position: { line: position.line, character: position.character },
+				textDocument: { uri: transaction.document.uri.toString() },
+				position: { line: transaction.position.line, character: transaction.position.character },
 				ch: '\n',
-				version,
+				version: transaction.version,
 				options: { tabSize: editor.options.tabSize, insertSpaces: editor.options.insertSpaces },
 			},
 		);
-		if (document.version !== version || !hasSingleEmptyCaretAt(document, position)) {
-			diagnostic('formatting.semicolon.enter', { outcome: 'staleResponse', version });
+		if (!isCurrent() || transaction.document.version !== transaction.version) {
+			diagnostic('formatting.semicolon.enter', { outcome: 'staleResponse', version: transaction.version, reason: 'documentChanged' });
+			clear();
 			return;
 		}
-		const applied = await editor.edit(
-			editBuilder => edits.forEach(edit => editBuilder.replace(rangeFromLsp(edit.range), edit.newText)),
-			{ undoStopBefore: false, undoStopAfter: false },
-		);
-		diagnostic('formatting.semicolon.enter', { outcome: applied ? 'applied' : 'editRejected', version, edits: edits.length });
+		if (edits.length === 0) {
+			diagnostic('formatting.semicolon.enter', { outcome: 'noEdits', version: transaction.version });
+			clear();
+			return;
+		}
+		transaction.edits = edits;
+		if (!transaction.caretReady) {
+			diagnostic('formatting.semicolon.enter', { outcome: 'awaitingCaret', version: transaction.version });
+		}
+		await applyPendingSemicolonEdit(transaction, isCurrent, clear);
 	} catch {
 		// A typing assist must never surface transport failures while the user edits.
-		diagnostic('formatting.semicolon.enter', { outcome: 'requestError', version });
+		diagnostic('formatting.semicolon.enter', { outcome: 'requestError', version: transaction.version });
+		clear();
 	}
+}
+
+async function applyPendingSemicolonEdit(
+	transaction: SemicolonEnterTransaction,
+	isCurrent: () => boolean,
+	clear: () => void,
+): Promise<void> {
+	if (!transaction.edits || !transaction.caretReady) {
+		return;
+	}
+	if (!isCurrent() || transaction.document.version !== transaction.version
+		|| !hasSingleEmptyCaretAt(transaction.document, transaction.position)) {
+		diagnostic('formatting.semicolon.enter', { outcome: 'staleResponse', version: transaction.version, reason: 'caretMoved' });
+		clear();
+		return;
+	}
+	const editor = vscode.window.activeTextEditor;
+	if (!editor) {
+		clear();
+		return;
+	}
+	const applied = await editor.edit(
+		editBuilder => transaction.edits?.forEach(edit => editBuilder.replace(rangeFromLsp(edit.range), edit.newText)),
+		{ undoStopBefore: false, undoStopAfter: false },
+	);
+	diagnostic('formatting.semicolon.enter', {
+		outcome: applied ? 'applied' : 'editRejected',
+		version: transaction.version,
+		edits: transaction.edits.length,
+	});
+	clear();
 }
 
 function hasSingleEmptyCaretAt(document: vscode.TextDocument, position: vscode.Position): boolean {

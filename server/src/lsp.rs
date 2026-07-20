@@ -2020,11 +2020,15 @@ impl<W: Write> LspServer<W> {
                     let mut log_uri = "<missing>".to_string();
                     let mut bytes = 0usize;
                     let mut version = -1i32;
+                    let mut line = -1i64;
+                    let mut character = -1i64;
                     let mut outcome = "no_edit";
                     let result = params
                         .and_then(|params| {
                             log_uri = params.text_document.uri;
                             version = params.version;
+                            line = params.position.line as i64;
+                            character = params.position.character as i64;
                             if params.ch != "\n" || params.position.line == 0 {
                                 outcome = "unsupported_trigger";
                                 return None;
@@ -2058,10 +2062,12 @@ impl<W: Write> LspServer<W> {
                         })
                         .unwrap_or_else(|| json!([]));
                     self.log(&format!(
-                        "request onTypeFormatting uri={} bytes={} version={} outcome={} elapsed_ms={}",
+                        "request onTypeFormatting uri={} bytes={} version={} line={} character={} outcome={} elapsed_ms={}",
                         log_uri,
                         bytes,
                         version,
+                        line,
+                        character,
                         outcome,
                         start.elapsed().as_millis()
                     ));

@@ -3,6 +3,7 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { languageClientCommands } from '../extensionConfig/languageClient';
+import { semicolonAfterEnterPosition } from '../languageClient/languageClient';
 
 suite('extension activation', () => {
 	test('registers editor-facing commands', async () => {
@@ -47,8 +48,31 @@ suite('extension activation', () => {
 		assert.ok(clientSource.includes('snippetSuggestTraceVersion'));
 		assert.ok(clientSource.includes('registerSemicolonAfterEnter'));
 		assert.ok(clientSource.includes('isSinglePlainEnter'));
-		assert.ok(clientSource.includes('queueMicrotask'));
+		assert.ok(clientSource.includes('semicolonAfterEnterPosition'));
+		assert.ok(clientSource.includes('onDidChangeTextEditorSelection'));
 		assert.ok(!clientSource.includes('registerOnTypeFormattingEditProvider'));
+	});
+
+	test('derives the Rust request position from the accepted Enter edit', () => {
+		const position = semicolonAfterEnterPosition([{
+			range: new vscode.Range(new vscode.Position(20, 61), new vscode.Position(20, 61)),
+			rangeLength: 0,
+			text: '\n\t',
+		} as vscode.TextDocumentContentChangeEvent]);
+		assert.deepStrictEqual(position, new vscode.Position(21, 1));
+
+		const crlfPosition = semicolonAfterEnterPosition([{
+			range: new vscode.Range(new vscode.Position(7, 12), new vscode.Position(7, 12)),
+			rangeLength: 0,
+			text: '\r\n',
+		} as vscode.TextDocumentContentChangeEvent]);
+		assert.deepStrictEqual(crlfPosition, new vscode.Position(8, 0));
+
+		assert.strictEqual(semicolonAfterEnterPosition([{
+			range: new vscode.Range(0, 0, 0, 1),
+			rangeLength: 1,
+			text: '\n',
+		} as vscode.TextDocumentContentChangeEvent]), undefined);
 	});
 
 	test('enables local diagnostic logging by default', () => {

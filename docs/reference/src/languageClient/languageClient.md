@@ -82,15 +82,17 @@ Rust completion items may still use VS Code's built-in parameter-hints command a
 
 The client also owns the editor admission for one Rust-authored semicolon
 typing assist. A document-change bridge accepts only a single plain Enter
-insertion; after one microtask it reads the settled active caret and rejects
-replacements, multicaret edits, selections, and stale revisions. The microtask
-also lets the language client's matching `didChange` publish before it forwards
-the URI, captured version, UTF-16 position, trigger, and formatting options
-through the standard `textDocument/onTypeFormatting` request. It never reads
-or classifies source text. If the document or caret changed while Rust was
-responding, it drops the response; otherwise it applies Rust's returned edits
-without adding an undo stop. Rust does not advertise a competing automatic
-provider because VS Code did not reliably invoke it in the active editor.
+insertion and derives the post-Enter UTF-16 position from that immutable change
+event, rather than relying on global active-editor selection timing. A matching
+selection event confirms that the same document/caret has settled; it is not a
+timer or language decision. A microtask lets the language client's matching
+`didChange` publish before the client forwards URI, captured version,
+event-derived position, trigger, and formatting options through the standard
+`textDocument/onTypeFormatting` request. It never reads or classifies source
+text. If the document or caret changes while Rust responds, it drops the
+response; otherwise it applies Rust's returned edits without adding an undo
+stop. Rust does not advertise a competing automatic provider because VS Code
+did not reliably invoke it in the active editor.
 
 ## Dependencies and Boundaries
 
