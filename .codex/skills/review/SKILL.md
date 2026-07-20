@@ -6,7 +6,8 @@ description: Run an evidence-based, read-only review of a Reforger Script Tools 
 # Parallel Review
 
 Run a bounded, advisory review. Never edit source, planning artifacts,
-configuration, Git state, or external systems during this skill.
+configuration, Git state, or external systems during this skill. Generated
+evidence journals under `tools/reports/review/` are the sole exception.
 
 ## 1. Establish the review package
 
@@ -16,9 +17,9 @@ configuration, Git state, or external systems during this skill.
 3. If scope is absent or broad, infer the smallest defensible scope from
    current changed files, the active OpenSpec change, and their owning docs.
    State the selected scope and material omissions before reviewing.
-4. Prepare one immutable evidence package: scope, revision/changed-file state,
-   relevant paths, observed behavior or logs, and known constraints. Do not
-   include the coordinator's diagnosis or recommendations.
+4. Prepare and disclose one immutable review contract: scope/base, intent,
+   requirements, symbols/callers, tests, docs, diagnostics, exclusions, and
+   unknowns. Do not include the coordinator's diagnosis or recommendations.
 
 For Enfusion Script, Workbench, or game API claims, invoke `reforger` and give
 every reviewer the verified API/source evidence rather than an unsupported
@@ -34,12 +35,16 @@ four persona contracts:
 - [performance-reliability.md](references/performance-reliability.md)
 - [developer-experience.md](references/developer-experience.md)
 
-Launch all four reviewer sub-agents concurrently when capacity permits. Each
+Create a unique run ID. Launch all four reviewer sub-agents concurrently when capacity permits. Each
 call MUST use `fork_turns: "none"`. Give each agent only:
 
 - its persona contract;
 - the shared evidence package; and
 - the common review contract.
+
+Give each reviewer only `tools/reports/review/<run-id>/<persona>.md`. It MUST
+update that journal after every completed evidence slice and MUST NOT read a
+peer journal. This is operational, not filesystem-security, isolation.
 
 Do not provide parent conversation, the coordinator's provisional conclusion,
 another persona's identity, status, output, or any review artifact from a
@@ -57,13 +62,18 @@ start immediately and the fourth to begin after a slot is released.
 
 After all final reports arrive:
 
-1. Group findings by underlying issue, retaining the evidence and contributing
+1. Reject findings without priority, confidence, evidence, impact, durable
+   direction, and validation. Assign stable IDs.
+2. Group findings by underlying issue only when defect and fix path match, retaining the evidence and contributing
    persona for each group.
-2. Keep materially different conclusions visible. Do not manufacture a
+3. Keep materially different conclusions visible. Do not manufacture a
    consensus or upgrade an inference to a fact.
-3. Rank groups by severity, confidence, and likely user/system impact.
-4. Keep no-finding reports as coverage evidence and report meaningful strengths.
-5. Recommend one best next step. List alternatives only when they represent a
+4. Rank groups by priority, confidence, and likely user/system impact. Agreement
+   can raise confidence, never priority.
+5. Keep no-finding reports as coverage evidence and report meaningful strengths.
+6. Give every unresolved P1-P3 item one disposition: fix now, planned task,
+   accepted residual with owner/reason, or needs evidence.
+7. Recommend one best next step. List alternatives only when they represent a
    genuine trade-off.
 
 Return this format:
@@ -79,7 +89,7 @@ Return this format:
 - ...
 
 ## Findings
-- [Severity | confidence] Title
+- [P1-P4 | confidence] P2-01: Title
   - Evidence: ...
   - Impact: ...
   - Durable direction: ...
@@ -87,6 +97,9 @@ Return this format:
 
 ## Disagreements and Unknowns
 - ...
+
+## Residual Work
+- <P1-P3 ID>: fix now | planned task | accepted residual | needs evidence
 
 ## Recommended Next Step
 <one concrete, evidence-backed action>

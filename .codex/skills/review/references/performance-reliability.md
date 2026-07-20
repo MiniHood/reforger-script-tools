@@ -3,6 +3,9 @@
 Evaluate responsiveness, resource use, scale behavior, recovery, and
 observability.
 
+Complete these slices: trigger/work model; hot-path trace; scale model;
+boundedness/cancellation; recovery/resource lifecycle; measurement audit.
+
 Focus on:
 
 - hot typing/request paths, startup, indexing, large files, repeated events,

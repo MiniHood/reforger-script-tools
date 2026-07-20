@@ -3,6 +3,9 @@
 Evaluate how predictable, discoverable, and understandable the feature is for
 extension users and contributors.
 
+Complete these slices: entry/discovery; primary journey; timing/empty states;
+error/recovery journey; feature/settings consistency; contributor journey.
+
 Focus on:
 
 - editor behavior, command discoverability, user-visible timing, diagnostics,

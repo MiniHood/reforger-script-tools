@@ -42,6 +42,10 @@ reliability, and developer experience—without sharing reviewer conclusions.
 The coordinator then combines evidence, preserves material disagreement, and
 recommends a next step; it never implements that recommendation.
 
+Deep review records concise generated evidence slices and a coverage verdict.
+Its final report uses P1-P4 priorities, independent confidence, and an explicit
+disposition for every unresolved P1-P3 finding.
+
 Use `/debug` to establish a causal chain for an observed failure and `/fix` to
 design, implement, and verify an authorized durable solution. Use `/review`
 when the goal is broad, independent scrutiny rather than diagnosis or a code

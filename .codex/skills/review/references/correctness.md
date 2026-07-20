@@ -2,6 +2,9 @@
 
 Evaluate whether the reviewed behavior can produce incorrect results.
 
+Complete these slices: requirement trace; golden path; boundary input; failure
+and fallback path; temporal/cancellation path; sibling caller audit; test proof.
+
 Focus on:
 
 - normal and boundary inputs, incomplete or malformed input, and state

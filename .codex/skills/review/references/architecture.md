@@ -3,6 +3,9 @@
 Evaluate whether the reviewed work fits the repository's authoritative
 architecture and remains easy to evolve.
 
+Complete these slices: ownership map; dependency direction; lifecycle/state map;
+duplicate-authority audit; adjacent-path audit; documentation-contract audit.
+
 Focus on:
 
 - ownership and layer boundaries, especially the TypeScript extension shell,
