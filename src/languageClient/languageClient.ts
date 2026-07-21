@@ -39,6 +39,7 @@ import {
 } from './workspaceWatchBridge';
 import { registerDebugCommandBridge } from './debugCommandBridge';
 import { createCompletionMiddleware } from './completionMiddleware';
+import { typingAssistRequest } from './typingAssistBridge';
 
 let client: LanguageClient | undefined;
 let clientDisposables: vscode.Disposable[] = [];
@@ -601,12 +602,7 @@ async function requestBlockCommentPair(
 	try {
 		const response = await activeClient.sendRequest<BlockCommentPairResponse>(
 			languageClientRequests.blockCommentPair,
-			{
-				textDocument: { uri: transaction.document.uri.toString() },
-				position: { line: transaction.position.line, character: transaction.position.character },
-				version: transaction.version,
-				options: { tabSize: editor.options.tabSize, insertSpaces: editor.options.insertSpaces },
-			},
+			typingAssistRequest(transaction.document, transaction.position, editor),
 		);
 		if (!isCurrent() || transaction.document.version !== transaction.version || response.edits.length === 0) {
 			diagnostic('formatting.commentPair', {
@@ -764,13 +760,7 @@ async function requestEnterTypingAssist(
 	try {
 		const response = await activeClient.sendRequest<EnterTypingAssistResponse>(
 			languageClientRequests.enterTypingAssist,
-			{
-				textDocument: { uri: transaction.document.uri.toString() },
-				position: { line: transaction.position.line, character: transaction.position.character },
-				ch: transaction.trigger,
-				version: transaction.version,
-				options: { tabSize: editor.options.tabSize, insertSpaces: editor.options.insertSpaces },
-			},
+			typingAssistRequest(transaction.document, transaction.position, editor, transaction.trigger),
 		);
 		if (!isCurrent() || transaction.document.version !== transaction.version) {
 			diagnostic('formatting.enter', { outcome: 'staleResponse', version: transaction.version, reason: 'documentChanged' });
