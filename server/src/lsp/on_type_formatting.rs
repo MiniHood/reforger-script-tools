@@ -31,6 +31,7 @@ pub(super) fn unbraced_if_body_outdent_plan(
     cursor: usize,
     tab_size: usize,
     insert_spaces: bool,
+    accept_single_unit_tab_indent: bool,
 ) -> Option<ControlBodyOutdentPlan> {
     if source.len() > MAX_ON_TYPE_SOURCE_BYTES || cursor > source.len() {
         return None;
@@ -58,7 +59,14 @@ pub(super) fn unbraced_if_body_outdent_plan(
         "\t".to_string()
     };
     let body_indent = format!("{header_indent}{unit}");
-    if current_indent != body_indent || !body.starts_with(&body_indent) {
+    // A trusted Tab trigger on an otherwise empty line starts from column zero.
+    // It therefore produces one indentation unit, not the `if` body's indent.
+    // Accept that exact Tab-triggered shape too, then restore the header indent.
+    // Enter keeps the stricter body-indent-only contract.
+    let is_single_unit_tab_indent = accept_single_unit_tab_indent && current_indent == unit;
+    if (current_indent != body_indent && !is_single_unit_tab_indent)
+        || !body.starts_with(&body_indent)
+    {
         return None;
     }
     let header_tokens = significant_tokens(header)?;
@@ -955,7 +963,7 @@ mod tests {
             "\tif (owner == GetOwner())\n\t\treturn owner; // note\n\t\t",
             "\tif (owner == GetOwner())\n\t\treturn owner\n\t\t",
         ] {
-            let plan = unbraced_if_body_outdent_plan(source, source.len(), 4, false).unwrap();
+            let plan = unbraced_if_body_outdent_plan(source, source.len(), 4, false, false).unwrap();
             assert_eq!(plan.replacement, "\t", "{source:?}");
             assert_eq!(plan.selection_character, 1, "{source:?}");
         }
@@ -970,10 +978,28 @@ mod tests {
             "\tif (owner == GetOwner())\n\t\treturn owner;\n\t",
         ] {
             assert!(
-                unbraced_if_body_outdent_plan(source, source.len(), 4, false).is_none(),
+                unbraced_if_body_outdent_plan(source, source.len(), 4, false, false).is_none(),
                 "{source:?}"
             );
         }
+    }
+
+    #[test]
+    fn tab_from_an_empty_line_restores_the_completed_if_header_indent() {
+        let source = "\t\tif (owner == GetOwner())\n\t\t\treturn owner;\n\t";
+        let plan = unbraced_if_body_outdent_plan(source, source.len(), 4, false, true).unwrap();
+        assert_eq!(plan.replacement, "\t\t");
+        assert_eq!(plan.selection_character, 2);
+        assert!(unbraced_if_body_outdent_plan(source, source.len(), 4, false, false).is_none());
+    }
+
+    #[test]
+    fn tab_from_an_empty_line_supports_space_indentation_when_the_trigger_is_trusted() {
+        let source = "        if (owner == GetOwner())\n            return owner;\n    ";
+        let plan = unbraced_if_body_outdent_plan(source, source.len(), 4, true, true).unwrap();
+        assert_eq!(plan.replacement, "        ");
+        assert_eq!(plan.selection_character, 8);
+        assert!(unbraced_if_body_outdent_plan(source, source.len(), 4, true, false).is_none());
     }
 
     #[test]

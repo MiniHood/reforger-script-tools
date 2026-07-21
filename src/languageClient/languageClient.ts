@@ -33,6 +33,7 @@ let devServerWatcher: vscode.FileSystemWatcher | undefined;
 let watchedDevServerPath: string | undefined;
 let restartTimer: NodeJS.Timeout | undefined;
 let restartingClient = false;
+let initialStartup: Promise<void> | undefined;
 const workspaceWatcherDebounceMs = 250;
 const devServerRestartDebounceMs = 500;
 const startupTimingSessionStartMs = Date.now();
@@ -133,7 +134,7 @@ function sanitizeDiagnosticFields(fields: Record<string, string | number | boole
 	return safe;
 }
 
-export function registerLanguageClientFeatures(context: vscode.ExtensionContext): void {
+export function registerLanguageClientFeatures(context: vscode.ExtensionContext): () => void {
 	logLanguageClientStartupTiming(context, 'languageClientRegistrationStart');
 	const outputChannel = vscode.window.createOutputChannel(languageClientIds.name, { log: true });
 	const debugOutputChannel = vscode.window.createOutputChannel(languageClientIds.debugOutputName);
@@ -172,8 +173,17 @@ export function registerLanguageClientFeatures(context: vscode.ExtensionContext)
 	));
 	context.subscriptions.push(registerFirstDocumentOpenTiming(context));
 
-	void startLanguageClient(context, outputChannel);
+	const startup = startLanguageClient(context, outputChannel);
+	initialStartup = startup;
+	void startup.finally(() => {
+		if (initialStartup === startup) {
+			initialStartup = undefined;
+		}
+	});
 	logLanguageClientStartupTiming(context, 'languageClientRegistrationEnd');
+	return () => {
+		void restartLanguageClient(context, outputChannel, 'game-data source changed');
+	};
 }
 
 function registerFirstDocumentOpenTiming(context: vscode.ExtensionContext): vscode.Disposable {
@@ -739,11 +749,7 @@ function registerEnterTypingAssist(): vscode.Disposable {
 		const editor = vscode.window.activeTextEditor;
 		const enterPosition = enterAfterPosition(event.contentChanges);
 		const tabPosition = editor && editor.document.uri.toString() === event.document.uri.toString()
-			? tabAfterPosition(
-				event.contentChanges,
-				Number(editor.options.tabSize ?? 4),
-				editor.options.insertSpaces === true,
-			)
+			? tabAfterPosition(event.contentChanges)
 			: undefined;
 		const position = enterPosition ?? tabPosition;
 		if (!position) {
@@ -1024,20 +1030,23 @@ async function restartLanguageClient(
 	}
 
 	restartingClient = true;
-	outputChannel.appendLine(`Restarting language server: ${reason}`);
-	disposeClientDisposables();
-	const activeClient = client;
-	client = undefined;
 	try {
-		if (activeClient) {
-			await activeClient.stop();
+		const startup = initialStartup;
+		if (startup) {
+			await startup;
 		}
-	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
-		outputChannel.appendLine(`Language server stop during restart reported: ${message}`);
-	}
-
-	try {
+		outputChannel.appendLine(`Restarting language server: ${reason}`);
+		disposeClientDisposables();
+		const activeClient = client;
+		client = undefined;
+		try {
+			if (activeClient) {
+				await activeClient.stop();
+			}
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			outputChannel.appendLine(`Language server stop during restart reported: ${message}`);
+		}
 		await startLanguageClient(context, outputChannel);
 	} finally {
 		restartingClient = false;
@@ -1411,16 +1420,12 @@ function isVscodeCommand(value: unknown): value is vscode.Command {
 
 export function tabAfterPosition(
 	changes: readonly vscode.TextDocumentContentChangeEvent[],
-	tabSize: number,
-	insertSpaces: boolean,
 ): vscode.Position | undefined {
 	if (changes.length !== 1 || changes[0].rangeLength !== 0) {
 		return undefined;
 	}
 	const change = changes[0];
-	const configuredIndent = insertSpaces ? ' '.repeat(Number(tabSize)) : '\t';
-	const nativeTabSpaces = /^[ ]{1,16}$/.test(change.text);
-	if (change.text !== '\t' && change.text !== configuredIndent && !nativeTabSpaces) {
+	if (change.text !== '\t') {
 		return undefined;
 	}
 	return new vscode.Position(change.range.start.line, change.range.start.character + change.text.length);

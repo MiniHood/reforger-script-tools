@@ -14,8 +14,8 @@ export function activate(context: vscode.ExtensionContext) {
 		extensionMode: extensionModeName(context.extensionMode),
 		workspaceFolders: String(vscode.workspace.workspaceFolders?.length ?? 0),
 	});
-	registerGameDataFeatures(context);
-	registerLanguageClientFeatures(context);
+	const refreshLanguageClientGameData = registerLanguageClientFeatures(context);
+	registerGameDataFeatures(context, refreshLanguageClientGameData);
 	logLanguageClientStartupTiming(context, 'activationEnd');
 	diagnostic('activationEnd');
 }

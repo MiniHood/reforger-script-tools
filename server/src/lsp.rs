@@ -2074,12 +2074,14 @@ impl<W: Write> LspServer<W> {
                     let mut line = -1i64;
                     let mut character = -1i64;
                     let mut outcome = "no_edit";
+                    let mut trigger = "unknown";
                     let result = params
                         .and_then(|params| {
                             log_uri = params.text_document.uri;
                             version = params.version;
                             line = params.position.line as i64;
                             character = params.position.character as i64;
+                            trigger = if params.ch == "\n" { "enter" } else if params.ch == "\t" { "tab" } else { "unsupported" };
                             if !matches!(params.ch.as_str(), "\n" | "\t")
                                 || (params.ch == "\n" && params.position.line == 0)
                             {
@@ -2123,6 +2125,7 @@ impl<W: Write> LspServer<W> {
                                 cursor,
                                 params.options.tab_size,
                                 params.options.insert_spaces,
+                                params.ch == "\t",
                             );
                             if let Some(plan) = &outdent {
                                 edits.push(json!({
@@ -2161,12 +2164,13 @@ impl<W: Write> LspServer<W> {
                         })
                         .unwrap_or_else(|| json!({ "edits": [] }));
                     self.log(&format!(
-                        "request enterTypingAssist uri={} bytes={} version={} line={} character={} outcome={} elapsed_ms={}",
+                        "request enterTypingAssist uri={} bytes={} version={} line={} character={} trigger={} outcome={} elapsed_ms={}",
                         log_uri,
                         bytes,
                         version,
                         line,
                         character,
+                        trigger,
                         outcome,
                         start.elapsed().as_millis()
                     ));
@@ -10118,6 +10122,48 @@ class Example
         assert!(output.contains("\"newText\":\"\\t\""), "{output}");
         assert!(
             output.contains("\"selection\":{\"character\":1,\"line\":2}"),
+            "{output}"
+        );
+    }
+
+    #[test]
+    fn typing_assist_restores_header_indent_when_tab_starts_on_an_empty_line() {
+        let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
+        let uri = "file:///Scripts/IfBodyEmptyTab.c";
+        server
+            .handle_message(
+                json!({ "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+                    "textDocument": {
+                        "uri": uri,
+                        "languageId": "enforce",
+                        "version": 1,
+                        "text": "\t\tif (owner == GetOwner())\n\t\t\treturn owner;\n\t"
+                    }
+                }}),
+                None,
+                0,
+                0,
+            )
+            .unwrap();
+        server.writer.clear();
+        server
+            .handle_message(
+                json!({ "jsonrpc": "2.0", "id": 1, "method": ENTER_TYPING_ASSIST_METHOD, "params": {
+                    "textDocument": { "uri": uri },
+                    "position": { "line": 2, "character": 1 },
+                    "ch": "\t",
+                    "version": 1,
+                    "options": { "tabSize": 4, "insertSpaces": false }
+                }}),
+                None,
+                0,
+                0,
+            )
+            .unwrap();
+        let output = String::from_utf8_lossy(&server.writer);
+        assert!(output.contains("\"newText\":\"\\t\\t\""), "{output}");
+        assert!(
+            output.contains("\"selection\":{\"character\":2,\"line\":2}"),
             "{output}"
         );
     }

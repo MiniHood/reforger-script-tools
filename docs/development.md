@@ -6,6 +6,10 @@ change crosses a boundary.
 
 ## Build and Test
 
+For a fresh checkout, install a current Node.js LTS release and the Rust toolchain
+(including Cargo), then run `npm ci` from the repository root. Rust is a
+development requirement only; packaged extension users receive the built server.
+
 From the repository root:
 
 | Command | Verifies |
@@ -22,14 +26,19 @@ changes, run `npm run compile` after the final source edit.
 
 ## Local Extension Session
 
-The `Run Extension` launch configuration uses the default build task and starts
-an Extension Development Host. The default task runs the TypeScript and
-extension-bundle watchers. Use it for live editor checks after compilation.
+The `Run Extension` launch configuration runs `npm run compile` before it starts
+an Extension Development Host, so the bundled development server exists before
+the client starts. Use `npm run watch` separately when iterating on TypeScript
+or the extension bundle, then use the existing host for live editor checks.
 
 The server build refreshes the development and packaged server binaries. It
 also stops repository-owned running language-server processes before replacing
 them, so verify the active development session after a server rebuild rather
 than assuming a previous process reflects the change.
+
+When game data is installed or a manual game-data folder is chosen, the client
+restarts the language server so its external index uses the new source. Wait for
+that restart before judging game-API language features.
 
 ## Documentation Changes
 

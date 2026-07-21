@@ -21,6 +21,11 @@ Game data and workspace scripts enter through resolved paths and document/file
 notifications. The server turns them into immutable language facts; the client
 renders or transports the resulting editor behavior.
 
+When the extension installs game data or the user selects a manual source, the
+top-level wiring requests a language-server restart. The replacement server then
+builds its external game-data layer from that source; game-data acquisition does
+not perform language analysis itself.
+
 ## Module Boundaries
 
 | Module | Owns | Must not own |

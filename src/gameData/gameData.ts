@@ -81,11 +81,14 @@ export function markManualFolderWarned(manualFolder: string, warnedManualFolders
 		: [...warnedManualFolders, normalized];
 }
 
-export function registerGameDataFeatures(context: vscode.ExtensionContext): void {
+export function registerGameDataFeatures(
+	context: vscode.ExtensionContext,
+	onGameDataSourceChanged?: () => void,
+): void {
 	diagnostic('gameData.registration');
 	context.subscriptions.push(
 		vscode.commands.registerCommand(gameDataCommands.checkForUpdates, async () => {
-			await runGameDataStartupCheck(context, true);
+			await runGameDataStartupCheck(context, true, onGameDataSourceChanged);
 		}),
 		vscode.commands.registerCommand(gameDataCommands.openStorageFolder, async () => {
 			const storageRoot = getGameDataStorageRoot(context);
@@ -94,10 +97,14 @@ export function registerGameDataFeatures(context: vscode.ExtensionContext): void
 		}),
 	);
 
-	void runGameDataStartupCheck(context, false);
+	void runGameDataStartupCheck(context, false, onGameDataSourceChanged);
 }
 
-async function runGameDataStartupCheck(context: vscode.ExtensionContext, manualCommand: boolean): Promise<void> {
+async function runGameDataStartupCheck(
+	context: vscode.ExtensionContext,
+	manualCommand: boolean,
+	onGameDataSourceChanged?: () => void,
+): Promise<void> {
 	const startedAt = Date.now();
 	try {
 		const manualFolder = getManualFolderSetting();
@@ -126,7 +133,7 @@ async function runGameDataStartupCheck(context: vscode.ExtensionContext, manualC
 			const selection = await promptForGameDataSource();
 
 			if (selection === setManualFolderChoice) {
-				await promptAndSetManualFolder(context);
+				await promptAndSetManualFolder(context, onGameDataSourceChanged);
 				return;
 			}
 
@@ -147,6 +154,7 @@ async function runGameDataStartupCheck(context: vscode.ExtensionContext, manualC
 				await downloadAndInstallGameData(context, remote, progress);
 			},
 		);
+		onGameDataSourceChanged?.();
 		vscode.window.showInformationMessage(`Reforger game data updated: ${remote.message}.`);
 		diagnostic('gameData.check', { mode: 'downloaded', outcome: 'updated', elapsedMs: Date.now() - startedAt });
 	} catch (error) {
@@ -164,7 +172,10 @@ async function promptForGameDataSource(): Promise<string | undefined> {
 	);
 }
 
-async function promptAndSetManualFolder(context: vscode.ExtensionContext): Promise<void> {
+async function promptAndSetManualFolder(
+	context: vscode.ExtensionContext,
+	onGameDataSourceChanged?: () => void,
+): Promise<void> {
 	const selectedFolders = await vscode.window.showOpenDialog({
 		canSelectFiles: false,
 		canSelectFolders: true,
@@ -182,6 +193,7 @@ async function promptAndSetManualFolder(context: vscode.ExtensionContext): Promi
 		.getConfiguration(gameDataConfig.section)
 		.update(gameDataConfig.settings.manualFolder, selectedFolder, vscode.ConfigurationTarget.Global);
 	await validateManualFolder(context, selectedFolder);
+	onGameDataSourceChanged?.();
 	vscode.window.showInformationMessage('Manual Reforger game data folder set. GitHub game-data checks and downloads are skipped.');
 }
 

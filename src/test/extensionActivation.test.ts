@@ -206,23 +206,16 @@ suite('extension activation', () => {
 		);
 	});
 
-	test('admits bounded native Tab indentation edits for the Rust typing assist', () => {
+	test('admits only literal Tab indentation edits for the Rust typing assist', () => {
 		const tab = {
 			range: new vscode.Range(new vscode.Position(8, 4), new vscode.Position(8, 4)),
 			rangeLength: 0,
 			text: '\t',
 		} as vscode.TextDocumentContentChangeEvent;
-		assert.deepStrictEqual(tabAfterPosition([tab], 4, false), new vscode.Position(8, 5));
-		assert.deepStrictEqual(
-			tabAfterPosition([{ ...tab, text: '    ' }], 4, true),
-			new vscode.Position(8, 8),
-		);
-		assert.deepStrictEqual(
-			tabAfterPosition([{ ...tab, text: '  ' }], 4, true),
-			new vscode.Position(8, 6),
-		);
-		assert.strictEqual(tabAfterPosition([{ ...tab, text: '                 ' }], 4, true), undefined);
-		assert.strictEqual(tabAfterPosition([{ ...tab, rangeLength: 1 }], 4, false), undefined);
+		assert.deepStrictEqual(tabAfterPosition([tab]), new vscode.Position(8, 5));
+		assert.strictEqual(tabAfterPosition([{ ...tab, text: '    ' }]), undefined);
+		assert.strictEqual(tabAfterPosition([{ ...tab, text: '  ' }]), undefined);
+		assert.strictEqual(tabAfterPosition([{ ...tab, rangeLength: 1 }]), undefined);
 	});
 
 	test('enables local diagnostic logging by default', () => {
