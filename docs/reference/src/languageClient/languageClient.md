@@ -80,6 +80,19 @@ trace before release.
 
 Rust completion items may still use VS Code's built-in parameter-hints command after ordinary callable insertion.
 
+The Rust `if` keyword item is the one additional completion-command exception.
+It declares Space as an item-specific LSP commit character and carries the
+Rust-authored `normalizeIfSpaceCommit` command. VS Code appends that commit
+character at the active snippet caret. The client handles both supported event
+orders: it removes the exact single-caret `if ( )` postcondition immediately
+when already present, or arms one version- and position-bound listener for the
+single Space insertion at the known `if ()` cursor. Any other edit, document,
+version, position, selection, or text shape is ignored. There is no server
+request, semantic classification, timer, or generic typing listener. Tab does
+not match either condition and remains a single Rust snippet edit. This narrow
+UI cleanup preserves the intended empty condition for direct `if` then Space
+input without making TypeScript a language-formatting owner.
+
 The client also owns the editor admission for one Rust-authored Enter typing
 assist. A document-change bridge accepts only a single plain Enter insertion
 and derives the post-Enter UTF-16 position from that immutable change event,

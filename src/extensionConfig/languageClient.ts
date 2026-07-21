@@ -22,6 +22,7 @@ export const languageClientCommands = {
 	debugCompletionAtCursor: 'reforger-sript-tools.debug.completionAtCursor',
 	triggerSuggestAtSnippetPlaceholder: 'reforger-sript-tools.completion.triggerSuggestAtSnippetPlaceholder',
 	advanceSnippetPlaceholderAfterAccept: 'reforger-sript-tools.completion.advanceSnippetPlaceholderAfterAccept',
+	normalizeIfSpaceCommit: 'reforger-sript-tools.completion.normalizeIfSpaceCommit',
 	openSymbolLocation: 'reforger-sript-tools.openSymbolLocation',
 } as const;
 

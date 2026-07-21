@@ -6,6 +6,8 @@ import { languageClientCommands } from '../extensionConfig/languageClient';
 import {
 	blockCommentPairPosition,
 	enterAfterPosition,
+	ifSpaceCommitDeletionRange,
+	ifSpaceCommitInsertionPosition,
 	isCurrentSingleTypingAssistCaret,
 } from '../languageClient/languageClient';
 
@@ -52,11 +54,34 @@ suite('extension activation', () => {
 		assert.ok(clientSource.includes('snippetSuggestTraceVersion'));
 		assert.ok(clientSource.includes('registerEnterTypingAssist'));
 		assert.ok(clientSource.includes('registerBlockCommentPair'));
+		assert.ok(clientSource.includes('normalizeIfSpaceCommit'));
+		assert.ok(clientSource.includes('ifSpaceCommitDeletionRange'));
 		assert.ok(clientSource.includes('isSinglePlainEnter'));
 		assert.ok(clientSource.includes('blockCommentPairPosition'));
 		assert.ok(clientSource.includes('enterAfterPosition'));
 		assert.ok(clientSource.includes('onDidChangeTextEditorSelection'));
 		assert.ok(!clientSource.includes('registerOnTypeFormattingEditProvider'));
+	});
+
+	test('removes only the Rust-authored if Space commit character', async () => {
+		const committedDocument = await vscode.workspace.openTextDocument({
+			language: 'enforce',
+			content: '\tif ( )',
+		});
+		assert.deepStrictEqual(
+			ifSpaceCommitDeletionRange(committedDocument, new vscode.Position(0, 6)),
+			new vscode.Range(0, 5, 0, 6),
+		);
+		assert.strictEqual(
+			ifSpaceCommitDeletionRange(committedDocument, new vscode.Position(0, 5)),
+			undefined,
+		);
+		const insertedDocument = await vscode.workspace.openTextDocument({
+			language: 'enforce',
+			content: '\tif ()',
+		});
+		assert.strictEqual(ifSpaceCommitInsertionPosition(insertedDocument, new vscode.Position(0, 5)), true);
+		assert.strictEqual(ifSpaceCommitInsertionPosition(insertedDocument, new vscode.Position(0, 6)), false);
 	});
 
 	test('contributes native pairs and narrow if-family indentation', async () => {

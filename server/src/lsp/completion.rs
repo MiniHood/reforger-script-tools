@@ -44,6 +44,11 @@ const COMMAND_TRIGGER_PARAMETER_HINTS: &str = "editor.action.triggerParameterHin
 /// to select each Rust-authored placeholder before dispatching Suggest.
 const COMMAND_TRIGGER_SUGGEST_AT_SNIPPET_PLACEHOLDER: &str =
     "reforger-sript-tools.completion.triggerSuggestAtSnippetPlaceholder";
+/// A completion-specific UI adapter which removes the one Space commit
+/// character that VS Code appends after this item's snippet edit. It has an
+/// exact caret-local contract and never classifies ordinary source text.
+const COMMAND_NORMALIZE_IF_SPACE_COMMIT: &str =
+    "reforger-sript-tools.completion.normalizeIfSpaceCommit";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LspCompletionList {
@@ -68,6 +73,11 @@ pub struct LspCompletionItem {
     pub filter_text: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub insert_text_format: Option<u32>,
+    /// Characters which accept this item through the editor's single native
+    /// completion transaction. This is intentionally item-specific: normal
+    /// typing must not become a completion acceptance path globally.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commit_characters: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub command: Option<LspCommand>,
     pub text_edit: LspTextEdit,
@@ -1160,6 +1170,7 @@ impl BoundedCompletionFacts {
                         sort_text: Some(format!("000:local:{}", declaration.name)),
                         filter_text: Some(declaration.name.clone()),
                         insert_text_format: None,
+                        commit_characters: None,
                         command: None,
                         text_edit: LspTextEdit {
                             range: range_for_span(source, prefix_span),
@@ -1600,6 +1611,7 @@ fn bounded_completion_item(
         sort_text: Some(format!("000:bounded:{label}")),
         filter_text: Some(label.clone()),
         insert_text_format: None,
+        commit_characters: None,
         command: None,
         text_edit: LspTextEdit {
             range: range_for_span(source, prefix_span),
@@ -2796,6 +2808,7 @@ fn completion_item_for_parameter_label(
         )),
         filter_text: Some(parameter.name.clone()),
         insert_text_format: Some(2),
+        commit_characters: None,
         command,
         text_edit: LspTextEdit {
             range: edit_range,
@@ -3422,6 +3435,7 @@ fn completion_item_for_override_candidate(
         )),
         filter_text: Some(label),
         insert_text_format: Some(2),
+        commit_characters: None,
         command: None,
         text_edit: LspTextEdit {
             range: edit_range,
@@ -3503,10 +3517,18 @@ fn keyword_completion_items(
             // parenthesized condition. Keep that choice inside the accepted
             // Rust-authored completion edit so VS Code applies it atomically,
             // rather than observing a later Space/Enter edit from the client.
-            let (new_text, insert_text_format) = if keyword == "if" {
-                ("if ($0)".to_string(), Some(2))
+            let (new_text, insert_text_format, commit_characters) = if keyword == "if" {
+                (
+                    "if ($0)".to_string(),
+                    Some(2),
+                    // Space accepts the selected `if` suggestion as the same
+                    // atomic completion transaction as Tab. This is not an
+                    // observed post-keypress rewrite, so it cannot race the
+                    // document, caret, or native Enter indentation.
+                    Some(vec![" ".to_string()]),
+                )
             } else {
-                (keyword.to_string(), None)
+                (keyword.to_string(), None, None)
             };
             LspCompletionItem {
                 label: keyword.to_string(),
@@ -3522,7 +3544,12 @@ fn keyword_completion_items(
                 )),
                 filter_text: Some(keyword.to_string()),
                 insert_text_format,
-                command: None,
+                commit_characters,
+                command: (keyword == "if").then_some(LspCommand {
+                    title: "Normalize if Space commit".to_string(),
+                    command: COMMAND_NORMALIZE_IF_SPACE_COMMIT.to_string(),
+                    arguments: None,
+                }),
                 text_edit: LspTextEdit {
                     range: edit_range,
                     new_text,
@@ -3978,6 +4005,7 @@ fn completion_item_for_candidate(
         sort_text: Some(completion_sort_text(candidate, &label, match_prefix, order)),
         filter_text: Some(filter_text),
         insert_text_format,
+        commit_characters: None,
         command,
         text_edit,
         required_parameter_count,
@@ -5669,7 +5697,13 @@ ArmaReforgerScripted GetGame();
 
         assert_eq!(if_item.text_edit.new_text, "if ($0)");
         assert_eq!(if_item.insert_text_format, Some(2));
-        assert!(if_item.command.is_none());
+        assert_eq!(if_item.commit_characters, Some(vec![" ".to_string()]));
+        assert_eq!(
+            if_item.command.as_ref().map(|command| command.command.as_str()),
+            Some(COMMAND_NORMALIZE_IF_SPACE_COMMIT),
+        );
+        let wire_item = serde_json::to_value(if_item).expect("keyword item should serialize");
+        assert_eq!(wire_item["commitCharacters"], serde_json::json!([" "]));
 
         let while_item = keyword_completion_items(
             "while",
@@ -5682,6 +5716,7 @@ ArmaReforgerScripted GetGame();
         .expect("while should remain a value-context keyword");
         assert_eq!(while_item.text_edit.new_text, "while");
         assert_eq!(while_item.insert_text_format, None);
+        assert_eq!(while_item.commit_characters, None);
     }
 
     #[test]

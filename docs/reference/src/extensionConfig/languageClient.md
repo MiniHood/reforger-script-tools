@@ -12,6 +12,10 @@ This file is TypeScript extension-shell configuration. It keeps language-client 
 
 Exports constants for the language client ID/name, hover-debug and completion-debug output channel names, language-client command IDs, server binary name, packaged server folder, development fallback path, log locations, startup timing log filename, index-cache locations, contributed language id, custom LSP request/notification names, and language-client document selector. This includes the Rust-owned `reforger/enterTypingAssist` and `reforger/blockCommentPair` typing-assist requests. The completion-debug command remains the single Ctrl+F2 debug entrypoint for both autocomplete and Signature Help.
 
+The command set also includes the Rust-authored `if` Space-commit normalization
+bridge. It is not a general typing command: the language client invokes it only
+when the Rust `if` completion item has been accepted.
+
 Also exports the language-client crash handling constants: the default-equivalent restart count, the restart window, and the concise final crash notification text.
 
 Also exports deletion and insertion completion retrigger debounces. These control only when the VS Code shell asks the Rust LSP for completion after backspace/delete or typed identifier characters; they do not provide candidates or duplicate completion logic.

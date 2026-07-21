@@ -125,12 +125,19 @@ suggestions. Across every completion context, exact names and case-insensitive
 prefixes rank before boundary abbreviations and subsequence matches; the score
 bands are non-overlapping so a long fuzzy name cannot outrank a direct prefix.
 Accepting the `if` keyword inserts the Rust-authored snippet `if ($0)`, with
-the cursor directly inside otherwise-empty parentheses. This is an atomic
-completion edit, not a client-side Space/Enter transform: Enter still creates
-a line break and native language configuration remains the sole owner of
-immediate control-body indentation. Other control keywords remain plain until
-their distinct syntax and editor journeys have their own source-backed
-contract.
+the cursor directly inside otherwise-empty parentheses. Tab and Space both
+accept this selected item through VS Code's native single completion
+transaction: Rust exposes Space only as this item's LSP `commitCharacters`
+value, so `if` followed by Space becomes the same atomic snippet rather than a
+client-side post-keypress rewrite. VS Code retains the committed Space at the
+active snippet cursor, so this item also carries a Rust-authored client command
+with one exact UI postcondition: only a single Enforce caret immediately after
+the inserted space in `if ( )` may remove that one character. Tab does not
+match that shape and is unchanged. The command does not parse or classify
+ordinary source and has no server round trip. Enter still creates a line break
+and native language configuration remains the sole owner of immediate
+control-body indentation. Other control keywords remain plain until their
+distinct syntax and editor journeys have their own source-backed contract.
 When a value completion starts immediately after `return`, Rust includes the
 required leading separator in the LSP edit so acceptance cannot form
 `returnowner`. The language manifest disables Enter-based acceptance by default
