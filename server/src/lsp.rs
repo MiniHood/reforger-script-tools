@@ -86,8 +86,8 @@ pub use hover::{
 };
 pub use open_documents::{file_index_for_source, FileIndexAnalysis};
 pub(crate) use open_documents::{
-    file_index_for_source_with_timings, FileIndexAnalysisTimings, OpenDocument,
-    TokenProjectionKind, TokenResultDisposition,
+    file_index_for_source_with_timings, FileIndexAnalysisTimings, ForegroundQuerySnapshot,
+    OpenDocument, TokenProjectionKind, TokenResultDisposition,
 };
 #[cfg(test)]
 use semantic_tokens::{fast_semantic_tokens_for_cached_analysis, LspSemanticTokens};
@@ -258,6 +258,29 @@ struct LspServer<W: Write> {
     semantic_tokens_refresh_dirty: bool,
     last_semantic_external_generation: u64,
     shutdown_requested: bool,
+}
+
+struct DocumentQuery<'a> {
+    document: &'a OpenDocument,
+    external_indexes: ExternalIndexSnapshot,
+}
+
+enum DocumentQueryState<'a> {
+    Cached(&'a FileIndexAnalysis),
+    Foreground(&'a ForegroundQuerySnapshot),
+    Pending,
+}
+
+impl<'a> DocumentQuery<'a> {
+    fn state_for(document: &'a OpenDocument) -> DocumentQueryState<'a> {
+        if document.analysis_ready() {
+            DocumentQueryState::Cached(document.analysis())
+        } else if let Some(foreground) = document.foreground() {
+            DocumentQueryState::Foreground(foreground)
+        } else {
+            DocumentQueryState::Pending
+        }
+    }
 }
 
 enum ServerEvent {
@@ -1176,6 +1199,14 @@ impl<W: Write> LspServer<W> {
         Self::new_with_runtime_senders(writer, options, None, None, None)
     }
 
+    fn document_query(&self, uri: &str) -> Option<DocumentQuery<'_>> {
+        let document = self.documents.get(uri)?;
+        Some(DocumentQuery {
+            document,
+            external_indexes: self.external_index.snapshot(),
+        })
+    }
+
     fn new_with_runtime_senders(
         writer: W,
         options: LspServerOptions,
@@ -1909,18 +1940,23 @@ impl<W: Write> LspServer<W> {
                     let result = params
                         .and_then(|params| {
                             log_uri = params.text_document.uri;
-                            self.documents.get(&log_uri).map(|document| {
+                            self.document_query(&log_uri).map(|query| {
+                                let DocumentQuery {
+                                    document,
+                                    external_indexes: indexes,
+                                } = query;
                                 bytes = document.text.len();
                                 revision = document.revision;
                                 foreground_ready = document.foreground_ready();
-                                let indexes = self.external_index.snapshot();
                                 external_index_status = indexes.status;
                                 external_index_layers = indexes.available_layers();
-                                let report = if document.analysis_ready() {
+                                let report = if let DocumentQueryState::Cached(analysis) =
+                                    DocumentQuery::state_for(document)
+                                {
                                     cached_analysis = true;
                                     completion_report_for_cached_analysis_with_external_indexes(
                                         &document.text,
-                                        document.analysis(),
+                                        analysis,
                                         params.position,
                                         indexes.workspace.as_deref(),
                                         indexes.game_data.as_deref(),
@@ -2308,29 +2344,32 @@ impl<W: Write> LspServer<W> {
                     let result = params
                         .and_then(|params| {
                             log_uri = params.text_document.uri;
-                            self.documents.get(&log_uri).map(|document| {
+                            self.document_query(&log_uri).map(|query| {
+                                let DocumentQuery {
+                                    document,
+                                    external_indexes: indexes,
+                                } = query;
                                 bytes = document.text.len();
                                 revision = document.revision;
-                                let indexes = self.external_index.snapshot();
                                 external_index_status = indexes.status;
                                 external_index_layers = indexes.available_layers();
-                                let report = if document.analysis_ready() {
-                                    signature_help_report_for_cached_analysis_with_external_indexes(
+                                let report = match DocumentQuery::state_for(document) {
+                                    DocumentQueryState::Cached(analysis) =>
+                                        signature_help_report_for_cached_analysis_with_external_indexes(
                                         &document.text,
-                                        document.analysis(),
+                                        analysis,
                                         params.position,
                                         indexes.workspace.as_deref(),
                                         indexes.game_data.as_deref(),
-                                    )
-                                } else if let Some(foreground) = document.foreground() {
-                                    signature_help_report_for_pending_snapshot(
+                                    ),
+                                    DocumentQueryState::Foreground(foreground) =>
+                                        signature_help_report_for_pending_snapshot(
                                         &document.snapshot,
                                         foreground,
                                         document.parse_diagnostic_count(),
                                         params.position,
-                                    )
-                                } else {
-                                    return None;
+                                    ),
+                                    DocumentQueryState::Pending => return None,
                                 };
                                 parse_diagnostics = report.parse_diagnostics;
                                 context = report.context.unwrap_or_else(|| "<none>".to_string());
@@ -2540,31 +2579,35 @@ impl<W: Write> LspServer<W> {
                     let result = params
                         .and_then(|params| {
                             log_uri = params.text_document.uri;
-                            self.documents.get(&log_uri).map(|document| {
+                            self.document_query(&log_uri).map(|query| {
+                                let DocumentQuery {
+                                    document,
+                                    external_indexes: indexes,
+                                } = query;
                                 bytes = document.text.len();
                                 revision = document.revision;
-                                let indexes = self.external_index.snapshot();
                                 external_index_status = indexes.status;
                                 external_index_layers = indexes.available_layers();
-                                let report = if document.analysis_ready() {
-                                    hover_report_for_cached_analysis_with_external_indexes(
+                                let report = match DocumentQuery::state_for(document) {
+                                    DocumentQueryState::Cached(analysis) =>
+                                        hover_report_for_cached_analysis_with_external_indexes(
                                         &document.text,
-                                        document.analysis(),
+                                        analysis,
                                         &log_uri,
                                         params.position,
                                         indexes.workspace.as_deref(),
                                         indexes.game_data.as_deref(),
-                                    )
-                                } else if let Some(foreground) = document.foreground() {
-                                    query_quality = QueryQuality::Unavailable;
-                                    hover_report_for_pending_snapshot(
+                                    ),
+                                    DocumentQueryState::Foreground(foreground) => {
+                                        query_quality = QueryQuality::Unavailable;
+                                        hover_report_for_pending_snapshot(
                                         &document.snapshot,
                                         foreground,
                                         params.position,
                                         document.parse_diagnostic_count(),
-                                    )
-                                } else {
-                                    return None;
+                                        )
+                                    }
+                                    DocumentQueryState::Pending => return None,
                                 };
                                 parse_diagnostics = report.parse_diagnostics;
                                 hit = report.is_hit();
@@ -2653,32 +2696,36 @@ impl<W: Write> LspServer<W> {
                     let result = params
                         .and_then(|params| {
                             log_uri = params.text_document.uri;
-                            self.documents.get(&log_uri).map(|document| {
+                            self.document_query(&log_uri).map(|query| {
+                                let DocumentQuery {
+                                    document,
+                                    external_indexes: indexes,
+                                } = query;
                                 bytes = document.text.len();
                                 revision = document.revision;
-                                let indexes = self.external_index.snapshot();
                                 external_index_status = indexes.status;
                                 external_index_layers = indexes.available_layers();
-                                let report = if document.analysis_ready() {
-                                    definition_report_for_cached_analysis_with_external_indexes(
+                                let report = match DocumentQuery::state_for(document) {
+                                    DocumentQueryState::Cached(analysis) =>
+                                        definition_report_for_cached_analysis_with_external_indexes(
                                         &document.text,
-                                        document.analysis(),
+                                        analysis,
                                         &log_uri,
                                         params.position,
                                         indexes.workspace.as_deref(),
                                         indexes.game_data.as_deref(),
-                                    )
-                                } else if let Some(foreground) = document.foreground() {
-                                    query_quality = QueryQuality::Unavailable;
-                                    definition_report_for_pending_snapshot(
+                                    ),
+                                    DocumentQueryState::Foreground(foreground) => {
+                                        query_quality = QueryQuality::Unavailable;
+                                        definition_report_for_pending_snapshot(
                                         &document.snapshot,
                                         foreground,
                                         &log_uri,
                                         params.position,
                                         document.parse_diagnostic_count(),
-                                    )
-                                } else {
-                                    return Vec::new();
+                                        )
+                                    }
+                                    DocumentQueryState::Pending => return Vec::new(),
                                 };
                                 parse_diagnostics = report.parse_diagnostics;
                                 hit = report.is_hit();
