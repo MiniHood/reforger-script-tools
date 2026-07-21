@@ -3498,28 +3498,39 @@ fn keyword_completion_items(
     keywords
         .into_iter()
         .filter(|keyword| starts_with_ignore_ascii_case(keyword, prefix))
-        .map(|keyword| LspCompletionItem {
-            label: keyword.to_string(),
-            label_details: None,
-            kind: 14,
-            detail: Some("keyword".to_string()),
-            documentation: None,
-            sort_text: Some(format!(
-                "00:00:{:03}:{:03}:{}",
-                keyword_completion_match_rank(keyword, prefix),
-                keyword.chars().count(),
-                keyword
-            )),
-            filter_text: Some(keyword.to_string()),
-            insert_text_format: None,
-            command: None,
-            text_edit: LspTextEdit {
-                range: edit_range,
-                new_text: keyword.to_string(),
-                replace_range: None,
-            },
-            required_parameter_count: 0,
-            optional_parameter_count: 0,
+        .map(|keyword| {
+            // `if` has one unambiguous, language-required next construct: a
+            // parenthesized condition. Keep that choice inside the accepted
+            // Rust-authored completion edit so VS Code applies it atomically,
+            // rather than observing a later Space/Enter edit from the client.
+            let (new_text, insert_text_format) = if keyword == "if" {
+                ("if (${1:condition})".to_string(), Some(2))
+            } else {
+                (keyword.to_string(), None)
+            };
+            LspCompletionItem {
+                label: keyword.to_string(),
+                label_details: None,
+                kind: 14,
+                detail: Some("keyword".to_string()),
+                documentation: None,
+                sort_text: Some(format!(
+                    "00:00:{:03}:{:03}:{}",
+                    keyword_completion_match_rank(keyword, prefix),
+                    keyword.chars().count(),
+                    keyword
+                )),
+                filter_text: Some(keyword.to_string()),
+                insert_text_format,
+                command: None,
+                text_edit: LspTextEdit {
+                    range: edit_range,
+                    new_text,
+                    replace_range: None,
+                },
+                required_parameter_count: 0,
+                optional_parameter_count: 0,
+            }
         })
         .collect()
 }
@@ -5641,6 +5652,36 @@ ArmaReforgerScripted GetGame();
         );
 
         assert!(items.is_empty());
+    }
+
+    #[test]
+    fn if_keyword_completion_inserts_a_selected_condition_snippet() {
+        let items = keyword_completion_items(
+            "if",
+            test_range(),
+            EditorTopLevelCompletionMode::Value,
+            false,
+        );
+        let if_item = items
+            .iter()
+            .find(|item| item.label == "if")
+            .expect("if should remain a value-context keyword");
+
+        assert_eq!(if_item.text_edit.new_text, "if (${1:condition})");
+        assert_eq!(if_item.insert_text_format, Some(2));
+        assert!(if_item.command.is_none());
+
+        let while_item = keyword_completion_items(
+            "while",
+            test_range(),
+            EditorTopLevelCompletionMode::Value,
+            false,
+        )
+        .into_iter()
+        .find(|item| item.label == "while")
+        .expect("while should remain a value-context keyword");
+        assert_eq!(while_item.text_edit.new_text, "while");
+        assert_eq!(while_item.insert_text_format, None);
     }
 
     #[test]
