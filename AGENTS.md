@@ -26,8 +26,9 @@ server. Keep the runtime ownership boundaries intact.
 
 ## Documentation Router
 
-Read only the document that owns the question before changing a non-trivial
-area:
+Read `docs/README.md` before creating or updating documentation. It owns the
+documentation lifecycle, including the completion check. Read only the document
+that owns the question before changing a non-trivial area:
 
 - `docs/overview.md`: project purpose and evidence hierarchy.
 - `docs/architecture.md`: cross-layer flow and ownership boundaries.
@@ -36,7 +37,8 @@ area:
 
 Documentation records durable context; code and tests remain the implementation
 source of truth. Extend an existing document when it owns the subject. Create a
-new one only for a lasting subsystem contract, decision, or workflow.
+new one only for a lasting subsystem contract, decision, or workflow. At task
+completion, update the owning document when the change affects its contract.
 
 ## Taste
 
