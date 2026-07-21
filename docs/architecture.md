@@ -41,15 +41,18 @@ not perform language analysis itself.
 
 Within the language-client bridge, the composition root retains server lifecycle
 and restart policy. Focused bridges own workspace-script notifications, hover
-rendering, and diagnostic command UI. Each bridge transports Rust-authored
-facts or applies editor behavior; none interprets Enfusion source.
+rendering, diagnostic command UI, development-server watching, completion UI
+transactions, and typing-assist transactions. Each bridge transports
+Rust-authored facts or applies editor behavior; none interprets Enfusion source.
 
-Within the LSP, protocol framing, operational logging, request-local
-document-query admission, and feature projection are separate concerns. A
-document query captures both the open-document snapshot and the external-index
-snapshot at the request boundary so downstream feature code cannot accidentally
-combine facts from different generations. Logging is best-effort observation;
-it cannot participate in request admission or response delivery.
+Within the LSP, transport framing, incoming-message scheduling, request routing,
+runtime scheduling, background-event publication, response writing, operational
+logging, request-local document-query admission, and feature projection are
+separate concerns. A document query captures both the open-document snapshot
+and the external-index snapshot at the request boundary so downstream feature
+code cannot accidentally combine facts from different generations. Logging is
+best-effort observation; it cannot participate in request admission or response
+delivery.
 
 ## Language Engine
 

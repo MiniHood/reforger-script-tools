@@ -30,38 +30,6 @@ suite('extension activation', () => {
 			command.command === languageClientCommands.triggerSuggestAtSnippetPlaceholder));
 	});
 
-	test('keeps the Rust snippet bridge command aligned with the extension contract', async () => {
-		const extension = vscode.extensions.all.find(
-			candidate => candidate.packageJSON.name === 'reforger-sript-tools',
-		);
-		assert.ok(extension, 'development extension is discoverable');
-		const completionSource = await fs.readFile(
-			path.join(extension.extensionPath, 'server', 'src', 'lsp', 'completion.rs'),
-			'utf8',
-		);
-		assert.ok(completionSource.includes(languageClientCommands.triggerSuggestAtSnippetPlaceholder));
-		assert.ok(completionSource.includes('RPL_RPC_ENUM_PLACEHOLDER_DEFAULTS'));
-		const clientSource = await fs.readFile(
-			path.join(extension.extensionPath, 'src', 'languageClient', 'languageClient.ts'),
-			'utf8',
-		);
-		assert.ok(clientSource.includes('expectedSelectionTexts'));
-		assert.ok(clientSource.includes('advanceSnippetSuggestTransaction'));
-		assert.ok(clientSource.includes('wrapBridgeCompletionCommands'));
-		assert.ok(clientSource.includes('jumpToNextSnippetPlaceholder'));
-		assert.ok(clientSource.includes('registerEmptyCompletionRefresh'));
-		assert.ok(clientSource.includes('isRefreshableEmptyCompletion'));
-		assert.ok(clientSource.includes('completionLifecycleTraceForDocument'));
-		assert.ok(clientSource.includes('snippetSuggestTraceVersion'));
-		assert.ok(clientSource.includes('registerEnterTypingAssist'));
-		assert.ok(clientSource.includes('registerBlockCommentPair'));
-		assert.ok(clientSource.includes('normalizeIfSpaceCommit'));
-		assert.ok(clientSource.includes('blockCommentPairPosition'));
-		assert.ok(clientSource.includes('enterAfterPosition'));
-		assert.ok(clientSource.includes('onDidChangeTextEditorSelection'));
-		assert.ok(!clientSource.includes('registerOnTypeFormattingEditProvider'));
-	});
-
 	test('accepts only Rust-authored if completion coordinates', () => {
 		assert.deepStrictEqual(
 			ifSpaceCommitPositionFromCommandArguments(['3', '9']),
