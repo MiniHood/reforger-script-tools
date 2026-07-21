@@ -93,10 +93,12 @@ not match either condition and remains a single Rust snippet edit. This narrow
 UI cleanup preserves the intended empty condition for direct `if` then Space
 input without making TypeScript a language-formatting owner.
 
-The client also owns the editor admission for one Rust-authored Enter typing
-assist. A document-change bridge accepts only a single plain Enter insertion
+The client also owns the editor admission for one Rust-authored typing assist.
+A document-change bridge accepts only a single plain Enter insertion
 and derives the post-Enter UTF-16 position from that immutable change event,
-rather than relying on global active-editor selection timing. A matching
+rather than relying on global active-editor selection timing. It also admits a
+single native Tab indentation insertion solely for Rust to correct the exact
+proven post-unbraced-`if` body shape. A matching
 selection event confirms that the same document/caret has settled; it is not a
 timer or language decision. A microtask lets the language client's matching
 `didChange` publish before the client forwards URI, captured version,
@@ -111,7 +113,8 @@ Native language configuration owns ordinary complete unbraced `if`, `else if`,
 and `else` header indentation so VS Code produces that final caret location in
 its original Enter transaction. Rust does not advertise a competing automatic
 provider because VS Code did not reliably invoke that provider in the active
-editor.
+editor. Tab remains ordinary VS Code behavior whenever Rust does not return
+that exact correction.
 
 The client also transports one narrow Rust-owned multiline-comment pairing
 assist. VS Code's language configuration first creates its normal `/*` ->

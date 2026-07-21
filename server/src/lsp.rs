@@ -2080,7 +2080,9 @@ impl<W: Write> LspServer<W> {
                             version = params.version;
                             line = params.position.line as i64;
                             character = params.position.character as i64;
-                            if params.ch != "\n" || params.position.line == 0 {
+                            if !matches!(params.ch.as_str(), "\n" | "\t")
+                                || (params.ch == "\n" && params.position.line == 0)
+                            {
                                 outcome = "unsupported_trigger";
                                 return None;
                             }
@@ -2091,27 +2093,29 @@ impl<W: Write> LspServer<W> {
                                 return None;
                             }
                             let cursor = offset_for_position(&document.text, params.position)?;
-                            if let Some(plan) = on_type_formatting::incomplete_if_header_enter_plan(
-                                &document.text,
-                                cursor,
-                                params.options.tab_size,
-                                params.options.insert_spaces,
-                            ) {
-                                outcome = "if_header";
-                                let start = position_for_offset(&document.text, plan.span.start);
-                                return Some(json!({
-                                    "edits": [{
-                                        "range": {
-                                            "start": start,
-                                            "end": position_for_offset(&document.text, plan.span.end),
+                            if params.ch == "\n" {
+                                if let Some(plan) = on_type_formatting::incomplete_if_header_enter_plan(
+                                    &document.text,
+                                    cursor,
+                                    params.options.tab_size,
+                                    params.options.insert_spaces,
+                                ) {
+                                    outcome = "if_header";
+                                    let start = position_for_offset(&document.text, plan.span.start);
+                                    return Some(json!({
+                                        "edits": [{
+                                            "range": {
+                                                "start": start,
+                                                "end": position_for_offset(&document.text, plan.span.end),
+                                            },
+                                            "newText": plan.replacement,
+                                        }],
+                                        "selection": {
+                                            "line": start.line + 1,
+                                            "character": plan.selection_character,
                                         },
-                                        "newText": plan.replacement,
-                                    }],
-                                    "selection": {
-                                        "line": start.line + 1,
-                                        "character": plan.selection_character,
-                                    },
-                                }));
+                                    }));
+                                }
                             }
                             let mut edits = Vec::new();
                             let outdent = on_type_formatting::unbraced_if_body_outdent_plan(
@@ -2129,15 +2133,17 @@ impl<W: Write> LspServer<W> {
                                     "newText": plan.replacement,
                                 }));
                             }
-                            if let Some(insertion) = on_type_formatting::semicolon_insertion_offset(
-                                &document.text,
-                                cursor,
-                            ) {
-                                let position = position_for_offset(&document.text, insertion);
-                                edits.push(json!({
-                                    "range": { "start": position, "end": position },
-                                    "newText": ";",
-                                }));
+                            if params.ch == "\n" {
+                                if let Some(insertion) = on_type_formatting::semicolon_insertion_offset(
+                                    &document.text,
+                                    cursor,
+                                ) {
+                                    let position = position_for_offset(&document.text, insertion);
+                                    edits.push(json!({
+                                        "range": { "start": position, "end": position },
+                                        "newText": ";",
+                                    }));
+                                }
                             }
                             outcome = match (outdent.is_some(), edits.is_empty()) {
                                 (_, true) => "no_edit",
@@ -10058,6 +10064,48 @@ class Example
                     "textDocument": { "uri": uri },
                     "position": { "line": 2, "character": 2 },
                     "ch": "\n",
+                    "version": 1,
+                    "options": { "tabSize": 4, "insertSpaces": false }
+                }}),
+                None,
+                0,
+                0,
+            )
+            .unwrap();
+        let output = String::from_utf8_lossy(&server.writer);
+        assert!(output.contains("\"newText\":\"\\t\""), "{output}");
+        assert!(
+            output.contains("\"selection\":{\"character\":1,\"line\":2}"),
+            "{output}"
+        );
+    }
+
+    #[test]
+    fn typing_assist_outdents_a_tab_that_would_reenter_a_finished_if_body() {
+        let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
+        let uri = "file:///Scripts/IfBodyTab.c";
+        server
+            .handle_message(
+                json!({ "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+                    "textDocument": {
+                        "uri": uri,
+                        "languageId": "enforce",
+                        "version": 1,
+                        "text": "\tif (owner == GetOwner())\n\t\treturn owner;\n\t\t"
+                    }
+                }}),
+                None,
+                0,
+                0,
+            )
+            .unwrap();
+        server.writer.clear();
+        server
+            .handle_message(
+                json!({ "jsonrpc": "2.0", "id": 1, "method": ENTER_TYPING_ASSIST_METHOD, "params": {
+                    "textDocument": { "uri": uri },
+                    "position": { "line": 2, "character": 2 },
+                    "ch": "\t",
                     "version": 1,
                     "options": { "tabSize": 4, "insertSpaces": false }
                 }}),

@@ -113,7 +113,7 @@ file-change notifications to the external overlay. It is deliberately a small
 dispatcher, not a general application framework.
 
 `reforger/enterTypingAssist` is the Rust-owned request for the conservative
-Enter typing assist. The extension forwards one plain Enter document-change
+typing assist. The extension forwards one plain Enter document-change
 event after its document synchronization listener has run; it rejects
 selections, multiple carets, replacement edits, and any other text change
 before transport. The server intentionally does not advertise an automatic
@@ -127,7 +127,9 @@ was moved to the new line by an auto-pair), Rust returns one replacement and
 exact body-caret position. It rejects every ambiguous,
 comment, unterminated-string, directive, malformed, or complete-header shape. Native language
 configuration still owns immediate indentation after standalone complete
-unbraced `if`, `else if`, and `else` headers. Once a supported complete
+unbraced `if`, `else if`, and `else` headers. A single native Tab insertion
+may use this same request only to undo the exact indentation that would
+re-enter a proven completed unbraced `if` body. Once a supported complete
 one-line body directly under an unbraced `if`/`else if` is proven, the same
 request may restore the following blank line to the header indentation; it
 does not infer broader control scope. Its concise request log records

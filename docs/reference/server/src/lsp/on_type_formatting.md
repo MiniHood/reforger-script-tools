@@ -40,6 +40,8 @@ condition, and one complete call, declaration, or return body statement. It
 also combines safely with semicolon insertion when that same supported body
 line is missing only its final semicolon. Braces, nested controls, malformed
 statements, custom indentation, and any uncertain shape remain untouched.
+It can run after the plain Enter or one subsequent native Tab insertion that
+recreated exactly that stale body indentation.
 
 If VS Code moves an already auto-paired final `)` onto the new line while the
 caret was still inside that condition, the plan recognizes it as the same

@@ -736,7 +736,16 @@ function registerEnterTypingAssist(): vscode.Disposable {
 		if (event.document.languageId !== languageClientLanguage.id) {
 			return;
 		}
-		const position = enterAfterPosition(event.contentChanges);
+		const editor = vscode.window.activeTextEditor;
+		const enterPosition = enterAfterPosition(event.contentChanges);
+		const tabPosition = editor && editor.document.uri.toString() === event.document.uri.toString()
+			? tabAfterPosition(
+				event.contentChanges,
+				Number(editor.options.tabSize ?? 4),
+				editor.options.insertSpaces === true,
+			)
+			: undefined;
+		const position = enterPosition ?? tabPosition;
 		if (!position) {
 			return;
 		}
@@ -746,6 +755,7 @@ function registerEnterTypingAssist(): vscode.Disposable {
 			version: event.document.version,
 			preEnterPosition: change.range.start,
 			position,
+			trigger: enterPosition ? '\n' : '\t',
 			caretReady: hasSingleEmptyCaretAt(event.document, position, event.document.version),
 		};
 		pending = transaction;
@@ -787,6 +797,7 @@ interface EnterTypingAssistTransaction {
 	version: number;
 	preEnterPosition: vscode.Position;
 	position: vscode.Position;
+	trigger: '\n' | '\t';
 	caretReady: boolean;
 	response?: EnterTypingAssistResponse;
 }
@@ -833,7 +844,7 @@ async function requestEnterTypingAssist(
 			{
 				textDocument: { uri: transaction.document.uri.toString() },
 				position: { line: transaction.position.line, character: transaction.position.character },
-				ch: '\n',
+				ch: transaction.trigger,
 				version: transaction.version,
 				options: { tabSize: editor.options.tabSize, insertSpaces: editor.options.insertSpaces },
 			},
@@ -1396,6 +1407,22 @@ function isVscodeCommand(value: unknown): value is vscode.Command {
 		&& value !== null
 		&& 'command' in value
 		&& typeof value.command === 'string';
+}
+
+export function tabAfterPosition(
+	changes: readonly vscode.TextDocumentContentChangeEvent[],
+	tabSize: number,
+	insertSpaces: boolean,
+): vscode.Position | undefined {
+	if (changes.length !== 1 || changes[0].rangeLength !== 0) {
+		return undefined;
+	}
+	const change = changes[0];
+	const configuredIndent = insertSpaces ? ' '.repeat(Number(tabSize)) : '\t';
+	if (change.text !== '\t' && change.text !== configuredIndent) {
+		return undefined;
+	}
+	return new vscode.Position(change.range.start.line, change.range.start.character + change.text.length);
 }
 
 /**

@@ -9,6 +9,7 @@ import {
 	ifSpaceCommitDeletionRange,
 	ifSpaceCommitInsertionPosition,
 	isCurrentSingleTypingAssistCaret,
+	tabAfterPosition,
 } from '../languageClient/languageClient';
 
 suite('extension activation', () => {
@@ -203,6 +204,21 @@ suite('extension activation', () => {
 			isCurrentSingleTypingAssistCaret(12, 12, 1, true, new vscode.Position(8, 5), position),
 			false,
 		);
+	});
+
+	test('admits only one native Tab indentation edit for the Rust typing assist', () => {
+		const tab = {
+			range: new vscode.Range(new vscode.Position(8, 4), new vscode.Position(8, 4)),
+			rangeLength: 0,
+			text: '\t',
+		} as vscode.TextDocumentContentChangeEvent;
+		assert.deepStrictEqual(tabAfterPosition([tab], 4, false), new vscode.Position(8, 5));
+		assert.deepStrictEqual(
+			tabAfterPosition([{ ...tab, text: '    ' }], 4, true),
+			new vscode.Position(8, 8),
+		);
+		assert.strictEqual(tabAfterPosition([{ ...tab, text: '  ' }], 4, true), undefined);
+		assert.strictEqual(tabAfterPosition([{ ...tab, rangeLength: 1 }], 4, false), undefined);
 	});
 
 	test('enables local diagnostic logging by default', () => {

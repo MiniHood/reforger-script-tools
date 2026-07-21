@@ -34,6 +34,10 @@ body whitespace making a later Tab appear to re-enter a scope that has already
 ended. It requires the exact native body indentation and refuses braces,
 nested controls, custom indentation, and unsupported statements.
 
+The same narrow proof may correct one native Tab insertion that recreates the
+body indentation on that blank line. All other Tab input remains VS Code-owned
+manual indentation.
+
 Native VS Code language configuration owns immediate indentation for complete
 unbraced `if`/`else if`/`else` headers. The server's incomplete-`if` plan is
 limited to completing the header that the same Enter interrupted; it does not
