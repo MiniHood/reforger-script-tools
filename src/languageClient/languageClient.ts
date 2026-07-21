@@ -26,6 +26,15 @@ import {
 	languageClientServer,
 } from '../extensionConfig/languageClient';
 import { getManualScriptsFolderCandidate } from '../gameData/gameData';
+import {
+	applyVersionedEditorEdits,
+	isCurrentSingleCaret,
+	rangeFromLsp,
+	type LspPosition,
+	type LspRange,
+	type LspTextEdit,
+	type VersionedEditResponse,
+} from './versionedEditorEdit';
 
 let client: LanguageClient | undefined;
 let clientDisposables: vscode.Disposable[] = [];
@@ -551,30 +560,9 @@ interface LspMarkupContent {
 	value?: string;
 }
 
-interface LspRange {
-	start: LspPosition;
-	end: LspPosition;
-}
+interface BlockCommentPairResponse extends VersionedEditResponse {}
 
-interface LspPosition {
-	line: number;
-	character: number;
-}
-
-interface LspTextEdit {
-	range: LspRange;
-	newText: string;
-}
-
-interface BlockCommentPairResponse {
-	edits: LspTextEdit[];
-	selection?: LspPosition;
-}
-
-interface EnterTypingAssistResponse {
-	edits: LspTextEdit[];
-	selection?: LspPosition;
-}
+interface EnterTypingAssistResponse extends VersionedEditResponse {}
 
 function registerBlockCommentPair(): vscode.Disposable {
 	let pending: BlockCommentPairTransaction | undefined;
@@ -705,17 +693,7 @@ async function applyPendingBlockCommentPair(
 		clear();
 		return;
 	}
-	const applied = await editor.edit(
-		editBuilder => transaction.response?.edits.forEach(edit => editBuilder.replace(rangeFromLsp(edit.range), edit.newText)),
-		{ undoStopBefore: false, undoStopAfter: false },
-	);
-	if (applied && transaction.response.selection) {
-		const position = new vscode.Position(
-			transaction.response.selection.line,
-			transaction.response.selection.character,
-		);
-		editor.selection = new vscode.Selection(position, position);
-	}
+	const applied = await applyVersionedEditorEdits(editor, transaction.response);
 	diagnostic('formatting.commentPair', {
 		outcome: applied ? 'applied' : 'editRejected',
 		version: transaction.version,
@@ -885,17 +863,7 @@ async function applyPendingEnterTypingAssist(
 		clear();
 		return;
 	}
-	const applied = await editor.edit(
-		editBuilder => transaction.response?.edits.forEach(edit => editBuilder.replace(rangeFromLsp(edit.range), edit.newText)),
-		{ undoStopBefore: false, undoStopAfter: false },
-	);
-	if (applied && transaction.response.selection) {
-		const position = new vscode.Position(
-			transaction.response.selection.line,
-			transaction.response.selection.character,
-		);
-		editor.selection = new vscode.Selection(position, position);
-	}
+	const applied = await applyVersionedEditorEdits(editor, transaction.response);
 	diagnostic('formatting.enter', {
 		outcome: applied ? 'applied' : 'editRejected',
 		version: transaction.version,
@@ -923,16 +891,7 @@ function hasSingleEmptyCaretAt(
 	position: vscode.Position,
 	expectedVersion: number,
 ): boolean {
-	const editor = vscode.window.activeTextEditor;
-	return editor?.document.uri.toString() === document.uri.toString()
-		&& isCurrentSingleTypingAssistCaret(
-			document.version,
-			expectedVersion,
-			editor.selections.length,
-			editor.selection.isEmpty,
-			editor.selection.active,
-			position,
-		);
+	return isCurrentSingleCaret(document, expectedVersion, position);
 }
 
 function hoverFromLspResponse(hover: LspHoverResponse): vscode.Hover | null {
@@ -960,12 +919,6 @@ function htmlMarkdownContent(content: LspMarkupContent | string): vscode.Markdow
 	return markdown;
 }
 
-function rangeFromLsp(range: LspRange): vscode.Range {
-	return new vscode.Range(
-		new vscode.Position(range.start.line, range.start.character),
-		new vscode.Position(range.end.line, range.end.character),
-	);
-}
 
 function registerDevelopmentServerWatcher(
 	context: vscode.ExtensionContext,
