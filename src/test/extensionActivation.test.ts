@@ -69,13 +69,9 @@ suite('extension activation', () => {
 			'utf8',
 		)) as {
 			autoClosingPairs: Array<{ open: string; close: string; notIn?: string[] }>;
-			indentationRules?: {
-				increaseIndentPattern?: string;
-				decreaseIndentPattern?: string;
-				indentNextLinePattern?: string;
-			};
 			onEnterRules?: Array<{
 				beforeText?: string;
+				previousLineText?: string;
 				action?: { indent?: string };
 			}>;
 		};
@@ -83,13 +79,12 @@ suite('extension activation', () => {
 			configuration.autoClosingPairs.find(pair => pair.open === '/*'),
 			{ open: '/*', close: '*/', notIn: ['string', 'comment'] },
 		);
-		const pattern = configuration.indentationRules?.indentNextLinePattern;
-		assert.ok(pattern);
-		assert.strictEqual(configuration.indentationRules?.increaseIndentPattern, '$^');
-		assert.strictEqual(configuration.indentationRules?.decreaseIndentPattern, '$^');
-		const indentNextLine = new RegExp(pattern);
+		const onEnterHeader = configuration.onEnterRules?.[0];
+		assert.strictEqual(onEnterHeader?.action?.indent, 'indent');
+		assert.ok(onEnterHeader?.beforeText);
+		const indentHeader = new RegExp(onEnterHeader.beforeText);
 		for (const header of ['if (enabled)', 'else if (enabled)', 'else']) {
-			assert.ok(indentNextLine.test(header), header);
+			assert.ok(indentHeader.test(header), header);
 		}
 		for (const ineligible of [
 			'if (enabled) {',
@@ -99,18 +94,16 @@ suite('extension activation', () => {
 			'if (enabled',
 			'// if (enabled)',
 		]) {
-			assert.ok(!indentNextLine.test(ineligible), ineligible);
+			assert.ok(!indentHeader.test(ineligible), ineligible);
 		}
-		const onEnterHeader = configuration.onEnterRules?.[0];
-		assert.strictEqual(onEnterHeader?.action?.indent, 'indent');
-		assert.ok(onEnterHeader?.beforeText);
-		const onEnterPattern = new RegExp(onEnterHeader.beforeText);
-		for (const header of ['if (enabled)', 'else if (enabled)', 'else']) {
-			assert.ok(onEnterPattern.test(header), header);
-		}
-		for (const ineligible of ['if (enabled) {', 'if (enabled);', 'if (enabled) Run();', 'if (enabled) // comment']) {
-			assert.ok(!onEnterPattern.test(ineligible), ineligible);
-		}
+		const outdentAfterBody = configuration.onEnterRules?.[1];
+		assert.strictEqual(outdentAfterBody?.action?.indent, 'outdent');
+		assert.strictEqual(outdentAfterBody?.previousLineText, onEnterHeader.beforeText);
+		assert.ok(outdentAfterBody?.beforeText);
+		const bodyLine = new RegExp(outdentAfterBody.beforeText);
+		assert.ok(bodyLine.test('\tRun();'));
+		assert.ok(!bodyLine.test('\t// comment'));
+		assert.ok(!bodyLine.test('\t/* comment'));
 	});
 
 	test('uses the native block-comment pair event as a narrow typing-assist trigger', async () => {

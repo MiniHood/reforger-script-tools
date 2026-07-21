@@ -37,16 +37,18 @@
     }
   ],
   "autoCloseBefore": ";:.,=+-*/%&|^!~? \t\n",
-  "indentationRules": {
-    "increaseIndentPattern": "$^",
-    "decreaseIndentPattern": "$^",
-    "indentNextLinePattern": "^\\s*(?:(?:else\\s+)?if\\s*\\([^{};]*\\)|else)\\s*$"
-  },
   "onEnterRules": [
     {
       "beforeText": "^\\s*(?:(?:else\\s+)?if\\s*\\([^{};]*\\)|else)\\s*$",
       "action": {
         "indent": "indent"
+      }
+    },
+    {
+      "previousLineText": "^\\s*(?:(?:else\\s+)?if\\s*\\([^{};]*\\)|else)\\s*$",
+      "beforeText": "^(?!\\s*(?://|/\\*|\\*))\\s*\\S.*$",
+      "action": {
+        "indent": "outdent"
       }
     }
   ],
