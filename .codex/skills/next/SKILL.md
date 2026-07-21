@@ -1,101 +1,87 @@
 ---
 name: next
-description: Continue the most relevant unfinished Reforger Script Tools task from the current conversation, or route ambiguous work through fix, review, and research workflows to identify the highest-value next task. Use when the user invokes /next, asks what to work on next, or wants Codex to continue before changing topics.
+description: Continue the most relevant unfinished Reforger Script Tools task from the current conversation, or route ambiguous work through fix, review, and research workflows to identify and begin the highest-value next task. Use when the user invokes /next, asks what to work on next, or wants Codex to continue before changing topics.
 ---
 
 # Continue the Next Task
 
 Treat the current conversation as the primary backlog. Preserve the active
-topic until the user explicitly pivots, the topic is completed, or its smallest
-decisive next investigation is reported. Do not let an older active OpenSpec
-change silently replace the most recent significant user-directed thread.
+topic until it is complete, blocked by a real dependency, or the user explicitly
+pivots. Do not let an older active OpenSpec change silently replace the most
+recent significant user-directed thread.
 
-## Route Work
+## Select the Active Thread
 
-`/next` is a thin router, not a second implementation, diagnosis, review, or
-research workflow. Read only enough context to select the owner: the latest
-handoff, explicit user requests, active OpenSpec tasks, current Git status, and
-already-established tests, logs, or review residuals. Do not repeat deep work
-that `/fix`, `/review`, or `/researcher` owns.
+Read only enough context to route the work: the latest handoff, explicit user
+direction, active OpenSpec tasks, current Git state, and established evidence,
+tests, logs, reviews, or research.
 
-Select the active thread before routing:
+Select in this order:
 
-1. **Explicit current direction wins.** A user says what to work on next,
-   continues a named feature, answers a question about the current feature, or
-   invokes `/next` immediately after a handoff with a stated next step. Treat
-   that topic as active even if an unrelated OpenSpec change has unfinished
-   tasks.
-2. **Recent significant continuation follows.** When the latest completed
-   work left a concrete residual, validation gate, or recommended smallest
-   investigation, keep that topic active. A research conclusion that says
-   "needs decisive validation" is unfinished feature work, not permission to
-   jump to a different backlog item.
-3. **OpenSpec is contextual, not a global override.** Prefer an active
-   OpenSpec change only when the user named it, it is clearly the active
-   thread, or it is the direct accepted continuation of the recent work. An
-   older incomplete change is a candidate only after the current thread is
-   complete, blocked, or explicitly deprioritized.
-4. **Resolve a true tie by value and evidence.** Compare only the current
-   thread and materially related candidates; never enumerate a broad backlog
-   merely to find work.
+1. Explicit current direction wins. Continue a named feature, an accepted plan,
+   a user-reported follow-up, or the next step from the immediately preceding
+   handoff.
+2. A recent concrete residual or validation gate stays active. Do not replace it
+   with unrelated backlog work.
+3. Treat OpenSpec as contextual, not a global override. Use an active change
+   only when it is named, clearly active, or directly continues the current
+   thread.
+4. Resolve a real tie only between materially related candidates, using value
+   and current evidence. Do not enumerate a broad backlog merely to find work.
 
-Route the selected active thread in this order:
+## Route and Start
 
-1. **Clear unfinished request or linked OpenSpec task:** continue it through
+Route the selected work in this order:
+
+1. Continue a clear unfinished request or linked active OpenSpec task through
    its owning workflow.
-2. **Open defect:** when context contains a verified failing test, debug root
-   cause, unresolved P1-P3 review item, explicit bug report, or an accepted
-   residual that needs correction, invoke `/fix`. Pass the concrete symptom,
-   evidence, scope, exclusions, and required validation; let `/fix` diagnose,
-   design, implement, and verify the durable solution.
-3. **Clear candidate, uncertain value or design:** invoke `/review` before
-   recommending or beginning it. Pass only the bounded scope and evidence, not
-   a preferred answer; let `/review` establish whether the candidate deserves
-   work or needs a different direction.
-4. **No concrete candidate:** invoke `/researcher` for the question "what is
-   the highest-value next task in this bounded scope?" Use `sources:local` by
-   default and `sources:both` only when outside practice can materially affect
-   the choice. Let `/researcher` explore opportunities, alternatives,
-   counterexamples, and durable options. Then invoke `/review` independently on
-   the strongest research candidate, or on the decisive uncertainty when no
-   candidate is safe to name.
+2. Route a verified defect, accepted review finding, or failed validation to
+   /fix with its symptom, evidence, scope, exclusions, and required checks.
+3. Route a clear but uncertain candidate to /review with the bounded scope and
+   evidence, without giving it a preferred answer.
+4. If no concrete candidate exists, route to /researcher for the highest-value
+   task in the bounded scope, then route the strongest result through /review.
 
-Keep unrelated dirty work out of scope. Research and review are discovery and
-challenge stages, not authorization to implement. If they disagree or leave a
-decisive unknown, route to the smallest missing investigation rather than
-inventing work to keep momentum.
+## Execution Contract
 
-For example, after research identifies a Workbench/compiler matrix as the
-smallest decisive prerequisite for a named feature, `/next` selects that
-matrixâ€”not an unrelated incomplete OpenSpec task. If completing the selected
-step needs a user-controlled external editor/session, report the exact matrix
-and ask for the needed observation; do not claim the feature is complete or
-substitute unrelated implementation work.
+When the selected work is the same active chain and has an established plan,
+accepted residual, or clearly ordered next slice, start it immediately. Do not
+ask the user to confirm a continuation already requested through /next. This
+includes invoking the owning /fix, /review, or /researcher workflow.
 
-Create one concrete recommended next task before prompting the user or
-suggesting a topic change. State the routing evidence, research favorability
-and evidence IDs when used, review findings or no-finding coverage when used,
-expected value, owner layer, durable target, and smallest first verification.
-Include alternatives only when they represent a material scope or risk
-trade-off.
+When the chain moves from implementation to independent review or research,
+invoke that workflow directly. Use its result to continue the chain or identify
+the next decisive step. Review and research remain advisory; they do not
+silently expand product scope.
 
-Choose and start the recommendation only when it is clearly a continuation or
-a safe, user-authorized maintenance step. Otherwise present the recommendation
-and ask whether to pursue it. Do not invent product work from a vague research
-or review signal, and do not merely say there is nothing to do without routing
-the available evidence to the appropriate workflow.
+Before taking action, state:
+
+Continuing: <task>. Why: <current evidence and expected value>. Owner: <workflow or layer>.
+
+Only pause for user direction when the next action needs new authority, a
+material product or design choice, a user-controlled external session/result,
+or a genuine blocker. State the exact missing decision or observation and why
+it is necessary. Do not pause merely because continuation needs source changes,
+verification, review, research, or a different owning workflow.
+
+After a review or research stage identifies a clear durable path, continue to
+the appropriate implementation or fix workflow. If it leaves a decisive
+unknown, run the smallest investigation that resolves it rather than inventing
+work to keep momentum.
 
 ## Guardrails
 
-- Preserve TypeScript shell/Rust language-engine boundaries.
-- Invoke `reforger` before making Enfusion Script behavior claims.
-- Treat user changes as owned by the user; do not stage, commit, or rewrite
-  unrelated work.
+- Preserve the TypeScript shell and Rust language-engine boundary.
+- Invoke reforger before making Enfusion Script behavior claims.
+- Keep unrelated dirty work out of scope.
+- Treat review and research as discovery, not direct authorization to alter
+  product scope.
 - Prefer evidence-backed vertical slices over broad refactors.
 - Do not create a second implementation path merely to keep momentum.
 
 ## Handoff
 
 State what was selected, why it was selected, which workflow owned the work,
-what was completed, verification performed, and the remaining or newly
-discovered next step.
+what was completed and verified, and the remaining or newly discovered next
+step. Do not imply a feature is complete when a required external validation
+or concrete follow-up remains.
