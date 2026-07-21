@@ -90,13 +90,12 @@ timer or language decision. A microtask lets the language client's matching
 event-derived position, trigger, and formatting options through the custom
 `reforger/enterTypingAssist` request. It never reads or classifies source
 text. If the document or caret changes while Rust responds, it drops the
-response; otherwise it applies Rust's returned edits without adding an undo
-stop. The whitespace replacement includes the native Enter caret, so VS Code
-maps that caret to the end of the replacement in the same editor transaction;
-the client must not issue a second selection update. One response can therefore
-add a semicolon and return a direct unbraced `if`-return body to its header
-scope without two racing client features. Rust does not advertise a competing
-automatic provider because VS Code did not reliably invoke it in the active
+response; otherwise it applies Rust's returned punctuation edits without adding
+an undo stop. It never applies an Enter-time indentation, scope, or caret
+correction. Native language configuration owns unbraced `if`, `else if`, and
+`else` header indentation so VS Code produces the final caret location in its
+original Enter transaction. Rust does not advertise a competing automatic
+provider because VS Code did not reliably invoke that provider in the active
 editor.
 
 The client also transports one narrow Rust-owned multiline-comment pairing

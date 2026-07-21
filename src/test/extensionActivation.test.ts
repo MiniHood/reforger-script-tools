@@ -59,7 +59,7 @@ suite('extension activation', () => {
 		assert.ok(!clientSource.includes('registerOnTypeFormattingEditProvider'));
 	});
 
-	test('contributes a context-safe native multi-line comment pair', async () => {
+	test('contributes native pairs and narrow if-family indentation', async () => {
 		const extension = vscode.extensions.all.find(
 			candidate => candidate.packageJSON.name === 'reforger-sript-tools',
 		);
@@ -67,11 +67,30 @@ suite('extension activation', () => {
 		const configuration = JSON.parse(await fs.readFile(
 			path.join(extension.extensionPath, 'language-configuration.json'),
 			'utf8',
-		)) as { autoClosingPairs: Array<{ open: string; close: string; notIn?: string[] }> };
+		)) as {
+			autoClosingPairs: Array<{ open: string; close: string; notIn?: string[] }>;
+			indentationRules?: { indentNextLinePattern?: string };
+		};
 		assert.deepStrictEqual(
 			configuration.autoClosingPairs.find(pair => pair.open === '/*'),
 			{ open: '/*', close: '*/', notIn: ['string', 'comment'] },
 		);
+		const pattern = configuration.indentationRules?.indentNextLinePattern;
+		assert.ok(pattern);
+		const indentNextLine = new RegExp(pattern);
+		for (const header of ['if (enabled)', 'else if (enabled)', 'else']) {
+			assert.ok(indentNextLine.test(header), header);
+		}
+		for (const ineligible of [
+			'if (enabled) {',
+			'if (enabled);',
+			'if (enabled) Run();',
+			'if (enabled) // comment',
+			'if (enabled',
+			'// if (enabled)',
+		]) {
+			assert.ok(!indentNextLine.test(ineligible), ineligible);
+		}
 	});
 
 	test('uses the native block-comment pair event as a narrow typing-assist trigger', async () => {
@@ -146,24 +165,6 @@ suite('extension activation', () => {
 			isCurrentSingleTypingAssistCaret(12, 12, 1, true, new vscode.Position(8, 5), position),
 			false,
 		);
-	});
-
-	test('maps the Enter caret through its whitespace replacement without a second selection update', async () => {
-		const document = await vscode.workspace.openTextDocument({
-			language: 'enforce',
-			content: 'void Run(bool enabled) {\n\tif (enabled)\n\t\treturn\n\t\t\n}',
-		});
-		const editor = await vscode.window.showTextDocument(document);
-		const nativeEnterPosition = new vscode.Position(3, 2);
-		editor.selection = new vscode.Selection(nativeEnterPosition, nativeEnterPosition);
-
-		const applied = await editor.edit(editBuilder => {
-			editBuilder.insert(new vscode.Position(2, 8), ';');
-			editBuilder.replace(new vscode.Range(new vscode.Position(3, 0), nativeEnterPosition), '\t');
-		}, { undoStopBefore: false, undoStopAfter: false });
-
-		assert.ok(applied);
-		assert.deepStrictEqual(editor.selection.active, new vscode.Position(3, 1));
 	});
 
 	test('enables local diagnostic logging by default', () => {

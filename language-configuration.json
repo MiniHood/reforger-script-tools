@@ -37,6 +37,9 @@
     }
   ],
   "autoCloseBefore": ";:.,=+-*/%&|^!~? \t\n",
+  "indentationRules": {
+    "indentNextLinePattern": "^\\s*(?:(?:else\\s+)?if\\s*\\([^{};]*\\)|else)\\s*$"
+  },
   "surroundingPairs": [
     [
       "{",

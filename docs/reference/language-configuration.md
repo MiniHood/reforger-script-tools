@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Provides minimal VS Code editing behavior for the `enforce` language id.
+Provides native VS Code editing behavior for the `enforce` language id.
 
 ## Architecture Role
 
@@ -24,6 +24,14 @@ Code's bracket-pair and matching-bracket layers do not have Enforce TextMate
 comment scopes and can color bracket characters inside comments. Enforce
 coloring is owned by Rust LSP semantic tokens and the bundled theme.
 
+Its narrow `indentNextLinePattern` recognizes a standalone `if (...)`, `else
+if (...)`, or `else` header with no braces, semicolon, comment, or trailing
+body. VS Code indents only the immediately following line as part of its
+native Enter operation. It does not inspect the body statement, insert braces,
+or use a language-server request; later lines return to normal native
+indentation. The rule is deliberately presentation-only and does not attempt
+to parse arbitrary Enfusion syntax.
+
 ## Dependencies and Boundaries
 
 This file must stay lightweight. It must not encode parser semantics, Workbench truth, syntax highlighting, or broad formatting rules.
@@ -31,12 +39,14 @@ This file must stay lightweight. It must not encode parser semantics, Workbench 
 ## Verification
 
 Run `npm test` after changing this configuration. In an Extension Development
-Host, verify comment insertion, auto-closing behavior, and that bracket
-characters inside comments retain comment coloring.
+Host, verify comment insertion, auto-closing behavior, native unbraced
+if-family indentation, and that bracket characters inside comments retain
+comment coloring.
 
 ## Future Improvements
 
 - Add Rust-owned comment Enter continuation as a separate assist only after a
   focused editor journey proves the paired block's final caret and newline
   behavior. Do not turn the explicit comment formatter into an on-type fallback.
-- Add indentation, folding, or richer bracket typing rules only after they are source-backed and tested against real Reforger script patterns.
+- Add another control form, folding, or richer bracket typing rule only after
+  it is source-backed and tested against real Reforger script patterns.

@@ -13,19 +13,16 @@ Formatting belongs in the Rust language engine and consumes lexer/parser/AST/mod
 The current first slice is a Rust `reforger/enterTypingAssist` in
 `server/src/lsp/on_type_formatting.rs`. A thin extension document-change bridge
 admits exactly one plain Enter edit and forwards its current revision and
-caret. Rust returns one atomic response for a semicolon insertion and any
-proven caret transition. It adds a zero-width `;` edit only when the preceding
+caret. Rust returns a zero-width `;` edit only when the preceding
 physical line is a complete standalone call/member-call expression, typed
 variable declaration, a bare `return`, or a value-return statement. It inserts
-before a trailing `//` comment.
+before a trailing `//` comment. It does not plan indentation, selection, or
+control-body layout edits.
 
-The first whitespace transition is deliberately narrower: after a direct,
-unbraced, non-nested `if` body consisting of a complete `return`, Rust may
-replace only the whitespace VS Code placed on the new line with the exact
-leading whitespace of the `if` header and return that caret position. The
-parser must prove the direct body relationship. Inline `if` statements,
-comments, `else`, nested conditionals, malformed statements, and every other
-control shape remain no-edit contexts for this slice.
+Native VS Code language configuration owns immediate unbraced `if`/`else if`/
+`else` header indentation. This avoids a second post-Enter editor mutation:
+the language server never classifies a body statement or moves the caret to
+correct a control-body scope.
 
 The assist is deliberately fail-closed. Controls, callable declarations and
 constructors, attributes, existing semicolons, incomplete expressions,
@@ -82,9 +79,10 @@ Generated/read-only sources require explicit policy before mutation. Documentati
 
 The Enter assist has table-driven safety cases for valid calls, member calls,
 comments, CRLF/UTF-16, controls, declarations, malformed expressions,
-comments/strings, directives, and large input. It separately verifies direct
-`if` return scope exit with and without a missing semicolon plus no-edit cases
-for comments, nesting, `else`, inline `if`, and recovery text. A future
+comments/strings, directives, and large input. Native control-header tests
+cover accepted and rejected line shapes; the real two-Enter behavior requires
+an Extension Development Host keypress journey because test-host newline
+injection bypasses VS Code's native indentation engine. A future
 broader formatter must define parser-backed edit safety cases, idempotence,
 malformed-source behavior, and LSP edit projection tests before enabling edits.
 

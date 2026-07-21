@@ -2080,34 +2080,18 @@ impl<W: Write> LspServer<W> {
                                 return None;
                             }
                             let cursor = offset_for_position(&document.text, params.position)?;
-                            let plan = on_type_formatting::enter_typing_assist_plan(
+                            let mut edits = Vec::new();
+                            if let Some(insertion) = on_type_formatting::semicolon_insertion_offset(
                                 &document.text,
                                 cursor,
-                            )?;
-                            let mut edits = Vec::new();
-                            if let Some(insertion) = plan.semicolon_insertion {
+                            ) {
                                 let position = position_for_offset(&document.text, insertion);
                                 edits.push(json!({
                                     "range": { "start": position, "end": position },
                                     "newText": ";",
                                 }));
                             }
-                            let has_scope_exit = plan.scope_exit.is_some();
-                            if let Some(scope_exit) = plan.scope_exit {
-                                let start = position_for_offset(&document.text, scope_exit.span.start);
-                                edits.push(json!({
-                                    "range": {
-                                        "start": start,
-                                        "end": position_for_offset(&document.text, scope_exit.span.end),
-                                    },
-                                    "newText": scope_exit.replacement,
-                                }));
-                            }
-                            outcome = match (edits.len(), has_scope_exit) {
-                                (0, _) => "no_edit",
-                                (_, true) => "semicolon_and_scope_exit",
-                                _ => "semicolon",
-                            };
+                            outcome = if edits.is_empty() { "no_edit" } else { "semicolon" };
                             Some(json!({ "edits": edits }))
                         })
                         .unwrap_or_else(|| json!({ "edits": [] }));
@@ -9942,47 +9926,6 @@ class Example
             .unwrap();
         let output = String::from_utf8_lossy(&server.writer);
         assert!(output.contains("\"newText\":\";\""), "{output}");
-    }
-
-    #[test]
-    fn enter_typing_assist_returns_a_single_transaction_for_direct_if_return_scope_exit() {
-        let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
-        let uri = "file:///Scripts/EnterTypingAssistScopeExit.c";
-        let source = "void Run(bool enabled) {\n\tif (enabled)\n\t\treturn\n\t\t\n}";
-        server
-            .handle_message(
-                json!({ "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
-                    "textDocument": {
-                        "uri": uri,
-                        "languageId": "enforce",
-                        "version": 1,
-                        "text": source
-                    }
-                }}),
-                None,
-                0,
-                0,
-            )
-            .unwrap();
-        server.writer.clear();
-        server
-            .handle_message(
-                json!({ "jsonrpc": "2.0", "id": 1, "method": ENTER_TYPING_ASSIST_METHOD, "params": {
-                    "textDocument": { "uri": uri },
-                    "position": { "line": 3, "character": 2 },
-                    "ch": "\n",
-                    "version": 1,
-                    "options": { "tabSize": 4, "insertSpaces": false }
-                }}),
-                None,
-                0,
-                0,
-            )
-            .unwrap();
-        let output = String::from_utf8_lossy(&server.writer);
-        assert!(output.contains("\"newText\":\";\""), "{output}");
-        assert!(output.contains("\"newText\":\"\\t\""), "{output}");
-        assert!(!output.contains("\"selection\":"), "{output}");
     }
 
     #[test]
