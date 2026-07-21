@@ -303,9 +303,10 @@ pub(crate) fn completion_report_for_lexical_source_at_offset_with_external_index
 }
 
 /// Runs `LocalScopeQuery` over a fixed lexical/syntax window from the current
-/// revision.  It intentionally does not parse, index, or project the file:
-/// when the callable block cannot be proved inside that window, callers use
-/// the documented unavailable fallback.
+/// revision. It supplies unqualified values both at ordinary value positions
+/// and inside an argument expression, without parsing, indexing, or projecting
+/// the file. When the callable block cannot be proved inside that window,
+/// callers use the documented unavailable fallback.
 pub(crate) fn completion_report_for_current_local_scope_at_offset_with_external_indexes(
     source: &str,
     offset: usize,
@@ -313,11 +314,14 @@ pub(crate) fn completion_report_for_current_local_scope_at_offset_with_external_
     game_data_index: Option<&SymbolIndex>,
 ) -> Option<LspCompletionReport> {
     let start = Instant::now();
-    let region = BoundedCompletionRegion::new(source, offset)?;
+    // Preserve the preceding line at the bounded-window edge so the current
+    // class header remains available to unqualified member recovery.
+    let region = BoundedCompletionRegion::for_current_override(source, offset)?;
     (!completion_cursor_is_in_comment(&region.tokens, offset)).then_some(())?;
-    if unavailable_completion_context(&region.tokens, offset)
-        != UnavailableCompletionContext::TopLevel
-    {
+    if !matches!(
+        unavailable_completion_context(&region.tokens, offset),
+        UnavailableCompletionContext::TopLevel | UnavailableCompletionContext::Argument
+    ) {
         return None;
     }
     let facts = BoundedCompletionFacts::recover(source, &region, offset)?;
@@ -1180,6 +1184,22 @@ impl BoundedCompletionFacts {
             game_data_index,
             UnavailableCompletionContext::TopLevel,
         );
+        let mut fallback = fallback;
+        // An argument expression is still an unqualified value position. The
+        // current snapshot proves the containing class/base and its directly
+        // declared members; immutable indexes prove inherited members. Keep
+        // those facts while analysis is pending instead of dropping them to
+        // the global-only fallback.
+        self.append_current_unqualified_value_items(
+            source,
+            region,
+            offset,
+            &prefix,
+            prefix_span,
+            workspace_index,
+            game_data_index,
+            &mut fallback,
+        );
         items.extend(fallback.list.items);
         let mut seen = BTreeSet::new();
         items.retain(|item| {
@@ -1233,6 +1253,89 @@ impl BoundedCompletionFacts {
             return;
         }
         items.extend(std::mem::take(&mut report.list.items));
+        let (items, is_incomplete) = cap_completion_items(items);
+        report.candidate_count = items.len();
+        report.list = LspCompletionList {
+            is_incomplete,
+            items,
+        };
+    }
+
+    /// Adds members that are provable from the current snapshot's containing
+    /// class and from immutable external base-class indexes. This is valid for
+    /// any unqualified value expression, including a function argument, and
+    /// deliberately never reads a previous document analysis.
+    #[allow(clippy::too_many_arguments)]
+    fn append_current_unqualified_value_items(
+        &self,
+        source: &str,
+        region: &BoundedCompletionRegion,
+        offset: usize,
+        prefix: &str,
+        prefix_span: TextSpan,
+        workspace_index: Option<&SymbolIndex>,
+        game_data_index: Option<&SymbolIndex>,
+        report: &mut LspCompletionReport,
+    ) {
+        let Some((class_name, base_type)) = self.enclosing_class_context(source, region, offset)
+        else {
+            return;
+        };
+
+        let mut items = Self::class_member_names(source, region, &class_name)
+            .into_iter()
+            .filter(|name| candidate_matches_prefix_name(name, prefix))
+            .map(|name| {
+                bounded_completion_item(source, prefix_span, name, Some(class_name.clone()), 2)
+            })
+            .collect::<Vec<_>>();
+
+        if let Some(base_type) = base_type {
+            let mut inherited = Vec::new();
+            for owner in external_completion_owners(
+                &base_type,
+                workspace_index,
+                game_data_index,
+            ) {
+                if let Some(index) = workspace_index {
+                    inherited.extend(prefixed_candidates(
+                        completion_candidates_for_owner(index, &owner, false),
+                        prefix,
+                    ));
+                }
+                if let Some(index) = game_data_index {
+                    inherited.extend(prefixed_candidates(
+                        completion_candidates_for_owner(index, &owner, false),
+                        prefix,
+                    ));
+                }
+            }
+            let inherited = combine_completion_candidates(inherited);
+            let empty_local_index = SymbolIndex::default();
+            let (inherited_items, source_counts, origin_counts) = completion_items_for_candidates(
+                &inherited,
+                range_for_span(source, prefix_span),
+                None,
+                CompletionInsertContext::Normal,
+                Some(prefix),
+                CompletionRenderContext::new(&empty_local_index, workspace_index, game_data_index),
+            );
+            merge_count_maps(&mut report.source_kind_counts, source_counts);
+            merge_count_maps(&mut report.origin_counts, origin_counts);
+            items.extend(inherited_items);
+        }
+
+        if items.is_empty() {
+            return;
+        }
+        items.extend(std::mem::take(&mut report.list.items));
+        let mut seen = BTreeSet::new();
+        items.retain(|item| {
+            seen.insert((
+                item.label.to_ascii_lowercase(),
+                item.text_edit.new_text.clone(),
+            ))
+        });
         let (items, is_incomplete) = cap_completion_items(items);
         report.candidate_count = items.len();
         report.list = LspCompletionList {
@@ -2134,7 +2237,7 @@ fn completion_report_for_offset(
     top_level_report
 }
 
-fn merge_argument_label_and_value_reports(
+pub(crate) fn merge_argument_label_and_value_reports(
     mut argument_report: LspCompletionReport,
     value_report: LspCompletionReport,
     total_start: Instant,
@@ -4548,6 +4651,44 @@ mod tests {
             .items
             .iter()
             .any(|item| item.label == "localValue"));
+    }
+
+    #[test]
+    fn current_argument_value_query_keeps_inherited_members_without_ready_analysis() {
+        let external = file_index_for_source(
+            r#"class ScriptComponent
+{
+	proto external GenericEntity GetOwner();
+}
+"#,
+        )
+        .index;
+        let source = r#"class Example : ScriptComponent
+{
+	void Consume(GenericEntity value) {}
+	void Run()
+	{
+		Consume(GetOwn);
+	}
+}
+"#;
+        let offset = source.find("GetOwn").unwrap() + "GetOwn".len();
+
+        let report = completion_report_for_current_local_scope_at_offset_with_external_indexes(
+            source,
+            offset,
+            Some(&external),
+            None,
+        )
+        .expect("a current argument expression should retain proven inherited values");
+
+        assert_eq!(report.query_quality, QueryQuality::Exact);
+        assert_eq!(report.completion_context, "local");
+        assert!(report
+            .list
+            .items
+            .iter()
+            .any(|item| item.label == "GetOwner"));
     }
 
     #[test]

@@ -112,7 +112,13 @@ proven chains such as `GetGame().GetPlayerController()` remain immediately
 available in ordinary large files without consulting stale facts. Oversized,
 malformed, or deadline-exceeded snapshots retain the independently indexed
 top-level/keyword fallback; pending requests never infer local, member, or
-argument facts without current lexical proof.
+argument facts without current lexical proof. When the fixed window proves the
+containing current class and its direct base, ordinary unqualified value
+completion (including an argument value) additionally includes current-class
+members and immutable inherited API members. This fills the pending-analysis
+gap for members such as `GetOwner` without joining the current snapshot to
+stale local analysis; unproven classes still use the lexical/top-level
+fallback.
 
 Keywords are LSP-owned so language suggestions do not depend on VS Code word
 suggestions. Across every completion context, exact names and case-insensitive
