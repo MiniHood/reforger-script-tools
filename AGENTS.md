@@ -43,7 +43,6 @@ completion, update the owning document when the change affects its contract.
 ## Taste
 
 - Prefer precise language facts and full-fidelity parsing over text matching.
-- Prefer small, verified vertical slices over broad speculative rewrites.
 - Keep modules deep: expose a small, clear contract and hide the complexity
   behind it. Do not add a manager, registry, wrapper, setting, or validation
   layer without a concrete present need.
@@ -79,7 +78,7 @@ language conventions.
 - Keep diagnostics optional, centralized, concise, and outside the workspace.
 - Read the relevant source and the routed documentation before a non-trivial
   change. Do not add per-file documentation machinery.
-- Verify the smallest meaningful slice. For extension-facing TypeScript,
+- For extension-facing TypeScript,
   language-client, or bundled-server changes, run `npm run compile` after the
   final source edit. State any live Workbench/editor validation still pending.
 - Commit coherent, attributable local changes after verification. Do not push,
