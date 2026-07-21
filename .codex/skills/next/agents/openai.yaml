@@ -1,4 +1,0 @@
-interface:
-  display_name: "Next Task"
-  short_description: "Route the next task to the right workflow"
-  default_prompt: "Use $next to continue work or route the best next task."

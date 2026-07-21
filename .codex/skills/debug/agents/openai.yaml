@@ -1,4 +1,0 @@
-interface:
-  display_name: "Extension Debug"
-  short_description: "Diagnose Reforger Script Tools behavior"
-  default_prompt: "Use $debug to diagnose this Reforger Script Tools issue."

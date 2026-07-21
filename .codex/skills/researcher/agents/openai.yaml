@@ -1,4 +1,0 @@
-interface:
-  display_name: "Researcher"
-  short_description: "Parallel evidence and option research"
-  default_prompt: "Use $researcher to investigate the best approaches for this issue."
