@@ -53,6 +53,7 @@ suite('extension activation', () => {
 		assert.ok(clientSource.includes('snippetSuggestTraceVersion'));
 		assert.ok(clientSource.includes('registerEnterTypingAssist'));
 		assert.ok(clientSource.includes('registerBlockCommentPair'));
+		assert.ok(clientSource.includes('normalizeIfSpaceCommit'));
 		assert.ok(clientSource.includes('isSinglePlainEnter'));
 		assert.ok(clientSource.includes('blockCommentPairPosition'));
 		assert.ok(clientSource.includes('enterAfterPosition'));
