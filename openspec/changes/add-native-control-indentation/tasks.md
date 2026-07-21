@@ -1,6 +1,6 @@
 ## 1. Native control-header contract
 
-- [x] 1.1 Add a narrow VS Code `indentNextLinePattern` for complete standalone `if (...)` headers and cover accepted/rejected header shapes.
+- [x] 1.1 Add paired narrow VS Code `onEnterRules` for complete standalone `if (...)` headers and cover accepted/rejected header shapes.
 - [ ] 1.2 Validate in the existing Extension Development Host that a real Enter after an eligible header indents the body and the following real Enter returns to the enclosing level. (The automated test host's injected newline bypasses native indentation.)
 
 ## 2. Retire deferred layout correction

@@ -3,9 +3,10 @@
 The existing Enter bridge receives a document-change event after VS Code has
 inserted a line. It can prove an unbraced `if` relationship in Rust, but any
 scope correction is necessarily a second edit and can visibly move the caret.
-VS Code language configuration has a synchronous `indentNextLinePattern`
-mechanism: a matched line indents only its next line. That matches the desired
-unbraced `if` interaction without examining the controlled statement.
+VS Code language configuration has synchronous paired `onEnterRules`: one
+rule indents after a matched header and the other outdents after its immediate
+physical body line. That matches the desired unbraced `if` interaction without
+examining the controlled statement.
 
 ## Goals / Non-Goals
 
@@ -30,10 +31,11 @@ unbraced `if` interaction without examining the controlled statement.
 
 ### Use native single-next-line indentation
 
-`language-configuration.json` SHALL use a narrow `indentNextLinePattern` for
-complete standalone `if`, `else if`, and `else` headers. VS Code evaluates the
-rule as part of Enter, so the initial caret location is final and no visual
-correction occurs.
+`language-configuration.json` SHALL use paired narrow `onEnterRules` for
+complete standalone `if`, `else if`, and `else` headers. VS Code evaluates
+the rules as part of Enter, so the initial caret location is final and no
+visual correction occurs. The first rule indents the body line; the second
+outdents after the immediate non-comment body line.
 
 The pattern is deliberately presentation-only. It must require a line that
 starts with the control keyword, has a closing condition delimiter where
