@@ -59,6 +59,10 @@ Before changing or asserting Enfusion Script, Workbench, game-data,
 parser/model/index, diagnostics, formatting, or language-feature behavior,
 consult the smallest relevant primary evidence directly.
 
+Do not invoke the `reforger` skill for this repository. Its slice-oriented
+workflow is not the project workflow; direct evidence and the ticket-completion
+rules below govern the work.
+
 Use evidence in this order:
 
 1. Workbench/compiler behavior.
