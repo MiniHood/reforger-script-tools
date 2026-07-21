@@ -39,6 +39,7 @@ import {
 } from './workspaceWatchBridge';
 import { registerDebugCommandBridge } from './debugCommandBridge';
 import { createCompletionMiddleware } from './completionMiddleware';
+import { openSymbolLocation } from './symbolLocationBridge';
 import {
 	blockCommentPairPosition,
 	enterAfterPosition,
@@ -239,69 +240,6 @@ function logFirstDocumentOpened(
 	});
 }
 
-
-interface OpenSymbolLocationArgs {
-	uri: string;
-	startByte: number;
-	endByte: number;
-}
-
-async function openSymbolLocation(args: unknown): Promise<void> {
-	if (!isOpenSymbolLocationArgs(args)) {
-		vscode.window.showWarningMessage('Invalid Reforger symbol location.');
-		return;
-	}
-
-	const uri = vscode.Uri.parse(args.uri, true);
-	const document = await vscode.workspace.openTextDocument(uri);
-	const editor = await vscode.window.showTextDocument(document);
-	const range = rangeFromByteOffsets(document.getText(), args.startByte, args.endByte);
-	editor.selection = new vscode.Selection(range.start, range.end);
-	editor.revealRange(range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
-}
-
-function isOpenSymbolLocationArgs(value: unknown): value is OpenSymbolLocationArgs {
-	if (!value || typeof value !== 'object') {
-		return false;
-	}
-	const candidate = value as Partial<OpenSymbolLocationArgs>;
-	const startByte = candidate.startByte;
-	const endByte = candidate.endByte;
-	return typeof candidate.uri === 'string'
-		&& Number.isInteger(startByte)
-		&& Number.isInteger(endByte)
-		&& startByte !== undefined
-		&& endByte !== undefined
-		&& startByte >= 0
-		&& endByte >= startByte;
-}
-
-function rangeFromByteOffsets(text: string, startByte: number, endByte: number): vscode.Range {
-	return new vscode.Range(
-		positionFromByteOffset(text, startByte),
-		positionFromByteOffset(text, endByte),
-	);
-}
-
-function positionFromByteOffset(text: string, byteOffset: number): vscode.Position {
-	let line = 0;
-	let character = 0;
-	let consumedBytes = 0;
-	for (const char of text) {
-		const charBytes = Buffer.byteLength(char, 'utf8');
-		if (consumedBytes + charBytes > byteOffset) {
-			break;
-		}
-		consumedBytes += charBytes;
-		if (char === '\n') {
-			line += 1;
-			character = 0;
-		} else {
-			character += char.length;
-		}
-	}
-	return new vscode.Position(line, character);
-}
 
 export async function deactivateLanguageClient(): Promise<void> {
 	diagnostic('languageClient.deactivate');

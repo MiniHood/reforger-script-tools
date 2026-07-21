@@ -19,8 +19,9 @@ use serde_json::{json, Value};
 use std::cell::Cell;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, VecDeque};
-use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufReader, BufWriter, Read, Write};
+#[cfg(test)]
+use std::fs;
+use std::io::{self, BufReader, Read, Write};
 #[cfg(test)]
 use std::path::Path;
 use std::path::PathBuf;
@@ -40,6 +41,7 @@ mod external_indexes;
 mod external_overlay;
 mod hover;
 mod hover_render;
+mod logging;
 mod on_type_formatting;
 mod open_documents;
 mod semantic_tokens;
@@ -87,6 +89,7 @@ pub use hover::{
     hover_reports_for_source_positions, hover_reports_for_source_positions_with_external,
     HoverSelectionSource, LspHover, LspHoverReport,
 };
+use logging::LspLogger;
 pub use open_documents::{file_index_for_source, FileIndexAnalysis};
 pub(crate) use open_documents::{
     file_index_for_source_with_timings, FileIndexAnalysisTimings, OpenDocument,
@@ -937,87 +940,6 @@ fn coalesce_rich_job(
 ) {
     if let Some(previous) = pending.insert(job.uri.clone(), job) {
         previous.task.cancel();
-    }
-}
-
-#[derive(Clone)]
-struct LspLogger {
-    path: Option<PathBuf>,
-    lock: Arc<Mutex<()>>,
-    diagnostic: Option<Arc<Mutex<BufWriter<File>>>>,
-    diagnostic_session: Arc<str>,
-}
-
-impl LspLogger {
-    fn new(path: Option<PathBuf>, diagnostic_path: Option<PathBuf>) -> Self {
-        if let Some(log_path) = path.as_ref() {
-            if let Some(parent) = log_path.parent() {
-                let _ = fs::create_dir_all(parent);
-            }
-        }
-        let diagnostic = diagnostic_path.and_then(|path| {
-            if let Some(parent) = path.parent() {
-                let _ = fs::create_dir_all(parent);
-            }
-            if path
-                .metadata()
-                .map(|metadata| metadata.len() > 1024 * 1024)
-                .unwrap_or(false)
-            {
-                let _ = fs::write(&path, b"");
-            }
-            OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)
-                .ok()
-                .map(|file| Arc::new(Mutex::new(BufWriter::new(file))))
-        });
-        Self {
-            path,
-            lock: Arc::new(Mutex::new(())),
-            diagnostic,
-            diagnostic_session: Arc::from(format!("{}-{}", timestamp_millis(), std::process::id())),
-        }
-    }
-
-    fn log(&self, message: &str) {
-        let Some(log_path) = self.path.as_ref() else {
-            return;
-        };
-        let Ok(_guard) = self.lock.lock() else {
-            return;
-        };
-        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(log_path) {
-            let _ = writeln!(file, "[{}] {message}", timestamp_millis());
-        }
-    }
-
-    fn diagnostic(&self, event: &str, fields: Value) {
-        let Some(writer) = &self.diagnostic else {
-            return;
-        };
-        let Ok(mut writer) = writer.lock() else {
-            return;
-        };
-        let record = json!({
-            "timestamp": timestamp_millis(),
-            "component": "languageServer",
-            "session": self.diagnostic_session.as_ref(),
-            "event": event,
-            "fields": fields,
-        });
-        if serde_json::to_writer(&mut *writer, &record).is_ok() {
-            let _ = writer.write_all(b"\n");
-        }
-    }
-
-    fn flush_diagnostics(&self) {
-        if let Some(writer) = &self.diagnostic {
-            if let Ok(mut writer) = writer.lock() {
-                let _ = writer.flush();
-            }
-        }
     }
 }
 
@@ -4297,6 +4219,7 @@ fn validate_params<T: for<'de> Deserialize<'de>>(
         .map_err(|error| format!("Invalid params for {method}: {error}"))
 }
 
+#[cfg(test)]
 fn timestamp_millis() -> u128 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

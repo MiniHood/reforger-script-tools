@@ -10,6 +10,7 @@ import {
 	isCurrentSingleTypingAssistCaret,
 	tabAfterPosition,
 } from '../languageClient/languageClient';
+import { positionFromByteOffset } from '../languageClient/symbolLocationBridge';
 
 suite('extension activation', () => {
 	test('registers editor-facing commands', async () => {
@@ -55,7 +56,6 @@ suite('extension activation', () => {
 		assert.ok(clientSource.includes('registerEnterTypingAssist'));
 		assert.ok(clientSource.includes('registerBlockCommentPair'));
 		assert.ok(clientSource.includes('normalizeIfSpaceCommit'));
-		assert.ok(clientSource.includes('isSinglePlainEnter'));
 		assert.ok(clientSource.includes('blockCommentPairPosition'));
 		assert.ok(clientSource.includes('enterAfterPosition'));
 		assert.ok(clientSource.includes('onDidChangeTextEditorSelection'));
@@ -69,6 +69,11 @@ suite('extension activation', () => {
 		);
 		assert.strictEqual(ifSpaceCommitPositionFromCommandArguments([3, 9]), undefined);
 		assert.strictEqual(ifSpaceCommitPositionFromCommandArguments(['3', '-1']), undefined);
+	});
+
+	test('maps Rust byte offsets to VS Code UTF-16 positions for symbol navigation', () => {
+		assert.deepStrictEqual(positionFromByteOffset('class \u{1F600}\nRun', 10), new vscode.Position(0, 8));
+		assert.deepStrictEqual(positionFromByteOffset('class \u{1F600}\nRun', 11), new vscode.Position(1, 0));
 	});
 
 	test('contributes native pairs and narrow if-family indentation', async () => {
