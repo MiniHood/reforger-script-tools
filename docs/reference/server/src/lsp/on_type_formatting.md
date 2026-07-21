@@ -32,6 +32,11 @@ unfinished expressions, and documents above the bounded source size. Ordinary
 complete `if`, `else if`, and `else` indentation remains native VS Code
 language-configuration behavior.
 
+If VS Code moves an already auto-paired final `)` onto the new line while the
+caret was still inside that condition, the plan recognizes it as the same
+unfinished-at-caret header and restores the closer on the header line. Enter
+after a header that was already complete at the caret remains native behavior.
+
 ## Dependencies and Boundaries
 
 Uses the lexer and source spans only. It must not resolve symbols, inspect a

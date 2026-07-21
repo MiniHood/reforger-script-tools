@@ -78,9 +78,24 @@ pub(super) fn incomplete_if_header_enter_plan(
     {
         return None;
     }
-    let condition = &tokens[2..];
+    let prefix_tokens = lex(header_prefix)
+        .into_iter()
+        .filter(|token| !token.kind.is_trivia() && token.kind != TokenKind::Eof)
+        .collect::<Vec<_>>();
+    if prefix_tokens.first().map(|token| token.kind) != Some(TokenKind::Keyword(Keyword::If))
+        || prefix_tokens.get(1).map(|token| token.kind) != Some(TokenKind::LeftParen)
+        || !has_only_open_if_paren(&prefix_tokens[2..])
+    {
+        return None;
+    }
+    let (condition, closing) = if has_only_open_if_paren(&tokens[2..]) {
+        (&tokens[2..], ")")
+    } else if has_completed_if_paren(&tokens[2..]) {
+        (&tokens[2..tokens.len() - 1], "")
+    } else {
+        return None;
+    };
     if condition.is_empty()
-        || !has_only_open_if_paren(condition)
         || !is_complete_value_expression(condition)
         || !condition.last().is_some_and(|token| can_end_value_expression(token.kind))
     {
@@ -96,7 +111,7 @@ pub(super) fn incomplete_if_header_enter_plan(
     let body_indent = format!("{indent}{unit}");
     Some(IncompleteIfHeaderPlan {
         span: TextSpan::new(previous_line_start, current_line_end),
-        replacement: format!("{header}){newline}{body_indent}"),
+        replacement: format!("{header}{closing}{newline}{body_indent}"),
         selection_character: body_indent
             .chars()
             .map(|character| character.len_utf16() as u32)
@@ -127,6 +142,37 @@ fn has_only_open_if_paren(tokens: &[Token]) -> bool {
         }
     }
     paren_depth == 1 && bracket_depth == 0
+}
+
+fn has_completed_if_paren(tokens: &[Token]) -> bool {
+    if tokens.last().map(|token| token.kind) != Some(TokenKind::RightParen) {
+        return false;
+    }
+    let mut paren_depth = 1usize;
+    let mut bracket_depth = 0usize;
+    for (index, token) in tokens.iter().enumerate() {
+        match token.kind {
+            TokenKind::LeftParen => paren_depth += 1,
+            TokenKind::RightParen => {
+                let Some(depth) = paren_depth.checked_sub(1) else {
+                    return false;
+                };
+                paren_depth = depth;
+                if paren_depth == 0 && index + 1 != tokens.len() {
+                    return false;
+                }
+            }
+            TokenKind::LeftBracket => bracket_depth += 1,
+            TokenKind::RightBracket => {
+                let Some(depth) = bracket_depth.checked_sub(1) else {
+                    return false;
+                };
+                bracket_depth = depth;
+            }
+            _ => {}
+        }
+    }
+    paren_depth == 0 && bracket_depth == 0
 }
 
 /// Expands the exact empty native `/**/` pair into a standalone multiline
@@ -763,6 +809,12 @@ mod tests {
         let cursor = "if (own\n\t".len();
         let plan = incomplete_if_header_enter_plan(split_identifier, cursor, 2, true).unwrap();
         assert_eq!(plan.replacement, "if (owner)\n  ");
+        assert_eq!(plan.selection_character, 2);
+
+        let auto_closed = "\tif (GetGame()\n\t)";
+        let cursor = "\tif (GetGame()\n\t".len();
+        let plan = incomplete_if_header_enter_plan(auto_closed, cursor, 4, false).unwrap();
+        assert_eq!(plan.replacement, "\tif (GetGame())\n\t\t");
         assert_eq!(plan.selection_character, 2);
     }
 

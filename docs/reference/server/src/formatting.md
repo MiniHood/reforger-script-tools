@@ -22,6 +22,11 @@ condition: Rust returns one header replacement and its intended unbraced-body
 caret position. It does not classify ordinary body statements or provide broad
 control-body layout edits.
 
+The classifier also recognizes VS Code moving the auto-paired final header
+parenthesis to the new line while the caret is still inside the condition. It
+restores that existing closer instead of adding another one; Enter after a
+complete header remains native behavior.
+
 Native VS Code language configuration owns immediate indentation for complete
 unbraced `if`/`else if`/`else` headers. The server's incomplete-`if` plan is
 limited to completing the header that the same Enter interrupted; it does not
