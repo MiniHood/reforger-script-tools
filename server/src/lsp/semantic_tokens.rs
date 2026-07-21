@@ -1,35 +1,15 @@
 use crate::index::SymbolIndex;
 use crate::lexer::{lex, Keyword, TextSpan, Token, TokenKind};
+use crate::lsp::external_indexes::ExternalIndexes;
 use crate::lsp::{
     file_index_for_source, range_for_span, span_text, FileIndexAnalysis, LspPositionIndex, LspRange,
 };
-use crate::model::{SourceKind, SymbolKind};
+use crate::model::SymbolKind;
 use crate::resolver::{CandidateSource, ReferenceCandidate, ReferenceResolver, ResolutionReason};
 use crate::syntax::{SyntaxElement, SyntaxKind, SyntaxNode};
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
-
-fn layered_external_indexes<'a>(
-    workspace_index: Option<&'a SymbolIndex>,
-    game_data_index: Option<&'a SymbolIndex>,
-) -> Vec<&'a SymbolIndex> {
-    workspace_index.into_iter().chain(game_data_index).collect()
-}
-
-fn external_index_for_candidate<'a>(
-    candidate: &ReferenceCandidate,
-    workspace_index: Option<&'a SymbolIndex>,
-    game_data_index: Option<&'a SymbolIndex>,
-) -> Option<&'a SymbolIndex> {
-    match candidate.source_kind {
-        SourceKind::Workspace => workspace_index,
-        SourceKind::GameData => game_data_index,
-        SourceKind::Unknown | SourceKind::Fixture => None,
-    }
-    .or(workspace_index)
-    .or(game_data_index)
-}
 
 pub(crate) const SEMANTIC_TOKEN_TYPES: &[&str] = &[
     "class",
@@ -420,7 +400,7 @@ fn semantic_raw_tokens(
             &analysis.index,
             &analysis.parse,
             &analysis.scope,
-            layered_external_indexes(workspace_index, game_data_index),
+            ExternalIndexes::new(workspace_index, game_data_index).ordered(),
         )
     });
 
@@ -1007,7 +987,7 @@ fn candidate_semantic_type(
         let index = match candidate.source {
             CandidateSource::FileLocal => Some(file_index),
             CandidateSource::External => {
-                external_index_for_candidate(candidate, workspace_index, game_data_index)
+                ExternalIndexes::new(workspace_index, game_data_index).for_candidate(candidate)
             }
         };
         if index

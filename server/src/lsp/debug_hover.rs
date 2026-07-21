@@ -1,13 +1,14 @@
 use crate::index::{GlobalSymbolId, SymbolIndex};
 use crate::index_query::IndexQuery;
 use crate::lexer::{lex, TextSpan, Token};
+use crate::lsp::external_indexes::ExternalIndexes;
 use crate::lsp::hover_render::{render_hover_markdown, HoverLinkContext, HoverRenderContext};
 use crate::lsp::semantic_tokens::semantic_tokens_report_for_cached_analysis_with_external_indexes;
 use crate::lsp::{
     file_index_for_source, offset_for_position, position_for_offset, span_text, symbol_kind_label,
     ExternalIndexStatusSummary, FileIndexAnalysis, LspPosition, LspRange,
 };
-use crate::model::{SourceKind, SymbolKind};
+use crate::model::SymbolKind;
 use crate::resolver::{CandidateSource, HoverResolution, ReferenceResolver};
 use crate::syntax::ParseDiagnostic;
 use std::collections::BTreeMap;
@@ -16,27 +17,6 @@ use std::time::Instant;
 const DEBUG_TOKEN_CONTEXT: usize = 8;
 const DEBUG_CANDIDATE_LIMIT: usize = 20;
 const DEBUG_CHILD_LIMIT: usize = 20;
-
-fn layered_external_indexes<'a>(
-    workspace_index: Option<&'a SymbolIndex>,
-    game_data_index: Option<&'a SymbolIndex>,
-) -> Vec<&'a SymbolIndex> {
-    workspace_index.into_iter().chain(game_data_index).collect()
-}
-
-fn external_index_for_candidate<'a>(
-    candidate: &crate::resolver::ReferenceCandidate,
-    workspace_index: Option<&'a SymbolIndex>,
-    game_data_index: Option<&'a SymbolIndex>,
-) -> Option<&'a SymbolIndex> {
-    match candidate.source_kind {
-        SourceKind::Workspace => workspace_index,
-        SourceKind::GameData => game_data_index,
-        SourceKind::Unknown | SourceKind::Fixture => None,
-    }
-    .or(workspace_index)
-    .or(game_data_index)
-}
 
 pub fn debug_hover_report_for_source_position(source: &str, position: LspPosition) -> String {
     debug_hover_report_for_source_position_with_external(source, position, None, None)
@@ -115,7 +95,7 @@ fn debug_hover_report_for_cached_analysis_with_external_layers(
         index,
         &analysis.parse,
         &analysis.scope,
-        layered_external_indexes(workspace_index, game_data_index),
+        ExternalIndexes::new(workspace_index, game_data_index).ordered(),
     );
     let resolver_resolution = offset.and_then(|offset| resolver.resolve_at_offset(offset));
     let hover_resolution = resolver_resolution
@@ -216,7 +196,7 @@ fn debug_hover_report_for_cached_analysis_with_external_layers(
         }
     } else if let Some(selected_candidate) = selected_candidate {
         if let Some(external_index) =
-            external_index_for_candidate(selected_candidate, workspace_index, game_data_index)
+            ExternalIndexes::new(workspace_index, game_data_index).for_candidate(selected_candidate)
         {
             let id = selected_candidate.id;
             let external_query = IndexQuery::new(external_index);
@@ -252,7 +232,7 @@ fn debug_hover_report_for_cached_analysis_with_external_layers(
         append_children(&mut report, source, index, &query, id);
     } else if let Some(selected_candidate) = selected_candidate {
         if let Some(external_index) =
-            external_index_for_candidate(selected_candidate, workspace_index, game_data_index)
+            ExternalIndexes::new(workspace_index, game_data_index).for_candidate(selected_candidate)
         {
             let id = selected_candidate.id;
             let external_query = IndexQuery::new(external_index);
@@ -701,11 +681,10 @@ fn append_resolver_resolution(
     {
         let display = match candidate.source {
             CandidateSource::FileLocal => query.symbol_display(candidate.id),
-            CandidateSource::External => {
-                external_index_for_candidate(candidate, workspace_index, game_data_index)
-                    .map(IndexQuery::new)
-                    .and_then(|query| query.symbol_display(candidate.id))
-            }
+            CandidateSource::External => ExternalIndexes::new(workspace_index, game_data_index)
+                .for_candidate(candidate)
+                .map(IndexQuery::new)
+                .and_then(|query| query.symbol_display(candidate.id)),
         };
         report.push_str(&format!(
             "| {} | `{}` | `{}` | `{}` | `{}` | `{}` | `{}` |\n",

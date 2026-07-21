@@ -35,6 +35,7 @@ mod completion;
 mod debug_hover;
 mod definition;
 mod diagnostics;
+mod external_indexes;
 mod external_overlay;
 mod hover;
 mod hover_render;

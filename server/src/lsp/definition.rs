@@ -1,5 +1,6 @@
 use crate::analysis_runtime::{DocumentSnapshot, Position};
 use crate::index::SymbolIndex;
+use crate::lsp::external_indexes::ExternalIndexes;
 use crate::lsp::open_documents::ForegroundQuerySnapshot;
 use crate::lsp::{
     file_index_for_source, offset_for_position, range_for_span, FileIndexAnalysis, LspPosition,
@@ -12,13 +13,6 @@ use crate::resolver::{
 use serde::Serialize;
 use std::fs;
 use std::path::Path;
-
-fn layered_external_indexes<'a>(
-    workspace_index: Option<&'a SymbolIndex>,
-    game_data_index: Option<&'a SymbolIndex>,
-) -> Vec<&'a SymbolIndex> {
-    workspace_index.into_iter().chain(game_data_index).collect()
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct LspLocation {
@@ -175,7 +169,7 @@ fn definition_report_for_offset(
         &analysis.index,
         &analysis.parse,
         &analysis.scope,
-        layered_external_indexes(workspace_index, game_data_index),
+        ExternalIndexes::new(workspace_index, game_data_index).ordered(),
     );
     let Some(resolution) = resolver.resolve_at_offset(offset) else {
         return empty_definition_report(analysis.parse_diagnostics);

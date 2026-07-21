@@ -2,6 +2,7 @@ use crate::analysis_runtime::DocumentSnapshot;
 use crate::index::{GlobalSymbolId, SymbolIndex};
 use crate::index_query::IndexQuery;
 use crate::lexer::TokenKind;
+use crate::lsp::external_indexes::ExternalIndexes;
 use crate::lsp::hover_render::{
     render_hover_markdown as render_hover_markdown_with_context, HoverLinkContext,
     HoverRenderContext,
@@ -11,7 +12,7 @@ use crate::lsp::{
     file_index_for_source, offset_for_position, range_for_span, FileIndexAnalysis,
     LspMarkupContent, LspPosition, LspRange,
 };
-use crate::model::{SourceKind, SymbolKind};
+use crate::model::SymbolKind;
 use crate::resolver::{
     CandidateSource, HoverResolution, IdentifierContext, ReceiverResolution, ReferenceResolver,
     ResolutionReason,
@@ -19,27 +20,6 @@ use crate::resolver::{
 use serde::Serialize;
 
 const SYNTHETIC_HOVER_URI: &str = "file:///hover-source.c";
-
-fn layered_external_indexes<'a>(
-    workspace_index: Option<&'a SymbolIndex>,
-    game_data_index: Option<&'a SymbolIndex>,
-) -> Vec<&'a SymbolIndex> {
-    workspace_index.into_iter().chain(game_data_index).collect()
-}
-
-fn external_index_for_candidate<'a>(
-    candidate: &crate::resolver::ReferenceCandidate,
-    workspace_index: Option<&'a SymbolIndex>,
-    game_data_index: Option<&'a SymbolIndex>,
-) -> Option<&'a SymbolIndex> {
-    match candidate.source_kind {
-        SourceKind::Workspace => workspace_index,
-        SourceKind::GameData => game_data_index,
-        SourceKind::Unknown | SourceKind::Fixture => None,
-    }
-    .or(workspace_index)
-    .or(game_data_index)
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -265,7 +245,7 @@ fn hover_report_for_offset(
         &analysis.index,
         &analysis.parse,
         &analysis.scope,
-        layered_external_indexes(workspace_index, game_data_index),
+        ExternalIndexes::new(workspace_index, game_data_index).ordered(),
     );
     match resolver.resolve_hover_at_offset(offset) {
         Some(HoverResolution::Identifier(resolution)) => {
@@ -297,7 +277,8 @@ fn hover_report_for_offset(
                     }
                     CandidateSource::External => {
                         if let Some(external_index) =
-                            external_index_for_candidate(selected, workspace_index, game_data_index)
+                            ExternalIndexes::new(workspace_index, game_data_index)
+                                .for_candidate(selected)
                         {
                             let external_query = IndexQuery::new(external_index);
                             if let Some(mut report) = hover_report_for_symbol(

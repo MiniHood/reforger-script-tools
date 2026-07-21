@@ -10,6 +10,7 @@ use crate::lsp::callable::{
     callable_argument_context_at_offset, callable_signature_parts, callable_type_owner,
     CallableParameter, CallableSignatureParts, CallableTarget,
 };
+use crate::lsp::external_indexes::ExternalIndexes;
 use crate::lsp::{
     file_index_for_source, offset_for_position, range_for_span, FileIndexAnalysis,
     LspMarkupContent, LspPosition, LspRange,
@@ -172,13 +173,6 @@ pub struct LspCompletionTimings {
     pub candidate_lookup: Duration,
     pub item_rendering: Duration,
     pub total: Duration,
-}
-
-fn layered_external_indexes<'a>(
-    workspace_index: Option<&'a SymbolIndex>,
-    game_data_index: Option<&'a SymbolIndex>,
-) -> Vec<&'a SymbolIndex> {
-    workspace_index.into_iter().chain(game_data_index).collect()
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -627,7 +621,7 @@ fn external_static_owner_has_members(
     workspace_index: Option<&SymbolIndex>,
     game_data_index: Option<&SymbolIndex>,
 ) -> bool {
-    layered_external_indexes(workspace_index, game_data_index)
+    ExternalIndexes::new(workspace_index, game_data_index).ordered()
         .into_iter()
         .any(|index| !IndexQuery::new(index).completion_static_members_for_type(owner).is_empty())
 }
@@ -654,7 +648,7 @@ pub(crate) fn completion_report_for_current_argument_labels_at_offset_with_exter
     }
     let context = region.bare_argument_context(source, offset)?;
     let mut callable_candidates = Vec::new();
-    for index in layered_external_indexes(workspace_index, game_data_index) {
+    for index in ExternalIndexes::new(workspace_index, game_data_index).ordered() {
         callable_candidates.extend(
             exact_top_level_candidates(index, &context.callee)
                 .into_iter()
@@ -2107,7 +2101,7 @@ fn completion_report_for_offset(
         &analysis.index,
         &analysis.parse,
         &analysis.scope,
-        layered_external_indexes(workspace_index, game_data_index),
+        ExternalIndexes::new(workspace_index, game_data_index).ordered(),
     );
     let mut argument_label_fallback = None;
     if let Some(context) = argument_label_completion_context(source, &analysis.parse.root, offset) {
@@ -3717,7 +3711,7 @@ fn containing_class_completion_owners(
     game_data_index: Option<&SymbolIndex>,
     class_name: &str,
 ) -> Vec<String> {
-    let indexes = layered_external_indexes(workspace_index, game_data_index);
+    let indexes = ExternalIndexes::new(workspace_index, game_data_index).ordered();
     let mut owners = Vec::new();
     let mut pending = vec![class_name.to_string()];
     let mut seen = BTreeSet::new();
@@ -3747,7 +3741,7 @@ fn external_completion_owners(
     workspace_index: Option<&SymbolIndex>,
     game_data_index: Option<&SymbolIndex>,
 ) -> Vec<String> {
-    let indexes = layered_external_indexes(workspace_index, game_data_index);
+    let indexes = ExternalIndexes::new(workspace_index, game_data_index).ordered();
     let mut owners = Vec::new();
     let mut pending = vec![root_owner.to_string()];
     let mut seen = BTreeSet::new();
