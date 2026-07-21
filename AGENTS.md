@@ -24,6 +24,20 @@ Keep TypeScript as the editor shell and Rust as the language engine. Workbench
 and the compiler establish Enfusion truth; they are not a second language
 server. Keep the runtime ownership boundaries intact.
 
+## Documentation Router
+
+Read only the document that owns the question before changing a non-trivial
+area:
+
+- `docs/overview.md`: project purpose and evidence hierarchy.
+- `docs/architecture.md`: cross-layer flow and ownership boundaries.
+- `docs/language-engine.md`: Rust analysis, snapshot, and LSP contract.
+- `docs/development.md`: local build, test, and development workflow.
+
+Documentation records durable context; code and tests remain the implementation
+source of truth. Extend an existing document when it owns the subject. Create a
+new one only for a lasting subsystem contract, decision, or workflow.
+
 ## Taste
 
 - Prefer precise language facts and full-fidelity parsing over text matching.
@@ -63,9 +77,8 @@ language conventions.
 - Runtime state belongs under `globalStorageUri`; `globalState` is for small,
   durable flags only. Do not write runtime state into source files.
 - Keep diagnostics optional, centralized, concise, and outside the workspace.
-- Read the relevant source and boundary documentation before a non-trivial
-  change. Documentation is evolving toward deep-module context; do not add
-  per-file documentation machinery unless the current task needs it.
+- Read the relevant source and the routed documentation before a non-trivial
+  change. Do not add per-file documentation machinery.
 - Verify the smallest meaningful slice. For extension-facing TypeScript,
   language-client, or bundled-server changes, run `npm run compile` after the
   final source edit. State any live Workbench/editor validation still pending.
