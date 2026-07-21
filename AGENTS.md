@@ -44,7 +44,6 @@ completion, update the owning document when the change affects its contract.
 
 - Prefer precise language facts and full-fidelity parsing over text matching.
 - Prefer small, verified vertical slices over broad speculative rewrites.
-- Preserve working behavior unless the task intentionally changes it.
 - Keep modules deep: expose a small, clear contract and hide the complexity
   behind it. Do not add a manager, registry, wrapper, setting, or validation
   layer without a concrete present need.
@@ -52,7 +51,6 @@ completion, update the owning document when the change affects its contract.
   parsing, indexing, completion, or semantic decisions out of Rust.
 - Use one authoritative path for a feature. Temporary migrations need an
   explicit removal condition.
-- Keep activation fast and expensive work off the extension host.
 - Marketplace installs must be self-contained: no user-installed Rust, Cargo,
   Node.js, npm dependencies, or separate language server.
 
