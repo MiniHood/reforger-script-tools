@@ -22,8 +22,7 @@ Route work to the owner instead of growing a second implementation path.
 
 Keep TypeScript as the editor shell and Rust as the language engine. Workbench
 and the compiler establish Enfusion truth; they are not a second language
-server. Keep the runtime flow in
-[docs/reference/architecture.md](docs/reference/architecture.md) intact.
+server. Keep the runtime ownership boundaries intact.
 
 ## Taste
 
