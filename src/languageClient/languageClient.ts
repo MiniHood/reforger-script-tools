@@ -39,7 +39,14 @@ import {
 } from './workspaceWatchBridge';
 import { registerDebugCommandBridge } from './debugCommandBridge';
 import { createCompletionMiddleware } from './completionMiddleware';
-import { typingAssistRequest } from './typingAssistBridge';
+import {
+	blockCommentPairPosition,
+	enterAfterPosition,
+	tabAfterPosition,
+	typingAssistRequest,
+} from './typingAssistBridge';
+
+export { blockCommentPairPosition, enterAfterPosition, tabAfterPosition } from './typingAssistBridge';
 
 let client: LanguageClient | undefined;
 let clientDisposables: vscode.Disposable[] = [];
@@ -576,16 +583,6 @@ interface BlockCommentPairTransaction {
 	response?: BlockCommentPairResponse;
 }
 
-export function blockCommentPairPosition(
-	changes: readonly vscode.TextDocumentContentChangeEvent[],
-): vscode.Position | undefined {
-	if (changes.length !== 1 || changes[0].rangeLength !== 0 || changes[0].text !== '**/') {
-		return undefined;
-	}
-	const change = changes[0];
-	return new vscode.Position(change.range.start.line, change.range.start.character + 1);
-}
-
 async function requestBlockCommentPair(
 	transaction: BlockCommentPairTransaction,
 	isCurrent: () => boolean,
@@ -719,23 +716,6 @@ interface EnterTypingAssistTransaction {
 	trigger: '\n' | '\t';
 	caretReady: boolean;
 	response?: EnterTypingAssistResponse;
-}
-
-export function enterAfterPosition(
-	changes: readonly vscode.TextDocumentContentChangeEvent[],
-): vscode.Position | undefined {
-	if (!isSinglePlainEnter(changes)) {
-		return undefined;
-	}
-	const change = changes[0];
-	const newline = change.text.lastIndexOf('\n');
-	return new vscode.Position(change.range.start.line + 1, change.text.length - newline - 1);
-}
-
-function isSinglePlainEnter(changes: readonly vscode.TextDocumentContentChangeEvent[]): boolean {
-	return changes.length === 1
-		&& changes[0].rangeLength === 0
-		&& /^\r?\n[\t ]*$/.test(changes[0].text);
 }
 
 async function requestEnterTypingAssist(
@@ -1177,19 +1157,6 @@ function isVscodeCommand(value: unknown): value is vscode.Command {
 		&& value !== null
 		&& 'command' in value
 		&& typeof value.command === 'string';
-}
-
-export function tabAfterPosition(
-	changes: readonly vscode.TextDocumentContentChangeEvent[],
-): vscode.Position | undefined {
-	if (changes.length !== 1 || changes[0].rangeLength !== 0) {
-		return undefined;
-	}
-	const change = changes[0];
-	if (change.text !== '\t') {
-		return undefined;
-	}
-	return new vscode.Position(change.range.start.line, change.range.start.character + change.text.length);
 }
 
 /**
