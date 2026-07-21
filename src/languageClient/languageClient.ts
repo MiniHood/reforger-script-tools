@@ -1392,9 +1392,8 @@ export function tabAfterPosition(
  * contract.
  */
 async function normalizeIfSpaceCommit(args: readonly unknown[]): Promise<void> {
-	const [line, character] = args;
-	if (typeof line !== 'number' || typeof character !== 'number'
-		|| !Number.isInteger(line) || !Number.isInteger(character) || line < 0 || character < 0) {
+	const position = ifSpaceCommitPositionFromCommandArguments(args);
+	if (!position) {
 		return;
 	}
 	const editor = vscode.window.activeTextEditor;
@@ -1404,7 +1403,7 @@ async function normalizeIfSpaceCommit(args: readonly unknown[]): Promise<void> {
 		|| !editor.selection.isEmpty) {
 		return;
 	}
-	const deletion = new vscode.Range(line, character, line, character + 1);
+	const deletion = new vscode.Range(position, position.translate(0, 1));
 	if (editor.selection.active.isEqual(deletion.end)) {
 		diagnostic('completion.ifSpaceCommit', { outcome: 'afterCommit' });
 		await removeIfSpaceCommitCharacter(editor, deletion);
@@ -1420,6 +1419,20 @@ async function normalizeIfSpaceCommit(args: readonly unknown[]): Promise<void> {
 		position: deletion.start,
 	};
 	diagnostic('completion.ifSpaceCommit', { outcome: 'awaitingCommitCharacter' });
+}
+
+export function ifSpaceCommitPositionFromCommandArguments(args: readonly unknown[]): vscode.Position | undefined {
+	const [line, character] = args;
+	if (typeof line !== 'string' || typeof character !== 'string'
+		|| !/^\d+$/.test(line) || !/^\d+$/.test(character)) {
+		return undefined;
+	}
+	const lineNumber = Number(line);
+	const characterNumber = Number(character);
+	if (!Number.isSafeInteger(lineNumber) || !Number.isSafeInteger(characterNumber)) {
+		return undefined;
+	}
+	return new vscode.Position(lineNumber, characterNumber);
 }
 
 function registerIfSpaceCommitCleanup(): vscode.Disposable {

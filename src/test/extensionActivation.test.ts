@@ -6,6 +6,7 @@ import { languageClientCommands } from '../extensionConfig/languageClient';
 import {
 	blockCommentPairPosition,
 	enterAfterPosition,
+	ifSpaceCommitPositionFromCommandArguments,
 	isCurrentSingleTypingAssistCaret,
 	tabAfterPosition,
 } from '../languageClient/languageClient';
@@ -59,6 +60,15 @@ suite('extension activation', () => {
 		assert.ok(clientSource.includes('enterAfterPosition'));
 		assert.ok(clientSource.includes('onDidChangeTextEditorSelection'));
 		assert.ok(!clientSource.includes('registerOnTypeFormattingEditProvider'));
+	});
+
+	test('accepts only Rust-authored if completion coordinates', () => {
+		assert.deepStrictEqual(
+			ifSpaceCommitPositionFromCommandArguments(['3', '9']),
+			new vscode.Position(3, 9),
+		);
+		assert.strictEqual(ifSpaceCommitPositionFromCommandArguments([3, 9]), undefined);
+		assert.strictEqual(ifSpaceCommitPositionFromCommandArguments(['3', '-1']), undefined);
 	});
 
 	test('contributes native pairs and narrow if-family indentation', async () => {
