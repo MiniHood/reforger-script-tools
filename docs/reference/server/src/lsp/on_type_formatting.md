@@ -23,6 +23,8 @@ The module supports three narrow assists:
 - when a plain Enter splits a complete single-line condition in an unfinished
   unbraced `if (` header, restores it as `if (<condition>)` and returns the
   immediate unbraced-body indentation/caret.
+- after a complete supported one-line body directly beneath an unbraced `if`,
+  restores the next blank line to the header's enclosing indentation.
 
 The incomplete-`if` path accepts only a current-line split with whitespace
 between the inserted newline and the captured caret. It preserves the existing
@@ -31,6 +33,13 @@ comments, unterminated strings, directives, braces, attributes, malformed delimi
 unfinished expressions, and documents above the bounded source size. Ordinary
 complete `if`, `else if`, and `else` indentation remains native VS Code
 language-configuration behavior.
+
+The body-outdent path requires adjacent physical header/body lines, the exact
+native body indentation, an otherwise complete unbraced `if`/`else if`
+condition, and one complete call, declaration, or return body statement. It
+also combines safely with semicolon insertion when that same supported body
+line is missing only its final semicolon. Braces, nested controls, malformed
+statements, custom indentation, and any uncertain shape remain untouched.
 
 If VS Code moves an already auto-paired final `)` onto the new line while the
 caret was still inside that condition, the plan recognizes it as the same

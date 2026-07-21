@@ -16,6 +16,109 @@ pub(super) struct IncompleteIfHeaderPlan {
     pub selection_character: u32,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ControlBodyOutdentPlan {
+    pub span: TextSpan,
+    pub replacement: String,
+    pub selection_character: u32,
+}
+
+/// Restores the enclosing indentation after one complete, unbraced `if` body
+/// statement. The editor owns initial body indentation; this only corrects
+/// the next blank line once the two physical lines prove the scope ended.
+pub(super) fn unbraced_if_body_outdent_plan(
+    source: &str,
+    cursor: usize,
+    tab_size: usize,
+    insert_spaces: bool,
+) -> Option<ControlBodyOutdentPlan> {
+    if source.len() > MAX_ON_TYPE_SOURCE_BYTES || cursor > source.len() {
+        return None;
+    }
+    let current_line_start = line_start_before(source, cursor)?;
+    let current_indent = &source[current_line_start..cursor];
+    if !current_indent.chars().all(char::is_whitespace) {
+        return None;
+    }
+    let body_line_end = trim_line_ending(source, current_line_start);
+    let body_line_start = source[..body_line_end]
+        .rfind('\n')
+        .map_or(0, |newline| newline + 1);
+    let header_line_end = trim_line_ending(source, body_line_start);
+    let header_line_start = source[..header_line_end]
+        .rfind('\n')
+        .map_or(0, |newline| newline + 1);
+    let header = &source[header_line_start..header_line_end];
+    let body = &source[body_line_start..body_line_end];
+    let header_indent_end = header.find(|character: char| !character.is_whitespace())?;
+    let header_indent = &header[..header_indent_end];
+    let unit = if insert_spaces {
+        " ".repeat(tab_size.clamp(1, 16))
+    } else {
+        "\t".to_string()
+    };
+    let body_indent = format!("{header_indent}{unit}");
+    if current_indent != body_indent || !body.starts_with(&body_indent) {
+        return None;
+    }
+    let header_tokens = significant_tokens(header)?;
+    let body_tokens = significant_tokens(&body[body_indent.len()..])?;
+    if !is_complete_unbraced_if_header(&header_tokens)
+        || !is_complete_one_line_body_statement(&body_tokens)
+    {
+        return None;
+    }
+    Some(ControlBodyOutdentPlan {
+        span: TextSpan::new(current_line_start, cursor),
+        replacement: header_indent.to_string(),
+        selection_character: header_indent
+            .chars()
+            .map(|character| character.len_utf16() as u32)
+            .sum(),
+    })
+}
+
+fn significant_tokens(source: &str) -> Option<Vec<Token>> {
+    let tokens = lex(source);
+    if tokens.iter().any(|token| token.kind.is_error()) {
+        return None;
+    }
+    Some(
+        tokens
+            .into_iter()
+            .filter(|token| !token.kind.is_trivia() && token.kind != TokenKind::Eof)
+            .collect(),
+    )
+}
+
+fn is_complete_unbraced_if_header(tokens: &[Token]) -> bool {
+    let condition_start = match tokens {
+        [Token { kind: TokenKind::Keyword(Keyword::If), .. }, Token { kind: TokenKind::LeftParen, .. }, ..] => 2,
+        [
+            Token { kind: TokenKind::Keyword(Keyword::Else), .. },
+            Token { kind: TokenKind::Keyword(Keyword::If), .. },
+            Token { kind: TokenKind::LeftParen, .. },
+            ..
+        ] => 3,
+        _ => return false,
+    };
+    let condition = &tokens[condition_start..];
+    has_completed_if_paren(condition)
+        && is_complete_value_expression(&condition[..condition.len().saturating_sub(1)])
+}
+
+fn is_complete_one_line_body_statement(tokens: &[Token]) -> bool {
+    let statement = if tokens.last().map(|token| token.kind) == Some(TokenKind::Semicolon) {
+        &tokens[..tokens.len() - 1]
+    } else {
+        tokens
+    };
+    !statement.is_empty()
+        && (is_complete_call_expression(statement)
+            || is_complete_variable_declaration(statement)
+            || is_complete_value_return_statement(statement))
+}
+
 /// Completes a single-line unbraced `if` header when Enter split its still
 /// unfinished condition.  This is intentionally smaller than a formatter:
 /// every unsupported or recovered shape leaves the editor's native Enter
@@ -689,6 +792,7 @@ fn consume_balanced(tokens: &[Token], start: usize, close: TokenKind) -> Option<
 mod tests {
     use super::{
         block_comment_pair_plan, incomplete_if_header_enter_plan, semicolon_insertion_offset,
+        unbraced_if_body_outdent_plan,
     };
 
     fn insertion(source: &str) -> Option<usize> {
@@ -842,6 +946,34 @@ mod tests {
         let source = "\tif (Ready()\r\n\t";
         let plan = incomplete_if_header_enter_plan(source, source.len(), 4, false).unwrap();
         assert_eq!(plan.replacement, "\tif (Ready())\r\n\t\t");
+    }
+
+    #[test]
+    fn outdents_after_one_complete_unbraced_if_body_statement() {
+        for source in [
+            "\tif (owner == GetOwner())\n\t\treturn owner;\n\t\t",
+            "\tif (owner == GetOwner())\n\t\treturn owner; // note\n\t\t",
+            "\tif (owner == GetOwner())\n\t\treturn owner\n\t\t",
+        ] {
+            let plan = unbraced_if_body_outdent_plan(source, source.len(), 4, false).unwrap();
+            assert_eq!(plan.replacement, "\t", "{source:?}");
+            assert_eq!(plan.selection_character, 1, "{source:?}");
+        }
+    }
+
+    #[test]
+    fn does_not_outdent_after_block_or_ambiguous_if_body() {
+        for source in [
+            "\tif (owner == GetOwner())\n\t\t{\n\t\t",
+            "\tif (owner == GetOwner())\n\t\treturn owner +\n\t\t",
+            "\tif (owner == GetOwner())\n\t\tif (other)\n\t\t",
+            "\tif (owner == GetOwner())\n\t\treturn owner;\n\t",
+        ] {
+            assert!(
+                unbraced_if_body_outdent_plan(source, source.len(), 4, false).is_none(),
+                "{source:?}"
+            );
+        }
     }
 
     #[test]

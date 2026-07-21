@@ -2114,6 +2114,21 @@ impl<W: Write> LspServer<W> {
                                 }));
                             }
                             let mut edits = Vec::new();
+                            let outdent = on_type_formatting::unbraced_if_body_outdent_plan(
+                                &document.text,
+                                cursor,
+                                params.options.tab_size,
+                                params.options.insert_spaces,
+                            );
+                            if let Some(plan) = &outdent {
+                                edits.push(json!({
+                                    "range": {
+                                        "start": position_for_offset(&document.text, plan.span.start),
+                                        "end": position_for_offset(&document.text, plan.span.end),
+                                    },
+                                    "newText": plan.replacement,
+                                }));
+                            }
                             if let Some(insertion) = on_type_formatting::semicolon_insertion_offset(
                                 &document.text,
                                 cursor,
@@ -2124,8 +2139,19 @@ impl<W: Write> LspServer<W> {
                                     "newText": ";",
                                 }));
                             }
-                            outcome = if edits.is_empty() { "no_edit" } else { "semicolon" };
-                            Some(json!({ "edits": edits }))
+                            outcome = match (outdent.is_some(), edits.is_empty()) {
+                                (_, true) => "no_edit",
+                                (true, _) => "if_body_outdent",
+                                (false, _) => "semicolon",
+                            };
+                            let mut result = json!({ "edits": edits });
+                            if let Some(plan) = outdent {
+                                result["selection"] = json!({
+                                    "line": params.position.line,
+                                    "character": plan.selection_character,
+                                });
+                            }
+                            Some(result)
                         })
                         .unwrap_or_else(|| json!({ "edits": [] }));
                     self.log(&format!(
@@ -10002,6 +10028,48 @@ class Example
         );
         assert!(
             output.contains("\"selection\":{\"character\":2,\"line\":1}"),
+            "{output}"
+        );
+    }
+
+    #[test]
+    fn enter_typing_assist_outdents_after_a_complete_unbraced_if_body() {
+        let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
+        let uri = "file:///Scripts/IfBodyEnter.c";
+        server
+            .handle_message(
+                json!({ "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+                    "textDocument": {
+                        "uri": uri,
+                        "languageId": "enforce",
+                        "version": 1,
+                        "text": "\tif (owner == GetOwner())\n\t\treturn owner; // note\n\t\t"
+                    }
+                }}),
+                None,
+                0,
+                0,
+            )
+            .unwrap();
+        server.writer.clear();
+        server
+            .handle_message(
+                json!({ "jsonrpc": "2.0", "id": 1, "method": ENTER_TYPING_ASSIST_METHOD, "params": {
+                    "textDocument": { "uri": uri },
+                    "position": { "line": 2, "character": 2 },
+                    "ch": "\n",
+                    "version": 1,
+                    "options": { "tabSize": 4, "insertSpaces": false }
+                }}),
+                None,
+                0,
+                0,
+            )
+            .unwrap();
+        let output = String::from_utf8_lossy(&server.writer);
+        assert!(output.contains("\"newText\":\"\\t\""), "{output}");
+        assert!(
+            output.contains("\"selection\":{\"character\":1,\"line\":2}"),
             "{output}"
         );
     }

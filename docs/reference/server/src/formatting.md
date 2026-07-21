@@ -27,6 +27,13 @@ parenthesis to the new line while the caret is still inside the condition. It
 restores that existing closer instead of adding another one; Enter after a
 complete header remains native behavior.
 
+After a proven complete one-line call, declaration, or return body immediately
+under an unbraced `if`/`else if`, the same Enter request restores the blank
+next line to the header indentation and supplies that caret. This avoids stale
+body whitespace making a later Tab appear to re-enter a scope that has already
+ended. It requires the exact native body indentation and refuses braces,
+nested controls, custom indentation, and unsupported statements.
+
 Native VS Code language configuration owns immediate indentation for complete
 unbraced `if`/`else if`/`else` headers. The server's incomplete-`if` plan is
 limited to completing the header that the same Enter interrupted; it does not

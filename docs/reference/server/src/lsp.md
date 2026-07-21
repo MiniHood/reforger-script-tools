@@ -127,7 +127,10 @@ was moved to the new line by an auto-pair), Rust returns one replacement and
 exact body-caret position. It rejects every ambiguous,
 comment, unterminated-string, directive, malformed, or complete-header shape. Native language
 configuration still owns immediate indentation after standalone complete
-unbraced `if`, `else if`, and `else` headers. Its concise request log records
+unbraced `if`, `else if`, and `else` headers. Once a supported complete
+one-line body directly under an unbraced `if`/`else if` is proven, the same
+request may restore the following blank line to the header indentation; it
+does not infer broader control scope. Its concise request log records
 the version, UTF-16 request position, outcome, and elapsed time, never source
 text.
 
