@@ -136,13 +136,17 @@ Before completing a source-changing task:
    command.
 4. Validate Reforger language claims with Workbench/compiler behavior whenever
    available.
-5. For Rust server, server-binary, or language-client lifecycle changes, force
-   a fresh language-server process when necessary. Reload the existing active
-   Extension Development Host in place after completed extension work so it
-   uses the rebuilt extension while preserving its debug-session UI and state.
-   Never launch a replacement VS Code window or close the user's host as a
-   substitute for reload. If available automation cannot target the existing
-   host, report the build as complete but live verification as pending.
+5. After the final source change to any extension-facing TypeScript, bundled
+   Rust server, or language-client behavior, run `npm run compile` before
+   reporting completion. This is mandatory even when another test command ran
+   an earlier build. It rebuilds the extension and replaces the development
+   server binary so the existing Extension Development Host's watcher can use
+   the new artifacts; do not leave that compilation step for the user.
+   Preserve the existing host and its debug-session UI: never launch a
+   replacement VS Code window, close the user's host, or ask the user to
+   manually reload it as a substitute for the compile-driven update. If the
+   available tooling cannot confirm a live interaction afterward, report only
+   that live verification as pending.
 6. Update required documentation and record verification plus remaining
    uncertainty.
 

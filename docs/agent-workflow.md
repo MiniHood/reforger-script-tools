@@ -117,13 +117,16 @@ when a separate full persona review is warranted.
 ## Development-host continuity
 
 An Extension Development Host is part of the developer's live debugging
-context, not a disposable test window. After an extension rebuild, reload the
-existing host in place when an automation surface can target it. Do not launch
-a new `--extensionDevelopmentPath` window, close VS Code, or replace the host:
-those actions lose debug-menu state and do not prove the active session loaded
-the rebuilt extension. When in-place reload cannot be controlled from the
-available tools, report the build and automated checks separately from pending
-live-host verification.
+context, not a disposable test window. After the final extension-facing source
+change, Codex runs `npm run compile` itself before handoff, even if an earlier
+test command already built the project. The rebuild updates the extension
+artifacts and replaces the development server binary for the existing host's
+watcher; this must not be deferred to the developer or presented as a manual
+reload step. Do not launch a new `--extensionDevelopmentPath` window, close VS
+Code, or replace the host: those actions lose debug-menu state and do not prove
+the active session loaded the rebuilt artifacts. If no available tool can
+perform a live editor interaction afterward, only that interaction remains
+pending; the build itself is complete.
 
 ## Preserving useful history
 
