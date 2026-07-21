@@ -45,11 +45,6 @@ const COMMAND_TRIGGER_PARAMETER_HINTS: &str = "editor.action.triggerParameterHin
 /// to select each Rust-authored placeholder before dispatching Suggest.
 const COMMAND_TRIGGER_SUGGEST_AT_SNIPPET_PLACEHOLDER: &str =
     "reforger-sript-tools.completion.triggerSuggestAtSnippetPlaceholder";
-/// A completion-specific UI adapter which removes the one Space commit
-/// character that VS Code appends after this item's snippet edit. It has an
-/// exact caret-local contract and never classifies ordinary source text.
-const COMMAND_NORMALIZE_IF_SPACE_COMMIT: &str =
-    "reforger-sript-tools.completion.normalizeIfSpaceCommit";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LspCompletionList {
@@ -3539,11 +3534,7 @@ fn keyword_completion_items(
                 filter_text: Some(keyword.to_string()),
                 insert_text_format,
                 commit_characters,
-                command: (keyword == "if").then_some(LspCommand {
-                    title: "Normalize if Space commit".to_string(),
-                    command: COMMAND_NORMALIZE_IF_SPACE_COMMIT.to_string(),
-                    arguments: None,
-                }),
+                command: None,
                 text_edit: LspTextEdit {
                     range: edit_range,
                     new_text,
@@ -5692,10 +5683,7 @@ ArmaReforgerScripted GetGame();
         assert_eq!(if_item.text_edit.new_text, "if ($0)");
         assert_eq!(if_item.insert_text_format, Some(2));
         assert_eq!(if_item.commit_characters, Some(vec![" ".to_string()]));
-        assert_eq!(
-            if_item.command.as_ref().map(|command| command.command.as_str()),
-            Some(COMMAND_NORMALIZE_IF_SPACE_COMMIT),
-        );
+        assert_eq!(if_item.command, None);
         let wire_item = serde_json::to_value(if_item).expect("keyword item should serialize");
         assert_eq!(wire_item["commitCharacters"], serde_json::json!([" "]));
 

@@ -46,7 +46,6 @@ let firstSemanticTokenTimingLogged = false;
 let completionTransactionSequence = 0;
 let pendingSnippetSuggestTransaction: SnippetSuggestTransaction | undefined;
 let pendingEmptyCompletionRefresh: EmptyCompletionRefresh | undefined;
-let pendingIfSpaceCommit: IfSpaceCommit | undefined;
 let latestEditorDocumentChange: EditorDocumentChange | undefined;
 const completionLifecycleTraceLimit = 80;
 const completionLifecycleTrace: CompletionLifecycleTraceEvent[] = [];
@@ -74,11 +73,6 @@ interface EmptyCompletionRefresh {
 	requestVersion: number;
 }
 
-interface IfSpaceCommit {
-	documentUri: string;
-	version: number;
-	position: vscode.Position;
-}
 
 interface EditorDocumentChange {
 	documentUri: string;
@@ -145,7 +139,6 @@ export function registerLanguageClientFeatures(context: vscode.ExtensionContext)
 	context.subscriptions.push(registerEnterTypingAssist());
 	context.subscriptions.push(registerBlockCommentPair());
 	context.subscriptions.push(registerEmptyCompletionRefresh());
-	context.subscriptions.push(registerIfSpaceCommitCleanup());
 	context.subscriptions.push(vscode.commands.registerCommand(
 		languageClientCommands.debugHoverAtCursor,
 		() => debugHoverAtCursor(context, debugOutputChannel),
@@ -162,10 +155,6 @@ export function registerLanguageClientFeatures(context: vscode.ExtensionContext)
 		languageClientCommands.advanceSnippetPlaceholderAfterAccept,
 		(transactionId: unknown, originalCommand: unknown) =>
 			advanceSnippetPlaceholderAfterAccept(transactionId, originalCommand),
-	));
-	context.subscriptions.push(vscode.commands.registerCommand(
-		languageClientCommands.normalizeIfSpaceCommit,
-		() => normalizeIfSpaceCommit(),
 	));
 	context.subscriptions.push(vscode.commands.registerCommand(
 		languageClientCommands.openSymbolLocation,
@@ -1429,108 +1418,6 @@ export function tabAfterPosition(
 		return undefined;
 	}
 	return new vscode.Position(change.range.start.line, change.range.start.character + change.text.length);
-}
-
-/**
- * Removes only the commit character that VS Code appends after accepting the
- * Rust-authored `if ($0)` snippet with Space. This is a completion UI adapter,
- * not TypeScript syntax recognition: Rust attaches this command exclusively to
- * that item, and the exact caret-local postcondition is the whole admission
- * contract.
- */
-async function normalizeIfSpaceCommit(): Promise<void> {
-	const editor = vscode.window.activeTextEditor;
-	if (!editor
-		|| editor.document.languageId !== languageClientLanguage.id
-		|| editor.selections.length !== 1
-		|| !editor.selection.isEmpty) {
-		return;
-	}
-	const deletion = ifSpaceCommitDeletionRange(editor.document, editor.selection.active);
-	if (deletion) {
-		diagnostic('completion.ifSpaceCommit', { outcome: 'afterCommit' });
-		await removeIfSpaceCommitCharacter(editor, deletion);
-		return;
-	}
-	if (!ifSpaceCommitInsertionPosition(editor.document, editor.selection.active)) {
-		diagnostic('completion.ifSpaceCommit', { outcome: 'ignored' });
-		return;
-	}
-	pendingIfSpaceCommit = {
-		documentUri: editor.document.uri.toString(),
-		version: editor.document.version,
-		position: editor.selection.active,
-	};
-	diagnostic('completion.ifSpaceCommit', { outcome: 'awaitingCommitCharacter' });
-}
-
-function registerIfSpaceCommitCleanup(): vscode.Disposable {
-	return vscode.workspace.onDidChangeTextDocument(event => {
-		const pending = pendingIfSpaceCommit;
-		if (!pending || event.document.uri.toString() !== pending.documentUri) {
-			return;
-		}
-		pendingIfSpaceCommit = undefined;
-		const [change] = event.contentChanges;
-		if (event.document.version !== pending.version + 1
-			|| event.contentChanges.length !== 1
-			|| !change.range.isEmpty
-			|| change.text !== ' '
-			|| !change.range.start.isEqual(pending.position)) {
-			diagnostic('completion.ifSpaceCommit', { outcome: 'unexpectedChange' });
-			return;
-		}
-		const editor = vscode.window.activeTextEditor;
-		const deletion = ifSpaceCommitDeletionRange(event.document, pending.position.translate(0, 1));
-		if (!editor
-			|| editor.document.uri.toString() !== pending.documentUri
-			|| !deletion) {
-			diagnostic('completion.ifSpaceCommit', { outcome: 'postCommitShapeMissing' });
-			return;
-		}
-		diagnostic('completion.ifSpaceCommit', { outcome: 'commitObserved' });
-		void removeIfSpaceCommitCharacter(editor, deletion);
-	});
-}
-
-async function removeIfSpaceCommitCharacter(
-	editor: vscode.TextEditor,
-	deletion: vscode.Range,
-): Promise<void> {
-	const position = deletion.start;
-	const applied = await editor.edit(edit => edit.delete(deletion), {
-		undoStopBefore: false,
-		undoStopAfter: false,
-	});
-	if (applied) {
-		editor.selection = new vscode.Selection(position, position);
-		diagnostic('completion.ifSpaceCommit', { outcome: 'normalized' });
-	}
-}
-
-export function ifSpaceCommitDeletionRange(
-	document: vscode.TextDocument,
-	caret: vscode.Position,
-): vscode.Range | undefined {
-	if (caret.line < 0 || caret.line >= document.lineCount || caret.character < 5) {
-		return undefined;
-	}
-	const line = document.lineAt(caret.line).text;
-	if (line.slice(caret.character - 5, caret.character + 1) !== 'if ( )') {
-		return undefined;
-	}
-	return new vscode.Range(caret.line, caret.character - 1, caret.line, caret.character);
-}
-
-export function ifSpaceCommitInsertionPosition(
-	document: vscode.TextDocument,
-	caret: vscode.Position,
-): boolean {
-	if (caret.line < 0 || caret.line >= document.lineCount || caret.character < 4) {
-		return false;
-	}
-	const line = document.lineAt(caret.line).text;
-	return line.slice(caret.character - 4, caret.character + 1) === 'if ()';
 }
 
 function advanceSnippetSuggestTransaction(id: number): void {
