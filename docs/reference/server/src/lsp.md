@@ -123,6 +123,14 @@ version as an extension field and Rust returns no edits unless it exactly
 matches the installed immutable snapshot. Its concise request log records the
 version, UTF-16 request position, outcome, and elapsed time, never source text.
 
+textDocument/rangeFormatting is advertised for an explicit comment-only
+formatting operation. It converts the standard UTF-16 range against the
+currently held document text, invokes the Rust formatting core, and projects
+only its returned byte spans back to UTF-16 edits. It never waits for semantic
+analysis, reads workspace data, or applies an edit for mixed code/comment,
+partial-comment, or invalid content. The standard language client owns
+request/result ordering; TypeScript does not implement a competing formatter.
+
 ## Dependencies and Boundaries
 
 Depends on `serde`/`serde_json`, the parser/model/index stack, and

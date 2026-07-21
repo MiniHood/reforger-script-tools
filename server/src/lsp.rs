@@ -123,6 +123,7 @@ const SIGNATURE_HELP_RETRIGGER_CHARACTERS: &[&str] = SIGNATURE_HELP_TRIGGER_CHAR
 const DEBUG_HOVER_METHOD: &str = "reforger/debugHover";
 const DEBUG_COMPLETION_METHOD: &str = "reforger/debugCompletion";
 const ON_TYPE_FORMATTING_METHOD: &str = "textDocument/onTypeFormatting";
+const RANGE_FORMATTING_METHOD: &str = "textDocument/rangeFormatting";
 const WORKSPACE_FILE_CHANGED_METHOD: &str = "reforger/workspaceFileChanged";
 const WORKSPACE_FILE_DELETED_METHOD: &str = "reforger/workspaceFileDeleted";
 const MAX_LSP_HEADER_LINE_BYTES: usize = 8 * 1024;
@@ -211,7 +212,7 @@ pub struct LspDocumentSymbol {
     pub children: Vec<LspDocumentSymbol>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LspRange {
     pub start: LspPosition,
     pub end: LspPosition,
@@ -1131,6 +1132,15 @@ struct OnTypeFormattingParams {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RangeFormattingParams {
+    text_document: TextDocumentIdentifier,
+    range: LspRange,
+    #[serde(rename = "options")]
+    _options: Value,
+}
+
+#[derive(Debug, Deserialize)]
 struct TextDocumentIdentifier {
     uri: String,
 }
@@ -1387,6 +1397,7 @@ impl<W: Write> LspServer<W> {
                                     "change": 1
                                 },
                                 "documentSymbolProvider": true,
+                                "documentRangeFormattingProvider": true,
                                 "hoverProvider": true,
                                 "definitionProvider": true,
                                 "completionProvider": {
@@ -2068,6 +2079,62 @@ impl<W: Write> LspServer<W> {
                         version,
                         line,
                         character,
+                        outcome,
+                        start.elapsed().as_millis()
+                    ));
+                    self.respond(id, result)?;
+                }
+            }
+            RANGE_FORMATTING_METHOD => {
+                if let Some(id) = message.id {
+                    let start = Instant::now();
+                    let params = parse_params::<RangeFormattingParams>(message.params, method)?;
+                    let mut log_uri = "<missing>".to_string();
+                    let mut bytes = 0usize;
+                    let mut version = -1i32;
+                    let mut edit_count = 0usize;
+                    let mut outcome = "no_edit";
+                    let result = params
+                        .and_then(|params| {
+                            log_uri = params.text_document.uri;
+                            let document = self.documents.get(&log_uri)?;
+                            bytes = document.text.len();
+                            version = document.version;
+                            let start = offset_for_position(&document.text, params.range.start)?;
+                            let end = offset_for_position(&document.text, params.range.end)?;
+                            if start > end {
+                                outcome = "invalid_range";
+                                return None;
+                            }
+                            let edits = crate::formatting::format_comment_region(
+                                &document.text,
+                                TextSpan::new(start, end),
+                            );
+                            edit_count = edits.len();
+                            if edits.is_empty() {
+                                return None;
+                            }
+                            let positions = LspPositionIndex::new(&document.text);
+                            outcome = "comment_region";
+                            Some(Value::Array(
+                                edits
+                                    .into_iter()
+                                    .map(|edit| {
+                                        json!({
+                                            "range": positions.range_for_span(edit.span),
+                                            "newText": edit.replacement
+                                        })
+                                    })
+                                    .collect(),
+                            ))
+                        })
+                        .unwrap_or_else(|| json!([]));
+                    self.log(&format!(
+                        "request rangeFormatting uri={} bytes={} version={} edits={} outcome={} elapsed_ms={}",
+                        log_uri,
+                        bytes,
+                        version,
+                        edit_count,
                         outcome,
                         start.elapsed().as_millis()
                     ));
@@ -4005,6 +4072,7 @@ fn validate_message_params(method: &str, params: &Option<Value>) -> Result<(), S
         | DEBUG_HOVER_METHOD
         | DEBUG_COMPLETION_METHOD => validate_params::<HoverParams>(params, method),
         ON_TYPE_FORMATTING_METHOD => validate_params::<OnTypeFormattingParams>(params, method),
+        RANGE_FORMATTING_METHOD => validate_params::<RangeFormattingParams>(params, method),
         _ => Ok(()),
     }
 }
@@ -8992,6 +9060,7 @@ class Example
 
         let output_text = String::from_utf8(output).unwrap();
         assert!(output_text.contains("\"documentSymbolProvider\":true"));
+        assert!(output_text.contains("\"documentRangeFormattingProvider\":true"));
         assert!(output_text.contains("\"name\":\"Smoke\""));
         assert!(output_text.contains("\"name\":\"Run\""));
     }
@@ -9763,6 +9832,71 @@ class Example
             .unwrap();
         let output = String::from_utf8_lossy(&server.writer);
         assert!(output.contains("\"newText\":\";\""), "{output}");
+    }
+
+    #[test]
+    fn range_formatting_projects_current_comment_only_edits() {
+        let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
+        let uri = "file:///Scripts/CommentFormatting.c";
+        let source = "\t//! First\n  //! \\param value Input\n\tint value;\n";
+        let comment_end = source.find("\tint").unwrap();
+        let range = LspRange {
+            start: LspPosition {
+                line: 0,
+                character: 0,
+            },
+            end: position_for_offset(source, comment_end),
+        };
+        server
+            .handle_message(
+                json!({ "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+                    "textDocument": {
+                        "uri": uri,
+                        "languageId": "enforce",
+                        "version": 1,
+                        "text": source
+                    }
+                }}),
+                None,
+                0,
+                0,
+            )
+            .unwrap();
+        server.writer.clear();
+        server
+            .handle_message(
+                json!({ "jsonrpc": "2.0", "id": 1, "method": RANGE_FORMATTING_METHOD, "params": {
+                    "textDocument": { "uri": uri },
+                    "range": range,
+                    "options": { "tabSize": 4, "insertSpaces": false }
+                }}),
+                None,
+                0,
+                0,
+            )
+            .unwrap();
+
+        let output = String::from_utf8_lossy(&server.writer);
+        assert!(output.contains("\"newText\":\"\\t\""), "{output}");
+        assert!(output.contains("\"character\":2,\"line\":1"), "{output}");
+
+        server.writer.clear();
+        server
+            .handle_message(
+                json!({ "jsonrpc": "2.0", "id": 2, "method": RANGE_FORMATTING_METHOD, "params": {
+                    "textDocument": { "uri": uri },
+                    "range": {
+                        "start": { "line": 0, "character": 0 },
+                        "end": { "line": 2, "character": 1 }
+                    },
+                    "options": { "tabSize": 4, "insertSpaces": false }
+                }}),
+                None,
+                0,
+                0,
+            )
+            .unwrap();
+        assert!(String::from_utf8_lossy(&server.writer).contains("\"result\":[]"));
     }
 
     #[test]

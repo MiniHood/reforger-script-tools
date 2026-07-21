@@ -82,9 +82,14 @@ fn selected_line_spans(source: &str, range: TextSpan) -> Vec<TextSpan> {
     let start = source[..range.start]
         .rfind('\n')
         .map_or(0, |index| index + 1);
-    let end = source[range.end..]
+    let requested_end = if range.end > start && source.as_bytes()[range.end - 1] == b'\n' {
+        range.end - 1
+    } else {
+        range.end
+    };
+    let end = source[requested_end..]
         .find('\n')
-        .map_or(source.len(), |index| range.end + index);
+        .map_or(source.len(), |index| requested_end + index);
     let mut lines = Vec::new();
     let mut line_start = start;
     while line_start <= end {
@@ -185,6 +190,15 @@ mod tests {
         let source = "//! documentation\n";
         let partial = TextSpan::new(1, source.len());
         assert!(format_comment_region(source, partial).is_empty());
+    }
+
+    #[test]
+    fn excludes_code_when_the_range_ends_at_its_line_start() {
+        let source = "\t//! First\n  //! Second\n\tint value;\n";
+        let range = TextSpan::new(0, source.find("\tint").unwrap());
+        let formatted = apply_edits(source, &format_comment_region(source, range));
+
+        assert_eq!(formatted, "\t//! First\n\t//! Second\n\tint value;\n");
     }
 
     #[test]

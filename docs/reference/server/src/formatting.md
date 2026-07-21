@@ -42,8 +42,8 @@ contiguous comment group to its first line while preserving delimiters, tags,
 prose, trailing text, and line endings. Block continuation lines beginning
 with `*` use one space after the group indentation. Code, strings, directives,
 trailing comments, partial comment tokens, malformed ranges, and mixed
-code/comment selections return no edits. It is intentionally not exposed over
-LSP yet.
+code/comment selections return no edits. It is exposed only through the
+explicit standard textDocument/rangeFormatting request.
 
 The planned feature surfaces are document/range formatting, on-type edits, typing assists, comment/Doxygen formatting, and formatting of already-inserted completion snippets. They share syntax-aware context rather than implementing separate text rewrite systems.
 
@@ -86,5 +86,7 @@ generation remains a separate Rust-owned action after the fixture gate is
 recorded. Do not add automatic comment conversion, prose reflow, trailing-doc
 movement, or save-time documentation generation as part of that slice.
 
-The remaining integration slice is a standard LSP range-formatting endpoint
-with current-snapshot, UTF-16, stale-result, and edit-projection coverage.
+Range formatting uses only the current open-document snapshot and projects its
+byte-span edits back to UTF-16 LSP ranges. Whole-document whitespace formatting,
+on-type comment formatting, and documentation generation remain separate
+future slices.
