@@ -38,6 +38,7 @@ import {
 	registerWorkspaceScriptWatchBridge,
 } from './workspaceWatchBridge';
 import { registerDebugCommandBridge } from './debugCommandBridge';
+import { createCompletionMiddleware } from './completionMiddleware';
 
 let client: LanguageClient | undefined;
 let clientDisposables: vscode.Disposable[] = [];
@@ -383,57 +384,31 @@ async function startLanguageClient(
 		},
 		middleware: {
 			provideHover: () => null,
-			provideCompletionItem: async (document, position, completionContext, token, next) => {
-				const transaction = pendingSnippetSuggestTransaction;
-				const requestVersion = document.version;
-				const startedAt = Date.now();
-				recordCompletionLifecycle(document.uri.toString(), 'request', {
-					requestVersion,
-					triggerKind: completionContext.triggerKind,
-				});
-				try {
-					const result = await next(document, position, completionContext, token);
-					recordCompletionLifecycle(document.uri.toString(), 'response', {
-						requestVersion,
-						currentVersion: document.version,
-						triggerKind: completionContext.triggerKind,
-						itemCount: completionItemCount(result),
-						isIncomplete: isCompletionListIncomplete(result),
-						elapsedMs: Date.now() - startedAt,
-					});
+			...createCompletionMiddleware({
+				begin: (document, triggerKind) => {
+					const transaction = pendingSnippetSuggestTransaction;
+					recordCompletionLifecycle(document.uri.toString(), 'request', { requestVersion: document.version, triggerKind });
+					return { transactionId: transaction?.documentUri === document.uri.toString() && transaction.awaitingCompletionResponse ? transaction.id : undefined };
+				},
+				respond: (document, triggerKind, requestVersion, transactionId, result, elapsedMs) => {
+					recordCompletionLifecycle(document.uri.toString(), 'response', { requestVersion, currentVersion: document.version, triggerKind, itemCount: completionItemCount(result), isIncomplete: isCompletionListIncomplete(result), elapsedMs });
 					armEmptyCompletionRefresh(document, requestVersion, result);
-					if (transaction?.documentUri === document.uri.toString()
-						&& transaction.awaitingCompletionResponse) {
-						const presentation = completionPresentationMetadata(result);
-						diagnostic('completion.transaction.response', {
-							transactionId: transaction.id,
-							triggerKind: completionContext.triggerKind,
-							itemCount: completionItemCount(result),
-							elapsedMs: Date.now() - startedAt,
-							...presentation,
-						});
+					const transaction = pendingSnippetSuggestTransaction;
+					if (transaction && transaction.id === transactionId && transaction.documentUri === document.uri.toString() && transaction.awaitingCompletionResponse) {
+						diagnostic('completion.transaction.response', { transactionId: transaction.id, triggerKind, itemCount: completionItemCount(result), elapsedMs, ...completionPresentationMetadata(result) });
 						wrapBridgeCompletionCommands(result, transaction.id);
 						advanceSnippetSuggestTransaction(transaction.id);
 					}
-					return result;
-				} catch (error) {
-					recordCompletionLifecycle(document.uri.toString(), 'responseError', {
-						requestVersion,
-						triggerKind: completionContext.triggerKind,
-						elapsedMs: Date.now() - startedAt,
-					});
-					if (transaction?.documentUri === document.uri.toString()
-						&& transaction.awaitingCompletionResponse) {
-						diagnostic('completion.transaction.responseError', {
-							transactionId: transaction.id,
-							triggerKind: completionContext.triggerKind,
-							elapsedMs: Date.now() - startedAt,
-						});
+				},
+				fail: (document, triggerKind, requestVersion, transactionId, elapsedMs) => {
+					recordCompletionLifecycle(document.uri.toString(), 'responseError', { requestVersion, triggerKind, elapsedMs });
+					const transaction = pendingSnippetSuggestTransaction;
+					if (transaction && transaction.id === transactionId && transaction.documentUri === document.uri.toString() && transaction.awaitingCompletionResponse) {
+						diagnostic('completion.transaction.responseError', { transactionId: transaction.id, triggerKind, elapsedMs });
 						clearSnippetSuggestTransaction(transaction.id);
 					}
-					throw error;
-				}
-			},
+				},
+			}),
 			provideDocumentSemanticTokens: async (document, token, next) => {
 				const startedAt = Date.now();
 				try {
