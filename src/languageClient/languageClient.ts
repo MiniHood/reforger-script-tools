@@ -21,7 +21,6 @@ import {
 	languageClientIds,
 	languageClientLanguage,
 	languageClientLogs,
-	languageClientNotifications,
 	languageClientRequests,
 	languageClientServer,
 } from '../extensionConfig/languageClient';
@@ -29,12 +28,16 @@ import { getManualScriptsFolderCandidate } from '../gameData/gameData';
 import {
 	applyVersionedEditorEdits,
 	isCurrentSingleCaret,
-	rangeFromLsp,
 	type LspPosition,
-	type LspRange,
 	type LspTextEdit,
 	type VersionedEditResponse,
 } from './versionedEditorEdit';
+import { registerHtmlHoverBridge } from './hoverBridge';
+import {
+	discoverWorkspaceScriptRoots,
+	registerWorkspaceScriptWatchBridge,
+} from './workspaceWatchBridge';
+import { registerDebugCommandBridge } from './debugCommandBridge';
 
 let client: LanguageClient | undefined;
 let clientDisposables: vscode.Disposable[] = [];
@@ -155,13 +158,12 @@ export function registerLanguageClientFeatures(context: vscode.ExtensionContext)
 	context.subscriptions.push(registerBlockCommentPair());
 	context.subscriptions.push(registerEmptyCompletionRefresh());
 	context.subscriptions.push(registerIfSpaceCommitCleanup());
-	context.subscriptions.push(vscode.commands.registerCommand(
-		languageClientCommands.debugHoverAtCursor,
-		() => debugHoverAtCursor(context, debugOutputChannel),
-	));
-	context.subscriptions.push(vscode.commands.registerCommand(
-		languageClientCommands.debugCompletionAtCursor,
-		() => debugCompletionAtCursor(context, completionDebugOutputChannel),
+	context.subscriptions.push(...registerDebugCommandBridge(
+		context,
+		() => client,
+		debugOutputChannel,
+		completionDebugOutputChannel,
+		completionLifecycleTraceForDocument,
 	));
 	context.subscriptions.push(vscode.commands.registerCommand(
 		languageClientCommands.triggerSuggestAtSnippetPlaceholder,
@@ -469,8 +471,8 @@ async function startLanguageClient(
 		if (workspaceScriptRoots.length > 0) {
 			outputChannel.appendLine(`Workspace script roots: ${workspaceScriptRoots.join('; ')}`);
 		}
-		clientDisposables.push(registerHtmlHoverProvider(client, outputChannel));
-		clientDisposables.push(...registerWorkspaceScriptWatchers(context, client, outputChannel));
+		clientDisposables.push(registerHtmlHoverBridge(client, outputChannel));
+		clientDisposables.push(...registerWorkspaceScriptWatchBridge(client, outputChannel));
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		outputChannel.appendLine(`Language server failed to start: ${message}`);
@@ -531,44 +533,6 @@ function createLanguageServerErrorHandler(): ErrorHandler {
 			return { action: CloseAction.Restart };
 		},
 	};
-}
-
-function registerHtmlHoverProvider(
-	activeClient: LanguageClient,
-	outputChannel: vscode.LogOutputChannel,
-): vscode.Disposable {
-	return vscode.languages.registerHoverProvider(languageClientDocumentSelector, {
-		provideHover: async (document, position, token) => {
-			const startedAt = Date.now();
-			try {
-				const hover = await activeClient.sendRequest<LspHoverResponse | null>(
-					'textDocument/hover',
-					{
-						textDocument: { uri: document.uri.toString() },
-						position: { line: position.line, character: position.character },
-					},
-					token,
-				);
-			diagnostic('lsp.hover', { outcome: hover ? 'hit' : 'empty', elapsedMs: Date.now() - startedAt });
-			return hover ? hoverFromLspResponse(hover) : null;
-			} catch (error) {
-				const message = error instanceof Error ? error.message : String(error);
-			outputChannel.debug(`HTML hover request failed for ${document.uri.toString()}: ${message}`);
-			diagnostic('lsp.hover', { outcome: 'error', elapsedMs: Date.now() - startedAt });
-				return null;
-			}
-		},
-	});
-}
-
-interface LspHoverResponse {
-	contents: LspMarkupContent | string | Array<LspMarkupContent | string>;
-	range?: LspRange;
-}
-
-interface LspMarkupContent {
-	kind?: string;
-	value?: string;
 }
 
 interface BlockCommentPairResponse extends VersionedEditResponse {}
@@ -905,32 +869,6 @@ function hasSingleEmptyCaretAt(
 	return isCurrentSingleCaret(document, expectedVersion, position);
 }
 
-function hoverFromLspResponse(hover: LspHoverResponse): vscode.Hover | null {
-	const contents = Array.isArray(hover.contents) ? hover.contents : [hover.contents];
-	const markdown = contents.map(content => htmlMarkdownContent(content));
-	if (markdown.length === 0) {
-		return null;
-	}
-	return new vscode.Hover(markdown, hover.range ? rangeFromLsp(hover.range) : undefined);
-}
-
-function htmlMarkdownContent(content: LspMarkupContent | string): vscode.MarkdownString {
-	const markdown = new vscode.MarkdownString();
-	markdown.isTrusted = true;
-	markdown.supportHtml = true;
-
-	if (typeof content === 'string') {
-		markdown.appendMarkdown(content);
-	} else if (content.kind === 'plaintext') {
-		markdown.appendText(content.value ?? '');
-	} else {
-		markdown.appendMarkdown(content.value ?? '');
-	}
-
-	return markdown;
-}
-
-
 function registerDevelopmentServerWatcher(
 	context: vscode.ExtensionContext,
 	serverPath: string,
@@ -1004,101 +942,6 @@ async function restartLanguageClient(
 	} finally {
 		restartingClient = false;
 	}
-}
-
-async function discoverWorkspaceScriptRoots(): Promise<string[]> {
-	const folders = vscode.workspace.workspaceFolders ?? [];
-	const roots = new Set<string>();
-
-	for (const folder of folders) {
-		const folderPath = folder.uri.fsPath;
-		const folderName = path.basename(folderPath).toLowerCase();
-		if (folderName === 'scripts') {
-			roots.add(folderPath);
-			continue;
-		}
-
-		for (const childName of ['Scripts', 'scripts']) {
-			const candidate = path.join(folderPath, childName);
-			if (await isDirectory(candidate)) {
-				roots.add(candidate);
-			}
-		}
-	}
-
-	return [...roots].sort();
-}
-
-function registerWorkspaceScriptWatchers(
-	context: vscode.ExtensionContext,
-	activeClient: LanguageClient,
-	outputChannel: vscode.LogOutputChannel,
-): vscode.Disposable[] {
-	const folders = vscode.workspace.workspaceFolders ?? [];
-	if (folders.length === 0) {
-		return [];
-	}
-
-	const disposables: vscode.Disposable[] = [];
-	const pending = new Map<string, { path: string; kind: 'changed' | 'deleted'; sequence: number }>();
-	const sequences = new Map<string, number>();
-	let timer: NodeJS.Timeout | undefined;
-
-	const flush = (): void => {
-		const entries = [...pending.entries()];
-		diagnostic('workspaceWatcher.flush', { entries: entries.length });
-		pending.clear();
-		timer = undefined;
-		void Promise.all(entries.map(async ([, entry]) => {
-			const { path: filePath, kind, sequence } = entry;
-			if (kind === 'deleted') {
-				activeClient.sendNotification(languageClientNotifications.workspaceFileDeleted, { path: filePath, sequence });
-				diagnostic('workspaceWatcher.deleted', { sequence });
-				return;
-			}
-
-			try {
-				const text = await fs.readFile(filePath, 'utf8');
-				activeClient.sendNotification(languageClientNotifications.workspaceFileChanged, { path: filePath, text, sequence });
-				diagnostic('workspaceWatcher.changed', { bytes: Buffer.byteLength(text, 'utf8'), sequence });
-			} catch (error) {
-				const message = error instanceof Error ? error.message : String(error);
-				outputChannel.debug(`Workspace script change skipped for ${filePath}: ${message}`);
-				diagnostic('workspaceWatcher.readFailed', { sequence });
-			}
-		}));
-	};
-
-	const schedule = (uri: vscode.Uri, kind: 'changed' | 'deleted'): void => {
-		if (uri.scheme !== 'file') {
-			return;
-		}
-		const key = workspaceWatcherPathKey(uri.fsPath);
-		const sequence = (sequences.get(key) ?? 0) + 1;
-		sequences.set(key, sequence);
-		pending.set(key, { path: uri.fsPath, kind, sequence });
-		if (timer) {
-			clearTimeout(timer);
-		}
-		timer = setTimeout(flush, workspaceWatcherDebounceMs);
-	};
-
-	for (const folder of folders) {
-		const folderName = path.basename(folder.uri.fsPath).toLowerCase();
-		const pattern = new vscode.RelativePattern(
-			folder,
-			folderName === 'scripts' ? '**/*.c' : '**/{Scripts,scripts}/**/*.c',
-		);
-		const watcher = vscode.workspace.createFileSystemWatcher(pattern);
-		disposables.push(
-			watcher,
-			watcher.onDidCreate(uri => schedule(uri, 'changed')),
-			watcher.onDidChange(uri => schedule(uri, 'changed')),
-			watcher.onDidDelete(uri => schedule(uri, 'deleted')),
-		);
-	}
-
-	return disposables;
 }
 
 function registerEmptyCompletionRefresh(): vscode.Disposable {
@@ -1580,11 +1423,6 @@ function validInsertReplaceRange(inserting: vscode.Range, replacing: vscode.Rang
 		&& inserting.end.isBeforeOrEqual(replacing.end);
 }
 
-function workspaceWatcherPathKey(filePath: string): string {
-	const normalized = path.resolve(filePath).replace(/\\/g, '/');
-	return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
-}
-
 function disposeClientDisposables(): void {
 	for (const disposable of clientDisposables) {
 		disposable.dispose();
@@ -1616,109 +1454,6 @@ async function resolveServerPath(context: vscode.ExtensionContext): Promise<stri
 	return undefined;
 }
 
-async function debugHoverAtCursor(
-	context: vscode.ExtensionContext,
-	outputChannel: vscode.OutputChannel,
-): Promise<void> {
-	const startedAt = Date.now();
-	diagnostic('command.debugHover.start');
-	const editor = vscode.window.activeTextEditor;
-	if (!editor) {
-		vscode.window.showWarningMessage('Open an Enforce script file before running hover debug.');
-		return;
-	}
-	if (editor.document.languageId !== languageClientLanguage.id) {
-		vscode.window.showWarningMessage('Hover debug is only available for Enforce language files.');
-		return;
-	}
-
-	const activeClient = client;
-	if (!activeClient) {
-		vscode.window.showWarningMessage('Reforger language server is not running.');
-		return;
-	}
-
-	const position = editor.selection.active;
-	const params = {
-		textDocument: {
-			uri: editor.document.uri.toString(),
-		},
-		position: {
-			line: position.line,
-			character: position.character,
-		},
-	};
-
-	try {
-		const report = await activeClient.sendRequest<string>(languageClientRequests.debugHover, params);
-		const reportPath = await writeHoverDebugReport(context, editor, position, report);
-		outputChannel.clear();
-		outputChannel.appendLine(`Hover debug report written to: ${reportPath}`);
-		outputChannel.appendLine('');
-		outputChannel.appendLine(report);
-		outputChannel.show(true);
-		diagnostic('command.debugHover.complete', { elapsedMs: Date.now() - startedAt });
-	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
-		outputChannel.appendLine(`Hover debug request failed: ${message}`);
-		outputChannel.show(true);
-		vscode.window.showWarningMessage(`Hover debug request failed: ${message}`);
-		diagnostic('command.debugHover.error', { elapsedMs: Date.now() - startedAt });
-	}
-}
-
-async function debugCompletionAtCursor(
-	context: vscode.ExtensionContext,
-	outputChannel: vscode.OutputChannel,
-): Promise<void> {
-	const startedAt = Date.now();
-	diagnostic('command.debugCompletion.start');
-	const editor = vscode.window.activeTextEditor;
-	if (!editor) {
-		vscode.window.showWarningMessage('Open an Enforce script file before running completion debug.');
-		return;
-	}
-	if (editor.document.languageId !== languageClientLanguage.id) {
-		vscode.window.showWarningMessage('Completion debug is only available for Enforce language files.');
-		return;
-	}
-
-	const activeClient = client;
-	if (!activeClient) {
-		vscode.window.showWarningMessage('Reforger language server is not running.');
-		return;
-	}
-
-	const position = editor.selection.active;
-	const params = {
-		textDocument: {
-			uri: editor.document.uri.toString(),
-		},
-		position: {
-			line: position.line,
-			character: position.character,
-		},
-	};
-
-	try {
-		const report = await activeClient.sendRequest<string>(languageClientRequests.debugCompletion, params);
-		const lifecycleTrace = completionLifecycleTraceForDocument(editor.document.uri.toString());
-		const reportPath = await writeCompletionDebugReport(context, editor, position, `${lifecycleTrace}\n\n---\n\n${report}`);
-		outputChannel.clear();
-		outputChannel.appendLine(`Completion debug report written to: ${reportPath}`);
-		outputChannel.appendLine('');
-		outputChannel.appendLine(report);
-		outputChannel.show(true);
-		diagnostic('command.debugCompletion.complete', { elapsedMs: Date.now() - startedAt });
-	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
-		outputChannel.appendLine(`Completion debug request failed: ${message}`);
-		outputChannel.show(true);
-		vscode.window.showWarningMessage(`Completion debug request failed: ${message}`);
-		diagnostic('command.debugCompletion.error', { elapsedMs: Date.now() - startedAt });
-	}
-}
-
 function completionLifecycleTraceForDocument(documentUri: string): string {
 	const events = completionLifecycleTrace.filter(event => event.documentUri === documentUri);
 	const lines = [
@@ -1742,74 +1477,6 @@ function completionLifecycleTraceForDocument(documentUri: string): string {
 	return lines.join('\n');
 }
 
-async function writeHoverDebugReport(
-	context: vscode.ExtensionContext,
-	editor: vscode.TextEditor,
-	position: vscode.Position,
-	report: string,
-): Promise<string> {
-	const folderPath = path.join(
-		context.globalStorageUri.fsPath,
-		languageClientLogs.rootFolder,
-		languageClientLogs.hoverDebugFolder,
-	);
-	await fs.mkdir(folderPath, { recursive: true });
-
-	const reportPath = path.join(folderPath, languageClientLogs.hoverDebugLatestFile);
-	const prefix = [
-		'# Reforger Hover Debug Log',
-		'',
-		`- Generated: ${new Date().toISOString()}`,
-		`- Document URI: ${editor.document.uri.toString()}`,
-		`- Document path: ${editor.document.uri.fsPath}`,
-		`- Language ID: ${editor.document.languageId}`,
-		`- Cursor: line ${position.line} character ${position.character} (UTF-16, zero-based)`,
-		`- Source: VS Code command ${languageClientCommands.debugHoverAtCursor}`,
-		'',
-		'This file is overwritten by each hover-debug command run and is intentionally separate from the normal language-server runtime log.',
-		'',
-		'---',
-		'',
-	].join('\n');
-
-	await fs.writeFile(reportPath, `${prefix}${report}\n`, 'utf8');
-	return reportPath;
-}
-
-async function writeCompletionDebugReport(
-	context: vscode.ExtensionContext,
-	editor: vscode.TextEditor,
-	position: vscode.Position,
-	report: string,
-): Promise<string> {
-	const folderPath = path.join(
-		context.globalStorageUri.fsPath,
-		languageClientLogs.rootFolder,
-		languageClientLogs.completionDebugFolder,
-	);
-	await fs.mkdir(folderPath, { recursive: true });
-
-	const reportPath = path.join(folderPath, languageClientLogs.completionDebugLatestFile);
-	const prefix = [
-		'# Reforger Completion Debug Log',
-		'',
-		`- Generated: ${new Date().toISOString()}`,
-		`- Document URI: ${editor.document.uri.toString()}`,
-		`- Document path: ${editor.document.uri.fsPath}`,
-		`- Language ID: ${editor.document.languageId}`,
-		`- Cursor: line ${position.line} character ${position.character} (UTF-16, zero-based)`,
-		`- Source: VS Code command ${languageClientCommands.debugCompletionAtCursor}`,
-		'',
-		'This file is overwritten by each completion-debug command run and is intentionally separate from the normal language-server runtime log.',
-		'',
-		'---',
-		'',
-	].join('\n');
-
-	await fs.writeFile(reportPath, `${prefix}${report}\n`, 'utf8');
-	return reportPath;
-}
-
 function getGameDataPaths(context: vscode.ExtensionContext): { scripts: string | undefined; metadata: string | undefined } {
 	const manualFolder = vscode.workspace
 		.getConfiguration(gameDataConfig.section)
@@ -1831,14 +1498,6 @@ function getGameDataPaths(context: vscode.ExtensionContext): { scripts: string |
 async function isFile(targetPath: string): Promise<boolean> {
 	try {
 		return (await fs.stat(targetPath)).isFile();
-	} catch {
-		return false;
-	}
-}
-
-async function isDirectory(targetPath: string): Promise<boolean> {
-	try {
-		return (await fs.stat(targetPath)).isDirectory();
 	} catch {
 		return false;
 	}

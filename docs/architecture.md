@@ -39,6 +39,17 @@ not perform language analysis itself.
 
 `src/extension.ts` composes these modules; it is not a feature owner.
 
+Within the language-client bridge, the composition root retains server lifecycle
+and restart policy. Focused bridges own workspace-script notifications, hover
+rendering, and diagnostic command UI. Each bridge transports Rust-authored
+facts or applies editor behavior; none interprets Enfusion source.
+
+Within the LSP, protocol framing, request-local document-query admission, and
+feature projection are separate concerns. A document query captures both the
+open-document snapshot and the external-index snapshot at the request boundary
+so downstream feature code cannot accidentally combine facts from different
+generations.
+
 ## Language Engine
 
 The Rust engine is organized as a compiler-style pipeline:

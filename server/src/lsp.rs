@@ -30,12 +30,12 @@ use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-mod transport;
 mod callable;
 mod completion;
 mod debug_hover;
 mod definition;
 mod diagnostics;
+mod document_query;
 mod external_indexes;
 mod external_overlay;
 mod hover;
@@ -44,6 +44,7 @@ mod on_type_formatting;
 mod open_documents;
 mod semantic_tokens;
 mod signature_help;
+mod transport;
 
 use completion::{
     completion_debug_markdown, completion_report_for_cached_analysis_with_external_indexes,
@@ -75,6 +76,7 @@ use definition::{
 };
 use diagnostics::{clear_diagnostics_message, publish_diagnostics_message};
 pub use diagnostics::{parser_diagnostics_for_source, LspDiagnostic};
+use document_query::{DocumentQuery, DocumentQueryState};
 pub(crate) use external_overlay::ExternalIndexStatusSummary;
 use external_overlay::{start_external_index, ExternalIndexHandle, ExternalIndexSnapshot};
 use hover::{
@@ -87,8 +89,8 @@ pub use hover::{
 };
 pub use open_documents::{file_index_for_source, FileIndexAnalysis};
 pub(crate) use open_documents::{
-    file_index_for_source_with_timings, FileIndexAnalysisTimings, ForegroundQuerySnapshot,
-    OpenDocument, TokenProjectionKind, TokenResultDisposition,
+    file_index_for_source_with_timings, FileIndexAnalysisTimings, OpenDocument,
+    TokenProjectionKind, TokenResultDisposition,
 };
 #[cfg(test)]
 use semantic_tokens::{fast_semantic_tokens_for_cached_analysis, LspSemanticTokens};
@@ -108,11 +110,11 @@ use signature_help::{
     signature_help_debug_markdown, signature_help_report_for_cached_analysis_with_external_indexes,
     signature_help_report_for_pending_snapshot,
 };
-use transport::read_message;
 pub use signature_help::{
     signature_help_report_for_source_position, LspParameterInformation, LspSignatureHelp,
     LspSignatureHelpReport, LspSignatureHelpTimings, LspSignatureInformation,
 };
+use transport::read_message;
 
 const SERVER_NAME: &str = "reforger-language-server";
 const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -257,38 +259,6 @@ struct LspServer<W: Write> {
     semantic_tokens_refresh_dirty: bool,
     last_semantic_external_generation: u64,
     shutdown_requested: bool,
-}
-
-struct DocumentQuery<'a> {
-    document: &'a OpenDocument,
-    external_indexes: ExternalIndexSnapshot,
-}
-
-enum DocumentQueryState<'a> {
-    Cached(&'a FileIndexAnalysis),
-    Foreground(&'a ForegroundQuerySnapshot),
-    Pending,
-}
-
-impl<'a> DocumentQuery<'a> {
-    fn state_for(document: &'a OpenDocument) -> DocumentQueryState<'a> {
-        if document.analysis_ready() {
-            DocumentQueryState::Cached(document.analysis())
-        } else if let Some(foreground) = document.foreground() {
-            DocumentQueryState::Foreground(foreground)
-        } else {
-            DocumentQueryState::Pending
-        }
-    }
-
-    fn quality(&self) -> QueryQuality {
-        match Self::state_for(self.document) {
-            DocumentQueryState::Cached(_) => QueryQuality::Exact,
-            DocumentQueryState::Foreground(_) | DocumentQueryState::Pending => {
-                QueryQuality::Unavailable
-            }
-        }
-    }
 }
 
 enum ServerEvent {
