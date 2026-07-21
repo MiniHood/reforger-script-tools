@@ -121,10 +121,12 @@ on-type-formatting capability because VS Code did not reliably invoke that
 provider in the active editor. The request carries the captured document
 version as an extension field and Rust returns no edits unless it exactly
 matches the installed immutable snapshot. One response may include both a
-semicolon insertion and a parser-proven whitespace/caret transition after a
-direct unbraced `if` return; both are applied by the client as one transaction.
-Its concise request log records the version, UTF-16 request position, outcome,
-and elapsed time, never source text.
+semicolon insertion and a parser-proven whitespace transition after a direct
+unbraced `if` return; both are applied by the client as one transaction. The
+whitespace span contains the native Enter caret, so VS Code maps it to the end
+of the replacement without a second selection mutation. Its concise request
+log records the version, UTF-16 request position, outcome, and elapsed time,
+never source text.
 
 `reforger/blockCommentPair` is a separate, Rust-owned typing-assist request
 for the editor's already-created native `/**/` block-comment pair. It checks

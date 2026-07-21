@@ -562,7 +562,6 @@ interface BlockCommentPairResponse {
 
 interface EnterTypingAssistResponse {
 	edits: LspTextEdit[];
-	selection?: LspPosition;
 }
 
 function registerBlockCommentPair(): vscode.Disposable {
@@ -871,13 +870,6 @@ async function applyPendingEnterTypingAssist(
 		editBuilder => transaction.response?.edits.forEach(edit => editBuilder.replace(rangeFromLsp(edit.range), edit.newText)),
 		{ undoStopBefore: false, undoStopAfter: false },
 	);
-	if (applied && transaction.response.selection) {
-		const position = new vscode.Position(
-			transaction.response.selection.line,
-			transaction.response.selection.character,
-		);
-		editor.selection = new vscode.Selection(position, position);
-	}
 	diagnostic('formatting.enter', {
 		outcome: applied ? 'applied' : 'editRejected',
 		version: transaction.version,

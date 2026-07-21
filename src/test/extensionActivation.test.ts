@@ -148,6 +148,24 @@ suite('extension activation', () => {
 		);
 	});
 
+	test('maps the Enter caret through its whitespace replacement without a second selection update', async () => {
+		const document = await vscode.workspace.openTextDocument({
+			language: 'enforce',
+			content: 'void Run(bool enabled) {\n\tif (enabled)\n\t\treturn\n\t\t\n}',
+		});
+		const editor = await vscode.window.showTextDocument(document);
+		const nativeEnterPosition = new vscode.Position(3, 2);
+		editor.selection = new vscode.Selection(nativeEnterPosition, nativeEnterPosition);
+
+		const applied = await editor.edit(editBuilder => {
+			editBuilder.insert(new vscode.Position(2, 8), ';');
+			editBuilder.replace(new vscode.Range(new vscode.Position(3, 0), nativeEnterPosition), '\t');
+		}, { undoStopBefore: false, undoStopAfter: false });
+
+		assert.ok(applied);
+		assert.deepStrictEqual(editor.selection.active, new vscode.Position(3, 1));
+	});
+
 	test('enables local diagnostic logging by default', () => {
 		const extension = vscode.extensions.all.find(
 			candidate => candidate.packageJSON.name === 'reforger-sript-tools',

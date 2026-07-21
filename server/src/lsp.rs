@@ -2092,7 +2092,8 @@ impl<W: Write> LspServer<W> {
                                     "newText": ";",
                                 }));
                             }
-                            let selection = plan.scope_exit.map(|scope_exit| {
+                            let has_scope_exit = plan.scope_exit.is_some();
+                            if let Some(scope_exit) = plan.scope_exit {
                                 let start = position_for_offset(&document.text, scope_exit.span.start);
                                 edits.push(json!({
                                     "range": {
@@ -2101,17 +2102,13 @@ impl<W: Write> LspServer<W> {
                                     },
                                     "newText": scope_exit.replacement,
                                 }));
-                                json!({
-                                    "line": params.position.line,
-                                    "character": scope_exit.selection_character,
-                                })
-                            });
-                            outcome = match (edits.len(), selection.is_some()) {
+                            }
+                            outcome = match (edits.len(), has_scope_exit) {
                                 (0, _) => "no_edit",
                                 (_, true) => "semicolon_and_scope_exit",
                                 _ => "semicolon",
                             };
-                            Some(json!({ "edits": edits, "selection": selection }))
+                            Some(json!({ "edits": edits }))
                         })
                         .unwrap_or_else(|| json!({ "edits": [] }));
                     self.log(&format!(
@@ -9985,10 +9982,7 @@ class Example
         let output = String::from_utf8_lossy(&server.writer);
         assert!(output.contains("\"newText\":\";\""), "{output}");
         assert!(output.contains("\"newText\":\"\\t\""), "{output}");
-        assert!(
-            output.contains("\"selection\":{\"character\":1,\"line\":3}"),
-            "{output}"
-        );
+        assert!(!output.contains("\"selection\":"), "{output}");
     }
 
     #[test]

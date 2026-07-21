@@ -26,8 +26,6 @@ pub(super) struct ScopeExitPlan {
     pub span: TextSpan,
     /// The exact leading whitespace of the proven `if` header line.
     pub replacement: String,
-    /// UTF-16 column for the final caret position on the current line.
-    pub selection_character: u32,
 }
 
 /// Plans the narrow Enter-time edits supported by the language server.
@@ -111,10 +109,6 @@ fn direct_if_return_scope_exit_plan(
     Some(ScopeExitPlan {
         span: TextSpan::new(current_line_start, cursor),
         replacement: header_indent.to_string(),
-        selection_character: header_indent
-            .chars()
-            .map(|character| character.len_utf16() as u32)
-            .sum(),
     })
 }
 
@@ -847,7 +841,6 @@ mod tests {
         );
         let scope_exit = plan.scope_exit.expect("scope-exit plan");
         assert_eq!(scope_exit.replacement, "\t");
-        assert_eq!(scope_exit.selection_character, 1);
         assert_eq!(&source[scope_exit.span.start..scope_exit.span.end], "\t\t");
     }
 
@@ -860,7 +853,6 @@ mod tests {
         assert_eq!(plan.semicolon_insertion, None);
         let scope_exit = plan.scope_exit.expect("scope-exit plan");
         assert_eq!(scope_exit.replacement, "    ");
-        assert_eq!(scope_exit.selection_character, 4);
     }
 
     #[test]
