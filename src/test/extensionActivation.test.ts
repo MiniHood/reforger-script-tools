@@ -206,7 +206,7 @@ suite('extension activation', () => {
 		);
 	});
 
-	test('admits only one native Tab indentation edit for the Rust typing assist', () => {
+	test('admits bounded native Tab indentation edits for the Rust typing assist', () => {
 		const tab = {
 			range: new vscode.Range(new vscode.Position(8, 4), new vscode.Position(8, 4)),
 			rangeLength: 0,
@@ -217,7 +217,11 @@ suite('extension activation', () => {
 			tabAfterPosition([{ ...tab, text: '    ' }], 4, true),
 			new vscode.Position(8, 8),
 		);
-		assert.strictEqual(tabAfterPosition([{ ...tab, text: '  ' }], 4, true), undefined);
+		assert.deepStrictEqual(
+			tabAfterPosition([{ ...tab, text: '  ' }], 4, true),
+			new vscode.Position(8, 6),
+		);
+		assert.strictEqual(tabAfterPosition([{ ...tab, text: '                 ' }], 4, true), undefined);
 		assert.strictEqual(tabAfterPosition([{ ...tab, rangeLength: 1 }], 4, false), undefined);
 	});
 

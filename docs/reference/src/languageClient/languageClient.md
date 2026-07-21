@@ -97,8 +97,10 @@ The client also owns the editor admission for one Rust-authored typing assist.
 A document-change bridge accepts only a single plain Enter insertion
 and derives the post-Enter UTF-16 position from that immutable change event,
 rather than relying on global active-editor selection timing. It also admits a
-single native Tab indentation insertion solely for Rust to correct the exact
-proven post-unbraced-`if` body shape. A matching
+native Tab indentation insertion (a literal Tab or one to sixteen spaces)
+solely for Rust to correct the exact proven post-unbraced-`if` body shape. This
+captures VS Code's partial space insertion at a tab stop without admitting
+arbitrary edits. A matching
 selection event confirms that the same document/caret has settled; it is not a
 timer or language decision. A microtask lets the language client's matching
 `didChange` publish before the client forwards URI, captured version,

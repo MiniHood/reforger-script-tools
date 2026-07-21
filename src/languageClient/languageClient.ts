@@ -1419,7 +1419,8 @@ export function tabAfterPosition(
 	}
 	const change = changes[0];
 	const configuredIndent = insertSpaces ? ' '.repeat(Number(tabSize)) : '\t';
-	if (change.text !== '\t' && change.text !== configuredIndent) {
+	const nativeTabSpaces = /^[ ]{1,16}$/.test(change.text);
+	if (change.text !== '\t' && change.text !== configuredIndent && !nativeTabSpaces) {
 		return undefined;
 	}
 	return new vscode.Position(change.range.start.line, change.range.start.character + change.text.length);
