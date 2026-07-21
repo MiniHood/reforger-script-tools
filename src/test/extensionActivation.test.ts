@@ -183,6 +183,7 @@ suite('extension activation', () => {
 		assert.ok(extension, 'development extension is discoverable');
 		const defaults = extension.packageJSON.contributes.configurationDefaults as Record<string, Record<string, unknown>>;
 		assert.strictEqual(defaults['[enforce]']['editor.acceptSuggestionOnEnter'], 'off');
+		assert.strictEqual(defaults['[enforce]']['editor.autoIndent'], 'full');
 	});
 
 });
