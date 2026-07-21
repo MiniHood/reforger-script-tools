@@ -3504,7 +3504,7 @@ fn keyword_completion_items(
             // Rust-authored completion edit so VS Code applies it atomically,
             // rather than observing a later Space/Enter edit from the client.
             let (new_text, insert_text_format) = if keyword == "if" {
-                ("if (${1:condition})".to_string(), Some(2))
+                ("if ($0)".to_string(), Some(2))
             } else {
                 (keyword.to_string(), None)
             };
@@ -5655,7 +5655,7 @@ ArmaReforgerScripted GetGame();
     }
 
     #[test]
-    fn if_keyword_completion_inserts_a_selected_condition_snippet() {
+    fn if_keyword_completion_places_the_cursor_inside_empty_parentheses() {
         let items = keyword_completion_items(
             "if",
             test_range(),
@@ -5667,7 +5667,7 @@ ArmaReforgerScripted GetGame();
             .find(|item| item.label == "if")
             .expect("if should remain a value-context keyword");
 
-        assert_eq!(if_item.text_edit.new_text, "if (${1:condition})");
+        assert_eq!(if_item.text_edit.new_text, "if ($0)");
         assert_eq!(if_item.insert_text_format, Some(2));
         assert!(if_item.command.is_none());
 

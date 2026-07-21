@@ -124,8 +124,8 @@ Keywords are LSP-owned so language suggestions do not depend on VS Code word
 suggestions. Across every completion context, exact names and case-insensitive
 prefixes rank before boundary abbreviations and subsequence matches; the score
 bands are non-overlapping so a long fuzzy name cannot outrank a direct prefix.
-Accepting the `if` keyword inserts the Rust-authored snippet
-`if (${1:condition})`, with the condition selected. This is an atomic
+Accepting the `if` keyword inserts the Rust-authored snippet `if ($0)`, with
+the cursor directly inside otherwise-empty parentheses. This is an atomic
 completion edit, not a client-side Space/Enter transform: Enter still creates
 a line break and native language configuration remains the sole owner of
 immediate control-body indentation. Other control keywords remain plain until
