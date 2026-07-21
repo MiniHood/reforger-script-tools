@@ -360,11 +360,7 @@ pub(crate) fn completion_report_for_current_override_at_offset_with_external_ind
     }
 
     let mut candidates = Vec::new();
-    for owner in external_completion_owners(
-        &context.base_type,
-        workspace_index,
-        game_data_index,
-    ) {
+    for owner in external_completion_owners(&context.base_type, workspace_index, game_data_index) {
         if let Some(index) = workspace_index {
             candidates.extend(prefixed_candidates(
                 override_candidates_for_owner(index, &owner),
@@ -384,13 +380,14 @@ pub(crate) fn completion_report_for_current_override_at_offset_with_external_ind
     }
 
     let existing_body = override_completion_has_existing_body(&region.tokens, context.prefix_span);
-    let (mut items, mut source_kind_counts, mut origin_counts) = completion_items_for_override_candidates(
-        &candidates,
-        range_for_span(source, context.prefix_span),
-        &context.typed_modifiers,
-        &context.prefix,
-        existing_body,
-    );
+    let (mut items, mut source_kind_counts, mut origin_counts) =
+        completion_items_for_override_candidates(
+            &candidates,
+            range_for_span(source, context.prefix_span),
+            &context.typed_modifiers,
+            &context.prefix,
+            existing_body,
+        );
     let empty_local_index = SymbolIndex::default();
     let source_candidates = top_level_source_completion_candidates(
         &context.prefix,
@@ -521,21 +518,15 @@ pub(crate) fn completion_report_for_current_receiver_at_offset_with_external_ind
                     false,
                     Some(facts),
                 )
-            } else if external_static_owner_has_members(
-                &receiver,
-                workspace_index,
-                game_data_index,
-            ) {
+            } else if external_static_owner_has_members(&receiver, workspace_index, game_data_index)
+            {
                 // Static enum completion also needs the enclosing class
                 // header to recover current and inherited value candidates.
                 // Reuse the bounded override window rather than reading any
                 // previous analysis or delaying the request.
                 class_region = BoundedCompletionRegion::for_current_override(source, offset);
-                let class_facts = BoundedCompletionFacts::recover(
-                    source,
-                    class_region.as_ref()?,
-                    offset,
-                )?;
+                let class_facts =
+                    BoundedCompletionFacts::recover(source, class_region.as_ref()?, offset)?;
                 if class_facts.visible_type(&receiver).is_some() {
                     return None;
                 }
@@ -621,9 +612,14 @@ fn external_static_owner_has_members(
     workspace_index: Option<&SymbolIndex>,
     game_data_index: Option<&SymbolIndex>,
 ) -> bool {
-    ExternalIndexes::new(workspace_index, game_data_index).ordered()
+    ExternalIndexes::new(workspace_index, game_data_index)
+        .ordered()
         .into_iter()
-        .any(|index| !IndexQuery::new(index).completion_static_members_for_type(owner).is_empty())
+        .any(|index| {
+            !IndexQuery::new(index)
+                .completion_static_members_for_type(owner)
+                .is_empty()
+        })
 }
 
 /// Runs the bounded current-revision argument-label query for one bare,
@@ -939,7 +935,9 @@ impl BoundedCompletionRegion {
             {
                 class_bases.insert(
                     window[4].span.start,
-                    source.get(window[3].span.start..window[3].span.end)?.to_string(),
+                    source
+                        .get(window[3].span.start..window[3].span.end)?
+                        .to_string(),
                 );
             }
         }
@@ -1297,11 +1295,7 @@ impl BoundedCompletionFacts {
 
         if let Some(base_type) = base_type {
             let mut inherited = Vec::new();
-            for owner in external_completion_owners(
-                &base_type,
-                workspace_index,
-                game_data_index,
-            ) {
+            for owner in external_completion_owners(&base_type, workspace_index, game_data_index) {
                 if let Some(index) = workspace_index {
                     inherited.extend(prefixed_candidates(
                         completion_candidates_for_owner(index, &owner, false),
@@ -1385,7 +1379,8 @@ impl BoundedCompletionFacts {
             })
             .collect::<Vec<_>>();
 
-        if let Some((class_name, base_type)) = self.enclosing_class_context(source, region, offset) {
+        if let Some((class_name, base_type)) = self.enclosing_class_context(source, region, offset)
+        {
             items.extend(
                 Self::class_member_names(source, region, &class_name)
                     .into_iter()
@@ -1408,11 +1403,9 @@ impl BoundedCompletionFacts {
                     game_data_index,
                 );
                 let mut inherited = Vec::new();
-                for owner in external_completion_owners(
-                    &base_type,
-                    workspace_index,
-                    game_data_index,
-                ) {
+                for owner in
+                    external_completion_owners(&base_type, workspace_index, game_data_index)
+                {
                     if let Some(index) = workspace_index {
                         inherited.extend(completion_candidates_for_owner(index, &owner, false));
                     }
@@ -1421,14 +1414,15 @@ impl BoundedCompletionFacts {
                     }
                 }
                 let inherited = combine_completion_candidates(inherited);
-                let (inherited_items, source_counts, origin_counts) = completion_items_for_candidates(
-                    &inherited,
-                    full_expression_range,
-                    None,
-                    CompletionInsertContext::Normal,
-                    Some(""),
-                    render_context,
-                );
+                let (inherited_items, source_counts, origin_counts) =
+                    completion_items_for_candidates(
+                        &inherited,
+                        full_expression_range,
+                        None,
+                        CompletionInsertContext::Normal,
+                        Some(""),
+                        render_context,
+                    );
                 merge_count_maps(&mut report.source_kind_counts, source_counts);
                 merge_count_maps(&mut report.origin_counts, origin_counts);
                 items.extend(inherited_items);
@@ -1485,7 +1479,9 @@ impl BoundedCompletionFacts {
                 .get(tokens[index + 1].span.start..tokens[index + 1].span.end)?
                 .to_string();
             let header = &tokens[index + 2..];
-            let body_index = header.iter().position(|token| token.kind == TokenKind::LeftBrace)?;
+            let body_index = header
+                .iter()
+                .position(|token| token.kind == TokenKind::LeftBrace)?;
             let base_type = header[..body_index]
                 .windows(2)
                 .find(|window| {
@@ -2355,56 +2351,55 @@ fn member_completion_report_for_indexes(
     let render_start = Instant::now();
     let render_context =
         CompletionRenderContext::new(local_index, workspace_index, game_data_index);
-    let (items, source_kind_counts, origin_counts) = if receiver_is_static
-        && render_context.is_enum_owner(owner)
-    {
-        // An enum field is still an expression position. Reuse the same
-        // contextual value collection as ordinary unqualified completion so
-        // enum-first ranking never turns into enum-only filtering. Pending
-        // receiver recovery deliberately has no whole-file analysis here and
-        // therefore retains its safe external/top-level fallback only.
-        let value_fallback_candidates = value_fallback_context.map_or_else(
-            || {
-                top_level_source_completion_candidates(
-                    "",
-                    EditorTopLevelCompletionMode::Value,
-                    local_index,
-                    workspace_index,
-                    game_data_index,
-                    MAX_COMPLETION_ITEMS,
-                )
-            },
-            |(analysis, offset)| {
-                contextual_value_completion_candidates(
-                    analysis,
-                    "",
-                    offset,
-                    local_index,
-                    workspace_index,
-                    game_data_index,
-                )
-            },
-        );
-        enum_static_completion_items(
-            source,
-            owner,
-            receiver_span,
-            prefix_span,
-            &prefix,
-            &candidates,
-            &value_fallback_candidates,
-            render_context,
-        )
-    } else {
-        completion_items_for_candidates(
-            &candidates,
-            edit_range,
-            None,
-            CompletionInsertContext::Normal,
-            Some(&prefix),
-            render_context,
-        )
-    };
+    let (items, source_kind_counts, origin_counts) =
+        if receiver_is_static && render_context.is_enum_owner(owner) {
+            // An enum field is still an expression position. Reuse the same
+            // contextual value collection as ordinary unqualified completion so
+            // enum-first ranking never turns into enum-only filtering. Pending
+            // receiver recovery deliberately has no whole-file analysis here and
+            // therefore retains its safe external/top-level fallback only.
+            let value_fallback_candidates = value_fallback_context.map_or_else(
+                || {
+                    top_level_source_completion_candidates(
+                        "",
+                        EditorTopLevelCompletionMode::Value,
+                        local_index,
+                        workspace_index,
+                        game_data_index,
+                        MAX_COMPLETION_ITEMS,
+                    )
+                },
+                |(analysis, offset)| {
+                    contextual_value_completion_candidates(
+                        analysis,
+                        "",
+                        offset,
+                        local_index,
+                        workspace_index,
+                        game_data_index,
+                    )
+                },
+            );
+            enum_static_completion_items(
+                source,
+                owner,
+                receiver_span,
+                prefix_span,
+                &prefix,
+                &candidates,
+                &value_fallback_candidates,
+                render_context,
+            )
+        } else {
+            completion_items_for_candidates(
+                &candidates,
+                edit_range,
+                None,
+                CompletionInsertContext::Normal,
+                Some(&prefix),
+                render_context,
+            )
+        };
     let (items, is_incomplete) = cap_completion_items(items);
     timings.item_rendering = render_start.elapsed();
     timings.total = total_start.elapsed();
@@ -3143,8 +3138,7 @@ fn completion_immediately_follows_return(source: &str, prefix_span: TextSpan) ->
     else {
         return false;
     };
-    previous.kind == TokenKind::Keyword(Keyword::Return)
-        && previous.span.end == prefix_start
+    previous.kind == TokenKind::Keyword(Keyword::Return) && previous.span.end == prefix_start
 }
 
 fn add_return_separator_to_completion_items(
@@ -3976,7 +3970,9 @@ fn completion_item_for_candidate(
         .as_ref()
         .map(|render| (render.insert_text.clone(), Some(2)))
         .unwrap_or_else(|| (label.clone(), None));
-    let command = callable.as_ref().map(|render| render.follow_up_command.clone());
+    let command = callable
+        .as_ref()
+        .map(|render| render.follow_up_command.clone());
     let documentation = completion_documentation(candidate, callable.as_ref());
     let required_parameter_count = callable
         .as_ref()
@@ -4153,8 +4149,7 @@ fn rpl_rpc_attribute_template(
         // ranks enum values first and retains normal value choices below.
         let body = format!(
             "RplRpc(${{1:{}}}, ${{2:{}}})",
-            RPL_RPC_ENUM_PLACEHOLDER_DEFAULTS[0],
-            RPL_RPC_ENUM_PLACEHOLDER_DEFAULTS[1],
+            RPL_RPC_ENUM_PLACEHOLDER_DEFAULTS[0], RPL_RPC_ENUM_PLACEHOLDER_DEFAULTS[1],
         );
         if include_brackets {
             format!("[{body}]")
@@ -4164,10 +4159,7 @@ fn rpl_rpc_attribute_template(
     })
 }
 
-const RPL_RPC_ENUM_PLACEHOLDER_DEFAULTS: [&str; 2] = [
-    "RplChannel.Reliable",
-    "RplRcver.Server",
-];
+const RPL_RPC_ENUM_PLACEHOLDER_DEFAULTS: [&str; 2] = ["RplChannel.Reliable", "RplRcver.Server"];
 
 fn rpl_rpc_enum_placeholder_defaults() -> Vec<String> {
     RPL_RPC_ENUM_PLACEHOLDER_DEFAULTS
@@ -4550,11 +4542,7 @@ mod tests {
     #[test]
     fn completion_suppresses_items_inside_line_and_block_comments() {
         let external = file_index_for_source("class GetGameMode {}").index;
-        for source in [
-            "// GetGameMode",
-            "/* GetGameMode */",
-            "/* GetGameMode",
-        ] {
+        for source in ["// GetGameMode", "/* GetGameMode */", "/* GetGameMode"] {
             let offset = source.len();
             let lexical = completion_report_for_lexical_source_at_offset_with_external_indexes(
                 source,
@@ -4562,10 +4550,14 @@ mod tests {
                 Some(&external),
                 None,
             );
-            assert!(lexical.list.items.is_empty(), "pending completion: {source}");
+            assert!(
+                lexical.list.items.is_empty(),
+                "pending completion: {source}"
+            );
 
             let analysis = file_index_for_source(source);
-            let cached = completion_report_for_offset(source, &analysis, offset, Some(&external), None);
+            let cached =
+                completion_report_for_offset(source, &analysis, offset, Some(&external), None);
             assert!(cached.list.items.is_empty(), "cached completion: {source}");
         }
     }
@@ -4830,8 +4822,15 @@ mod tests {
 
         assert_eq!(report.completion_context, "override");
         assert_eq!(report.prefix, "overr");
-        assert_eq!(report.list.items.first().map(|item| item.label.as_str()), Some("override"));
-        assert!(report.list.items.iter().all(|item| item.label == "override"));
+        assert_eq!(
+            report.list.items.first().map(|item| item.label.as_str()),
+            Some("override")
+        );
+        assert!(report
+            .list
+            .items
+            .iter()
+            .all(|item| item.label == "override"));
     }
 
     #[test]
@@ -4943,7 +4942,11 @@ class ScriptComponent
         .expect("nearby class header should stay within the fixed override window");
 
         assert_eq!(report.completion_context, "override");
-        assert!(report.list.items.iter().any(|item| item.label == "OnPostInit"));
+        assert!(report
+            .list
+            .items
+            .iter()
+            .any(|item| item.label == "OnPostInit"));
     }
 
     #[test]
@@ -5081,7 +5084,10 @@ class OtherChoice {}
             labels[..2],
             ["RplChannel.Reliable", "RplChannel.Unreliable"]
         );
-        assert!(labels.len() > 2, "expected normal value fallbacks: {labels:?}");
+        assert!(
+            labels.len() > 2,
+            "expected normal value fallbacks: {labels:?}"
+        );
         assert_eq!(
             report.list.items[0].text_edit.new_text,
             "RplChannel.Reliable"
@@ -5149,8 +5155,15 @@ class Constructed
                 .map(|item| item.label.as_str())
                 .collect::<Vec<_>>();
             assert_eq!(labels[..2], ["Channel.Reliable", "Channel.Unreliable"]);
-            assert!(labels.len() > 2, "expected normal fallbacks for {source}: {labels:?}");
-            assert!(report.list.items.iter().all(|item| item.text_edit.replace_range.is_none()));
+            assert!(
+                labels.len() > 2,
+                "expected normal fallbacks for {source}: {labels:?}"
+            );
+            assert!(report
+                .list
+                .items
+                .iter()
+                .all(|item| item.text_edit.replace_range.is_none()));
         }
     }
 
@@ -5206,8 +5219,17 @@ class ScriptComponent
             .map(|item| item.label.as_str())
             .collect::<Vec<_>>();
 
-        assert_eq!(labels[..2], ["RplChannel.Reliable", "RplChannel.Unreliable"]);
-        for label in ["localValue", "owner", "m_Field", "CurrentMethod", "OnPostInit"] {
+        assert_eq!(
+            labels[..2],
+            ["RplChannel.Reliable", "RplChannel.Unreliable"]
+        );
+        for label in [
+            "localValue",
+            "owner",
+            "m_Field",
+            "CurrentMethod",
+            "OnPostInit",
+        ] {
             assert!(
                 labels.contains(&label),
                 "pending enum fallback must retain {label}: {labels:?}"
@@ -5219,9 +5241,19 @@ class ScriptComponent
             .iter()
             .position(|item| item.kind == 14)
             .expect("the normal keyword fallback remains available");
-        for label in ["localValue", "owner", "m_Field", "CurrentMethod", "OnPostInit"] {
+        for label in [
+            "localValue",
+            "owner",
+            "m_Field",
+            "CurrentMethod",
+            "OnPostInit",
+        ] {
             assert!(
-                labels.iter().position(|candidate| *candidate == label).unwrap() < first_keyword,
+                labels
+                    .iter()
+                    .position(|candidate| *candidate == label)
+                    .unwrap()
+                    < first_keyword,
                 "current value {label} must rank before keywords: {labels:?}"
             );
         }
@@ -5283,17 +5315,35 @@ class Example
     #[test]
     fn insert_replace_edits_require_a_shared_start_and_prefix_insert_range() {
         let insert = LspRange {
-            start: LspPosition { line: 0, character: 4 },
-            end: LspPosition { line: 0, character: 7 },
+            start: LspPosition {
+                line: 0,
+                character: 4,
+            },
+            end: LspPosition {
+                line: 0,
+                character: 7,
+            },
         };
         let replace = LspRange {
-            start: LspPosition { line: 0, character: 4 },
-            end: LspPosition { line: 0, character: 12 },
+            start: LspPosition {
+                line: 0,
+                character: 4,
+            },
+            end: LspPosition {
+                line: 0,
+                character: 12,
+            },
         };
         assert!(insert_replace_ranges_are_valid(&insert, &replace));
         let invalid_insert = LspRange {
-            start: LspPosition { line: 0, character: 8 },
-            end: LspPosition { line: 0, character: 12 },
+            start: LspPosition {
+                line: 0,
+                character: 8,
+            },
+            end: LspPosition {
+                line: 0,
+                character: 12,
+            },
         };
         assert!(!insert_replace_ranges_are_valid(&invalid_insert, &replace));
     }
@@ -5339,13 +5389,21 @@ class Example
 
         assert_eq!(report.owner_type.as_deref(), Some("ScriptApi"));
         assert!(report.list.items.iter().any(|item| item.label == "s_Value"));
-        assert!(report.list.items.iter().any(|item| item.label == "StaticRun"));
+        assert!(report
+            .list
+            .items
+            .iter()
+            .any(|item| item.label == "StaticRun"));
         assert!(
             !report.list.items.iter().any(|item| item.label == "m_Value"),
             "a static owner must not expose instance fields"
         );
         assert!(
-            !report.list.items.iter().any(|item| item.label == "InstanceRun"),
+            !report
+                .list
+                .items
+                .iter()
+                .any(|item| item.label == "InstanceRun"),
             "a static owner must not expose instance methods"
         );
     }
@@ -5380,7 +5438,11 @@ class Example
 
         let report = report.expect("the visible local binding should use its own type");
         assert_eq!(report.owner_type.as_deref(), Some("LocalReceiver"));
-        assert!(!report.list.items.iter().any(|item| item.label == "Reliable"));
+        assert!(!report
+            .list
+            .items
+            .iter()
+            .any(|item| item.label == "Reliable"));
     }
 
     #[test]
@@ -5696,11 +5758,17 @@ ArmaReforgerScripted GetGame();
         assert_eq!(if_item.insert_text_format, Some(2));
         assert_eq!(if_item.commit_characters, Some(vec![" ".to_string()]));
         assert_eq!(
-            if_item.command.as_ref().map(|command| command.command.as_str()),
+            if_item
+                .command
+                .as_ref()
+                .map(|command| command.command.as_str()),
             Some(COMMAND_NORMALIZE_IF_SPACE_COMMIT),
         );
         assert_eq!(
-            if_item.command.as_ref().and_then(|command| command.arguments.as_ref()),
+            if_item
+                .command
+                .as_ref()
+                .and_then(|command| command.arguments.as_ref()),
             Some(&vec!["0".to_string(), "4".to_string()]),
         );
         let wire_item = serde_json::to_value(if_item).expect("keyword item should serialize");

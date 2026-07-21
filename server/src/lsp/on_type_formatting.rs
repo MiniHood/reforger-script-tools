@@ -101,13 +101,23 @@ fn significant_tokens(source: &str) -> Option<Vec<Token>> {
 
 fn is_complete_unbraced_if_header(tokens: &[Token]) -> bool {
     let condition_start = match tokens {
-        [Token { kind: TokenKind::Keyword(Keyword::If), .. }, Token { kind: TokenKind::LeftParen, .. }, ..] => 2,
-        [
-            Token { kind: TokenKind::Keyword(Keyword::Else), .. },
-            Token { kind: TokenKind::Keyword(Keyword::If), .. },
-            Token { kind: TokenKind::LeftParen, .. },
+        [Token {
+            kind: TokenKind::Keyword(Keyword::If),
             ..
-        ] => 3,
+        }, Token {
+            kind: TokenKind::LeftParen,
+            ..
+        }, ..] => 2,
+        [Token {
+            kind: TokenKind::Keyword(Keyword::Else),
+            ..
+        }, Token {
+            kind: TokenKind::Keyword(Keyword::If),
+            ..
+        }, Token {
+            kind: TokenKind::LeftParen,
+            ..
+        }, ..] => 3,
         _ => return false,
     };
     let condition = &tokens[condition_start..];
@@ -184,7 +194,10 @@ pub(super) fn incomplete_if_header_enter_plan(
     if tokens.first().map(|token| token.kind) != Some(TokenKind::Keyword(Keyword::If))
         || tokens.get(1).map(|token| token.kind) != Some(TokenKind::LeftParen)
         || tokens.iter().any(|token| {
-            matches!(token.kind, TokenKind::LeftBrace | TokenKind::RightBrace | TokenKind::Semicolon)
+            matches!(
+                token.kind,
+                TokenKind::LeftBrace | TokenKind::RightBrace | TokenKind::Semicolon
+            )
         })
     {
         return None;
@@ -208,12 +221,18 @@ pub(super) fn incomplete_if_header_enter_plan(
     };
     if condition.is_empty()
         || !is_complete_value_expression(condition)
-        || !condition.last().is_some_and(|token| can_end_value_expression(token.kind))
+        || !condition
+            .last()
+            .is_some_and(|token| can_end_value_expression(token.kind))
     {
         return None;
     }
 
-    let newline = if source.contains("\r\n") { "\r\n" } else { "\n" };
+    let newline = if source.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
     let unit = if insert_spaces {
         " ".repeat(tab_size.clamp(1, 16))
     } else {
@@ -963,7 +982,8 @@ mod tests {
             "\tif (owner == GetOwner())\n\t\treturn owner; // note\n\t\t",
             "\tif (owner == GetOwner())\n\t\treturn owner\n\t\t",
         ] {
-            let plan = unbraced_if_body_outdent_plan(source, source.len(), 4, false, false).unwrap();
+            let plan =
+                unbraced_if_body_outdent_plan(source, source.len(), 4, false, false).unwrap();
             assert_eq!(plan.replacement, "\t", "{source:?}");
             assert_eq!(plan.selection_character, 1, "{source:?}");
         }
@@ -1040,5 +1060,4 @@ mod tests {
             );
         }
     }
-
 }
