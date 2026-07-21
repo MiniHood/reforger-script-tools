@@ -9,6 +9,126 @@ pub(super) struct BlockCommentPairPlan {
     pub selection_character: u32,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct IncompleteIfHeaderPlan {
+    pub span: TextSpan,
+    pub replacement: String,
+    pub selection_character: u32,
+}
+
+/// Completes a single-line unbraced `if` header when Enter split its still
+/// unfinished condition.  This is intentionally smaller than a formatter:
+/// every unsupported or recovered shape leaves the editor's native Enter
+/// result alone.
+pub(super) fn incomplete_if_header_enter_plan(
+    source: &str,
+    cursor: usize,
+    tab_size: usize,
+    insert_spaces: bool,
+) -> Option<IncompleteIfHeaderPlan> {
+    if source.len() > MAX_ON_TYPE_SOURCE_BYTES || cursor > source.len() {
+        return None;
+    }
+    let current_line_start = line_start_before(source, cursor)?;
+    if !source[current_line_start..cursor]
+        .chars()
+        .all(char::is_whitespace)
+    {
+        return None;
+    }
+    let previous_line_end = trim_line_ending(source, current_line_start);
+    let previous_line_start = source[..previous_line_end]
+        .rfind('\n')
+        .map_or(0, |newline| newline + 1);
+    let mut current_line_end = source[cursor..]
+        .find('\n')
+        .map_or(source.len(), |offset| cursor + offset);
+    if current_line_end > cursor && source.as_bytes().get(current_line_end - 1) == Some(&b'\r') {
+        current_line_end -= 1;
+    }
+    let header_prefix = &source[previous_line_start..previous_line_end];
+    let condition_suffix = &source[cursor..current_line_end];
+    let header = format!("{header_prefix}{condition_suffix}");
+    let indent_end = header.find(|character: char| !character.is_whitespace())?;
+    let indent = &header[..indent_end];
+    let header_tokens = lex(&header);
+    if header_tokens.iter().any(|token| {
+        token.kind.is_error()
+            || matches!(
+                token.kind,
+                TokenKind::LineComment
+                    | TokenKind::DocLineComment
+                    | TokenKind::BlockComment
+                    | TokenKind::DocBlockComment
+            )
+    }) {
+        return None;
+    }
+    let tokens = header_tokens
+        .iter()
+        .copied()
+        .filter(|token| !token.kind.is_trivia() && token.kind != TokenKind::Eof)
+        .collect::<Vec<_>>();
+    let tokens = tokens.as_slice();
+    if tokens.first().map(|token| token.kind) != Some(TokenKind::Keyword(Keyword::If))
+        || tokens.get(1).map(|token| token.kind) != Some(TokenKind::LeftParen)
+        || tokens.iter().any(|token| {
+            matches!(token.kind, TokenKind::LeftBrace | TokenKind::RightBrace | TokenKind::Semicolon)
+        })
+    {
+        return None;
+    }
+    let condition = &tokens[2..];
+    if condition.is_empty()
+        || !has_only_open_if_paren(condition)
+        || !is_complete_value_expression(condition)
+        || !condition.last().is_some_and(|token| can_end_value_expression(token.kind))
+    {
+        return None;
+    }
+
+    let newline = if source.contains("\r\n") { "\r\n" } else { "\n" };
+    let unit = if insert_spaces {
+        " ".repeat(tab_size.clamp(1, 16))
+    } else {
+        "\t".to_string()
+    };
+    let body_indent = format!("{indent}{unit}");
+    Some(IncompleteIfHeaderPlan {
+        span: TextSpan::new(previous_line_start, current_line_end),
+        replacement: format!("{header}){newline}{body_indent}"),
+        selection_character: body_indent
+            .chars()
+            .map(|character| character.len_utf16() as u32)
+            .sum(),
+    })
+}
+
+fn has_only_open_if_paren(tokens: &[Token]) -> bool {
+    let mut paren_depth = 1usize;
+    let mut bracket_depth = 0usize;
+    for token in tokens {
+        match token.kind {
+            TokenKind::LeftParen => paren_depth += 1,
+            TokenKind::RightParen => {
+                let Some(depth) = paren_depth.checked_sub(1) else {
+                    return false;
+                };
+                paren_depth = depth;
+            }
+            TokenKind::LeftBracket => bracket_depth += 1,
+            TokenKind::RightBracket => {
+                let Some(depth) = bracket_depth.checked_sub(1) else {
+                    return false;
+                };
+                bracket_depth = depth;
+            }
+            _ => {}
+        }
+    }
+    paren_depth == 1 && bracket_depth == 0
+}
+
 /// Expands the exact empty native `/**/` pair into a standalone multiline
 /// block comment. The client only sends this after VS Code reports its native
 /// `**/` auto-close edit, so ordinary `*` typing never reaches this classifier.
@@ -521,7 +641,9 @@ fn consume_balanced(tokens: &[Token], start: usize, close: TokenKind) -> Option<
 
 #[cfg(test)]
 mod tests {
-    use super::{block_comment_pair_plan, semicolon_insertion_offset};
+    use super::{
+        block_comment_pair_plan, incomplete_if_header_enter_plan, semicolon_insertion_offset,
+    };
 
     fn insertion(source: &str) -> Option<usize> {
         semicolon_insertion_offset(source, source.len())
@@ -626,6 +748,48 @@ mod tests {
         assert_eq!(insertion("\"unterminated\nRun()\n"), None);
         let source = format!("{}Run()\n", " ".repeat(64 * 1024));
         assert_eq!(insertion(&source), None);
+    }
+
+    #[test]
+    fn completes_an_unfinished_if_header_and_places_the_body_caret() {
+        let source = "\tif (owner == GetOwner()\n\t";
+        let plan = incomplete_if_header_enter_plan(source, source.len(), 4, false).unwrap();
+        assert_eq!(plan.span.start, 0);
+        assert_eq!(plan.span.end, source.len());
+        assert_eq!(plan.replacement, "\tif (owner == GetOwner())\n\t\t");
+        assert_eq!(plan.selection_character, 2);
+
+        let split_identifier = "if (own\n\ter";
+        let cursor = "if (own\n\t".len();
+        let plan = incomplete_if_header_enter_plan(split_identifier, cursor, 2, true).unwrap();
+        assert_eq!(plan.replacement, "if (owner)\n  ");
+        assert_eq!(plan.selection_character, 2);
+    }
+
+    #[test]
+    fn rejects_completed_or_ambiguous_if_header_enters() {
+        for source in [
+            "if (owner)\n\t",
+            "if (owner &&\n\t",
+            "if (owner // note\n\t",
+            "if (\"owner\n\t",
+            "[Attribute(\n\t",
+            "while (owner\n\t",
+            "if (owner {\n\t",
+            "if (owners[\n\t",
+        ] {
+            assert!(
+                incomplete_if_header_enter_plan(source, source.len(), 4, false).is_none(),
+                "{source:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn incomplete_if_header_plan_preserves_crlf() {
+        let source = "\tif (Ready()\r\n\t";
+        let plan = incomplete_if_header_enter_plan(source, source.len(), 4, false).unwrap();
+        assert_eq!(plan.replacement, "\tif (Ready())\r\n\t\t");
     }
 
     #[test]

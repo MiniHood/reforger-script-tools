@@ -1137,8 +1137,7 @@ struct EnterTypingAssistParams {
     /// VS Code captures this at the Enter edit. It is used solely to reject a
     /// stale editor result before any typing-assist edit is planned.
     version: i32,
-    #[serde(rename = "options")]
-    _options: Value,
+    options: BlockCommentPairOptions,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2092,6 +2091,28 @@ impl<W: Write> LspServer<W> {
                                 return None;
                             }
                             let cursor = offset_for_position(&document.text, params.position)?;
+                            if let Some(plan) = on_type_formatting::incomplete_if_header_enter_plan(
+                                &document.text,
+                                cursor,
+                                params.options.tab_size,
+                                params.options.insert_spaces,
+                            ) {
+                                outcome = "if_header";
+                                let start = position_for_offset(&document.text, plan.span.start);
+                                return Some(json!({
+                                    "edits": [{
+                                        "range": {
+                                            "start": start,
+                                            "end": position_for_offset(&document.text, plan.span.end),
+                                        },
+                                        "newText": plan.replacement,
+                                    }],
+                                    "selection": {
+                                        "line": start.line + 1,
+                                        "character": plan.selection_character,
+                                    },
+                                }));
+                            }
                             let mut edits = Vec::new();
                             if let Some(insertion) = on_type_formatting::semicolon_insertion_offset(
                                 &document.text,
@@ -9938,6 +9959,51 @@ class Example
             .unwrap();
         let output = String::from_utf8_lossy(&server.writer);
         assert!(output.contains("\"newText\":\";\""), "{output}");
+    }
+
+    #[test]
+    fn enter_typing_assist_repairs_only_an_incomplete_if_header_with_a_body_selection() {
+        let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
+        let uri = "file:///Scripts/IfHeaderEnter.c";
+        server
+            .handle_message(
+                json!({ "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+                    "textDocument": {
+                        "uri": uri,
+                        "languageId": "enforce",
+                        "version": 1,
+                        "text": "\tif (owner == GetOwner()\n\t"
+                    }
+                }}),
+                None,
+                0,
+                0,
+            )
+            .unwrap();
+        server.writer.clear();
+        server
+            .handle_message(
+                json!({ "jsonrpc": "2.0", "id": 1, "method": ENTER_TYPING_ASSIST_METHOD, "params": {
+                    "textDocument": { "uri": uri },
+                    "position": { "line": 1, "character": 1 },
+                    "ch": "\n",
+                    "version": 1,
+                    "options": { "tabSize": 4, "insertSpaces": false }
+                }}),
+                None,
+                0,
+                0,
+            )
+            .unwrap();
+        let output = String::from_utf8_lossy(&server.writer);
+        assert!(
+            output.contains("\"newText\":\"\\tif (owner == GetOwner())\\n\\t\\t\""),
+            "{output}"
+        );
+        assert!(
+            output.contains("\"selection\":{\"character\":2,\"line\":1}"),
+            "{output}"
+        );
     }
 
     #[test]

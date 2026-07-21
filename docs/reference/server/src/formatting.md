@@ -16,13 +16,16 @@ admits exactly one plain Enter edit and forwards its current revision and
 caret. Rust returns a zero-width `;` edit only when the preceding
 physical line is a complete standalone call/member-call expression, typed
 variable declaration, a bare `return`, or a value-return statement. It inserts
-before a trailing `//` comment. It does not plan indentation, selection, or
+before a trailing `//` comment. The same request also repairs only the exact
+case where that Enter split a complete, otherwise-unclosed single-line `if (`
+condition: Rust returns one header replacement and its intended unbraced-body
+caret position. It does not classify ordinary body statements or provide broad
 control-body layout edits.
 
-Native VS Code language configuration owns immediate unbraced `if`/`else if`/
-`else` header indentation. This avoids a second post-Enter editor mutation:
-the language server never classifies a body statement or moves the caret to
-correct a control-body scope.
+Native VS Code language configuration owns immediate indentation for complete
+unbraced `if`/`else if`/`else` headers. The server's incomplete-`if` plan is
+limited to completing the header that the same Enter interrupted; it does not
+reclassify a body or correct an already complete control scope.
 
 The assist is deliberately fail-closed. Controls, callable declarations and
 constructors, attributes, existing semicolons, incomplete expressions,

@@ -120,12 +120,15 @@ before transport. The server intentionally does not advertise an automatic
 on-type-formatting capability because VS Code did not reliably invoke that
 provider in the active editor. The request carries the captured document
 version as an extension field and Rust returns no edits unless it exactly
-matches the installed immutable snapshot. It returns only a proven semicolon
-insertion; it never returns whitespace, scope, or caret edits. Native language
-configuration owns immediate indentation after standalone unbraced `if`,
-`else if`, and `else` headers so the editor produces the final layout without
-a post-change server round trip. Its concise request log records the version,
-UTF-16 request position, outcome, and elapsed time, never source text.
+matches the installed immutable snapshot. It returns a proven semicolon
+insertion, or a narrow incomplete unbraced `if`-header repair: when the Enter
+split a complete condition but left the header's final `)` absent, Rust returns
+one replacement and exact body-caret position. It rejects every ambiguous,
+comment, unterminated-string, directive, malformed, or complete-header shape. Native language
+configuration still owns immediate indentation after standalone complete
+unbraced `if`, `else if`, and `else` headers. Its concise request log records
+the version, UTF-16 request position, outcome, and elapsed time, never source
+text.
 
 `reforger/blockCommentPair` is a separate, Rust-owned typing-assist request
 for the editor's already-created native `/**/` block-comment pair. It checks
