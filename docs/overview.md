@@ -4,33 +4,8 @@ Reforger Script Tools is a VS Code extension and bundled Rust language server
 for Enfusion Script. Its purpose is high-fidelity language understanding and
 reliable editor behavior without making users install a separate toolchain.
 
-## Runtime Flow
-
-```text
-VS Code editor
-  -> TypeScript extension shell
-  -> bundled Rust language server
-  -> language results back to VS Code
-```
-
-The extension resolves user settings, game-data locations, storage paths, and
-editor events. The language server receives documents and external source
-locations, then owns language analysis and LSP results.
-
-## Ownership
-
-| Owner | Responsibility | Must not own |
-| --- | --- | --- |
-| `src/extension.ts` | Activation and top-level wiring | Language behavior or game-data logic |
-| `src/extensionConfig/` | Extension-facing names, defaults, and limits | Runtime behavior |
-| `src/gameData/` | Game-data acquisition and source resolution | Parsing or semantic analysis |
-| `src/languageClient/` | Server lifecycle, transport, and thin editor bridges | Language decisions |
-| `server/` | Parsing, semantic analysis, indexes, diagnostics, formatting, and LSP features | VS Code UI or game-data acquisition |
-| `tools/` | Development and investigation tooling | Extension runtime behavior |
-
-The Rust engine is the single language authority. TypeScript may adapt editor
-events and render Rust results, but it must not reimplement syntax, lookup,
-completion, or type reasoning.
+Read [the architecture](architecture.md) for runtime flow, ownership, and
+invariants.
 
 ## Sources of Truth
 

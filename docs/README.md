@@ -9,5 +9,5 @@ evidence contract.
 
 ## Current Documents
 
-- [System overview](overview.md): runtime flow, ownership, and sources of
-  truth.
+- [System overview](overview.md): product purpose and sources of truth.
+- [Architecture](architecture.md): module boundaries and runtime invariants.
