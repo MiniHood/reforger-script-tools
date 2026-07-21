@@ -56,6 +56,7 @@ export const languageClientRequests = {
 	debugHover: 'reforger/debugHover',
 	debugCompletion: 'reforger/debugCompletion',
 	onTypeFormatting: 'textDocument/onTypeFormatting',
+	blockCommentPair: 'reforger/blockCommentPair',
 } as const;
 
 export const languageClientNotifications = {

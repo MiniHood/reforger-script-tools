@@ -31,6 +31,15 @@ tokens. It rejects control keywords, adjacent primary values, and incomplete
 in a call rather than a bare member or index access. These checks do not treat
 delimiter balance alone as proof that a user has finished an expression.
 
+Multiline block-comment pairing is a separate Rust-owned typing assist. VS
+Code first creates its standard `/**/` native pair; only its exact `**/`
+document-change event is forwarded to Rust. Rust then replaces only a complete,
+empty, standalone pair with a three-line raw block comment and supplies the
+interior caret position. Inline, nonempty, nested-looking, string-contained,
+stale, oversized, and otherwise uncertain forms return no edit. This path does
+not run on ordinary asterisk input, consult semantic/index/workspace data, or
+reuse the explicit comment range formatter.
+
 The parser preserves declarations, bodies, expressions, attributes,
 comments/trivia, loops, and switch structure needed for a conservative future
 formatter.

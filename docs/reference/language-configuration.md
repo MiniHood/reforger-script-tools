@@ -12,9 +12,11 @@ This file belongs to the VS Code shell contribution layer. It gives VS Code comm
 
 The configuration defines `//` line comments, `/* */` block comments, and a
 native `/*` -> `*/` auto-closing pair. VS Code owns that immediate delimiter
-pairing, so it respects the user's standard autoclose preferences and does not
-put a language-server request on the `*` typing path. The pair is suppressed
-in editor-recognized string and comment contexts. Brace/bracket/paren and
+pairing, so it respects the user's standard autoclose preferences. The Rust
+typing assist receives only VS Code's precise native `**/` pair-change event,
+never general `*` typing, and replaces a proven empty standalone pair with a
+three-line comment plus Rust-authored interior caret position. The pair is
+suppressed in editor-recognized string and comment contexts. Brace/bracket/paren and
 double-quote pairs remain unchanged. It narrows `autoCloseBefore` so typing
 `{`, `[`, or `(` immediately before an existing closing bracket does not create
 a duplicate closer. It intentionally does not define editor `brackets`; VS
@@ -34,7 +36,7 @@ characters inside comments retain comment coloring.
 
 ## Future Improvements
 
-- Add Rust-owned comment Enter continuation only after a focused editor journey
-  proves native pairing's final caret and newline behavior. Do not turn the
-  explicit comment formatter into an on-type fallback.
+- Add Rust-owned comment Enter continuation as a separate assist only after a
+  focused editor journey proves the paired block's final caret and newline
+  behavior. Do not turn the explicit comment formatter into an on-type fallback.
 - Add indentation, folding, or richer bracket typing rules only after they are source-backed and tested against real Reforger script patterns.

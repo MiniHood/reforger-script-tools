@@ -94,6 +94,16 @@ response; otherwise it applies Rust's returned edits without adding an undo
 stop. Rust does not advertise a competing automatic provider because VS Code
 did not reliably invoke it in the active editor.
 
+The client also transports one narrow Rust-owned multiline-comment pairing
+assist. VS Code's language configuration first creates its normal `/*` ->
+`*/` pair. The bridge admits only the precise `**/` document-change shape that
+VS Code emits for that native pair, captures the post-pair version and caret,
+and forwards it through `reforger/blockCommentPair`. It never inspects source
+text and never forwards ordinary `*` typing. Rust returns a replacement plus
+the exact interior caret position only for a proven empty standalone block
+comment; the client discards stale/caret-moved results and applies the edit as
+one undoable typing transaction.
+
 ## Dependencies and Boundaries
 
 Uses VS Code APIs, Node path/filesystem APIs, `vscode-languageclient`, and extension config constants. It must not parse Enfusion Script, build indexes, inspect symbols, or implement language features directly.

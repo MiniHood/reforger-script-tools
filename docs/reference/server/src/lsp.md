@@ -123,6 +123,14 @@ version as an extension field and Rust returns no edits unless it exactly
 matches the installed immutable snapshot. Its concise request log records the
 version, UTF-16 request position, outcome, and elapsed time, never source text.
 
+`reforger/blockCommentPair` is a separate, Rust-owned typing-assist request
+for the editor's already-created native `/**/` block-comment pair. It checks
+the exact current document version, proves that the pair is a complete
+standalone block comment with only indentation on its line, then returns one
+replacement edit and an interior UTF-16 caret position. It does not run
+semantic analysis, inspect workspace data, or service ordinary asterisk input;
+the client emits this request only for the native `**/` change event.
+
 textDocument/rangeFormatting is advertised for an explicit comment-only
 formatting operation. It converts the standard UTF-16 range against the
 currently held document text, invokes the Rust formatting core, and projects

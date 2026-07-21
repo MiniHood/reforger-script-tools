@@ -1,6 +1,62 @@
-use crate::lexer::{lex, Keyword, Operator, Token, TokenKind};
+use crate::lexer::{lex, Keyword, Operator, TextSpan, Token, TokenKind};
 
 const MAX_ON_TYPE_SOURCE_BYTES: usize = 64 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct BlockCommentPairPlan {
+    pub span: TextSpan,
+    pub replacement: String,
+    pub selection_character: u32,
+}
+
+/// Expands the exact empty native `/**/` pair into a standalone multiline
+/// block comment. The client only sends this after VS Code reports its native
+/// `**/` auto-close edit, so ordinary `*` typing never reaches this classifier.
+pub(super) fn block_comment_pair_plan(
+    source: &str,
+    cursor: usize,
+    tab_size: usize,
+    insert_spaces: bool,
+) -> Option<BlockCommentPairPlan> {
+    if source.len() > MAX_ON_TYPE_SOURCE_BYTES || cursor < 2 || cursor > source.len() {
+        return None;
+    }
+    let comment = lex(source).into_iter().find(|token| {
+        token.kind == TokenKind::BlockComment
+            && token.span.start + 2 == cursor
+            && token.span.end == cursor + 2
+            && source.get(token.span.start..token.span.end) == Some("/**/")
+    })?;
+    let line_start = source[..comment.span.start]
+        .rfind('\n')
+        .map_or(0, |newline| newline + 1);
+    let line_end = source[comment.span.end..]
+        .find('\n')
+        .map_or(source.len(), |offset| comment.span.end + offset);
+    let indent = &source[line_start..comment.span.start];
+    if !indent.chars().all(char::is_whitespace)
+        || !source[comment.span.end..line_end].trim().is_empty()
+    {
+        return None;
+    }
+
+    let newline = if source.contains("\r\n") { "\r\n" } else { "\n" };
+    let unit = if insert_spaces {
+        " ".repeat(tab_size.clamp(1, 16))
+    } else {
+        "\t".to_string()
+    };
+    let inner_indent = format!("{indent}{unit}");
+    let replacement = format!("/*{newline}{inner_indent}{newline}{indent}*/");
+    Some(BlockCommentPairPlan {
+        span: comment.span,
+        replacement,
+        selection_character: inner_indent
+            .chars()
+            .map(|character| character.len_utf16() as u32)
+            .sum(),
+    })
+}
 
 /// Finds the byte offset where a semicolon can be inserted after Enter.
 ///
@@ -461,7 +517,7 @@ fn consume_balanced(tokens: &[Token], start: usize, close: TokenKind) -> Option<
 
 #[cfg(test)]
 mod tests {
-    use super::semicolon_insertion_offset;
+    use super::{block_comment_pair_plan, semicolon_insertion_offset};
 
     fn insertion(source: &str) -> Option<usize> {
         semicolon_insertion_offset(source, source.len())
@@ -574,5 +630,33 @@ mod tests {
         assert_eq!(insertion(source), None);
         let source = "Run(\"😀\")\r\n\t";
         assert_eq!(insertion(source), Some("Run(\"😀\")".len()));
+    }
+
+    #[test]
+    fn expands_only_an_empty_standalone_native_block_comment_pair() {
+        let source = "\t/**/\r\n";
+        let cursor = source.find("*/").unwrap();
+        let plan = block_comment_pair_plan(source, cursor, 4, false).unwrap();
+        assert_eq!(plan.span.start, 1);
+        assert_eq!(plan.span.end, 5);
+        assert_eq!(plan.replacement, "/*\r\n\t\t\r\n\t*/");
+        assert_eq!(plan.selection_character, 2);
+
+        let spaces = block_comment_pair_plan("/**/", 2, 3, true).unwrap();
+        assert_eq!(spaces.replacement, "/*\n   \n*/");
+        assert_eq!(spaces.selection_character, 3);
+    }
+
+    #[test]
+    fn rejects_nonempty_inline_and_ambiguous_block_comment_pairs() {
+        for (source, cursor) in [
+            ("value /**/", "value /**/".find("*/").unwrap()),
+            ("/**/ value", "/**/".find("*/").unwrap()),
+            ("/** text */", "/** text */".find("*/").unwrap()),
+            ("\"/**/\"", "\"/**/\"".find("*/").unwrap()),
+            ("/*\n/**/\n*/", "/*\n/**/\n*/".find("*/").unwrap()),
+        ] {
+            assert!(block_comment_pair_plan(source, cursor, 4, false).is_none(), "{source:?}");
+        }
     }
 }

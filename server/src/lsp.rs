@@ -122,6 +122,7 @@ const SIGNATURE_HELP_TRIGGER_CHARACTERS: &[&str] = &[
 const SIGNATURE_HELP_RETRIGGER_CHARACTERS: &[&str] = SIGNATURE_HELP_TRIGGER_CHARACTERS;
 const DEBUG_HOVER_METHOD: &str = "reforger/debugHover";
 const DEBUG_COMPLETION_METHOD: &str = "reforger/debugCompletion";
+const BLOCK_COMMENT_PAIR_METHOD: &str = "reforger/blockCommentPair";
 const ON_TYPE_FORMATTING_METHOD: &str = "textDocument/onTypeFormatting";
 const RANGE_FORMATTING_METHOD: &str = "textDocument/rangeFormatting";
 const WORKSPACE_FILE_CHANGED_METHOD: &str = "reforger/workspaceFileChanged";
@@ -1133,6 +1134,22 @@ struct OnTypeFormattingParams {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct BlockCommentPairParams {
+    text_document: TextDocumentIdentifier,
+    position: LspPosition,
+    version: i32,
+    options: BlockCommentPairOptions,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BlockCommentPairOptions {
+    tab_size: usize,
+    insert_spaces: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct RangeFormattingParams {
     text_document: TextDocumentIdentifier,
     range: LspRange,
@@ -2079,6 +2096,59 @@ impl<W: Write> LspServer<W> {
                         version,
                         line,
                         character,
+                        outcome,
+                        start.elapsed().as_millis()
+                    ));
+                    self.respond(id, result)?;
+                }
+            }
+            BLOCK_COMMENT_PAIR_METHOD => {
+                if let Some(id) = message.id {
+                    let start = Instant::now();
+                    let params = parse_params::<BlockCommentPairParams>(message.params, method)?;
+                    let mut log_uri = "<missing>".to_string();
+                    let mut bytes = 0usize;
+                    let mut version = -1i32;
+                    let mut outcome = "no_edit";
+                    let result = params
+                        .and_then(|params| {
+                            log_uri = params.text_document.uri;
+                            version = params.version;
+                            let document = self.documents.get(&log_uri)?;
+                            bytes = document.text.len();
+                            if document.version != params.version {
+                                outcome = "stale_version";
+                                return None;
+                            }
+                            let cursor = offset_for_position(&document.text, params.position)?;
+                            let plan = on_type_formatting::block_comment_pair_plan(
+                                &document.text,
+                                cursor,
+                                params.options.tab_size,
+                                params.options.insert_spaces,
+                            )?;
+                            outcome = "paired";
+                            let start = position_for_offset(&document.text, plan.span.start);
+                            Some(json!({
+                                "edits": [{
+                                    "range": {
+                                        "start": start,
+                                        "end": position_for_offset(&document.text, plan.span.end),
+                                    },
+                                    "newText": plan.replacement,
+                                }],
+                                "selection": {
+                                    "line": start.line + 1,
+                                    "character": plan.selection_character,
+                                },
+                            }))
+                        })
+                        .unwrap_or_else(|| json!({ "edits": [] }));
+                    self.log(&format!(
+                        "request blockCommentPair uri={} bytes={} version={} outcome={} elapsed_ms={}",
+                        log_uri,
+                        bytes,
+                        version,
                         outcome,
                         start.elapsed().as_millis()
                     ));
@@ -4072,6 +4142,7 @@ fn validate_message_params(method: &str, params: &Option<Value>) -> Result<(), S
         | DEBUG_HOVER_METHOD
         | DEBUG_COMPLETION_METHOD => validate_params::<HoverParams>(params, method),
         ON_TYPE_FORMATTING_METHOD => validate_params::<OnTypeFormattingParams>(params, method),
+        BLOCK_COMMENT_PAIR_METHOD => validate_params::<BlockCommentPairParams>(params, method),
         RANGE_FORMATTING_METHOD => validate_params::<RangeFormattingParams>(params, method),
         _ => Ok(()),
     }
@@ -9832,6 +9903,60 @@ class Example
             .unwrap();
         let output = String::from_utf8_lossy(&server.writer);
         assert!(output.contains("\"newText\":\";\""), "{output}");
+    }
+
+    #[test]
+    fn block_comment_pair_returns_a_current_revision_multiline_edit_and_selection() {
+        let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
+        let uri = "file:///Scripts/BlockCommentPair.c";
+        server
+            .handle_message(
+                json!({ "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+                    "textDocument": {
+                        "uri": uri,
+                        "languageId": "enforce",
+                        "version": 1,
+                        "text": "\t/**/"
+                    }
+                }}),
+                None,
+                0,
+                0,
+            )
+            .unwrap();
+        server.writer.clear();
+        server
+            .handle_message(
+                json!({ "jsonrpc": "2.0", "id": 1, "method": BLOCK_COMMENT_PAIR_METHOD, "params": {
+                    "textDocument": { "uri": uri },
+                    "position": { "line": 0, "character": 3 },
+                    "version": 1,
+                    "options": { "tabSize": 4, "insertSpaces": false }
+                }}),
+                None,
+                0,
+                0,
+            )
+            .unwrap();
+        let output = String::from_utf8_lossy(&server.writer);
+        assert!(output.contains("\"newText\":\"/*\\n\\t\\t\\n\\t*/\""), "{output}");
+        assert!(output.contains("\"selection\":{\"character\":2,\"line\":1}"), "{output}");
+
+        server.writer.clear();
+        server
+            .handle_message(
+                json!({ "jsonrpc": "2.0", "id": 2, "method": BLOCK_COMMENT_PAIR_METHOD, "params": {
+                    "textDocument": { "uri": uri },
+                    "position": { "line": 0, "character": 3 },
+                    "version": 2,
+                    "options": { "tabSize": 4, "insertSpaces": false }
+                }}),
+                None,
+                0,
+                0,
+            )
+            .unwrap();
+        assert!(String::from_utf8_lossy(&server.writer).contains("\"edits\":[]"));
     }
 
     #[test]

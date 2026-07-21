@@ -3,7 +3,11 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { languageClientCommands } from '../extensionConfig/languageClient';
-import { isCurrentSingleSemicolonCaret, semicolonAfterEnterPosition } from '../languageClient/languageClient';
+import {
+	blockCommentPairPosition,
+	isCurrentSingleSemicolonCaret,
+	semicolonAfterEnterPosition,
+} from '../languageClient/languageClient';
 
 suite('extension activation', () => {
 	test('registers editor-facing commands', async () => {
@@ -47,7 +51,9 @@ suite('extension activation', () => {
 		assert.ok(clientSource.includes('completionLifecycleTraceForDocument'));
 		assert.ok(clientSource.includes('snippetSuggestTraceVersion'));
 		assert.ok(clientSource.includes('registerSemicolonAfterEnter'));
+		assert.ok(clientSource.includes('registerBlockCommentPair'));
 		assert.ok(clientSource.includes('isSinglePlainEnter'));
+		assert.ok(clientSource.includes('blockCommentPairPosition'));
 		assert.ok(clientSource.includes('semicolonAfterEnterPosition'));
 		assert.ok(clientSource.includes('onDidChangeTextEditorSelection'));
 		assert.ok(!clientSource.includes('registerOnTypeFormattingEditProvider'));
@@ -66,6 +72,35 @@ suite('extension activation', () => {
 			configuration.autoClosingPairs.find(pair => pair.open === '/*'),
 			{ open: '/*', close: '*/', notIn: ['string', 'comment'] },
 		);
+	});
+
+	test('uses the native block-comment pair event as a narrow typing-assist trigger', async () => {
+		const document = await vscode.workspace.openTextDocument({ language: 'enforce', content: '' });
+		await vscode.window.showTextDocument(document);
+		const observed: string[][] = [];
+		const listener = vscode.workspace.onDidChangeTextDocument(event => {
+			if (event.document.uri.toString() === document.uri.toString()) {
+				observed.push(event.contentChanges.map(change => change.text));
+			}
+		});
+		try {
+			await vscode.commands.executeCommand('type', { text: '/' });
+			await vscode.commands.executeCommand('type', { text: '*' });
+			assert.deepStrictEqual(observed, [['/'], ['**/']]);
+		} finally {
+			listener.dispose();
+		}
+	});
+
+	test('derives the Rust pair request position only from the native pair event', () => {
+		const pair = {
+			range: new vscode.Range(new vscode.Position(4, 7), new vscode.Position(4, 7)),
+			rangeLength: 0,
+			text: '**/',
+		} as vscode.TextDocumentContentChangeEvent;
+		assert.deepStrictEqual(blockCommentPairPosition([pair]), new vscode.Position(4, 8));
+		assert.strictEqual(blockCommentPairPosition([{ ...pair, text: '*' }]), undefined);
+		assert.strictEqual(blockCommentPairPosition([{ ...pair, rangeLength: 1 }]), undefined);
 	});
 
 	test('derives the Rust request position from the accepted Enter edit', () => {

@@ -135,6 +135,7 @@ export function registerLanguageClientFeatures(context: vscode.ExtensionContext)
 	context.subscriptions.push(debugOutputChannel);
 	context.subscriptions.push(completionDebugOutputChannel);
 	context.subscriptions.push(registerSemicolonAfterEnter());
+	context.subscriptions.push(registerBlockCommentPair());
 	context.subscriptions.push(registerEmptyCompletionRefresh());
 	context.subscriptions.push(vscode.commands.registerCommand(
 		languageClientCommands.debugHoverAtCursor,
@@ -552,6 +553,159 @@ interface LspPosition {
 interface LspTextEdit {
 	range: LspRange;
 	newText: string;
+}
+
+interface BlockCommentPairResponse {
+	edits: LspTextEdit[];
+	selection?: LspPosition;
+}
+
+function registerBlockCommentPair(): vscode.Disposable {
+	let pending: BlockCommentPairTransaction | undefined;
+	const documentChanges = vscode.workspace.onDidChangeTextDocument(event => {
+		if (pending && pending.document.uri.toString() === event.document.uri.toString()
+			&& event.document.version > pending.version) {
+			diagnostic('formatting.commentPair', { outcome: 'superseded', version: pending.version });
+			pending = undefined;
+		}
+		if (event.document.languageId !== languageClientLanguage.id) {
+			return;
+		}
+		const position = blockCommentPairPosition(event.contentChanges);
+		if (!position) {
+			return;
+		}
+		const transaction: BlockCommentPairTransaction = {
+			document: event.document,
+			version: event.document.version,
+			prePairPosition: event.contentChanges[0].range.start,
+			position,
+			caretReady: hasSingleEmptyCaretAt(event.document, position, event.document.version),
+		};
+		pending = transaction;
+		queueMicrotask(() => {
+			if (pending === transaction) {
+				void requestBlockCommentPair(transaction, () => pending === transaction, () => {
+					pending = undefined;
+				});
+			}
+		});
+	});
+	const selectionChanges = vscode.window.onDidChangeTextEditorSelection(event => {
+		const transaction = pending;
+		if (!transaction || event.textEditor.document.uri.toString() !== transaction.document.uri.toString()) {
+			return;
+		}
+		if (hasSingleEmptyCaretAt(transaction.document, transaction.position, transaction.version)) {
+			transaction.caretReady = true;
+			void applyPendingBlockCommentPair(transaction, () => pending === transaction, () => {
+				pending = undefined;
+			});
+			return;
+		}
+		if (transaction.document.version !== transaction.version
+			|| !hasSingleEmptyCaretAt(transaction.document, transaction.prePairPosition, transaction.version)) {
+			diagnostic('formatting.commentPair', { outcome: 'caretMoved', version: transaction.version });
+			pending = undefined;
+		}
+	});
+	return vscode.Disposable.from(documentChanges, selectionChanges);
+}
+
+interface BlockCommentPairTransaction {
+	document: vscode.TextDocument;
+	version: number;
+	prePairPosition: vscode.Position;
+	position: vscode.Position;
+	caretReady: boolean;
+	response?: BlockCommentPairResponse;
+}
+
+export function blockCommentPairPosition(
+	changes: readonly vscode.TextDocumentContentChangeEvent[],
+): vscode.Position | undefined {
+	if (changes.length !== 1 || changes[0].rangeLength !== 0 || changes[0].text !== '**/') {
+		return undefined;
+	}
+	const change = changes[0];
+	return new vscode.Position(change.range.start.line, change.range.start.character + 1);
+}
+
+async function requestBlockCommentPair(
+	transaction: BlockCommentPairTransaction,
+	isCurrent: () => boolean,
+	clear: () => void,
+): Promise<void> {
+	const activeClient = client;
+	const editor = vscode.window.activeTextEditor;
+	if (!activeClient || !editor || editor.document.uri.toString() !== transaction.document.uri.toString()
+		|| transaction.document.version !== transaction.version) {
+		diagnostic('formatting.commentPair', { outcome: 'rejectedEditorState', version: transaction.version });
+		clear();
+		return;
+	}
+	try {
+		const response = await activeClient.sendRequest<BlockCommentPairResponse>(
+			languageClientRequests.blockCommentPair,
+			{
+				textDocument: { uri: transaction.document.uri.toString() },
+				position: { line: transaction.position.line, character: transaction.position.character },
+				version: transaction.version,
+				options: { tabSize: editor.options.tabSize, insertSpaces: editor.options.insertSpaces },
+			},
+		);
+		if (!isCurrent() || transaction.document.version !== transaction.version || response.edits.length === 0) {
+			diagnostic('formatting.commentPair', {
+				outcome: response.edits.length === 0 ? 'noEdits' : 'staleResponse',
+				version: transaction.version,
+			});
+			clear();
+			return;
+		}
+		transaction.response = response;
+		await applyPendingBlockCommentPair(transaction, isCurrent, clear);
+	} catch {
+		diagnostic('formatting.commentPair', { outcome: 'requestError', version: transaction.version });
+		clear();
+	}
+}
+
+async function applyPendingBlockCommentPair(
+	transaction: BlockCommentPairTransaction,
+	isCurrent: () => boolean,
+	clear: () => void,
+): Promise<void> {
+	if (!transaction.response || !transaction.caretReady) {
+		return;
+	}
+	if (!isCurrent() || transaction.document.version !== transaction.version
+		|| !hasSingleEmptyCaretAt(transaction.document, transaction.position, transaction.version)) {
+		diagnostic('formatting.commentPair', { outcome: 'staleResponse', version: transaction.version });
+		clear();
+		return;
+	}
+	const editor = vscode.window.activeTextEditor;
+	if (!editor) {
+		clear();
+		return;
+	}
+	const applied = await editor.edit(
+		editBuilder => transaction.response?.edits.forEach(edit => editBuilder.replace(rangeFromLsp(edit.range), edit.newText)),
+		{ undoStopBefore: false, undoStopAfter: false },
+	);
+	if (applied && transaction.response.selection) {
+		const position = new vscode.Position(
+			transaction.response.selection.line,
+			transaction.response.selection.character,
+		);
+		editor.selection = new vscode.Selection(position, position);
+	}
+	diagnostic('formatting.commentPair', {
+		outcome: applied ? 'applied' : 'editRejected',
+		version: transaction.version,
+		edits: transaction.response.edits.length,
+	});
+	clear();
 }
 
 function registerSemicolonAfterEnter(): vscode.Disposable {
