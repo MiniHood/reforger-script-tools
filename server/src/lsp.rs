@@ -281,6 +281,15 @@ impl<'a> DocumentQuery<'a> {
             DocumentQueryState::Pending
         }
     }
+
+    fn quality(&self) -> QueryQuality {
+        match Self::state_for(self.document) {
+            DocumentQueryState::Cached(_) => QueryQuality::Exact,
+            DocumentQueryState::Foreground(_) | DocumentQueryState::Pending => {
+                QueryQuality::Unavailable
+            }
+        }
+    }
 }
 
 enum ServerEvent {
@@ -2580,6 +2589,7 @@ impl<W: Write> LspServer<W> {
                         .and_then(|params| {
                             log_uri = params.text_document.uri;
                             self.document_query(&log_uri).map(|query| {
+                                query_quality = query.quality();
                                 let DocumentQuery {
                                     document,
                                     external_indexes: indexes,
@@ -2589,22 +2599,22 @@ impl<W: Write> LspServer<W> {
                                 external_index_status = indexes.status;
                                 external_index_layers = indexes.available_layers();
                                 let report = match DocumentQuery::state_for(document) {
-                                    DocumentQueryState::Cached(analysis) =>
+                                    DocumentQueryState::Cached(analysis) => {
                                         hover_report_for_cached_analysis_with_external_indexes(
-                                        &document.text,
-                                        analysis,
-                                        &log_uri,
-                                        params.position,
-                                        indexes.workspace.as_deref(),
-                                        indexes.game_data.as_deref(),
-                                    ),
+                                            &document.text,
+                                            analysis,
+                                            &log_uri,
+                                            params.position,
+                                            indexes.workspace.as_deref(),
+                                            indexes.game_data.as_deref(),
+                                        )
+                                    }
                                     DocumentQueryState::Foreground(foreground) => {
-                                        query_quality = QueryQuality::Unavailable;
                                         hover_report_for_pending_snapshot(
-                                        &document.snapshot,
-                                        foreground,
-                                        params.position,
-                                        document.parse_diagnostic_count(),
+                                            &document.snapshot,
+                                            foreground,
+                                            params.position,
+                                            document.parse_diagnostic_count(),
                                         )
                                     }
                                     DocumentQueryState::Pending => return None,
@@ -2697,6 +2707,7 @@ impl<W: Write> LspServer<W> {
                         .and_then(|params| {
                             log_uri = params.text_document.uri;
                             self.document_query(&log_uri).map(|query| {
+                                query_quality = query.quality();
                                 let DocumentQuery {
                                     document,
                                     external_indexes: indexes,
@@ -2706,23 +2717,23 @@ impl<W: Write> LspServer<W> {
                                 external_index_status = indexes.status;
                                 external_index_layers = indexes.available_layers();
                                 let report = match DocumentQuery::state_for(document) {
-                                    DocumentQueryState::Cached(analysis) =>
+                                    DocumentQueryState::Cached(analysis) => {
                                         definition_report_for_cached_analysis_with_external_indexes(
-                                        &document.text,
-                                        analysis,
-                                        &log_uri,
-                                        params.position,
-                                        indexes.workspace.as_deref(),
-                                        indexes.game_data.as_deref(),
-                                    ),
+                                            &document.text,
+                                            analysis,
+                                            &log_uri,
+                                            params.position,
+                                            indexes.workspace.as_deref(),
+                                            indexes.game_data.as_deref(),
+                                        )
+                                    }
                                     DocumentQueryState::Foreground(foreground) => {
-                                        query_quality = QueryQuality::Unavailable;
                                         definition_report_for_pending_snapshot(
-                                        &document.snapshot,
-                                        foreground,
-                                        &log_uri,
-                                        params.position,
-                                        document.parse_diagnostic_count(),
+                                            &document.snapshot,
+                                            foreground,
+                                            &log_uri,
+                                            params.position,
+                                            document.parse_diagnostic_count(),
                                         )
                                     }
                                     DocumentQueryState::Pending => return Vec::new(),
@@ -2781,18 +2792,24 @@ impl<W: Write> LspServer<W> {
                     let start = Instant::now();
                     let params = parse_params::<HoverParams>(message.params, method)?;
                     if let Some(ref params) = params {
-                        if let Some(document) = self.documents.get(&params.text_document.uri) {
-                            if let Some(scheduler) = self.analysis_scheduler.clone() {
-                                let uri = params.text_document.uri.clone();
-                                let position = params.position;
-                                let revision = document.revision;
-                                let analysis = document.analysis().clone();
-                                let external_status = self.external_index.status_summary();
-                                let indexes = self.external_index.snapshot();
-                                let task = match self.admit_debug_capture(&uri) {
-                                    Ok(task) => task,
-                                    Err((retained_jobs, retained_bytes)) => {
-                                        self.log(&format!(
+                        if let Some(query) = self.document_query(&params.text_document.uri) {
+                            let DocumentQuery {
+                                document,
+                                external_indexes: indexes,
+                            } = query;
+                            if let DocumentQueryState::Cached(analysis) =
+                                DocumentQuery::state_for(document)
+                            {
+                                if let Some(scheduler) = self.analysis_scheduler.clone() {
+                                    let uri = params.text_document.uri.clone();
+                                    let position = params.position;
+                                    let revision = document.revision;
+                                    let analysis = analysis.clone();
+                                    let external_status = self.external_index.status_summary();
+                                    let task = match self.admit_debug_capture(&uri) {
+                                        Ok(task) => task,
+                                        Err((retained_jobs, retained_bytes)) => {
+                                            self.log(&format!(
                                             "request debugHover skipped uri={} revision={} reason=runtime-overload retained_jobs={} retained_bytes={} elapsed_ms={}",
                                             uri,
                                             revision,
@@ -2800,26 +2817,29 @@ impl<W: Write> LspServer<W> {
                                             retained_bytes,
                                             start.elapsed().as_millis()
                                         ));
-                                        self.respond_error(
+                                            self.respond_error(
+                                                id,
+                                                -32801,
+                                                "Debug capture unavailable",
+                                            )?;
+                                            return Ok(false);
+                                        }
+                                    };
+                                    scheduler.schedule_debug(DebugRequestJob::Hover(
+                                        DebugHoverJob {
+                                            task,
                                             id,
-                                            -32801,
-                                            "Debug capture unavailable",
-                                        )?;
-                                        return Ok(false);
-                                    }
-                                };
-                                scheduler.schedule_debug(DebugRequestJob::Hover(DebugHoverJob {
-                                    task,
-                                    id,
-                                    uri,
-                                    position,
-                                    revision,
-                                    scheduled_at: start,
-                                    analysis,
-                                    external_snapshot: indexes,
-                                    external_status,
-                                }));
-                                return Ok(false);
+                                            uri,
+                                            position,
+                                            revision,
+                                            scheduled_at: start,
+                                            analysis,
+                                            external_snapshot: indexes,
+                                            external_status,
+                                        },
+                                    ));
+                                    return Ok(false);
+                                }
                             }
                         }
                     }
@@ -2831,15 +2851,23 @@ impl<W: Write> LspServer<W> {
                     let result = params
                         .and_then(|params| {
                             log_uri = params.text_document.uri;
-                            self.documents.get(&log_uri).map(|document| {
+                            self.document_query(&log_uri).and_then(|query| {
+                                let DocumentQuery {
+                                    document,
+                                    external_indexes: indexes,
+                                } = query;
+                                let DocumentQueryState::Cached(analysis) =
+                                    DocumentQuery::state_for(document)
+                                else {
+                                    return None;
+                                };
                                 bytes = document.text.len();
                                 revision = document.revision;
                                 let external_status = self.external_index.status_summary();
-                                let indexes = self.external_index.snapshot();
                                 let report =
                                     debug_hover_report_for_cached_analysis_with_external_indexes(
                                         &document.text,
-                                        document.analysis(),
+                                        analysis,
                                         &log_uri,
                                         params.position,
                                         indexes.workspace.as_deref(),
@@ -2850,7 +2878,7 @@ impl<W: Write> LspServer<W> {
                                 if let Some(label) = selected_label_from_debug_report(&report) {
                                     selected_label = label;
                                 }
-                                Value::String(report)
+                                Some(Value::String(report))
                             })
                         })
                         .unwrap_or_else(|| {
@@ -2876,17 +2904,23 @@ impl<W: Write> LspServer<W> {
                     let start = Instant::now();
                     let params = parse_params::<HoverParams>(message.params, method)?;
                     if let Some(ref params) = params {
-                        if let Some(document) = self.documents.get(&params.text_document.uri) {
-                            if let Some(scheduler) = self.analysis_scheduler.clone() {
-                                let uri = params.text_document.uri.clone();
-                                let position = params.position;
-                                let revision = document.revision;
-                                let analysis = document.analysis().clone();
-                                let indexes = self.external_index.snapshot();
-                                let task = match self.admit_debug_capture(&uri) {
-                                    Ok(task) => task,
-                                    Err((retained_jobs, retained_bytes)) => {
-                                        self.log(&format!(
+                        if let Some(query) = self.document_query(&params.text_document.uri) {
+                            let DocumentQuery {
+                                document,
+                                external_indexes: indexes,
+                            } = query;
+                            if let DocumentQueryState::Cached(analysis) =
+                                DocumentQuery::state_for(document)
+                            {
+                                if let Some(scheduler) = self.analysis_scheduler.clone() {
+                                    let uri = params.text_document.uri.clone();
+                                    let position = params.position;
+                                    let revision = document.revision;
+                                    let analysis = analysis.clone();
+                                    let task = match self.admit_debug_capture(&uri) {
+                                        Ok(task) => task,
+                                        Err((retained_jobs, retained_bytes)) => {
+                                            self.log(&format!(
                                             "request debugCompletion skipped uri={} revision={} reason=runtime-overload retained_jobs={} retained_bytes={} elapsed_ms={}",
                                             uri,
                                             revision,
@@ -2894,27 +2928,28 @@ impl<W: Write> LspServer<W> {
                                             retained_bytes,
                                             start.elapsed().as_millis()
                                         ));
-                                        self.respond_error(
+                                            self.respond_error(
+                                                id,
+                                                -32801,
+                                                "Debug capture unavailable",
+                                            )?;
+                                            return Ok(false);
+                                        }
+                                    };
+                                    scheduler.schedule_debug(DebugRequestJob::Completion(
+                                        DebugCompletionJob {
+                                            task,
                                             id,
-                                            -32801,
-                                            "Debug capture unavailable",
-                                        )?;
-                                        return Ok(false);
-                                    }
-                                };
-                                scheduler.schedule_debug(DebugRequestJob::Completion(
-                                    DebugCompletionJob {
-                                        task,
-                                        id,
-                                        uri,
-                                        position,
-                                        revision,
-                                        scheduled_at: start,
-                                        analysis,
-                                        external_snapshot: indexes,
-                                    },
-                                ));
-                                return Ok(false);
+                                            uri,
+                                            position,
+                                            revision,
+                                            scheduled_at: start,
+                                            analysis,
+                                            external_snapshot: indexes,
+                                        },
+                                    ));
+                                    return Ok(false);
+                                }
                             }
                         }
                     }
@@ -2930,22 +2965,30 @@ impl<W: Write> LspServer<W> {
                     let result = params
                         .and_then(|params| {
                             log_uri = params.text_document.uri;
-                            self.documents.get(&log_uri).map(|document| {
+                            self.document_query(&log_uri).and_then(|query| {
+                                let DocumentQuery {
+                                    document,
+                                    external_indexes: indexes,
+                                } = query;
+                                let DocumentQueryState::Cached(analysis) =
+                                    DocumentQuery::state_for(document)
+                                else {
+                                    return None;
+                                };
                                 bytes = document.text.len();
                                 revision = document.revision;
-                                let indexes = self.external_index.snapshot();
                                 external_index_status = indexes.status;
                                 external_index_layers = indexes.available_layers();
                                 let report = completion_report_for_cached_analysis_with_external_indexes(
                                         &document.text,
-                                        document.analysis(),
+                                        analysis,
                                         params.position,
                                         indexes.workspace.as_deref(),
                                         indexes.game_data.as_deref(),
                                     );
                                 let signature_report = signature_help_report_for_cached_analysis_with_external_indexes(
                                         &document.text,
-                                        document.analysis(),
+                                        analysis,
                                         params.position,
                                         indexes.workspace.as_deref(),
                                         indexes.game_data.as_deref(),
@@ -2965,7 +3008,7 @@ impl<W: Write> LspServer<W> {
                                     external_index_status,
                                 );
                                 markdown.push_str(&signature_help_debug_markdown(&signature_report));
-                                Value::String(markdown)
+                                Some(Value::String(markdown))
                             })
                         })
                         .unwrap_or_else(|| {
