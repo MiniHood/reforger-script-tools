@@ -53,8 +53,20 @@ comments/strings, directives, and large input. A future broader formatter must
 define parser-backed edit safety cases, idempotence, malformed-source behavior,
 and LSP edit projection tests before enabling edits.
 
+Comment/Doxygen work has an explicit evidence gate before it may change source:
+run the development-only `tools/comment-formatting-corpus-report.mjs` against a
+known corpus, validate `tools/fixtures/formatting/comment_doxygen_matrix.c` in
+Workbench, and record the versioned result. Corpus frequencies and parser
+acceptance are discovery evidence only; neither establishes edit eligibility.
+
 ## Future Direction
 
 Keep completion, signature help, formatting, and documentation generation as
 distinct owners. Future full formatting needs a parser-backed model; the
 semicolon assist is intentionally not a general formatter.
+
+The next comment slice is parser/trivia-backed, region-scoped formatting that
+preserves comment payload byte-for-byte. Explicit missing-documentation
+generation remains a separate Rust-owned action after the fixture gate is
+recorded. Do not add automatic comment conversion, prose reflow, trailing-doc
+movement, or save-time documentation generation as part of that slice.
