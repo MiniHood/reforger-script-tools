@@ -69,7 +69,15 @@ suite('extension activation', () => {
 			'utf8',
 		)) as {
 			autoClosingPairs: Array<{ open: string; close: string; notIn?: string[] }>;
-			indentationRules?: { indentNextLinePattern?: string };
+			indentationRules?: {
+				increaseIndentPattern?: string;
+				decreaseIndentPattern?: string;
+				indentNextLinePattern?: string;
+			};
+			onEnterRules?: Array<{
+				beforeText?: string;
+				action?: { indent?: string };
+			}>;
 		};
 		assert.deepStrictEqual(
 			configuration.autoClosingPairs.find(pair => pair.open === '/*'),
@@ -77,6 +85,8 @@ suite('extension activation', () => {
 		);
 		const pattern = configuration.indentationRules?.indentNextLinePattern;
 		assert.ok(pattern);
+		assert.strictEqual(configuration.indentationRules?.increaseIndentPattern, '$^');
+		assert.strictEqual(configuration.indentationRules?.decreaseIndentPattern, '$^');
 		const indentNextLine = new RegExp(pattern);
 		for (const header of ['if (enabled)', 'else if (enabled)', 'else']) {
 			assert.ok(indentNextLine.test(header), header);
@@ -90,6 +100,16 @@ suite('extension activation', () => {
 			'// if (enabled)',
 		]) {
 			assert.ok(!indentNextLine.test(ineligible), ineligible);
+		}
+		const onEnterHeader = configuration.onEnterRules?.[0];
+		assert.strictEqual(onEnterHeader?.action?.indent, 'indent');
+		assert.ok(onEnterHeader?.beforeText);
+		const onEnterPattern = new RegExp(onEnterHeader.beforeText);
+		for (const header of ['if (enabled)', 'else if (enabled)', 'else']) {
+			assert.ok(onEnterPattern.test(header), header);
+		}
+		for (const ineligible of ['if (enabled) {', 'if (enabled);', 'if (enabled) Run();', 'if (enabled) // comment']) {
+			assert.ok(!onEnterPattern.test(ineligible), ineligible);
 		}
 	});
 
@@ -184,6 +204,11 @@ suite('extension activation', () => {
 		const defaults = extension.packageJSON.contributes.configurationDefaults as Record<string, Record<string, unknown>>;
 		assert.strictEqual(defaults['[enforce]']['editor.acceptSuggestionOnEnter'], 'off');
 		assert.strictEqual(defaults['[enforce]']['editor.autoIndent'], 'full');
+	});
+
+	test('resolves full auto indentation for an Enforce editor', async () => {
+		const document = await vscode.workspace.openTextDocument({ language: 'enforce', content: '' });
+		assert.strictEqual(vscode.workspace.getConfiguration('editor', document.uri).get('autoIndent'), 'full');
 	});
 
 });

@@ -38,8 +38,18 @@
   ],
   "autoCloseBefore": ";:.,=+-*/%&|^!~? \t\n",
   "indentationRules": {
+    "increaseIndentPattern": "$^",
+    "decreaseIndentPattern": "$^",
     "indentNextLinePattern": "^\\s*(?:(?:else\\s+)?if\\s*\\([^{};]*\\)|else)\\s*$"
   },
+  "onEnterRules": [
+    {
+      "beforeText": "^\\s*(?:(?:else\\s+)?if\\s*\\([^{};]*\\)|else)\\s*$",
+      "action": {
+        "indent": "indent"
+      }
+    }
+  ],
   "surroundingPairs": [
     [
       "{",

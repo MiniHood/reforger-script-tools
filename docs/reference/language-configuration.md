@@ -24,13 +24,15 @@ Code's bracket-pair and matching-bracket layers do not have Enforce TextMate
 comment scopes and can color bracket characters inside comments. Enforce
 coloring is owned by Rust LSP semantic tokens and the bundled theme.
 
-Its narrow `indentNextLinePattern` recognizes a standalone `if (...)`, `else
-if (...)`, or `else` header with no braces, semicolon, comment, or trailing
-body. VS Code indents only the immediately following line as part of its
-native Enter operation. It does not inspect the body statement, insert braces,
-or use a language-server request; later lines return to normal native
-indentation. The rule is deliberately presentation-only and does not attempt
-to parse arbitrary Enfusion syntax.
+Its indentation configuration has one coordinated native path. A narrow
+`onEnterRules` rule gives VS Code the immediate extra indentation after a
+standalone `if (...)`, `else if (...)`, or `else` header with no braces,
+semicolon, comment, or trailing body. An equally narrow
+`indentNextLinePattern` makes that indentation temporary, so pressing Enter
+after the resulting body line returns to the enclosing level. The inert
+required increase/decrease patterns prevent this presentation slice from
+affecting multi-line block indentation or outdent behavior. It does not
+inspect the body statement, insert braces, or use a language-server request.
 
 ## Dependencies and Boundaries
 
