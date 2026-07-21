@@ -9,6 +9,19 @@ Use the red-green loop to produce durable public-behavior tests. Consult these
 rules before and during every cycle. When exploring a codebase, read
 `CONTEXT.md` if it exists and respect applicable ADRs.
 
+## Ticket goal
+
+When this skill is invoked for a ticket, first create a slash goal for
+completing that ticket. The goal is complete only after every stated
+requirement has been implemented and checked against the ticket, relevant
+public-behavior tests have passed, the full required verification has passed,
+the change has been reviewed, required documentation has been updated, the
+coherent result has been committed, and the ticket tracker has been brought to
+its required final state. Keep working through those steps without treating an
+individual red-green cycle, a partial build, or an intermediate commit as goal
+completion. Do not pause for confirmation when the next step is determined by
+the ticket and repository workflow; report progress in commentary instead.
+
 ## Public seams
 
 Test behavior through public interfaces, never implementation details. A test
