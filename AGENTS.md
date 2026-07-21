@@ -1,168 +1,78 @@
-# AGENTS.md
+# Reforger Script Tools
 
 ## Mission
 
-Build Reforger Script Tools as a high-fidelity Enfusion Script toolchain. Favor
-correct language understanding, reliable editor behavior, and a durable path to
-a complete parser, semantic model, index, and language server. Do not take a
-shortcut that makes that destination worse.
+Build a high-fidelity Enfusion Script toolchain: correct language
+understanding, reliable editor behavior, and a durable path to a complete
+parser, semantic model, index, and language server. Do not take shortcuts that
+make that destination worse.
 
-## Architecture
+## Router
 
-The canonical runtime flow is in [docs/reference/architecture.md](docs/reference/architecture.md).
-Keep these boundaries intact.
+Route work to the owner instead of growing a second implementation path.
 
-- VS Code TypeScript is the extension shell: activation, commands, settings,
-  UI glue, process lifecycle, editor events, and LSP transport.
-- Rust is the language engine: lexing, parsing, syntax/AST, semantic model,
-  indexing, diagnostics, formatting, and LSP request handling.
-- Workbench/compiler behavior is the authority for Enfusion Script behavior;
-  it validates language truth but is not the extension's language server.
-- Game-data acquisition and source resolution belong in `src/gameData/`.
-- Language-client process management and protocol bridging belong in
-  `src/languageClient/`.
-- `src/extension.ts` wires top-level services only. It must not gain language
-  intelligence, parser, indexer, downloader, or Workbench logic.
-- `src/extensionConfig/` owns extension-facing IDs, keys, names, defaults, and
-  thresholds. Do not scatter magic strings.
-- `server/` owns the Rust language engine. Keep compiler-style responsibilities
-  separate as the engine gains layers.
-- `tools/` is developer/Codex tooling only, never an extension runtime
-  dependency.
-- Use one authoritative implementation path for each feature. A temporary
-  migration path requires a removal condition and must not become permanent.
-- Keep extension activation fast; expensive analysis belongs in Rust or a
-  background process.
+- `src/extension.ts`: activation and top-level wiring only.
+- `src/extensionConfig/`: extension-facing IDs, names, defaults, and limits.
+- `src/gameData/`: game-data acquisition and source resolution.
+- `src/languageClient/`: VS Code process lifecycle, transport, and thin editor
+  bridges.
+- `server/`: lexing, parsing, syntax, semantics, indexing, diagnostics,
+  formatting, and LSP behavior.
+- `tools/`: developer tooling only; never a runtime dependency.
 
-Marketplace installs must be self-contained. End users must not need Rust,
-Cargo, Node.js, npm packages, a separately installed LSP server, or another
-manual helper dependency.
+Keep TypeScript as the editor shell and Rust as the language engine. Workbench
+and the compiler establish Enfusion truth; they are not a second language
+server. Keep the runtime flow in
+[docs/reference/architecture.md](docs/reference/architecture.md) intact.
+
+## Taste
+
+- Prefer precise language facts and full-fidelity parsing over text matching.
+- Prefer small, verified vertical slices over broad speculative rewrites.
+- Preserve working behavior unless the task intentionally changes it.
+- Keep modules deep: expose a small, clear contract and hide the complexity
+  behind it. Do not add a manager, registry, wrapper, setting, or validation
+  layer without a concrete present need.
+- Keep TypeScript typed, thin, deterministic, and editor-facing. Do not move
+  parsing, indexing, completion, or semantic decisions out of Rust.
+- Use one authoritative path for a feature. Temporary migrations need an
+  explicit removal condition.
+- Keep activation fast and expensive work off the extension host.
+- Marketplace installs must be self-contained: no user-installed Rust, Cargo,
+  Node.js, npm dependencies, or separate language server.
 
 ## Reforger Truth
 
-Before reasoning about or changing Enfusion Script behavior, Workbench, game
-data, fixtures, parser/model/index behavior, diagnostics, formatting, or LSP
-language features, invoke the `reforger` skill.
+Before changing or asserting Enfusion Script, Workbench, game-data,
+parser/model/index, diagnostics, formatting, or language-feature behavior,
+invoke the `reforger` skill.
 
 Use evidence in this order:
 
-1. Workbench/compiler behavior when available.
+1. Workbench/compiler behavior.
 2. Official Reforger documentation.
-3. Extracted APIs and verified game-data records.
-4. Source samples and fixtures, labelled by confidence.
+3. Verified extracted game data.
+4. Source examples and fixtures, labelled by confidence.
 
 Never infer Enfusion behavior from C#, Unity, Unreal, Arma 3, SQF, or generic
-scripting-language conventions.
+language conventions.
 
-## Design Rules
+## Basic Rules
 
-- Prefer full-fidelity parsing and precise semantic data over text matching.
-- Prefer small, verified vertical slices over broad speculative rewrites.
-- Preserve working behavior unless the task intentionally changes it.
-- Do not add managers, registries, wrappers, settings, or validation layers
-  without a current, concrete need.
-- Keep TypeScript typed, thin, deterministic, and editor-facing.
-- Do not introduce TypeScript language logic that competes with Rust.
 - Treat user settings as intentional controls; do not expose internal consent
   or bookkeeping as settings.
-- Runtime state belongs under `globalStorageUri`; `globalState` contains only
-  small durable flags. Never write runtime state into source files.
-- Logs are optional, centrally owned, concise, and outside the workspace source
-  tree. For hover-selection work, inspect
-  `globalStorageUri/logs/hover-debug/latest.md` first.
+- Runtime state belongs under `globalStorageUri`; `globalState` is for small,
+  durable flags only. Do not write runtime state into source files.
+- Keep diagnostics optional, centralized, concise, and outside the workspace.
+- Read the relevant source and boundary documentation before a non-trivial
+  change. Documentation is evolving toward deep-module context; do not add
+  per-file documentation machinery unless the current task needs it.
+- Verify the smallest meaningful slice. For extension-facing TypeScript,
+  language-client, or bundled-server changes, run `npm run compile` after the
+  final source edit. State any live Workbench/editor validation still pending.
+- Commit coherent, attributable local changes after verification. Do not push,
+  open a PR, change remotes, or rewrite history unless explicitly asked.
 
-## Documentation
+## Handoff
 
-`AGENTS.md` is strict policy. Follow [docs/documentation.md](docs/documentation.md)
-for document lifecycle and verification. [docs/reference/architecture.md](docs/reference/architecture.md)
-owns cross-layer architecture. [docs/agent-workflow.md](docs/agent-workflow.md)
-owns workflow rationale. `docs/reference/` owns current subsystem context;
-`tools/reports/` contains ignored generated investigation output.
-
-### Research and review journals
-
-Use a journal under `tools/reports/review/` or `tools/reports/research/` only
-when it is directly relevant to the active scope or an explicit user follow-up.
-Read its manifest and synthesis first, then only the supporting persona report
-needed for the decision. Treat journals as advisory evidence and provenance,
-never as a replacement for current source, active reference docs,
-Workbench/compiler truth, or user direction.
-
-Before relying on a journal, compare its recorded base revision, dirty-file
-exclusions, and source identities with the current task. A journal is stale
-for a decision when its relevant code/docs changed, its related change was
-archived or superseded, it lacks a verifiable snapshot, or a newer relevant
-investigation exists. In that case, use it only as historical context; refresh
-the evidence or investigate the current state. Do not load or cite old journals
-merely because they exist, and preserve disagreements or validation gates when
-carrying a still-current finding forward.
-
-Before changing a non-trivial or architecture-sensitive source file, read its
-matching active reference page in full when one exists, plus any related page
-that defines a boundary involved in the change. Update or create the matching
-reference page when ownership, behavior, boundaries, or future direction
-changes. Do not create reference pages for generated output, dependencies, or
-trivial metadata. Replace harmful legacy documentation when current source,
-accepted policy, or user direction supports the replacement.
-
-## Workflow and Git
-
-### Normal implementation autonomy
-
-Proceed without asking the user for permission for ordinary in-scope work:
-inspect source and logs, read required references, create or update planned
-artifacts, edit project files, run builds/tests/formatters, and perform
-non-destructive local diagnostics. A request to plan and work on a feature
-authorizes the normal implementation and verification loop for that feature.
-
-Pause only when the next action is destructive or irreversible, changes an
-external system or collaborator state, exceeds the user's stated scope, or
-requires a consequential product/design choice that cannot be resolved from
-current evidence. Do not turn routine terminal commands, compilation,
-extension rebuilds, or local validation into permission prompts.
-
-After a coherent task scope is verified, commit only its attributable changes
-to the current branch with a concise, value-focused title. Do not push, open a
-PR, modify remotes, or alter branches or history unless the user explicitly
-asks for that operation.
-
-## Completion Reporting
-
-When a task is complete, the final handoff must state:
-
-1. What was worked on.
-2. What was completed, including verification performed.
-3. Any remaining work, uncertainty, or recommended next step.
-
-Do not imply that a task is fully complete when a known follow-up or required
-external validation remains.
-
-## Verification
-
-These are repository-specific verification requirements.
-
-Before completing a source-changing task:
-
-1. Inspect repository state and relevant source/reference documentation.
-2. Confirm the smallest intended slice and avoid unrelated edits.
-3. Define the smallest non-overlapping verification set before editing; run it
-   after the final change. Do not duplicate checks covered by a selected final
-   command.
-4. Validate Reforger language claims with Workbench/compiler behavior whenever
-   available.
-5. After the final source change to any extension-facing TypeScript, bundled
-   Rust server, or language-client behavior, run `npm run compile` before
-   reporting completion. This is mandatory even when another test command ran
-   an earlier build. It rebuilds the extension and replaces the development
-   server binary so the existing Extension Development Host's watcher can use
-   the new artifacts; do not leave that compilation step for the user.
-   Preserve the existing host and its debug-session UI: never launch a
-   replacement VS Code window, close the user's host, or ask the user to
-   manually reload it as a substitute for the compile-driven update. If the
-   available tooling cannot confirm a live interaction afterward, report only
-   that live verification as pending.
-6. Update required documentation and record verification plus remaining
-   uncertainty.
-
-For documentation-only work, `git diff --check` plus manual link/path review
-is sufficient when no source, package, build, or runtime behavior changed.
+Say what changed, how it was verified, and what remains uncertain or next.
