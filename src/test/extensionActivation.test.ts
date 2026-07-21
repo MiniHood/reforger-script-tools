@@ -53,6 +53,21 @@ suite('extension activation', () => {
 		assert.ok(!clientSource.includes('registerOnTypeFormattingEditProvider'));
 	});
 
+	test('contributes a context-safe native multi-line comment pair', async () => {
+		const extension = vscode.extensions.all.find(
+			candidate => candidate.packageJSON.name === 'reforger-sript-tools',
+		);
+		assert.ok(extension, 'development extension is discoverable');
+		const configuration = JSON.parse(await fs.readFile(
+			path.join(extension.extensionPath, 'language-configuration.json'),
+			'utf8',
+		)) as { autoClosingPairs: Array<{ open: string; close: string; notIn?: string[] }> };
+		assert.deepStrictEqual(
+			configuration.autoClosingPairs.find(pair => pair.open === '/*'),
+			{ open: '/*', close: '*/', notIn: ['string', 'comment'] },
+		);
+	});
+
 	test('derives the Rust request position from the accepted Enter edit', () => {
 		const position = semicolonAfterEnterPosition([{
 			range: new vscode.Range(new vscode.Position(20, 61), new vscode.Position(20, 61)),
