@@ -35,11 +35,26 @@ The parser preserves declarations, bodies, expressions, attributes,
 comments/trivia, loops, and switch structure needed for a conservative future
 formatter.
 
+The current comment-formatting core provides a Rust-only,
+`format_comment_region` operation. It accepts one explicitly selected,
+comment-only region and returns zero or more byte-span edits. It aligns each
+contiguous comment group to its first line while preserving delimiters, tags,
+prose, trailing text, and line endings. Block continuation lines beginning
+with `*` use one space after the group indentation. Code, strings, directives,
+trailing comments, partial comment tokens, malformed ranges, and mixed
+code/comment selections return no edits. It is intentionally not exposed over
+LSP yet.
+
 The planned feature surfaces are document/range formatting, on-type edits, typing assists, comment/Doxygen formatting, and formatting of already-inserted completion snippets. They share syntax-aware context rather than implementing separate text rewrite systems.
 
 ## Dependencies and Boundaries
 
 Future formatting depends on lexer spans/trivia, parser syntax, and AST/model facts; targeted assists may use resolver/type facts. It must not become a second parser, use regex-only structural rewrites, re-order declarations, change semantics, evaluate macros, or apply broad ambiguous edits while a user is typing.
+
+The comment-region core consumes full-fidelity lexer trivia only. Its caller
+must project LSP UTF-16 ranges to valid source spans and may expose it only as
+an explicit range-formatting action; it must not run on type, on save, or over
+mixed code regions.
 
 Only auto-apply an edit when the syntax leaves no realistic alternate user action. If an action chooses a symbol, callable, inherited member, argument label, enum owner, or source-backed template, it belongs to completion or an explicit assist. If it explains the active callable without editing, it belongs to signature help. Formatting changes only presentation of already-chosen text.
 
@@ -70,3 +85,6 @@ preserves comment payload byte-for-byte. Explicit missing-documentation
 generation remains a separate Rust-owned action after the fixture gate is
 recorded. Do not add automatic comment conversion, prose reflow, trailing-doc
 movement, or save-time documentation generation as part of that slice.
+
+The remaining integration slice is a standard LSP range-formatting endpoint
+with current-snapshot, UTF-16, stale-result, and edit-projection coverage.

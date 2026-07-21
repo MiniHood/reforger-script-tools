@@ -1,6 +1,7 @@
 pub mod analysis_runtime;
 pub mod ast;
 pub mod expression_type;
+pub mod formatting;
 pub mod index;
 pub mod index_build;
 pub mod index_cache;
