@@ -9,18 +9,18 @@ Use the red-green loop to produce durable public-behavior tests. Consult these
 rules before and during every cycle. When exploring a codebase, read
 `CONTEXT.md` if it exists and respect applicable ADRs.
 
-## Ticket goal
+## Goal gate
 
-When this skill is invoked for a ticket, first create a slash goal for
-completing that ticket. The goal is complete only after every stated
-requirement has been implemented and checked against the ticket, relevant
-public-behavior tests have passed, the full required verification has passed,
-the change has been reviewed, required documentation has been updated, the
-coherent result has been committed, and the ticket tracker has been brought to
-its required final state. Keep working through those steps without treating an
-individual red-green cycle, a partial build, or an intermediate commit as goal
-completion. Do not pause for confirmation when the next step is determined by
-the ticket and repository workflow; report progress in commentary instead.
+For ticket work, create a slash goal before acting. Keep it active until every
+stated requirement is implemented and checked, relevant public-behavior tests
+and required verification pass, the change is reviewed, required documentation
+is updated, the coherent result is committed, and the ticket tracker reaches
+its required final state.
+
+Continue while the goal is active. A response may end the run only when the
+goal is complete or genuinely blocked by required user input or external state.
+Use commentary for progress. A partial implementation, check, review, or
+commit is not a terminal state.
 
 ## Public seams
 
@@ -28,10 +28,9 @@ Test behavior through public interfaces, never implementation details. A test
 should read like a specification, survive internal moves, and use an
 independent expected value.
 
-Treat existing public tests and documented contracts as pre-agreed seams. Write
-them down before adding a test. Ask the user to confirm a seam only when a task
-introduces new observable behavior and the relevant public boundary cannot be
-determined from available context.
+Treat existing public tests and documented contracts as pre-agreed seams. Infer
+new seams from the ticket, existing tests, and documentation; ask only when a
+material product decision cannot be determined safely from available context.
 
 See [tests.md](tests.md) for test examples and [mocking.md](mocking.md) for
 boundary-mocking guidance.
