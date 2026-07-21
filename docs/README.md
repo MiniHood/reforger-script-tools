@@ -20,6 +20,10 @@ format. Update the document that owns that context when it did. Do not add a
 documentation change merely to restate implementation details already clear in
 code and tests.
 
+For ticketed work, completion means every ticket requirement has been checked
+against the final code and verification evidence. An independently verified
+implementation slice is progress, not a completed ticket.
+
 ## Current Documents
 
 - [System overview](overview.md): product purpose and sources of truth.

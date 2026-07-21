@@ -57,7 +57,7 @@ completion, update the owning document when the change affects its contract.
 
 Before changing or asserting Enfusion Script, Workbench, game-data,
 parser/model/index, diagnostics, formatting, or language-feature behavior,
-invoke the `reforger` skill.
+consult the smallest relevant primary evidence directly.
 
 Use evidence in this order:
 
@@ -68,6 +68,20 @@ Use evidence in this order:
 
 Never infer Enfusion behavior from C#, Unity, Unreal, Arma 3, SQF, or generic
 language conventions.
+
+## Ticket Completion
+
+For a ticket or explicitly bounded request, turn every stated requirement into
+an observable completion checklist before editing. Small, verified changes are
+implementation slices only: after verifying one, continue directly to the next
+unchecked item. Do not present a slice, a clean build, a commit, or a review as
+ticket completion while any requirement remains.
+
+Before handing off a ticket, compare the final implementation against the full
+ticket, verify each item with code/tests or a stated external validation, update
+the owning documentation when its contract changed, and commit the coherent
+ticket result. If context must change, carry the unchecked checklist forward;
+do not ask whether to move to another ticket.
 
 ## Basic Rules
 

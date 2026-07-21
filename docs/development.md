@@ -24,6 +24,15 @@ For Rust-only work, run `cargo test` from `server/` in addition to focused
 tests. For extension-facing TypeScript, language-client, or bundled-server
 changes, run `npm run compile` after the final source edit.
 
+## Ticket Completion
+
+Break a ticket into small, behavior-preserving implementation slices when that
+reduces risk, but keep an explicit checklist of its full requirements. Verify a
+slice before starting the next one; do not treat that verification or its commit
+as ticket completion. Before handoff, compare the completed code and tests with
+the whole ticket, run the applicable final checks, and record any editor or
+Workbench validation that still requires a live session.
+
 ## Local Extension Session
 
 The `Run Extension` launch configuration runs `npm run compile` before it starts
