@@ -5,8 +5,8 @@ import * as vscode from 'vscode';
 import { languageClientCommands } from '../extensionConfig/languageClient';
 import {
 	blockCommentPairPosition,
-	isCurrentSingleSemicolonCaret,
-	semicolonAfterEnterPosition,
+	enterAfterPosition,
+	isCurrentSingleTypingAssistCaret,
 } from '../languageClient/languageClient';
 
 suite('extension activation', () => {
@@ -50,11 +50,11 @@ suite('extension activation', () => {
 		assert.ok(clientSource.includes('isRefreshableEmptyCompletion'));
 		assert.ok(clientSource.includes('completionLifecycleTraceForDocument'));
 		assert.ok(clientSource.includes('snippetSuggestTraceVersion'));
-		assert.ok(clientSource.includes('registerSemicolonAfterEnter'));
+		assert.ok(clientSource.includes('registerEnterTypingAssist'));
 		assert.ok(clientSource.includes('registerBlockCommentPair'));
 		assert.ok(clientSource.includes('isSinglePlainEnter'));
 		assert.ok(clientSource.includes('blockCommentPairPosition'));
-		assert.ok(clientSource.includes('semicolonAfterEnterPosition'));
+		assert.ok(clientSource.includes('enterAfterPosition'));
 		assert.ok(clientSource.includes('onDidChangeTextEditorSelection'));
 		assert.ok(!clientSource.includes('registerOnTypeFormattingEditProvider'));
 	});
@@ -104,21 +104,21 @@ suite('extension activation', () => {
 	});
 
 	test('derives the Rust request position from the accepted Enter edit', () => {
-		const position = semicolonAfterEnterPosition([{
+		const position = enterAfterPosition([{
 			range: new vscode.Range(new vscode.Position(20, 61), new vscode.Position(20, 61)),
 			rangeLength: 0,
 			text: '\n\t',
 		} as vscode.TextDocumentContentChangeEvent]);
 		assert.deepStrictEqual(position, new vscode.Position(21, 1));
 
-		const crlfPosition = semicolonAfterEnterPosition([{
+		const crlfPosition = enterAfterPosition([{
 			range: new vscode.Range(new vscode.Position(7, 12), new vscode.Position(7, 12)),
 			rangeLength: 0,
 			text: '\r\n',
 		} as vscode.TextDocumentContentChangeEvent]);
 		assert.deepStrictEqual(crlfPosition, new vscode.Position(8, 0));
 
-		assert.strictEqual(semicolonAfterEnterPosition([{
+		assert.strictEqual(enterAfterPosition([{
 			range: new vscode.Range(0, 0, 0, 1),
 			rangeLength: 1,
 			text: '\n',
@@ -129,21 +129,21 @@ suite('extension activation', () => {
 			rangeLength: 0,
 			text: '\n',
 		} as vscode.TextDocumentContentChangeEvent;
-		assert.strictEqual(semicolonAfterEnterPosition([plainEnter, plainEnter]), undefined);
-		assert.strictEqual(semicolonAfterEnterPosition([{
+		assert.strictEqual(enterAfterPosition([plainEnter, plainEnter]), undefined);
+		assert.strictEqual(enterAfterPosition([{
 			...plainEnter,
 			text: '\ntext',
 		}]), undefined);
 	});
 
-	test('applies a semicolon response only at the original single caret and revision', () => {
+	test('applies an Enter assist response only at the original single caret and revision', () => {
 		const position = new vscode.Position(8, 4);
-		assert.strictEqual(isCurrentSingleSemicolonCaret(12, 12, 1, true, position, position), true);
-		assert.strictEqual(isCurrentSingleSemicolonCaret(13, 12, 1, true, position, position), false);
-		assert.strictEqual(isCurrentSingleSemicolonCaret(12, 12, 2, true, position, position), false);
-		assert.strictEqual(isCurrentSingleSemicolonCaret(12, 12, 1, false, position, position), false);
+		assert.strictEqual(isCurrentSingleTypingAssistCaret(12, 12, 1, true, position, position), true);
+		assert.strictEqual(isCurrentSingleTypingAssistCaret(13, 12, 1, true, position, position), false);
+		assert.strictEqual(isCurrentSingleTypingAssistCaret(12, 12, 2, true, position, position), false);
+		assert.strictEqual(isCurrentSingleTypingAssistCaret(12, 12, 1, false, position, position), false);
 		assert.strictEqual(
-			isCurrentSingleSemicolonCaret(12, 12, 1, true, new vscode.Position(8, 5), position),
+			isCurrentSingleTypingAssistCaret(12, 12, 1, true, new vscode.Position(8, 5), position),
 			false,
 		);
 	});

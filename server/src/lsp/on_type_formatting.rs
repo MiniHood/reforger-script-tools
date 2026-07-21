@@ -1,4 +1,6 @@
 use crate::lexer::{lex, Keyword, Operator, TextSpan, Token, TokenKind};
+use crate::parser::parse_source;
+use crate::syntax::{SyntaxElement, SyntaxKind, SyntaxNode};
 
 const MAX_ON_TYPE_SOURCE_BYTES: usize = 64 * 1024;
 
@@ -7,6 +9,172 @@ pub(super) struct BlockCommentPairPlan {
     pub span: TextSpan,
     pub replacement: String,
     pub selection_character: u32,
+}
+
+/// The complete, snapshot-local result for one admitted Enter keypress.  It
+/// deliberately keeps the semicolon and scope-exit decisions together so the
+/// client can apply one editor transaction without competing typing assists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct EnterTypingAssistPlan {
+    pub semicolon_insertion: Option<usize>,
+    pub scope_exit: Option<ScopeExitPlan>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ScopeExitPlan {
+    /// The whitespace VS Code inserted on the newly-created line.
+    pub span: TextSpan,
+    /// The exact leading whitespace of the proven `if` header line.
+    pub replacement: String,
+    /// UTF-16 column for the final caret position on the current line.
+    pub selection_character: u32,
+}
+
+/// Plans the narrow Enter-time edits supported by the language server.
+///
+/// The only scope transition in this first slice is an unbraced, non-nested
+/// `if` whose direct body is a complete `return` on the preceding physical
+/// line.  The parser must prove that relationship; matching indentation alone
+/// is never enough to move a user's caret.  All other shapes fail closed.
+pub(super) fn enter_typing_assist_plan(
+    source: &str,
+    cursor: usize,
+) -> Option<EnterTypingAssistPlan> {
+    let semicolon_insertion = semicolon_insertion_offset(source, cursor);
+    let scope_exit = direct_if_return_scope_exit_plan(source, cursor, semicolon_insertion);
+    if semicolon_insertion.is_none() && scope_exit.is_none() {
+        return None;
+    }
+
+    Some(EnterTypingAssistPlan {
+        semicolon_insertion,
+        scope_exit,
+    })
+}
+
+fn direct_if_return_scope_exit_plan(
+    source: &str,
+    cursor: usize,
+    semicolon_insertion: Option<usize>,
+) -> Option<ScopeExitPlan> {
+    if source.len() > MAX_ON_TYPE_SOURCE_BYTES || cursor > source.len() {
+        return None;
+    }
+    let current_line_start = line_start_before(source, cursor)?;
+    if !source[current_line_start..cursor]
+        .chars()
+        .all(char::is_whitespace)
+    {
+        return None;
+    }
+    let previous_line_end = trim_line_ending(source, current_line_start);
+    let previous_line_start = source[..previous_line_end]
+        .rfind('\n')
+        .map_or(0, |newline| newline + 1);
+    let previous_line = &source[previous_line_start..previous_line_end];
+    let previous_code_end = previous_line_start + previous_line.trim_end().len();
+    if previous_code_end == previous_line_start || line_has_comment_or_non_return(previous_line) {
+        return None;
+    }
+
+    let mut parsed_source = source.to_string();
+    let expected_return_end = if let Some(insertion) = semicolon_insertion {
+        // Scope transition uses a fully parsed statement, never parser
+        // recovery for a missing semicolon.  The returned edit still targets
+        // the immutable original snapshot.
+        parsed_source.insert(insertion, ';');
+        previous_code_end + 1
+    } else {
+        previous_code_end
+    };
+    let parse = parse_source(&parsed_source);
+    let if_statement = find_direct_if_return(&parse.root, expected_return_end, 0)?;
+    if node_contains_kind(if_statement, SyntaxKind::Error) {
+        return None;
+    }
+    let if_token = direct_token(if_statement, TokenKind::Keyword(Keyword::If))?;
+    let header_line_start = source[..if_token.span.start]
+        .rfind('\n')
+        .map_or(0, |newline| newline + 1);
+    if header_line_start == previous_line_start {
+        // Inline `if (condition) return;` intentionally remains untouched.
+        return None;
+    }
+    let header_indent = &source[header_line_start..if_token.span.start];
+    if !header_indent
+        .chars()
+        .all(|character| character == '\t' || character == ' ')
+    {
+        return None;
+    }
+
+    Some(ScopeExitPlan {
+        span: TextSpan::new(current_line_start, cursor),
+        replacement: header_indent.to_string(),
+        selection_character: header_indent
+            .chars()
+            .map(|character| character.len_utf16() as u32)
+            .sum(),
+    })
+}
+
+fn line_has_comment_or_non_return(line: &str) -> bool {
+    let tokens = lex(line);
+    let code_tokens = tokens
+        .iter()
+        .filter(|token| !token.kind.is_trivia() && token.kind != TokenKind::Eof)
+        .collect::<Vec<_>>();
+    code_tokens.first().map(|token| token.kind) != Some(TokenKind::Keyword(Keyword::Return))
+        || tokens.iter().any(|token| {
+            matches!(
+                token.kind,
+                TokenKind::LineComment | TokenKind::DocLineComment | TokenKind::BlockComment
+            )
+        })
+}
+
+fn find_direct_if_return<'a>(
+    node: &'a SyntaxNode,
+    expected_return_end: usize,
+    if_depth: usize,
+) -> Option<&'a SyntaxNode> {
+    if node.kind == SyntaxKind::IfStatement && if_depth == 0 {
+        let body = node.children.iter().find_map(|child| match child {
+            SyntaxElement::Node(child) if child.kind == SyntaxKind::ReturnStatement => {
+                Some(child.as_ref())
+            }
+            _ => None,
+        });
+        let has_else = node.children.iter().any(|child| {
+            matches!(child, SyntaxElement::Node(child) if child.kind == SyntaxKind::ElseClause)
+        });
+        if body.is_some_and(|body| body.span.end == expected_return_end) && !has_else {
+            return Some(node);
+        }
+    }
+
+    let nested_if_depth = if_depth + usize::from(node.kind == SyntaxKind::IfStatement);
+    node.children.iter().find_map(|child| match child {
+        SyntaxElement::Node(child) => {
+            find_direct_if_return(child, expected_return_end, nested_if_depth)
+        }
+        SyntaxElement::Token(_) => None,
+    })
+}
+
+fn node_contains_kind(node: &SyntaxNode, kind: SyntaxKind) -> bool {
+    node.kind == kind
+        || node.children.iter().any(|child| match child {
+            SyntaxElement::Node(child) => node_contains_kind(child, kind),
+            SyntaxElement::Token(_) => false,
+        })
+}
+
+fn direct_token(node: &SyntaxNode, kind: TokenKind) -> Option<&Token> {
+    node.children.iter().find_map(|child| match child {
+        SyntaxElement::Token(token) if token.kind == kind => Some(token),
+        SyntaxElement::Node(_) | SyntaxElement::Token(_) => None,
+    })
 }
 
 /// Expands the exact empty native `/**/` pair into a standalone multiline
@@ -40,7 +208,11 @@ pub(super) fn block_comment_pair_plan(
         return None;
     }
 
-    let newline = if source.contains("\r\n") { "\r\n" } else { "\n" };
+    let newline = if source.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
     let unit = if insert_spaces {
         " ".repeat(tab_size.clamp(1, 16))
     } else {
@@ -517,7 +689,7 @@ fn consume_balanced(tokens: &[Token], start: usize, close: TokenKind) -> Option<
 
 #[cfg(test)]
 mod tests {
-    use super::{block_comment_pair_plan, semicolon_insertion_offset};
+    use super::{block_comment_pair_plan, enter_typing_assist_plan, semicolon_insertion_offset};
 
     fn insertion(source: &str) -> Option<usize> {
         semicolon_insertion_offset(source, source.len())
@@ -656,7 +828,56 @@ mod tests {
             ("\"/**/\"", "\"/**/\"".find("*/").unwrap()),
             ("/*\n/**/\n*/", "/*\n/**/\n*/".find("*/").unwrap()),
         ] {
-            assert!(block_comment_pair_plan(source, cursor, 4, false).is_none(), "{source:?}");
+            assert!(
+                block_comment_pair_plan(source, cursor, 4, false).is_none(),
+                "{source:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn exits_a_direct_unbraced_if_return_and_adds_the_missing_semicolon_together() {
+        let source = "void Run(bool enabled)\n{\n\tif (enabled)\n\t\treturn\n\t\t\n}";
+        let cursor = source.find("\n\t\t\n}").unwrap() + "\n\t\t".len();
+        let plan = enter_typing_assist_plan(source, cursor).expect("Enter plan");
+
+        assert_eq!(
+            plan.semicolon_insertion,
+            Some(source.find("\n\t\t\n}").unwrap())
+        );
+        let scope_exit = plan.scope_exit.expect("scope-exit plan");
+        assert_eq!(scope_exit.replacement, "\t");
+        assert_eq!(scope_exit.selection_character, 1);
+        assert_eq!(&source[scope_exit.span.start..scope_exit.span.end], "\t\t");
+    }
+
+    #[test]
+    fn exits_a_direct_unbraced_if_return_with_an_existing_semicolon() {
+        let source = "void Run(bool enabled)\n{\n    if (enabled)\n        return;\n        \n}";
+        let cursor = source.find("\n        \n}").unwrap() + "\n        ".len();
+        let plan = enter_typing_assist_plan(source, cursor).expect("Enter plan");
+
+        assert_eq!(plan.semicolon_insertion, None);
+        let scope_exit = plan.scope_exit.expect("scope-exit plan");
+        assert_eq!(scope_exit.replacement, "    ");
+        assert_eq!(scope_exit.selection_character, 4);
+    }
+
+    #[test]
+    fn scope_exit_fails_closed_for_comments_nested_or_else_if_shapes() {
+        for source in [
+            "void Run(bool enabled)\n{\n\tif (enabled)\n\t\treturn; // explain\n\t\t\n}",
+            "void Run(bool outer, bool inner)\n{\n\tif (outer)\n\t\tif (inner)\n\t\t\treturn;\n\t\t\t\n}",
+            "void Run(bool enabled)\n{\n\tif (enabled)\n\t\treturn;\n\telse\n\t\treturn;\n\t\t\n}",
+            "void Run(bool enabled)\n{\n\tif (enabled) return;\n\t\n}",
+            "void Run(bool enabled)\n{\n\tif (enabled)\n\t\treturn (\n\t\t\n}",
+        ] {
+            // Each fixture ends with the pending blank line followed by the
+            // enclosing brace, so this is the caret immediately before that
+            // final line ending regardless of its indentation depth.
+            let cursor = source.len() - "\n}".len();
+            let plan = enter_typing_assist_plan(source, cursor);
+            assert!(plan.as_ref().is_none_or(|plan| plan.scope_exit.is_none()), "{source:?}");
         }
     }
 }

@@ -10,13 +10,22 @@ Formatting belongs in the Rust language engine and consumes lexer/parser/AST/mod
 
 ## Current Behavior
 
-The current first slice is a Rust `textDocument/onTypeFormatting` semicolon
-assist in `server/src/lsp/on_type_formatting.rs`. A thin extension document
-change bridge admits exactly one plain Enter edit and forwards its current
-revision and caret. Rust adds a single zero-width `;` edit only when the
-preceding physical line is a complete standalone call/member-call expression,
-typed variable declaration, a bare `return`, or a value-return statement. It inserts before a
-trailing `//` comment.
+The current first slice is a Rust `reforger/enterTypingAssist` in
+`server/src/lsp/on_type_formatting.rs`. A thin extension document-change bridge
+admits exactly one plain Enter edit and forwards its current revision and
+caret. Rust returns one atomic response for a semicolon insertion and any
+proven caret transition. It adds a zero-width `;` edit only when the preceding
+physical line is a complete standalone call/member-call expression, typed
+variable declaration, a bare `return`, or a value-return statement. It inserts
+before a trailing `//` comment.
+
+The first whitespace transition is deliberately narrower: after a direct,
+unbraced, non-nested `if` body consisting of a complete `return`, Rust may
+replace only the whitespace VS Code placed on the new line with the exact
+leading whitespace of the `if` header and return that caret position. The
+parser must prove the direct body relationship. Inline `if` statements,
+comments, `else`, nested conditionals, malformed statements, and every other
+control shape remain no-edit contexts for this slice.
 
 The assist is deliberately fail-closed. Controls, callable declarations and
 constructors, attributes, existing semicolons, incomplete expressions,
@@ -71,11 +80,13 @@ Generated/read-only sources require explicit policy before mutation. Documentati
 
 ## Verification
 
-The semicolon assist has table-driven safety cases for valid calls, member
-calls, comments, CRLF/UTF-16, controls, declarations, malformed expressions,
-comments/strings, directives, and large input. A future broader formatter must
-define parser-backed edit safety cases, idempotence, malformed-source behavior,
-and LSP edit projection tests before enabling edits.
+The Enter assist has table-driven safety cases for valid calls, member calls,
+comments, CRLF/UTF-16, controls, declarations, malformed expressions,
+comments/strings, directives, and large input. It separately verifies direct
+`if` return scope exit with and without a missing semicolon plus no-edit cases
+for comments, nesting, `else`, inline `if`, and recovery text. A future
+broader formatter must define parser-backed edit safety cases, idempotence,
+malformed-source behavior, and LSP edit projection tests before enabling edits.
 
 Comment/Doxygen work has an explicit evidence gate before it may change source:
 run the development-only `tools/comment-formatting-corpus-report.mjs` against a
@@ -87,7 +98,7 @@ acceptance are discovery evidence only; neither establishes edit eligibility.
 
 Keep completion, signature help, formatting, and documentation generation as
 distinct owners. Future full formatting needs a parser-backed model; the
-semicolon assist is intentionally not a general formatter.
+Enter assist is intentionally not a general formatter.
 
 The next comment slice is parser/trivia-backed, region-scoped formatting that
 preserves comment payload byte-for-byte. Explicit missing-documentation

@@ -112,16 +112,19 @@ The module exposes bounded developer-only debug requests and wires workspace
 file-change notifications to the external overlay. It is deliberately a small
 dispatcher, not a general application framework.
 
-`textDocument/onTypeFormatting` is handled as a Rust-owned, standard-shape
-request for the semicolon typing assist. The extension forwards one plain
-Enter document-change event after its document synchronization listener has
-run; it rejects selections, multiple carets, replacement edits, and any other
-text change before transport. The server intentionally does not advertise an
-automatic on-type-formatting capability because VS Code did not reliably invoke
-the provider in the active editor. The request carries the captured document
+`reforger/enterTypingAssist` is the Rust-owned request for the conservative
+Enter typing assist. The extension forwards one plain Enter document-change
+event after its document synchronization listener has run; it rejects
+selections, multiple carets, replacement edits, and any other text change
+before transport. The server intentionally does not advertise an automatic
+on-type-formatting capability because VS Code did not reliably invoke that
+provider in the active editor. The request carries the captured document
 version as an extension field and Rust returns no edits unless it exactly
-matches the installed immutable snapshot. Its concise request log records the
-version, UTF-16 request position, outcome, and elapsed time, never source text.
+matches the installed immutable snapshot. One response may include both a
+semicolon insertion and a parser-proven whitespace/caret transition after a
+direct unbraced `if` return; both are applied by the client as one transaction.
+Its concise request log records the version, UTF-16 request position, outcome,
+and elapsed time, never source text.
 
 `reforger/blockCommentPair` is a separate, Rust-owned typing-assist request
 for the editor's already-created native `/**/` block-comment pair. It checks

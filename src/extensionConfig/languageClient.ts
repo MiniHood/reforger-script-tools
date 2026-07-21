@@ -55,7 +55,7 @@ export const languageClientLanguage = {
 export const languageClientRequests = {
 	debugHover: 'reforger/debugHover',
 	debugCompletion: 'reforger/debugCompletion',
-	onTypeFormatting: 'textDocument/onTypeFormatting',
+	enterTypingAssist: 'reforger/enterTypingAssist',
 	blockCommentPair: 'reforger/blockCommentPair',
 } as const;
 

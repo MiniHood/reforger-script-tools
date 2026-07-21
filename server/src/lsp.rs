@@ -38,8 +38,8 @@ mod diagnostics;
 mod external_overlay;
 mod hover;
 mod hover_render;
-mod open_documents;
 mod on_type_formatting;
+mod open_documents;
 mod semantic_tokens;
 mod signature_help;
 
@@ -123,7 +123,7 @@ const SIGNATURE_HELP_RETRIGGER_CHARACTERS: &[&str] = SIGNATURE_HELP_TRIGGER_CHAR
 const DEBUG_HOVER_METHOD: &str = "reforger/debugHover";
 const DEBUG_COMPLETION_METHOD: &str = "reforger/debugCompletion";
 const BLOCK_COMMENT_PAIR_METHOD: &str = "reforger/blockCommentPair";
-const ON_TYPE_FORMATTING_METHOD: &str = "textDocument/onTypeFormatting";
+const ENTER_TYPING_ASSIST_METHOD: &str = "reforger/enterTypingAssist";
 const RANGE_FORMATTING_METHOD: &str = "textDocument/rangeFormatting";
 const WORKSPACE_FILE_CHANGED_METHOD: &str = "reforger/workspaceFileChanged";
 const WORKSPACE_FILE_DELETED_METHOD: &str = "reforger/workspaceFileDeleted";
@@ -957,10 +957,19 @@ impl LspLogger {
             if let Some(parent) = path.parent() {
                 let _ = fs::create_dir_all(parent);
             }
-            if path.metadata().map(|metadata| metadata.len() > 1024 * 1024).unwrap_or(false) {
+            if path
+                .metadata()
+                .map(|metadata| metadata.len() > 1024 * 1024)
+                .unwrap_or(false)
+            {
                 let _ = fs::write(&path, b"");
             }
-            OpenOptions::new().create(true).append(true).open(path).ok().map(|file| Arc::new(Mutex::new(BufWriter::new(file))))
+            OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .ok()
+                .map(|file| Arc::new(Mutex::new(BufWriter::new(file))))
         });
         Self {
             path,
@@ -1121,12 +1130,12 @@ struct HoverParams {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct OnTypeFormattingParams {
+struct EnterTypingAssistParams {
     text_document: TextDocumentIdentifier,
     position: LspPosition,
     ch: String,
-    /// VS Code captures this before forwarding the standard on-type request.
-    /// It is an extension field used solely to reject a stale editor result.
+    /// VS Code captures this at the Enter edit. It is used solely to reject a
+    /// stale editor result before any typing-assist edit is planned.
     version: i32,
     #[serde(rename = "options")]
     _options: Value,
@@ -1174,7 +1183,10 @@ impl<W: Write> LspServer<W> {
         analysis_scheduler: Option<RuntimeWorkExecutor>,
         _internal_sender: Option<mpsc::Sender<ServerEvent>>,
     ) -> Self {
-        let logger = LspLogger::new(options.log_path.clone(), options.diagnostic_log_path.clone());
+        let logger = LspLogger::new(
+            options.log_path.clone(),
+            options.diagnostic_log_path.clone(),
+        );
         let external_index = start_external_index(&options, logger.clone());
         let server = Self {
             writer,
@@ -2041,10 +2053,10 @@ impl<W: Write> LspServer<W> {
                     self.respond(id, result)?;
                 }
             }
-            ON_TYPE_FORMATTING_METHOD => {
+            ENTER_TYPING_ASSIST_METHOD => {
                 if let Some(id) = message.id {
                     let start = Instant::now();
-                    let params = parse_params::<OnTypeFormattingParams>(message.params, method)?;
+                    let params = parse_params::<EnterTypingAssistParams>(message.params, method)?;
                     let mut log_uri = "<missing>".to_string();
                     let mut bytes = 0usize;
                     let mut version = -1i32;
@@ -2068,29 +2080,42 @@ impl<W: Write> LspServer<W> {
                                 return None;
                             }
                             let cursor = offset_for_position(&document.text, params.position)?;
-                            let insertion = on_type_formatting::semicolon_insertion_offset(
+                            let plan = on_type_formatting::enter_typing_assist_plan(
                                 &document.text,
                                 cursor,
                             )?;
-                            let line_start = document.text[..insertion]
-                                .rfind('\n')
-                                .map_or(0, |newline| newline + 1);
-                            let character: u32 = document.text[line_start..insertion]
-                                .chars()
-                                .map(|character| character.len_utf16() as u32)
-                                .sum();
-                            outcome = "semicolon";
-                            Some(json!([{
-                                "range": {
-                                    "start": { "line": params.position.line - 1, "character": character },
-                                    "end": { "line": params.position.line - 1, "character": character }
-                                },
-                                "newText": ";"
-                            }]))
+                            let mut edits = Vec::new();
+                            if let Some(insertion) = plan.semicolon_insertion {
+                                let position = position_for_offset(&document.text, insertion);
+                                edits.push(json!({
+                                    "range": { "start": position, "end": position },
+                                    "newText": ";",
+                                }));
+                            }
+                            let selection = plan.scope_exit.map(|scope_exit| {
+                                let start = position_for_offset(&document.text, scope_exit.span.start);
+                                edits.push(json!({
+                                    "range": {
+                                        "start": start,
+                                        "end": position_for_offset(&document.text, scope_exit.span.end),
+                                    },
+                                    "newText": scope_exit.replacement,
+                                }));
+                                json!({
+                                    "line": params.position.line,
+                                    "character": scope_exit.selection_character,
+                                })
+                            });
+                            outcome = match (edits.len(), selection.is_some()) {
+                                (0, _) => "no_edit",
+                                (_, true) => "semicolon_and_scope_exit",
+                                _ => "semicolon",
+                            };
+                            Some(json!({ "edits": edits, "selection": selection }))
                         })
-                        .unwrap_or_else(|| json!([]));
+                        .unwrap_or_else(|| json!({ "edits": [] }));
                     self.log(&format!(
-                        "request onTypeFormatting uri={} bytes={} version={} line={} character={} outcome={} elapsed_ms={}",
+                        "request enterTypingAssist uri={} bytes={} version={} line={} character={} outcome={} elapsed_ms={}",
                         log_uri,
                         bytes,
                         version,
@@ -2322,11 +2347,10 @@ impl<W: Write> LspServer<W> {
                     let mut rich_work: Option<(String, u64, u64)> = None;
                     let mut result_id = "reforger:missing:lexical".to_string();
                     let mut defer_current_request = false;
-                    let result =
-                        params
-                            .and_then(|params| {
-                                log_uri = params.text_document.uri;
-                                self.documents.get_mut(&log_uri).map(|document| {
+                    let result = params
+                        .and_then(|params| {
+                            log_uri = params.text_document.uri;
+                            self.documents.get_mut(&log_uri).map(|document| {
                                     bytes = document.text.len();
                                     revision = document.revision;
                                     let had_rich_display =
@@ -2394,15 +2418,15 @@ impl<W: Write> LspServer<W> {
                                         &projection.tokens,
                                     )
                                 })
+                        })
+                        .map(|tokens| serde_json::to_value(tokens).unwrap_or(Value::Null))
+                        .unwrap_or_else(|| {
+                            serde_json::to_value(LspSemanticTokensFull {
+                                result_id,
+                                data: Vec::new(),
                             })
-                            .map(|tokens| serde_json::to_value(tokens).unwrap_or(Value::Null))
-                            .unwrap_or_else(|| {
-                                serde_json::to_value(LspSemanticTokensFull {
-                                    result_id,
-                                    data: Vec::new(),
-                                })
-                                .unwrap_or(Value::Null)
-                            });
+                            .unwrap_or(Value::Null)
+                        });
                     self.log(&format!(
                         "request semanticTokens uri={} bytes={} revision={} cached_analysis=true mode={} outcome={} tokens={} external_index_status={} external_generation={} parse_diagnostics={} lex_ms={} token_loop_ms={} resolver_ms={} resolver_calls={} encode_ms={} queue_ms={} elapsed_ms={}",
                         log_uri,
@@ -2877,11 +2901,14 @@ impl<W: Write> LspServer<W> {
         };
         self.request_semantic_tokens_refresh_if_external_generation_changed()?;
         let should_exit = self.shutdown_requested && method == "exit";
-        self.logger.diagnostic("rpc.completed", json!({
-            "method": method,
-            "outcome": if should_exit { "exit" } else { "complete" },
-            "elapsedMs": started_at.elapsed().as_millis(),
-        }));
+        self.logger.diagnostic(
+            "rpc.completed",
+            json!({
+                "method": method,
+                "outcome": if should_exit { "exit" } else { "complete" },
+                "elapsedMs": started_at.elapsed().as_millis(),
+            }),
+        );
         Ok(should_exit)
     }
 
@@ -4141,7 +4168,7 @@ fn validate_message_params(method: &str, params: &Option<Value>) -> Result<(), S
         | "textDocument/signatureHelp"
         | DEBUG_HOVER_METHOD
         | DEBUG_COMPLETION_METHOD => validate_params::<HoverParams>(params, method),
-        ON_TYPE_FORMATTING_METHOD => validate_params::<OnTypeFormattingParams>(params, method),
+        ENTER_TYPING_ASSIST_METHOD => validate_params::<EnterTypingAssistParams>(params, method),
         BLOCK_COMMENT_PAIR_METHOD => validate_params::<BlockCommentPairParams>(params, method),
         RANGE_FORMATTING_METHOD => validate_params::<RangeFormattingParams>(params, method),
         _ => Ok(()),
@@ -4401,12 +4428,7 @@ mod tests {
         let now = Instant::now();
         let mut runtime = AnalysisRuntime::new(AdmissionLimits::new(2, 2));
         let mut pending = BTreeMap::new();
-        let rich = rich_semantic_tokens_job(
-            &mut runtime,
-            "file:///rich.c",
-            1,
-            now,
-        );
+        let rich = rich_semantic_tokens_job(&mut runtime, "file:///rich.c", 1, now);
         let semantic = semantic_analysis_job(&mut runtime, "file:///semantic.c", 1, now);
         pending.insert(
             (TaskClass::Rich, "file:///rich.c".to_string()),
@@ -6165,7 +6187,10 @@ class PlayerController
             position_after_needle(game_source, "GetGame()."),
             Some(&external),
         );
-        assert_eq!(game_report.owner_type.as_deref(), Some("ArmaReforgerScripted"));
+        assert_eq!(
+            game_report.owner_type.as_deref(),
+            Some("ArmaReforgerScripted")
+        );
         assert!(game_report
             .list
             .items
@@ -6185,7 +6210,10 @@ class PlayerController
             position_after_needle(controller_source, "GetGame().GetPlayerController()."),
             Some(&external),
         );
-        assert_eq!(controller_report.owner_type.as_deref(), Some("PlayerController"));
+        assert_eq!(
+            controller_report.owner_type.as_deref(),
+            Some("PlayerController")
+        );
         assert!(controller_report
             .list
             .items
@@ -7223,7 +7251,10 @@ class Example
                 .command
                 .as_ref()
                 .and_then(|command| command.arguments.as_ref()),
-            Some(&vec!["FirstChoice.".to_string(), "SecondChoice.".to_string()])
+            Some(&vec![
+                "FirstChoice.".to_string(),
+                "SecondChoice.".to_string()
+            ])
         );
 
         let constructor_source = format!(
@@ -7261,7 +7292,10 @@ class Example
                 .command
                 .as_ref()
                 .and_then(|command| command.arguments.as_ref()),
-            Some(&vec!["FirstChoice.".to_string(), "SecondChoice.".to_string()])
+            Some(&vec![
+                "FirstChoice.".to_string(),
+                "SecondChoice.".to_string()
+            ])
         );
 
         let attribute_source = format!(
@@ -7297,7 +7331,10 @@ class Example
                 .command
                 .as_ref()
                 .and_then(|command| command.arguments.as_ref()),
-            Some(&vec!["FirstChoice.".to_string(), "SecondChoice.".to_string()])
+            Some(&vec![
+                "FirstChoice.".to_string(),
+                "SecondChoice.".to_string()
+            ])
         );
     }
 
@@ -8223,7 +8260,12 @@ class Example
         );
         assert!(report.list.items.len() > 2);
         assert!(
-            report.list.items.iter().take(2).all(|item| item.command.is_none()),
+            report
+                .list
+                .items
+                .iter()
+                .take(2)
+                .all(|item| item.command.is_none()),
             "enum members themselves do not carry callable commands; ranked value fallbacks may"
         );
         let enum_item = &report.list.items[0];
@@ -9812,7 +9854,7 @@ class Example
     }
 
     #[test]
-    fn on_type_formatting_returns_one_semicolon_edit_only_for_the_current_version() {
+    fn enter_typing_assist_returns_one_semicolon_edit_only_for_the_current_version() {
         let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
         let uri = "file:///Scripts/OnTypeFormatting.c";
         server
@@ -9833,7 +9875,7 @@ class Example
         server.writer.clear();
         server
             .handle_message(
-                json!({ "jsonrpc": "2.0", "id": 1, "method": ON_TYPE_FORMATTING_METHOD, "params": {
+                json!({ "jsonrpc": "2.0", "id": 1, "method": ENTER_TYPING_ASSIST_METHOD, "params": {
                     "textDocument": { "uri": uri },
                     "position": { "line": 2, "character": 0 },
                     "ch": "\n",
@@ -9852,7 +9894,7 @@ class Example
         server.writer.clear();
         server
             .handle_message(
-                json!({ "jsonrpc": "2.0", "id": 2, "method": ON_TYPE_FORMATTING_METHOD, "params": {
+                json!({ "jsonrpc": "2.0", "id": 2, "method": ENTER_TYPING_ASSIST_METHOD, "params": {
                     "textDocument": { "uri": uri },
                     "position": { "line": 2, "character": 0 },
                     "ch": "\n",
@@ -9864,11 +9906,11 @@ class Example
                 0,
             )
             .unwrap();
-        assert!(String::from_utf8_lossy(&server.writer).contains("\"result\":[]"));
+        assert!(String::from_utf8_lossy(&server.writer).contains("\"edits\":[]"));
     }
 
     #[test]
-    fn on_type_formatting_accepts_a_complete_typed_variable_declaration() {
+    fn enter_typing_assist_accepts_a_complete_typed_variable_declaration() {
         let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
         let uri = "file:///Scripts/OnTypeFormattingDeclaration.c";
         server
@@ -9889,7 +9931,7 @@ class Example
         server.writer.clear();
         server
             .handle_message(
-                json!({ "jsonrpc": "2.0", "id": 1, "method": ON_TYPE_FORMATTING_METHOD, "params": {
+                json!({ "jsonrpc": "2.0", "id": 1, "method": ENTER_TYPING_ASSIST_METHOD, "params": {
                     "textDocument": { "uri": uri },
                     "position": { "line": 2, "character": 0 },
                     "ch": "\n",
@@ -9903,6 +9945,50 @@ class Example
             .unwrap();
         let output = String::from_utf8_lossy(&server.writer);
         assert!(output.contains("\"newText\":\";\""), "{output}");
+    }
+
+    #[test]
+    fn enter_typing_assist_returns_a_single_transaction_for_direct_if_return_scope_exit() {
+        let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
+        let uri = "file:///Scripts/EnterTypingAssistScopeExit.c";
+        let source = "void Run(bool enabled) {\n\tif (enabled)\n\t\treturn\n\t\t\n}";
+        server
+            .handle_message(
+                json!({ "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+                    "textDocument": {
+                        "uri": uri,
+                        "languageId": "enforce",
+                        "version": 1,
+                        "text": source
+                    }
+                }}),
+                None,
+                0,
+                0,
+            )
+            .unwrap();
+        server.writer.clear();
+        server
+            .handle_message(
+                json!({ "jsonrpc": "2.0", "id": 1, "method": ENTER_TYPING_ASSIST_METHOD, "params": {
+                    "textDocument": { "uri": uri },
+                    "position": { "line": 3, "character": 2 },
+                    "ch": "\n",
+                    "version": 1,
+                    "options": { "tabSize": 4, "insertSpaces": false }
+                }}),
+                None,
+                0,
+                0,
+            )
+            .unwrap();
+        let output = String::from_utf8_lossy(&server.writer);
+        assert!(output.contains("\"newText\":\";\""), "{output}");
+        assert!(output.contains("\"newText\":\"\\t\""), "{output}");
+        assert!(
+            output.contains("\"selection\":{\"character\":1,\"line\":3}"),
+            "{output}"
+        );
     }
 
     #[test]
@@ -9939,8 +10025,14 @@ class Example
             )
             .unwrap();
         let output = String::from_utf8_lossy(&server.writer);
-        assert!(output.contains("\"newText\":\"/*\\n\\t\\t\\n\\t*/\""), "{output}");
-        assert!(output.contains("\"selection\":{\"character\":2,\"line\":1}"), "{output}");
+        assert!(
+            output.contains("\"newText\":\"/*\\n\\t\\t\\n\\t*/\""),
+            "{output}"
+        );
+        assert!(
+            output.contains("\"selection\":{\"character\":2,\"line\":1}"),
+            "{output}"
+        );
 
         server.writer.clear();
         server
@@ -12728,7 +12820,10 @@ class Example
             timestamp_millis()
         ));
         let logger = LspLogger::new(None, Some(path.clone()));
-        logger.diagnostic("rpc.completed", json!({"method": "textDocument/hover", "elapsedMs": 4}));
+        logger.diagnostic(
+            "rpc.completed",
+            json!({"method": "textDocument/hover", "elapsedMs": 4}),
+        );
         logger.flush_diagnostics();
         let record = fs::read_to_string(&path).unwrap();
         assert!(record.contains("\"component\":\"languageServer\""));

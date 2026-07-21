@@ -80,19 +80,22 @@ trace before release.
 
 Rust completion items may still use VS Code's built-in parameter-hints command after ordinary callable insertion.
 
-The client also owns the editor admission for one Rust-authored semicolon
-typing assist. A document-change bridge accepts only a single plain Enter
-insertion and derives the post-Enter UTF-16 position from that immutable change
-event, rather than relying on global active-editor selection timing. A matching
+The client also owns the editor admission for one Rust-authored Enter typing
+assist. A document-change bridge accepts only a single plain Enter insertion
+and derives the post-Enter UTF-16 position from that immutable change event,
+rather than relying on global active-editor selection timing. A matching
 selection event confirms that the same document/caret has settled; it is not a
 timer or language decision. A microtask lets the language client's matching
 `didChange` publish before the client forwards URI, captured version,
-event-derived position, trigger, and formatting options through the standard
-`textDocument/onTypeFormatting` request. It never reads or classifies source
+event-derived position, trigger, and formatting options through the custom
+`reforger/enterTypingAssist` request. It never reads or classifies source
 text. If the document or caret changes while Rust responds, it drops the
-response; otherwise it applies Rust's returned edits without adding an undo
-stop. Rust does not advertise a competing automatic provider because VS Code
-did not reliably invoke it in the active editor.
+response; otherwise it applies Rust's returned edits and optional Rust-authored
+caret position without adding an undo stop. One response can therefore add a
+semicolon and return a direct unbraced `if`-return body to its header scope
+without two racing client features. Rust does not advertise a competing
+automatic provider because VS Code did not reliably invoke it in the active
+editor.
 
 The client also transports one narrow Rust-owned multiline-comment pairing
 assist. VS Code's language configuration first creates its normal `/*` ->
