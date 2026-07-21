@@ -26,6 +26,7 @@ formatter eligibility.
 
 ## Verification
 
-Run the relevant parser/lexer fixture tests. Once a Workbench matrix run is
+Run `cargo test preserves_comment_matrix_delimiters_as_raw_trivia --manifest-path
+server/Cargo.toml` to verify lexer preservation. Once a Workbench matrix run is
 recorded, update the fixture's truth-status comment with the versioned evidence
 rather than silently treating it as confirmed.

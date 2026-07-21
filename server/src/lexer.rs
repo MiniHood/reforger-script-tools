@@ -731,12 +731,43 @@ modded class PlayerNameInputController
             include_str!("../../tools/fixtures/lexer/modded_game_mode_shapes.c"),
             include_str!("../../tools/fixtures/lexer/trivia_preprocessor_rpc.c"),
             include_str!("../../tools/fixtures/lexer/workbench_basic_code_formatter_excerpt.c"),
+            include_str!("../../tools/fixtures/formatting/comment_doxygen_matrix.c"),
         ];
 
         for fixture in fixtures {
             let tokens = lex(fixture);
             assert!(!tokens.iter().any(|token| token.kind.is_error()));
         }
+    }
+
+    #[test]
+    fn preserves_comment_matrix_delimiters_as_raw_trivia() {
+        let source = include_str!("../../tools/fixtures/formatting/comment_doxygen_matrix.c");
+        let comment_tokens: Vec<Token> = lex(source)
+            .into_iter()
+            .filter(|token| {
+                matches!(
+                    token.kind,
+                    TokenKind::LineComment
+                        | TokenKind::DocLineComment
+                        | TokenKind::BlockComment
+                        | TokenKind::DocBlockComment
+                )
+            })
+            .collect();
+        let comments: Vec<&str> = comment_tokens
+            .iter()
+            .map(|token| &source[token.span.start..token.span.end])
+            .collect();
+
+        assert!(comments.iter().any(|comment| comment.starts_with("//")));
+        assert!(comments.iter().any(|comment| comment.starts_with("///")));
+        assert!(comments.iter().any(|comment| comment.starts_with("//!")));
+        assert!(comments.iter().any(|comment| comment.starts_with("//!<")));
+        assert!(comments.iter().any(|comment| comment.starts_with("/*")));
+        assert!(comments.iter().any(|comment| comment.starts_with("/*!")));
+        assert!(comments.iter().any(|comment| comment.starts_with("/**")));
+        assert!(comment_tokens.iter().all(|token| token.kind.is_trivia()));
     }
 
     #[test]

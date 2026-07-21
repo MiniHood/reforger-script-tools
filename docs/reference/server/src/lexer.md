@@ -14,6 +14,10 @@ It emits identifiers, keywords, number/string literals, whitespace, comments, do
 
 `//!` and `/*! ... */` receive documentation-comment kinds. Doxygen tags remain raw comment text rather than a lexer-level documentation model. Keyword and number handling is exercised against focused snippets and committed source-derived fixtures.
 
+The pending-Workbench formatting comment matrix is a lexer regression fixture.
+It verifies that the lexer retains every tested comment delimiter as raw trivia;
+it does not assign attachment, tag, or formatting meaning to any delimiter.
+
 ## Dependencies and Boundaries
 
 Uses only Rust standard-library behavior. It does not parse declarations, resolve symbols, evaluate preprocessor directives, crawl files, call Workbench, or handle LSP.
