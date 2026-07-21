@@ -128,6 +128,16 @@ the active session loaded the rebuilt artifacts. If no available tool can
 perform a live editor interaction afterward, only that interaction remains
 pending; the build itself is complete.
 
+## Normal implementation autonomy
+
+Once a user has asked to plan and work on a bounded feature or fix, normal
+local work proceeds as one continuous loop: inspect, edit, build, test, and
+record the result. Requiring a second confirmation before ordinary terminal
+commands or compilation only interrupts that loop without adding a meaningful
+decision point. The workflow pauses for destructive or irreversible actions,
+external state changes, scope expansion, or a consequential unresolved design
+choice - not for routine local implementation and verification.
+
 ## Preserving useful history
 
 Documentation is valuable when it explains current ownership or constraints

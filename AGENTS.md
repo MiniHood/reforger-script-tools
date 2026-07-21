@@ -107,6 +107,20 @@ accepted policy, or user direction supports the replacement.
 
 ## Workflow and Git
 
+### Normal implementation autonomy
+
+Proceed without asking the user for permission for ordinary in-scope work:
+inspect source and logs, read required references, create or update planned
+artifacts, edit project files, run builds/tests/formatters, and perform
+non-destructive local diagnostics. A request to plan and work on a feature
+authorizes the normal implementation and verification loop for that feature.
+
+Pause only when the next action is destructive or irreversible, changes an
+external system or collaborator state, exceeds the user's stated scope, or
+requires a consequential product/design choice that cannot be resolved from
+current evidence. Do not turn routine terminal commands, compilation,
+extension rebuilds, or local validation into permission prompts.
+
 After a coherent task scope is verified, commit only its attributable changes
 to the current branch with a concise, value-focused title. Do not push, open a
 PR, modify remotes, or alter branches or history unless the user explicitly
