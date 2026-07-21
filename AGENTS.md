@@ -69,20 +69,6 @@ Use evidence in this order:
 Never infer Enfusion behavior from C#, Unity, Unreal, Arma 3, SQF, or generic
 language conventions.
 
-## Ticket Completion
-
-For a ticket or explicitly bounded request, turn every stated requirement into
-an observable completion checklist before editing. Small, verified changes are
-implementation slices only: after verifying one, continue directly to the next
-unchecked item. Do not present a slice, a clean build, a commit, or a review as
-ticket completion while any requirement remains.
-
-Before handing off a ticket, compare the final implementation against the full
-ticket, verify each item with code/tests or a stated external validation, update
-the owning documentation when its contract changed, and commit the coherent
-ticket result. If context must change, carry the unchecked checklist forward;
-do not ask whether to move to another ticket.
-
 ## Basic Rules
 
 - Treat user settings as intentional controls; do not expose internal consent
@@ -97,7 +83,3 @@ do not ask whether to move to another ticket.
   final source edit. State any live Workbench/editor validation still pending.
 - Commit coherent, attributable local changes after verification. Do not push,
   open a PR, change remotes, or rewrite history unless explicitly asked.
-
-## Handoff
-
-Say what changed, how it was verified, and what remains uncertain or next.
