@@ -1,4 +1,4 @@
-use super::{publish_diagnostics_message, LspServer, ServerEvent};
+use super::{publish_diagnostics_message, LspServer, RuntimeEffect, ServerEvent};
 use std::io::Write;
 
 impl<W: Write> LspServer<W> {
@@ -151,12 +151,12 @@ impl<W: Write> LspServer<W> {
                     .clone();
                 let source = document.snapshot.text().to_string();
                 let _ = document;
-                self.write_message(publish_diagnostics_message(
+                self.deliver_effect(RuntimeEffect::Notification(publish_diagnostics_message(
                     &uri,
                     version,
                     &source,
                     &diagnostics,
-                ))?;
+                )))?;
                 self.log(&format!(
                     "foreground ready uri={} version={} revision={} lexical_state=ready syntax_state=ready elapsed_ms={}",
                     uri, version, revision, elapsed_ms
@@ -263,13 +263,17 @@ impl<W: Write> LspServer<W> {
                         "request {} discarded uri={} revision={} reason=runtime-stale async=true elapsed_ms={}",
                         method, uri, revision, elapsed_ms
                     ));
-                    return self.respond_error(id, -32801, "Content modified");
+                    return self.deliver_effect(RuntimeEffect::Error {
+                        id,
+                        code: -32801,
+                        message: "Content modified".to_string(),
+                    });
                 }
                 self.log(&format!(
                     "request {} uri={} revision={} {} async=true elapsed_ms={}",
                     method, uri, revision, details, elapsed_ms
                 ));
-                self.respond(id, result)
+                self.deliver_effect(RuntimeEffect::Response { id, result })
             }
         }
     }

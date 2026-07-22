@@ -97,6 +97,7 @@ pub(crate) use open_documents::{
     file_index_for_source_with_timings, FileIndexAnalysisTimings, OpenDocument,
     TokenProjectionKind, TokenResultDisposition,
 };
+use response_writer::RuntimeEffect;
 use runtime_scheduler::{ForegroundDocumentJob, OpenDocumentAnalysisJob, RuntimeWorkExecutor};
 pub use semantic_tokens::{
     fast_semantic_tokens_for_source, fast_semantic_tokens_report_for_source,

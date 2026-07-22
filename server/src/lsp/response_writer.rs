@@ -2,7 +2,30 @@ use super::LspServer;
 use serde_json::{json, Value};
 use std::io::Write;
 
+/// A transport action requested by runtime-owned work. Only `LspServer`
+/// delivers these effects, keeping JSON-RPC framing out of the runtime.
+pub(super) enum RuntimeEffect {
+    Notification(Value),
+    Response {
+        id: Value,
+        result: Value,
+    },
+    Error {
+        id: Value,
+        code: i32,
+        message: String,
+    },
+}
+
 impl<W: Write> LspServer<W> {
+    pub(super) fn deliver_effect(&mut self, effect: RuntimeEffect) -> Result<(), String> {
+        match effect {
+            RuntimeEffect::Notification(message) => self.write_message(message),
+            RuntimeEffect::Response { id, result } => self.respond(id, result),
+            RuntimeEffect::Error { id, code, message } => self.respond_error(id, code, &message),
+        }
+    }
+
     /// Serializes and frames protocol responses; request routing owns only response choices.
     pub(super) fn respond(&mut self, id: Value, result: Value) -> Result<(), String> {
         self.write_message(json!({"jsonrpc": "2.0", "id": id, "result": result}))
