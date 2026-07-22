@@ -450,7 +450,9 @@ fn input_route_creates_loop_and_switch_bodies_without_rewriting_headers() {
                     "text": "for (int i = 0; i < count; i++)\nswitch (kind)"
                 }
             }}),
-            None, 0, 0,
+            None,
+            0,
+            0,
         )
         .unwrap();
     server.writer.clear();
@@ -486,6 +488,25 @@ fn input_route_declines_multiple_or_nonempty_selections() {
         ], "options": { "tabSize": 4, "insertSpaces": true }
     }}), None, 0, 0).unwrap();
     assert!(String::from_utf8_lossy(&server.writer).contains("\"edits\":[]"));
+}
+
+#[test]
+fn input_route_moves_if_enter_to_the_unbraced_body_without_moving_the_parenthesis() {
+    let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
+    let uri = "file:///Scripts/IfEnter.c";
+    server.handle_message(json!({ "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+        "textDocument": { "uri": uri, "languageId": "enforce", "version": 1, "text": "if (true)" }
+    }}), None, 0, 0).unwrap();
+    server.writer.clear();
+    server.handle_message(json!({ "jsonrpc": "2.0", "id": 1, "method": CONTROL_HEADER_ENTER_METHOD, "params": {
+        "textDocument": { "uri": uri }, "operation": "insertNewline", "version": 1,
+        "selections": [{ "start": { "line": 0, "character": 8 }, "end": { "line": 0, "character": 8 } }],
+        "options": { "tabSize": 4, "insertSpaces": true }
+    }}), None, 0, 0).unwrap();
+    let output = String::from_utf8_lossy(&server.writer);
+    assert!(output.contains("\"newText\":\"\\n    \""), "{output}");
+    assert!(output.contains("\"owner\":\"ifHeader\""), "{output}");
+    assert!(!output.contains("\"newText\":\"\\n{\""), "{output}");
 }
 
 #[test]
@@ -640,7 +661,9 @@ fn framed_lsp_smoke_test_handles_hover() {
     let output_text = String::from_utf8(output).unwrap();
     assert!(output_text.contains("\"hoverProvider\":true"));
     assert!(output_text.contains("\"signatureHelpProvider\""));
-    assert!(output_text.contains("\"completionProvider\":{\"triggerCharacters\":[\".\",\"[\",\"#\"]}"));
+    assert!(
+        output_text.contains("\"completionProvider\":{\"triggerCharacters\":[\".\",\"[\",\"#\"]}")
+    );
     assert!(output_text.contains("void Run(int value)"));
     assert!(output_text.contains("\"kind\":\"markdown\""));
 }
@@ -786,33 +809,54 @@ fn framed_lsp_if_completion_carries_rust_normalization_contract() {
 #[test]
 fn framed_lsp_preprocessor_completion_exposes_directives_and_active_macro_operands() {
     let mut input = Vec::new();
-    write_test_message(&mut input, json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {} }));
-    write_test_message(&mut input, json!({
-        "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": { "textDocument": {
-            "uri": "file:///Scripts/PreprocessorCompletion.c", "languageId": "enforce", "version": 1,
-            "text": "#define ACTIVE_FLAG\n//#define COMMENTED_FLAG\n\t#\n#ifndef "
-        }}
-    }));
-    write_test_message(&mut input, json!({
-        "jsonrpc": "2.0", "id": 2, "method": "textDocument/completion", "params": {
-            "textDocument": { "uri": "file:///Scripts/PreprocessorCompletion.c" },
-            "position": { "line": 2, "character": 2 }
-        }
-    }));
-    write_test_message(&mut input, json!({
-        "jsonrpc": "2.0", "id": 3, "method": "textDocument/completion", "params": {
-            "textDocument": { "uri": "file:///Scripts/PreprocessorCompletion.c" },
-            "position": { "line": 3, "character": 8 }
-        }
-    }));
-    write_test_message(&mut input, json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown", "params": null }));
-    write_test_message(&mut input, json!({ "jsonrpc": "2.0", "method": "exit", "params": null }));
+    write_test_message(
+        &mut input,
+        json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {} }),
+    );
+    write_test_message(
+        &mut input,
+        json!({
+            "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": { "textDocument": {
+                "uri": "file:///Scripts/PreprocessorCompletion.c", "languageId": "enforce", "version": 1,
+                "text": "#define ACTIVE_FLAG\n//#define COMMENTED_FLAG\n\t#\n#ifndef "
+            }}
+        }),
+    );
+    write_test_message(
+        &mut input,
+        json!({
+            "jsonrpc": "2.0", "id": 2, "method": "textDocument/completion", "params": {
+                "textDocument": { "uri": "file:///Scripts/PreprocessorCompletion.c" },
+                "position": { "line": 2, "character": 2 }
+            }
+        }),
+    );
+    write_test_message(
+        &mut input,
+        json!({
+            "jsonrpc": "2.0", "id": 3, "method": "textDocument/completion", "params": {
+                "textDocument": { "uri": "file:///Scripts/PreprocessorCompletion.c" },
+                "position": { "line": 3, "character": 8 }
+            }
+        }),
+    );
+    write_test_message(
+        &mut input,
+        json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown", "params": null }),
+    );
+    write_test_message(
+        &mut input,
+        json!({ "jsonrpc": "2.0", "method": "exit", "params": null }),
+    );
 
     let mut output = Vec::new();
     run(input.as_slice(), &mut output, LspServerOptions::default()).unwrap();
     let output = String::from_utf8(output).unwrap();
     for directive in ["#define", "#ifdef", "#ifndef", "#else", "#endif"] {
-        assert!(output.contains(&format!("\"label\":\"{directive}\"")), "{directive}");
+        assert!(
+            output.contains(&format!("\"label\":\"{directive}\"")),
+            "{directive}"
+        );
     }
     assert!(output.contains("\"label\":\"ACTIVE_FLAG\""));
     assert!(output.contains("\"detail\":\"#define ACTIVE_FLAG (Workspace)\""));
@@ -888,7 +932,9 @@ fn framed_lsp_smoke_test_handles_member_completion() {
     run(input.as_slice(), &mut output, LspServerOptions::default()).unwrap();
 
     let output_text = String::from_utf8(output).unwrap();
-    assert!(output_text.contains("\"completionProvider\":{\"triggerCharacters\":[\".\",\"[\",\"#\"]}"));
+    assert!(
+        output_text.contains("\"completionProvider\":{\"triggerCharacters\":[\".\",\"[\",\"#\"]}")
+    );
     assert!(output_text.contains("\"isIncomplete\":false"));
     assert!(output_text.contains("\"label\":\"SetVisible\""));
     assert!(output_text.contains("\"newText\":\"SetVisible(${1:visible})\""));

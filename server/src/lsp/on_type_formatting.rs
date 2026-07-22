@@ -1,6 +1,6 @@
-use crate::lexer::{lex, Keyword, TextSpan, Token, TokenKind};
 #[cfg(test)]
 use crate::lexer::Operator;
+use crate::lexer::{lex, Keyword, TextSpan, Token, TokenKind};
 
 const MAX_ON_TYPE_SOURCE_BYTES: usize = 64 * 1024;
 
@@ -121,14 +121,17 @@ pub(super) fn auto_block_control_header_enter_plan(
         .map(|character| character.len_utf16() as u32)
         .sum(),
         switch_arm_selection_end: is_switch.then(|| {
-            (format!("{indent}{unit}").chars().map(|character| character.len_utf16() as u32).sum::<u32>()) + 7
+            (format!("{indent}{unit}")
+                .chars()
+                .map(|character| character.len_utf16() as u32)
+                .sum::<u32>())
+                + 7
         }),
     })
 }
 
-/// Plans a control-header Enter before VS Code performs its native line split.
-/// The virtual split lets the ordinary planner retain ownership of the syntax
-/// while the returned range remains anchored to the unmodified document.
+/// Plans a braced control-header Enter before VS Code performs its native line
+/// split. The returned insertion always leaves the existing header untouched.
 pub(super) fn control_header_block_before_enter_plan(
     source: &str,
     cursor: usize,
@@ -136,6 +139,79 @@ pub(super) fn control_header_block_before_enter_plan(
     insert_spaces: bool,
 ) -> Option<AutoBlockControlHeaderPlan> {
     auto_block_control_header_enter_plan(source, cursor, tab_size, insert_spaces)
+}
+
+pub(super) fn if_header_body_before_enter_plan(
+    source: &str,
+    cursor: usize,
+    tab_size: usize,
+    insert_spaces: bool,
+) -> Option<AutoBlockControlHeaderPlan> {
+    if source.len() > MAX_ON_TYPE_SOURCE_BYTES || cursor > source.len() {
+        return None;
+    }
+    let tokens = lex(source)
+        .into_iter()
+        .filter(|token| !token.kind.is_trivia() && token.kind != TokenKind::Eof)
+        .collect::<Vec<_>>();
+    let (if_index, close_index) = tokens
+        .iter()
+        .enumerate()
+        .filter_map(|(index, token)| {
+            (token.kind == TokenKind::Keyword(Keyword::If)
+                && tokens.get(index + 1).map(|token| token.kind) == Some(TokenKind::LeftParen))
+            .then(|| matching_right_paren(&tokens, index + 1).map(|close| (index, close)))
+            .flatten()
+        })
+        .last()?;
+    let if_token = tokens[if_index];
+    let header_start =
+        if if_index > 0 && tokens[if_index - 1].kind == TokenKind::Keyword(Keyword::Else) {
+            tokens[if_index - 1].span.start
+        } else {
+            if_token.span.start
+        };
+    let header_end = tokens[close_index].span.end;
+    if cursor < header_start
+        || cursor > header_end
+        || tokens
+            .get(close_index + 1)
+            .is_some_and(|token| token.kind == TokenKind::LeftBrace)
+    {
+        return None;
+    }
+    let line_start = source[..header_start]
+        .rfind('\n')
+        .map_or(0, |index| index + 1);
+    let indent = &source[line_start..header_start];
+    if !indent.chars().all(char::is_whitespace) {
+        return None;
+    }
+    let newline = if source.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
+    let unit = if insert_spaces {
+        " ".repeat(tab_size.clamp(1, 16))
+    } else {
+        "\t".to_string()
+    };
+    let body_indent = format!("{indent}{unit}");
+    Some(AutoBlockControlHeaderPlan {
+        span: TextSpan::new(header_end, header_end),
+        replacement: format!("{newline}{body_indent}"),
+        selection_line: source[..header_end]
+            .bytes()
+            .filter(|byte| *byte == b'\n')
+            .count() as u32
+            + 1,
+        selection_character: body_indent
+            .chars()
+            .map(|character| character.len_utf16() as u32)
+            .sum(),
+        switch_arm_selection_end: None,
+    })
 }
 
 fn matching_right_paren(tokens: &[Token], open: usize) -> Option<usize> {
@@ -888,8 +964,8 @@ mod tests {
 
     use super::{
         auto_block_control_header_enter_plan, block_comment_pair_plan,
-        control_header_block_before_enter_plan, incomplete_if_header_enter_plan,
-        semicolon_insertion_offset,
+        control_header_block_before_enter_plan, if_header_body_before_enter_plan,
+        incomplete_if_header_enter_plan, semicolon_insertion_offset,
     };
 
     fn insertion(source: &str) -> Option<usize> {
@@ -1038,10 +1114,7 @@ mod tests {
             auto_block_control_header_enter_plan(switch_source, switch_source.len(), 2, true)
                 .unwrap();
         assert_eq!(plan.replacement, "\n{\n  default:\n    \n}");
-        assert_eq!(
-            plan.switch_arm_selection_end,
-            Some(9)
-        );
+        assert_eq!(plan.switch_arm_selection_end, Some(9));
     }
 
     #[test]
@@ -1062,7 +1135,10 @@ mod tests {
         .unwrap();
         assert_eq!(plan.span, TextSpan::new(source.len(), source.len()));
         assert_eq!(plan.selection_line, 3);
-        assert_eq!(plan.replacement, "\r\n        {\r\n            \r\n        }");
+        assert_eq!(
+            plan.replacement,
+            "\r\n        {\r\n            \r\n        }"
+        );
     }
 
     #[test]
@@ -1073,10 +1149,7 @@ mod tests {
                 .unwrap();
         assert_eq!(plan.span, TextSpan::new(source.len(), source.len()));
         assert_eq!(plan.selection_line, 2);
-        assert_eq!(
-            plan.replacement,
-            "\n        {\n            \n        }"
-        );
+        assert_eq!(plan.replacement, "\n        {\n            \n        }");
     }
 
     #[test]
@@ -1099,13 +1172,33 @@ mod tests {
         assert_eq!(plan.replacement, "\n{\n    \n}");
 
         let crlf = "while (running)\r\n";
-        let plan = control_header_block_before_enter_plan(crlf, "while (running)".len(), 4, true).unwrap();
+        let plan =
+            control_header_block_before_enter_plan(crlf, "while (running)".len(), 4, true).unwrap();
         assert_eq!(plan.replacement, "\r\n{\r\n    \r\n}");
     }
 
     #[test]
+    fn puts_if_enter_inside_the_unbraced_body_without_splitting_the_header() {
+        for source in ["if (true)", "else if (true)"] {
+            for cursor in [source.len() - 1, source.len()] {
+                let plan = if_header_body_before_enter_plan(source, cursor, 4, true).unwrap();
+                assert_eq!(plan.span, TextSpan::new(source.len(), source.len()));
+                assert_eq!(plan.replacement, "\n    ");
+                assert_eq!(plan.selection_line, 1);
+                assert_eq!(plan.selection_character, 4);
+                assert_eq!(plan.switch_arm_selection_end, None);
+            }
+        }
+    }
+
+    #[test]
     fn accepts_incomplete_header_contents_but_declines_if_else_and_do_while() {
-        for source in ["for (int i =)", "foreach (entry in)", "while ()", "switch ()"] {
+        for source in [
+            "for (int i =)",
+            "foreach (entry in)",
+            "while ()",
+            "switch ()",
+        ] {
             assert!(
                 control_header_block_before_enter_plan(&source, source.len(), 4, true).is_some(),
                 "{source:?}"

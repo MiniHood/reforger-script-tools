@@ -189,8 +189,9 @@ _Avoid_: unit-tests-only verification, visual polish assumption
 A newly authored `for`, `foreach`, `while`, or `switch` header whose typing
 assist creates a braced body when Enter is pressed from inside the parentheses
 or immediately after them, regardless of whether the header contents are
-complete. `if` and `else if` do not create blocks automatically because their
-bodies do not have one agreed automatic shape; `else` is not a header.
+complete. `if` and `else if` never receive automatic braces; Enter inside a
+completed paired condition preserves the header and places one indented,
+unbraced body line below it. `else` is not a header.
 The assist preserves the header exactly and only adds the body below it.
 _Avoid_: control-flow snippet, automatic braces
 

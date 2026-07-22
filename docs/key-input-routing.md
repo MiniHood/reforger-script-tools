@@ -99,11 +99,13 @@ are available in extension development diagnostics.
 
 ## Implication for Reforger Script Tools
 
-The first Input Feature Owner is control-header `insertNewline`: `for`,
+The first Input Feature Owners are control-header `insertNewline`: `for`,
 `foreach`, `while`, and `switch` create their braced bodies before native
-Enter. The `switch` result embeds `default:` in its one primary edit, selects
-`default`, and may request suggestion UI; it must not insert a second snippet.
-`if` and `else` retain native body behavior.
+Enter. A completed `if` or `else if` condition entered from inside its paired
+parentheses instead preserves that header and creates one indented, unbraced
+body line. The `switch` result embeds `default:` in its one primary edit,
+selects `default`, and may request suggestion UI; it must not insert a second
+snippet. Plain `else` retains native body behavior.
 
 The prior post-native Enter typing assist is removed with this migration,
 including its duplicate control-block logic, incomplete-`if` repair, and

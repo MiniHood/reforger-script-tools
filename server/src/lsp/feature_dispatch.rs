@@ -20,8 +20,8 @@ use super::{
     DebugCompletionJob, DebugHoverJob, DebugRequestJob, DocumentQuery, DocumentQueryState,
     DocumentRuntime, ExternalIndexHandle, HoverSelectionSource, LspPositionIndex, QueryQuality,
     RuntimeEffect, TextSpan, BLOCK_COMMENT_PAIR_METHOD, CONTROL_HEADER_ENTER_METHOD,
-    DEBUG_COMPLETION_METHOD, DEBUG_HOVER_METHOD,
-    RANGE_FORMATTING_METHOD, WORKSPACE_FILE_CHANGED_METHOD, WORKSPACE_FILE_DELETED_METHOD,
+    DEBUG_COMPLETION_METHOD, DEBUG_HOVER_METHOD, RANGE_FORMATTING_METHOD,
+    WORKSPACE_FILE_CHANGED_METHOD, WORKSPACE_FILE_DELETED_METHOD,
 };
 use serde_json::{json, Value};
 use std::time::Instant;
@@ -417,8 +417,7 @@ impl FeatureDispatcher<'_> {
             CONTROL_HEADER_ENTER_METHOD => {
                 if let Some(id) = message.id {
                     let started_at = Instant::now();
-                    let RequestCommand::Feature(FeatureCommand::InputRoute(params)) =
-                        &command
+                    let RequestCommand::Feature(FeatureCommand::InputRoute(params)) = &command
                     else {
                         unreachable!("input route has typed parameters");
                     };
@@ -444,15 +443,22 @@ impl FeatureDispatcher<'_> {
                                 return None;
                             }
                             let cursor = offset_for_position(&document.text, params.selections[0].end)?;
-                            let Some(plan) = on_type_formatting::control_header_block_before_enter_plan(
+                            let Some((plan, owner)) = on_type_formatting::control_header_block_before_enter_plan(
                                 &document.text,
                                 cursor,
                                 params.options.tab_size,
                                 params.options.insert_spaces,
-                            ) else {
+                            )
+                            .map(|plan| (plan, "controlHeader"))
+                            .or_else(|| on_type_formatting::if_header_body_before_enter_plan(
+                                &document.text,
+                                cursor,
+                                params.options.tab_size,
+                                params.options.insert_spaces,
+                            ).map(|plan| (plan, "ifHeader"))) else {
                                 return None;
                             };
-                            trace = params.trace.then_some(("applied", "controlHeader", true, "eligible"));
+                            trace = params.trace.then_some(("applied", owner, true, "eligible"));
                             let start = position_for_offset(&document.text, plan.span.start);
                             Some(json!({
                                 "edits": [{
@@ -462,7 +468,7 @@ impl FeatureDispatcher<'_> {
                                     },
                                     "newText": plan.replacement,
                                 }],
-                                "owner": "controlHeader",
+                                "owner": owner,
                                 "selectionRange": plan.switch_arm_selection_end.map(|end| json!({ "start": { "line": plan.selection_line, "character": plan.selection_character }, "end": { "line": plan.selection_line, "character": end } })),
                                 "selection": { "line": plan.selection_line, "character": plan.selection_character },
                                 "triggerSuggest": plan.switch_arm_selection_end.is_some(),
