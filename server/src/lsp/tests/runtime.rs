@@ -1,0 +1,1375 @@
+#[test]
+fn one_cpu_capacity_reserves_execution_for_foreground() {
+    assert_eq!(
+        RuntimeWorkCapacity::for_logical_cpus(1),
+        RuntimeWorkCapacity {
+            foreground_workers: 1,
+            background_workers: 0,
+        }
+    );
+    assert_eq!(
+        RuntimeWorkCapacity::for_logical_cpus(2),
+        RuntimeWorkCapacity {
+            foreground_workers: 1,
+            background_workers: 1,
+        }
+    );
+}
+
+#[test]
+fn one_cpu_foreground_lane_advances_background_only_when_foreground_is_idle() {
+    let now = Instant::now();
+    let mut runtime = AnalysisRuntime::new(AdmissionLimits::new(2, 64));
+    let mut pending = BTreeMap::new();
+    let semantic = semantic_analysis_job(&mut runtime, "file:///semantic.c", 1, now);
+    let foreground = foreground_document_job(
+        &mut runtime,
+        "file:///foreground.c",
+        1,
+        "class Fresh {}",
+        now,
+    );
+    pending.insert(
+        (TaskClass::Semantic, "file:///semantic.c".to_string()),
+        RuntimeWorkJob::Semantic(semantic),
+    );
+    assert_eq!(
+        next_runnable_work_key_for_lane(
+            &pending,
+            now,
+            RuntimeWorkerLane::ForegroundWithIdleBackground,
+        ),
+        Some((TaskClass::Semantic, "file:///semantic.c".to_string()))
+    );
+
+    pending.insert(
+        (TaskClass::Foreground, "file:///foreground.c".to_string()),
+        RuntimeWorkJob::Foreground(foreground),
+    );
+    assert_eq!(
+        next_runnable_work_key_for_lane(
+            &pending,
+            now,
+            RuntimeWorkerLane::ForegroundWithIdleBackground,
+        ),
+        Some((TaskClass::Foreground, "file:///foreground.c".to_string()))
+    );
+}
+
+#[test]
+fn shared_executor_prioritizes_ready_semantic_work_over_ready_rich_work() {
+    let now = Instant::now();
+    let mut runtime = AnalysisRuntime::new(AdmissionLimits::new(2, 2));
+    let mut pending = BTreeMap::new();
+    let rich = rich_semantic_tokens_job(&mut runtime, "file:///rich.c", 1, now);
+    let semantic = semantic_analysis_job(&mut runtime, "file:///semantic.c", 1, now);
+    pending.insert(
+        (TaskClass::Rich, "file:///rich.c".to_string()),
+        RuntimeWorkJob::Rich(rich),
+    );
+    pending.insert(
+        (TaskClass::Semantic, "file:///semantic.c".to_string()),
+        RuntimeWorkJob::Semantic(semantic),
+    );
+
+    assert_eq!(
+        next_runnable_work_key(&pending, now),
+        Some((TaskClass::Semantic, "file:///semantic.c".to_string()))
+    );
+}
+
+#[test]
+fn foreground_worker_completes_while_background_semantic_work_is_in_flight() {
+    let (event_sender, event_receiver) = mpsc::channel();
+    let (semantic_started_sender, semantic_started_receiver) = mpsc::channel();
+    let (release_semantic_sender, release_semantic_receiver) = mpsc::channel();
+    let release_semantic_receiver = Arc::new(Mutex::new(Some(release_semantic_receiver)));
+    let hook_release = release_semantic_receiver.clone();
+    let scheduler = RuntimeWorkExecutor::start_with_capacity_and_test_hook(
+        event_sender,
+        RuntimeWorkCapacity::for_logical_cpus(2),
+        Arc::new(move |class| {
+            if class == TaskClass::Semantic {
+                semantic_started_sender
+                    .send(())
+                    .expect("test waits for semantic start");
+                hook_release
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .expect("semantic hook runs once")
+                    .recv()
+                    .expect("test releases semantic work");
+            }
+        }),
+    );
+    let mut runtime = AnalysisRuntime::new(AdmissionLimits::new(8, 8 * 1024));
+    let now = Instant::now();
+    scheduler.schedule(semantic_analysis_job(
+        &mut runtime,
+        "file:///background.c",
+        1,
+        now,
+    ));
+    semantic_started_receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect("background worker began semantic work");
+
+    scheduler.schedule_foreground(foreground_document_job(
+        &mut runtime,
+        "file:///foreground.c",
+        1,
+        "class Fresh {}",
+        Instant::now(),
+    ));
+
+    // The semantic hook cannot finish until after this assertion.  The
+    // foreground-ready event therefore proves the reserved foreground
+    // worker made progress independently, without wall-clock assertions.
+    assert!(matches!(
+        event_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("foreground worker event"),
+        ServerEvent::ForegroundDocumentReady { task, .. }
+            if task.uri() == "file:///foreground.c"
+    ));
+    release_semantic_sender
+        .send(())
+        .expect("release blocked semantic worker");
+}
+
+#[test]
+fn rich_scheduler_selects_the_earliest_due_job_not_the_first_uri() {
+    let now = Instant::now();
+    let mut runtime = AnalysisRuntime::new(AdmissionLimits::new(2, 2));
+    let mut pending = BTreeMap::new();
+    pending.insert(
+        "file:///a.c".to_string(),
+        rich_semantic_tokens_job(&mut runtime, "file:///a.c", 1, now),
+    );
+    pending.insert(
+        "file:///z.c".to_string(),
+        rich_semantic_tokens_job(
+            &mut runtime,
+            "file:///z.c",
+            1,
+            now - Duration::from_millis(1),
+        ),
+    );
+
+    assert_eq!(
+        earliest_due_pending_uri(&pending).as_deref(),
+        Some("file:///z.c")
+    );
+}
+
+#[test]
+fn rich_work_is_runnable_without_an_idle_delay() {
+    let now = Instant::now();
+    let mut runtime = AnalysisRuntime::new(AdmissionLimits::new(1, 1));
+    let job = RuntimeWorkJob::Rich(rich_semantic_tokens_job(
+        &mut runtime,
+        "file:///rich.c",
+        1,
+        now,
+    ));
+
+    assert_eq!(job.due_at(), job.scheduled_at());
+}
+
+#[test]
+fn rich_worker_relies_on_runtime_capacity_and_coalesces_only_same_uri() {
+    let now = Instant::now();
+    let mut runtime = AnalysisRuntime::new(AdmissionLimits::new(17, 17));
+    let mut pending = BTreeMap::new();
+    for index in 0..17 {
+        let uri = format!("file:///rich-{index}.c");
+        let job = rich_semantic_tokens_job(&mut runtime, &uri, 1, now);
+        coalesce_rich_job(&mut pending, job);
+    }
+
+    assert_eq!(pending.len(), 17);
+    assert_eq!(
+        runtime.upsert("file:///rich-overflow.c", 1, ""),
+        UpsertOutcome::Accepted
+    );
+    assert!(matches!(
+        runtime.admit(
+            TaskClass::Rich,
+            runtime.latest("file:///rich-overflow.c").unwrap(),
+            18,
+            Instant::now(),
+        ),
+        AdmissionDisposition::DroppedOverload {
+            class: TaskClass::Rich,
+            ..
+        }
+    ));
+
+    let original = pending["file:///rich-0.c"].task.clone();
+    let replacement = rich_semantic_tokens_job(
+        &mut runtime,
+        "file:///rich-0.c",
+        2,
+        now + Duration::from_millis(1),
+    );
+    coalesce_rich_job(&mut pending, replacement);
+    assert_eq!(pending.len(), 17);
+    assert!(original.is_cancelled());
+}
+
+#[test]
+fn completion_labels_overloads_and_uses_source_rank_as_tiebreaker() {
+    let source = r#"class Widget
+{
+	void SetVisible(bool visible);
+	void SetVisible(bool visible, bool animate);
+}
+
+class Example
+{
+	void Run()
+	{
+		Widget widget;
+		widget.Set
+	}
+}
+"#;
+    let external = file_index_for_source(
+        r#"class Widget
+{
+	void SetText(string text);
+}
+"#,
+    )
+    .index;
+
+    let report = completion_report_for_source_position_with_external(
+        source,
+        position_after_needle(source, "widget.Set"),
+        Some(&external),
+    );
+
+    let overload_details = report
+        .list
+        .items
+        .iter()
+        .filter(|item| item.label == "SetVisible")
+        .filter_map(|item| {
+            item.label_details
+                .as_ref()
+                .and_then(|details| details.detail.as_deref())
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        overload_details,
+        vec!["(bool visible)", "(bool visible, bool animate)"]
+    );
+    let first = report.list.items.first().unwrap();
+    assert_eq!(first.label, "SetText");
+    assert!(first
+        .sort_text
+        .as_deref()
+        .unwrap_or("")
+        .starts_with("014:01:"));
+}
+
+#[test]
+fn position_index_stops_when_cancellation_arrives_mid_build() {
+    let source = "field ".repeat(256);
+    let checks = Cell::new(0usize);
+
+    let index = LspPositionIndex::new_cancellable(
+        &source,
+        Some(&|| {
+            checks.set(checks.get() + 1);
+            checks.get() >= 2
+        }),
+    );
+
+    assert!(index.is_none());
+}
+
+#[test]
+fn channel_runtime_coalesces_contiguous_full_sync_changes_before_outline_request() {
+    let uri = "file:///Scripts/Coalesced.c";
+    let log_path = test_log_path("coalesced_channel_changes");
+    let (incoming_sender, incoming_receiver) = mpsc::channel();
+    let (internal_sender, internal_receiver) = mpsc::channel();
+    let mut server = LspServer::new(
+        Vec::new(),
+        LspServerOptions {
+            log_path: Some(log_path.clone()),
+            ..LspServerOptions::default()
+        },
+    );
+    let send = |value| {
+        incoming_sender
+            .send(ServerEvent::Incoming {
+                received_at: Instant::now(),
+                result: Ok(value),
+            })
+            .unwrap();
+    };
+    send(json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": { "textDocument": {
+            "uri": uri,
+            "languageId": "enforce",
+            "version": 1,
+            "text": "class Initial {}"
+        }}
+    }));
+    for (version, name) in [(2, "Second"), (3, "Third")] {
+        send(json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didChange",
+            "params": {
+                "textDocument": { "uri": uri, "version": version },
+                "contentChanges": [{ "text": format!("class {name} {{}}") }]
+            }
+        }));
+    }
+    send(json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "textDocument/documentSymbol",
+        "params": { "textDocument": { "uri": uri } }
+    }));
+    send(json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didChange",
+        "params": {
+            "textDocument": { "uri": uri, "version": 4 },
+            "contentChanges": [{ "text": "class Current {}" }]
+        }
+    }));
+    send(json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "textDocument/documentSymbol",
+        "params": { "textDocument": { "uri": uri } }
+    }));
+    drop(incoming_sender);
+    drop(internal_sender);
+
+    server
+        .run_message_channels(incoming_receiver, internal_receiver)
+        .unwrap();
+
+    let output = String::from_utf8(server.writer).unwrap();
+    assert!(output.contains("\"id\":1"));
+    assert!(output.contains("\"id\":2"));
+    assert!(output.contains("\"name\":\"Third\""));
+    assert!(output.contains("\"name\":\"Current\""));
+    assert!(!output.contains("\"name\":\"Second\""));
+
+    let log = std::fs::read_to_string(&log_path).unwrap();
+    assert_eq!(log.matches("notification didChange uri=").count(), 2);
+    assert!(log.contains("version=3"));
+    assert!(log.contains("version=4"));
+    assert!(log.contains("coalesced_changes=2 superseded_changes=1"));
+    cleanup_log(&log_path);
+}
+
+#[test]
+fn document_analysis_scheduler_keeps_only_latest_pending_revision() {
+    let (sender, receiver) = mpsc::channel();
+    let scheduler = OpenDocumentAnalysisScheduler::start(sender);
+    let mut runtime = AnalysisRuntime::new(AdmissionLimits::new(4, 1024));
+    assert_eq!(
+        runtime.upsert("file:///Scripts/Pending.c", 2, "class Old {}"),
+        UpsertOutcome::Accepted
+    );
+    let old = match runtime.admit(
+        TaskClass::Semantic,
+        runtime.latest("file:///Scripts/Pending.c").unwrap(),
+        1,
+        Instant::now(),
+    ) {
+        AdmissionDisposition::Enqueued { .. } => runtime.take_next().unwrap(),
+        _ => unreachable!(),
+    };
+    assert_eq!(
+        runtime.upsert("file:///Scripts/Pending.c", 3, "class Current {}"),
+        UpsertOutcome::Accepted
+    );
+    let current = match runtime.admit(
+        TaskClass::Semantic,
+        runtime.latest("file:///Scripts/Pending.c").unwrap(),
+        2,
+        Instant::now(),
+    ) {
+        AdmissionDisposition::Enqueued { .. } => runtime.take_next().unwrap(),
+        _ => unreachable!(),
+    };
+    scheduler.schedule(OpenDocumentAnalysisJob {
+        task: old,
+        scheduled_at: Instant::now(),
+    });
+    scheduler.schedule(OpenDocumentAnalysisJob {
+        task: current,
+        scheduled_at: Instant::now(),
+    });
+
+    let event = (0..2)
+        .filter_map(|_| receiver.recv_timeout(Duration::from_secs(2)).ok())
+        .find(|event| matches!(event, ServerEvent::DocumentAnalysisReady { .. }))
+        .expect("latest analysis result");
+    assert!(
+        matches!(event, ServerEvent::DocumentAnalysisReady { task, .. } if task.revision() == 2)
+    );
+}
+
+#[test]
+fn document_analysis_scheduler_bounds_distinct_pending_documents() {
+    let (sender, receiver) = mpsc::channel();
+    // Deliberately keep the executor workerless: immediate semantic work
+    // otherwise drains this queue before capacity can be observed.
+    let scheduler = RuntimeWorkExecutor {
+        state: Arc::new((Mutex::new(BTreeMap::new()), Condvar::new())),
+        sender,
+        test_before_execute: None,
+    };
+    for index in 0..=MAX_PENDING_DOCUMENT_ANALYSIS_JOBS {
+        let mut runtime = AnalysisRuntime::new(AdmissionLimits::new(2, 1024));
+        let uri = format!("file:///Scripts/Pending{index}.c");
+        assert_eq!(
+            runtime.upsert(uri.clone(), 1, "class Pending {}"),
+            UpsertOutcome::Accepted
+        );
+        let task = match runtime.admit(
+            TaskClass::Semantic,
+            runtime.latest(&uri).unwrap(),
+            index as u64,
+            Instant::now(),
+        ) {
+            AdmissionDisposition::Enqueued { .. } => runtime.take_next().unwrap(),
+            _ => unreachable!(),
+        };
+        scheduler.schedule(OpenDocumentAnalysisJob {
+            task,
+            scheduled_at: Instant::now(),
+        });
+    }
+
+    let event = receiver
+        .recv_timeout(Duration::from_secs(1))
+        .expect("capacity eviction event");
+    assert!(matches!(
+        event,
+        ServerEvent::DocumentAnalysisSkipped { reason, .. }
+            if reason == "scheduler-capacity-evicted"
+    ));
+}
+
+#[test]
+fn semantic_tokens_pending_baseline_schedules_rich_after_analysis_completion() {
+    let (sender, receiver) = mpsc::channel();
+    let scheduler = OpenDocumentAnalysisScheduler::start(sender);
+    let mut server = LspServer::new_with_runtime_senders(
+        Vec::new(),
+        LspServerOptions::default(),
+        None,
+        Some(scheduler),
+        None,
+    );
+    let uri = "file:///Scripts/PendingTokens.c";
+    server
+        .handle_message(
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": { "textDocument": {
+                    "uri": uri,
+                    "languageId": "enforce",
+                    "version": 1,
+                    "text": "// pending\r\nclass Pending {}"
+                }}
+            }),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+    assert!(!server.documents[uri].analysis_ready());
+
+    server
+        .handle_message(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "textDocument/semanticTokens/full",
+                "params": { "textDocument": { "uri": uri } }
+            }),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+
+    let output = String::from_utf8_lossy(&server.writer);
+    assert!(output.contains("\"id\":1"));
+    assert!(output.contains("\"data\":["));
+    assert!(output.contains("\"resultId\":\"reforger:1:lexical\""));
+
+    let mut rich_ready = false;
+    for _ in 0..3 {
+        let event = receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("foreground, analysis, then rich worker event");
+        rich_ready |= matches!(&event, ServerEvent::RichSemanticTokensReady { .. });
+        server.handle_internal_event(event).unwrap();
+        if rich_ready {
+            break;
+        }
+    }
+    assert!(
+        rich_ready,
+        "current lexical baseline must converge to rich tokens"
+    );
+    assert!(String::from_utf8_lossy(&server.writer).contains("workspace/semanticTokens/refresh"));
+}
+
+#[test]
+fn deferred_semantic_tokens_are_server_cancelled_when_superseded_or_cancelled() {
+    let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
+    let uri = "file:///Scripts/DeferredTokens.c";
+    server
+        .defer_semantic_token_request(uri, 2, 4, json!(10))
+        .unwrap();
+    server
+        .discard_deferred_semantic_token_requests(uri, 3, "superseded")
+        .unwrap();
+    assert!(String::from_utf8_lossy(&server.writer).contains("\"code\":-32802"));
+
+    server.writer.clear();
+    server
+        .defer_semantic_token_request(uri, 3, 4, json!(11))
+        .unwrap();
+    server.cancel_deferred_semantic_token_request(&json!(11));
+    assert!(!server.deferred_semantic_token_requests.contains_key(uri));
+    assert!(server.writer.is_empty());
+}
+
+#[test]
+fn completion_responds_with_current_lexical_top_level_result_while_analysis_is_pending() {
+    let (sender, _receiver) = mpsc::channel();
+    let scheduler = OpenDocumentAnalysisScheduler::start(sender);
+    let mut server = LspServer::new_with_runtime_senders(
+        Vec::new(),
+        LspServerOptions::default(),
+        None,
+        Some(scheduler),
+        None,
+    );
+    let uri = "file:///Scripts/PendingCompletion.c";
+    server
+        .handle_message(
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": { "textDocument": {
+                    "uri": uri,
+                    "languageId": "enforce",
+                    "version": 1,
+                    "text": "getga"
+                }}
+            }),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+    server
+        .handle_message(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "textDocument/completion",
+                "params": {
+                    "textDocument": { "uri": uri },
+                    "position": { "line": 0, "character": 5 }
+                }
+            }),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+
+    let output = String::from_utf8(server.writer).unwrap();
+    assert!(output.contains("\"id\":1"));
+    assert!(output.contains("\"items\":["));
+}
+
+#[test]
+fn pending_signature_help_uses_only_the_current_unique_simple_callable() {
+    let (sender, receiver) = mpsc::channel();
+    let scheduler = OpenDocumentAnalysisScheduler::start(sender);
+    let mut server = LspServer::new_with_runtime_senders(
+        Vec::new(),
+        LspServerOptions::default(),
+        None,
+        Some(scheduler),
+        None,
+    );
+    let uri = "file:///Scripts/PendingSignature.c";
+    let initial = "class Example { void Stale(int oldValue) {} void Test() { Stale( } }";
+    let current =
+        "class Example { void Current(string currentValue) {} void Test() { Current(\"\", ); } }";
+    let current_position = position_after_needle(current, "Current(\"\", ");
+    server
+        .handle_message(
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": { "textDocument": {
+                    "uri": uri,
+                    "languageId": "enforce",
+                    "version": 1,
+                    "text": initial
+                }}
+            }),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+    install_next_foreground(&mut server, &receiver);
+    server
+        .handle_message(
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didChange",
+                "params": {
+                    "textDocument": { "uri": uri, "version": 2 },
+                    "contentChanges": [{ "text": current }]
+                }
+            }),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+    assert!(!server.documents[uri].analysis_ready());
+    install_next_foreground(&mut server, &receiver);
+
+    server
+        .handle_message(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "textDocument/signatureHelp",
+                "params": {
+                    "textDocument": { "uri": uri },
+                    "position": current_position
+                }
+            }),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+
+    let output = String::from_utf8(server.writer).unwrap();
+    let mut reader = BufReader::new(output.as_bytes());
+    let response = loop {
+        let response = read_message(&mut reader)
+            .unwrap()
+            .expect("pending signature response");
+        if response["id"] == 1 {
+            break response;
+        }
+    };
+    assert_eq!(response["id"], 1);
+    assert_eq!(
+        response["result"]["signatures"][0]["label"], "void Current(string currentValue)",
+        "response={response}"
+    );
+    assert!(!response.to_string().contains("Stale"));
+}
+
+#[test]
+fn pending_signature_help_rejects_ambiguous_or_member_calls() {
+    let (sender, _receiver) = mpsc::channel();
+    let scheduler = OpenDocumentAnalysisScheduler::start(sender);
+    let mut server = LspServer::new_with_runtime_senders(
+        Vec::new(),
+        LspServerOptions::default(),
+        None,
+        Some(scheduler),
+        None,
+    );
+    let uri = "file:///Scripts/PendingSignatureAmbiguous.c";
+    let source = "class First { void Run(int value) {} } class Second { void Run(string value) {} } class Example { void Test(First receiver) { Run( ); receiver.Run( ); } }";
+    let ambiguous_position = position_after_needle(source, "Run( ");
+    let member_position = position_after_needle(source, "receiver.Run( ");
+    server
+        .handle_message(
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": { "textDocument": {
+                    "uri": uri,
+                    "languageId": "enforce",
+                    "version": 1,
+                    "text": source
+                }}
+            }),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+    for (id, position) in [(1, ambiguous_position), (2, member_position)] {
+        server
+            .handle_message(
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "method": "textDocument/signatureHelp",
+                    "params": { "textDocument": { "uri": uri }, "position": position }
+                }),
+                None,
+                0,
+                0,
+            )
+            .unwrap();
+    }
+    let output = String::from_utf8(server.writer).unwrap();
+    let mut reader = BufReader::new(output.as_bytes());
+    let mut responses = BTreeMap::new();
+    while responses.len() < 2 {
+        let response = read_message(&mut reader)
+            .unwrap()
+            .expect("pending signature response");
+        if let Some(id) = response["id"].as_i64() {
+            responses.insert(id, response);
+        }
+    }
+    for id in [1, 2] {
+        let response = responses.remove(&id).unwrap();
+        assert_eq!(response["id"], id);
+        assert!(response["result"].is_null());
+    }
+}
+
+#[test]
+fn pending_definition_returns_only_a_current_snapshot_declaration_target() {
+    let (sender, receiver) = mpsc::channel();
+    let scheduler = OpenDocumentAnalysisScheduler::start(sender);
+    let mut server = LspServer::new_with_runtime_senders(
+        Vec::new(),
+        LspServerOptions::default(),
+        None,
+        Some(scheduler),
+        None,
+    );
+    let uri = "file:///Scripts/PendingDefinition.c";
+    server
+        .handle_message(
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": { "textDocument": {
+                    "uri": uri,
+                    "languageId": "enforce",
+                    "version": 1,
+                    "text": "class Previous {}"
+                }}
+            }),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+    server
+        .handle_message(
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didChange",
+                "params": {
+                    "textDocument": { "uri": uri, "version": 2 },
+                    "contentChanges": [{ "text": "class Current {}\nCurrent value;" }]
+                }
+            }),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+    install_next_foreground(&mut server, &receiver);
+
+    for (id, line, character) in [(1, 0, 6), (2, 1, 0)] {
+        server
+            .handle_message(
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "method": "textDocument/definition",
+                    "params": {
+                        "textDocument": { "uri": uri },
+                        "position": { "line": line, "character": character }
+                    }
+                }),
+                None,
+                0,
+                0,
+            )
+            .unwrap();
+    }
+
+    let output = String::from_utf8(server.writer).unwrap();
+    let mut reader = BufReader::new(output.as_bytes());
+    let mut first = None;
+    let mut second = None;
+    while first.is_none() || second.is_none() {
+        let message = read_message(&mut reader)
+            .unwrap()
+            .expect("definition response");
+        match message["id"].as_i64() {
+            Some(1) => first = Some(message),
+            Some(2) => second = Some(message),
+            _ => {}
+        }
+    }
+    let first = first.unwrap();
+    let second = second.unwrap();
+    assert_eq!(first["id"], 1);
+    assert_eq!(first["result"][0]["targetUri"], uri);
+    assert_eq!(
+        first["result"][0]["targetSelectionRange"]["start"],
+        json!({ "line": 0, "character": 6 })
+    );
+    assert_eq!(second["id"], 2);
+    assert_eq!(second["result"], json!([]));
+}
+
+#[test]
+fn completion_resolves_current_receiver_before_foreground_publication() {
+    let (sender, _receiver) = mpsc::channel();
+    let scheduler = OpenDocumentAnalysisScheduler::start(sender);
+    let mut server = LspServer::new_with_runtime_senders(
+        Vec::new(),
+        LspServerOptions::default(),
+        None,
+        Some(scheduler),
+        None,
+    );
+    let uri = "file:///Scripts/PendingReceiverCompletion.c";
+    let source = "class Widget { void GetName() {} } class Example { void Run(Widget parameter) { parameter.Get } }";
+    let offset = source.find("parameter.Get").unwrap() + "parameter.Get".len();
+    server
+        .handle_message(
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": { "textDocument": {
+                    "uri": uri,
+                    "languageId": "enforce",
+                    "version": 1,
+                    "text": source
+                }}
+            }),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+    assert!(!server.documents[uri].foreground_ready());
+    assert!(!server.documents[uri].analysis_ready());
+    server
+        .handle_message(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "textDocument/completion",
+                "params": {
+                    "textDocument": { "uri": uri },
+                    "position": { "line": 0, "character": offset }
+                }
+            }),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+
+    let output = String::from_utf8(server.writer).unwrap();
+    assert!(output.contains("\"id\":1"));
+    assert!(output.contains("\"label\":\"GetName\""));
+}
+
+#[test]
+fn completion_returns_current_argument_labels_while_analysis_is_pending() {
+    let (sender, receiver) = mpsc::channel();
+    let scheduler = OpenDocumentAnalysisScheduler::start(sender);
+    let mut server = LspServer::new_with_runtime_senders(
+        Vec::new(),
+        LspServerOptions::default(),
+        None,
+        Some(scheduler),
+        None,
+    );
+    let uri = "file:///Scripts/PendingArgumentCompletion.c";
+    let source = "class Example { void Run(int firstValue, string secondValue) {} void Test() { Run(sec); } }";
+    let offset = source.find("Run(sec").unwrap() + "Run(sec".len();
+    server
+        .handle_message(
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": { "textDocument": {
+                    "uri": uri,
+                    "languageId": "enforce",
+                    "version": 1,
+                    "text": source
+                }}
+            }),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+    server
+        .handle_internal_event(
+            receiver
+                .recv_timeout(Duration::from_secs(2))
+                .expect("foreground result"),
+        )
+        .unwrap();
+    server
+        .handle_message(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "textDocument/completion",
+                "params": {
+                    "textDocument": { "uri": uri },
+                    "position": { "line": 0, "character": offset }
+                }
+            }),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+
+    let output = String::from_utf8(server.writer).unwrap();
+    assert!(output.contains("\"id\":1"));
+    assert!(output.contains("\"label\":\"secondValue\""));
+}
+
+#[test]
+fn pending_analysis_publishes_current_parser_diagnostics_before_worker_publication() {
+    let (sender, receiver) = mpsc::channel();
+    let scheduler = OpenDocumentAnalysisScheduler::start(sender);
+    let mut server = LspServer::new_with_runtime_senders(
+        Vec::new(),
+        LspServerOptions::default(),
+        None,
+        Some(scheduler),
+        None,
+    );
+    let uri = "file:///Scripts/PendingDiagnostics.c";
+    server
+        .handle_message(
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": { "textDocument": {
+                    "uri": uri,
+                    "languageId": "enforce",
+                    "version": 1,
+                    "text": "class {"
+                }}
+            }),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+    server
+        .handle_internal_event(
+            receiver
+                .recv_timeout(Duration::from_secs(2))
+                .expect("foreground result"),
+        )
+        .unwrap();
+
+    let output = String::from_utf8(server.writer).unwrap();
+    assert!(output.contains("\"method\":\"textDocument/publishDiagnostics\""));
+    assert!(output.contains("\"version\":1"));
+    assert!(output.contains("Reforger Script Tools parser"));
+    assert!(output.contains("\"diagnostics\":[{"));
+}
+
+#[test]
+fn pending_analysis_clears_repaired_parser_diagnostics_before_worker_publication() {
+    let (sender, receiver) = mpsc::channel();
+    let scheduler = OpenDocumentAnalysisScheduler::start(sender);
+    let mut server = LspServer::new_with_runtime_senders(
+        Vec::new(),
+        LspServerOptions::default(),
+        None,
+        Some(scheduler),
+        None,
+    );
+    let uri = "file:///Scripts/PendingDiagnosticsRepair.c";
+    for (version, text) in [(1, "class {"), (2, "class Repaired {}")] {
+        let method = if version == 1 {
+            "textDocument/didOpen"
+        } else {
+            "textDocument/didChange"
+        };
+        let params = if version == 1 {
+            json!({ "textDocument": {
+                "uri": uri, "languageId": "enforce", "version": version, "text": text
+            }})
+        } else {
+            json!({
+                "textDocument": { "uri": uri, "version": version },
+                "contentChanges": [{ "text": text }]
+            })
+        };
+        server
+            .handle_message(
+                json!({ "jsonrpc": "2.0", "method": method, "params": params }),
+                None,
+                0,
+                0,
+            )
+            .unwrap();
+        loop {
+            let event = receiver
+                .recv_timeout(Duration::from_secs(2))
+                .expect("foreground result");
+            let is_current_foreground = matches!(
+                &event,
+                ServerEvent::ForegroundDocumentReady { task, .. }
+                    if task.revision() == version as u64
+            );
+            server.handle_internal_event(event).unwrap();
+            if is_current_foreground {
+                break;
+            }
+        }
+    }
+
+    let output = String::from_utf8(server.writer).unwrap();
+    let mut reader = BufReader::new(output.as_bytes());
+    let broken = read_message(&mut reader).unwrap().unwrap();
+    let repaired = read_message(&mut reader).unwrap().unwrap();
+    assert_eq!(broken["params"]["version"], 1);
+    assert!(!broken["params"]["diagnostics"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert_eq!(repaired["params"]["version"], 2);
+    assert_eq!(repaired["params"]["diagnostics"], json!([]));
+}
+
+#[test]
+fn pending_hover_returns_only_current_lexical_facts_after_semantic_overload() {
+    let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
+    let uri = "file:///Scripts/Overloaded.c";
+    server
+        .handle_message(
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": { "textDocument": {
+                    "uri": uri,
+                    "languageId": "enforce",
+                    "version": 1,
+                    "text": "class Overloaded {}"
+                }}
+            }),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+    let task = match server.runtime.admit(
+        TaskClass::Semantic,
+        server.runtime.latest(uri).expect("accepted snapshot"),
+        1,
+        Instant::now(),
+    ) {
+        AdmissionDisposition::Enqueued { .. } => server.runtime.take_next().unwrap(),
+        _ => unreachable!(),
+    };
+    let snapshot = server.runtime.latest(uri).expect("accepted snapshot");
+    let document = server.documents.get_mut(uri).unwrap();
+    document.replace(snapshot.clone());
+    assert!(document.install_foreground(
+        snapshot.revision(),
+        PositionIndex::new(snapshot.text()),
+        lex(snapshot.text()),
+        parse_source(snapshot.text()),
+    ));
+    server
+        .handle_internal_event(ServerEvent::DocumentAnalysisSkipped {
+            task: task.identity().clone(),
+            reason: "scheduler-capacity-evicted".to_string(),
+            elapsed_ms: 0,
+        })
+        .unwrap();
+    server
+        .handle_message(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "textDocument/hover",
+                "params": {
+                    "textDocument": { "uri": uri },
+                    "position": { "line": 0, "character": 0 }
+                }
+            }),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+
+    let output = String::from_utf8(server.writer).unwrap();
+    let mut reader = BufReader::new(output.as_bytes());
+    let response = loop {
+        let message = read_message(&mut reader).unwrap();
+        let message = message.expect("hover response");
+        if message["id"] == 1 {
+            break message;
+        }
+    };
+    assert_eq!(response["id"], 1);
+    assert_eq!(
+        response["result"]["contents"]["value"],
+        "**Keyword**\n\n```enforce\nclass\n```"
+    );
+    assert!(response.get("error").is_none());
+}
+
+#[test]
+fn pending_document_symbol_request_returns_current_lexical_outline() {
+    let (sender, receiver) = mpsc::channel();
+    let scheduler = OpenDocumentAnalysisScheduler::start(sender);
+    let mut server = LspServer::new_with_runtime_senders(
+        Vec::new(),
+        LspServerOptions::default(),
+        None,
+        Some(scheduler),
+        None,
+    );
+    let uri = "file:///Scripts/PendingOutline.c";
+
+    server
+        .handle_message(
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": { "textDocument": {
+                    "uri": uri,
+                    "languageId": "enforce",
+                    "version": 1,
+                    "text": "class Initial {}"
+                }}
+            }),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+    install_next_foreground(&mut server, &receiver);
+    server
+        .handle_message(
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didChange",
+                "params": {
+                    "textDocument": { "uri": uri, "version": 2 },
+                    "contentChanges": [{ "text": "class Current {}" }]
+                }
+            }),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+    install_next_foreground(&mut server, &receiver);
+    server
+        .handle_message(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "textDocument/documentSymbol",
+                "params": { "textDocument": { "uri": uri } }
+            }),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+    let pending_output = String::from_utf8_lossy(&server.writer);
+    assert!(pending_output.contains("\"id\":1"));
+    assert!(pending_output.contains("\"name\":\"Current\""));
+    assert!(!pending_output.contains("\"name\":\"Initial\""));
+
+    server
+        .handle_internal_event(
+            receiver
+                .recv_timeout(Duration::from_secs(2))
+                .expect("document analysis result"),
+        )
+        .unwrap();
+
+    let output = String::from_utf8(server.writer).unwrap();
+    assert_eq!(output.matches("\"id\":1").count(), 1);
+    assert!(output.contains("\"name\":\"Current\""));
+    assert!(!output.contains("\"name\":\"Initial\""));
+}
+
+#[test]
+fn runtime_debug_hover_rejects_a_capture_superseded_before_publication() {
+    let (sender, receiver) = mpsc::channel();
+    let scheduler = RuntimeWorkExecutor::start(sender);
+    let mut server = LspServer::new_with_runtime_senders(
+        Vec::new(),
+        LspServerOptions::default(),
+        None,
+        Some(scheduler),
+        None,
+    );
+    let uri = "file:///Scripts/StaleAsyncDebug.c";
+    server
+        .handle_message(
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": { "textDocument": {
+                    "uri": uri,
+                    "languageId": "enforce",
+                    "version": 1,
+                    "text": "class StaleAsyncDebug { void Run() {} }"
+                }}
+            }),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+    server
+        .handle_message(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 8,
+                "method": "reforger/debugHover",
+                "params": {
+                    "textDocument": { "uri": uri },
+                    "position": { "line": 0, "character": 24 }
+                }
+            }),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+    let event = receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect("debug result");
+
+    server
+        .handle_message(
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didChange",
+                "params": {
+                    "textDocument": { "uri": uri, "version": 2 },
+                    "contentChanges": [{ "text": "class Current {}" }]
+                }
+            }),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+    server.handle_internal_event(event).unwrap();
+
+    let output = String::from_utf8(server.writer).unwrap();
+    assert!(output.contains("\"id\":8"));
+    assert!(output.contains("\"code\":-32801"));
+    assert!(output.contains("Content modified"));
+}
+
+#[test]
+fn pending_debug_request_receives_content_modified_when_a_new_edit_supersedes_it() {
+    let (sender, _receiver) = mpsc::channel();
+    let scheduler = OpenDocumentAnalysisScheduler::start(sender);
+    let mut server = LspServer::new_with_runtime_senders(
+        Vec::new(),
+        LspServerOptions::default(),
+        None,
+        Some(scheduler),
+        None,
+    );
+    let uri = "file:///Scripts/SupersededRequest.c";
+
+    for (method, params) in [
+        (
+            "textDocument/didOpen",
+            json!({ "textDocument": {
+                "uri": uri, "languageId": "enforce", "version": 1, "text": "class Initial {}"
+            }}),
+        ),
+        (
+            "textDocument/didChange",
+            json!({
+                "textDocument": { "uri": uri, "version": 2 },
+                "contentChanges": [{ "text": "class Pending {}" }]
+            }),
+        ),
+    ] {
+        server
+            .handle_message(
+                json!({ "jsonrpc": "2.0", "method": method, "params": params }),
+                None,
+                0,
+                0,
+            )
+            .unwrap();
+    }
+    server
+        .handle_message(
+            json!({
+                "jsonrpc": "2.0", "id": 1,
+                "method": "reforger/debugHover",
+                "params": {
+                    "textDocument": { "uri": uri },
+                    "position": { "line": 0, "character": 6 }
+                }
+            }),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+    server
+        .handle_message(
+            json!({
+                "jsonrpc": "2.0", "method": "textDocument/didChange",
+                "params": {
+                    "textDocument": { "uri": uri, "version": 3 },
+                    "contentChanges": [{ "text": "class Current {}" }]
+                }
+            }),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+
+    let output = String::from_utf8(server.writer).unwrap();
+    assert!(output.contains("\"id\":1"));
+    assert!(output.contains("\"code\":-32801"));
+}
