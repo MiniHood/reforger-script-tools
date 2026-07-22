@@ -81,5 +81,6 @@ language conventions.
 - For extension-facing TypeScript,
   language-client, or bundled-server changes, run `npm run compile` after the
   final source edit. State any live Workbench/editor validation still pending.
-- Commit coherent, attributable local changes after verification. Do not push,
-  open a PR, change remotes, or rewrite history unless explicitly asked.
+- Commit coherent, attributable local changes after verification, then push the
+  commit to the current branch. Do not create or switch branches, open a PR,
+  change remotes, force-push, or rewrite history unless explicitly asked.
