@@ -192,9 +192,10 @@ impl<W: Write> LspServer<W> {
                         self.documents.insert(uri.clone(), document);
                         let request_id = self.next_server_request_id;
                         self.next_server_request_id += 1;
+                        let snapshot = self.runtime.latest(&uri).expect("accepted snapshot");
                         match self.runtime.admit(
                             TaskClass::Foreground,
-                            self.runtime.latest(&uri).expect("accepted snapshot"),
+                            snapshot,
                             request_id,
                             Instant::now() + Duration::from_secs(30),
                         ) {
@@ -324,9 +325,10 @@ impl<W: Write> LspServer<W> {
                             self.discard_deferred_document_requests(&uri, revision)?;
                             let request_id = self.next_server_request_id;
                             self.next_server_request_id += 1;
+                            let snapshot = self.runtime.latest(&uri).expect("accepted snapshot");
                             match self.runtime.admit(
                                 TaskClass::Foreground,
-                                self.runtime.latest(&uri).expect("accepted snapshot"),
+                                snapshot,
                                 request_id,
                                 Instant::now() + Duration::from_secs(30),
                             ) {

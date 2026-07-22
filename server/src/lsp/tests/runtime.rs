@@ -1092,9 +1092,10 @@ fn pending_hover_returns_only_current_lexical_facts_after_semantic_overload() {
             0,
         )
         .unwrap();
+    let snapshot = server.runtime.latest(uri).expect("accepted snapshot");
     let task = match server.runtime.admit(
         TaskClass::Semantic,
-        server.runtime.latest(uri).expect("accepted snapshot"),
+        snapshot,
         1,
         Instant::now(),
     ) {

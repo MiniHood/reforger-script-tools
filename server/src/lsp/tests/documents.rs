@@ -23,9 +23,10 @@ fn duplicate_did_open_rejects_old_rich_semantic_tokens() {
         .unwrap();
 
     let external_generation = server.external_index.status_summary().generation;
+    let snapshot = server.runtime.latest(uri).expect("accepted snapshot");
     let task = match server.runtime.admit(
         TaskClass::Rich,
-        server.runtime.latest(uri).expect("accepted snapshot"),
+        snapshot,
         1,
         Instant::now(),
     ) {

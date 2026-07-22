@@ -1,7 +1,9 @@
 use crate::analysis_runtime::{
-    AdmissionDisposition, AdmissionLimits, AnalysisRuntime, AnalysisTask, PositionIndex,
+    AdmissionDisposition, AnalysisTask, PositionIndex,
     QueryQuality, TaskClass, TaskIdentity, UpsertOutcome,
 };
+#[cfg(test)]
+use crate::analysis_runtime::{AdmissionLimits, AnalysisRuntime};
 use crate::index::{GlobalSymbolId, SymbolIndex};
 use crate::index_query::IndexQuery;
 use crate::lexer::{lex, Keyword, TextSpan, Token, TokenKind};
@@ -12,9 +14,11 @@ use serde_json::{json, Value};
 #[cfg(test)]
 use std::cell::Cell;
 #[cfg(test)]
-use std::sync::{Arc, Condvar, Mutex};
 use std::collections::BTreeMap;
+#[cfg(test)]
+use std::sync::{Arc, Condvar, Mutex};
 use std::io::{self, BufReader, Read, Write};
+use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::thread;
@@ -76,6 +80,7 @@ use definition::{
 use diagnostics::{clear_diagnostics_message, publish_diagnostics_message};
 pub use diagnostics::{parser_diagnostics_for_source, LspDiagnostic};
 use document_query::{DocumentQuery, DocumentQueryState};
+use document_runtime::DocumentRuntime;
 pub(crate) use external_overlay::ExternalIndexStatusSummary;
 use external_overlay::{start_external_index, ExternalIndexHandle, ExternalIndexSnapshot};
 use hover::{
@@ -246,18 +251,27 @@ impl LspDocumentSymbolReport {
 
 struct LspServer<W: Write> {
     writer: W,
-    documents: BTreeMap<String, OpenDocument>,
-    runtime: AnalysisRuntime,
     logger: LspLogger,
     external_index: ExternalIndexHandle,
-    analysis_scheduler: Option<RuntimeWorkExecutor>,
-    deferred_document_requests: BTreeMap<String, Vec<DeferredDocumentRequest>>,
-    deferred_semantic_token_requests: BTreeMap<String, Vec<DeferredSemanticTokenRequest>>,
-    next_server_request_id: u64,
-    semantic_tokens_refresh_in_flight: Option<String>,
-    semantic_tokens_refresh_dirty: bool,
-    last_semantic_external_generation: u64,
+    document_runtime: DocumentRuntime,
     shutdown_requested: bool,
+}
+
+// Transitional bridge while request routing and background publication move to
+// typed Document Runtime commands and effects. It keeps the first ownership
+// extraction behavior-preserving; no new code may rely on this forwarding.
+impl<W: Write> Deref for LspServer<W> {
+    type Target = DocumentRuntime;
+
+    fn deref(&self) -> &Self::Target {
+        &self.document_runtime
+    }
+}
+
+impl<W: Write> DerefMut for LspServer<W> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.document_runtime
+    }
 }
 
 enum ServerEvent {
@@ -315,23 +329,6 @@ enum ServerEvent {
         result: Value,
         elapsed_ms: u128,
     },
-}
-
-struct DeferredDocumentRequest {
-    revision: u64,
-    received_at: Instant,
-    value: Value,
-}
-
-/// Full semantic-token responses replace the editor's entire token display.
-/// Keep these requests apart from source-backed feature deferral so a newer
-/// revision can wait for a matching rich projection without publishing a
-/// lexical downgrade.
-struct DeferredSemanticTokenRequest {
-    id: Value,
-    revision: u64,
-    external_generation: u64,
-    received_at: Instant,
 }
 
 fn source_backed_request_method(method: &str) -> bool {
@@ -675,17 +672,9 @@ impl<W: Write> LspServer<W> {
         let external_index = start_external_index(&options, logger.clone());
         let server = Self {
             writer,
-            documents: BTreeMap::new(),
-            runtime: AnalysisRuntime::new(AdmissionLimits::new(64, 64 * 1024 * 1024)),
             logger,
             external_index,
-            analysis_scheduler,
-            deferred_document_requests: BTreeMap::new(),
-            deferred_semantic_token_requests: BTreeMap::new(),
-            next_server_request_id: 1,
-            semantic_tokens_refresh_in_flight: None,
-            semantic_tokens_refresh_dirty: false,
-            last_semantic_external_generation: 0,
+            document_runtime: DocumentRuntime::new(analysis_scheduler),
             shutdown_requested: false,
         };
         server.log(&format!(

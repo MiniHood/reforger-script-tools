@@ -1,14 +1,65 @@
 use super::{
     request_document_uri, semantic_tokens_for_cached_analysis_with_external_indexes,
-    AdmissionDisposition, AnalysisTask, DeferredDocumentRequest,
-    DeferredSemanticTokenRequest, FileIndexAnalysis, FileIndexAnalysisTimings,
+    AdmissionDisposition, AnalysisTask, FileIndexAnalysis, FileIndexAnalysisTimings,
     LspSemanticTokenProjection, LspSemanticTokensFull, LspServer,
-    OpenDocumentAnalysisJob, RichSemanticTokensJob, RpcMessage, TaskClass,
+    OpenDocument, OpenDocumentAnalysisJob, RichSemanticTokensJob, RpcMessage,
+    RuntimeWorkExecutor, TaskClass,
     MAX_PENDING_DOCUMENT_REQUESTS_PER_URI,
 };
+use crate::analysis_runtime::{AdmissionLimits, AnalysisRuntime};
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::{Duration, Instant};
+
+/// Owns all mutable state whose lifetime is bounded by open documents and
+/// their admitted analysis. Transport and external-index ownership stay in
+/// the LSP composition root.
+pub(super) struct DocumentRuntime {
+    pub(super) documents: BTreeMap<String, OpenDocument>,
+    pub(super) runtime: AnalysisRuntime,
+    pub(super) analysis_scheduler: Option<RuntimeWorkExecutor>,
+    pub(super) deferred_document_requests: BTreeMap<String, Vec<DeferredDocumentRequest>>,
+    pub(super) deferred_semantic_token_requests:
+        BTreeMap<String, Vec<DeferredSemanticTokenRequest>>,
+    pub(super) next_server_request_id: u64,
+    pub(super) semantic_tokens_refresh_in_flight: Option<String>,
+    pub(super) semantic_tokens_refresh_dirty: bool,
+    pub(super) last_semantic_external_generation: u64,
+}
+
+impl DocumentRuntime {
+    pub(super) fn new(analysis_scheduler: Option<RuntimeWorkExecutor>) -> Self {
+        Self {
+            documents: BTreeMap::new(),
+            runtime: AnalysisRuntime::new(AdmissionLimits::new(64, 64 * 1024 * 1024)),
+            analysis_scheduler,
+            deferred_document_requests: BTreeMap::new(),
+            deferred_semantic_token_requests: BTreeMap::new(),
+            next_server_request_id: 1,
+            semantic_tokens_refresh_in_flight: None,
+            semantic_tokens_refresh_dirty: false,
+            last_semantic_external_generation: 0,
+        }
+    }
+}
+
+pub(super) struct DeferredDocumentRequest {
+    pub(super) revision: u64,
+    pub(super) received_at: Instant,
+    pub(super) value: Value,
+}
+
+/// Full semantic-token responses replace the editor's entire token display.
+/// Keep these requests apart from source-backed feature deferral so a newer
+/// revision can wait for a matching rich projection without publishing a
+/// lexical downgrade.
+pub(super) struct DeferredSemanticTokenRequest {
+    pub(super) id: Value,
+    pub(super) revision: u64,
+    pub(super) external_generation: u64,
+    pub(super) received_at: Instant,
+}
 
 impl<W: Write> LspServer<W> {
     pub(super) fn defer_request_while_document_analysis_is_pending(
@@ -293,11 +344,13 @@ impl<W: Write> LspServer<W> {
         if document.revision != revision || !document.foreground_ready() {
             return;
         }
+        let snapshot = document.snapshot.clone();
+        let _ = document;
         let request_id = self.next_server_request_id;
         self.next_server_request_id += 1;
         match self.runtime.admit(
             TaskClass::Semantic,
-            document.snapshot.clone(),
+            snapshot,
             request_id,
             Instant::now() + Duration::from_secs(30),
         ) {
@@ -349,11 +402,12 @@ impl<W: Write> LspServer<W> {
             }
             let analysis = document.analysis().clone();
             let _ = document;
+            let snapshot = self.runtime.latest(uri).expect("current rich snapshot");
             let request_id = self.next_server_request_id;
             self.next_server_request_id += 1;
             let task = match self.runtime.admit(
                 TaskClass::Rich,
-                self.runtime.latest(uri).expect("current rich snapshot"),
+                snapshot,
                 request_id,
                 Instant::now() + Duration::from_secs(30),
             ) {
@@ -485,9 +539,10 @@ impl<W: Write> LspServer<W> {
     ) -> Result<AnalysisTask, (usize, usize)> {
         let request_id = self.next_server_request_id;
         self.next_server_request_id += 1;
+        let snapshot = self.runtime.latest(uri).expect("current debug snapshot");
         match self.runtime.admit(
             TaskClass::Rich,
-            self.runtime.latest(uri).expect("current debug snapshot"),
+            snapshot,
             request_id,
             Instant::now() + Duration::from_secs(30),
         ) {
