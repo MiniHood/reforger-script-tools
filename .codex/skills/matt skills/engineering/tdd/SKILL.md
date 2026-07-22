@@ -18,8 +18,13 @@ Pursue the goal until every item is evidenced and the tracker reaches its
 required final state (normally closed); a partial implementation, passing
 subset of checks, review, commit, push, or report is never terminal. End only
 when complete or genuinely blocked by required user input or unavailable
-external state; when blocked, keep the goal active and report the exact unmet
-item before resuming. Use commentary for progress and re-check the checklist
+external state. Difficulty, uncertainty, an unfinished design, a missing test,
+or an implementation path that still needs to be worked out are not blockers:
+continue investigating and implementing them. Before marking a goal blocked,
+identify the exact external dependency or user decision that makes further
+progress impossible, confirm that safe in-scope alternatives are exhausted,
+and keep the goal active unless the platform's blocked-state threshold has
+actually been met. Use commentary for progress and re-check the checklist
 before declaring completion.
 
 ## Public seams

@@ -100,9 +100,15 @@ pub(super) fn auto_block_control_header_enter_plan(
         .rfind('\n')
         .map(|relative| keyword.span.start + relative)
         .filter(|newline| *newline < cursor);
-    let header_closure = inserted_header_newline
-        .is_some()
-        .then_some(")")
+    let normalized_header = inserted_header_newline.map(|_| {
+        source[keyword.span.start..close.span.start]
+            .split('\n')
+            .map(str::trim_start)
+            .collect::<String>()
+    });
+    let header_closure = normalized_header
+        .as_deref()
+        .map(|header| format!("{header})"))
         .unwrap_or_default();
     let body = if is_switch {
         format!("{header_closure}{newline}{indent}{{{newline}{indent}{unit}{newline}{indent}}}")
@@ -115,7 +121,9 @@ pub(super) fn auto_block_control_header_enter_plan(
         .count() as u32;
     Some(AutoBlockControlHeaderPlan {
         span: TextSpan::new(
-            inserted_header_newline.unwrap_or(header_end),
+            normalized_header.map_or(inserted_header_newline.unwrap_or(header_end), |_| {
+                keyword.span.start
+            }),
             cursor.max(header_end),
         ),
         replacement: body,
@@ -994,7 +1002,7 @@ mod tests {
     #[test]
     fn creates_braced_bodies_without_rewriting_control_headers() {
         for source in [
-            "\tfor (int i = 0;\n\t i < count; i++)",
+            "\tfor (int i = 0; i < count; i++)",
             "\tforeach (value in values)",
             "\twhile (running)",
         ] {
@@ -1021,12 +1029,26 @@ mod tests {
         let source = "        while (sadfs\n        )";
         let cursor = "        while (sadfs\n        ".len();
         let plan = auto_block_control_header_enter_plan(source, cursor, 4, true).unwrap();
-        assert_eq!(plan.span.start, "        while (sadfs".len());
+        assert_eq!(plan.span.start, 8);
         assert_eq!(plan.span.end, source.len());
-        assert_eq!(plan.replacement, ")\n        {\n            \n        }");
+        assert_eq!(
+            plan.replacement,
+            "while (sadfs)\n        {\n            \n        }"
+        );
 
         let plan = auto_block_control_header_enter_plan(source, source.len(), 4, true).unwrap();
-        assert_eq!(plan.span.start, "        while (sadfs".len());
+        assert_eq!(plan.span.start, 8);
+
+        let source = "        while (true\n)";
+        let plan =
+            auto_block_control_header_enter_plan(source, "        while (true\n".len(), 4, true)
+                .unwrap();
+        assert_eq!(plan.span.start, 8);
+        assert_eq!(plan.span.end, source.len());
+        assert_eq!(
+            plan.replacement,
+            "while (true)\n        {\n            \n        }"
+        );
     }
 
     #[test]

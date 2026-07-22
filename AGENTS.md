@@ -81,6 +81,11 @@ language conventions.
 - For extension-facing TypeScript,
   language-client, or bundled-server changes, run `npm run compile` after the
   final source edit. State any live Workbench/editor validation still pending.
+- After **every** change under `server/`, run `npm run compile` to rebuild and
+  replace the bundled Rust language-server binary, then relaunch the language
+  server (or reload the VS Code window) before relying on editor behavior.
+  Rust unit tests alone are not sufficient: they do not prove the editor is
+  running the changed server binary.
 - Commit coherent, attributable local changes after verification, then push the
   commit to the current branch. Do not create or switch branches, open a PR,
   change remotes, force-push, or rewrite history unless explicitly asked.
