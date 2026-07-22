@@ -668,6 +668,19 @@ impl<W: Write> LspServer<W> {
         {
             return self.handle_document_close_command(routed);
         }
+        if routed.command == RequestCommand::Document
+            && matches!(
+                routed.message.method.as_deref(),
+                Some("textDocument/didOpen" | "textDocument/didChange")
+            )
+        {
+            return self.handle_document_update_command(
+                routed,
+                queue_ms.unwrap_or(0),
+                coalesced_changes,
+                superseded_changes,
+            );
+        }
         RequestRouter::new(self).handle_message(
             value,
             queue_ms,
@@ -690,6 +703,43 @@ impl<W: Write> LspServer<W> {
         )
         .map_err(|error| format!("Invalid textDocument/didClose params: {error}"))?;
         for effect in self.document_runtime.close_document(&params.text_document.uri) {
+            self.deliver_effect(effect)?;
+        }
+        Ok(false)
+    }
+
+    fn handle_document_update_command(
+        &mut self,
+        routed: RoutedRequest,
+        queue_ms: u128,
+        coalesced_changes: usize,
+        superseded_changes: usize,
+    ) -> Result<bool, String> {
+        let method = routed.message.method.as_deref().expect("document command has a method");
+        if let Some(error) = routed.parameter_error {
+            if let Some(id) = routed.message.id {
+                self.respond_error(id, -32602, &error)?;
+            } else {
+                self.log(&format!("notification ignored invalid_params method={method} error={error}"));
+            }
+            return Ok(false);
+        }
+        let effects = match method {
+            "textDocument/didOpen" => self.document_runtime.open_document(
+                serde_json::from_value::<DidOpenTextDocumentParams>(routed.message.params.unwrap_or(Value::Null))
+                    .map_err(|error| format!("Invalid textDocument/didOpen params: {error}"))?,
+                queue_ms,
+            )?,
+            "textDocument/didChange" => self.document_runtime.change_document(
+                serde_json::from_value::<DidChangeTextDocumentParams>(routed.message.params.unwrap_or(Value::Null))
+                    .map_err(|error| format!("Invalid textDocument/didChange params: {error}"))?,
+                queue_ms,
+                coalesced_changes,
+                superseded_changes,
+            )?,
+            _ => unreachable!("only open and change reach the document update executor"),
+        };
+        for effect in effects {
             self.deliver_effect(effect)?;
         }
         Ok(false)

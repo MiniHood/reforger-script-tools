@@ -1,12 +1,15 @@
 use super::{
     clear_diagnostics_message,
+    document_symbol_count, document_symbols_from_cached_analysis, file_index_for_source_with_timings,
+    lex, parse_source, publish_diagnostics_message,
     request_document_uri, semantic_tokens_for_cached_analysis_with_external_indexes,
     AdmissionDisposition, AnalysisTask, DocumentQuery, ExternalIndexSnapshot, FileIndexAnalysis,
     FileIndexAnalysisTimings, LspSemanticTokenProjection, LspSemanticTokensFull, LspServer,
-    OpenDocument, OpenDocumentAnalysisJob, RichSemanticTokensJob, RpcMessage, RuntimeWorkExecutor,
+    DidChangeTextDocumentParams, DidOpenTextDocumentParams, ForegroundDocumentJob, OpenDocument,
+    OpenDocumentAnalysisJob, PositionIndex, RichSemanticTokensJob, RpcMessage, RuntimeWorkExecutor,
     RuntimeEffect, TaskClass, MAX_PENDING_DOCUMENT_REQUESTS_PER_URI,
 };
-use crate::analysis_runtime::{AdmissionLimits, AnalysisRuntime};
+use crate::analysis_runtime::{AdmissionLimits, AnalysisRuntime, UpsertOutcome};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -89,6 +92,179 @@ impl DocumentRuntime {
         effects.push(RuntimeEffect::Notification(clear_diagnostics_message(uri)));
         effects.push(RuntimeEffect::Log(format!("notification didClose uri={uri}")));
         effects
+    }
+
+    pub(super) fn open_document(
+        &mut self,
+        params: DidOpenTextDocumentParams,
+        queue_ms: u128,
+    ) -> Result<Vec<RuntimeEffect>, String> {
+        let start = Instant::now();
+        let uri = params.text_document.uri;
+        let version = params.text_document.version;
+        let text = params.text_document.text;
+        let bytes = text.len();
+        let mut effects = Vec::new();
+        if let Some(mut previous) = self.documents.remove(&uri) {
+            previous.semantic_tokens.cancel_pending();
+            self.runtime.close(&uri, previous.snapshot.revision());
+        }
+        let UpsertOutcome::Accepted = self.runtime.upsert(uri.clone(), version, text) else {
+            return Err(format!("didOpen could not install document snapshot for {uri}"));
+        };
+        let snapshot = self.runtime.latest(&uri).expect("accepted snapshot");
+        let revision = snapshot.revision();
+        self.discard_deferred_document_requests_for_revision(&uri, revision, &mut effects)?;
+        self.discard_deferred_semantic_requests_for_revision(&uri, revision, "opened", &mut effects);
+
+        if let Some(scheduler) = self.analysis_scheduler.clone() {
+            let mut document = OpenDocument::pending(snapshot);
+            document.mark_analysis_pending();
+            self.documents.insert(uri.clone(), document);
+            self.admit_foreground(&uri, revision, scheduler);
+            effects.push(RuntimeEffect::Log(format!(
+                "notification didOpen uri={} bytes={} version={} revision={} foreground_state=pending analysis_state=waiting-foreground queue_ms={} analysis_elapsed_ms={}",
+                uri, bytes, version, revision, queue_ms, start.elapsed().as_millis()
+            )));
+        } else {
+            let mut document = OpenDocument::new(snapshot);
+            let symbol_start = Instant::now();
+            let symbols = document_symbols_from_cached_analysis(document.snapshot.text(), document.analysis());
+            let document_symbol_ms = symbol_start.elapsed().as_millis();
+            let symbol_count = document_symbol_count(&symbols);
+            document.set_document_symbols(symbols);
+            let parse_diagnostics = document.parse_diagnostic_count();
+            let analysis_timings = document.analysis_timings();
+            let diagnostics = document.syntax().expect("ready test document has syntax").diagnostics.clone();
+            let source = document.snapshot.text().to_string();
+            self.documents.insert(uri.clone(), document);
+            effects.push(RuntimeEffect::Notification(publish_diagnostics_message(&uri, version, &source, &diagnostics)));
+            effects.push(RuntimeEffect::Log(format!(
+                "notification didOpen uri={} bytes={} version={} revision={} cached_analysis=true document_symbols_cached=true symbols={} parse_diagnostics={} analysis_parse_ms={} analysis_catalog_ms={} analysis_index_ms={} analysis_scope_ms={} analysis_build_ms={} document_symbol_ms={} queue_ms={} analysis_elapsed_ms={}",
+                uri, bytes, version, revision, symbol_count, parse_diagnostics,
+                analysis_timings.parse_ms, analysis_timings.catalog_ms, analysis_timings.index_ms,
+                analysis_timings.scope_ms, analysis_timings.total_ms, document_symbol_ms, queue_ms,
+                start.elapsed().as_millis()
+            )));
+        }
+        Ok(effects)
+    }
+
+    pub(super) fn change_document(
+        &mut self,
+        params: DidChangeTextDocumentParams,
+        queue_ms: u128,
+        coalesced_changes: usize,
+        superseded_changes: usize,
+    ) -> Result<Vec<RuntimeEffect>, String> {
+        let Some(change) = params.content_changes.into_iter().last() else {
+            return Ok(Vec::new());
+        };
+        let start = Instant::now();
+        let uri = params.text_document.uri;
+        let version = params.text_document.version;
+        let text = change.text;
+        let bytes = text.len();
+        let mut effects = Vec::new();
+        let Some(current_version) = self.runtime.latest(&uri).map(|snapshot| snapshot.version()) else {
+            effects.push(RuntimeEffect::Log(format!("notification didChange ignored uri={} version={} reason=not_open", uri, version)));
+            return Ok(effects);
+        };
+        if version <= current_version || !matches!(self.runtime.upsert(uri.clone(), version, text), UpsertOutcome::Accepted) {
+            effects.push(RuntimeEffect::Log(format!("notification didChange ignored uri={} version={} current_version={} reason=stale", uri, version, current_version)));
+            return Ok(effects);
+        }
+        let snapshot = self.runtime.latest(&uri).expect("accepted snapshot");
+        let revision = {
+            let document = self.documents.get_mut(&uri).expect("open document exists after version check");
+            document.replace(snapshot);
+            document.mark_analysis_pending();
+            document.snapshot.revision()
+        };
+        self.discard_deferred_semantic_requests_for_revision(&uri, revision, "superseded", &mut effects);
+        if let Some(scheduler) = self.analysis_scheduler.clone() {
+            self.discard_deferred_document_requests_for_revision(&uri, revision, &mut effects)?;
+            self.admit_foreground(&uri, revision, scheduler);
+            effects.push(RuntimeEffect::Log(format!(
+                "notification didChange uri={} bytes={} version={} revision={} foreground_state=pending analysis_state=waiting-foreground queue_ms={} coalesced_changes={} superseded_changes={} analysis_elapsed_ms={}",
+                uri, bytes, version, revision, queue_ms, coalesced_changes, superseded_changes, start.elapsed().as_millis()
+            )));
+        } else {
+            let snapshot = self.runtime.latest(&uri).expect("accepted snapshot");
+            let document = self.documents.get_mut(&uri).expect("open document exists");
+            assert!(document.install_foreground(revision, PositionIndex::new(snapshot.text()), lex(snapshot.text()), parse_source(snapshot.text())));
+            let diagnostics = document.syntax().expect("foreground installation supplies syntax").diagnostics.clone();
+            let source = snapshot.text().to_string();
+            effects.push(RuntimeEffect::Notification(publish_diagnostics_message(&uri, version, &source, &diagnostics)));
+            let (analysis, timings) = file_index_for_source_with_timings(snapshot.text());
+            effects.push(RuntimeEffect::Log(format!(
+                "notification didChange uri={} bytes={} version={} revision={} cached_analysis=true document_symbols_cached=false symbols=pending parse_diagnostics={} analysis_parse_ms={} analysis_catalog_ms={} analysis_index_ms={} analysis_scope_ms={} analysis_build_ms={} queue_ms={} coalesced_changes={} superseded_changes={} analysis_elapsed_ms={}",
+                uri, bytes, version, revision, analysis.parse_diagnostics, timings.parse_ms,
+                timings.catalog_ms, timings.index_ms, timings.scope_ms, timings.total_ms,
+                queue_ms, coalesced_changes, superseded_changes, start.elapsed().as_millis()
+            )));
+            self.install_analysis_synchronously(&uri, revision, analysis, timings);
+        }
+        Ok(effects)
+    }
+
+    fn install_analysis_synchronously(
+        &mut self,
+        uri: &str,
+        revision: u64,
+        analysis: FileIndexAnalysis,
+        timings: FileIndexAnalysisTimings,
+    ) {
+        let Some(document) = self.documents.get_mut(uri) else { return; };
+        let _ = document.install_analysis(revision, analysis, timings);
+    }
+
+    fn admit_foreground(&mut self, uri: &str, revision: u64, scheduler: RuntimeWorkExecutor) {
+        let request_id = self.next_server_request_id;
+        self.next_server_request_id += 1;
+        let snapshot = self.runtime.latest(uri).expect("accepted snapshot");
+        match self.runtime.admit(TaskClass::Foreground, snapshot, request_id, Instant::now() + Duration::from_secs(30)) {
+            AdmissionDisposition::Enqueued { .. } => scheduler.schedule_foreground(ForegroundDocumentJob {
+                task: self.runtime.take_next().expect("admitted foreground task is runnable"),
+                scheduled_at: Instant::now(),
+            }),
+            AdmissionDisposition::DroppedOverload { .. } => self.documents.get_mut(uri)
+                .expect("pending document exists")
+                .reject_pending_analysis(),
+        }
+        let _ = revision;
+    }
+
+    fn discard_deferred_document_requests_for_revision(
+        &mut self,
+        uri: &str,
+        current_revision: u64,
+        effects: &mut Vec<RuntimeEffect>,
+    ) -> Result<(), String> {
+        let Some(pending) = self.deferred_document_requests.remove(uri) else { return Ok(()); };
+        for request in pending {
+            let message: RpcMessage = serde_json::from_value(request.value)
+                .map_err(|error| format!("Invalid deferred JSON-RPC message: {error}"))?;
+            if let Some(id) = message.id {
+                effects.push(RuntimeEffect::Error { id, code: -32801, message: "Content modified".to_string() });
+            }
+        }
+        effects.push(RuntimeEffect::Log(format!("request deferred discarded uri={} current_revision={} reason=superseded", uri, current_revision)));
+        Ok(())
+    }
+
+    fn discard_deferred_semantic_requests_for_revision(
+        &mut self,
+        uri: &str,
+        current_revision: u64,
+        reason: &str,
+        effects: &mut Vec<RuntimeEffect>,
+    ) {
+        let Some(pending) = self.deferred_semantic_token_requests.remove(uri) else { return; };
+        for request in pending {
+            effects.push(RuntimeEffect::Error { id: request.id, code: -32802, message: "Semantic tokens superseded".to_string() });
+        }
+        effects.push(RuntimeEffect::Log(format!("semanticTokens deferred discarded uri={} current_revision={} reason={} outcome=server-cancelled", uri, current_revision, reason)));
     }
 }
 
@@ -749,5 +925,52 @@ mod tests {
             .iter()
             .any(|effect| matches!(effect, RuntimeEffect::Notification(_))));
         assert!(effects.iter().any(|effect| matches!(effect, RuntimeEffect::Log(_))));
+    }
+
+    #[test]
+    fn open_and_change_own_snapshot_replacement_and_emit_delivery_effects() {
+        let mut runtime = DocumentRuntime::new(None);
+        let uri = "file:///runtime.c".to_string();
+        let opened = runtime
+            .open_document(
+                DidOpenTextDocumentParams {
+                    text_document: super::super::TextDocumentItem {
+                        uri: uri.clone(),
+                        version: 1,
+                        text: "class Before {}".to_string(),
+                    },
+                },
+                0,
+            )
+            .expect("open succeeds");
+        assert!(opened
+            .iter()
+            .any(|effect| matches!(effect, RuntimeEffect::Notification(_))));
+
+        let changed = runtime
+            .change_document(
+                DidChangeTextDocumentParams {
+                    text_document: super::super::VersionedTextDocumentIdentifier {
+                        uri: uri.clone(),
+                        version: 2,
+                    },
+                    content_changes: vec![super::super::TextDocumentContentChangeEvent {
+                        range: None,
+                        range_length: None,
+                        text: "class After {}".to_string(),
+                    }],
+                },
+                0,
+                0,
+                0,
+            )
+            .expect("change succeeds");
+
+        assert_eq!(runtime.documents[&uri].version, 2);
+        assert_eq!(runtime.documents[&uri].snapshot.text(), "class After {}");
+        assert!(runtime.documents[&uri].analysis_ready());
+        assert!(changed
+            .iter()
+            .any(|effect| matches!(effect, RuntimeEffect::Notification(_))));
     }
 }
