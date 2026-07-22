@@ -212,92 +212,6 @@ pub(super) fn if_header_body_before_enter_plan(
     })
 }
 
-pub(super) fn paired_brace_control_body_before_enter_plan(
-    source: &str,
-    cursor: usize,
-    tab_size: usize,
-    insert_spaces: bool,
-) -> Option<AutoBlockControlHeaderPlan> {
-    if source.len() > MAX_ON_TYPE_SOURCE_BYTES || cursor > source.len() {
-        return None;
-    }
-    let brace_line_start = source[..cursor].rfind('\n').map_or(0, |index| index + 1);
-    if source[brace_line_start..cursor].trim() != "{" {
-        return None;
-    }
-    let brace_line_end = source[cursor..]
-        .find(['\r', '\n'])
-        .map_or(source.len(), |offset| cursor + offset);
-    if source[cursor..brace_line_end].trim() != "}" {
-        return None;
-    }
-    let header_line_end = trim_line_ending(source, brace_line_start);
-    let header_line_start = source[..header_line_end]
-        .rfind('\n')
-        .map_or(0, |index| index + 1);
-    let header_line = &source[header_line_start..header_line_end];
-    let header_indent_end =
-        header_line.len() - header_line.trim_start_matches(char::is_whitespace).len();
-    let header_indent = &header_line[..header_indent_end];
-    let tokens = lex(header_line)
-        .into_iter()
-        .filter(|token| !token.kind.is_trivia() && token.kind != TokenKind::Eof)
-        .collect::<Vec<_>>();
-    let (header_keyword_index, is_plain_else) = match tokens.first().map(|token| token.kind) {
-        Some(TokenKind::Keyword(
-            Keyword::If | Keyword::For | Keyword::Foreach | Keyword::While | Keyword::Switch,
-        )) => (0, false),
-        Some(TokenKind::Keyword(Keyword::Else))
-            if tokens.get(1).map(|token| token.kind) == Some(TokenKind::Keyword(Keyword::If)) =>
-        {
-            (1, false)
-        }
-        Some(TokenKind::Keyword(Keyword::Else)) if tokens.len() == 1 => (0, true),
-        _ => return None,
-    };
-    if !is_plain_else
-        && (tokens
-            .get(header_keyword_index + 1)
-            .map(|token| token.kind)
-            != Some(TokenKind::LeftParen)
-            || matching_right_paren(&tokens, header_keyword_index + 1)? + 1 != tokens.len())
-    {
-        return None;
-    }
-    let brace_prefix = &source[brace_line_start..cursor];
-    let brace_indent_end =
-        brace_prefix.len() - brace_prefix.trim_start_matches(char::is_whitespace).len();
-    let brace_indent = &brace_prefix[..brace_indent_end];
-    if header_indent != brace_indent {
-        return None;
-    }
-    let newline = if source.contains("\r\n") {
-        "\r\n"
-    } else {
-        "\n"
-    };
-    let unit = if insert_spaces {
-        " ".repeat(tab_size.clamp(1, 16))
-    } else {
-        "\t".to_string()
-    };
-    let body_indent = format!("{brace_indent}{unit}");
-    Some(AutoBlockControlHeaderPlan {
-        span: TextSpan::new(cursor - 1, cursor + 1),
-        replacement: format!("{{{newline}{unit}$0{newline}}}"),
-        selection_line: source[..cursor]
-            .bytes()
-            .filter(|byte| *byte == b'\n')
-            .count() as u32
-            + 1,
-        selection_character: body_indent
-            .chars()
-            .map(|character| character.len_utf16() as u32)
-            .sum(),
-        switch_arm_selection_end: None,
-    })
-}
-
 /// Plans the narrow automatic-semicolon case before VS Code performs Enter.
 /// The edit preserves the source line and its indentation while producing the
 /// same completed statement and body position as the former post-Enter assist.
@@ -1183,8 +1097,7 @@ mod tests {
     use super::{
         auto_block_control_header_enter_plan, block_comment_pair_plan,
         control_header_block_before_enter_plan, if_header_body_before_enter_plan,
-        incomplete_if_header_enter_plan, paired_brace_control_body_before_enter_plan,
-        semicolon_before_enter_plan, semicolon_insertion_offset,
+        incomplete_if_header_enter_plan, semicolon_before_enter_plan, semicolon_insertion_offset,
     };
 
     fn insertion(source: &str) -> Option<usize> {
@@ -1432,30 +1345,6 @@ mod tests {
     }
 
     #[test]
-    fn plans_a_paired_brace_body_below_every_supported_control_header() {
-        for header in [
-            "if (true)",
-            "else if (true)",
-            "else",
-            "for (int i = 0; i < count; i++)",
-            "foreach (entry in entries)",
-            "while (running)",
-            "switch (kind)",
-        ] {
-            let source = format!("        {header}\n        {{}}");
-            let cursor = source.find("{}").unwrap() + 1;
-            let plan = paired_brace_control_body_before_enter_plan(&source, cursor, 4, true)
-                .unwrap();
-            assert_eq!(plan.span, TextSpan::new(cursor - 1, cursor + 1), "{header}");
-            assert_eq!(plan.replacement, "{\n    $0\n}", "{header}");
-            assert_eq!(plan.selection_line, 2, "{header}");
-            assert_eq!(plan.selection_character, 12, "{header}");
-        }
-        assert!(paired_brace_control_body_before_enter_plan("        {}", 9, 4, true).is_none());
-        assert!(paired_brace_control_body_before_enter_plan("        do\n        {}", 20, 4, true).is_none());
-    }
-
-    #[test]
     fn accepts_incomplete_header_contents_but_declines_if_else_and_do_while() {
         for source in [
             "for (int i =)",
@@ -1504,6 +1393,30 @@ mod tests {
             assert!(
                 control_header_block_before_enter_plan(source, source.len(), 4, true).is_none(),
                 "{source:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn does_not_reach_across_later_lines_for_any_control_body_assist() {
+        for header in [
+            "for (;;) ",
+            "foreach (entry in entries)",
+            "while (running)",
+            "switch (kind)",
+        ] {
+            let source = format!("{header}\n    // unrelated line");
+            assert!(
+                control_header_block_before_enter_plan(&source, source.len(), 4, true).is_none(),
+                "{header}"
+            );
+        }
+
+        for header in ["if (ready)", "else if (ready)"] {
+            let source = format!("{header}\n    // unrelated line");
+            assert!(
+                if_header_body_before_enter_plan(&source, source.len(), 4, true).is_none(),
+                "{header}"
             );
         }
     }

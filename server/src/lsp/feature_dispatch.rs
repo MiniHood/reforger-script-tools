@@ -477,12 +477,6 @@ impl FeatureDispatcher<'_> {
                                 params.options.tab_size,
                                 params.options.insert_spaces,
                             ).map(|plan| (plan, "ifHeader")))
-                            .or_else(|| on_type_formatting::paired_brace_control_body_before_enter_plan(
-                                &document.text,
-                                cursor,
-                                params.options.tab_size,
-                                params.options.insert_spaces,
-                            ).map(|plan| (plan, "pairedBraceBody")))
                             .or_else(|| on_type_formatting::semicolon_before_enter_plan(
                                 &document.text,
                                 cursor,

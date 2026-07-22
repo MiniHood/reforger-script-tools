@@ -534,7 +534,7 @@ fn input_route_moves_if_enter_to_the_unbraced_body_without_moving_the_parenthesi
 }
 
 #[test]
-fn input_route_replaces_paired_control_braces_with_an_indented_body_snippet() {
+fn input_route_leaves_paired_control_braces_below_a_header_native() {
     let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
     let uri = "file:///Scripts/ControlBraceEnter.c";
     server.handle_message(json!({ "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
@@ -547,12 +547,7 @@ fn input_route_replaces_paired_control_braces_with_an_indented_body_snippet() {
         "options": { "tabSize": 4, "insertSpaces": true }
     }}), None, 0, 0).unwrap();
     let output = String::from_utf8_lossy(&server.writer);
-    assert!(output.contains("\"owner\":\"pairedBraceBody\""), "{output}");
-    assert!(
-        output.contains("\"snippet\":\"{\\n    $0\\n}\""),
-        "{output}"
-    );
-    assert!(output.contains("\"snippetRange\""), "{output}");
+    assert!(output.contains("\"edits\":[]"), "{output}");
 }
 
 #[test]

@@ -122,12 +122,6 @@ Block-comment expansion is a future `insertText` feature: it must become
 pre-native before it is migrated. Existing completion and snippet transactions
 and language configuration remain outside this module.
 
-When an author has manually typed an empty paired brace body directly below a
-completed supported control header (`if`, `else if`, `else`, `for`, `foreach`,
-`while`, or `switch`), Enter inside that pair is also one atomic snippet replacement.
-It produces the same normal braced-body indentation for every supported header
-without exposing a native line break and correction.
-
 `indent` remains native except on an otherwise blank line following a proven
 complete one-line unbraced `if` or `else if` body. The owner may cross at most
 eight blank physical lines to find that body, then replaces the blank line's
