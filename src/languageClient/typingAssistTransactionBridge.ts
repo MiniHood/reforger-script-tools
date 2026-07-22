@@ -148,7 +148,7 @@ export function registerEnterTypingAssist(getClient: () => LanguageClient | unde
 		const editor = vscode.window.activeTextEditor;
 		const enterPosition = enterAfterPosition(event.contentChanges);
 		const tabPosition = editor && editor.document.uri.toString() === event.document.uri.toString()
-			? tabAfterPosition(event.contentChanges, editor.options.tabSize, editor.options.insertSpaces === true)
+			? tabAfterPosition(event.contentChanges, editor.options.tabSize, editor.options.insertSpaces !== false)
 			: undefined;
 		const position = enterPosition ?? tabPosition;
 		if (!position) {

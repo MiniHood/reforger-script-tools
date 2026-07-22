@@ -43,8 +43,8 @@ export function enterAfterPosition(changes: readonly vscode.TextDocumentContentC
 
 /**
  * Identifies one native Tab indentation edit. VS Code writes spaces rather
- * than a tab character when `editor.insertSpaces` is enabled, so the accepted
- * text must match the active indentation unit exactly.
+ * than a tab character when `editor.insertSpaces` is enabled. With full
+ * auto-indent, one Tab can insert several whole indentation units at once.
  */
 export function tabAfterPosition(
 	changes: readonly vscode.TextDocumentContentChangeEvent[],
@@ -52,10 +52,17 @@ export function tabAfterPosition(
 	insertSpaces = false,
 ): vscode.Position | undefined {
 	const resolvedTabSize = typeof tabSize === 'number' ? Math.min(Math.max(tabSize, 1), 16) : 4;
-	const indentationUnit = insertSpaces ? ' '.repeat(resolvedTabSize) : '\t';
-	if (changes.length !== 1 || changes[0].rangeLength !== 0 || changes[0].text !== indentationUnit) {
+	if (changes.length !== 1 || changes[0].rangeLength !== 0) {
 		return undefined;
 	}
 	const change = changes[0];
-	return new vscode.Position(change.range.start.line, change.range.start.character + indentationUnit.length);
+	const isTab = change.text === '\t';
+	const isWholeSpaceIndent = insertSpaces
+		&& change.text.length >= resolvedTabSize
+		&& change.text.length % resolvedTabSize === 0
+		&& change.text === ' '.repeat(change.text.length);
+	if (!isTab && !isWholeSpaceIndent) {
+		return undefined;
+	}
+	return new vscode.Position(change.range.start.line, change.range.start.character + change.text.length);
 }

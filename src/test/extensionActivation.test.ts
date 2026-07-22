@@ -293,6 +293,7 @@ suite('extension activation', () => {
 		} as vscode.TextDocumentContentChangeEvent;
 		assert.deepStrictEqual(tabAfterPosition([tab]), new vscode.Position(8, 5));
 		assert.deepStrictEqual(tabAfterPosition([{ ...tab, text: '    ' }], 4, true), new vscode.Position(8, 8));
+		assert.deepStrictEqual(tabAfterPosition([{ ...tab, text: '            ' }], 4, true), new vscode.Position(8, 16));
 		assert.strictEqual(tabAfterPosition([{ ...tab, text: '  ' }], 4, true), undefined);
 		assert.strictEqual(tabAfterPosition([{ ...tab, text: '    ' }]), undefined);
 		assert.strictEqual(tabAfterPosition([{ ...tab, rangeLength: 1 }]), undefined);
