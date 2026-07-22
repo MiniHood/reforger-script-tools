@@ -400,6 +400,21 @@ impl DocumentRuntime {
             _ => None,
         }
     }
+
+    pub(super) fn interpret_rich_skipped_event(&mut self, event: ServerEvent) -> Option<Vec<RuntimeEffect>> {
+        let ServerEvent::RichSemanticTokensSkipped { task, uri, revision, external_generation, reason, elapsed_ms } = event else { return None; };
+        self.runtime.complete(&task);
+        if let Some(document) = self.documents.get_mut(&uri) {
+            document.semantic_tokens.cancel_pending_if_matches(revision, external_generation);
+        }
+        let mut effects = Vec::new();
+        self.discard_deferred_semantic_requests_for_revision(&uri, revision, "rich-skipped", &mut effects);
+        effects.push(RuntimeEffect::Log(format!(
+            "semanticTokensRich skipped uri={} revision={} external_generation={} reason={} elapsed_ms={}",
+            uri, revision, external_generation, reason, elapsed_ms
+        )));
+        Some(effects)
+    }
 }
 
 pub(super) struct DeferredDocumentRequest {

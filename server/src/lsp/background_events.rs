@@ -17,6 +17,12 @@ impl<W: Write> LspServer<W> {
             for effect in effects { self.deliver_effect(effect)?; }
             return Ok(());
         }
+        if matches!(&event, ServerEvent::RichSemanticTokensSkipped { .. }) {
+            let effects = self.document_runtime.interpret_rich_skipped_event(event)
+                .expect("rich skipped event is handled by the document runtime");
+            for effect in effects { self.deliver_effect(effect)?; }
+            return Ok(());
+        }
         match event {
             ServerEvent::Incoming { .. } => Ok(()),
             ServerEvent::RichSemanticTokensReady {
