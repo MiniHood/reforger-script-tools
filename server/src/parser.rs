@@ -811,7 +811,10 @@ impl Parser<'_> {
                 structure_declaration(declaration_children),
             ));
         } else {
-            self.parse_for_expression_list(&mut children, &[TokenKind::Semicolon]);
+            self.parse_for_expression_list(
+                &mut children,
+                &[TokenKind::Semicolon, TokenKind::RightParen],
+            );
         }
         node(SyntaxKind::ForInitializer, children)
     }

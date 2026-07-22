@@ -1161,6 +1161,45 @@ fn hover_uses_external_index_for_type_position_symbols() {
 }
 
 #[test]
+fn hover_and_definition_resolve_type_references_after_an_incomplete_for_statement() {
+    let source = r#"class Example
+{
+	void Run()
+	{
+		for (t)
+
+		GRAY_TEST2 test44;
+		test44.TestNumFun();
+	}
+}
+
+class GRAY_TEST2
+{
+	void TestNumFun();
+}
+"#;
+    let hover = hover_at(source, "GRAY_TEST2 test44", "GRAY_TEST2");
+    assert!(hover.is_hit(), "{hover:?}");
+    assert_eq!(hover.selected_kind, Some(SymbolKind::Class));
+    assert_eq!(hover.selected_label.as_deref(), Some("GRAY_TEST2"));
+
+    let definition = definition_at(source, "GRAY_TEST2 test44", "GRAY_TEST2");
+    assert!(definition.is_hit(), "{definition:?}");
+    assert_eq!(definition.selected_kind, Some(SymbolKind::Class));
+    assert_eq!(definition.selected_label.as_deref(), Some("GRAY_TEST2"));
+
+    let method_hover = hover_at(source, "test44.TestNumFun", "TestNumFun");
+    assert!(method_hover.is_hit(), "{method_hover:?}");
+    assert_eq!(method_hover.selected_kind, Some(SymbolKind::Method));
+    assert_eq!(method_hover.selected_label.as_deref(), Some("TestNumFun"));
+
+    let method_definition = definition_at(source, "test44.TestNumFun", "TestNumFun");
+    assert!(method_definition.is_hit(), "{method_definition:?}");
+    assert_eq!(method_definition.selected_kind, Some(SymbolKind::Method));
+    assert_eq!(method_definition.selected_label.as_deref(), Some("TestNumFun"));
+}
+
+#[test]
 fn hover_type_usage_renders_same_class_display_as_class_declaration() {
     let source = r#"class Example
 {
