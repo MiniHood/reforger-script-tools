@@ -857,7 +857,7 @@ impl DocumentRuntime {
             .expect("document remains present for admitted rich task")
             .semantic_tokens
             .mark_pending(revision, generation, task.cancellation_token());
-        let Some(scheduler) = self.analysis_scheduler.clone() else {
+        if self.analysis_scheduler.is_none() {
             let projection = semantic_tokens_for_cached_analysis_with_external_indexes(
                 task.snapshot().text(),
                 &analysis,
@@ -880,7 +880,6 @@ impl DocumentRuntime {
                 .expect("constructed rich event is handled");
         };
         vec![RuntimeEffect::ScheduleRich {
-            scheduler,
             job: RichSemanticTokensJob {
                 task,
                 uri: uri.to_string(),
@@ -1074,6 +1073,13 @@ impl DocumentRuntime {
             .as_ref()
             .expect("debug work is admitted only when the runtime worker exists")
             .schedule_debug(job);
+    }
+
+    pub(super) fn schedule_rich(&self, job: RichSemanticTokensJob) {
+        self.analysis_scheduler
+            .as_ref()
+            .expect("rich work is admitted only when the runtime worker exists")
+            .schedule_rich(job);
     }
 
     /// The single owner for worker completion interpretation. The composition
