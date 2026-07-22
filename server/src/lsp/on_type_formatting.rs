@@ -239,20 +239,64 @@ pub(super) fn semicolon_before_enter_plan(
     let line_start = source[..cursor].rfind('\n').map_or(0, |index| index + 1);
     let indent = &source[line_start..cursor];
     let indent = &indent[..indent.len() - indent.trim_start_matches(char::is_whitespace).len()];
+    let next_indent = unbraced_if_body_indent(source, line_start, cursor).unwrap_or(indent);
     Some(AutoBlockControlHeaderPlan {
         span: TextSpan::new(insertion, cursor),
-        replacement: format!(";{}{}", &source[insertion..cursor], newline) + indent,
+        replacement: format!(";{}{}", &source[insertion..cursor], newline) + next_indent,
         selection_line: source[..cursor]
             .bytes()
             .filter(|byte| *byte == b'\n')
             .count() as u32
             + 1,
-        selection_character: indent
+        selection_character: next_indent
             .chars()
             .map(|character| character.len_utf16() as u32)
             .sum(),
         switch_arm_selection_end: None,
     })
+}
+
+fn unbraced_if_body_indent(source: &str, body_line_start: usize, cursor: usize) -> Option<&str> {
+    let body_line = &source[body_line_start..cursor];
+    let body_indent_end = body_line.len() - body_line.trim_start_matches(char::is_whitespace).len();
+    let body_indent = &body_line[..body_indent_end];
+    let body_tokens = lex(body_line)
+        .into_iter()
+        .filter(|token| !token.kind.is_trivia() && token.kind != TokenKind::Eof)
+        .collect::<Vec<_>>();
+    if !is_complete_value_return_statement(&body_tokens) {
+        return None;
+    }
+
+    let previous_line_end = trim_line_ending(source, body_line_start);
+    let previous_line_start = source[..previous_line_end]
+        .rfind('\n')
+        .map_or(0, |index| index + 1);
+    let header_line = &source[previous_line_start..previous_line_end];
+    let header_indent_end =
+        header_line.len() - header_line.trim_start_matches(char::is_whitespace).len();
+    let header_indent = &header_line[..header_indent_end];
+    if header_indent.chars().count() >= body_indent.chars().count() {
+        return None;
+    }
+    let tokens = lex(header_line)
+        .into_iter()
+        .filter(|token| !token.kind.is_trivia() && token.kind != TokenKind::Eof)
+        .collect::<Vec<_>>();
+    let if_index = match tokens.first().map(|token| token.kind) {
+        Some(TokenKind::Keyword(Keyword::If)) => 0,
+        Some(TokenKind::Keyword(Keyword::Else))
+            if tokens.get(1).map(|token| token.kind) == Some(TokenKind::Keyword(Keyword::If)) =>
+        {
+            1
+        }
+        _ => return None,
+    };
+    if tokens.get(if_index + 1).map(|token| token.kind) != Some(TokenKind::LeftParen) {
+        return None;
+    }
+    let close_index = matching_right_paren(&tokens, if_index + 1)?;
+    (close_index + 1 == tokens.len()).then_some(header_indent)
 }
 
 fn matching_right_paren(tokens: &[Token], open: usize) -> Option<usize> {
@@ -1016,6 +1060,11 @@ mod tests {
         let source = "Run() // keep this";
         let plan = semicolon_before_enter_plan(source, source.len()).unwrap();
         assert_eq!(plan.replacement, "; // keep this\n");
+
+        let source = "        if (true)\n            return";
+        let plan = semicolon_before_enter_plan(source, source.len()).unwrap();
+        assert_eq!(plan.replacement, ";\n        ");
+        assert_eq!(plan.selection_character, 8);
 
         assert!(semicolon_before_enter_plan("Run() trailing", "Run()".len()).is_none());
     }
