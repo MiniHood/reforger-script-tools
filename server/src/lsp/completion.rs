@@ -19,6 +19,7 @@ use crate::model::{SourceKind, SymbolKind};
 use crate::resolver::{CandidateSource, IdentifierContext, ReferenceCandidate, ReferenceResolver};
 use crate::syntax::SyntaxNode;
 use serde::{ser::SerializeMap, Serialize, Serializer};
+use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
@@ -94,7 +95,7 @@ pub struct LspCommand {
     pub title: String,
     pub command: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub arguments: Option<Vec<String>>,
+    pub arguments: Option<Vec<Value>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -3536,10 +3537,14 @@ fn keyword_completion_items(
                 command: (keyword == "if").then_some(LspCommand {
                     title: "Normalize if Space commit".to_string(),
                     command: COMMAND_NORMALIZE_IF_SPACE_COMMIT.to_string(),
-                    arguments: Some(vec![
-                        edit_range.start.line.to_string(),
-                        (edit_range.start.character + 4).to_string(),
-                    ]),
+                    arguments: Some(vec![json!({
+                        "expectedCommit": " ",
+                        "deletion": {
+                            "start": { "line": edit_range.start.line, "character": edit_range.start.character + 4 },
+                            "end": { "line": edit_range.start.line, "character": edit_range.start.character + 5 },
+                        },
+                        "caret": { "line": edit_range.start.line, "character": edit_range.start.character + 4 },
+                    })]),
                 }),
                 text_edit: LspTextEdit {
                     range: edit_range,
@@ -4230,7 +4235,7 @@ fn trigger_suggest_at_snippet_placeholder_command(placeholder_defaults: Vec<Stri
         // The extension uses this ordered sequence only to recognize VS
         // Code's selected snippet fields. It never parses or classifies
         // source text, symbols, or parameters.
-        arguments: Some(placeholder_defaults),
+        arguments: Some(placeholder_defaults.into_iter().map(Value::String).collect()),
     }
 }
 
@@ -4912,8 +4917,8 @@ class ScriptComponent
             rpc.command
                 .as_ref()
                 .and_then(|command| command.arguments.as_ref())
-                .map(|arguments| arguments.iter().map(String::as_str).collect::<Vec<_>>()),
-            Some(vec!["RplChannel.Reliable", "RplRcver.Server"])
+                .cloned(),
+            Some(vec![json!("RplChannel.Reliable"), json!("RplRcver.Server")])
         );
     }
 
@@ -5769,7 +5774,11 @@ ArmaReforgerScripted GetGame();
                 .command
                 .as_ref()
                 .and_then(|command| command.arguments.as_ref()),
-            Some(&vec!["0".to_string(), "4".to_string()]),
+            Some(&vec![json!({
+                "expectedCommit": " ",
+                "deletion": { "start": { "line": 0, "character": 4 }, "end": { "line": 0, "character": 5 } },
+                "caret": { "line": 0, "character": 4 },
+            })]),
         );
         let wire_item = serde_json::to_value(if_item).expect("keyword item should serialize");
         assert_eq!(wire_item["commitCharacters"], serde_json::json!([" "]));

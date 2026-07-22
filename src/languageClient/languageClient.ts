@@ -50,7 +50,7 @@ import {
 
 export { blockCommentPairPosition, enterAfterPosition, tabAfterPosition } from './typingAssistBridge';
 export { isCurrentSingleTypingAssistCaret } from './typingAssistTransactionBridge';
-export { ifSpaceCommitPositionFromCommandArguments } from './completionUiBridge';
+export { ifSpaceCommitContractFromCommandArguments } from './completionUiBridge';
 
 let client: LanguageClient | undefined;
 let clientDisposables: vscode.Disposable[] = [];

@@ -3840,8 +3840,8 @@ class RplRpc : UniqueAttribute
             item.command
                 .as_ref()
                 .and_then(|command| command.arguments.as_ref())
-                .map(|arguments| arguments.iter().map(String::as_str).collect::<Vec<_>>()),
-            Some(vec!["RplChannel.Reliable", "RplRcver.Server"])
+                .cloned(),
+            Some(vec![serde_json::json!("RplChannel.Reliable"), serde_json::json!("RplRcver.Server")])
         );
         assert_eq!(item.required_parameter_count, 2);
         assert_eq!(item.optional_parameter_count, 2);
@@ -4125,10 +4125,7 @@ class Example
                 .command
                 .as_ref()
                 .and_then(|command| command.arguments.as_ref()),
-            Some(&vec![
-                "FirstChoice.".to_string(),
-                "SecondChoice.".to_string()
-            ])
+            Some(&vec![serde_json::json!("FirstChoice."), serde_json::json!("SecondChoice.")])
         );
 
         let constructor_source = format!(
@@ -4166,10 +4163,7 @@ class Example
                 .command
                 .as_ref()
                 .and_then(|command| command.arguments.as_ref()),
-            Some(&vec![
-                "FirstChoice.".to_string(),
-                "SecondChoice.".to_string()
-            ])
+            Some(&vec![serde_json::json!("FirstChoice."), serde_json::json!("SecondChoice.")])
         );
 
         let attribute_source = format!(
@@ -4205,10 +4199,7 @@ class Example
                 .command
                 .as_ref()
                 .and_then(|command| command.arguments.as_ref()),
-            Some(&vec![
-                "FirstChoice.".to_string(),
-                "SecondChoice.".to_string()
-            ])
+            Some(&vec![serde_json::json!("FirstChoice."), serde_json::json!("SecondChoice.")])
         );
     }
 
@@ -8184,6 +8175,39 @@ class Example
         assert!(output_text.contains("\"targetSelectionRange\""));
         assert!(output_text.contains("\"line\":2"));
         assert!(output_text.contains("\"character\":14"));
+    }
+
+    #[test]
+    fn framed_lsp_if_completion_carries_rust_normalization_contract() {
+        let mut input = Vec::new();
+        write_test_message(&mut input, json!({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}
+        }));
+        write_test_message(&mut input, json!({
+            "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+                "textDocument": {
+                    "uri": "file:///Scripts/IfCompletion.c", "languageId": "enforce", "version": 1, "text": "i"
+                }
+            }
+        }));
+        write_test_message(&mut input, json!({
+            "jsonrpc": "2.0", "id": 2, "method": "textDocument/completion", "params": {
+                "textDocument": { "uri": "file:///Scripts/IfCompletion.c" },
+                "position": { "line": 0, "character": 1 }
+            }
+        }));
+        write_test_message(&mut input, json!({
+            "jsonrpc": "2.0", "id": 3, "method": "shutdown", "params": null
+        }));
+        write_test_message(&mut input, json!({ "jsonrpc": "2.0", "method": "exit", "params": null }));
+
+        let mut output = Vec::new();
+        run(input.as_slice(), &mut output, LspServerOptions::default()).unwrap();
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("\"label\":\"if\""));
+        assert!(output.contains("\"expectedCommit\":\" \""));
+        assert!(output.contains("\"deletion\":{\"end\":{\"character\":5,\"line\":0},\"start\":{\"character\":4,\"line\":0}}"));
+        assert!(output.contains("\"caret\":{\"character\":4,\"line\":0}"));
     }
 
     #[test]

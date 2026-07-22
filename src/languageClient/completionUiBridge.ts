@@ -37,7 +37,9 @@ interface EmptyCompletionRefresh {
 interface IfSpaceCommit {
 	documentUri: string;
 	version: number;
-	position: vscode.Position;
+	expectedCommit: string;
+	deletion: vscode.Range;
+	caret: vscode.Position;
 }
 
 interface EditorDocumentChange {
@@ -324,8 +326,8 @@ function isVscodeCommand(value: unknown): value is vscode.Command {
  * contract.
  */
 async function normalizeIfSpaceCommit(args: readonly unknown[]): Promise<void> {
-	const position = ifSpaceCommitPositionFromCommandArguments(args);
-	if (!position) {
+	const contract = ifSpaceCommitContractFromCommandArguments(args);
+	if (!contract) {
 		return;
 	}
 	const editor = vscode.window.activeTextEditor;
@@ -335,36 +337,54 @@ async function normalizeIfSpaceCommit(args: readonly unknown[]): Promise<void> {
 		|| !editor.selection.isEmpty) {
 		return;
 	}
-	const deletion = new vscode.Range(position, position.translate(0, 1));
-	if (editor.selection.active.isEqual(deletion.end)) {
-		diagnostic('completion.ifSpaceCommit', { outcome: 'afterCommit' });
-		await removeIfSpaceCommitCharacter(editor, deletion);
+	if (editor.selection.active.isEqual(contract.deletion.end)
+		&& latestEditorDocumentChange?.documentUri === editor.document.uri.toString()
+		&& latestEditorDocumentChange.version === editor.document.version
+		&& !latestEditorDocumentChange.hasDeletion) {
+		diagnostic('completion.ifSpaceCommit', { outcome: 'postCommitContractObserved' });
+		await removeIfSpaceCommitCharacter(editor, contract.deletion, contract.caret);
 		return;
 	}
-	if (!editor.selection.active.isEqual(deletion.start)) {
+	if (!editor.selection.active.isEqual(contract.deletion.start)) {
 		diagnostic('completion.ifSpaceCommit', { outcome: 'ignored' });
 		return;
 	}
 	pendingIfSpaceCommit = {
 		documentUri: editor.document.uri.toString(),
 		version: editor.document.version,
-		position: deletion.start,
+		...contract,
 	};
 	diagnostic('completion.ifSpaceCommit', { outcome: 'awaitingCommitCharacter' });
 }
 
-export function ifSpaceCommitPositionFromCommandArguments(args: readonly unknown[]): vscode.Position | undefined {
-	const [line, character] = args;
-	if (typeof line !== 'string' || typeof character !== 'string'
-		|| !/^\d+$/.test(line) || !/^\d+$/.test(character)) {
+interface IfSpaceCommitContract {
+	expectedCommit: string;
+	deletion: vscode.Range;
+	caret: vscode.Position;
+}
+
+export function ifSpaceCommitContractFromCommandArguments(args: readonly unknown[]): IfSpaceCommitContract | undefined {
+	const [value] = args;
+	if (typeof value !== 'object' || value === null) {
 		return undefined;
 	}
-	const lineNumber = Number(line);
-	const characterNumber = Number(character);
-	if (!Number.isSafeInteger(lineNumber) || !Number.isSafeInteger(characterNumber)) {
+	const contract = value as { expectedCommit?: unknown; deletion?: { start?: unknown; end?: unknown }; caret?: unknown };
+	const position = (candidate: unknown): vscode.Position | undefined => {
+		if (typeof candidate !== 'object' || candidate === null) {
+			return undefined;
+		}
+		const { line, character } = candidate as { line?: unknown; character?: unknown };
+		return typeof line === 'number' && Number.isSafeInteger(line) && line >= 0
+			&& typeof character === 'number' && Number.isSafeInteger(character) && character >= 0
+			? new vscode.Position(line, character) : undefined;
+	};
+	const start = position(contract.deletion?.start);
+	const end = position(contract.deletion?.end);
+	const caret = position(contract.caret);
+	if (typeof contract.expectedCommit !== 'string' || contract.expectedCommit.length !== 1 || !start || !end || !caret) {
 		return undefined;
 	}
-	return new vscode.Position(lineNumber, characterNumber);
+	return { expectedCommit: contract.expectedCommit, deletion: new vscode.Range(start, end), caret };
 }
 
 function registerIfSpaceCommitCleanup(): vscode.Disposable {
@@ -378,34 +398,34 @@ function registerIfSpaceCommitCleanup(): vscode.Disposable {
 		if (event.document.version !== pending.version + 1
 			|| event.contentChanges.length !== 1
 			|| !change.range.isEmpty
-			|| change.text !== ' '
-			|| !change.range.start.isEqual(pending.position)) {
+		|| change.text !== pending.expectedCommit
+		|| !change.range.start.isEqual(pending.deletion.start)) {
 			diagnostic('completion.ifSpaceCommit', { outcome: 'unexpectedChange' });
 			return;
 		}
 		const editor = vscode.window.activeTextEditor;
 		if (!editor
 			|| editor.document.uri.toString() !== pending.documentUri
-			|| !editor.selection.active.isEqual(pending.position.translate(0, 1))) {
-			diagnostic('completion.ifSpaceCommit', { outcome: 'postCommitShapeMissing' });
+		|| !editor.selection.active.isEqual(pending.deletion.end)) {
+			diagnostic('completion.ifSpaceCommit', { outcome: 'postCommitStateMismatch' });
 			return;
 		}
 		diagnostic('completion.ifSpaceCommit', { outcome: 'commitObserved' });
-		void removeIfSpaceCommitCharacter(editor, new vscode.Range(pending.position, pending.position.translate(0, 1)));
+	void removeIfSpaceCommitCharacter(editor, pending.deletion, pending.caret);
 	});
 }
 
 async function removeIfSpaceCommitCharacter(
 	editor: vscode.TextEditor,
 	deletion: vscode.Range,
+	caret: vscode.Position,
 ): Promise<void> {
-	const position = deletion.start;
 	const applied = await editor.edit(edit => edit.delete(deletion), {
 		undoStopBefore: false,
 		undoStopAfter: false,
 	});
 	if (applied) {
-		editor.selection = new vscode.Selection(position, position);
+		editor.selection = new vscode.Selection(caret, caret);
 		diagnostic('completion.ifSpaceCommit', { outcome: 'normalized' });
 	}
 }

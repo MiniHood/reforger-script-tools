@@ -6,7 +6,7 @@ import { languageClientCommands } from '../extensionConfig/languageClient';
 import {
 	blockCommentPairPosition,
 	enterAfterPosition,
-	ifSpaceCommitPositionFromCommandArguments,
+	ifSpaceCommitContractFromCommandArguments,
 	isCurrentSingleTypingAssistCaret,
 	tabAfterPosition,
 } from '../languageClient/languageClient';
@@ -33,13 +33,49 @@ suite('extension activation', () => {
 			command.command === languageClientCommands.triggerSuggestAtSnippetPlaceholder));
 	});
 
-	test('accepts only Rust-authored if completion coordinates', () => {
-		assert.deepStrictEqual(
-			ifSpaceCommitPositionFromCommandArguments(['3', '9']),
-			new vscode.Position(3, 9),
-		);
-		assert.strictEqual(ifSpaceCommitPositionFromCommandArguments([3, 9]), undefined);
-		assert.strictEqual(ifSpaceCommitPositionFromCommandArguments(['3', '-1']), undefined);
+	test('accepts only a complete Rust-authored if completion contract', () => {
+		const contract = ifSpaceCommitContractFromCommandArguments([{
+			expectedCommit: ' ',
+			deletion: { start: { line: 3, character: 9 }, end: { line: 3, character: 10 } },
+			caret: { line: 3, character: 9 },
+		}]);
+		assert.deepStrictEqual(contract?.deletion, new vscode.Range(3, 9, 3, 10));
+		assert.deepStrictEqual(contract?.caret, new vscode.Position(3, 9));
+		assert.strictEqual(ifSpaceCommitContractFromCommandArguments([{ expectedCommit: ' ' }]), undefined);
+	});
+
+	test('applies the Rust-authored if completion contract after a Space commit', async () => {
+		const document = await vscode.workspace.openTextDocument({ language: 'enforce', content: 'if ()' });
+		const editor = await vscode.window.showTextDocument(document);
+		const position = new vscode.Position(0, 4);
+		await editor.edit(edit => edit.insert(position, ' '));
+		editor.selection = new vscode.Selection(new vscode.Position(0, 5), new vscode.Position(0, 5));
+		await vscode.commands.executeCommand(languageClientCommands.normalizeIfSpaceCommit, {
+			expectedCommit: ' ',
+			deletion: { start: { line: 0, character: 4 }, end: { line: 0, character: 5 } },
+			caret: { line: 0, character: 4 },
+		});
+		assert.strictEqual(document.getText(), 'if ()');
+		assert.deepStrictEqual(editor.selection.active, new vscode.Position(0, 4));
+	});
+
+	test('rejects an if completion contract after a caret or selection change', async () => {
+		const contract = {
+			expectedCommit: ' ',
+			deletion: { start: { line: 0, character: 4 }, end: { line: 0, character: 5 } },
+			caret: { line: 0, character: 4 },
+		};
+		const document = await vscode.workspace.openTextDocument({ language: 'enforce', content: 'if ( )' });
+		const editor = await vscode.window.showTextDocument(document);
+		editor.selection = new vscode.Selection(new vscode.Position(0, 0), new vscode.Position(0, 0));
+		await vscode.commands.executeCommand(languageClientCommands.normalizeIfSpaceCommit, contract);
+		assert.strictEqual(document.getText(), 'if ( )');
+		editor.selections = [
+			new vscode.Selection(new vscode.Position(0, 4), new vscode.Position(0, 4)),
+			new vscode.Selection(new vscode.Position(0, 4), new vscode.Position(0, 4)),
+		];
+		await vscode.commands.executeCommand(languageClientCommands.normalizeIfSpaceCommit, contract);
+		assert.strictEqual(document.getText(), 'if ( )');
 	});
 
 	test('maps Rust byte offsets to VS Code UTF-16 positions for symbol navigation', () => {
