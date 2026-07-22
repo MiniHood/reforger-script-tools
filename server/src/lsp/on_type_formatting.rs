@@ -1,6 +1,7 @@
 use crate::lexer::{lex, Keyword, Operator, TextSpan, Token, TokenKind};
 
 const MAX_ON_TYPE_SOURCE_BYTES: usize = 64 * 1024;
+const MAX_UNBRACED_CONTROL_BODY_BLANK_LINES: usize = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct BlockCommentPairPlan {
@@ -41,10 +42,11 @@ pub(super) fn unbraced_if_body_outdent_plan(
     if !current_indent.chars().all(char::is_whitespace) {
         return None;
     }
-    let body_line_end = trim_line_ending(source, current_line_start);
-    let body_line_start = source[..body_line_end]
-        .rfind('\n')
-        .map_or(0, |newline| newline + 1);
+    let (body_line_start, body_line_end) = previous_nonempty_line(
+        source,
+        current_line_start,
+        MAX_UNBRACED_CONTROL_BODY_BLANK_LINES,
+    )?;
     let header_line_end = trim_line_ending(source, body_line_start);
     let header_line_start = source[..header_line_end]
         .rfind('\n')
@@ -453,6 +455,31 @@ fn trim_line_ending(source: &str, line_start: usize) -> usize {
         end = end.saturating_sub(1);
     }
     end
+}
+
+/// Finds the preceding nonempty physical line without crossing comments or
+/// code. This lets an unbraced control body's enclosing indentation persist
+/// across a small deliberate run of blank lines.
+fn previous_nonempty_line(
+    source: &str,
+    current_line_start: usize,
+    max_blank_lines: usize,
+) -> Option<(usize, usize)> {
+    let mut line_end = trim_line_ending(source, current_line_start);
+    let mut blank_lines = 0usize;
+    loop {
+        let line_start = source[..line_end]
+            .rfind('\n')
+            .map_or(0, |newline| newline + 1);
+        if !source[line_start..line_end].trim().is_empty() {
+            return Some((line_start, line_end));
+        }
+        blank_lines += 1;
+        if blank_lines > max_blank_lines || line_start == 0 {
+            return None;
+        }
+        line_end = trim_line_ending(source, line_start);
+    }
 }
 
 fn is_complete_call_expression(tokens: &[Token]) -> bool {
@@ -1020,6 +1047,14 @@ mod tests {
         assert_eq!(plan.replacement, "        ");
         assert_eq!(plan.selection_character, 8);
         assert!(unbraced_if_body_outdent_plan(source, source.len(), 4, true, false).is_none());
+    }
+
+    #[test]
+    fn tab_outdents_after_a_small_run_of_blank_lines_following_an_unbraced_if_body() {
+        let source = "        if (GetGame())\n            return;\n\n\n            ";
+        let plan = unbraced_if_body_outdent_plan(source, source.len(), 4, true, false).unwrap();
+        assert_eq!(plan.replacement, "        ");
+        assert_eq!(plan.selection_character, 8);
     }
 
     #[test]
