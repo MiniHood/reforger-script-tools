@@ -1015,7 +1015,7 @@ mod tests {
 
     #[test]
     fn tab_from_an_empty_line_supports_space_indentation_when_the_trigger_is_trusted() {
-        let source = "        if (owner == GetOwner())\n            return owner;\n    ";
+        let source = "        if (GetGame())\n            return;\n    ";
         let plan = unbraced_if_body_outdent_plan(source, source.len(), 4, true, true).unwrap();
         assert_eq!(plan.replacement, "        ");
         assert_eq!(plan.selection_character, 8);
