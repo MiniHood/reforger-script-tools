@@ -1,12 +1,13 @@
 use super::{
     clear_diagnostics_message, document_symbol_count, document_symbols_from_cached_analysis,
-    file_index_for_source_with_timings, lex, parse_source, publish_diagnostics_message,
-    request_document_uri, semantic_tokens_for_cached_analysis_with_external_indexes,
-    AdmissionDisposition, AnalysisTask, DebugRequestJob, DidChangeTextDocumentParams,
-    DidOpenTextDocumentParams, DocumentQuery, ExternalIndexSnapshot, FileIndexAnalysis,
-    FileIndexAnalysisTimings, ForegroundDocumentJob, LspSemanticTokensFull, OpenDocument,
-    OpenDocumentAnalysisJob, PositionIndex, RichSemanticTokensJob, RpcMessage, RuntimeEffect,
-    RuntimeWorkExecutor, ServerEvent, TaskClass, MAX_PENDING_DOCUMENT_REQUESTS_PER_URI,
+    file_index_for_source_with_timings, lex, lexical_document_symbols_for_snapshot, parse_source,
+    publish_diagnostics_message, request_document_uri,
+    semantic_tokens_for_cached_analysis_with_external_indexes, AdmissionDisposition, AnalysisTask,
+    DebugRequestJob, DidChangeTextDocumentParams, DidOpenTextDocumentParams, DocumentQuery,
+    ExternalIndexSnapshot, FileIndexAnalysis, FileIndexAnalysisTimings, ForegroundDocumentJob,
+    LspDocumentSymbol, LspSemanticTokensFull, OpenDocument, OpenDocumentAnalysisJob, PositionIndex,
+    RichSemanticTokensJob, RpcMessage, RuntimeEffect, RuntimeWorkExecutor, ServerEvent, TaskClass,
+    MAX_PENDING_DOCUMENT_REQUESTS_PER_URI,
 };
 use crate::analysis_runtime::{AdmissionLimits, AnalysisRuntime, UpsertOutcome};
 use serde_json::Value;
@@ -27,6 +28,18 @@ pub(super) struct DocumentRuntime {
     pub(super) semantic_tokens_refresh_in_flight: Option<String>,
     pub(super) semantic_tokens_refresh_dirty: bool,
     pub(super) last_semantic_external_generation: u64,
+}
+
+/// The document-runtime-owned result of an outline projection. Feature
+/// handlers receive data, never a mutable open-document entry.
+pub(super) struct DocumentSymbolProjection {
+    pub(super) symbols: Vec<LspDocumentSymbol>,
+    pub(super) bytes: usize,
+    pub(super) revision: u64,
+    pub(super) parse_diagnostics: usize,
+    pub(super) cached: bool,
+    pub(super) quality: &'static str,
+    pub(super) projection_ms: u128,
 }
 
 impl DocumentRuntime {
@@ -54,6 +67,44 @@ impl DocumentRuntime {
             document: self.documents.get(uri)?,
             external_indexes,
         })
+    }
+
+    /// Projects an outline from the current snapshot while retaining the
+    /// document-symbol cache inside the runtime that owns the document.
+    pub(super) fn document_symbols(&mut self, uri: &str) -> Option<DocumentSymbolProjection> {
+        let document = self.documents.get_mut(uri)?;
+        let bytes = document.text.len();
+        let revision = document.revision;
+        let projection_start = Instant::now();
+        if document.analysis_ready() {
+            let cached = document.document_symbols_ready();
+            if !cached {
+                let symbols =
+                    document_symbols_from_cached_analysis(&document.text, document.analysis());
+                document.set_document_symbols(symbols);
+            }
+            let symbols = document.document_symbols().to_vec();
+            Some(DocumentSymbolProjection {
+                symbols,
+                bytes,
+                revision,
+                parse_diagnostics: document.analysis().parse_diagnostics,
+                cached,
+                quality: "Exact",
+                projection_ms: projection_start.elapsed().as_millis(),
+            })
+        } else {
+            let symbols = lexical_document_symbols_for_snapshot(&document.snapshot);
+            Some(DocumentSymbolProjection {
+                symbols,
+                bytes,
+                revision,
+                parse_diagnostics: 0,
+                cached: false,
+                quality: "Unavailable",
+                projection_ms: projection_start.elapsed().as_millis(),
+            })
+        }
     }
 
     /// Closes a document and turns every transport-visible consequence into

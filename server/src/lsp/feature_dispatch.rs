@@ -10,12 +10,11 @@ use super::{
     completion_report_for_lexical_source_with_external_indexes,
     debug_hover_report_for_cached_analysis_with_external_indexes,
     definition_report_for_cached_analysis_with_external_indexes,
-    definition_report_for_pending_snapshot, document_symbol_count,
-    document_symbols_from_cached_analysis, empty_completion_list,
+    definition_report_for_pending_snapshot, document_symbol_count, empty_completion_list,
     hover_report_for_cached_analysis_with_external_indexes, hover_report_for_pending_snapshot,
-    lexical_document_symbols_for_snapshot, lexical_semantic_tokens_for_source, offset_for_position,
-    on_type_formatting, parse_params, position_for_offset, selected_label_from_debug_report,
-    signature_help_debug_markdown, signature_help_report_for_cached_analysis_with_external_indexes,
+    lexical_semantic_tokens_for_source, offset_for_position, on_type_formatting, parse_params,
+    position_for_offset, selected_label_from_debug_report, signature_help_debug_markdown,
+    signature_help_report_for_cached_analysis_with_external_indexes,
     signature_help_report_for_pending_snapshot, source_backed_request_method, symbol_kind_label,
     BlockCommentPairParams, DebugCompletionJob, DebugHoverJob, DebugRequestJob, DocumentQuery,
     DocumentQueryState, DocumentSymbolParams, EnterTypingAssistParams, HoverParams,
@@ -216,36 +215,16 @@ impl<W: Write> LspServer<W> {
                         .and_then(|params| {
                             log_uri = params.text_document.uri;
                             self.document_runtime
-                                .documents
-                                .get_mut(&log_uri)
-                                .map(|document| {
-                                    bytes = document.text.len();
-                                    revision = document.revision;
-                                    if document.analysis_ready() {
-                                        cached_projection = document.document_symbols_ready();
-                                        if !cached_projection {
-                                            let projection_start = Instant::now();
-                                            let symbols = document_symbols_from_cached_analysis(
-                                                &document.text,
-                                                document.analysis(),
-                                            );
-                                            projection_ms = projection_start.elapsed().as_millis();
-                                            document.set_document_symbols(symbols);
-                                        }
-                                        let symbols = document.document_symbols();
-                                        symbol_count = document_symbol_count(&symbols);
-                                        parse_diagnostics = document.analysis().parse_diagnostics;
-                                        symbols.to_vec()
-                                    } else {
-                                        outline_quality = "Unavailable";
-                                        let projection_start = Instant::now();
-                                        let symbols = lexical_document_symbols_for_snapshot(
-                                            &document.snapshot,
-                                        );
-                                        projection_ms = projection_start.elapsed().as_millis();
-                                        symbol_count = document_symbol_count(&symbols);
-                                        symbols
-                                    }
+                                .document_symbols(&log_uri)
+                                .map(|projection| {
+                                    bytes = projection.bytes;
+                                    revision = projection.revision;
+                                    cached_projection = projection.cached;
+                                    outline_quality = projection.quality;
+                                    projection_ms = projection.projection_ms;
+                                    parse_diagnostics = projection.parse_diagnostics;
+                                    symbol_count = document_symbol_count(&projection.symbols);
+                                    projection.symbols
                                 })
                         })
                         .map(|symbols| serde_json::to_value(symbols).unwrap_or(Value::Null))
