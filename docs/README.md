@@ -30,3 +30,5 @@ implementation slice is progress, not a completed ticket.
 - [Architecture](architecture.md): module boundaries and runtime invariants.
 - [Language engine](language-engine.md): Rust analysis and LSP contract.
 - [Development](development.md): build, test, and local development workflow.
+- [Key input routing](key-input-routing.md): VS Code key-routing boundary and
+  the ownership policy for atomic typing assists.
