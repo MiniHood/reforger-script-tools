@@ -1,4 +1,4 @@
-use super::{LspServer, RichSemanticTokensJob};
+use super::LspServer;
 use serde_json::{json, Value};
 use std::io::Write;
 
@@ -9,9 +9,6 @@ pub(super) enum RuntimeEffect {
     ReplayDeferred {
         value: Value,
         queue_ms: u128,
-    },
-    ScheduleRich {
-        job: RichSemanticTokensJob,
     },
     RequestSemanticTokensRefresh {
         id: String,
@@ -37,10 +34,6 @@ impl<W: Write> LspServer<W> {
             }
             RuntimeEffect::ReplayDeferred { value, queue_ms } => {
                 self.handle_message(value, Some(queue_ms), 0, 0).map(|_| ())
-            }
-            RuntimeEffect::ScheduleRich { job } => {
-                self.document_runtime.schedule_rich(job);
-                Ok(())
             }
             RuntimeEffect::RequestSemanticTokensRefresh { id } => self.write_message(json!({
                 "jsonrpc": "2.0",
