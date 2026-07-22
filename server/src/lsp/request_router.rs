@@ -37,6 +37,71 @@ use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+/// The protocol-level ownership of a JSON-RPC message.  Classification is
+/// deliberately independent of document state: the composition root decides
+/// lifecycle policy, while the document runtime decides whether a document
+/// command can be admitted for its current snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum RequestCommand {
+    Lifecycle,
+    Document,
+    Feature,
+    WorkspaceIndex,
+    Cancellation,
+    Unknown,
+}
+
+#[derive(Debug)]
+pub(super) struct RoutedRequest {
+    pub(super) command: RequestCommand,
+    pub(super) message: RpcMessage,
+    pub(super) value: Value,
+    pub(super) parameter_error: Option<String>,
+}
+
+/// A pure JSON-RPC boundary. It validates the envelope and classifies one
+/// message without consulting open documents, the analysis runtime, or the
+/// transport.
+pub(super) fn classify_request(value: Value) -> Result<RoutedRequest, String> {
+    let message = serde_json::from_value::<RpcMessage>(value.clone())
+        .map_err(|error| format!("Invalid JSON-RPC message: {error}"))?;
+    let command = match message.method.as_deref() {
+        None => RequestCommand::Lifecycle,
+        Some("$/cancelRequest") => RequestCommand::Cancellation,
+        Some("initialize" | "initialized" | "shutdown" | "exit") => RequestCommand::Lifecycle,
+        Some("textDocument/didOpen" | "textDocument/didChange" | "textDocument/didClose") => {
+            RequestCommand::Document
+        }
+        Some(WORKSPACE_FILE_CHANGED_METHOD | WORKSPACE_FILE_DELETED_METHOD) => {
+            RequestCommand::WorkspaceIndex
+        }
+        Some(method)
+            if method.starts_with("textDocument/")
+                || matches!(
+                    method,
+                    DEBUG_HOVER_METHOD
+                        | DEBUG_COMPLETION_METHOD
+                        | BLOCK_COMMENT_PAIR_METHOD
+                        | ENTER_TYPING_ASSIST_METHOD
+                        | RANGE_FORMATTING_METHOD
+                ) =>
+        {
+            RequestCommand::Feature
+        }
+        Some(_) => RequestCommand::Unknown,
+    };
+    let parameter_error = message
+        .method
+        .as_deref()
+        .and_then(|method| validate_message_params(method, &message.params).err());
+    Ok(RoutedRequest {
+        command,
+        message,
+        value,
+        parameter_error,
+    })
+}
+
 /// The protocol-routing boundary. It borrows the composition root only for
 /// the transition period while document commands finish moving to
 /// `DocumentRuntime`; it owns no durable server state.
@@ -57,8 +122,13 @@ impl<'server, W: Write> RequestRouter<'server, W> {
         superseded_changes: usize,
     ) -> Result<bool, String> {
         let started_at = Instant::now();
-        let message = serde_json::from_value::<RpcMessage>(value.clone())
-            .map_err(|error| format!("Invalid JSON-RPC message: {error}"))?;
+        let routed = classify_request(value)?;
+        let RoutedRequest {
+            command,
+            message,
+            value,
+            parameter_error,
+        } = routed;
         let queue_ms = queue_ms.unwrap_or(0);
         let Some(method) = message.method.as_deref() else {
             self.handle_semantic_tokens_refresh_response(&message)?;
@@ -68,6 +138,7 @@ impl<'server, W: Write> RequestRouter<'server, W> {
             "rpc.received",
             json!({
                 "method": method,
+                "command": format!("{command:?}"),
                 "request": message.id.is_some(),
                 "queueMs": queue_ms,
                 "coalescedChanges": coalesced_changes,
@@ -87,7 +158,7 @@ impl<'server, W: Write> RequestRouter<'server, W> {
             return Ok(false);
         }
 
-        if let Err(error) = validate_message_params(method, &message.params) {
+        if let Some(error) = parameter_error {
             if let Some(id) = message.id.clone() {
                 self.respond_error(id, -32602, &error)?;
             } else {
@@ -1742,5 +1813,48 @@ impl<W: Write> Deref for RequestRouter<'_, W> {
 impl<W: Write> DerefMut for RequestRouter<'_, W> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.server
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{classify_request, RequestCommand};
+    use serde_json::json;
+
+    #[test]
+    fn classifies_document_feature_workspace_and_lifecycle_messages_without_runtime_state() {
+        let cases = [
+            (json!({"method": "initialize"}), RequestCommand::Lifecycle),
+            (
+                json!({"method": "textDocument/didOpen", "params": {"textDocument": {"uri": "file:///a.c", "version": 1, "text": "class A {}"}}}),
+                RequestCommand::Document,
+            ),
+            (
+                json!({"method": "textDocument/hover", "id": 1, "params": {"textDocument": {"uri": "file:///a.c"}, "position": {"line": 0, "character": 0}}}),
+                RequestCommand::Feature,
+            ),
+            (
+                json!({"method": "reforger/workspaceFileChanged", "params": {"uri": "file:///a.c"}}),
+                RequestCommand::WorkspaceIndex,
+            ),
+            (json!({"method": "$/cancelRequest"}), RequestCommand::Cancellation),
+        ];
+
+        for (value, expected) in cases {
+            assert_eq!(classify_request(value).unwrap().command, expected);
+        }
+    }
+
+    #[test]
+    fn preserves_parameter_errors_for_composition_root_response_policy() {
+        let routed = classify_request(json!({
+            "id": 1,
+            "method": "textDocument/hover",
+            "params": {"textDocument": {"uri": "file:///a.c"}}
+        }))
+        .unwrap();
+
+        assert_eq!(routed.command, RequestCommand::Feature);
+        assert!(routed.parameter_error.is_some());
     }
 }
