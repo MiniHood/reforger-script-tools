@@ -89,3 +89,20 @@ language conventions.
 - Commit coherent, attributable local changes after verification, then push the
   commit to the current branch. Do not create or switch branches, open a PR,
   change remotes, force-push, or rewrite history unless explicitly asked.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub Issues; external pull requests are not a triage surface.
+See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The default five-role triage vocabulary is used. See
+`docs/agents/triage-labels.md`.
+
+### Domain docs
+
+This is a single-context repository rooted at `CONTEXT.md`. See
+`docs/agents/domain.md`.
