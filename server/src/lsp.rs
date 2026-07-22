@@ -443,7 +443,8 @@ impl<W: Write> LspServer<W> {
         // Lifecycle has no document-owned state. Keep it at the composition
         // root so the request router never needs transport or shutdown
         // ownership for these commands.
-        if matches!(routed.command, RequestCommand::Lifecycle(_)) && routed.message.method.is_some()
+        if matches!(&routed.command, RequestCommand::Lifecycle(_))
+            && routed.message.method.is_some()
         {
             return self.handle_lifecycle_command(
                 routed,
@@ -453,13 +454,13 @@ impl<W: Write> LspServer<W> {
             );
         }
         if matches!(
-            routed.command,
+            &routed.command,
             RequestCommand::Document(request_router::DocumentCommand::Close)
         ) {
             return self.handle_document_close_command(routed);
         }
         if matches!(
-            routed.command,
+            &routed.command,
             RequestCommand::Document(
                 request_router::DocumentCommand::Open | request_router::DocumentCommand::Change
             )

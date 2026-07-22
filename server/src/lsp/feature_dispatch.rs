@@ -1,4 +1,4 @@
-use super::request_router::RoutedRequest;
+use super::request_router::{RequestCommand, RoutedRequest, WorkspaceIndexCommand};
 use super::workspace_requests::{delete_workspace_file, update_workspace_file};
 use super::{
     completion, completion_debug_markdown,
@@ -147,12 +147,22 @@ impl FeatureDispatcher<'_> {
                 }
             }
             WORKSPACE_FILE_CHANGED_METHOD => {
-                for effect in update_workspace_file(&mut self.external_index, message.params)? {
+                let RequestCommand::WorkspaceIndex(WorkspaceIndexCommand::Changed(params)) =
+                    &command
+                else {
+                    unreachable!("workspace change method has a workspace command");
+                };
+                for effect in update_workspace_file(&mut self.external_index, params.clone()) {
                     self.deliver_effect(effect)?;
                 }
             }
             WORKSPACE_FILE_DELETED_METHOD => {
-                for effect in delete_workspace_file(&mut self.external_index, message.params)? {
+                let RequestCommand::WorkspaceIndex(WorkspaceIndexCommand::Deleted(params)) =
+                    &command
+                else {
+                    unreachable!("workspace deletion method has a workspace command");
+                };
+                for effect in delete_workspace_file(&mut self.external_index, params.clone()) {
                     self.deliver_effect(effect)?;
                 }
             }

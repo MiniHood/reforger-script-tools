@@ -5,34 +5,31 @@
 //! into transport-neutral runtime effects.
 use super::{ExternalIndexHandle, RuntimeEffect};
 use serde::Deserialize;
-use serde_json::Value;
 use std::path::PathBuf;
 use std::time::Instant;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct WorkspaceFileChangedParams {
-    path: String,
-    text: String,
-    sequence: u64,
+    pub(super) path: String,
+    pub(super) text: String,
+    pub(super) sequence: u64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct WorkspaceFileDeletedParams {
-    path: String,
-    sequence: u64,
+    pub(super) path: String,
+    pub(super) sequence: u64,
 }
 
 pub(super) fn update_workspace_file(
     external_index: &mut ExternalIndexHandle,
-    params: Option<Value>,
-) -> Result<Vec<RuntimeEffect>, String> {
+    params: Option<WorkspaceFileChangedParams>,
+) -> Vec<RuntimeEffect> {
     let Some(params) = params else {
-        return Ok(Vec::new());
+        return Vec::new();
     };
-    let params = serde_json::from_value::<WorkspaceFileChangedParams>(params)
-        .map_err(|error| format!("Invalid workspaceFileChanged params: {error}"))?;
     let start = Instant::now();
     let path = PathBuf::from(params.path);
     let bytes = params.text.len();
@@ -59,18 +56,16 @@ pub(super) fn update_workspace_file(
         )
         }
     };
-    Ok(vec![RuntimeEffect::Log(message)])
+    vec![RuntimeEffect::Log(message)]
 }
 
 pub(super) fn delete_workspace_file(
     external_index: &mut ExternalIndexHandle,
-    params: Option<Value>,
-) -> Result<Vec<RuntimeEffect>, String> {
+    params: Option<WorkspaceFileDeletedParams>,
+) -> Vec<RuntimeEffect> {
     let Some(params) = params else {
-        return Ok(Vec::new());
+        return Vec::new();
     };
-    let params = serde_json::from_value::<WorkspaceFileDeletedParams>(params)
-        .map_err(|error| format!("Invalid workspaceFileDeleted params: {error}"))?;
     let start = Instant::now();
     let path = PathBuf::from(params.path);
     let removed = external_index.delete_workspace_file(&path, params.sequence);
@@ -86,5 +81,5 @@ pub(super) fn delete_workspace_file(
             path.display(), params.sequence, start.elapsed().as_millis()
         ),
     };
-    Ok(vec![RuntimeEffect::Log(message)])
+    vec![RuntimeEffect::Log(message)]
 }

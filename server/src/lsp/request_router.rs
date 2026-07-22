@@ -2,6 +2,7 @@
 //!
 //! This module validates one envelope and assigns it to a runtime contract.
 //! It does not read document state or perform transport work.
+use super::workspace_requests::{WorkspaceFileChangedParams, WorkspaceFileDeletedParams};
 use super::{
     validate_message_params, RpcMessage, BLOCK_COMMENT_PAIR_METHOD, DEBUG_COMPLETION_METHOD,
     DEBUG_HOVER_METHOD, ENTER_TYPING_ASSIST_METHOD, RANGE_FORMATTING_METHOD,
@@ -9,7 +10,7 @@ use super::{
 };
 use serde_json::Value;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum RequestCommand {
     Lifecycle(LifecycleCommand),
     Document(DocumentCommand),
@@ -35,10 +36,10 @@ pub(super) enum DocumentCommand {
     Close,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum WorkspaceIndexCommand {
-    Changed,
-    Deleted,
+    Changed(Option<WorkspaceFileChangedParams>),
+    Deleted(Option<WorkspaceFileDeletedParams>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,12 +79,12 @@ pub(super) fn classify_request(value: Value) -> Result<RoutedRequest, String> {
         Some("textDocument/didOpen") => RequestCommand::Document(DocumentCommand::Open),
         Some("textDocument/didChange") => RequestCommand::Document(DocumentCommand::Change),
         Some("textDocument/didClose") => RequestCommand::Document(DocumentCommand::Close),
-        Some(WORKSPACE_FILE_CHANGED_METHOD) => {
-            RequestCommand::WorkspaceIndex(WorkspaceIndexCommand::Changed)
-        }
-        Some(WORKSPACE_FILE_DELETED_METHOD) => {
-            RequestCommand::WorkspaceIndex(WorkspaceIndexCommand::Deleted)
-        }
+        Some(WORKSPACE_FILE_CHANGED_METHOD) => RequestCommand::WorkspaceIndex(
+            WorkspaceIndexCommand::Changed(parse_workspace_params(&message.params)),
+        ),
+        Some(WORKSPACE_FILE_DELETED_METHOD) => RequestCommand::WorkspaceIndex(
+            WorkspaceIndexCommand::Deleted(parse_workspace_params(&message.params)),
+        ),
         Some("textDocument/documentSymbol") => {
             RequestCommand::Feature(FeatureCommand::DocumentSymbols)
         }
@@ -122,6 +123,14 @@ pub(super) fn classify_request(value: Value) -> Result<RoutedRequest, String> {
     })
 }
 
+fn parse_workspace_params<T: for<'de> serde::Deserialize<'de>>(
+    params: &Option<Value>,
+) -> Option<T> {
+    params
+        .as_ref()
+        .and_then(|params| serde_json::from_value(params.clone()).ok())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -147,7 +156,7 @@ mod tests {
             ),
             (
                 json!({"method": "reforger/workspaceFileChanged"}),
-                RequestCommand::WorkspaceIndex(WorkspaceIndexCommand::Changed),
+                RequestCommand::WorkspaceIndex(WorkspaceIndexCommand::Changed(None)),
             ),
             (
                 json!({"method": "$/cancelRequest"}),
