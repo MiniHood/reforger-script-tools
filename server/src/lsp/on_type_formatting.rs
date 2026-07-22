@@ -96,17 +96,28 @@ pub(super) fn auto_block_control_header_enter_plan(
         "\t".to_string()
     };
     let is_switch = keyword.kind == TokenKind::Keyword(Keyword::Switch);
+    let inserted_header_newline = source[keyword.span.start..close.span.end]
+        .rfind('\n')
+        .map(|relative| keyword.span.start + relative)
+        .filter(|newline| *newline < cursor);
+    let header_closure = inserted_header_newline
+        .is_some()
+        .then_some(")")
+        .unwrap_or_default();
     let body = if is_switch {
-        format!("{newline}{indent}{{{newline}{indent}{unit}{newline}{indent}}}")
+        format!("{header_closure}{newline}{indent}{{{newline}{indent}{unit}{newline}{indent}}}")
     } else {
-        format!("{newline}{indent}{{{newline}{indent}{unit}{newline}{indent}}}")
+        format!("{header_closure}{newline}{indent}{{{newline}{indent}{unit}{newline}{indent}}}")
     };
     let selection_line = source[..header_end]
         .bytes()
         .filter(|byte| *byte == b'\n')
         .count() as u32;
     Some(AutoBlockControlHeaderPlan {
-        span: TextSpan::new(header_end, cursor.max(header_end)),
+        span: TextSpan::new(
+            inserted_header_newline.unwrap_or(header_end),
+            cursor.max(header_end),
+        ),
         replacement: body,
         selection_line: selection_line + 2,
         selection_character: (if is_switch {
@@ -1003,6 +1014,19 @@ mod tests {
             plan.switch_arm_snippet,
             Some("${1:default}:\n  ${0}".to_string())
         );
+    }
+
+    #[test]
+    fn removes_the_native_enter_newline_inside_a_completed_control_header() {
+        let source = "        while (sadfs\n        )";
+        let cursor = "        while (sadfs\n        ".len();
+        let plan = auto_block_control_header_enter_plan(source, cursor, 4, true).unwrap();
+        assert_eq!(plan.span.start, "        while (sadfs".len());
+        assert_eq!(plan.span.end, source.len());
+        assert_eq!(plan.replacement, ")\n        {\n            \n        }");
+
+        let plan = auto_block_control_header_enter_plan(source, source.len(), 4, true).unwrap();
+        assert_eq!(plan.span.start, "        while (sadfs".len());
     }
 
     #[test]
