@@ -23,9 +23,7 @@ use super::{
     QueryQuality, RangeFormattingParams, TextSpan, TokenProjectionKind, TokenResultDisposition,
     WorkspaceFileChangedParams, WorkspaceFileDeletedParams, BLOCK_COMMENT_PAIR_METHOD,
     DEBUG_COMPLETION_METHOD, DEBUG_HOVER_METHOD, ENTER_TYPING_ASSIST_METHOD,
-    RANGE_FORMATTING_METHOD, SEMANTIC_TOKEN_MODIFIERS, SEMANTIC_TOKEN_TYPES, SERVER_NAME,
-    SERVER_VERSION, SIGNATURE_HELP_RETRIGGER_CHARACTERS, SIGNATURE_HELP_TRIGGER_CHARACTERS,
-    WORKSPACE_FILE_CHANGED_METHOD, WORKSPACE_FILE_DELETED_METHOD,
+    RANGE_FORMATTING_METHOD, WORKSPACE_FILE_CHANGED_METHOD, WORKSPACE_FILE_DELETED_METHOD,
 };
 use serde_json::{json, Value};
 use std::io::Write;
@@ -119,62 +117,6 @@ impl<W: Write> LspServer<W> {
                         self.deliver_effect(effect)?;
                     }
                 }
-            }
-            "initialize" => {
-                self.log("request initialize");
-                if let Some(id) = message.id {
-                    self.respond(
-                        id,
-                        json!({
-                            "capabilities": {
-                                "textDocumentSync": {
-                                    "openClose": true,
-                                    "change": 1
-                                },
-                                "documentSymbolProvider": true,
-                                "documentRangeFormattingProvider": true,
-                                "hoverProvider": true,
-                                "definitionProvider": true,
-                                "completionProvider": {
-                                    "triggerCharacters": [".", "["]
-                                },
-                                "signatureHelpProvider": {
-                                    "triggerCharacters": SIGNATURE_HELP_TRIGGER_CHARACTERS,
-                                    "retriggerCharacters": SIGNATURE_HELP_RETRIGGER_CHARACTERS
-                                },
-                                "semanticTokensProvider": {
-                                    "legend": {
-                                        "tokenTypes": SEMANTIC_TOKEN_TYPES,
-                                        "tokenModifiers": SEMANTIC_TOKEN_MODIFIERS
-                                    },
-                                    "full": true,
-                                    "range": false
-                                }
-                            },
-                            "serverInfo": {
-                                "name": SERVER_NAME,
-                                "version": SERVER_VERSION
-                            }
-                        }),
-                    )?;
-                }
-            }
-            "initialized" => {
-                self.log("notification initialized");
-            }
-            "shutdown" => {
-                self.log("request shutdown");
-                self.shutdown_requested = true;
-                if let Some(id) = message.id {
-                    self.respond(id, Value::Null)?;
-                }
-            }
-            "exit" => {
-                self.log("notification exit");
-                if !self.shutdown_requested {
-                    return Err("LSP exit received before shutdown".to_string());
-                }
-                return Ok(true);
             }
             WORKSPACE_FILE_CHANGED_METHOD => {
                 if let Some(params) =

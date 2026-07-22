@@ -66,3 +66,34 @@ pub(super) fn classify_request(value: Value) -> Result<RoutedRequest, String> {
         parameter_error,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{classify_request, RequestCommand};
+    use serde_json::json;
+
+    #[test]
+    fn classifies_protocol_messages_without_document_runtime_state() {
+        for (value, expected) in [
+            (json!({"method": "initialize"}), RequestCommand::Lifecycle),
+            (
+                json!({"method": "textDocument/didOpen"}),
+                RequestCommand::Document,
+            ),
+            (
+                json!({"method": "textDocument/hover"}),
+                RequestCommand::Feature,
+            ),
+            (
+                json!({"method": "reforger/workspaceFileChanged"}),
+                RequestCommand::WorkspaceIndex,
+            ),
+            (
+                json!({"method": "$/cancelRequest"}),
+                RequestCommand::Cancellation,
+            ),
+        ] {
+            assert_eq!(classify_request(value).unwrap().command, expected);
+        }
+    }
+}
