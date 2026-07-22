@@ -11,10 +11,11 @@ export function registerDebugCommandBridge(
 	debugOutput: vscode.OutputChannel,
 	completionOutput: vscode.OutputChannel,
 	completionLifecycleTrace: (documentUri: string) => string,
+	completionPresentationObservation: (documentUri: string) => string,
 ): vscode.Disposable[] {
 	return [
 		vscode.commands.registerCommand(languageClientCommands.debugHoverAtCursor, () => debugHoverAtCursor(context, client, debugOutput)),
-		vscode.commands.registerCommand(languageClientCommands.debugCompletionAtCursor, () => debugCompletionAtCursor(context, client, completionOutput, completionLifecycleTrace)),
+		vscode.commands.registerCommand(languageClientCommands.debugCompletionAtCursor, () => debugCompletionAtCursor(context, client, completionOutput, completionLifecycleTrace, completionPresentationObservation)),
 	];
 }
 
@@ -42,7 +43,7 @@ async function debugHoverAtCursor(context: vscode.ExtensionContext, client: () =
 	}
 }
 
-async function debugCompletionAtCursor(context: vscode.ExtensionContext, client: () => LanguageClient | undefined, output: vscode.OutputChannel, lifecycleTrace: (documentUri: string) => string): Promise<void> {
+async function debugCompletionAtCursor(context: vscode.ExtensionContext, client: () => LanguageClient | undefined, output: vscode.OutputChannel, lifecycleTrace: (documentUri: string) => string, completionPresentationObservation: (documentUri: string) => string): Promise<void> {
 	const startedAt = Date.now();
 	diagnostic('command.debugCompletion.start');
 	const editor = activeEnforceEditor('Open an Enforce script file before running completion debug.', 'Completion debug is only available for Enforce language files.');
@@ -57,7 +58,8 @@ async function debugCompletionAtCursor(context: vscode.ExtensionContext, client:
 	try {
 		const position = editor.selection.active;
 		const report = await activeClient.sendRequest<string>(languageClientRequests.debugCompletion, requestParams(editor, position));
-		const reportPath = await writeReport(context, editor, position, `${lifecycleTrace(editor.document.uri.toString())}\n\n---\n\n${report}`, 'completion');
+		const observedResponse = completionPresentationObservation(editor.document.uri.toString());
+		const reportPath = await writeReport(context, editor, position, `${observedResponse}\n\n---\n\n${lifecycleTrace(editor.document.uri.toString())}\n\n---\n\n## Server Debug Analysis\n\n${report}`, 'completion');
 		output.clear(); output.appendLine(`Completion debug report written to: ${reportPath}`); output.appendLine(''); output.appendLine(report); output.show(true);
 		diagnostic('command.debugCompletion.complete', { elapsedMs: Date.now() - startedAt });
 	} catch (error) {

@@ -619,6 +619,68 @@ fn completion_responds_with_current_lexical_top_level_result_while_analysis_is_p
 }
 
 #[test]
+fn completion_returns_preprocessor_directives_after_foreground_publication() {
+    let (sender, receiver) = mpsc::channel();
+    let scheduler = OpenDocumentAnalysisScheduler::start(sender);
+    let mut server = LspServer::new_with_runtime_senders(
+        Vec::new(),
+        LspServerOptions::default(),
+        None,
+        Some(scheduler),
+        None,
+    );
+    let uri = "file:///Scripts/PendingPreprocessorCompletion.c";
+    server
+        .handle_message(
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": { "textDocument": {
+                    "uri": uri,
+                    "languageId": "enforce",
+                    "version": 1,
+                    "text": "class PendingPreprocessor : ScriptComponent\n{\n\tint value = 1;\n\tRplChannel channel = RplChannel.Reliable;\n\t#\n}"
+                }}
+            }),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+    server
+        .handle_internal_event(
+            receiver
+                .recv_timeout(Duration::from_secs(2))
+                .expect("foreground result"),
+        )
+        .unwrap();
+    let state = server.document_runtime.test_document_state(uri).unwrap();
+    assert!(state.foreground_ready);
+    assert!(!state.analysis_ready);
+    server
+        .handle_message(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "textDocument/completion",
+                "params": {
+                    "textDocument": { "uri": uri },
+                    "position": { "line": 4, "character": 2 }
+                }
+            }),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+
+    let output = String::from_utf8(server.writer).unwrap();
+    for directive in ["#define", "#ifdef", "#ifndef", "#else", "#endif"] {
+        assert!(output.contains(&format!("\"label\":\"{directive}\"")), "{directive}");
+    }
+}
+
+#[test]
 fn pending_signature_help_uses_only_the_current_unique_simple_callable() {
     let (sender, receiver) = mpsc::channel();
     let scheduler = OpenDocumentAnalysisScheduler::start(sender);

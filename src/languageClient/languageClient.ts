@@ -37,7 +37,7 @@ import {
 	createCompletionMiddleware,
 	isCompletionListIncomplete,
 } from './completionMiddleware';
-import { completionUiMiddlewareCallbacks, completionLifecycleTraceForDocument, registerCompletionUiBridge } from './completionUiBridge';
+import { completionPresentationObservationForDocument, completionUiMiddlewareCallbacks, completionLifecycleTraceForDocument, registerCompletionUiBridge } from './completionUiBridge';
 import { openSymbolLocation } from './symbolLocationBridge';
 import {
 	disposeDevelopmentServerWatchBridge,
@@ -124,6 +124,7 @@ export function registerLanguageClientFeatures(context: vscode.ExtensionContext)
 		debugOutputChannel,
 		completionDebugOutputChannel,
 		completionLifecycleTraceForDocument,
+		completionPresentationObservationForDocument,
 	));
 	context.subscriptions.push(vscode.commands.registerCommand(
 		languageClientCommands.openSymbolLocation,

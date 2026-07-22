@@ -55,6 +55,7 @@ use completion::{
     completion_report_for_current_argument_labels_at_offset_with_external_indexes,
     completion_report_for_current_local_scope_at_offset_with_external_indexes,
     completion_report_for_current_override_at_offset_with_external_indexes,
+    completion_report_for_current_preprocessor_at_offset_with_external_indexes,
     completion_report_for_current_receiver_at_offset_with_external_indexes,
     completion_report_for_lexical_source_at_offset_with_external_indexes,
     completion_report_for_lexical_source_with_external_indexes, empty_completion_list,

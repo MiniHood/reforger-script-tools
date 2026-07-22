@@ -6,6 +6,7 @@ use super::{
     completion_report_for_current_argument_labels_at_offset_with_external_indexes,
     completion_report_for_current_local_scope_at_offset_with_external_indexes,
     completion_report_for_current_override_at_offset_with_external_indexes,
+    completion_report_for_current_preprocessor_at_offset_with_external_indexes,
     completion_report_for_current_receiver_at_offset_with_external_indexes,
     completion_report_for_lexical_source_at_offset_with_external_indexes,
     completion_report_for_lexical_source_with_external_indexes,
@@ -286,50 +287,57 @@ impl FeatureDispatcher<'_> {
                                             offset_for_position(&document.text, params.position)
                                         });
                                     if let Some(offset) = offset {
-                                        let completion_start = std::time::Instant::now();
-                                        let argument_label_report = completion_report_for_current_argument_labels_at_offset_with_external_indexes(
+                                        completion_report_for_current_preprocessor_at_offset_with_external_indexes(
                                             &document.text,
                                             offset,
                                             indexes.workspace.as_deref(),
                                             indexes.game_data.as_deref(),
-                                        );
-                                        let value_report = completion_report_for_current_receiver_at_offset_with_external_indexes(
-                                            &document.text,
-                                            offset,
-                                            indexes.workspace.as_deref(),
-                                            indexes.game_data.as_deref(),
-                                        )
-                                        .or_else(|| completion_report_for_current_override_at_offset_with_external_indexes(
-                                            &document.text,
-                                            offset,
-                                            indexes.workspace.as_deref(),
-                                            indexes.game_data.as_deref(),
-                                        ))
-                                        .or_else(|| completion_report_for_current_local_scope_at_offset_with_external_indexes(
-                                            &document.text,
-                                            offset,
-                                            indexes.workspace.as_deref(),
-                                            indexes.game_data.as_deref(),
-                                        ));
-                                        match (argument_label_report, value_report) {
-                                            (Some(argument_report), Some(value_report)) => {
-                                                completion::merge_argument_label_and_value_reports(
-                                                    argument_report,
-                                                    value_report,
-                                                    completion_start,
-                                                )
-                                            }
-                                            (Some(argument_report), None) => argument_report,
-                                            (None, Some(value_report)) => value_report,
-                                            (None, None) => {
-                                            completion_report_for_lexical_source_at_offset_with_external_indexes(
+                                        ).unwrap_or_else(|| {
+                                            let completion_start = std::time::Instant::now();
+                                            let argument_label_report = completion_report_for_current_argument_labels_at_offset_with_external_indexes(
+                                                &document.text,
+                                                offset,
+                                                indexes.workspace.as_deref(),
+                                                indexes.game_data.as_deref(),
+                                            );
+                                            let value_report = completion_report_for_current_receiver_at_offset_with_external_indexes(
                                                 &document.text,
                                                 offset,
                                                 indexes.workspace.as_deref(),
                                                 indexes.game_data.as_deref(),
                                             )
+                                            .or_else(|| completion_report_for_current_override_at_offset_with_external_indexes(
+                                                &document.text,
+                                                offset,
+                                                indexes.workspace.as_deref(),
+                                                indexes.game_data.as_deref(),
+                                            ))
+                                            .or_else(|| completion_report_for_current_local_scope_at_offset_with_external_indexes(
+                                                &document.text,
+                                                offset,
+                                                indexes.workspace.as_deref(),
+                                                indexes.game_data.as_deref(),
+                                            ));
+                                            match (argument_label_report, value_report) {
+                                                (Some(argument_report), Some(value_report)) => {
+                                                    completion::merge_argument_label_and_value_reports(
+                                                        argument_report,
+                                                        value_report,
+                                                        completion_start,
+                                                    )
+                                                }
+                                                (Some(argument_report), None) => argument_report,
+                                                (None, Some(value_report)) => value_report,
+                                                (None, None) => {
+                                                    completion_report_for_lexical_source_at_offset_with_external_indexes(
+                                                        &document.text,
+                                                        offset,
+                                                        indexes.workspace.as_deref(),
+                                                        indexes.game_data.as_deref(),
+                                                    )
+                                                }
                                             }
-                                        }
+                                        })
                                     } else {
                                         completion_report_for_lexical_source_with_external_indexes(
                                             &document.text,

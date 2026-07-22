@@ -14,8 +14,28 @@ import { positionFromByteOffset } from '../languageClient/symbolLocationBridge';
 import { registerEnterTypingAssist } from '../languageClient/typingAssistTransactionBridge';
 import { registerBlockCommentPair } from '../languageClient/typingAssistTransactionBridge';
 import { VersionedEditorTransaction } from '../languageClient/versionedEditorTransaction';
+import { completionPresentationObservationForDocument, completionUiMiddlewareCallbacks } from '../languageClient/completionUiBridge';
 
 suite('extension activation', () => {
+	test('renders the completion response observed by the VS Code suggest pipeline', async () => {
+		const document = await vscode.workspace.openTextDocument({ language: 'enforce', content: '\t#' });
+		completionUiMiddlewareCallbacks.begin(document, new vscode.Position(0, 2), 1);
+		completionUiMiddlewareCallbacks.respond(
+			document,
+			1,
+			document.version,
+			undefined,
+			[new vscode.CompletionItem('#define'), new vscode.CompletionItem('#ifdef')],
+			0,
+		);
+
+		const report = completionPresentationObservationForDocument(document.uri.toString());
+		assert.match(report, /Cursor: line 0, character 2/);
+		assert.match(report, /Trigger kind: 1/);
+		assert.match(report, /\| 1 \| #define \|/);
+		assert.match(report, /\| 2 \| #ifdef \|/);
+	});
+
 	test('registers editor-facing commands', async () => {
 		const extension = vscode.extensions.all.find(
 			candidate => candidate.packageJSON.name === 'reforger-sript-tools',

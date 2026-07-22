@@ -326,6 +326,33 @@ pub(crate) fn completion_report_for_lexical_source_at_offset_with_external_index
     unavailable_completion_report(report, context.reason())
 }
 
+/// Handles the source forms that are complete from the current snapshot alone
+/// before pending-analysis queries attempt ordinary local, receiver, or
+/// argument completion. This keeps directive completion independent of the
+/// document-analysis publication race.
+pub(crate) fn completion_report_for_current_preprocessor_at_offset_with_external_indexes(
+    source: &str,
+    offset: usize,
+    workspace_index: Option<&SymbolIndex>,
+    game_data_index: Option<&SymbolIndex>,
+) -> Option<LspCompletionReport> {
+    if current_snapshot_cursor_is_in_comment_or_string(source, offset) {
+        return None;
+    }
+    let context = completion_context_at_offset(source, offset)?;
+    let empty_local_index = SymbolIndex::default();
+    Some(preprocessor_completion_report(
+        source,
+        0,
+        context,
+        &empty_local_index,
+        workspace_index,
+        game_data_index,
+        Duration::ZERO,
+        Instant::now(),
+    ))
+}
+
 /// Runs `LocalScopeQuery` over a fixed lexical/syntax window from the current
 /// revision. It supplies unqualified values both at ordinary value positions
 /// and inside an argument expression, without parsing, indexing, or projecting
