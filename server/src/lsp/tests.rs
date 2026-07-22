@@ -2,7 +2,7 @@ use super::runtime_scheduler::{
     next_runnable_work_key, next_runnable_work_key_for_lane, OpenDocumentAnalysisScheduler,
     RuntimeWorkCapacity, RuntimeWorkJob, RuntimeWorkerLane,
 };
-use super::semantic_tokens::{fast_semantic_tokens_for_cached_analysis, LspSemanticTokens};
+use super::semantic_tokens::LspSemanticTokens;
 use super::*;
 use crate::analysis_runtime::UpsertOutcome;
 use crate::resolver::{CandidateSource, IdentifierContext, ResolutionReason};
@@ -97,12 +97,7 @@ fn install_next_foreground(
             .recv_timeout(Duration::from_secs(2))
             .expect("foreground worker event");
         server.handle_internal_event(event).unwrap();
-        if server
-            .document_runtime
-            .documents
-            .values()
-            .any(OpenDocument::foreground_ready)
-        {
+        if server.document_runtime.test_has_any_foreground_document() {
             return;
         }
     }

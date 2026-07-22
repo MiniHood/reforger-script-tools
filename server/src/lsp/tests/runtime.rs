@@ -493,7 +493,7 @@ fn semantic_tokens_pending_baseline_schedules_rich_after_analysis_completion() {
             0,
         )
         .unwrap();
-    assert!(!server.document_runtime.documents[uri].analysis_ready());
+    assert!(!server.document_runtime.test_document_state(uri).unwrap().analysis_ready);
 
     server
         .handle_message(
@@ -563,7 +563,7 @@ fn deferred_semantic_tokens_are_server_cancelled_when_superseded_or_cancelled() 
     {
         server.deliver_effect(effect).unwrap();
     }
-    assert!(!server.document_runtime.deferred_semantic_token_requests.contains_key(uri));
+    assert!(!server.document_runtime.test_has_deferred_semantic_token_request(uri));
     assert!(server.writer.is_empty());
 }
 
@@ -667,7 +667,7 @@ fn pending_signature_help_uses_only_the_current_unique_simple_callable() {
             0,
         )
         .unwrap();
-    assert!(!server.document_runtime.documents[uri].analysis_ready());
+    assert!(!server.document_runtime.test_document_state(uri).unwrap().analysis_ready);
     install_next_foreground(&mut server, &receiver);
 
     server
@@ -892,8 +892,8 @@ fn completion_resolves_current_receiver_before_foreground_publication() {
             0,
         )
         .unwrap();
-    assert!(!server.document_runtime.documents[uri].foreground_ready());
-    assert!(!server.document_runtime.documents[uri].analysis_ready());
+    assert!(!server.document_runtime.test_document_state(uri).unwrap().foreground_ready);
+    assert!(!server.document_runtime.test_document_state(uri).unwrap().analysis_ready);
     server
         .handle_message(
             json!({
@@ -1106,25 +1106,8 @@ fn pending_hover_returns_only_current_lexical_facts_after_semantic_overload() {
             0,
         )
         .unwrap();
-    let snapshot = server.document_runtime.runtime.latest(uri).expect("accepted snapshot");
-    let task = match server.document_runtime.runtime.admit(
-        TaskClass::Semantic,
-        snapshot,
-        1,
-        Instant::now(),
-    ) {
-        AdmissionDisposition::Enqueued { .. } => server.document_runtime.runtime.take_next().unwrap(),
-        _ => unreachable!(),
-    };
-    let snapshot = server.document_runtime.runtime.latest(uri).expect("accepted snapshot");
-    let document = server.document_runtime.documents.get_mut(uri).unwrap();
-    document.replace(snapshot.clone());
-    assert!(document.install_foreground(
-        snapshot.revision(),
-        PositionIndex::new(snapshot.text()),
-        lex(snapshot.text()),
-        parse_source(snapshot.text()),
-    ));
+    let task = server.document_runtime.test_admit_task(uri, TaskClass::Semantic);
+    assert!(server.document_runtime.test_install_current_foreground(uri));
     server
         .handle_internal_event(ServerEvent::DocumentAnalysisSkipped {
             task: task.identity().clone(),

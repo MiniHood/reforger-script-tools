@@ -1,4 +1,4 @@
-use super::request_router::{RequestCommand, RoutedRequest, WorkspaceIndexCommand};
+use super::request_router::{FeatureCommand, RequestCommand, RoutedRequest, WorkspaceIndexCommand};
 use super::workspace_requests::{delete_workspace_file, update_workspace_file};
 use super::{
     completion, completion_debug_markdown,
@@ -13,17 +13,14 @@ use super::{
     definition_report_for_cached_analysis_with_external_indexes,
     definition_report_for_pending_snapshot, document_symbol_count, empty_completion_list,
     hover_report_for_cached_analysis_with_external_indexes, hover_report_for_pending_snapshot,
-    lexical_semantic_tokens_for_source, offset_for_position, on_type_formatting, parse_params,
-    position_for_offset, selected_label_from_debug_report, signature_help_debug_markdown,
-    signature_help_report_for_cached_analysis_with_external_indexes,
+    offset_for_position, on_type_formatting, position_for_offset, selected_label_from_debug_report,
+    signature_help_debug_markdown, signature_help_report_for_cached_analysis_with_external_indexes,
     signature_help_report_for_pending_snapshot, source_backed_request_method, symbol_kind_label,
-    BlockCommentPairParams, DebugCompletionJob, DebugHoverJob, DebugRequestJob, DocumentQuery,
-    DocumentQueryState, DocumentRuntime, DocumentSymbolParams, EnterTypingAssistParams,
-    ExternalIndexHandle, HoverParams, HoverSelectionSource, LspLogger, LspPositionIndex,
-    LspSemanticTokensFull, QueryQuality, RangeFormattingParams, RuntimeEffect, TextSpan,
-    TokenProjectionKind, TokenResultDisposition, BLOCK_COMMENT_PAIR_METHOD,
-    DEBUG_COMPLETION_METHOD, DEBUG_HOVER_METHOD, ENTER_TYPING_ASSIST_METHOD,
-    RANGE_FORMATTING_METHOD, WORKSPACE_FILE_CHANGED_METHOD, WORKSPACE_FILE_DELETED_METHOD,
+    DebugCompletionJob, DebugHoverJob, DebugRequestJob, DocumentQuery, DocumentQueryState,
+    DocumentRuntime, ExternalIndexHandle, HoverSelectionSource, LspPositionIndex, QueryQuality,
+    RuntimeEffect, TextSpan, BLOCK_COMMENT_PAIR_METHOD, DEBUG_COMPLETION_METHOD,
+    DEBUG_HOVER_METHOD, ENTER_TYPING_ASSIST_METHOD, RANGE_FORMATTING_METHOD,
+    WORKSPACE_FILE_CHANGED_METHOD, WORKSPACE_FILE_DELETED_METHOD,
 };
 use serde_json::{json, Value};
 use std::time::Instant;
@@ -36,7 +33,6 @@ pub(super) struct FeatureDispatchOutcome {
 }
 
 struct FeatureDispatcher<'a> {
-    logger: &'a LspLogger,
     external_index: &'a mut ExternalIndexHandle,
     document_runtime: &'a mut DocumentRuntime,
     shutdown_requested: bool,
@@ -44,7 +40,6 @@ struct FeatureDispatcher<'a> {
 }
 
 pub(super) fn execute_feature_or_workspace_message(
-    logger: &LspLogger,
     external_index: &mut ExternalIndexHandle,
     document_runtime: &mut DocumentRuntime,
     shutdown_requested: bool,
@@ -54,7 +49,6 @@ pub(super) fn execute_feature_or_workspace_message(
     superseded_changes: usize,
 ) -> Result<FeatureDispatchOutcome, String> {
     FeatureDispatcher {
-        logger,
         external_index,
         document_runtime,
         shutdown_requested,
@@ -75,7 +69,6 @@ impl FeatureDispatcher<'_> {
         let RoutedRequest {
             command,
             message,
-            value,
             parameter_error,
         } = routed;
         let queue_ms = queue_ms.unwrap_or(0);
@@ -88,9 +81,9 @@ impl FeatureDispatcher<'_> {
             }
             return Ok(self.finish(false));
         };
-        self.logger.diagnostic(
-            "rpc.received",
-            json!({
+        self.effects.push(RuntimeEffect::Diagnostic {
+            event: "rpc.received",
+            data: json!({
                 "method": method,
                 "command": format!("{command:?}"),
                 "request": message.id.is_some(),
@@ -98,7 +91,7 @@ impl FeatureDispatcher<'_> {
                 "coalescedChanges": coalesced_changes,
                 "supersededChanges": superseded_changes,
             }),
-        );
+        });
 
         if self.shutdown_requested && method != "exit" {
             let error = "Server has already received shutdown";
@@ -124,9 +117,11 @@ impl FeatureDispatcher<'_> {
         }
 
         if message.id.is_some() && source_backed_request_method(method) {
-            let (deferred, effects) = self
-                .document_runtime
-                .defer_document_request(&message, value.clone())?;
+            let (deferred, effects) = self.document_runtime.defer_document_request(
+                &message,
+                command.clone(),
+                parameter_error.clone(),
+            )?;
             for effect in effects {
                 self.deliver_effect(effect)?;
             }
@@ -169,7 +164,11 @@ impl FeatureDispatcher<'_> {
             "textDocument/documentSymbol" => {
                 if let Some(id) = message.id {
                     let start = Instant::now();
-                    let params = parse_params::<DocumentSymbolParams>(message.params, method)?;
+                    let RequestCommand::Feature(FeatureCommand::DocumentSymbols(params)) = &command
+                    else {
+                        unreachable!("document symbol method has a typed command");
+                    };
+                    let params = params.clone();
                     let mut log_uri = "<missing>".to_string();
                     let mut bytes = 0usize;
                     let mut symbol_count = 0usize;
@@ -216,7 +215,11 @@ impl FeatureDispatcher<'_> {
             "textDocument/completion" => {
                 if let Some(id) = message.id {
                     let start = Instant::now();
-                    let params = parse_params::<HoverParams>(message.params, method)?;
+                    let RequestCommand::Feature(FeatureCommand::Completion(params)) = &command
+                    else {
+                        unreachable!("completion method has a typed command");
+                    };
+                    let params = params.clone();
                     let mut log_uri = "<missing>".to_string();
                     let mut bytes = 0usize;
                     let mut parse_diagnostics = 0usize;
@@ -406,7 +409,12 @@ impl FeatureDispatcher<'_> {
             ENTER_TYPING_ASSIST_METHOD => {
                 if let Some(id) = message.id {
                     let start = Instant::now();
-                    let params = parse_params::<EnterTypingAssistParams>(message.params, method)?;
+                    let RequestCommand::Feature(FeatureCommand::EnterTypingAssist(params)) =
+                        &command
+                    else {
+                        unreachable!("typing assist method has a typed command");
+                    };
+                    let params = params.clone();
                     let mut log_uri = "<missing>".to_string();
                     let mut bytes = 0usize;
                     let mut version = -1i32;
@@ -522,7 +530,12 @@ impl FeatureDispatcher<'_> {
             BLOCK_COMMENT_PAIR_METHOD => {
                 if let Some(id) = message.id {
                     let start = Instant::now();
-                    let params = parse_params::<BlockCommentPairParams>(message.params, method)?;
+                    let RequestCommand::Feature(FeatureCommand::BlockCommentPair(params)) =
+                        &command
+                    else {
+                        unreachable!("block comment pair method has a typed command");
+                    };
+                    let params = params.clone();
                     let mut log_uri = "<missing>".to_string();
                     let mut bytes = 0usize;
                     let mut version = -1i32;
@@ -578,7 +591,11 @@ impl FeatureDispatcher<'_> {
             RANGE_FORMATTING_METHOD => {
                 if let Some(id) = message.id {
                     let start = Instant::now();
-                    let params = parse_params::<RangeFormattingParams>(message.params, method)?;
+                    let RequestCommand::Feature(FeatureCommand::RangeFormatting(params)) = &command
+                    else {
+                        unreachable!("range formatting method has a typed command");
+                    };
+                    let params = params.clone();
                     let mut log_uri = "<missing>".to_string();
                     let mut bytes = 0usize;
                     let mut version = -1i32;
@@ -637,7 +654,11 @@ impl FeatureDispatcher<'_> {
             "textDocument/signatureHelp" => {
                 if let Some(id) = message.id {
                     let start = Instant::now();
-                    let params = parse_params::<HoverParams>(message.params, method)?;
+                    let RequestCommand::Feature(FeatureCommand::SignatureHelp(params)) = &command
+                    else {
+                        unreachable!("signature help method has a typed command");
+                    };
+                    let params = params.clone();
                     let mut log_uri = "<missing>".to_string();
                     let mut bytes = 0usize;
                     let mut revision = 0u64;
@@ -735,130 +756,51 @@ impl FeatureDispatcher<'_> {
             "textDocument/semanticTokens/full" => {
                 if let Some(id) = message.id {
                     let start = Instant::now();
-                    let params = parse_params::<DocumentSymbolParams>(message.params, method)?;
-                    let mut log_uri = "<missing>".to_string();
-                    let mut bytes = 0usize;
-                    let mut revision = 0u64;
-                    let mut token_count = 0usize;
-                    let mut parse_diagnostics = 0usize;
+                    let RequestCommand::Feature(FeatureCommand::SemanticTokensFull(params)) =
+                        &command
+                    else {
+                        unreachable!("semantic tokens method has a typed command");
+                    };
+                    let params = params.clone();
                     let external_index_summary = self.external_index.status_summary();
                     let external_index_status = external_index_summary.status;
                     let external_generation = external_index_summary.generation;
-                    let mut projection_mode = "missing-document";
-                    let mut lex_ms = 0u128;
-                    let mut resolver_ms = 0u128;
-                    let mut resolver_calls = 0usize;
-                    let mut token_loop_ms = 0u128;
-                    let mut encode_ms = 0u128;
-                    let mut rich_work: Option<(String, u64, u64)> = None;
-                    let mut result_id = "reforger:missing:lexical".to_string();
-                    let mut defer_current_request = false;
-                    let result = params
-                        .and_then(|params| {
-                            log_uri = params.text_document.uri;
-                            self.document_runtime
-                                .documents
-                                .get_mut(&log_uri)
-                                .map(|document| {
-                                    bytes = document.text.len();
-                                    revision = document.revision;
-                                    let had_rich_display =
-                                        document.semantic_tokens.has_rich_display();
-                                    let source = document.text.clone();
-                                    let (
-                                        selection_kind,
-                                        selection_result_id,
-                                        disposition,
-                                        projection,
-                                    ) = {
-                                        let selection =
-                                            document.semantic_tokens.select_or_insert_lexical(
-                                                document.revision,
-                                                external_generation,
-                                                || lexical_semantic_tokens_for_source(&source),
-                                            );
-                                        (
-                                            selection.kind,
-                                            selection.result_id,
-                                            selection.disposition,
-                                            selection.projection.clone(),
-                                        )
-                                    };
-                                    result_id = selection_result_id;
-                                    projection_mode = match selection_kind {
-                                        TokenProjectionKind::LexicalBaseline
-                                            if document.analysis_ready() =>
-                                        {
-                                            "lexical-baseline"
-                                        }
-                                        TokenProjectionKind::LexicalBaseline => "lexical-pending",
-                                        TokenProjectionKind::RichOverlay => "rich-overlay",
-                                    };
-                                    debug_assert_eq!(disposition, TokenResultDisposition::Full);
-                                    if selection_kind == TokenProjectionKind::LexicalBaseline
-                                        && document.analysis_ready()
-                                    {
-                                        if !document
-                                            .semantic_tokens
-                                            .pending_for_revision_and_external_generation(
-                                                document.revision,
-                                                external_generation,
-                                            )
-                                        {
-                                            rich_work = Some((
-                                                log_uri.clone(),
-                                                document.revision,
-                                                external_generation,
-                                            ));
-                                        }
-                                    }
-                                    defer_current_request = selection_kind
-                                        == TokenProjectionKind::LexicalBaseline
-                                        && had_rich_display;
-                                    token_count = projection.token_count;
-                                    parse_diagnostics = projection.parse_diagnostics;
-                                    lex_ms = projection.timings.lex_ms;
-                                    resolver_ms = projection.timings.resolver_ms;
-                                    resolver_calls = projection.timings.identifier_resolver_calls;
-                                    token_loop_ms = projection.timings.token_loop_ms;
-                                    encode_ms = projection.timings.encode_ms;
-                                    LspSemanticTokensFull::from_tokens(
-                                        result_id.clone(),
-                                        &projection.tokens,
-                                    )
-                                })
+                    let selection = params
+                        .as_ref()
+                        .map(|params| {
+                            self.document_runtime.select_semantic_tokens(
+                                &params.text_document.uri,
+                                external_generation,
+                            )
                         })
-                        .map(|tokens| serde_json::to_value(tokens).unwrap_or(Value::Null))
                         .unwrap_or_else(|| {
-                            serde_json::to_value(LspSemanticTokensFull {
-                                result_id,
-                                data: Vec::new(),
-                            })
-                            .unwrap_or(Value::Null)
+                            self.document_runtime
+                                .select_semantic_tokens("<missing>", external_generation)
                         });
+                    let result = serde_json::to_value(&selection.tokens).unwrap_or(Value::Null);
                     self.log(&format!(
                         "request semanticTokens uri={} bytes={} revision={} cached_analysis=true mode={} outcome={} tokens={} external_index_status={} external_generation={} parse_diagnostics={} lex_ms={} token_loop_ms={} resolver_ms={} resolver_calls={} encode_ms={} queue_ms={} elapsed_ms={}",
-                        log_uri,
-                        bytes,
-                        revision,
-                        projection_mode,
-                        if defer_current_request { "deferred-rich" } else { "responded" },
-                        token_count,
+                        selection.uri,
+                        selection.bytes,
+                        selection.revision,
+                        selection.projection_mode,
+                        if selection.defer_current_request { "deferred-rich" } else { "responded" },
+                        selection.token_count,
                         external_index_status,
                         external_generation,
-                        parse_diagnostics,
-                        lex_ms,
-                        token_loop_ms,
-                        resolver_ms,
-                        resolver_calls,
-                        encode_ms,
+                        selection.parse_diagnostics,
+                        selection.lex_ms,
+                        selection.token_loop_ms,
+                        selection.resolver_ms,
+                        selection.resolver_calls,
+                        selection.encode_ms,
                         queue_ms,
                         start.elapsed().as_millis()
                     ));
-                    if defer_current_request {
+                    if selection.defer_current_request {
                         let effects = self.document_runtime.defer_semantic_token_request(
-                            &log_uri,
-                            revision,
+                            &selection.uri,
+                            selection.revision,
                             external_generation,
                             id,
                         );
@@ -868,7 +810,9 @@ impl FeatureDispatcher<'_> {
                     } else {
                         self.respond(id, result)?;
                     }
-                    if let Some((uri, rich_revision, rich_external_generation)) = rich_work {
+                    if let Some((uri, rich_revision, rich_external_generation)) =
+                        selection.rich_work
+                    {
                         let external_indexes = self.external_index.snapshot();
                         let effects = self.document_runtime.admit_rich_semantic_tokens(
                             &uri,
@@ -885,7 +829,10 @@ impl FeatureDispatcher<'_> {
             "textDocument/hover" => {
                 if let Some(id) = message.id {
                     let start = Instant::now();
-                    let params = parse_params::<HoverParams>(message.params, method)?;
+                    let RequestCommand::Feature(FeatureCommand::Hover(params)) = &command else {
+                        unreachable!("hover method has a typed command");
+                    };
+                    let params = params.clone();
                     let mut log_uri = "<missing>".to_string();
                     let mut bytes = 0usize;
                     let mut parse_diagnostics = 0usize;
@@ -1008,7 +955,11 @@ impl FeatureDispatcher<'_> {
             "textDocument/definition" => {
                 if let Some(id) = message.id {
                     let start = Instant::now();
-                    let params = parse_params::<HoverParams>(message.params, method)?;
+                    let RequestCommand::Feature(FeatureCommand::Definition(params)) = &command
+                    else {
+                        unreachable!("definition method has a typed command");
+                    };
+                    let params = params.clone();
                     let mut log_uri = "<missing>".to_string();
                     let mut bytes = 0usize;
                     let mut parse_diagnostics = 0usize;
@@ -1112,7 +1063,11 @@ impl FeatureDispatcher<'_> {
             DEBUG_HOVER_METHOD => {
                 if let Some(id) = message.id {
                     let start = Instant::now();
-                    let params = parse_params::<HoverParams>(message.params, method)?;
+                    let RequestCommand::Feature(FeatureCommand::DebugHover(params)) = &command
+                    else {
+                        unreachable!("debug hover method has a typed command");
+                    };
+                    let params = params.clone();
                     if let Some(ref params) = params {
                         if let Some(query) = self.document_runtime.capture_query(
                             &params.text_document.uri,
@@ -1230,7 +1185,11 @@ impl FeatureDispatcher<'_> {
             DEBUG_COMPLETION_METHOD => {
                 if let Some(id) = message.id {
                     let start = Instant::now();
-                    let params = parse_params::<HoverParams>(message.params, method)?;
+                    let RequestCommand::Feature(FeatureCommand::DebugCompletion(params)) = &command
+                    else {
+                        unreachable!("debug completion method has a typed command");
+                    };
+                    let params = params.clone();
                     if let Some(ref params) = params {
                         if let Some(query) = self.document_runtime.capture_query(
                             &params.text_document.uri,
@@ -1382,14 +1341,14 @@ impl FeatureDispatcher<'_> {
             self.deliver_effect(effect)?;
         }
         let should_exit = self.shutdown_requested && method == "exit";
-        self.logger.diagnostic(
-            "rpc.completed",
-            json!({
+        self.effects.push(RuntimeEffect::Diagnostic {
+            event: "rpc.completed",
+            data: json!({
                 "method": method,
                 "outcome": if should_exit { "exit" } else { "complete" },
                 "elapsedMs": started_at.elapsed().as_millis(),
             }),
-        );
+        });
         Ok(self.finish(should_exit))
     }
 

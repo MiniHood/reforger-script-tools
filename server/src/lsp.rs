@@ -376,20 +376,20 @@ struct DidCloseTextDocumentParams {
     text_document: TextDocumentIdentifier,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DocumentSymbolParams {
     text_document: TextDocumentIdentifier,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct HoverParams {
     text_document: TextDocumentIdentifier,
     position: LspPosition,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct EnterTypingAssistParams {
     text_document: TextDocumentIdentifier,
@@ -401,7 +401,7 @@ struct EnterTypingAssistParams {
     options: BlockCommentPairOptions,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct BlockCommentPairParams {
     text_document: TextDocumentIdentifier,
@@ -410,14 +410,14 @@ struct BlockCommentPairParams {
     options: BlockCommentPairOptions,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct BlockCommentPairOptions {
     tab_size: usize,
     insert_spaces: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RangeFormattingParams {
     text_document: TextDocumentIdentifier,
@@ -439,7 +439,17 @@ impl<W: Write> LspServer<W> {
         coalesced_changes: usize,
         superseded_changes: usize,
     ) -> Result<bool, String> {
-        let routed = classify_request(value.clone())?;
+        let routed = classify_request(value)?;
+        self.handle_routed(routed, queue_ms, coalesced_changes, superseded_changes)
+    }
+
+    fn handle_routed(
+        &mut self,
+        routed: RoutedRequest,
+        queue_ms: Option<u128>,
+        coalesced_changes: usize,
+        superseded_changes: usize,
+    ) -> Result<bool, String> {
         // Lifecycle has no document-owned state. Keep it at the composition
         // root so the request router never needs transport or shutdown
         // ownership for these commands.
@@ -474,7 +484,6 @@ impl<W: Write> LspServer<W> {
             );
         }
         let outcome = feature_dispatch::execute_feature_or_workspace_message(
-            &self.logger,
             &mut self.external_index,
             &mut self.document_runtime,
             self.shutdown_requested,
@@ -1072,18 +1081,6 @@ pub(crate) fn span_text(source: &str, span: TextSpan) -> &str {
     source.get(span.start..span.end).unwrap_or("")
 }
 
-fn parse_params<T: for<'de> Deserialize<'de>>(
-    params: Option<Value>,
-    method: &str,
-) -> Result<Option<T>, String> {
-    let Some(params) = params else {
-        return Ok(None);
-    };
-    serde_json::from_value(params)
-        .map(Some)
-        .map_err(|error| format!("Invalid params for {method}: {error}"))
-}
-
 fn validate_message_params(method: &str, params: &Option<Value>) -> Result<(), String> {
     match method {
         "textDocument/didOpen" => validate_params::<DidOpenTextDocumentParams>(params, method),
@@ -1098,15 +1095,15 @@ fn validate_message_params(method: &str, params: &Option<Value>) -> Result<(), S
         "textDocument/documentSymbol" | "textDocument/semanticTokens/full" => {
             validate_params::<DocumentSymbolParams>(params, method)
         }
-        "textDocument/hover"
-        | "textDocument/definition"
-        | "textDocument/completion"
+        "textDocument/completion"
         | "textDocument/signatureHelp"
+        | "textDocument/hover"
+        | "textDocument/definition"
         | DEBUG_HOVER_METHOD
         | DEBUG_COMPLETION_METHOD => validate_params::<HoverParams>(params, method),
-        ENTER_TYPING_ASSIST_METHOD => validate_params::<EnterTypingAssistParams>(params, method),
-        BLOCK_COMMENT_PAIR_METHOD => validate_params::<BlockCommentPairParams>(params, method),
         RANGE_FORMATTING_METHOD => validate_params::<RangeFormattingParams>(params, method),
+        BLOCK_COMMENT_PAIR_METHOD => validate_params::<BlockCommentPairParams>(params, method),
+        ENTER_TYPING_ASSIST_METHOD => validate_params::<EnterTypingAssistParams>(params, method),
         _ => Ok(()),
     }
 }

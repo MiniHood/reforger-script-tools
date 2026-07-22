@@ -23,30 +23,9 @@ fn duplicate_did_open_rejects_old_rich_semantic_tokens() {
         .unwrap();
 
     let external_generation = server.external_index.status_summary().generation;
-    let snapshot = server.document_runtime.runtime.latest(uri).expect("accepted snapshot");
-    let task = match server.document_runtime.runtime.admit(
-        TaskClass::Rich,
-        snapshot,
-        1,
-        Instant::now(),
-    ) {
-        AdmissionDisposition::Enqueued { .. } => server.document_runtime.runtime.take_next().unwrap(),
-        other => panic!("unexpected admission disposition: {other:?}"),
-    };
-    let (old_revision, projection, cancel) = {
-        let document = server.document_runtime.documents.get_mut(uri).unwrap();
-        let cancel = task.cancellation_token();
-        document.semantic_tokens.mark_pending(
-            document.revision,
-            external_generation,
-            cancel.clone(),
-        );
-        (
-            document.revision,
-            fast_semantic_tokens_for_cached_analysis(&document.text, document.analysis()),
-            cancel,
-        )
-    };
+    let (task, old_revision, projection, cancel) = server
+        .document_runtime
+        .test_prepare_rich_event(uri, external_generation);
 
     server
         .handle_message(
@@ -68,7 +47,7 @@ fn duplicate_did_open_rejects_old_rich_semantic_tokens() {
         )
         .unwrap();
 
-    let current_revision = server.document_runtime.documents[uri].revision;
+    let current_revision = server.document_runtime.test_document_state(uri).unwrap().revision;
     assert!(cancel.load(Ordering::Relaxed));
     assert_ne!(old_revision, current_revision);
 
@@ -84,10 +63,7 @@ fn duplicate_did_open_rejects_old_rich_semantic_tokens() {
         })
         .unwrap();
 
-    assert!(server.document_runtime.documents[uri]
-        .semantic_tokens
-        .rich_for_revision_and_external_generation(current_revision, external_generation)
-        .is_none());
+    assert!(!server.document_runtime.test_document_state(uri).unwrap().rich_semantic_tokens);
 }
 
 #[test]
@@ -330,7 +306,7 @@ fn document_open_and_change_require_versions() {
             0,
         )
         .unwrap();
-    assert!(!server.document_runtime.documents.contains_key(uri));
+    assert!(server.document_runtime.test_document_state(uri).is_none());
 
     server
         .handle_message(
@@ -350,7 +326,7 @@ fn document_open_and_change_require_versions() {
             0,
         )
         .unwrap();
-    assert!(!server.document_runtime.documents.contains_key(uri));
+    assert!(server.document_runtime.test_document_state(uri).is_none());
 
     server
         .handle_message(
@@ -387,9 +363,9 @@ fn document_open_and_change_require_versions() {
         )
         .unwrap();
 
-    let document = &server.document_runtime.documents[uri];
+    let document = server.document_runtime.test_document_state(uri).unwrap();
     assert_eq!(document.version, 1);
-    assert_eq!(document.text.as_ref(), "class Current {}");
+    assert_eq!(document.text, "class Current {}");
 
     server
         .handle_message(
@@ -407,7 +383,7 @@ fn document_open_and_change_require_versions() {
         )
         .unwrap();
 
-    let document = &server.document_runtime.documents[uri];
+    let document = server.document_runtime.test_document_state(uri).unwrap();
     assert_eq!(document.version, 1);
-    assert_eq!(document.text.as_ref(), "class Current {}");
+    assert_eq!(document.text, "class Current {}");
 }

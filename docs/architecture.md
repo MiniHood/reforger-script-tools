@@ -58,9 +58,11 @@ delivery.
 
 The Document Runtime owns the mutable lifecycle of open-document snapshots:
 admission, cancellation, deferred document-backed work, semantic-token refresh
-state, and query capture. Request routing and background-event interpretation
-are short-lived coordinator contracts invoked by the composition root; they do
-not own durable server state. The composition root is the only owner of
+state, semantic-token projection selection, and query capture. Request routing
+decodes supported lifecycle, document, workspace, and feature payloads into
+typed commands before dispatch. Background-event interpretation and request
+routing are short-lived coordinator contracts invoked by the composition root;
+they do not own durable server state. The composition root is the only owner of
 JSON-RPC framing and delivers typed runtime effects such as notifications and
 asynchronous responses.
 

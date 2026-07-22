@@ -1,3 +1,4 @@
+use super::request_router::RoutedRequest;
 use super::LspServer;
 use serde_json::{json, Value};
 use std::io::Write;
@@ -6,8 +7,12 @@ use std::io::Write;
 /// delivers these effects, keeping JSON-RPC framing out of the runtime.
 pub(super) enum RuntimeEffect {
     Log(String),
+    Diagnostic {
+        event: &'static str,
+        data: Value,
+    },
     ReplayDeferred {
-        value: Value,
+        routed: RoutedRequest,
         queue_ms: u128,
     },
     RequestSemanticTokensRefresh {
@@ -32,8 +37,12 @@ impl<W: Write> LspServer<W> {
                 self.log(&message);
                 Ok(())
             }
-            RuntimeEffect::ReplayDeferred { value, queue_ms } => {
-                self.handle_message(value, Some(queue_ms), 0, 0).map(|_| ())
+            RuntimeEffect::Diagnostic { event, data } => {
+                self.logger.diagnostic(event, data);
+                Ok(())
+            }
+            RuntimeEffect::ReplayDeferred { routed, queue_ms } => {
+                self.handle_routed(routed, Some(queue_ms), 0, 0).map(|_| ())
             }
             RuntimeEffect::RequestSemanticTokensRefresh { id } => self.write_message(json!({
                 "jsonrpc": "2.0",

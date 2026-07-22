@@ -4,10 +4,12 @@
 //! It does not read document state or perform transport work.
 use super::workspace_requests::{WorkspaceFileChangedParams, WorkspaceFileDeletedParams};
 use super::{
-    validate_message_params, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, RpcMessage, BLOCK_COMMENT_PAIR_METHOD, DEBUG_COMPLETION_METHOD,
-    DEBUG_HOVER_METHOD, ENTER_TYPING_ASSIST_METHOD, RANGE_FORMATTING_METHOD,
-    WORKSPACE_FILE_CHANGED_METHOD, WORKSPACE_FILE_DELETED_METHOD,
+    validate_message_params, BlockCommentPairParams, DidChangeTextDocumentParams,
+    DidCloseTextDocumentParams, DidOpenTextDocumentParams, DocumentSymbolParams,
+    EnterTypingAssistParams, HoverParams, RangeFormattingParams, RpcMessage,
+    BLOCK_COMMENT_PAIR_METHOD, DEBUG_COMPLETION_METHOD, DEBUG_HOVER_METHOD,
+    ENTER_TYPING_ASSIST_METHOD, RANGE_FORMATTING_METHOD, WORKSPACE_FILE_CHANGED_METHOD,
+    WORKSPACE_FILE_DELETED_METHOD,
 };
 use serde_json::Value;
 
@@ -43,27 +45,26 @@ pub(super) enum WorkspaceIndexCommand {
     Deleted(Option<WorkspaceFileDeletedParams>),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum FeatureCommand {
-    DocumentSymbols,
-    Completion,
-    SignatureHelp,
-    SemanticTokensFull,
-    Hover,
-    Definition,
-    RangeFormatting,
-    DebugHover,
-    DebugCompletion,
-    BlockCommentPair,
-    EnterTypingAssist,
+    DocumentSymbols(Option<DocumentSymbolParams>),
+    Completion(Option<HoverParams>),
+    SignatureHelp(Option<HoverParams>),
+    SemanticTokensFull(Option<DocumentSymbolParams>),
+    Hover(Option<HoverParams>),
+    Definition(Option<HoverParams>),
+    RangeFormatting(Option<RangeFormattingParams>),
+    DebugHover(Option<HoverParams>),
+    DebugCompletion(Option<HoverParams>),
+    BlockCommentPair(Option<BlockCommentPairParams>),
+    EnterTypingAssist(Option<EnterTypingAssistParams>),
     OtherTextDocument,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(super) struct RoutedRequest {
     pub(super) command: RequestCommand,
     pub(super) message: RpcMessage,
-    pub(super) value: Value,
     pub(super) parameter_error: Option<String>,
 }
 
@@ -77,42 +78,54 @@ pub(super) fn classify_request(value: Value) -> Result<RoutedRequest, String> {
         Some("initialized") => RequestCommand::Lifecycle(LifecycleCommand::Initialized),
         Some("shutdown") => RequestCommand::Lifecycle(LifecycleCommand::Shutdown),
         Some("exit") => RequestCommand::Lifecycle(LifecycleCommand::Exit),
-        Some("textDocument/didOpen") => RequestCommand::Document(DocumentCommand::Open(
-            parse_workspace_params(&message.params),
-        )),
-        Some("textDocument/didChange") => RequestCommand::Document(DocumentCommand::Change(
-            parse_workspace_params(&message.params),
-        )),
-        Some("textDocument/didClose") => RequestCommand::Document(DocumentCommand::Close(
-            parse_workspace_params(&message.params),
-        )),
+        Some("textDocument/didOpen") => {
+            RequestCommand::Document(DocumentCommand::Open(parse_typed_params(&message.params)))
+        }
+        Some("textDocument/didChange") => {
+            RequestCommand::Document(DocumentCommand::Change(parse_typed_params(&message.params)))
+        }
+        Some("textDocument/didClose") => {
+            RequestCommand::Document(DocumentCommand::Close(parse_typed_params(&message.params)))
+        }
         Some(WORKSPACE_FILE_CHANGED_METHOD) => RequestCommand::WorkspaceIndex(
-            WorkspaceIndexCommand::Changed(parse_workspace_params(&message.params)),
+            WorkspaceIndexCommand::Changed(parse_typed_params(&message.params)),
         ),
         Some(WORKSPACE_FILE_DELETED_METHOD) => RequestCommand::WorkspaceIndex(
-            WorkspaceIndexCommand::Deleted(parse_workspace_params(&message.params)),
+            WorkspaceIndexCommand::Deleted(parse_typed_params(&message.params)),
         ),
-        Some("textDocument/documentSymbol") => {
-            RequestCommand::Feature(FeatureCommand::DocumentSymbols)
+        Some("textDocument/documentSymbol") => RequestCommand::Feature(
+            FeatureCommand::DocumentSymbols(parse_typed_params(&message.params)),
+        ),
+        Some("textDocument/completion") => RequestCommand::Feature(FeatureCommand::Completion(
+            parse_typed_params(&message.params),
+        )),
+        Some("textDocument/signatureHelp") => RequestCommand::Feature(
+            FeatureCommand::SignatureHelp(parse_typed_params(&message.params)),
+        ),
+        Some("textDocument/semanticTokens/full") => RequestCommand::Feature(
+            FeatureCommand::SemanticTokensFull(parse_typed_params(&message.params)),
+        ),
+        Some("textDocument/hover") => {
+            RequestCommand::Feature(FeatureCommand::Hover(parse_typed_params(&message.params)))
         }
-        Some("textDocument/completion") => RequestCommand::Feature(FeatureCommand::Completion),
-        Some("textDocument/signatureHelp") => {
-            RequestCommand::Feature(FeatureCommand::SignatureHelp)
-        }
-        Some("textDocument/semanticTokens/full") => {
-            RequestCommand::Feature(FeatureCommand::SemanticTokensFull)
-        }
-        Some("textDocument/hover") => RequestCommand::Feature(FeatureCommand::Hover),
-        Some("textDocument/definition") => RequestCommand::Feature(FeatureCommand::Definition),
-        Some(RANGE_FORMATTING_METHOD) => RequestCommand::Feature(FeatureCommand::RangeFormatting),
-        Some(DEBUG_HOVER_METHOD) => RequestCommand::Feature(FeatureCommand::DebugHover),
-        Some(DEBUG_COMPLETION_METHOD) => RequestCommand::Feature(FeatureCommand::DebugCompletion),
-        Some(BLOCK_COMMENT_PAIR_METHOD) => {
-            RequestCommand::Feature(FeatureCommand::BlockCommentPair)
-        }
-        Some(ENTER_TYPING_ASSIST_METHOD) => {
-            RequestCommand::Feature(FeatureCommand::EnterTypingAssist)
-        }
+        Some("textDocument/definition") => RequestCommand::Feature(FeatureCommand::Definition(
+            parse_typed_params(&message.params),
+        )),
+        Some(RANGE_FORMATTING_METHOD) => RequestCommand::Feature(FeatureCommand::RangeFormatting(
+            parse_typed_params(&message.params),
+        )),
+        Some(DEBUG_HOVER_METHOD) => RequestCommand::Feature(FeatureCommand::DebugHover(
+            parse_typed_params(&message.params),
+        )),
+        Some(DEBUG_COMPLETION_METHOD) => RequestCommand::Feature(FeatureCommand::DebugCompletion(
+            parse_typed_params(&message.params),
+        )),
+        Some(BLOCK_COMMENT_PAIR_METHOD) => RequestCommand::Feature(
+            FeatureCommand::BlockCommentPair(parse_typed_params(&message.params)),
+        ),
+        Some(ENTER_TYPING_ASSIST_METHOD) => RequestCommand::Feature(
+            FeatureCommand::EnterTypingAssist(parse_typed_params(&message.params)),
+        ),
         Some(method) if method.starts_with("textDocument/") => {
             RequestCommand::Feature(FeatureCommand::OtherTextDocument)
         }
@@ -125,14 +138,11 @@ pub(super) fn classify_request(value: Value) -> Result<RoutedRequest, String> {
     Ok(RoutedRequest {
         command,
         message,
-        value,
         parameter_error,
     })
 }
 
-fn parse_workspace_params<T: for<'de> serde::Deserialize<'de>>(
-    params: &Option<Value>,
-) -> Option<T> {
+fn parse_typed_params<T: for<'de> serde::Deserialize<'de>>(params: &Option<Value>) -> Option<T> {
     params
         .as_ref()
         .and_then(|params| serde_json::from_value(params.clone()).ok())
@@ -159,7 +169,7 @@ mod tests {
             ),
             (
                 json!({"method": "textDocument/hover"}),
-                RequestCommand::Feature(FeatureCommand::Hover),
+                RequestCommand::Feature(FeatureCommand::Hover(None)),
             ),
             (
                 json!({"method": "reforger/workspaceFileChanged"}),
@@ -172,5 +182,33 @@ mod tests {
         ] {
             assert_eq!(classify_request(value).unwrap().command, expected);
         }
+    }
+
+    #[test]
+    fn captures_feature_payloads_and_reports_invalid_feature_parameters() {
+        let routed = classify_request(json!({
+            "method": "textDocument/hover",
+            "params": {
+                "textDocument": {"uri": "file:///script.c"},
+                "position": {"line": 2, "character": 4}
+            }
+        }))
+        .unwrap();
+        let RequestCommand::Feature(FeatureCommand::Hover(Some(params))) = routed.command else {
+            panic!("hover must retain its typed payload");
+        };
+        assert_eq!(params.text_document.uri, "file:///script.c");
+        assert_eq!(params.position.line, 2);
+
+        let routed = classify_request(json!({
+            "method": "textDocument/hover",
+            "params": {"textDocument": {"uri": "file:///script.c"}}
+        }))
+        .unwrap();
+        assert!(matches!(
+            routed.command,
+            RequestCommand::Feature(FeatureCommand::Hover(None))
+        ));
+        assert!(routed.parameter_error.is_some());
     }
 }
