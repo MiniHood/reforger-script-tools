@@ -294,6 +294,59 @@ impl DocumentRuntime {
             RuntimeEffect::Response { id, result },
         ])
     }
+
+    pub(super) fn interpret_foreground_event(&mut self, event: ServerEvent) -> Option<Vec<RuntimeEffect>> {
+        let ServerEvent::ForegroundDocumentReady { task, positions, lexer_tokens, syntax, elapsed_ms } = event else {
+            return None;
+        };
+        if !self.runtime.complete(&task) {
+            return Some(vec![RuntimeEffect::Log(format!(
+                "foreground discarded uri={} revision={} reason=runtime-stale elapsed_ms={}",
+                task.uri(), task.revision(), elapsed_ms
+            ))]);
+        }
+        let Some(document) = self.documents.get_mut(task.uri()) else { return Some(Vec::new()); };
+        if !document.install_foreground(task.revision(), positions, lexer_tokens, syntax) {
+            return Some(vec![RuntimeEffect::Log(format!(
+                "foreground discarded uri={} revision={} reason=stale-install elapsed_ms={}",
+                task.uri(), task.revision(), elapsed_ms
+            ))]);
+        }
+        let uri = task.uri().to_string();
+        let version = document.version;
+        let revision = document.revision;
+        let diagnostics = document.syntax().expect("foreground installation supplies syntax").diagnostics.clone();
+        let source = document.snapshot.text().to_string();
+        let _ = document;
+        self.admit_semantic_after_foreground_runtime(&uri, revision);
+        Some(vec![
+            RuntimeEffect::Notification(publish_diagnostics_message(&uri, version, &source, &diagnostics)),
+            RuntimeEffect::Log(format!(
+                "foreground ready uri={} version={} revision={} lexical_state=ready syntax_state=ready elapsed_ms={}",
+                uri, version, revision, elapsed_ms
+            )),
+        ])
+    }
+
+    fn admit_semantic_after_foreground_runtime(&mut self, uri: &str, revision: u64) {
+        let Some(scheduler) = self.analysis_scheduler.clone() else { return; };
+        let Some(document) = self.documents.get(uri) else { return; };
+        if document.revision != revision || !document.foreground_ready() { return; }
+        let snapshot = document.snapshot.clone();
+        let request_id = self.next_server_request_id;
+        self.next_server_request_id += 1;
+        match self.runtime.admit(TaskClass::Semantic, snapshot, request_id, Instant::now() + Duration::from_secs(30)) {
+            AdmissionDisposition::Enqueued { .. } => scheduler.schedule(OpenDocumentAnalysisJob {
+                task: self.runtime.take_next().expect("foreground dependency admits a runnable semantic task"),
+                scheduled_at: Instant::now(),
+            }),
+            AdmissionDisposition::DroppedOverload { .. } => {
+                if let Some(document) = self.documents.get_mut(uri) {
+                    if document.revision == revision { document.reject_pending_analysis(); }
+                }
+            }
+        }
+    }
 }
 
 pub(super) struct DeferredDocumentRequest {
@@ -581,49 +634,6 @@ impl<W: Write> LspServer<W> {
             }
         }
         Ok(())
-    }
-
-    /// Foreground publication is the only dependency edge into whole-file
-    /// semantic work.  In particular, an accepted edit never admits semantic
-    /// construction while its current syntax/position state is absent.
-    pub(super) fn admit_semantic_after_foreground(&mut self, uri: &str, revision: u64) {
-        let Some(scheduler) = self.analysis_scheduler.clone() else {
-            return;
-        };
-        let Some(document) = self.documents.get(uri) else {
-            return;
-        };
-        if document.revision != revision || !document.foreground_ready() {
-            return;
-        }
-        let snapshot = document.snapshot.clone();
-        let _ = document;
-        let request_id = self.next_server_request_id;
-        self.next_server_request_id += 1;
-        match self.runtime.admit(
-            TaskClass::Semantic,
-            snapshot,
-            request_id,
-            Instant::now() + Duration::from_secs(30),
-        ) {
-            AdmissionDisposition::Enqueued { .. } => {
-                let task = self
-                    .runtime
-                    .take_next()
-                    .expect("foreground dependency admits a runnable semantic task");
-                scheduler.schedule(OpenDocumentAnalysisJob {
-                    task,
-                    scheduled_at: Instant::now(),
-                });
-            }
-            AdmissionDisposition::DroppedOverload { .. } => {
-                if let Some(document) = self.documents.get_mut(uri) {
-                    if document.revision == revision {
-                        document.reject_pending_analysis();
-                    }
-                }
-            }
-        }
     }
 
     pub(super) fn schedule_rich_semantic_tokens(

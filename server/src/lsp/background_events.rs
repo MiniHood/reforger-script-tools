@@ -1,4 +1,4 @@
-use super::{publish_diagnostics_message, LspServer, RuntimeEffect, ServerEvent};
+use super::{LspServer, ServerEvent};
 use std::io::Write;
 /// Compatibility executor for worker completions. The composition root owns
 /// this transport-facing remainder; document state transitions are being
@@ -126,44 +126,10 @@ impl<W: Write> LspServer<W> {
                 syntax,
                 elapsed_ms,
             } => {
-                if !self.runtime.complete(&task) {
-                    self.log(&format!(
-                        "foreground discarded uri={} revision={} reason=runtime-stale elapsed_ms={}",
-                        task.uri(), task.revision(), elapsed_ms
-                    ));
-                    return Ok(());
-                }
-                let Some(document) = self.documents.get_mut(task.uri()) else {
-                    return Ok(());
-                };
-                if !document.install_foreground(task.revision(), positions, lexer_tokens, syntax) {
-                    self.log(&format!(
-                        "foreground discarded uri={} revision={} reason=stale-install elapsed_ms={}",
-                        task.uri(), task.revision(), elapsed_ms
-                    ));
-                    return Ok(());
-                }
-                let uri = task.uri().to_string();
-                let version = document.version;
-                let revision = document.revision;
-                let diagnostics = document
-                    .syntax()
-                    .expect("foreground installation supplies syntax")
-                    .diagnostics
-                    .clone();
-                let source = document.snapshot.text().to_string();
-                let _ = document;
-                self.deliver_effect(RuntimeEffect::Notification(publish_diagnostics_message(
-                    &uri,
-                    version,
-                    &source,
-                    &diagnostics,
-                )))?;
-                self.log(&format!(
-                    "foreground ready uri={} version={} revision={} lexical_state=ready syntax_state=ready elapsed_ms={}",
-                    uri, version, revision, elapsed_ms
-                ));
-                self.admit_semantic_after_foreground(&uri, revision);
+                let effects = self.document_runtime.interpret_foreground_event(
+                    ServerEvent::ForegroundDocumentReady { task, positions, lexer_tokens, syntax, elapsed_ms },
+                ).expect("foreground event is handled by the document runtime");
+                for effect in effects { self.deliver_effect(effect)?; }
                 Ok(())
             }
             ServerEvent::ForegroundDocumentSkipped {
