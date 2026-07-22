@@ -46,10 +46,21 @@ game-data downloads. Enfusion behavior must be established from
 Workbench/compiler evidence first; see the [system overview](overview.md) for
 the complete evidence order.
 
-For the `if` keyword completion, Rust owns the snippet and an opaque
-caret-local Space-commit contract. The TypeScript client may remove only the
-single committed Space identified by that contract, whether VS Code applies it
-before or after the snippet edit; it must not infer or rewrite ordinary source.
+For control-header keyword completions (`if`, `for`, `foreach`, `while`, and
+`switch`), Rust owns the parenthesized snippet and an opaque caret-local
+Space-commit contract. The TypeScript client may remove only the single
+committed Space identified by that contract, whether VS Code applies it before
+or after the snippet edit; it must not infer or rewrite ordinary source.
+
+The Enter typing-assist request is a bounded structural edit, not a formatter.
+For `for`, `foreach`, `while`, and `switch` headers with a matched closing
+parenthesis, Rust may append a braced body while preserving the header exactly.
+It declines existing-brace, non-header, comment/string, multi-caret, stale, and
+disabled-setting cases. A generated `switch` body begins with a Rust-authored
+`default` snippet: typing replaces its selected arm, while Tab retains it and
+moves to the body. At that arm, Rust offers the structural `case value` snippet
+and opens ordinary value completion for its selected value. The client owns only
+applying the returned versioned edit and snippet, never inferring source shape.
 
 Run focused Rust tests while iterating and `cargo test` from `server/` for the
 engine suite. Use the [development guide](development.md) for extension-level

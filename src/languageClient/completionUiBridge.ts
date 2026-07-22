@@ -277,7 +277,17 @@ function wrapBridgeCompletionCommands(
 ): void {
 	const items = !result ? [] : ('items' in result ? result.items : result);
 	for (const item of items) {
-		const originalCommand = item.command;
+		let originalCommand = item.command;
+		const transaction = pendingSnippetSuggestTransaction;
+		if (transaction?.expectedSelectionTexts[transaction.nextPlaceholderIndex - 1] === 'default'
+			&& item.label === 'case') {
+			item.insertText = new vscode.SnippetString('case ${1:value}');
+			originalCommand = {
+				title: 'Suggest switch case value',
+				command: languageClientCommands.triggerSuggestAtSnippetPlaceholder,
+				arguments: ['value'],
+			};
+		}
 		item.command = {
 			title: 'Advance enum snippet placeholder',
 			command: languageClientCommands.advanceSnippetPlaceholderAfterAccept,

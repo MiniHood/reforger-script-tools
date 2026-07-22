@@ -18,6 +18,9 @@ export interface LspTextEdit {
 export interface VersionedEditResponse {
 	edits: readonly LspTextEdit[];
 	selection?: LspPosition;
+	selectionRange?: LspRange;
+	snippet?: string;
+	triggerSuggest?: boolean;
 }
 
 export function isCurrentSingleCaret(
@@ -41,9 +44,17 @@ export async function applyVersionedEditorEdits(
 		editBuilder => response.edits.forEach(edit => editBuilder.replace(rangeFromLsp(edit.range), edit.newText)),
 		{ undoStopBefore: false, undoStopAfter: false },
 	);
-	if (applied && response.selection) {
+	if (applied && response.selectionRange) {
+		editor.selection = new vscode.Selection(
+			new vscode.Position(response.selectionRange.start.line, response.selectionRange.start.character),
+			new vscode.Position(response.selectionRange.end.line, response.selectionRange.end.character),
+		);
+	} else if (applied && response.selection) {
 		const position = new vscode.Position(response.selection.line, response.selection.character);
 		editor.selection = new vscode.Selection(position, position);
+	}
+	if (applied && response.snippet) {
+		await editor.insertSnippet(new vscode.SnippetString(response.snippet));
 	}
 	return applied;
 }

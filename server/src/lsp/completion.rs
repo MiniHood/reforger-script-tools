@@ -3676,13 +3676,14 @@ fn keyword_completion_items(
         .into_iter()
         .filter(|keyword| starts_with_ignore_ascii_case(keyword, prefix))
         .map(|keyword| {
-            // `if` has one unambiguous, language-required next construct: a
-            // parenthesized condition. Keep that choice inside the accepted
+            // These control headers have one unambiguous next construct: a
+            // parenthesized condition/header. Keep that choice inside the accepted
             // Rust-authored completion edit so VS Code applies it atomically,
             // rather than observing a later Space/Enter edit from the client.
-            let (new_text, insert_text_format, commit_characters) = if keyword == "if" {
+            let is_control_header = matches!(keyword, "if" | "for" | "foreach" | "while" | "switch");
+            let (new_text, insert_text_format, commit_characters) = if is_control_header {
                 (
-                    "if ($0)".to_string(),
+                    format!("{keyword} ($0)"),
                     Some(2),
                     // Space accepts the selected `if` suggestion as the same
                     // atomic completion transaction as Tab. This is not an
@@ -3708,20 +3709,20 @@ fn keyword_completion_items(
                 filter_text: Some(keyword.to_string()),
                 insert_text_format,
                 commit_characters,
-                command: (keyword == "if").then_some(LspCommand {
-                    title: "Normalize if Space commit".to_string(),
+                command: is_control_header.then_some(LspCommand {
+                    title: "Normalize control header Space commit".to_string(),
                     command: COMMAND_NORMALIZE_IF_SPACE_COMMIT.to_string(),
                     arguments: Some(vec![json!({
                         "expectedCommit": " ",
                         "deletion": {
-                            "start": { "line": edit_range.start.line, "character": edit_range.start.character + 4 },
-                            "end": { "line": edit_range.start.line, "character": edit_range.start.character + 5 },
+                            "start": { "line": edit_range.start.line, "character": edit_range.start.character + keyword.len() as u32 + 2 },
+                            "end": { "line": edit_range.start.line, "character": edit_range.start.character + keyword.len() as u32 + 3 },
                         },
                         "trailingDeletion": {
-                            "start": { "line": edit_range.start.line, "character": edit_range.start.character + 5 },
-                            "end": { "line": edit_range.start.line, "character": edit_range.start.character + 6 },
+                            "start": { "line": edit_range.start.line, "character": edit_range.start.character + keyword.len() as u32 + 3 },
+                            "end": { "line": edit_range.start.line, "character": edit_range.start.character + keyword.len() as u32 + 4 },
                         },
-                        "caret": { "line": edit_range.start.line, "character": edit_range.start.character + 4 },
+                        "caret": { "line": edit_range.start.line, "character": edit_range.start.character + keyword.len() as u32 + 2 },
                     })]),
                 }),
                 text_edit: LspTextEdit {
@@ -3734,6 +3735,74 @@ fn keyword_completion_items(
             }
         })
         .collect()
+}
+
+/// The generated first switch arm is deliberately a tiny completion surface.
+/// `default` remains a normal replacement; accepting `case` creates the only
+/// structurally valid alternative and selects a value field for ordinary value
+/// completion. This recognizes syntax, never editor text heuristics.
+#[cfg(test)]
+fn switch_arm_placeholder_completion_items(
+    source: &str,
+    prefix_span: TextSpan,
+) -> Option<Vec<LspCompletionItem>> {
+    let prefix = source.get(prefix_span.start..prefix_span.end)?;
+    if prefix.is_empty()
+        || !starts_with_ignore_ascii_case("default", prefix)
+            && !starts_with_ignore_ascii_case("case", prefix)
+    {
+        return None;
+    }
+    let tokens = lex(source)
+        .into_iter()
+        .filter(|token| !token.kind.is_trivia() && token.kind != TokenKind::Eof)
+        .collect::<Vec<_>>();
+    let index = tokens.iter().position(|token| token.span == prefix_span)?;
+    if tokens.get(index + 1).map(|token| token.kind) != Some(TokenKind::Colon)
+        || index < 2
+        || tokens[index - 1].kind != TokenKind::LeftBrace
+        || tokens[index - 2].kind != TokenKind::RightParen
+        || !tokens[..index - 2]
+            .iter()
+            .rev()
+            .any(|token| token.kind == TokenKind::Keyword(Keyword::Switch))
+    {
+        return None;
+    }
+    let range = range_for_span(source, prefix_span);
+    let keyword_item = |label: &str,
+                        new_text: String,
+                        format: Option<u32>,
+                        command: Option<LspCommand>| LspCompletionItem {
+        label: label.to_string(),
+        label_details: None,
+        kind: 14,
+        detail: Some("switch arm".to_string()),
+        documentation: None,
+        sort_text: Some(format!("00:00:000:{label}")),
+        filter_text: Some(label.to_string()),
+        insert_text_format: format,
+        commit_characters: None,
+        command,
+        text_edit: LspTextEdit {
+            range,
+            new_text,
+            replace_range: None,
+        },
+        required_parameter_count: 0,
+        optional_parameter_count: 0,
+    };
+    Some(vec![
+        keyword_item("default", "default".to_string(), None, None),
+        keyword_item(
+            "case",
+            "case ${1:value}".to_string(),
+            Some(2),
+            Some(trigger_suggest_at_snippet_placeholder_command(vec![
+                "value".to_string(),
+            ])),
+        ),
+    ])
 }
 
 fn keyword_completion_sort_key<'keyword>(
@@ -5930,55 +5999,63 @@ ArmaReforgerScripted GetGame();
     }
 
     #[test]
-    fn if_keyword_completion_places_the_cursor_inside_empty_parentheses() {
-        let items = keyword_completion_items(
-            "if",
-            test_range(),
-            EditorTopLevelCompletionMode::Value,
-            false,
-        );
-        let if_item = items
-            .iter()
-            .find(|item| item.label == "if")
-            .expect("if should remain a value-context keyword");
+    fn control_header_keyword_completions_place_the_cursor_inside_empty_parentheses() {
+        for keyword in ["if", "for", "foreach", "while", "switch"] {
+            let item = keyword_completion_items(
+                keyword,
+                test_range(),
+                EditorTopLevelCompletionMode::Value,
+                false,
+            )
+            .into_iter()
+            .find(|item| item.label == keyword)
+            .expect("control keyword should remain a value-context keyword");
+            let caret = keyword.len() as u32 + 2;
 
-        assert_eq!(if_item.text_edit.new_text, "if ($0)");
-        assert_eq!(if_item.insert_text_format, Some(2));
-        assert_eq!(if_item.commit_characters, Some(vec![" ".to_string()]));
+            assert_eq!(item.text_edit.new_text, format!("{keyword} ($0)"));
+            assert_eq!(item.insert_text_format, Some(2));
+            assert_eq!(item.commit_characters, Some(vec![" ".to_string()]));
+            assert_eq!(
+                item.command
+                    .as_ref()
+                    .map(|command| command.command.as_str()),
+                Some(COMMAND_NORMALIZE_IF_SPACE_COMMIT),
+            );
+            assert_eq!(
+                item.command
+                    .as_ref()
+                    .and_then(|command| command.arguments.as_ref()),
+                Some(&vec![json!({
+                    "expectedCommit": " ",
+                    "deletion": { "start": { "line": 0, "character": caret }, "end": { "line": 0, "character": caret + 1 } },
+                    "trailingDeletion": { "start": { "line": 0, "character": caret + 1 }, "end": { "line": 0, "character": caret + 2 } },
+                    "caret": { "line": 0, "character": caret },
+                })]),
+            );
+            let wire_item = serde_json::to_value(item).expect("keyword item should serialize");
+            assert_eq!(wire_item["commitCharacters"], serde_json::json!([" "]));
+        }
+    }
+
+    #[test]
+    fn switch_arm_placeholder_offers_default_and_a_value_case_snippet() {
+        let source = "switch (kind) {\n\tdefault:\n\t\t\n}";
+        let start = source.find("default").unwrap();
+        let items =
+            switch_arm_placeholder_completion_items(source, TextSpan::new(start, start + 7))
+                .expect("generated switch arm should be recognized");
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].label, "default");
+        assert_eq!(items[1].label, "case");
+        assert_eq!(items[1].text_edit.new_text, "case ${1:value}");
+        assert_eq!(items[1].insert_text_format, Some(2));
         assert_eq!(
-            if_item
-                .command
-                .as_ref()
-                .map(|command| command.command.as_str()),
-            Some(COMMAND_NORMALIZE_IF_SPACE_COMMIT),
-        );
-        assert_eq!(
-            if_item
+            items[1]
                 .command
                 .as_ref()
                 .and_then(|command| command.arguments.as_ref()),
-            Some(&vec![json!({
-                "expectedCommit": " ",
-                "deletion": { "start": { "line": 0, "character": 4 }, "end": { "line": 0, "character": 5 } },
-                "trailingDeletion": { "start": { "line": 0, "character": 5 }, "end": { "line": 0, "character": 6 } },
-                "caret": { "line": 0, "character": 4 },
-            })]),
+            Some(&vec![json!("value")]),
         );
-        let wire_item = serde_json::to_value(if_item).expect("keyword item should serialize");
-        assert_eq!(wire_item["commitCharacters"], serde_json::json!([" "]));
-
-        let while_item = keyword_completion_items(
-            "while",
-            test_range(),
-            EditorTopLevelCompletionMode::Value,
-            false,
-        )
-        .into_iter()
-        .find(|item| item.label == "while")
-        .expect("while should remain a value-context keyword");
-        assert_eq!(while_item.text_edit.new_text, "while");
-        assert_eq!(while_item.insert_text_format, None);
-        assert_eq!(while_item.commit_characters, None);
     }
 
     #[test]

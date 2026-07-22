@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import type { LanguageClient } from 'vscode-languageclient/node';
 import { experimentalAutoFormattingEnabled } from '../extensionConfig/experimentalAutoFormatting';
-import { languageClientLanguage, languageClientRequests } from '../extensionConfig/languageClient';
+import { languageClientCommands, languageClientLanguage, languageClientRequests } from '../extensionConfig/languageClient';
 import { diagnostic } from '../diagnostics/diagnostics';
 import { type VersionedEditResponse } from './versionedEditorEdit';
 import { isCurrentSingleVersionedEditorCaret, VersionedEditorTransaction } from './versionedEditorTransaction';
@@ -275,6 +275,12 @@ async function applyPendingEnterTypingAssist(
 		version: transaction.version,
 		edits: transaction.response?.edits.length,
 	});
+	if (outcome === 'applied' && transaction.response?.triggerSuggest) {
+		void vscode.commands.executeCommand(
+			languageClientCommands.triggerSuggestAtSnippetPlaceholder,
+			'default',
+		);
+	}
 	clear();
 }
 

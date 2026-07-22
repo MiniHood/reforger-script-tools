@@ -274,6 +274,23 @@ suite('extension activation', () => {
 		assert.strictEqual(await transaction.apply(), 'pending');
 	});
 
+	test('applies a Rust-authored switch arm snippet with default selected and a body tab stop', async () => {
+		const document = await vscode.workspace.openTextDocument({ language: 'enforce', content: 'switch (value)\n' });
+		const editor = await vscode.window.showTextDocument(document);
+		const position = new vscode.Position(1, 0);
+		editor.selection = new vscode.Selection(position, position);
+		const transaction = new VersionedEditorTransaction(document, document.version, position, position);
+		assert.strictEqual(transaction.accept({
+			edits: [{ range: { start: { line: 0, character: 14 }, end: { line: 1, character: 0 } }, newText: '\n{\n\t\n}' }],
+			selection: { line: 2, character: 1 },
+			snippet: '${1:default}:\n\t${0}',
+		}), true);
+		assert.strictEqual(await transaction.apply(), 'applied');
+		assert.strictEqual(document.getText(), 'switch (value)\n{\n\tdefault:\n        \n}');
+		assert.deepStrictEqual(editor.selection.anchor, new vscode.Position(2, 1));
+		assert.deepStrictEqual(editor.selection.active, new vscode.Position(2, 8));
+	});
+
 	test('rejects empty and stale versioned assist responses', async () => {
 		const document = await vscode.workspace.openTextDocument({ language: 'enforce', content: 'value' });
 		const editor = await vscode.window.showTextDocument(document);

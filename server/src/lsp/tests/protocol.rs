@@ -482,6 +482,39 @@ fn enter_typing_assist_repairs_only_an_incomplete_if_header_with_a_body_selectio
 }
 
 #[test]
+fn enter_typing_assist_creates_loop_and_switch_bodies_without_rewriting_headers() {
+    let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
+    let uri = "file:///Scripts/ControlHeaderEnter.c";
+    server
+        .handle_message(
+            json!({ "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "enforce",
+                    "version": 1,
+                    "text": "for (int i = 0; i < count; i++)\nswitch (kind)\n"
+                }
+            }}),
+            None, 0, 0,
+        )
+        .unwrap();
+    server.writer.clear();
+    server
+        .handle_message(
+            json!({ "jsonrpc": "2.0", "id": 1, "method": ENTER_TYPING_ASSIST_METHOD, "params": {
+                "textDocument": { "uri": uri }, "position": { "line": 2, "character": 0 },
+                "ch": "\n", "version": 1, "options": { "tabSize": 4, "insertSpaces": true }
+            }}),
+            None, 0, 0,
+        )
+        .unwrap();
+    let output = String::from_utf8_lossy(&server.writer);
+    assert!(output.contains("\\n{\\n    \\n}"), "{output}");
+    assert!(output.contains("\"snippet\":\"${1:default}:\\n    ${0}\""), "{output}");
+    assert!(output.contains("\"triggerSuggest\":true"), "{output}");
+}
+
+#[test]
 fn runtime_debug_hover_runs_off_the_lsp_message_loop() {
     let (sender, receiver) = mpsc::channel();
     let scheduler = RuntimeWorkExecutor::start(sender);

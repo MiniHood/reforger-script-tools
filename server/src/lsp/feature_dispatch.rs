@@ -454,6 +454,24 @@ impl FeatureDispatcher<'_> {
                             }
                             let cursor = offset_for_position(&document.text, params.position)?;
                             if params.ch == "\n" {
+                                if let Some(plan) = on_type_formatting::auto_block_control_header_enter_plan(
+                                    &document.text,
+                                    cursor,
+                                    params.options.tab_size,
+                                    params.options.insert_spaces,
+                                ) {
+                                    outcome = "control_block";
+                                    let start = position_for_offset(&document.text, plan.span.start);
+                                    return Some(json!({
+                                        "edits": [{
+                                            "range": { "start": start, "end": position_for_offset(&document.text, plan.span.end) },
+                                            "newText": plan.replacement,
+                                        }],
+                                        "selection": { "line": plan.selection_line, "character": plan.selection_character },
+                                        "snippet": plan.switch_arm_snippet,
+                                        "triggerSuggest": plan.switch_arm_snippet.is_some(),
+                                    }));
+                                }
                                 if let Some(plan) = on_type_formatting::incomplete_if_header_enter_plan(
                                     &document.text,
                                     cursor,

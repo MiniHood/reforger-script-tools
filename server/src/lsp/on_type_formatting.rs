@@ -16,6 +16,158 @@ pub(super) struct IncompleteIfHeaderPlan {
     pub selection_character: u32,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct AutoBlockControlHeaderPlan {
+    pub span: TextSpan,
+    pub replacement: String,
+    pub selection_line: u32,
+    pub selection_character: u32,
+    pub switch_arm_snippet: Option<String>,
+}
+
+pub(super) fn auto_block_control_header_enter_plan(
+    source: &str,
+    cursor: usize,
+    tab_size: usize,
+    insert_spaces: bool,
+) -> Option<AutoBlockControlHeaderPlan> {
+    if source.len() > MAX_ON_TYPE_SOURCE_BYTES || cursor > source.len() {
+        return None;
+    }
+    let tokens = lex(source)
+        .into_iter()
+        .filter(|token| !token.kind.is_trivia() && token.kind != TokenKind::Eof)
+        .collect::<Vec<_>>();
+    // Select the nearest eligible header. A preceding loop in the same method
+    // must never cause Enter in a later header to edit the earlier one.
+    let (keyword_index, close_index) = tokens
+        .iter()
+        .enumerate()
+        .filter_map(|(index, token)| {
+            if !matches!(
+                token.kind,
+                TokenKind::Keyword(
+                    Keyword::For | Keyword::Foreach | Keyword::While | Keyword::Switch
+                )
+            ) || tokens.get(index + 1).map(|token| token.kind) != Some(TokenKind::LeftParen)
+            {
+                return None;
+            }
+            if token.kind == TokenKind::Keyword(Keyword::While) && is_do_while_tail(&tokens, index)
+            {
+                return None;
+            }
+            let close = matching_right_paren(&tokens, index + 1)?;
+            let header_end = tokens[close].span.end;
+            let immediately_after_header = source.get(header_end..cursor).is_some_and(|between| {
+                between.chars().all(char::is_whitespace)
+                        // The native Enter produces exactly one line break.
+                        // Do not reach back across an unrelated blank line.
+                        && between.bytes().filter(|byte| *byte == b'\n').count() <= 1
+            });
+            (token.span.start <= cursor && (cursor <= header_end || immediately_after_header))
+                .then_some((index, close))
+        })
+        .last()?;
+    let close = tokens[close_index];
+    let header_end = close.span.end;
+    if tokens
+        .get(close_index + 1)
+        .is_some_and(|token| token.kind == TokenKind::LeftBrace)
+    {
+        return None;
+    }
+    let keyword = tokens[keyword_index];
+    let line_start = source[..keyword.span.start]
+        .rfind('\n')
+        .map_or(0, |index| index + 1);
+    let indent = &source[line_start..keyword.span.start];
+    if !indent.chars().all(char::is_whitespace) {
+        return None;
+    }
+    let newline = if source.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
+    let unit = if insert_spaces {
+        " ".repeat(tab_size.clamp(1, 16))
+    } else {
+        "\t".to_string()
+    };
+    let is_switch = keyword.kind == TokenKind::Keyword(Keyword::Switch);
+    let body = if is_switch {
+        format!("{newline}{indent}{{{newline}{indent}{unit}{newline}{indent}}}")
+    } else {
+        format!("{newline}{indent}{{{newline}{indent}{unit}{newline}{indent}}}")
+    };
+    let selection_line = source[..header_end]
+        .bytes()
+        .filter(|byte| *byte == b'\n')
+        .count() as u32;
+    Some(AutoBlockControlHeaderPlan {
+        span: TextSpan::new(header_end, cursor.max(header_end)),
+        replacement: body,
+        selection_line: selection_line + 2,
+        selection_character: (if is_switch {
+            format!("{indent}{unit}")
+        } else {
+            format!("{indent}{unit}")
+        })
+        .chars()
+        .map(|character| character.len_utf16() as u32)
+        .sum(),
+        // VS Code carries the current arm line's indentation across a snippet
+        // newline, so the snippet adds only one body indentation unit.
+        switch_arm_snippet: is_switch.then(|| format!("${{1:default}}:{newline}{unit}${{0}}")),
+    })
+}
+
+fn matching_right_paren(tokens: &[Token], open: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    for (index, token) in tokens.iter().enumerate().skip(open) {
+        match token.kind {
+            TokenKind::LeftParen => depth += 1,
+            TokenKind::RightParen => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn is_do_while_tail(tokens: &[Token], while_index: usize) -> bool {
+    // A `do` body can be either a braced block or one statement. Conservatively
+    // decline a following `while` when an unmatched `do` occurs since the last
+    // brace boundary; a false negative would turn a valid do-while tail into a
+    // second body, while a conservative no-op leaves ordinary typing intact.
+    if while_index > 0 && tokens[while_index - 1].kind == TokenKind::RightBrace {
+        let mut depth = 0usize;
+        for index in (0..while_index).rev() {
+            match tokens[index].kind {
+                TokenKind::RightBrace => depth += 1,
+                TokenKind::LeftBrace => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        return index > 0
+                            && tokens[index - 1].kind == TokenKind::Keyword(Keyword::Do);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    tokens[..while_index]
+        .iter()
+        .rev()
+        .take_while(|token| !matches!(token.kind, TokenKind::LeftBrace | TokenKind::RightBrace))
+        .any(|token| token.kind == TokenKind::Keyword(Keyword::Do))
+}
+
 /// Completes a single-line unbraced `if` header when Enter split its still
 /// unfinished condition.  This is intentionally smaller than a formatter:
 /// every unsupported or recovered shape leaves the editor's native Enter
@@ -697,7 +849,8 @@ fn consume_balanced(tokens: &[Token], start: usize, close: TokenKind) -> Option<
 #[cfg(test)]
 mod tests {
     use super::{
-        block_comment_pair_plan, incomplete_if_header_enter_plan, semicolon_insertion_offset,
+        auto_block_control_header_enter_plan, block_comment_pair_plan,
+        incomplete_if_header_enter_plan, semicolon_insertion_offset,
     };
 
     fn insertion(source: &str) -> Option<usize> {
@@ -825,6 +978,44 @@ mod tests {
         let plan = incomplete_if_header_enter_plan(auto_closed, cursor, 4, false).unwrap();
         assert_eq!(plan.replacement, "\tif (GetGame())\n\t\t");
         assert_eq!(plan.selection_character, 2);
+    }
+
+    #[test]
+    fn creates_braced_bodies_without_rewriting_control_headers() {
+        for source in [
+            "\tfor (int i = 0;\n\t i < count; i++)",
+            "\tforeach (value in values)",
+            "\twhile (running)",
+        ] {
+            let plan =
+                auto_block_control_header_enter_plan(source, source.len(), 4, false).unwrap();
+            assert_eq!(plan.span.start, source.len());
+            assert_eq!(plan.replacement, "\n\t{\n\t\t\n\t}");
+            assert_eq!(plan.switch_arm_snippet, None);
+        }
+
+        let switch_source = "switch (value)\n";
+        let plan =
+            auto_block_control_header_enter_plan(switch_source, switch_source.len(), 2, true)
+                .unwrap();
+        assert_eq!(plan.replacement, "\n{\n  \n}");
+        assert_eq!(
+            plan.switch_arm_snippet,
+            Some("${1:default}:\n  ${0}".to_string())
+        );
+    }
+
+    #[test]
+    fn declines_existing_bodies_and_never_uses_an_earlier_header() {
+        assert!(auto_block_control_header_enter_plan("for (;;) {}", 8, 4, true).is_none());
+        let do_while = "do { Work(); } while (running)\n";
+        assert!(auto_block_control_header_enter_plan(do_while, do_while.len(), 4, true).is_none());
+        let do_while = "do Work(); while (running)\n";
+        assert!(auto_block_control_header_enter_plan(do_while, do_while.len(), 4, true).is_none());
+        let source = "for (;;) {}\nwhile (running)\n";
+        let plan = auto_block_control_header_enter_plan(source, source.len(), 4, true).unwrap();
+        assert_eq!(plan.span.start, source.len() - 1);
+        assert_eq!(plan.replacement, "\n{\n    \n}");
     }
 
     #[test]
