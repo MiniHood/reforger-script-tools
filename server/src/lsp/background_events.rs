@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    publish_diagnostics_message, LspServer, ServerEvent,
+};
+use std::io::Write;
 
 impl<W: Write> LspServer<W> {
     pub(super) fn handle_internal_event(&mut self, event: ServerEvent) -> Result<(), String> {

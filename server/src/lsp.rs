@@ -11,13 +11,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 #[cfg(test)]
 use std::cell::Cell;
-use std::cmp::Reverse;
+#[cfg(test)]
+use std::sync::{Arc, Condvar, Mutex};
 use std::collections::BTreeMap;
 use std::io::{self, BufReader, Read, Write};
 use std::path::PathBuf;
-use std::sync::{mpsc, Arc, Condvar, Mutex};
+use std::sync::mpsc;
 use std::thread;
-use std::time::{Duration, Instant};
+#[cfg(test)]
+use std::time::Duration;
+use std::time::Instant;
 
 mod background_events;
 mod callable;
