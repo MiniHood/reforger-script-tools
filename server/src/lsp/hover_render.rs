@@ -301,9 +301,14 @@ fn render_enum_members(
                 &candidate.display,
                 context,
             );
-            if let Some(detail) = &candidate.display.detail {
-                rendered.push_str(" // ");
-                rendered.push_str(&escape_html_text(detail));
+            if let Some(value) = candidate
+                .display
+                .detail
+                .as_deref()
+                .and_then(|detail| detail.strip_prefix("value "))
+            {
+                rendered.push_str(" = ");
+                rendered.push_str(&escape_html_text(value));
             }
             rendered
         })
@@ -1594,10 +1599,10 @@ class Child : Base
         assert!(markdown.contains("<span style=\"color:#59A6E9;\">enum</span>"));
         assert!(markdown.contains("<span style=\"color:#40b5ac;\">ExampleEnum</span>"));
         assert!(markdown.contains("### Enum Values"));
-        assert!(markdown.contains("<span style=\"color:#cfcfcf;\">First</span> // value 1"));
+        assert!(markdown.contains("<span style=\"color:#cfcfcf;\">First</span> = 1"));
         assert!(markdown.contains("<span style=\"color:#cfcfcf;\">Second</span>"));
         assert!(markdown.contains("<span style=\"color:#cfcfcf;\">Fifth</span>"));
-        assert!(!markdown.contains("// +"));
+        assert!(!markdown.contains(" // value"));
     }
 
     #[test]
@@ -1630,7 +1635,7 @@ class Child : Base
         assert!(markdown.contains("### Enum Values"));
         assert!(markdown.contains("<a href=\"command:reforger-sript-tools.openSymbolLocation?"));
         assert!(markdown.contains("<span style=\"color:#cfcfcf;\">First</span>"));
-        assert!(markdown.contains(" // value 1"));
+        assert!(markdown.contains(" = 1"));
         assert!(!markdown.contains("```enforce"));
         assert!(!markdown.contains("[<span"));
     }
