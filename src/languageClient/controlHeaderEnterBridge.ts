@@ -8,9 +8,8 @@ import { applyVersionedEditorEdits, isCurrentSingleCaret, type VersionedEditResp
 
 const nativeTypeCommand = 'type';
 
-interface InputRouteResult extends Omit<VersionedEditResponse, 'snippet'> {
-	snippet?: never;
-	owner?: 'controlHeader' | 'ifHeader' | 'semicolon';
+interface InputRouteResult extends VersionedEditResponse {
+	owner?: 'controlHeader' | 'ifHeader' | 'ifBraceBody' | 'semicolon';
 	reason?: string;
 }
 

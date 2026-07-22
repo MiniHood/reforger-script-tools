@@ -456,12 +456,19 @@ impl FeatureDispatcher<'_> {
                                 params.options.tab_size,
                                 params.options.insert_spaces,
                             ).map(|plan| (plan, "ifHeader")))
+                            .or_else(|| on_type_formatting::paired_brace_if_body_before_enter_plan(
+                                &document.text,
+                                cursor,
+                                params.options.tab_size,
+                                params.options.insert_spaces,
+                            ).map(|plan| (plan, "ifBraceBody")))
                             .or_else(|| on_type_formatting::semicolon_before_enter_plan(
                                 &document.text,
                                 cursor,
                             ).map(|plan| (plan, "semicolon"))) else {
                                 return None;
                             };
+                            let use_snippet = owner == "ifBraceBody";
                             trace = params.trace.then_some(("applied", owner, true, "eligible"));
                             let start = position_for_offset(&document.text, plan.span.start);
                             Some(json!({
@@ -470,8 +477,10 @@ impl FeatureDispatcher<'_> {
                                         "start": start,
                                         "end": position_for_offset(&document.text, plan.span.end),
                                     },
-                                    "newText": plan.replacement,
+                                    "newText": if use_snippet { "" } else { &plan.replacement },
                                 }],
+                                "snippet": use_snippet.then_some(&plan.replacement),
+                                "snippetRange": use_snippet.then(|| json!({ "start": start, "end": position_for_offset(&document.text, plan.span.end) })),
                                 "owner": owner,
                                 "selectionRange": plan.switch_arm_selection_end.map(|end| json!({ "start": { "line": plan.selection_line, "character": plan.selection_character }, "end": { "line": plan.selection_line, "character": end } })),
                                 "selection": { "line": plan.selection_line, "character": plan.selection_character },

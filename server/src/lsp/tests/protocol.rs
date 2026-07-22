@@ -510,6 +510,28 @@ fn input_route_moves_if_enter_to_the_unbraced_body_without_moving_the_parenthesi
 }
 
 #[test]
+fn input_route_replaces_a_paired_if_brace_with_an_indented_body_snippet() {
+    let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
+    let uri = "file:///Scripts/IfBraceEnter.c";
+    server.handle_message(json!({ "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+        "textDocument": { "uri": uri, "languageId": "enforce", "version": 1, "text": "        if (true)\n        {}" }
+    }}), None, 0, 0).unwrap();
+    server.writer.clear();
+    server.handle_message(json!({ "jsonrpc": "2.0", "id": 1, "method": CONTROL_HEADER_ENTER_METHOD, "params": {
+        "textDocument": { "uri": uri }, "operation": "insertNewline", "version": 1,
+        "selections": [{ "start": { "line": 1, "character": 9 }, "end": { "line": 1, "character": 9 } }],
+        "options": { "tabSize": 4, "insertSpaces": true }
+    }}), None, 0, 0).unwrap();
+    let output = String::from_utf8_lossy(&server.writer);
+    assert!(output.contains("\"owner\":\"ifBraceBody\""), "{output}");
+    assert!(
+        output.contains("\"snippet\":\"{\\n    $0\\n}\""),
+        "{output}"
+    );
+    assert!(output.contains("\"snippetRange\""), "{output}");
+}
+
+#[test]
 fn input_route_finishes_an_unambiguous_statement_with_a_semicolon_before_enter() {
     let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
     let uri = "file:///Scripts/SemicolonEnter.c";

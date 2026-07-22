@@ -17,6 +17,7 @@ export interface LspTextEdit {
 
 export interface VersionedEditResponse {
 	edits: readonly LspTextEdit[];
+	snippetRange?: LspRange;
 	selection?: LspPosition;
 	selectionRange?: LspRange;
 	snippet?: string;
@@ -40,6 +41,13 @@ export async function applyVersionedEditorEdits(
 	editor: vscode.TextEditor,
 	response: VersionedEditResponse,
 ): Promise<boolean> {
+	if (response.snippet && response.snippetRange) {
+		return editor.insertSnippet(
+			new vscode.SnippetString(response.snippet),
+			rangeFromLsp(response.snippetRange),
+			{ undoStopBefore: false, undoStopAfter: false },
+		);
+	}
 	const applied = await editor.edit(
 		editBuilder => response.edits.forEach(edit => editBuilder.replace(rangeFromLsp(edit.range), edit.newText)),
 		{ undoStopBefore: false, undoStopAfter: false },

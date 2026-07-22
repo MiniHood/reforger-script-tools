@@ -46,7 +46,7 @@
     },
     {
       "previousLineText": "^\\s*(?:(?:else\\s+)?if\\s*\\([^{};]*\\)|else)\\s*$",
-      "beforeText": "^(?!\\s*(?://|/\\*|\\*))\\s*\\S.*$",
+      "beforeText": "^(?!\\s*(?://|/\\*|\\*|\\{))\\s*\\S.*$",
       "action": {
         "indent": "outdent"
       }

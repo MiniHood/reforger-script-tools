@@ -79,9 +79,11 @@ _Avoid_: TypeScript typing rule, client-side formatter decision
 **Atomic Input Result**:
 The initial handled result of an Input Routing Decision: one set of document
 text edits and the final selections, applied together as one undoable editor
-operation. It may declaratively request that the suggestion UI opens after
-those edits and selections are applied. The initial protocol permits no other
-arbitrary VS Code command, delayed follow-up action, or edit sequence.
+operation. A Rust-authored snippet replacement is also permitted when VS Code
+must retain a blank structural line and its caret as one operation. It may
+declaratively request that the suggestion UI opens afterwards. The protocol
+permits no other arbitrary VS Code command, delayed follow-up action, or edit
+sequence.
 _Avoid_: command result, chained editor mutation
 
 **Atomic Switch Arm**:

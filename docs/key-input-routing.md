@@ -78,10 +78,11 @@ and IME composition may bypass an operation command by design.
    decision without an arbitrary timeout. On request failure or server
    unavailability it immediately uses Native Fallback and ignores a late
    result.
-5. Apply a handled result as one source edit and final selection state. It may
+5. Apply a handled result as one source edit and final selection state. A
+   Rust-authored snippet replacement may be the one operation when it is
+   needed to preserve a blank structural line and its caret. It may
    declaratively request that suggestion UI opens afterwards, but it cannot
-   run arbitrary VS Code commands, insert a follow-up snippet, or perform a
-   second source mutation.
+   run arbitrary VS Code commands or perform a second source mutation.
 6. A decision is valid only for the exact document version and selection it
    inspected. A stale response is discarded and Native Fallback runs at the
    editor's then-current state.
