@@ -39,6 +39,13 @@
   "autoCloseBefore": ";:.,=+-*/%&|^!~? \t\n",
   "onEnterRules": [
     {
+      "beforeText": "^\\s*(?:(?:else\\s+)?if\\s*\\([^{};]*)$",
+      "afterText": "^\\s*\\)\\s*$",
+      "action": {
+        "indent": "indent"
+      }
+    },
+    {
       "beforeText": "^\\s*(?:(?:else\\s+)?if\\s*\\([^{};]*\\)|else)\\s*$",
       "action": {
         "indent": "indent"

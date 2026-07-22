@@ -155,7 +155,7 @@ suite('extension activation', () => {
 			configuration.autoClosingPairs.find(pair => pair.open === '/*'),
 			{ open: '/*', close: '*/', notIn: ['string', 'comment'] },
 		);
-		const onEnterHeader = configuration.onEnterRules?.[0];
+		const onEnterHeader = configuration.onEnterRules?.[1];
 		assert.strictEqual(onEnterHeader?.action?.indent, 'indent');
 		assert.ok(onEnterHeader?.beforeText);
 		const indentHeader = new RegExp(onEnterHeader.beforeText);
@@ -172,7 +172,7 @@ suite('extension activation', () => {
 		]) {
 			assert.ok(!indentHeader.test(ineligible), ineligible);
 		}
-		const outdentAfterBody = configuration.onEnterRules?.[1];
+		const outdentAfterBody = configuration.onEnterRules?.[2];
 		assert.strictEqual(outdentAfterBody?.action?.indent, 'outdent');
 		assert.strictEqual(outdentAfterBody?.previousLineText, onEnterHeader.beforeText);
 		assert.ok(outdentAfterBody?.beforeText);
@@ -225,6 +225,15 @@ suite('extension activation', () => {
 		assert.strictEqual(document.getText(), 'value;');
 		assert.deepStrictEqual(editor.selection.active, new vscode.Position(0, 6));
 		assert.strictEqual(await transaction.apply(), 'pending');
+	});
+
+	test('indents Enter inside a completed if condition before its closing parenthesis', async () => {
+		const document = await vscode.workspace.openTextDocument({ language: 'enforce', content: 'if (true)' });
+		const editor = await vscode.window.showTextDocument(document);
+		const closingParenthesis = new vscode.Position(0, 'if (true'.length);
+		editor.selection = new vscode.Selection(closingParenthesis, closingParenthesis);
+		await vscode.commands.executeCommand('type', { text: '\n' });
+		assert.strictEqual(document.getText(), 'if (true\r\n    )');
 	});
 
 	test('routes a switch Enter as one atomic edit with default selected', async () => {
