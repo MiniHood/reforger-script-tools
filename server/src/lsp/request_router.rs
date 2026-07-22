@@ -4,7 +4,8 @@
 //! It does not read document state or perform transport work.
 use super::workspace_requests::{WorkspaceFileChangedParams, WorkspaceFileDeletedParams};
 use super::{
-    validate_message_params, RpcMessage, BLOCK_COMMENT_PAIR_METHOD, DEBUG_COMPLETION_METHOD,
+    validate_message_params, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
+    DidOpenTextDocumentParams, RpcMessage, BLOCK_COMMENT_PAIR_METHOD, DEBUG_COMPLETION_METHOD,
     DEBUG_HOVER_METHOD, ENTER_TYPING_ASSIST_METHOD, RANGE_FORMATTING_METHOD,
     WORKSPACE_FILE_CHANGED_METHOD, WORKSPACE_FILE_DELETED_METHOD,
 };
@@ -29,11 +30,11 @@ pub(super) enum LifecycleCommand {
     Response,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum DocumentCommand {
-    Open,
-    Change,
-    Close,
+    Open(Option<DidOpenTextDocumentParams>),
+    Change(Option<DidChangeTextDocumentParams>),
+    Close(Option<DidCloseTextDocumentParams>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,9 +77,15 @@ pub(super) fn classify_request(value: Value) -> Result<RoutedRequest, String> {
         Some("initialized") => RequestCommand::Lifecycle(LifecycleCommand::Initialized),
         Some("shutdown") => RequestCommand::Lifecycle(LifecycleCommand::Shutdown),
         Some("exit") => RequestCommand::Lifecycle(LifecycleCommand::Exit),
-        Some("textDocument/didOpen") => RequestCommand::Document(DocumentCommand::Open),
-        Some("textDocument/didChange") => RequestCommand::Document(DocumentCommand::Change),
-        Some("textDocument/didClose") => RequestCommand::Document(DocumentCommand::Close),
+        Some("textDocument/didOpen") => RequestCommand::Document(DocumentCommand::Open(
+            parse_workspace_params(&message.params),
+        )),
+        Some("textDocument/didChange") => RequestCommand::Document(DocumentCommand::Change(
+            parse_workspace_params(&message.params),
+        )),
+        Some("textDocument/didClose") => RequestCommand::Document(DocumentCommand::Close(
+            parse_workspace_params(&message.params),
+        )),
         Some(WORKSPACE_FILE_CHANGED_METHOD) => RequestCommand::WorkspaceIndex(
             WorkspaceIndexCommand::Changed(parse_workspace_params(&message.params)),
         ),
@@ -148,7 +155,7 @@ mod tests {
             ),
             (
                 json!({"method": "textDocument/didOpen"}),
-                RequestCommand::Document(DocumentCommand::Open),
+                RequestCommand::Document(DocumentCommand::Open(None)),
             ),
             (
                 json!({"method": "textDocument/hover"}),

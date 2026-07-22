@@ -306,40 +306,40 @@ fn format_paths(paths: &[PathBuf]) -> String {
         .join(";")
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct RpcMessage {
     id: Option<Value>,
     method: Option<String>,
     params: Option<Value>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DidOpenTextDocumentParams {
     text_document: TextDocumentItem,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 struct TextDocumentItem {
     uri: String,
     version: i32,
     text: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DidChangeTextDocumentParams {
     text_document: VersionedTextDocumentIdentifier,
     content_changes: Vec<TextDocumentContentChangeEvent>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 struct VersionedTextDocumentIdentifier {
     uri: String,
     version: i32,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 struct TextDocumentContentChangeEvent {
     #[serde(default)]
     range: Option<Value>,
@@ -370,7 +370,7 @@ fn coalescible_full_sync_did_change(value: &Value) -> Option<CoalescibleDidChang
     })
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DidCloseTextDocumentParams {
     text_document: TextDocumentIdentifier,
@@ -426,7 +426,7 @@ struct RangeFormattingParams {
     _options: Value,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 struct TextDocumentIdentifier {
     uri: String,
 }
@@ -455,14 +455,15 @@ impl<W: Write> LspServer<W> {
         }
         if matches!(
             &routed.command,
-            RequestCommand::Document(request_router::DocumentCommand::Close)
+            RequestCommand::Document(request_router::DocumentCommand::Close(_))
         ) {
             return self.handle_document_close_command(routed);
         }
         if matches!(
             &routed.command,
             RequestCommand::Document(
-                request_router::DocumentCommand::Open | request_router::DocumentCommand::Change
+                request_router::DocumentCommand::Open(_)
+                    | request_router::DocumentCommand::Change(_)
             )
         ) {
             return self.handle_document_update_command(
@@ -497,10 +498,13 @@ impl<W: Write> LspServer<W> {
             }
             return Ok(false);
         }
-        let params = serde_json::from_value::<DidCloseTextDocumentParams>(
-            routed.message.params.unwrap_or(Value::Null),
-        )
-        .map_err(|error| format!("Invalid textDocument/didClose params: {error}"))?;
+        let RequestCommand::Document(request_router::DocumentCommand::Close(params)) =
+            routed.command
+        else {
+            unreachable!("close handler receives close commands");
+        };
+        let params = params
+            .ok_or_else(|| "Invalid textDocument/didClose params: missing params".to_string())?;
         for effect in self
             .document_runtime
             .close_document(&params.text_document.uri)
@@ -532,23 +536,25 @@ impl<W: Write> LspServer<W> {
             }
             return Ok(false);
         }
-        let effects = match method {
-            "textDocument/didOpen" => self.document_runtime.open_document(
-                serde_json::from_value::<DidOpenTextDocumentParams>(
-                    routed.message.params.unwrap_or(Value::Null),
-                )
-                .map_err(|error| format!("Invalid textDocument/didOpen params: {error}"))?,
-                queue_ms,
-            )?,
-            "textDocument/didChange" => self.document_runtime.change_document(
-                serde_json::from_value::<DidChangeTextDocumentParams>(
-                    routed.message.params.unwrap_or(Value::Null),
-                )
-                .map_err(|error| format!("Invalid textDocument/didChange params: {error}"))?,
-                queue_ms,
-                coalesced_changes,
-                superseded_changes,
-            )?,
+        let effects = match routed.command {
+            RequestCommand::Document(request_router::DocumentCommand::Open(params)) => {
+                self.document_runtime.open_document(
+                    params.ok_or_else(|| {
+                        "Invalid textDocument/didOpen params: missing params".to_string()
+                    })?,
+                    queue_ms,
+                )?
+            }
+            RequestCommand::Document(request_router::DocumentCommand::Change(params)) => {
+                self.document_runtime.change_document(
+                    params.ok_or_else(|| {
+                        "Invalid textDocument/didChange params: missing params".to_string()
+                    })?,
+                    queue_ms,
+                    coalesced_changes,
+                    superseded_changes,
+                )?
+            }
             _ => unreachable!("only open and change reach the document update executor"),
         };
         for effect in effects {
