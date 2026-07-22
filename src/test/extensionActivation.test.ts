@@ -285,17 +285,15 @@ suite('extension activation', () => {
 		}
 	});
 
-	test('admits exactly one configured Tab indentation unit for the Rust typing assist', () => {
+	test('admits only literal Tab indentation edits for the Rust typing assist', () => {
 		const tab = {
 			range: new vscode.Range(new vscode.Position(8, 4), new vscode.Position(8, 4)),
 			rangeLength: 0,
 			text: '\t',
 		} as vscode.TextDocumentContentChangeEvent;
 		assert.deepStrictEqual(tabAfterPosition([tab]), new vscode.Position(8, 5));
-		assert.deepStrictEqual(tabAfterPosition([{ ...tab, text: '    ' }], 4, true), new vscode.Position(8, 8));
-		assert.deepStrictEqual(tabAfterPosition([{ ...tab, text: '            ' }], 4, true), new vscode.Position(8, 16));
-		assert.strictEqual(tabAfterPosition([{ ...tab, text: '  ' }], 4, true), undefined);
 		assert.strictEqual(tabAfterPosition([{ ...tab, text: '    ' }]), undefined);
+		assert.strictEqual(tabAfterPosition([{ ...tab, text: '  ' }]), undefined);
 		assert.strictEqual(tabAfterPosition([{ ...tab, rangeLength: 1 }]), undefined);
 	});
 
