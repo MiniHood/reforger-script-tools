@@ -103,6 +103,8 @@ use runtime_scheduler::{
     DebugCompletionJob, DebugHoverJob, DebugRequestJob, RichSemanticTokensJob, ServerEvent,
 };
 use runtime_scheduler::{ForegroundDocumentJob, OpenDocumentAnalysisJob, RuntimeWorkExecutor};
+#[cfg(test)]
+use semantic_tokens::LspSemanticTokenProjection;
 pub use semantic_tokens::{
     fast_semantic_tokens_for_source, fast_semantic_tokens_report_for_source,
     semantic_tokens_for_source_with_external, semantic_tokens_report_for_source,
@@ -114,8 +116,6 @@ use semantic_tokens::{
     semantic_tokens_for_cached_analysis_with_external_indexes_cancelled, LspSemanticTokensFull,
     SEMANTIC_TOKEN_MODIFIERS, SEMANTIC_TOKEN_TYPES,
 };
-#[cfg(test)]
-use semantic_tokens::LspSemanticTokenProjection;
 use signature_help::{
     signature_help_debug_markdown, signature_help_report_for_cached_analysis_with_external_indexes,
     signature_help_report_for_pending_snapshot,

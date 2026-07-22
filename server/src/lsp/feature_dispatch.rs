@@ -480,7 +480,10 @@ impl<W: Write> LspServer<W> {
                                 outcome = "unsupported_trigger";
                                 return None;
                             }
-                            let document = self.document_runtime.documents.get(&log_uri)?;
+                            let query = self
+                                .document_runtime
+                                .capture_query(&log_uri, self.external_index.snapshot())?;
+                            let document = query.document;
                             bytes = document.text.len();
                             if document.version != params.version {
                                 outcome = "stale_version";
@@ -581,7 +584,10 @@ impl<W: Write> LspServer<W> {
                         .and_then(|params| {
                             log_uri = params.text_document.uri;
                             version = params.version;
-                            let document = self.document_runtime.documents.get(&log_uri)?;
+                            let query = self
+                                .document_runtime
+                                .capture_query(&log_uri, self.external_index.snapshot())?;
+                            let document = query.document;
                             bytes = document.text.len();
                             if document.version != params.version {
                                 outcome = "stale_version";
@@ -634,7 +640,10 @@ impl<W: Write> LspServer<W> {
                     let result = params
                         .and_then(|params| {
                             log_uri = params.text_document.uri;
-                            let document = self.document_runtime.documents.get(&log_uri)?;
+                            let query = self
+                                .document_runtime
+                                .capture_query(&log_uri, self.external_index.snapshot())?;
+                            let document = query.document;
                             bytes = document.text.len();
                             version = document.version;
                             let start = offset_for_position(&document.text, params.range.start)?;
