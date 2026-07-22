@@ -1,5 +1,5 @@
 use crate::analysis_runtime::{
-    AdmissionDisposition, AnalysisTask, PositionIndex, QueryQuality, TaskClass, TaskIdentity,
+    AdmissionDisposition, AnalysisTask, PositionIndex, QueryQuality, TaskClass,
 };
 #[cfg(test)]
 use crate::analysis_runtime::{AdmissionLimits, AnalysisRuntime};
@@ -99,6 +99,9 @@ pub(crate) use open_documents::{
 };
 use request_router::{classify_request, RequestCommand, RoutedRequest};
 use response_writer::RuntimeEffect;
+use runtime_scheduler::{
+    DebugCompletionJob, DebugHoverJob, DebugRequestJob, RichSemanticTokensJob, ServerEvent,
+};
 use runtime_scheduler::{ForegroundDocumentJob, OpenDocumentAnalysisJob, RuntimeWorkExecutor};
 pub use semantic_tokens::{
     fast_semantic_tokens_for_source, fast_semantic_tokens_report_for_source,
@@ -108,10 +111,11 @@ pub use semantic_tokens::{
 };
 use semantic_tokens::{
     lexical_semantic_tokens_for_source, semantic_tokens_for_cached_analysis_with_external_indexes,
-    semantic_tokens_for_cached_analysis_with_external_indexes_cancelled,
-    LspSemanticTokenProjection, LspSemanticTokensFull, SEMANTIC_TOKEN_MODIFIERS,
-    SEMANTIC_TOKEN_TYPES,
+    semantic_tokens_for_cached_analysis_with_external_indexes_cancelled, LspSemanticTokensFull,
+    SEMANTIC_TOKEN_MODIFIERS, SEMANTIC_TOKEN_TYPES,
 };
+#[cfg(test)]
+use semantic_tokens::LspSemanticTokenProjection;
 use signature_help::{
     signature_help_debug_markdown, signature_help_report_for_cached_analysis_with_external_indexes,
     signature_help_report_for_pending_snapshot,
@@ -259,63 +263,6 @@ struct LspServer<W: Write> {
     shutdown_requested: bool,
 }
 
-enum ServerEvent {
-    Incoming {
-        received_at: Instant,
-        result: Result<Value, String>,
-    },
-    RichSemanticTokensReady {
-        task: TaskIdentity,
-        uri: String,
-        revision: u64,
-        external_generation: u64,
-        external_status: &'static str,
-        projection: LspSemanticTokenProjection,
-        elapsed_ms: u128,
-    },
-    RichSemanticTokensSkipped {
-        task: TaskIdentity,
-        uri: String,
-        revision: u64,
-        external_generation: u64,
-        reason: String,
-        elapsed_ms: u128,
-    },
-    DocumentAnalysisReady {
-        task: TaskIdentity,
-        analysis: FileIndexAnalysis,
-        timings: FileIndexAnalysisTimings,
-        elapsed_ms: u128,
-    },
-    ForegroundDocumentReady {
-        task: TaskIdentity,
-        positions: PositionIndex,
-        lexer_tokens: Vec<Token>,
-        syntax: crate::syntax::Parse,
-        elapsed_ms: u128,
-    },
-    ForegroundDocumentSkipped {
-        task: TaskIdentity,
-        reason: String,
-        elapsed_ms: u128,
-    },
-    DocumentAnalysisSkipped {
-        task: TaskIdentity,
-        reason: String,
-        elapsed_ms: u128,
-    },
-    DebugRequestReady {
-        task: TaskIdentity,
-        id: Value,
-        method: &'static str,
-        uri: String,
-        revision: u64,
-        details: String,
-        result: Value,
-        elapsed_ms: u128,
-    },
-}
-
 fn source_backed_request_method(method: &str) -> bool {
     matches!(method, DEBUG_HOVER_METHOD | DEBUG_COMPLETION_METHOD)
 }
@@ -326,139 +273,6 @@ fn request_document_uri(params: Option<&Value>) -> Option<String> {
         .get("uri")?
         .as_str()
         .map(str::to_string)
-}
-
-struct RichSemanticTokensJob {
-    task: AnalysisTask,
-    uri: String,
-    revision: u64,
-    external_generation: u64,
-    scheduled_at: Instant,
-    analysis: FileIndexAnalysis,
-    external_snapshot: ExternalIndexSnapshot,
-}
-
-enum DebugRequestJob {
-    Hover(DebugHoverJob),
-    Completion(DebugCompletionJob),
-}
-
-struct DebugHoverJob {
-    task: AnalysisTask,
-    id: Value,
-    uri: String,
-    position: LspPosition,
-    revision: u64,
-    scheduled_at: Instant,
-    analysis: FileIndexAnalysis,
-    external_snapshot: ExternalIndexSnapshot,
-    external_status: ExternalIndexStatusSummary,
-}
-
-struct DebugCompletionJob {
-    task: AnalysisTask,
-    id: Value,
-    uri: String,
-    position: LspPosition,
-    revision: u64,
-    scheduled_at: Instant,
-    analysis: FileIndexAnalysis,
-    external_snapshot: ExternalIndexSnapshot,
-}
-
-impl DebugRequestJob {
-    fn task(&self) -> &AnalysisTask {
-        match self {
-            Self::Hover(job) => &job.task,
-            Self::Completion(job) => &job.task,
-        }
-    }
-
-    fn scheduled_at(&self) -> Instant {
-        match self {
-            Self::Hover(job) => job.scheduled_at,
-            Self::Completion(job) => job.scheduled_at,
-        }
-    }
-
-    fn execute(self) -> ServerEvent {
-        match self {
-            Self::Hover(job) => {
-                let report = debug_hover_report_for_cached_analysis_with_external_indexes(
-                    job.task.snapshot().text(),
-                    &job.analysis,
-                    &job.uri,
-                    job.position,
-                    job.external_snapshot.workspace.as_deref(),
-                    job.external_snapshot.game_data.as_deref(),
-                    Some(&job.external_status),
-                );
-                let hit = report.contains("Selected Symbol: yes");
-                let label = selected_label_from_debug_report(&report)
-                    .unwrap_or_else(|| "<none>".to_string());
-                ServerEvent::DebugRequestReady {
-                    task: job.task.identity().clone(),
-                    id: job.id,
-                    method: DEBUG_HOVER_METHOD,
-                    uri: job.uri,
-                    revision: job.revision,
-                    details: format!("cached_analysis=true hit={} label={}", hit, label),
-                    result: Value::String(report),
-                    elapsed_ms: job.scheduled_at.elapsed().as_millis(),
-                }
-            }
-            Self::Completion(job) => {
-                let report = completion_report_for_cached_analysis_with_external_indexes(
-                    job.task.snapshot().text(),
-                    &job.analysis,
-                    job.position,
-                    job.external_snapshot.workspace.as_deref(),
-                    job.external_snapshot.game_data.as_deref(),
-                );
-                if job.task.is_cancelled() {
-                    return ServerEvent::DebugRequestReady {
-                        task: job.task.identity().clone(),
-                        id: job.id,
-                        method: DEBUG_COMPLETION_METHOD,
-                        uri: job.uri,
-                        revision: job.revision,
-                        details: "cancelled-after-completion-report".to_string(),
-                        result: Value::Null,
-                        elapsed_ms: job.scheduled_at.elapsed().as_millis(),
-                    };
-                }
-                let signature_report =
-                    signature_help_report_for_cached_analysis_with_external_indexes(
-                        job.task.snapshot().text(),
-                        &job.analysis,
-                        job.position,
-                        job.external_snapshot.workspace.as_deref(),
-                        job.external_snapshot.game_data.as_deref(),
-                    );
-                let completion_context = report.completion_context.clone();
-                let candidate_count = report.candidate_count;
-                let signature_context = signature_report
-                    .context
-                    .clone()
-                    .unwrap_or_else(|| "none".to_string());
-                let signature_candidate_count = signature_report.candidate_count;
-                let mut markdown = completion_debug_markdown(
-                    &report,
-                    &job.uri,
-                    job.task.snapshot().text().len(),
-                    job.revision,
-                    job.external_snapshot.status,
-                );
-                markdown.push_str(&signature_help_debug_markdown(&signature_report));
-                ServerEvent::DebugRequestReady {
-                    task: job.task.identity().clone(), id: job.id, method: DEBUG_COMPLETION_METHOD,
-                    uri: job.uri, revision: job.revision,
-                    details: format!("cached_analysis=true context={} candidates={} signature_context={} signature_candidates={} external_index_status={} external_index_layers={}", completion_context, candidate_count, signature_context, signature_candidate_count, job.external_snapshot.status, job.external_snapshot.available_layers()),
-                    result: Value::String(markdown), elapsed_ms: job.scheduled_at.elapsed().as_millis(),
-                }
-            }
-        }
-    }
 }
 
 #[cfg(test)]
