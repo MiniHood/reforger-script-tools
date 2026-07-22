@@ -5,7 +5,7 @@ import { languageClientLanguage, languageClientRequests } from '../extensionConf
 import { diagnostic } from '../diagnostics/diagnostics';
 import { type VersionedEditResponse } from './versionedEditorEdit';
 import { isCurrentSingleVersionedEditorCaret, VersionedEditorTransaction } from './versionedEditorTransaction';
-import { blockCommentPairPosition, enterAfterPosition, tabAfterPosition, typingAssistRequest } from './typingAssistBridge';
+import { blockCommentPairPosition, enterAfterPosition, typingAssistRequest } from './typingAssistBridge';
 
 interface BlockCommentPairResponse extends VersionedEditResponse {}
 
@@ -145,21 +145,16 @@ export function registerEnterTypingAssist(getClient: () => LanguageClient | unde
 		if (event.document.languageId !== languageClientLanguage.id) {
 			return;
 		}
-		const editor = vscode.window.activeTextEditor;
 		const enterPosition = enterAfterPosition(event.contentChanges);
-		const tabPosition = editor && editor.document.uri.toString() === event.document.uri.toString()
-			? tabAfterPosition(event.contentChanges)
-			: undefined;
-		const position = enterPosition ?? tabPosition;
-		if (!position) {
+		if (!enterPosition) {
 			return;
 		}
 		const change = event.contentChanges[0];
 		const transaction = Object.assign(
 			new VersionedEditorTransaction<EnterTypingAssistResponse>(
-				event.document, event.document.version, position, change.range.start,
+				event.document, event.document.version, enterPosition, change.range.start,
 			),
-			{ trigger: enterPosition ? '\n' as const : '\t' as const },
+			{ trigger: '\n' as const },
 		);
 		pending = transaction;
 		queueMicrotask(() => {
@@ -203,7 +198,7 @@ export function registerEnterTypingAssist(getClient: () => LanguageClient | unde
 }
 
 type EnterTypingAssistTransaction = VersionedEditorTransaction<EnterTypingAssistResponse> & {
-	trigger: '\n' | '\t';
+	trigger: '\n';
 };
 
 async function requestEnterTypingAssist(

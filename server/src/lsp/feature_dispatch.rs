@@ -470,22 +470,6 @@ impl FeatureDispatcher<'_> {
                                 }
                             }
                             let mut edits = Vec::new();
-                            let outdent = on_type_formatting::unbraced_if_body_outdent_plan(
-                                &document.text,
-                                cursor,
-                                params.options.tab_size,
-                                params.options.insert_spaces,
-                                params.ch == "\t",
-                            );
-                            if let Some(plan) = &outdent {
-                                edits.push(json!({
-                                    "range": {
-                                        "start": position_for_offset(&document.text, plan.span.start),
-                                        "end": position_for_offset(&document.text, plan.span.end),
-                                    },
-                                    "newText": plan.replacement,
-                                }));
-                            }
                             if params.ch == "\n" {
                                 if let Some(insertion) = on_type_formatting::semicolon_insertion_offset(
                                     &document.text,
@@ -498,19 +482,8 @@ impl FeatureDispatcher<'_> {
                                     }));
                                 }
                             }
-                            outcome = match (outdent.is_some(), edits.is_empty()) {
-                                (_, true) => "no_edit",
-                                (true, _) => "if_body_outdent",
-                                (false, _) => "semicolon",
-                            };
-                            let mut result = json!({ "edits": edits });
-                            if let Some(plan) = outdent {
-                                result["selection"] = json!({
-                                    "line": params.position.line,
-                                    "character": plan.selection_character,
-                                });
-                            }
-                            Some(result)
+                            outcome = if edits.is_empty() { "no_edit" } else { "semicolon" };
+                            Some(json!({ "edits": edits }))
                         })
                         .unwrap_or_else(|| json!({ "edits": [] }));
                     self.log(&format!(

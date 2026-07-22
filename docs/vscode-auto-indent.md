@@ -73,20 +73,17 @@ setting.
 
 ## Repository observation
 
-At the time of this research, this extension's `configurationDefaults` sets
-`[enforce].editor.autoIndent` to `"full"`. That matches VS Code's native
-default, so it is redundant unless the extension deliberately intends to set a
-language default. Removing that contribution is the appropriate follow-up if
-the intended policy is to leave the editor setting wholly to VS Code and the
-user; this research note makes no code change.
+This extension now leaves `editor.autoIndent` unset for Enforce. VS Code and
+the user's normal editor configuration therefore own the policy; current VS
+Code defaults to `"full"`.
 
 ## Current implementation audit
 
 | Area | Current implementation | Assessment | Follow-up |
 | --- | --- | --- | --- |
-| Native setting ownership | `package.json` explicitly sets `[enforce].editor.autoIndent` to `"full"`. | Gap: it duplicates VS Code's default and prevents the extension from simply inheriting the user's normal editor policy. | Remove the language-specific override. |
+| Native setting ownership | `package.json` does not override `[enforce].editor.autoIndent`. | Aligned: the extension inherits VS Code's default and the user's editor policy. | Keep it unset. |
 | Declarative Enter behavior | `language-configuration.json` has two narrow `onEnterRules` for `if`/`else` headers and their immediate body line. | Aligned: these are synchronous, editor-native rules with bounded textual scope. | Keep and validate them against Workbench/compiler-supported syntax as the language surface expands. |
 | Braces and pairs | The language configuration declares `{}`, `[]`, and `()` pairs. It has no `indentationRules`. | Aligned for now: native bracket behavior remains available; no broad regex has been asserted as Enfusion truth. | Add declarative rules only when primary evidence establishes a stable language-wide rule. |
-| Post-edit control-body correction | `typingAssistTransactionBridge.ts` observes document edits, asks Rust for `unbraced_if_body_outdent_plan`, and may replace indentation after Enter or a literal tab character. | Gap: this competes with native indentation and can visibly move the caret after VS Code has already rendered it. | Retire this control-body outdent path rather than expanding it. |
+| Post-edit control-body correction | No typing assist observes Tab or corrects unbraced control-body indentation. | Aligned: VS Code owns indentation synchronously, without a second post-edit caret move. | Keep Tab outside the extension's typing-assist path. |
 | Other typing assists | The same bridge also handles incomplete `if` headers, semicolon insertion, and empty block-comment expansion. | Out of scope for the Tab/auto-indent decision; they are separate, explicit typing assists. | Review independently before changing. |
 | Explicit formatting | The current LSP range formatter is limited to comment regions; it is not a general Enfusion formatter. | Expected current state, not a native-auto-indent substitute. | When the parser/formatter is ready, offer explicit parser-backed formatting rather than a Tab correction. |

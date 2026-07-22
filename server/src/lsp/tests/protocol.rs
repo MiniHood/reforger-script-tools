@@ -482,48 +482,6 @@ fn enter_typing_assist_repairs_only_an_incomplete_if_header_with_a_body_selectio
 }
 
 #[test]
-fn typing_assist_restores_header_indent_when_tab_starts_on_an_empty_line() {
-    let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
-    let uri = "file:///Scripts/IfBodyEmptyTab.c";
-    server
-        .handle_message(
-            json!({ "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": "enforce",
-                    "version": 1,
-                    "text": "\t\tif (owner == GetOwner())\n\t\t\treturn owner;\n\t"
-                }
-            }}),
-            None,
-            0,
-            0,
-        )
-        .unwrap();
-    server.writer.clear();
-    server
-        .handle_message(
-            json!({ "jsonrpc": "2.0", "id": 1, "method": ENTER_TYPING_ASSIST_METHOD, "params": {
-                "textDocument": { "uri": uri },
-                "position": { "line": 2, "character": 1 },
-                "ch": "\t",
-                "version": 1,
-                "options": { "tabSize": 4, "insertSpaces": false }
-            }}),
-            None,
-            0,
-            0,
-        )
-        .unwrap();
-    let output = String::from_utf8_lossy(&server.writer);
-    assert!(output.contains("\"newText\":\"\\t\\t\""), "{output}");
-    assert!(
-        output.contains("\"selection\":{\"character\":2,\"line\":2}"),
-        "{output}"
-    );
-}
-
-#[test]
 fn runtime_debug_hover_runs_off_the_lsp_message_loop() {
     let (sender, receiver) = mpsc::channel();
     let scheduler = RuntimeWorkExecutor::start(sender);

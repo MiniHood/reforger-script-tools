@@ -40,7 +40,6 @@
     ],
     "configurationDefaults": {
       "[enforce]": {
-        "editor.autoIndent": "full",
         "editor.bracketPairColorization.enabled": false,
         "editor.quickSuggestions": {
           "other": "on",

@@ -48,7 +48,7 @@ import {
 	registerEnterTypingAssist,
 } from './typingAssistTransactionBridge';
 
-export { blockCommentPairPosition, enterAfterPosition, tabAfterPosition } from './typingAssistBridge';
+export { blockCommentPairPosition, enterAfterPosition } from './typingAssistBridge';
 export { isCurrentSingleTypingAssistCaret } from './typingAssistTransactionBridge';
 export { ifSpaceCommitContractFromCommandArguments } from './completionUiBridge';
 

@@ -9,7 +9,6 @@ import {
 	enterAfterPosition,
 	ifSpaceCommitContractFromCommandArguments,
 	isCurrentSingleTypingAssistCaret,
-	tabAfterPosition,
 } from '../languageClient/languageClient';
 import { positionFromByteOffset } from '../languageClient/symbolLocationBridge';
 import { registerEnterTypingAssist } from '../languageClient/typingAssistTransactionBridge';
@@ -239,29 +238,6 @@ suite('extension activation', () => {
 		assert.strictEqual(document.getText(), 'value');
 	});
 
-	test('applies a Rust-authored Tab assist through the editor bridge', async () => {
-		const document = await vscode.workspace.openTextDocument({ language: 'enforce', content: 'value' });
-		const editor = await vscode.window.showTextDocument(document);
-		editor.selection = new vscode.Selection(new vscode.Position(0, 5), new vscode.Position(0, 5));
-		const requests: unknown[] = [];
-		const disposable = registerEnterTypingAssist(() => ({
-			sendRequest: async (_method: string, params: unknown) => {
-				requests.push(params);
-				return {
-					edits: [{ range: { start: { line: 0, character: 6 }, end: { line: 0, character: 6 } }, newText: ';' }],
-				};
-			},
-		} as never));
-		try {
-			await vscode.commands.executeCommand('type', { text: '\t' });
-			await new Promise(resolve => setTimeout(resolve, 20));
-			assert.strictEqual(document.getText(), 'value\t;');
-			assert.strictEqual(requests.length, 1);
-		} finally {
-			disposable.dispose();
-		}
-	});
-
 	test('applies a Rust-authored block-comment assist through the native pair event', async () => {
 		const document = await vscode.workspace.openTextDocument({ language: 'enforce', content: '' });
 		await vscode.window.showTextDocument(document);
@@ -283,18 +259,6 @@ suite('extension activation', () => {
 		} finally {
 			disposable.dispose();
 		}
-	});
-
-	test('admits only literal Tab indentation edits for the Rust typing assist', () => {
-		const tab = {
-			range: new vscode.Range(new vscode.Position(8, 4), new vscode.Position(8, 4)),
-			rangeLength: 0,
-			text: '\t',
-		} as vscode.TextDocumentContentChangeEvent;
-		assert.deepStrictEqual(tabAfterPosition([tab]), new vscode.Position(8, 5));
-		assert.strictEqual(tabAfterPosition([{ ...tab, text: '    ' }]), undefined);
-		assert.strictEqual(tabAfterPosition([{ ...tab, text: '  ' }]), undefined);
-		assert.strictEqual(tabAfterPosition([{ ...tab, rangeLength: 1 }]), undefined);
 	});
 
 	test('enables local diagnostic logging by default', () => {
@@ -381,12 +345,6 @@ suite('extension activation', () => {
 		assert.ok(extension, 'development extension is discoverable');
 		const defaults = extension.packageJSON.contributes.configurationDefaults as Record<string, Record<string, unknown>>;
 		assert.strictEqual(defaults['[enforce]']['editor.acceptSuggestionOnEnter'], 'off');
-		assert.strictEqual(defaults['[enforce]']['editor.autoIndent'], 'full');
-	});
-
-	test('resolves full auto indentation for an Enforce editor', async () => {
-		const document = await vscode.workspace.openTextDocument({ language: 'enforce', content: '' });
-		assert.strictEqual(vscode.workspace.getConfiguration('editor', document.uri).get('autoIndent'), 'full');
 	});
 
 });

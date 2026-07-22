@@ -5,7 +5,7 @@ export interface TypingAssistRequest {
 	position: { line: number; character: number };
 	version: number;
 	options: { tabSize: vscode.TextEditorOptions['tabSize']; insertSpaces: vscode.TextEditorOptions['insertSpaces'] };
-	ch?: '\n' | '\t';
+	ch?: '\n';
 }
 
 /** Builds editor transport data only; Rust decides whether an assist applies. */
@@ -13,7 +13,7 @@ export function typingAssistRequest(
 	document: vscode.TextDocument,
 	position: vscode.Position,
 	editor: vscode.TextEditor,
-	trigger?: '\n' | '\t',
+	trigger?: '\n',
 ): TypingAssistRequest {
 	return {
 		textDocument: { uri: document.uri.toString() },
@@ -39,12 +39,4 @@ export function enterAfterPosition(changes: readonly vscode.TextDocumentContentC
 	const change = changes[0];
 	const newline = change.text.lastIndexOf('\n');
 	return new vscode.Position(change.range.start.line + 1, change.text.length - newline - 1);
-}
-
-export function tabAfterPosition(changes: readonly vscode.TextDocumentContentChangeEvent[]): vscode.Position | undefined {
-	if (changes.length !== 1 || changes[0].rangeLength !== 0 || changes[0].text !== '\t') {
-		return undefined;
-	}
-	const change = changes[0];
-	return new vscode.Position(change.range.start.line, change.range.start.character + 1);
 }
