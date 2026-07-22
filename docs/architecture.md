@@ -56,6 +56,14 @@ code cannot accidentally combine facts from different generations. Logging is
 best-effort observation; it cannot participate in request admission or response
 delivery.
 
+The Document Runtime owns the mutable lifecycle of open-document snapshots:
+admission, cancellation, deferred document-backed work, semantic-token refresh
+state, and query capture. Request routing and background-event interpretation
+are short-lived coordinator contracts invoked by the composition root; they do
+not own durable server state. The composition root is the only owner of
+JSON-RPC framing and delivers typed runtime effects such as notifications and
+asynchronous responses.
+
 LSP tests live in a test-only child module rather than the production
 composition root. They are organized by observable behavior domains—protocol,
 documents, runtime, and features—and use framed LSP traffic by default. A
