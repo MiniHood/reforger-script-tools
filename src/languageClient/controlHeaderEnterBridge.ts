@@ -10,14 +10,20 @@ const nativeTypeCommand = 'type';
 
 interface InputRouteResult extends Omit<VersionedEditResponse, 'snippet'> {
 	snippet?: never;
-	owner?: 'controlHeader';
+	owner?: 'controlHeader' | 'ifHeader' | 'semicolon';
 	reason?: string;
 }
 
 export function registerControlHeaderEnter(getClient: () => LanguageClient | undefined): vscode.Disposable {
-	return vscode.commands.registerCommand(languageClientCommands.insertNewline, async () => {
+	return vscode.commands.registerCommand(languageClientCommands.insertNewline, async (args?: { dismissSuggest?: boolean }) => {
 		const editor = vscode.window.activeTextEditor;
-		await executeInsertNewline(editor, getClient());
+		await executeInsertNewline(
+			editor,
+			getClient(),
+			undefined,
+			undefined,
+			args?.dismissSuggest ? () => vscode.commands.executeCommand('hideSuggestWidget') : undefined,
+		);
 	});
 }
 
@@ -26,8 +32,12 @@ export async function executeInsertNewline(
 	client: LanguageClient | undefined,
 	nativeFallback: () => Promise<void> = typeNativeEnter,
 	triggerSuggest: () => Thenable<unknown> = () => vscode.commands.executeCommand('editor.action.triggerSuggest'),
+	dismissSuggest?: () => Thenable<unknown>,
 ): Promise<void> {
 	const startedAt = Date.now();
+	if (dismissSuggest) {
+		await dismissSuggest();
+	}
 	if (!editor || editor.document.languageId !== languageClientLanguage.id) {
 		await nativeFallback();
 		traceInputRoute('nativeFallback', 'ineligibleEditor', undefined, startedAt);

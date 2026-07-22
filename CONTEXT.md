@@ -136,8 +136,11 @@ _Avoid_: formatting timeout, delayed correction
 **Native Editing Mode**:
 An editor state with its own input semantics, initially including an open
 completion list, an active snippet placeholder, IME or composition input, and
-a read-only editor. The input router uses Native Fallback in these modes unless
-a future Input Feature Owner explicitly defines compatible behavior.
+a read-only editor. Enter with an open completion list is the one current
+exception: the entry command hides the list without accepting its selection,
+then routes the newline normally. The router uses Native Fallback in the other
+modes unless a future Input Feature Owner explicitly defines compatible
+behavior.
 _Avoid_: generally safe typing context, route exception
 
 **Stale Input Decision**:

@@ -118,6 +118,14 @@
         "command": "reforger-sript-tools.input.insertNewline",
         "key": "enter",
         "when": "editorTextFocus && editorLangId == enforce && !editorReadonly && !suggestWidgetVisible && !inSnippetMode"
+      },
+      {
+        "command": "reforger-sript-tools.input.insertNewline",
+        "key": "enter",
+        "when": "editorTextFocus && editorLangId == enforce && !editorReadonly && suggestWidgetVisible && !inSnippetMode",
+        "args": {
+          "dismissSuggest": true
+        }
       }
     ],
     "menus": {

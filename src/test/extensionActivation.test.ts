@@ -298,6 +298,29 @@ suite('extension activation', () => {
 		}
 	});
 
+	test('dismisses completion before routing Enter without accepting its selection', async () => {
+		const document = await vscode.workspace.openTextDocument({ language: 'enforce', content: 'if (tr)' });
+		const editor = await vscode.window.showTextDocument(document);
+		const position = new vscode.Position(0, 'if (tr'.length);
+		editor.selection = new vscode.Selection(position, position);
+		const events: string[] = [];
+		await executeInsertNewline(editor, {
+			sendRequest: async () => {
+				events.push('route');
+				return {
+					edits: [{ range: { start: { line: 0, character: 7 }, end: { line: 0, character: 7 } }, newText: '\n\t' }],
+					owner: 'ifHeader',
+				};
+			},
+		} as never, async () => {
+			events.push('native');
+		}, undefined, async () => {
+			events.push('dismiss');
+		});
+		assert.deepStrictEqual(events, ['dismiss', 'route']);
+		assert.strictEqual(document.getText(), 'if (tr)\r\n\t');
+	});
+
 	test('discards a stale input route before it can edit the current caret', async () => {
 		const document = await vscode.workspace.openTextDocument({ language: 'enforce', content: 'while (true)' });
 		const editor = await vscode.window.showTextDocument(document);
@@ -480,11 +503,18 @@ suite('extension activation', () => {
 			candidate => candidate.packageJSON.name === 'reforger-sript-tools',
 		);
 		assert.ok(extension, 'development extension is discoverable');
-		const keybindings = extension.packageJSON.contributes.keybindings as Array<{ command: string; when?: string }>;
-		const routedEnter = keybindings.find(binding => binding.command === languageClientCommands.insertNewline);
+		const keybindings = extension.packageJSON.contributes.keybindings as Array<{
+			command: string;
+			when?: string;
+			args?: { dismissSuggest?: boolean };
+		}>;
+		const routedEnter = keybindings.find(binding => binding.command === languageClientCommands.insertNewline && binding.when?.includes('!suggestWidgetVisible'));
 		assert.match(routedEnter?.when ?? '', /!editorReadonly/);
-		assert.match(routedEnter?.when ?? '', /!suggestWidgetVisible/);
 		assert.match(routedEnter?.when ?? '', /!inSnippetMode/);
+		const suggestEnter = keybindings.find(binding => binding.command === languageClientCommands.insertNewline
+			&& binding.when?.includes('suggestWidgetVisible')
+			&& !binding.when.includes('!suggestWidgetVisible'));
+		assert.strictEqual(suggestEnter?.args?.dismissSuggest, true);
 	});
 
 });

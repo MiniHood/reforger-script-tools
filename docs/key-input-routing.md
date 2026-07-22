@@ -85,9 +85,10 @@ and IME composition may bypass an operation command by design.
 6. A decision is valid only for the exact document version and selection it
    inspected. A stale response is discarded and Native Fallback runs at the
    editor's then-current state.
-7. Completion lists, active snippet placeholders, IME/composition input, and
-   read-only editors retain native behavior unless a future feature explicitly
-   defines compatible semantics.
+7. Enter with a visible completion list first hides that list without accepting
+   its selected item, then uses the normal route or fallback. Active snippet
+   placeholders, IME/composition input, and read-only editors retain native
+   behavior unless a future feature explicitly defines compatible semantics.
 8. Once a behavior is migrated, no `onDidChangeTextDocument` listener may
    mutate the document to reproduce it. Observers may only trace or clean up
    state.
