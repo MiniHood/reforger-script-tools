@@ -2,11 +2,11 @@ use super::{
     clear_diagnostics_message, document_symbol_count, document_symbols_from_cached_analysis,
     file_index_for_source_with_timings, lex, parse_source, publish_diagnostics_message,
     request_document_uri, semantic_tokens_for_cached_analysis_with_external_indexes,
-    AdmissionDisposition, AnalysisTask, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
-    DocumentQuery, ExternalIndexSnapshot, FileIndexAnalysis, FileIndexAnalysisTimings,
-    ForegroundDocumentJob, LspSemanticTokensFull, OpenDocument, OpenDocumentAnalysisJob,
-    PositionIndex, RichSemanticTokensJob, RpcMessage, RuntimeEffect, RuntimeWorkExecutor,
-    ServerEvent, TaskClass, MAX_PENDING_DOCUMENT_REQUESTS_PER_URI,
+    AdmissionDisposition, AnalysisTask, DebugRequestJob, DidChangeTextDocumentParams,
+    DidOpenTextDocumentParams, DocumentQuery, ExternalIndexSnapshot, FileIndexAnalysis,
+    FileIndexAnalysisTimings, ForegroundDocumentJob, LspSemanticTokensFull, OpenDocument,
+    OpenDocumentAnalysisJob, PositionIndex, RichSemanticTokensJob, RpcMessage, RuntimeEffect,
+    RuntimeWorkExecutor, ServerEvent, TaskClass, MAX_PENDING_DOCUMENT_REQUESTS_PER_URI,
 };
 use crate::analysis_runtime::{AdmissionLimits, AnalysisRuntime, UpsertOutcome};
 use serde_json::Value;
@@ -1063,6 +1063,17 @@ impl DocumentRuntime {
                 ..
             } => Err((retained_jobs, retained_bytes)),
         }
+    }
+
+    pub(super) fn has_runtime_worker(&self) -> bool {
+        self.analysis_scheduler.is_some()
+    }
+
+    pub(super) fn schedule_debug(&self, job: DebugRequestJob) {
+        self.analysis_scheduler
+            .as_ref()
+            .expect("debug work is admitted only when the runtime worker exists")
+            .schedule_debug(job);
     }
 
     /// The single owner for worker completion interpretation. The composition

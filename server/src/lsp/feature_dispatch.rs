@@ -19,8 +19,8 @@ use super::{
     signature_help_report_for_pending_snapshot, source_backed_request_method, symbol_kind_label,
     BlockCommentPairParams, DebugCompletionJob, DebugHoverJob, DebugRequestJob, DocumentQuery,
     DocumentQueryState, DocumentSymbolParams, EnterTypingAssistParams, HoverParams,
-    HoverSelectionSource, LspPositionIndex, LspSemanticTokensFull, LspServer, OpenDocument,
-    QueryQuality, RangeFormattingParams, TextSpan, TokenProjectionKind, TokenResultDisposition,
+    HoverSelectionSource, LspPositionIndex, LspSemanticTokensFull, LspServer, QueryQuality,
+    RangeFormattingParams, TextSpan, TokenProjectionKind, TokenResultDisposition,
     WorkspaceFileChangedParams, WorkspaceFileDeletedParams, BLOCK_COMMENT_PAIR_METHOD,
     DEBUG_COMPLETION_METHOD, DEBUG_HOVER_METHOD, ENTER_TYPING_ASSIST_METHOD,
     RANGE_FORMATTING_METHOD, WORKSPACE_FILE_CHANGED_METHOD, WORKSPACE_FILE_DELETED_METHOD,
@@ -703,6 +703,7 @@ impl<W: Write> LspServer<W> {
                     let mut context_ms = 0u128;
                     let mut lookup_ms = 0u128;
                     let mut render_ms = 0u128;
+                    let mut cached_analysis = false;
                     let mut external_index_status = self.external_index.status_summary().status;
                     let mut external_index_layers = "none";
                     let result = params
@@ -720,14 +721,16 @@ impl<W: Write> LspServer<W> {
                                 external_index_status = indexes.status;
                                 external_index_layers = indexes.available_layers();
                                 let report = match DocumentQuery::state_for(document) {
-                                    DocumentQueryState::Cached(analysis) =>
+                                    DocumentQueryState::Cached(analysis) => {
+                                        cached_analysis = true;
                                         signature_help_report_for_cached_analysis_with_external_indexes(
                                         &document.text,
                                         analysis,
                                         params.position,
                                         indexes.workspace.as_deref(),
                                         indexes.game_data.as_deref(),
-                                    ),
+                                    )
+                                    }
                                     DocumentQueryState::Foreground(foreground) =>
                                         signature_help_report_for_pending_snapshot(
                                         &document.snapshot,
@@ -764,7 +767,7 @@ impl<W: Write> LspServer<W> {
                         log_uri,
                         bytes,
                         revision,
-                        self.document_runtime.documents.get(&log_uri).is_some_and(OpenDocument::analysis_ready),
+                        cached_analysis,
                         context,
                         active_parameter,
                         candidate_count,
@@ -1175,9 +1178,7 @@ impl<W: Write> LspServer<W> {
                             if let DocumentQueryState::Cached(analysis) =
                                 DocumentQuery::state_for(document)
                             {
-                                if let Some(scheduler) =
-                                    self.document_runtime.analysis_scheduler.clone()
-                                {
+                                if self.document_runtime.has_runtime_worker() {
                                     let uri = params.text_document.uri.clone();
                                     let position = params.position;
                                     let revision = document.revision;
@@ -1203,7 +1204,7 @@ impl<W: Write> LspServer<W> {
                                             return Ok(false);
                                         }
                                     };
-                                    scheduler.schedule_debug(DebugRequestJob::Hover(
+                                    self.document_runtime.schedule_debug(DebugRequestJob::Hover(
                                         DebugHoverJob {
                                             task,
                                             id,
@@ -1295,9 +1296,7 @@ impl<W: Write> LspServer<W> {
                             if let DocumentQueryState::Cached(analysis) =
                                 DocumentQuery::state_for(document)
                             {
-                                if let Some(scheduler) =
-                                    self.document_runtime.analysis_scheduler.clone()
-                                {
+                                if self.document_runtime.has_runtime_worker() {
                                     let uri = params.text_document.uri.clone();
                                     let position = params.position;
                                     let revision = document.revision;
@@ -1322,8 +1321,8 @@ impl<W: Write> LspServer<W> {
                                             return Ok(false);
                                         }
                                     };
-                                    scheduler.schedule_debug(DebugRequestJob::Completion(
-                                        DebugCompletionJob {
+                                    self.document_runtime.schedule_debug(
+                                        DebugRequestJob::Completion(DebugCompletionJob {
                                             task,
                                             id,
                                             uri,
@@ -1332,8 +1331,8 @@ impl<W: Write> LspServer<W> {
                                             scheduled_at: start,
                                             analysis,
                                             external_snapshot: indexes,
-                                        },
-                                    ));
+                                        }),
+                                    );
                                     return Ok(false);
                                 }
                             }
