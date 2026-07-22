@@ -22,7 +22,7 @@ pub(super) struct AutoBlockControlHeaderPlan {
     pub replacement: String,
     pub selection_line: u32,
     pub selection_character: u32,
-    pub switch_arm_snippet: Option<String>,
+    pub switch_arm_selection_end: Option<u32>,
 }
 
 pub(super) fn auto_block_control_header_enter_plan(
@@ -111,7 +111,7 @@ pub(super) fn auto_block_control_header_enter_plan(
         .map(|header| format!("{header})"))
         .unwrap_or_default();
     let body = if is_switch {
-        format!("{header_closure}{newline}{indent}{{{newline}{indent}{unit}{newline}{indent}}}")
+        format!("{header_closure}{newline}{indent}{{{newline}{indent}{unit}default:{newline}{indent}{unit}{unit}{newline}{indent}}}")
     } else {
         format!("{header_closure}{newline}{indent}{{{newline}{indent}{unit}{newline}{indent}}}")
     };
@@ -140,9 +140,9 @@ pub(super) fn auto_block_control_header_enter_plan(
         .chars()
         .map(|character| character.len_utf16() as u32)
         .sum(),
-        // VS Code carries the current arm line's indentation across a snippet
-        // newline, so the snippet adds only one body indentation unit.
-        switch_arm_snippet: is_switch.then(|| format!("${{1:default}}:{newline}{unit}${{0}}")),
+        switch_arm_selection_end: is_switch.then(|| {
+            (format!("{indent}{unit}").chars().map(|character| character.len_utf16() as u32).sum::<u32>()) + 7
+        }),
     })
 }
 
@@ -1054,17 +1054,17 @@ mod tests {
                 auto_block_control_header_enter_plan(source, source.len(), 4, false).unwrap();
             assert_eq!(plan.span.start, source.len());
             assert_eq!(plan.replacement, "\n\t{\n\t\t\n\t}");
-            assert_eq!(plan.switch_arm_snippet, None);
+            assert_eq!(plan.switch_arm_selection_end, None);
         }
 
         let switch_source = "switch (value)\n";
         let plan =
             auto_block_control_header_enter_plan(switch_source, switch_source.len(), 2, true)
                 .unwrap();
-        assert_eq!(plan.replacement, "\n{\n  \n}");
+        assert_eq!(plan.replacement, "\n{\n  default:\n    \n}");
         assert_eq!(
-            plan.switch_arm_snippet,
-            Some("${1:default}:\n  ${0}".to_string())
+            plan.switch_arm_selection_end,
+            Some(9)
         );
     }
 

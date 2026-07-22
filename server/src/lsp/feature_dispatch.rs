@@ -447,9 +447,9 @@ impl FeatureDispatcher<'_> {
                                     },
                                     "newText": plan.replacement,
                                 }],
+                                "selectionRange": plan.switch_arm_selection_end.map(|end| json!({ "start": { "line": plan.selection_line, "character": plan.selection_character }, "end": { "line": plan.selection_line, "character": end } })),
                                 "selection": { "line": plan.selection_line, "character": plan.selection_character },
-                                "snippet": plan.switch_arm_snippet,
-                                "triggerSuggest": plan.switch_arm_snippet.is_some(),
+                                "triggerSuggest": plan.switch_arm_selection_end.is_some(),
                             }))
                         })
                         .unwrap_or_else(|| json!({ "edits": [] }));
@@ -509,9 +509,9 @@ impl FeatureDispatcher<'_> {
                                             "range": { "start": start, "end": position_for_offset(&document.text, plan.span.end) },
                                             "newText": plan.replacement,
                                         }],
+                                        "selectionRange": plan.switch_arm_selection_end.map(|end| json!({ "start": { "line": plan.selection_line, "character": plan.selection_character }, "end": { "line": plan.selection_line, "character": end } })),
                                         "selection": { "line": plan.selection_line, "character": plan.selection_character },
-                                        "snippet": plan.switch_arm_snippet,
-                                        "triggerSuggest": plan.switch_arm_snippet.is_some(),
+                                        "triggerSuggest": plan.switch_arm_selection_end.is_some(),
                                     }));
                                 }
                                 if let Some(plan) = on_type_formatting::incomplete_if_header_enter_plan(

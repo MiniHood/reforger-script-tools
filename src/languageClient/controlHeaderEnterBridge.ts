@@ -9,7 +9,7 @@ import { applyVersionedEditorEdits, isCurrentSingleCaret, type VersionedEditResp
 const nativeTypeCommand = 'type';
 
 export function registerControlHeaderEnter(getClient: () => LanguageClient | undefined): vscode.Disposable {
-	return vscode.commands.registerCommand(languageClientCommands.controlHeaderEnter, async () => {
+	return vscode.commands.registerCommand(languageClientCommands.insertNewline, async () => {
 		const editor = vscode.window.activeTextEditor;
 		if (!editor || editor.document.languageId !== languageClientLanguage.id || !experimentalAutoFormattingEnabled()
 			|| !mayBeControlHeader(editor)) {
@@ -25,21 +25,20 @@ export function registerControlHeaderEnter(getClient: () => LanguageClient | und
 		}
 		try {
 			const response = await client.sendRequest<VersionedEditResponse>(
-				languageClientRequests.controlHeaderEnter,
+				languageClientRequests.inputRoute,
 				typingAssistRequest(editor.document, position, editor, '\n'),
 			);
 			if (response.edits.length > 0 && isCurrentSingleCaret(editor.document, version, position)) {
 				const applied = await applyVersionedEditorEdits(editor, response);
-				diagnostic('formatting.controlHeaderEnter', { outcome: applied ? 'applied' : 'editRejected', version });
+				diagnostic('inputRoute.insertNewline', { outcome: applied ? 'applied' : 'editRejected', version });
+				if (applied && response.triggerSuggest) {
+					await vscode.commands.executeCommand('editor.action.triggerSuggest');
+				}
 				return;
 			}
-			if (editor.document.version === version && editor.selection.active.isEqual(position)) {
-				await typeNativeEnter();
-			}
+			await typeNativeEnter();
 		} catch {
-			if (editor.document.version === version && editor.selection.active.isEqual(position)) {
-				await typeNativeEnter();
-			}
+			await typeNativeEnter();
 		}
 	});
 }

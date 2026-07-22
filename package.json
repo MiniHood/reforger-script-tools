@@ -65,8 +65,8 @@
         "title": "Reforger Script Tools: Trigger Snippet Suggestions"
       },
       {
-        "command": "reforger-sript-tools.controlHeaderEnter",
-        "title": "Reforger Script Tools: Control Header Enter"
+        "command": "reforger-sript-tools.input.insertNewline",
+        "title": "Reforger Script Tools: Insert Newline"
       },
       {
         "command": "reforger-sript-tools.gameData.checkForUpdates",
@@ -115,7 +115,7 @@
         "when": "suggestWidgetVisible && editorLangId == enforce"
       },
       {
-        "command": "reforger-sript-tools.controlHeaderEnter",
+        "command": "reforger-sript-tools.input.insertNewline",
         "key": "enter",
         "when": "editorTextFocus && editorLangId == enforce && !editorReadonly && !suggestWidgetVisible && !inSnippetMode"
       }
@@ -127,7 +127,7 @@
           "when": "false"
         },
         {
-          "command": "reforger-sript-tools.controlHeaderEnter",
+          "command": "reforger-sript-tools.input.insertNewline",
           "when": "false"
         }
       ]
