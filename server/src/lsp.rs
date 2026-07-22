@@ -98,7 +98,7 @@ pub(crate) use open_documents::{
     file_index_for_source_with_timings, FileIndexAnalysisTimings, OpenDocument,
     TokenProjectionKind, TokenResultDisposition,
 };
-use request_router::{classify_request, RequestCommand, RequestRouter, RoutedRequest};
+use request_router::{classify_request, RequestCommand, RoutedRequest};
 use response_writer::RuntimeEffect;
 use runtime_scheduler::{ForegroundDocumentJob, OpenDocumentAnalysisJob, RuntimeWorkExecutor};
 pub use semantic_tokens::{
@@ -681,7 +681,7 @@ impl<W: Write> LspServer<W> {
                 superseded_changes,
             );
         }
-        RequestRouter::new(self).handle_message(
+        self.handle_feature_or_workspace_message(
             value,
             queue_ms,
             coalesced_changes,
