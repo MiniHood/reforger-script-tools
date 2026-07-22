@@ -6,9 +6,9 @@ use super::workspace_requests::{WorkspaceFileChangedParams, WorkspaceFileDeleted
 use super::{
     validate_message_params, BlockCommentPairParams, DidChangeTextDocumentParams,
     DidCloseTextDocumentParams, DidOpenTextDocumentParams, DocumentSymbolParams,
-    EnterTypingAssistParams, HoverParams, RangeFormattingParams, RpcMessage,
+    HoverParams, InputRouteParams, RangeFormattingParams, RpcMessage,
     BLOCK_COMMENT_PAIR_METHOD, CONTROL_HEADER_ENTER_METHOD, DEBUG_COMPLETION_METHOD,
-    DEBUG_HOVER_METHOD, ENTER_TYPING_ASSIST_METHOD, RANGE_FORMATTING_METHOD,
+    DEBUG_HOVER_METHOD, RANGE_FORMATTING_METHOD,
     WORKSPACE_FILE_CHANGED_METHOD, WORKSPACE_FILE_DELETED_METHOD,
 };
 use serde_json::Value;
@@ -57,8 +57,7 @@ pub(super) enum FeatureCommand {
     DebugHover(Option<HoverParams>),
     DebugCompletion(Option<HoverParams>),
     BlockCommentPair(Option<BlockCommentPairParams>),
-    ControlHeaderEnter(Option<EnterTypingAssistParams>),
-    EnterTypingAssist(Option<EnterTypingAssistParams>),
+    InputRoute(Option<InputRouteParams>),
     OtherTextDocument,
 }
 
@@ -125,10 +124,7 @@ pub(super) fn classify_request(value: Value) -> Result<RoutedRequest, String> {
             FeatureCommand::BlockCommentPair(parse_typed_params(&message.params)),
         ),
         Some(CONTROL_HEADER_ENTER_METHOD) => RequestCommand::Feature(
-            FeatureCommand::ControlHeaderEnter(parse_typed_params(&message.params)),
-        ),
-        Some(ENTER_TYPING_ASSIST_METHOD) => RequestCommand::Feature(
-            FeatureCommand::EnterTypingAssist(parse_typed_params(&message.params)),
+            FeatureCommand::InputRoute(parse_typed_params(&message.params)),
         ),
         Some(method) if method.starts_with("textDocument/") => {
             RequestCommand::Feature(FeatureCommand::OtherTextDocument)

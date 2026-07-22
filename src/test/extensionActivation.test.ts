@@ -6,13 +6,11 @@ import * as vscode from 'vscode';
 import { languageClientCommands } from '../extensionConfig/languageClient';
 import {
 	blockCommentPairPosition,
-	enterAfterPosition,
 	ifSpaceCommitContractFromCommandArguments,
-	isCurrentSingleTypingAssistCaret,
 } from '../languageClient/languageClient';
 import { positionFromByteOffset } from '../languageClient/symbolLocationBridge';
-import { registerEnterTypingAssist } from '../languageClient/typingAssistTransactionBridge';
 import { registerBlockCommentPair } from '../languageClient/typingAssistTransactionBridge';
+import { executeInsertNewline } from '../languageClient/controlHeaderEnterBridge';
 import { VersionedEditorTransaction } from '../languageClient/versionedEditorTransaction';
 import { completionPresentationObservationForDocument, completionUiMiddlewareCallbacks } from '../languageClient/completionUiBridge';
 
@@ -213,51 +211,6 @@ suite('extension activation', () => {
 		assert.strictEqual(blockCommentPairPosition([{ ...pair, rangeLength: 1 }]), undefined);
 	});
 
-	test('derives the Rust request position from the accepted Enter edit', () => {
-		const position = enterAfterPosition([{
-			range: new vscode.Range(new vscode.Position(20, 61), new vscode.Position(20, 61)),
-			rangeLength: 0,
-			text: '\n\t',
-		} as vscode.TextDocumentContentChangeEvent]);
-		assert.deepStrictEqual(position, new vscode.Position(21, 1));
-
-		const crlfPosition = enterAfterPosition([{
-			range: new vscode.Range(new vscode.Position(7, 12), new vscode.Position(7, 12)),
-			rangeLength: 0,
-			text: '\r\n',
-		} as vscode.TextDocumentContentChangeEvent]);
-		assert.deepStrictEqual(crlfPosition, new vscode.Position(8, 0));
-
-		assert.strictEqual(enterAfterPosition([{
-			range: new vscode.Range(0, 0, 0, 1),
-			rangeLength: 1,
-			text: '\n',
-		} as vscode.TextDocumentContentChangeEvent]), undefined);
-
-		const plainEnter = {
-			range: new vscode.Range(0, 0, 0, 0),
-			rangeLength: 0,
-			text: '\n',
-		} as vscode.TextDocumentContentChangeEvent;
-		assert.strictEqual(enterAfterPosition([plainEnter, plainEnter]), undefined);
-		assert.strictEqual(enterAfterPosition([{
-			...plainEnter,
-			text: '\ntext',
-		}]), undefined);
-	});
-
-	test('applies an Enter assist response only at the original single caret and revision', () => {
-		const position = new vscode.Position(8, 4);
-		assert.strictEqual(isCurrentSingleTypingAssistCaret(12, 12, 1, true, position, position), true);
-		assert.strictEqual(isCurrentSingleTypingAssistCaret(13, 12, 1, true, position, position), false);
-		assert.strictEqual(isCurrentSingleTypingAssistCaret(12, 12, 2, true, position, position), false);
-		assert.strictEqual(isCurrentSingleTypingAssistCaret(12, 12, 1, false, position, position), false);
-		assert.strictEqual(
-			isCurrentSingleTypingAssistCaret(12, 12, 1, true, new vscode.Position(8, 5), position),
-			false,
-		);
-	});
-
 	test('applies one current versioned assist response and preserves its selection', async () => {
 		const document = await vscode.workspace.openTextDocument({ language: 'enforce', content: 'value' });
 		const editor = await vscode.window.showTextDocument(document);
@@ -274,21 +227,107 @@ suite('extension activation', () => {
 		assert.strictEqual(await transaction.apply(), 'pending');
 	});
 
-	test('applies a Rust-authored switch arm snippet with default selected and a body tab stop', async () => {
+	test('routes a switch Enter as one atomic edit with default selected', async () => {
 		const document = await vscode.workspace.openTextDocument({ language: 'enforce', content: 'switch (value)\n' });
 		const editor = await vscode.window.showTextDocument(document);
-		const position = new vscode.Position(1, 0);
+		const position = new vscode.Position(0, 14);
 		editor.selection = new vscode.Selection(position, position);
-		const transaction = new VersionedEditorTransaction(document, document.version, position, position);
-		assert.strictEqual(transaction.accept({
-			edits: [{ range: { start: { line: 0, character: 14 }, end: { line: 1, character: 0 } }, newText: '\n{\n\t\n}' }],
-			selection: { line: 2, character: 1 },
-			snippet: '${1:default}:\n\t${0}',
-		}), true);
-		assert.strictEqual(await transaction.apply(), 'applied');
-		assert.strictEqual(document.getText(), 'switch (value)\n{\n\tdefault:\n        \n}');
+		const requests: unknown[] = [];
+		await executeInsertNewline(editor, {
+			sendRequest: async (_method: string, request: unknown) => {
+				requests.push(request);
+				return {
+					edits: [{ range: { start: { line: 0, character: 14 }, end: { line: 1, character: 0 } }, newText: '\n{\n\tdefault:\n\t\t\n}' }],
+					selectionRange: { start: { line: 2, character: 1 }, end: { line: 2, character: 8 } },
+					owner: 'controlHeader',
+				};
+			},
+		} as never);
+		assert.strictEqual(document.getText(), 'switch (value)\n{\n\tdefault:\n\t\t\n}');
 		assert.deepStrictEqual(editor.selection.anchor, new vscode.Position(2, 1));
 		assert.deepStrictEqual(editor.selection.active, new vscode.Position(2, 8));
+		assert.deepStrictEqual(requests, [{
+			textDocument: { uri: document.uri.toString() },
+			version: 1,
+			operation: 'insertNewline',
+			selections: [{ start: { line: 0, character: 14 }, end: { line: 0, character: 14 } }],
+			options: { tabSize: 4, insertSpaces: true },
+		}]);
+	});
+
+	test('uses native fallback when an input route declines or fails', async () => {
+		for (const response of [
+			{ edits: [], reason: 'declined' },
+			new Error('server unavailable'),
+		]) {
+			const document = await vscode.workspace.openTextDocument({ language: 'enforce', content: 'while (true)' });
+			const editor = await vscode.window.showTextDocument(document);
+			const position = new vscode.Position(0, 12);
+			editor.selection = new vscode.Selection(position, position);
+			let fallbacks = 0;
+			await executeInsertNewline(editor, {
+				sendRequest: async () => {
+					if (response instanceof Error) {
+						throw response;
+					}
+					return response;
+				},
+			} as never, async () => {
+				fallbacks += 1;
+				await editor.edit(edit => edit.insert(editor.selection.active, '\n'));
+			});
+			assert.strictEqual(fallbacks, 1);
+			assert.strictEqual(document.getText(), 'while (true)\r\n');
+		}
+	});
+
+	test('discards a stale input route before it can edit the current caret', async () => {
+		const document = await vscode.workspace.openTextDocument({ language: 'enforce', content: 'while (true)' });
+		const editor = await vscode.window.showTextDocument(document);
+		const position = new vscode.Position(0, 12);
+		editor.selection = new vscode.Selection(position, position);
+		let fallbacks = 0;
+		await executeInsertNewline(editor, {
+			sendRequest: async () => {
+				editor.selection = new vscode.Selection(new vscode.Position(0, 0), new vscode.Position(0, 0));
+				return {
+					edits: [{ range: { start: { line: 0, character: 12 }, end: { line: 0, character: 12 } }, newText: '\n{\n\t\n}' }],
+					owner: 'controlHeader',
+				};
+			},
+		} as never, async () => {
+			fallbacks += 1;
+			await editor.edit(edit => edit.insert(editor.selection.active, '\n'));
+		});
+		assert.strictEqual(fallbacks, 1);
+		assert.strictEqual(document.getText(), '\r\nwhile (true)');
+	});
+
+	test('leaves routed Enter native when Experimental Auto Formatting is disabled', async () => {
+		const configuration = vscode.workspace.getConfiguration('reforgerScriptTools');
+		await configuration.update('experimentalAutoFormatting', false, vscode.ConfigurationTarget.Global);
+		try {
+			const document = await vscode.workspace.openTextDocument({ language: 'enforce', content: 'while (true)' });
+			const editor = await vscode.window.showTextDocument(document);
+			const position = new vscode.Position(0, 12);
+			editor.selection = new vscode.Selection(position, position);
+			let requests = 0;
+			let fallbacks = 0;
+			await executeInsertNewline(editor, {
+				sendRequest: async () => {
+					requests += 1;
+					return { edits: [] };
+				},
+			} as never, async () => {
+				fallbacks += 1;
+				await editor.edit(edit => edit.insert(editor.selection.active, '\n'));
+			});
+			assert.strictEqual(requests, 0);
+			assert.strictEqual(fallbacks, 1);
+			assert.strictEqual(document.getText(), 'while (true)\r\n');
+		} finally {
+			await configuration.update('experimentalAutoFormatting', undefined, vscode.ConfigurationTarget.Global);
+		}
 	});
 
 	test('rejects empty and stale versioned assist responses', async () => {
@@ -332,13 +371,13 @@ suite('extension activation', () => {
 		}
 	});
 
-	test('enables local diagnostic logging by default', () => {
+	test('keeps local diagnostic logging opt-in by default', () => {
 		const extension = vscode.extensions.all.find(
 			candidate => candidate.packageJSON.name === 'reforger-sript-tools',
 		);
 		assert.ok(extension, 'development extension is discoverable');
 		const properties = extension.packageJSON.contributes.configuration.properties as Record<string, { default?: unknown }>;
-		assert.strictEqual(properties['reforgerScriptTools.diagnostics.enabled'].default, true);
+		assert.strictEqual(properties['reforgerScriptTools.diagnostics.enabled'].default, false);
 	});
 
 	test('enables Experimental Auto Formatting by default', () => {
@@ -416,6 +455,18 @@ suite('extension activation', () => {
 		assert.ok(extension, 'development extension is discoverable');
 		const defaults = extension.packageJSON.contributes.configurationDefaults as Record<string, Record<string, unknown>>;
 		assert.strictEqual(defaults['[enforce]']['editor.acceptSuggestionOnEnter'], 'off');
+	});
+
+	test('routes Enter only outside native editing modes', () => {
+		const extension = vscode.extensions.all.find(
+			candidate => candidate.packageJSON.name === 'reforger-sript-tools',
+		);
+		assert.ok(extension, 'development extension is discoverable');
+		const keybindings = extension.packageJSON.contributes.keybindings as Array<{ command: string; when?: string }>;
+		const routedEnter = keybindings.find(binding => binding.command === languageClientCommands.insertNewline);
+		assert.match(routedEnter?.when ?? '', /!editorReadonly/);
+		assert.match(routedEnter?.when ?? '', /!suggestWidgetVisible/);
+		assert.match(routedEnter?.when ?? '', /!inSnippetMode/);
 	});
 
 });

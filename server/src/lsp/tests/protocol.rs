@@ -437,51 +437,6 @@ fn framed_lsp_did_change_defers_document_symbol_projection_until_requested() {
 }
 
 #[test]
-fn enter_typing_assist_repairs_only_an_incomplete_if_header_with_a_body_selection() {
-    let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
-    let uri = "file:///Scripts/IfHeaderEnter.c";
-    server
-        .handle_message(
-            json!({ "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": "enforce",
-                    "version": 1,
-                    "text": "\tif (owner == GetOwner()\n\t"
-                }
-            }}),
-            None,
-            0,
-            0,
-        )
-        .unwrap();
-    server.writer.clear();
-    server
-        .handle_message(
-            json!({ "jsonrpc": "2.0", "id": 1, "method": ENTER_TYPING_ASSIST_METHOD, "params": {
-                "textDocument": { "uri": uri },
-                "position": { "line": 1, "character": 1 },
-                "ch": "\n",
-                "version": 1,
-                "options": { "tabSize": 4, "insertSpaces": false }
-            }}),
-            None,
-            0,
-            0,
-        )
-        .unwrap();
-    let output = String::from_utf8_lossy(&server.writer);
-    assert!(
-        output.contains("\"newText\":\"\\tif (owner == GetOwner())\\n\\t\\t\""),
-        "{output}"
-    );
-    assert!(
-        output.contains("\"selection\":{\"character\":2,\"line\":1}"),
-        "{output}"
-    );
-}
-
-#[test]
 fn input_route_creates_loop_and_switch_bodies_without_rewriting_headers() {
     let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
     let uri = "file:///Scripts/ControlHeaderEnter.c";
@@ -502,7 +457,8 @@ fn input_route_creates_loop_and_switch_bodies_without_rewriting_headers() {
     server
         .handle_message(
             json!({ "jsonrpc": "2.0", "id": 1, "method": CONTROL_HEADER_ENTER_METHOD, "params": {
-                "textDocument": { "uri": uri }, "position": { "line": 1, "character": 13 }, "ch": "\n",
+                "textDocument": { "uri": uri }, "operation": "insertNewline",
+                "selections": [{ "start": { "line": 1, "character": 13 }, "end": { "line": 1, "character": 13 } }],
                 "version": 1, "options": { "tabSize": 4, "insertSpaces": true }
             }}),
             None, 0, 0,
@@ -512,6 +468,24 @@ fn input_route_creates_loop_and_switch_bodies_without_rewriting_headers() {
     assert!(output.contains("default:"), "{output}");
     assert!(output.contains("\"selectionRange\""), "{output}");
     assert!(output.contains("\"triggerSuggest\":true"), "{output}");
+}
+
+#[test]
+fn input_route_declines_multiple_or_nonempty_selections() {
+    let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
+    let uri = "file:///Scripts/InputRouteSelection.c";
+    server.handle_message(json!({ "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+        "textDocument": { "uri": uri, "languageId": "enforce", "version": 1, "text": "while (true)" }
+    }}), None, 0, 0).unwrap();
+    server.writer.clear();
+    server.handle_message(json!({ "jsonrpc": "2.0", "id": 1, "method": CONTROL_HEADER_ENTER_METHOD, "params": {
+        "textDocument": { "uri": uri }, "operation": "insertNewline", "version": 1,
+        "selections": [
+            { "start": { "line": 0, "character": 12 }, "end": { "line": 0, "character": 12 } },
+            { "start": { "line": 0, "character": 12 }, "end": { "line": 0, "character": 12 } }
+        ], "options": { "tabSize": 4, "insertSpaces": true }
+    }}), None, 0, 0).unwrap();
+    assert!(String::from_utf8_lossy(&server.writer).contains("\"edits\":[]"));
 }
 
 #[test]

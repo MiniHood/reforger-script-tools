@@ -1,4 +1,6 @@
-use crate::lexer::{lex, Keyword, Operator, TextSpan, Token, TokenKind};
+use crate::lexer::{lex, Keyword, TextSpan, Token, TokenKind};
+#[cfg(test)]
+use crate::lexer::Operator;
 
 const MAX_ON_TYPE_SOURCE_BYTES: usize = 64 * 1024;
 
@@ -9,6 +11,7 @@ pub(super) struct BlockCommentPairPlan {
     pub selection_character: u32,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct IncompleteIfHeaderPlan {
     pub span: TextSpan,
@@ -232,6 +235,7 @@ fn is_do_while_tail(tokens: &[Token], while_index: usize) -> bool {
 /// unfinished condition.  This is intentionally smaller than a formatter:
 /// every unsupported or recovered shape leaves the editor's native Enter
 /// result alone.
+#[cfg(test)]
 pub(super) fn incomplete_if_header_enter_plan(
     source: &str,
     cursor: usize,
@@ -340,6 +344,7 @@ pub(super) fn incomplete_if_header_enter_plan(
     })
 }
 
+#[cfg(test)]
 fn has_only_open_if_paren(tokens: &[Token]) -> bool {
     let mut paren_depth = 1usize;
     let mut bracket_depth = 0usize;
@@ -365,6 +370,7 @@ fn has_only_open_if_paren(tokens: &[Token]) -> bool {
     paren_depth == 1 && bracket_depth == 0
 }
 
+#[cfg(test)]
 fn has_completed_if_paren(tokens: &[Token]) -> bool {
     if tokens.last().map(|token| token.kind) != Some(TokenKind::RightParen) {
         return false;
@@ -456,6 +462,7 @@ pub(super) fn block_comment_pair_plan(
 /// declaration, or value-return statement on the physical line before the
 /// cursor. Every uncertain, malformed, or unsupported shape is a no-edit
 /// result.
+#[cfg(test)]
 pub(super) fn semicolon_insertion_offset(source: &str, cursor: usize) -> Option<usize> {
     if source.len() > MAX_ON_TYPE_SOURCE_BYTES || cursor > source.len() {
         return None;
@@ -533,11 +540,13 @@ pub(super) fn semicolon_insertion_offset(source: &str, cursor: usize) -> Option<
     Some(previous_line_start + insertion_in_line)
 }
 
+#[cfg(test)]
 fn line_start_before(source: &str, cursor: usize) -> Option<usize> {
     let before_cursor = &source[..cursor];
     before_cursor.rfind('\n').map(|newline| newline + 1)
 }
 
+#[cfg(test)]
 fn trim_line_ending(source: &str, line_start: usize) -> usize {
     let mut end = line_start.saturating_sub(1);
     if end > 0 && source.as_bytes().get(end - 1) == Some(&b'\r') {
@@ -546,6 +555,7 @@ fn trim_line_ending(source: &str, line_start: usize) -> usize {
     end
 }
 
+#[cfg(test)]
 fn is_complete_call_expression(tokens: &[Token]) -> bool {
     let mut index = 0;
     if !is_receiver_start(tokens.get(index).map(|token| token.kind)) {
@@ -588,6 +598,7 @@ fn is_complete_call_expression(tokens: &[Token]) -> bool {
     ends_with_call
 }
 
+#[cfg(test)]
 fn is_receiver_start(kind: Option<TokenKind>) -> bool {
     matches!(
         kind,
@@ -595,6 +606,7 @@ fn is_receiver_start(kind: Option<TokenKind>) -> bool {
     )
 }
 
+#[cfg(test)]
 fn is_complete_value_return_statement(tokens: &[Token]) -> bool {
     if tokens.first().map(|token| token.kind) != Some(TokenKind::Keyword(Keyword::Return)) {
         return false;
@@ -614,6 +626,7 @@ fn is_complete_value_return_statement(tokens: &[Token]) -> bool {
 /// sequence. This bounded lexical check rejects control keywords and adjacent
 /// primary values (for example `owner GetOwner()`), which are not a complete
 /// Enforce expression and therefore must not receive an automatic edit.
+#[cfg(test)]
 fn is_complete_value_expression(tokens: &[Token]) -> bool {
     let Some(first) = tokens.first() else {
         return false;
@@ -641,6 +654,7 @@ fn is_complete_value_expression(tokens: &[Token]) -> bool {
 /// Primitive keywords can only participate in a returned expression as type
 /// arguments of a `new Type<...>(...)` construction. Scanning back to the
 /// construction keyword is bounded by the already-small physical line.
+#[cfg(test)]
 fn is_new_type_keyword(tokens: &[Token], index: usize) -> bool {
     if !matches!(
         tokens[index].kind,
@@ -675,6 +689,7 @@ fn is_new_type_keyword(tokens: &[Token], index: usize) -> bool {
 /// `new Type` is syntactically unfinished until its constructor argument list
 /// closes.  Keep this explicit instead of relying on generic delimiter balance
 /// so the typing assist remains fail-closed around construction expressions.
+#[cfg(test)]
 fn has_only_complete_new_expressions(tokens: &[Token]) -> bool {
     let mut index = 0;
     while index < tokens.len() {
@@ -705,6 +720,7 @@ fn has_only_complete_new_expressions(tokens: &[Token]) -> bool {
     true
 }
 
+#[cfg(test)]
 fn is_value_expression_token(kind: TokenKind) -> bool {
     !matches!(kind, TokenKind::Keyword(keyword) if !matches!(
         keyword,
@@ -712,6 +728,7 @@ fn is_value_expression_token(kind: TokenKind) -> bool {
     ))
 }
 
+#[cfg(test)]
 fn can_start_value_expression(kind: TokenKind) -> bool {
     matches!(
         kind,
@@ -739,6 +756,7 @@ fn can_start_value_expression(kind: TokenKind) -> bool {
     )
 }
 
+#[cfg(test)]
 fn can_end_value_expression(kind: TokenKind) -> bool {
     matches!(
         kind,
@@ -757,6 +775,7 @@ fn can_end_value_expression(kind: TokenKind) -> bool {
 /// Recognizes a complete typed variable declaration without resolving its
 /// type. A `Type name` shape is unambiguously a declaration in statement
 /// position; callable headers and controls cannot satisfy this grammar.
+#[cfg(test)]
 fn is_complete_variable_declaration(tokens: &[Token]) -> bool {
     let mut index = 0;
     while matches!(
@@ -813,6 +832,7 @@ fn is_complete_variable_declaration(tokens: &[Token]) -> bool {
     }
 }
 
+#[cfg(test)]
 fn is_local_type_start(kind: Option<TokenKind>) -> bool {
     matches!(
         kind,
@@ -829,6 +849,7 @@ fn is_local_type_start(kind: Option<TokenKind>) -> bool {
     )
 }
 
+#[cfg(test)]
 fn consume_generic_arguments(tokens: &[Token], mut index: usize) -> Option<usize> {
     if tokens.get(index).map(|token| token.kind) != Some(TokenKind::Operator(Operator::Less)) {
         return Some(index);
@@ -850,6 +871,7 @@ fn consume_generic_arguments(tokens: &[Token], mut index: usize) -> Option<usize
     None
 }
 
+#[cfg(test)]
 fn consume_initializer(tokens: &[Token], mut index: usize) -> Option<usize> {
     let start = index;
     let mut closes = Vec::new();
@@ -877,6 +899,7 @@ fn consume_initializer(tokens: &[Token], mut index: usize) -> Option<usize> {
     Some(index)
 }
 
+#[cfg(test)]
 fn ends_in_incomplete_expression(kind: TokenKind) -> bool {
     matches!(
         kind,
@@ -884,6 +907,7 @@ fn ends_in_incomplete_expression(kind: TokenKind) -> bool {
     )
 }
 
+#[cfg(test)]
 fn consume_balanced(tokens: &[Token], start: usize, close: TokenKind) -> Option<usize> {
     let mut stack = vec![close];
     let mut index = start + 1;
@@ -1123,6 +1147,51 @@ mod tests {
             plan.replacement,
             "while (true)\n        {\n            \n        }"
         );
+    }
+
+    #[test]
+    fn creates_bodies_for_every_supported_header_from_inside_or_after_parentheses() {
+        for source in [
+            "for (int i = 0; i < count; i++)",
+            "foreach (entry in entries)",
+            "while (running)",
+            "switch (kind)",
+        ] {
+            let cursor = source.len();
+            let plan = control_header_block_before_enter_plan(source, cursor, 4, true).unwrap();
+            assert!(plan.replacement.contains("\n{"), "{source:?}");
+        }
+
+        let source = "while (tr|ue)";
+        let cursor = source.find('|').unwrap();
+        let source = source.replace('|', "");
+        let plan = control_header_block_before_enter_plan(&source, cursor, 4, true).unwrap();
+        assert_eq!(plan.replacement, "while (true)\n{\n    \n}");
+
+        let crlf = "while (running)\r\n";
+        let plan = control_header_block_before_enter_plan(crlf, "while (running)".len(), 4, true).unwrap();
+        assert_eq!(plan.replacement, "\r\n{\r\n    \r\n}");
+    }
+
+    #[test]
+    fn accepts_incomplete_header_contents_but_declines_if_else_and_do_while() {
+        for source in ["for (int i =)", "foreach (entry in)", "while ()", "switch ()"] {
+            assert!(
+                control_header_block_before_enter_plan(&source, source.len(), 4, true).is_some(),
+                "{source:?}"
+            );
+        }
+        for source in [
+            "if (ready)",
+            "else if (ready)",
+            "else",
+            "do { Work(); } while (running)",
+        ] {
+            assert!(
+                control_header_block_before_enter_plan(source, source.len(), 4, true).is_none(),
+                "{source:?}"
+            );
+        }
     }
 
     #[test]

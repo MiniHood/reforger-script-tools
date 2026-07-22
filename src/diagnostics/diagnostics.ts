@@ -11,7 +11,7 @@ let logPath = '';
 let writeQueue: Promise<void> = Promise.resolve();
 
 export function initializeDiagnostics(context: vscode.ExtensionContext): void {
-	enabled = vscode.workspace.getConfiguration(diagnosticsConfig.section).get<boolean>(diagnosticsConfig.settings.enabled, true);
+	enabled = vscode.workspace.getConfiguration(diagnosticsConfig.section).get<boolean>(diagnosticsConfig.settings.enabled, false);
 	session = `${Date.now()}-${process.pid}`;
 	logPath = path.join(context.globalStorageUri.fsPath, diagnosticsLogs.rootFolder, diagnosticsLogs.extensionFile);
 	if (!enabled) {

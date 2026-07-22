@@ -20,7 +20,7 @@ use super::{
     DebugCompletionJob, DebugHoverJob, DebugRequestJob, DocumentQuery, DocumentQueryState,
     DocumentRuntime, ExternalIndexHandle, HoverSelectionSource, LspPositionIndex, QueryQuality,
     RuntimeEffect, TextSpan, BLOCK_COMMENT_PAIR_METHOD, CONTROL_HEADER_ENTER_METHOD,
-    DEBUG_COMPLETION_METHOD, DEBUG_HOVER_METHOD, ENTER_TYPING_ASSIST_METHOD,
+    DEBUG_COMPLETION_METHOD, DEBUG_HOVER_METHOD,
     RANGE_FORMATTING_METHOD, WORKSPACE_FILE_CHANGED_METHOD, WORKSPACE_FILE_DELETED_METHOD,
 };
 use serde_json::{json, Value};
@@ -416,14 +416,19 @@ impl FeatureDispatcher<'_> {
             }
             CONTROL_HEADER_ENTER_METHOD => {
                 if let Some(id) = message.id {
-                    let RequestCommand::Feature(FeatureCommand::ControlHeaderEnter(params)) =
+                    let RequestCommand::Feature(FeatureCommand::InputRoute(params)) =
                         &command
                     else {
-                        unreachable!("control-header Enter has typed parameters");
+                        unreachable!("input route has typed parameters");
                     };
                     let result = params
                         .clone()
                         .and_then(|params| {
+                            if params.operation != "insertNewline" || params.selections.len() != 1
+                                || params.selections[0].start != params.selections[0].end
+                            {
+                                return None;
+                            }
                             let query = self
                                 .document_runtime
                                 .capture_query(&params.text_document.uri, self.external_index.snapshot())?;
@@ -431,7 +436,7 @@ impl FeatureDispatcher<'_> {
                             if document.version != params.version {
                                 return None;
                             }
-                            let cursor = offset_for_position(&document.text, params.position)?;
+                            let cursor = offset_for_position(&document.text, params.selections[0].end)?;
                             let plan = on_type_formatting::control_header_block_before_enter_plan(
                                 &document.text,
                                 cursor,
@@ -447,124 +452,13 @@ impl FeatureDispatcher<'_> {
                                     },
                                     "newText": plan.replacement,
                                 }],
+                                "owner": "controlHeader",
                                 "selectionRange": plan.switch_arm_selection_end.map(|end| json!({ "start": { "line": plan.selection_line, "character": plan.selection_character }, "end": { "line": plan.selection_line, "character": end } })),
                                 "selection": { "line": plan.selection_line, "character": plan.selection_character },
                                 "triggerSuggest": plan.switch_arm_selection_end.is_some(),
                             }))
                         })
-                        .unwrap_or_else(|| json!({ "edits": [] }));
-                    self.respond(id, result)?;
-                }
-            }
-            ENTER_TYPING_ASSIST_METHOD => {
-                if let Some(id) = message.id {
-                    let start = Instant::now();
-                    let RequestCommand::Feature(FeatureCommand::EnterTypingAssist(params)) =
-                        &command
-                    else {
-                        unreachable!("typing assist method has a typed command");
-                    };
-                    let params = params.clone();
-                    let mut log_uri = "<missing>".to_string();
-                    let mut bytes = 0usize;
-                    let mut version = -1i32;
-                    let mut line = -1i64;
-                    let mut character = -1i64;
-                    let mut outcome = "no_edit";
-                    let mut trigger = "unknown";
-                    let result = params
-                        .and_then(|params| {
-                            log_uri = params.text_document.uri;
-                            version = params.version;
-                            line = params.position.line as i64;
-                            character = params.position.character as i64;
-                            trigger = if params.ch == "\n" { "enter" } else if params.ch == "\t" { "tab" } else { "unsupported" };
-                            if !matches!(params.ch.as_str(), "\n" | "\t")
-                                || (params.ch == "\n" && params.position.line == 0)
-                            {
-                                outcome = "unsupported_trigger";
-                                return None;
-                            }
-                            let query = self
-                                .document_runtime
-                                .capture_query(&log_uri, self.external_index.snapshot())?;
-                            let document = query.document;
-                            bytes = document.text.len();
-                            if document.version != params.version {
-                                outcome = "stale_version";
-                                return None;
-                            }
-                            let cursor = offset_for_position(&document.text, params.position)?;
-                            if params.ch == "\n" {
-                                if let Some(plan) = on_type_formatting::auto_block_control_header_enter_plan(
-                                    &document.text,
-                                    cursor,
-                                    params.options.tab_size,
-                                    params.options.insert_spaces,
-                                ) {
-                                    outcome = "control_block";
-                                    let start = position_for_offset(&document.text, plan.span.start);
-                                    return Some(json!({
-                                        "edits": [{
-                                            "range": { "start": start, "end": position_for_offset(&document.text, plan.span.end) },
-                                            "newText": plan.replacement,
-                                        }],
-                                        "selectionRange": plan.switch_arm_selection_end.map(|end| json!({ "start": { "line": plan.selection_line, "character": plan.selection_character }, "end": { "line": plan.selection_line, "character": end } })),
-                                        "selection": { "line": plan.selection_line, "character": plan.selection_character },
-                                        "triggerSuggest": plan.switch_arm_selection_end.is_some(),
-                                    }));
-                                }
-                                if let Some(plan) = on_type_formatting::incomplete_if_header_enter_plan(
-                                    &document.text,
-                                    cursor,
-                                    params.options.tab_size,
-                                    params.options.insert_spaces,
-                                ) {
-                                    outcome = "if_header";
-                                    let start = position_for_offset(&document.text, plan.span.start);
-                                    return Some(json!({
-                                        "edits": [{
-                                            "range": {
-                                                "start": start,
-                                                "end": position_for_offset(&document.text, plan.span.end),
-                                            },
-                                            "newText": plan.replacement,
-                                        }],
-                                        "selection": {
-                                            "line": start.line + 1,
-                                            "character": plan.selection_character,
-                                        },
-                                    }));
-                                }
-                            }
-                            let mut edits = Vec::new();
-                            if params.ch == "\n" {
-                                if let Some(insertion) = on_type_formatting::semicolon_insertion_offset(
-                                    &document.text,
-                                    cursor,
-                                ) {
-                                    let position = position_for_offset(&document.text, insertion);
-                                    edits.push(json!({
-                                        "range": { "start": position, "end": position },
-                                        "newText": ";",
-                                    }));
-                                }
-                            }
-                            outcome = if edits.is_empty() { "no_edit" } else { "semicolon" };
-                            Some(json!({ "edits": edits }))
-                        })
-                        .unwrap_or_else(|| json!({ "edits": [] }));
-                    self.log(&format!(
-                        "request enterTypingAssist uri={} bytes={} version={} line={} character={} trigger={} outcome={} elapsed_ms={}",
-                        log_uri,
-                        bytes,
-                        version,
-                        line,
-                        character,
-                        trigger,
-                        outcome,
-                        start.elapsed().as_millis()
-                    ));
+                        .unwrap_or_else(|| json!({ "edits": [], "reason": "declined" }));
                     self.respond(id, result)?;
                 }
             }

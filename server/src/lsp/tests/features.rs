@@ -4235,44 +4235,6 @@ fn semantic_tokens_keep_existing_rich_display_until_current_rich_result() {
 }
 
 #[test]
-fn enter_typing_assist_accepts_a_complete_typed_variable_declaration() {
-    let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
-    let uri = "file:///Scripts/OnTypeFormattingDeclaration.c";
-    server
-        .handle_message(
-            json!({ "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": "enforce",
-                    "version": 1,
-                    "text": "void Run() {\n\tGRAY_TEST2 test44\n}"
-                }
-            }}),
-            None,
-            0,
-            0,
-        )
-        .unwrap();
-    server.writer.clear();
-    server
-        .handle_message(
-            json!({ "jsonrpc": "2.0", "id": 1, "method": ENTER_TYPING_ASSIST_METHOD, "params": {
-                "textDocument": { "uri": uri },
-                "position": { "line": 2, "character": 0 },
-                "ch": "\n",
-                "version": 1,
-                "options": { "tabSize": 4, "insertSpaces": false }
-            }}),
-            None,
-            0,
-            0,
-        )
-        .unwrap();
-    let output = String::from_utf8_lossy(&server.writer);
-    assert!(output.contains("\"newText\":\";\""), "{output}");
-}
-
-#[test]
 fn block_comment_pair_returns_a_current_revision_multiline_edit_and_selection() {
     let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
     let uri = "file:///Scripts/BlockCommentPair.c";

@@ -8,6 +8,27 @@ export interface TypingAssistRequest {
 	ch?: '\n';
 }
 
+export interface InputRouteRequest {
+	textDocument: { uri: string };
+	version: number;
+	operation: 'insertNewline';
+	selections: Array<{ start: { line: number; character: number }; end: { line: number; character: number } }>;
+	options: { tabSize: vscode.TextEditorOptions['tabSize']; insertSpaces: vscode.TextEditorOptions['insertSpaces'] };
+}
+
+export function inputRouteRequest(document: vscode.TextDocument, editor: vscode.TextEditor): InputRouteRequest {
+	return {
+		textDocument: { uri: document.uri.toString() },
+		version: document.version,
+		operation: 'insertNewline',
+		selections: editor.selections.map(selection => ({
+			start: { line: selection.start.line, character: selection.start.character },
+			end: { line: selection.end.line, character: selection.end.character },
+		})),
+		options: { tabSize: editor.options.tabSize, insertSpaces: editor.options.insertSpaces },
+	};
+}
+
 /** Builds editor transport data only; Rust decides whether an assist applies. */
 export function typingAssistRequest(
 	document: vscode.TextDocument,
@@ -30,13 +51,4 @@ export function blockCommentPairPosition(changes: readonly vscode.TextDocumentCo
 	}
 	const change = changes[0];
 	return new vscode.Position(change.range.start.line, change.range.start.character + 1);
-}
-
-export function enterAfterPosition(changes: readonly vscode.TextDocumentContentChangeEvent[]): vscode.Position | undefined {
-	if (changes.length !== 1 || changes[0].rangeLength !== 0 || !/^\r?\n[\t ]*$/.test(changes[0].text)) {
-		return undefined;
-	}
-	const change = changes[0];
-	const newline = change.text.lastIndexOf('\n');
-	return new vscode.Position(change.range.start.line + 1, change.text.length - newline - 1);
 }

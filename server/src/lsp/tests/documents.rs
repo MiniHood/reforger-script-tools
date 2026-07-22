@@ -231,62 +231,6 @@ fn document_symbol_projection_builds_one_position_index() {
 }
 
 #[test]
-fn enter_typing_assist_returns_one_semicolon_edit_only_for_the_current_version() {
-    let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
-    let uri = "file:///Scripts/OnTypeFormatting.c";
-    server
-        .handle_message(
-            json!({ "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": "enforce",
-                    "version": 1,
-                    "text": "void Run() {\n\tGetGame()\n}"
-                }
-            }}),
-            None,
-            0,
-            0,
-        )
-        .unwrap();
-    server.writer.clear();
-    server
-        .handle_message(
-            json!({ "jsonrpc": "2.0", "id": 1, "method": ENTER_TYPING_ASSIST_METHOD, "params": {
-                "textDocument": { "uri": uri },
-                "position": { "line": 2, "character": 0 },
-                "ch": "\n",
-                "version": 1,
-                "options": { "tabSize": 4, "insertSpaces": false }
-            }}),
-            None,
-            0,
-            0,
-        )
-        .unwrap();
-    let output = String::from_utf8_lossy(&server.writer);
-    assert!(output.contains("\"newText\":\";\""), "{output}");
-    assert!(output.contains("\"character\":10,\"line\":1"), "{output}");
-
-    server.writer.clear();
-    server
-        .handle_message(
-            json!({ "jsonrpc": "2.0", "id": 2, "method": ENTER_TYPING_ASSIST_METHOD, "params": {
-                "textDocument": { "uri": uri },
-                "position": { "line": 2, "character": 0 },
-                "ch": "\n",
-                "version": 2,
-                "options": { "tabSize": 4, "insertSpaces": false }
-            }}),
-            None,
-            0,
-            0,
-        )
-        .unwrap();
-    assert!(String::from_utf8_lossy(&server.writer).contains("\"edits\":[]"));
-}
-
-#[test]
 fn document_open_and_change_require_versions() {
     let uri = "file:///Scripts/RequiredVersions.c";
     let mut server = LspServer::new(Vec::new(), LspServerOptions::default());

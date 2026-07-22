@@ -48,8 +48,7 @@ import {
 } from './typingAssistTransactionBridge';
 import { registerControlHeaderEnter } from './controlHeaderEnterBridge';
 
-export { blockCommentPairPosition, enterAfterPosition } from './typingAssistBridge';
-export { isCurrentSingleTypingAssistCaret } from './typingAssistTransactionBridge';
+export { blockCommentPairPosition } from './typingAssistBridge';
 export { ifSpaceCommitContractFromCommandArguments } from './completionUiBridge';
 
 let client: LanguageClient | undefined;
