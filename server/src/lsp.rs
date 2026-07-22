@@ -49,7 +49,6 @@ mod semantic_tokens;
 mod signature_help;
 mod transport;
 
-use background_events::BackgroundEvents;
 use completion::{
     completion_debug_markdown, completion_report_for_cached_analysis_with_external_indexes,
     completion_report_for_current_argument_labels_at_offset_with_external_indexes,
@@ -829,7 +828,7 @@ impl<W: Write> LspServer<W> {
     }
 
     fn handle_internal_event(&mut self, event: ServerEvent) -> Result<(), String> {
-        BackgroundEvents::new(self).handle_internal_event(event)
+        self.handle_background_event(event)
     }
 
     fn new(writer: W, options: LspServerOptions) -> Self {

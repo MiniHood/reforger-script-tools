@@ -1,19 +1,10 @@
 use super::{publish_diagnostics_message, LspServer, RuntimeEffect, ServerEvent};
 use std::io::Write;
-use std::ops::{Deref, DerefMut};
-
-/// Interprets one worker completion before the composition root delivers its
-/// resulting transport effects. It owns no document or transport state.
-pub(super) struct BackgroundEvents<'server, W: Write> {
-    server: &'server mut LspServer<W>,
-}
-
-impl<'server, W: Write> BackgroundEvents<'server, W> {
-    pub(super) fn new(server: &'server mut LspServer<W>) -> Self {
-        Self { server }
-    }
-
-    pub(super) fn handle_internal_event(&mut self, event: ServerEvent) -> Result<(), String> {
+/// Compatibility executor for worker completions. The composition root owns
+/// this transport-facing remainder; document state transitions are being
+/// moved into `DocumentRuntime` as their typed event contracts land.
+impl<W: Write> LspServer<W> {
+    pub(super) fn handle_background_event(&mut self, event: ServerEvent) -> Result<(), String> {
         match event {
             ServerEvent::Incoming { .. } => Ok(()),
             ServerEvent::RichSemanticTokensReady {
@@ -287,19 +278,5 @@ impl<'server, W: Write> BackgroundEvents<'server, W> {
                 self.deliver_effect(RuntimeEffect::Response { id, result })
             }
         }
-    }
-}
-
-impl<W: Write> Deref for BackgroundEvents<'_, W> {
-    type Target = LspServer<W>;
-
-    fn deref(&self) -> &Self::Target {
-        self.server
-    }
-}
-
-impl<W: Write> DerefMut for BackgroundEvents<'_, W> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.server
     }
 }
