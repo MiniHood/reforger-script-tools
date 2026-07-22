@@ -1,5 +1,6 @@
 import * as assert from 'node:assert';
 import * as fs from 'node:fs/promises';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { languageClientCommands } from '../extensionConfig/languageClient';
@@ -344,6 +345,35 @@ suite('extension activation', () => {
 		}
 	});
 
+	test('serves directive and Macro completion through the live Extension Development Host', async function () {
+		this.timeout(10_000);
+		const extension = vscode.extensions.all.find(
+			candidate => candidate.packageJSON.name === 'reforger-sript-tools',
+		);
+		assert.ok(extension, 'development extension is discoverable');
+		await extension.activate();
+		const folder = await fs.mkdtemp(path.join(os.tmpdir(), 'reforger-script-tools-'));
+		const file = path.join(folder, 'PreprocessorCompletion.c');
+		await fs.writeFile(file, '#define LIVE_FLAG\n\t#\n#ifndef ');
+		try {
+			const opened = await vscode.workspace.openTextDocument(vscode.Uri.file(file));
+			const document = await vscode.languages.setTextDocumentLanguage(opened, 'enforce');
+			await vscode.window.showTextDocument(document);
+			const directives = await completionItems(document, new vscode.Position(1, 2));
+			for (const directive of ['#define', '#ifdef', '#ifndef', '#else', '#endif']) {
+				assert.ok(directives.includes(directive), directive);
+			}
+			const macros = await completionItems(document, new vscode.Position(2, 8));
+			assert.ok(macros.includes('LIVE_FLAG'));
+		} finally {
+			await fs.rm(folder, { recursive: true, force: true }).catch(error => {
+				if ((error as NodeJS.ErrnoException).code !== 'EBUSY') {
+					throw error;
+				}
+			});
+		}
+	});
+
 	test('keeps Enter available for line breaks in Enforce suggestions', () => {
 		const extension = vscode.extensions.all.find(
 			candidate => candidate.packageJSON.name === 'reforger-sript-tools',
@@ -360,3 +390,17 @@ suite('extension activation', () => {
 	});
 
 });
+
+async function completionItems(document: vscode.TextDocument, position: vscode.Position): Promise<string[]> {
+	for (let attempt = 0; attempt < 20; attempt += 1) {
+		const result = await vscode.commands.executeCommand<vscode.CompletionList>(
+			'vscode.executeCompletionItemProvider', document.uri, position,
+		);
+		const labels = result?.items.map(item => typeof item.label === 'string' ? item.label : item.label.label) ?? [];
+		if (labels.length > 0) {
+			return labels;
+		}
+		await new Promise(resolve => setTimeout(resolve, 100));
+	}
+	return [];
+}

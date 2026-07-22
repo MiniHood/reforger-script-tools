@@ -818,6 +818,43 @@ fn framed_lsp_if_completion_carries_rust_normalization_contract() {
 }
 
 #[test]
+fn framed_lsp_preprocessor_completion_exposes_directives_and_active_macro_operands() {
+    let mut input = Vec::new();
+    write_test_message(&mut input, json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {} }));
+    write_test_message(&mut input, json!({
+        "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": { "textDocument": {
+            "uri": "file:///Scripts/PreprocessorCompletion.c", "languageId": "enforce", "version": 1,
+            "text": "#define ACTIVE_FLAG\n//#define COMMENTED_FLAG\n\t#\n#ifndef "
+        }}
+    }));
+    write_test_message(&mut input, json!({
+        "jsonrpc": "2.0", "id": 2, "method": "textDocument/completion", "params": {
+            "textDocument": { "uri": "file:///Scripts/PreprocessorCompletion.c" },
+            "position": { "line": 2, "character": 2 }
+        }
+    }));
+    write_test_message(&mut input, json!({
+        "jsonrpc": "2.0", "id": 3, "method": "textDocument/completion", "params": {
+            "textDocument": { "uri": "file:///Scripts/PreprocessorCompletion.c" },
+            "position": { "line": 3, "character": 8 }
+        }
+    }));
+    write_test_message(&mut input, json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown", "params": null }));
+    write_test_message(&mut input, json!({ "jsonrpc": "2.0", "method": "exit", "params": null }));
+
+    let mut output = Vec::new();
+    run(input.as_slice(), &mut output, LspServerOptions::default()).unwrap();
+    let output = String::from_utf8(output).unwrap();
+    for directive in ["#define", "#ifdef", "#ifndef", "#else", "#endif"] {
+        assert!(output.contains(&format!("\"label\":\"{directive}\"")), "{directive}");
+    }
+    assert!(output.contains("\"label\":\"ACTIVE_FLAG\""));
+    assert!(output.contains("\"detail\":\"#define ACTIVE_FLAG (Workspace)\""));
+    assert!(output.contains("\"newText\":\"ACTIVE_FLAG\""));
+    assert!(!output.contains("COMMENTED_FLAG"));
+}
+
+#[test]
 fn framed_lsp_smoke_test_handles_member_completion() {
     let source = "class Widget\n{\n\tvoid SetVisible(bool visible);\n}\nclass Smoke\n{\n\tvoid Run()\n\t{\n\t\tWidget widget;\n\t\twidget.\n\t}\n}\n";
     let completion_position = position_after_needle(source, "widget.");
