@@ -6,6 +6,8 @@ use std::io::Write;
 /// delivers these effects, keeping JSON-RPC framing out of the runtime.
 pub(super) enum RuntimeEffect {
     Log(String),
+    ReplayDeferred { value: Value, queue_ms: u128 },
+    ScheduleRich { uri: String, revision: u64, external_generation: u64 },
     Notification(Value),
     Response {
         id: Value,
@@ -24,6 +26,12 @@ impl<W: Write> LspServer<W> {
             RuntimeEffect::Log(message) => {
                 self.log(&message);
                 Ok(())
+            }
+            RuntimeEffect::ReplayDeferred { value, queue_ms } => {
+                self.handle_message(value, Some(queue_ms), 0, 0).map(|_| ())
+            }
+            RuntimeEffect::ScheduleRich { uri, revision, external_generation } => {
+                self.schedule_rich_semantic_tokens(&uri, revision, external_generation)
             }
             RuntimeEffect::Notification(message) => self.write_message(message),
             RuntimeEffect::Response { id, result } => self.respond(id, result),

@@ -347,6 +347,59 @@ impl DocumentRuntime {
             }
         }
     }
+
+    pub(super) fn interpret_analysis_event(
+        &mut self,
+        event: ServerEvent,
+        external_generation: u64,
+    ) -> Option<Result<Vec<RuntimeEffect>, String>> {
+        match event {
+            ServerEvent::DocumentAnalysisReady { task, analysis, timings, elapsed_ms } => {
+                if !self.runtime.complete(&task) {
+                    return Some(Ok(vec![RuntimeEffect::Log(format!(
+                        "documentAnalysis discarded uri={} revision={} reason=runtime-stale elapsed_ms={}",
+                        task.uri(), task.revision(), elapsed_ms
+                    ))]));
+                }
+                let uri = task.uri().to_string();
+                let revision = task.revision();
+                let Some(document) = self.documents.get_mut(&uri) else { return Some(Ok(Vec::new())); };
+                if !document.install_analysis(revision, analysis, timings) { return Some(Ok(Vec::new())); }
+                let pending = self.deferred_document_requests.remove(&uri).unwrap_or_default();
+                let mut effects = Vec::new();
+                for request in pending {
+                    if request.revision == revision {
+                        effects.push(RuntimeEffect::ReplayDeferred { value: request.value, queue_ms: request.received_at.elapsed().as_millis() });
+                    } else if let Ok(message) = serde_json::from_value::<RpcMessage>(request.value) {
+                        if let Some(id) = message.id { effects.push(RuntimeEffect::Error { id, code: -32801, message: "Content modified".to_string() }); }
+                    }
+                }
+                if self.documents.get(&uri).is_some_and(|document| document.semantic_tokens.needs_rich_projection(revision, external_generation)) {
+                    effects.push(RuntimeEffect::ScheduleRich { uri: uri.clone(), revision, external_generation });
+                }
+                effects.push(RuntimeEffect::Log(format!("documentAnalysis ready uri={} revision={} elapsed_ms={}", uri, revision, elapsed_ms)));
+                Some(Ok(effects))
+            }
+            ServerEvent::DocumentAnalysisSkipped { task, reason, elapsed_ms } => {
+                let current = self.runtime.complete(&task);
+                let mut effects = Vec::new();
+                if reason == "scheduler-capacity-evicted" && current {
+                    if let Some(document) = self.documents.get_mut(task.uri()) {
+                        if document.revision == task.revision() && !document.analysis_ready() {
+                            document.reject_pending_analysis();
+                            if let Err(error) = self.discard_deferred_document_requests_for_revision(task.uri(), task.revision(), &mut effects) {
+                                return Some(Err(error));
+                            }
+                            self.discard_deferred_semantic_requests_for_revision(task.uri(), task.revision(), "analysis-skipped", &mut effects);
+                        }
+                    }
+                }
+                effects.push(RuntimeEffect::Log(format!("documentAnalysis skipped uri={} revision={} reason={} elapsed_ms={}", task.uri(), task.revision(), reason, elapsed_ms)));
+                Some(Ok(effects))
+            }
+            _ => None,
+        }
+    }
 }
 
 pub(super) struct DeferredDocumentRequest {

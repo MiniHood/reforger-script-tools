@@ -5,6 +5,18 @@ use std::io::Write;
 /// moved into `DocumentRuntime` as their typed event contracts land.
 impl<W: Write> LspServer<W> {
     pub(super) fn handle_background_event(&mut self, event: ServerEvent) -> Result<(), String> {
+        let external_generation = self.external_index.status_summary().generation;
+        if matches!(
+            &event,
+            ServerEvent::DocumentAnalysisReady { .. } | ServerEvent::DocumentAnalysisSkipped { .. }
+        ) {
+            let effects = self
+                .document_runtime
+                .interpret_analysis_event(event, external_generation)
+                .expect("analysis event is handled by the document runtime")?;
+            for effect in effects { self.deliver_effect(effect)?; }
+            return Ok(());
+        }
         match event {
             ServerEvent::Incoming { .. } => Ok(()),
             ServerEvent::RichSemanticTokensReady {
