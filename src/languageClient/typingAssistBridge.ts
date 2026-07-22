@@ -12,15 +12,17 @@ export interface InputRouteRequest {
 	textDocument: { uri: string };
 	version: number;
 	operation: 'insertNewline';
+	trace: boolean;
 	selections: Array<{ start: { line: number; character: number }; end: { line: number; character: number } }>;
 	options: { tabSize: vscode.TextEditorOptions['tabSize']; insertSpaces: vscode.TextEditorOptions['insertSpaces'] };
 }
 
-export function inputRouteRequest(document: vscode.TextDocument, editor: vscode.TextEditor): InputRouteRequest {
+export function inputRouteRequest(document: vscode.TextDocument, editor: vscode.TextEditor, trace: boolean): InputRouteRequest {
 	return {
 		textDocument: { uri: document.uri.toString() },
 		version: document.version,
 		operation: 'insertNewline',
+		trace,
 		selections: editor.selections.map(selection => ({
 			start: { line: selection.start.line, character: selection.start.character },
 			end: { line: selection.end.line, character: selection.end.character },

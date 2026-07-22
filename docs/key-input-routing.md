@@ -94,7 +94,8 @@ and IME composition may bypass an operation command by design.
 
 Optional centralized route traces record operation kind, eligibility or
 decline reason, selected feature, version match, result, and elapsed time. They
-never record source text or identifiers and are disabled in ordinary use.
+never record source text or identifiers and are disabled in ordinary use. They
+are available in extension development diagnostics.
 
 ## Implication for Reforger Script Tools
 

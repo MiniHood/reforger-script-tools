@@ -99,40 +99,17 @@ pub(super) fn auto_block_control_header_enter_plan(
         "\t".to_string()
     };
     let is_switch = keyword.kind == TokenKind::Keyword(Keyword::Switch);
-    let inserted_header_newline = source[keyword.span.start..close.span.end]
-        .rfind('\n')
-        .map(|relative| keyword.span.start + relative)
-        .filter(|newline| *newline < cursor);
-    let normalized_header = inserted_header_newline.map(|_| {
-        source[keyword.span.start..close.span.start]
-            .lines()
-            .map(str::trim_start)
-            .collect::<String>()
-    });
-    let header_closure = normalized_header
-        .as_deref()
-        .map(|header| format!("{header})"))
-        .unwrap_or_default();
     let body = if is_switch {
-        format!("{header_closure}{newline}{indent}{{{newline}{indent}{unit}default:{newline}{indent}{unit}{unit}{newline}{indent}}}")
+        format!("{newline}{indent}{{{newline}{indent}{unit}default:{newline}{indent}{unit}{unit}{newline}{indent}}}")
     } else {
-        format!("{header_closure}{newline}{indent}{{{newline}{indent}{unit}{newline}{indent}}}")
+        format!("{newline}{indent}{{{newline}{indent}{unit}{newline}{indent}}}")
     };
-    let selection_line = source[..if normalized_header.is_some() {
-        keyword.span.start
-    } else {
-        header_end
-    }]
+    let selection_line = source[..header_end]
         .bytes()
         .filter(|byte| *byte == b'\n')
         .count() as u32;
     Some(AutoBlockControlHeaderPlan {
-        span: TextSpan::new(
-            normalized_header.map_or(inserted_header_newline.unwrap_or(header_end), |_| {
-                keyword.span.start
-            }),
-            cursor.max(header_end),
-        ),
+        span: TextSpan::new(header_end, header_end),
         replacement: body,
         selection_line: selection_line + 2,
         selection_character: (if is_switch {
@@ -158,32 +135,7 @@ pub(super) fn control_header_block_before_enter_plan(
     tab_size: usize,
     insert_spaces: bool,
 ) -> Option<AutoBlockControlHeaderPlan> {
-    if cursor > source.len() {
-        return None;
-    }
-    let line_start = source[..cursor].rfind('\n').map_or(0, |index| index + 1);
-    let indentation = source[line_start..cursor]
-        .chars()
-        .take_while(|character| character.is_whitespace())
-        .collect::<String>();
-    let newline = if source.contains("\r\n") {
-        "\r\n"
-    } else {
-        "\n"
-    };
-    let inserted = format!("{newline}{indentation}");
-    let mut virtual_source = String::with_capacity(source.len() + inserted.len());
-    virtual_source.push_str(&source[..cursor]);
-    virtual_source.push_str(&inserted);
-    virtual_source.push_str(&source[cursor..]);
-    let mut plan = auto_block_control_header_enter_plan(
-        &virtual_source,
-        cursor + inserted.len(),
-        tab_size,
-        insert_spaces,
-    )?;
-    plan.span.end = plan.span.end.checked_sub(inserted.len())?;
-    Some(plan)
+    auto_block_control_header_enter_plan(source, cursor, tab_size, insert_spaces)
 }
 
 fn matching_right_paren(tokens: &[Token], open: usize) -> Option<usize> {
@@ -1093,30 +1045,12 @@ mod tests {
     }
 
     #[test]
-    fn removes_the_native_enter_newline_inside_a_completed_control_header() {
+    fn preserves_existing_multiline_control_headers() {
         let source = "        while (sadfs\n        )";
         let cursor = "        while (sadfs\n        ".len();
         let plan = auto_block_control_header_enter_plan(source, cursor, 4, true).unwrap();
-        assert_eq!(plan.span.start, 8);
-        assert_eq!(plan.span.end, source.len());
-        assert_eq!(
-            plan.replacement,
-            "while (sadfs)\n        {\n            \n        }"
-        );
-
-        let plan = auto_block_control_header_enter_plan(source, source.len(), 4, true).unwrap();
-        assert_eq!(plan.span.start, 8);
-
-        let source = "        while (true\n)";
-        let plan =
-            auto_block_control_header_enter_plan(source, "        while (true\n".len(), 4, true)
-                .unwrap();
-        assert_eq!(plan.span.start, 8);
-        assert_eq!(plan.span.end, source.len());
-        assert_eq!(
-            plan.replacement,
-            "while (true)\n        {\n            \n        }"
-        );
+        assert_eq!(plan.span, TextSpan::new(source.len(), source.len()));
+        assert_eq!(plan.replacement, "\n        {\n            \n        }");
 
         let source = "        while (true\r\n        )";
         let plan = auto_block_control_header_enter_plan(
@@ -1126,26 +1060,22 @@ mod tests {
             true,
         )
         .unwrap();
-        assert_eq!(plan.span.start, 8);
-        assert_eq!(plan.span.end, source.len());
-        assert_eq!(plan.selection_line, 2);
-        assert_eq!(
-            plan.replacement,
-            "while (true)\r\n        {\r\n            \r\n        }"
-        );
+        assert_eq!(plan.span, TextSpan::new(source.len(), source.len()));
+        assert_eq!(plan.selection_line, 3);
+        assert_eq!(plan.replacement, "\r\n        {\r\n            \r\n        }");
     }
 
     #[test]
-    fn creates_a_control_block_before_native_enter_splits_the_header() {
+    fn creates_a_control_block_without_splitting_or_rewriting_the_header() {
         let source = "        while (true)";
         let plan =
             control_header_block_before_enter_plan(source, "        while (true".len(), 4, true)
                 .unwrap();
-        assert_eq!(plan.span, TextSpan::new(8, source.len()));
+        assert_eq!(plan.span, TextSpan::new(source.len(), source.len()));
         assert_eq!(plan.selection_line, 2);
         assert_eq!(
             plan.replacement,
-            "while (true)\n        {\n            \n        }"
+            "\n        {\n            \n        }"
         );
     }
 
@@ -1166,7 +1096,7 @@ mod tests {
         let cursor = source.find('|').unwrap();
         let source = source.replace('|', "");
         let plan = control_header_block_before_enter_plan(&source, cursor, 4, true).unwrap();
-        assert_eq!(plan.replacement, "while (true)\n{\n    \n}");
+        assert_eq!(plan.replacement, "\n{\n    \n}");
 
         let crlf = "while (running)\r\n";
         let plan = control_header_block_before_enter_plan(crlf, "while (running)".len(), 4, true).unwrap();

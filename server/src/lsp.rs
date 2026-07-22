@@ -396,6 +396,8 @@ struct InputRouteParams {
     text_document: TextDocumentIdentifier,
     version: i32,
     operation: String,
+    #[serde(default)]
+    trace: bool,
     selections: Vec<LspRange>,
     options: BlockCommentPairOptions,
 }

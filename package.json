@@ -87,7 +87,7 @@
         },
         "reforgerScriptTools.diagnostics.enabled": {
           "type": "boolean",
-          "default": false,
+          "default": true,
           "description": "Write local extension and language-server diagnostic performance logs. Logs exclude source text and LSP payloads."
         },
         "reforgerScriptTools.experimentalAutoFormatting": {

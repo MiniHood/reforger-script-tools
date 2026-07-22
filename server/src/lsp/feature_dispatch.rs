@@ -416,33 +416,43 @@ impl FeatureDispatcher<'_> {
             }
             CONTROL_HEADER_ENTER_METHOD => {
                 if let Some(id) = message.id {
+                    let started_at = Instant::now();
                     let RequestCommand::Feature(FeatureCommand::InputRoute(params)) =
                         &command
                     else {
                         unreachable!("input route has typed parameters");
                     };
+                    let mut trace = None;
                     let result = params
                         .clone()
                         .and_then(|params| {
-                            if params.operation != "insertNewline" || params.selections.len() != 1
-                                || params.selections[0].start != params.selections[0].end
-                            {
+                            if params.operation != "insertNewline" {
+                                trace = params.trace.then_some(("declined", "none", true, "unsupportedOperation"));
                                 return None;
                             }
+                            if params.selections.len() != 1 || params.selections[0].start != params.selections[0].end {
+                                trace = params.trace.then_some(("declined", "none", true, "singleCaretRequired"));
+                                return None;
+                            }
+                            trace = params.trace.then_some(("declined", "none", true, "documentUnavailable"));
                             let query = self
                                 .document_runtime
                                 .capture_query(&params.text_document.uri, self.external_index.snapshot())?;
                             let document = query.document;
                             if document.version != params.version {
+                                trace = params.trace.then_some(("stale", "none", false, "staleVersion"));
                                 return None;
                             }
                             let cursor = offset_for_position(&document.text, params.selections[0].end)?;
-                            let plan = on_type_formatting::control_header_block_before_enter_plan(
+                            let Some(plan) = on_type_formatting::control_header_block_before_enter_plan(
                                 &document.text,
                                 cursor,
                                 params.options.tab_size,
                                 params.options.insert_spaces,
-                            )?;
+                            ) else {
+                                return None;
+                            };
+                            trace = params.trace.then_some(("applied", "controlHeader", true, "eligible"));
                             let start = position_for_offset(&document.text, plan.span.start);
                             Some(json!({
                                 "edits": [{
@@ -459,6 +469,12 @@ impl FeatureDispatcher<'_> {
                             }))
                         })
                         .unwrap_or_else(|| json!({ "edits": [], "reason": "declined" }));
+                    if let Some((outcome, owner, version_match, reason)) = trace {
+                        self.log(&format!(
+                            "inputRoute operation=insertNewline outcome={outcome} reason={reason} owner={owner} version_match={version_match} elapsed_ms={}",
+                            started_at.elapsed().as_millis()
+                        ));
+                    }
                     self.respond(id, result)?;
                 }
             }

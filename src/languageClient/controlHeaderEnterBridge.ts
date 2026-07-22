@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import type { LanguageClient } from 'vscode-languageclient/node';
 import { experimentalAutoFormattingEnabled } from '../extensionConfig/experimentalAutoFormatting';
 import { languageClientCommands, languageClientLanguage, languageClientRequests } from '../extensionConfig/languageClient';
-import { diagnostic } from '../diagnostics/diagnostics';
+import { diagnostic, inputRouteTraceEnabled } from '../diagnostics/diagnostics';
 import { inputRouteRequest } from './typingAssistBridge';
 import { applyVersionedEditorEdits, isCurrentSingleCaret, type VersionedEditResponse } from './versionedEditorEdit';
 
@@ -25,6 +25,7 @@ export async function executeInsertNewline(
 	editor: vscode.TextEditor | undefined,
 	client: LanguageClient | undefined,
 	nativeFallback: () => Promise<void> = typeNativeEnter,
+	triggerSuggest: () => Thenable<unknown> = () => vscode.commands.executeCommand('editor.action.triggerSuggest'),
 ): Promise<void> {
 	const startedAt = Date.now();
 	if (!editor || editor.document.languageId !== languageClientLanguage.id) {
@@ -37,11 +38,6 @@ export async function executeInsertNewline(
 		traceInputRoute('nativeFallback', 'formattingDisabled', undefined, startedAt);
 		return;
 	}
-	if (!mayBeControlHeader(editor)) {
-		await nativeFallback();
-		traceInputRoute('nativeFallback', 'notCandidate', undefined, startedAt);
-		return;
-	}
 	if (!client) {
 		await nativeFallback();
 		traceInputRoute('nativeFallback', 'serverUnavailable', undefined, startedAt);
@@ -52,7 +48,7 @@ export async function executeInsertNewline(
 	try {
 		const response = await client.sendRequest<InputRouteResult>(
 			languageClientRequests.inputRoute,
-			inputRouteRequest(editor.document, editor),
+			inputRouteRequest(editor.document, editor, inputRouteTraceEnabled()),
 		);
 		if (response.edits.length === 0) {
 			await nativeFallback();
@@ -71,22 +67,13 @@ export async function executeInsertNewline(
 			return;
 		}
 		if (response.triggerSuggest) {
-			await vscode.commands.executeCommand('editor.action.triggerSuggest');
+			await triggerSuggest();
 		}
 		traceInputRoute('applied', undefined, response.owner, startedAt);
 	} catch {
 		await nativeFallback();
 		traceInputRoute('nativeFallback', 'requestFailed', undefined, startedAt);
 	}
-}
-
-function mayBeControlHeader(editor: vscode.TextEditor): boolean {
-	const position = editor.selection.active;
-	const line = editor.document.lineAt(position.line).text;
-	const before = line.slice(0, position.character);
-	const after = line.slice(position.character);
-	return /\b(?:for|foreach|while|switch)\s*\([^{}]*$/.test(before)
-		&& (after.includes(')') || /\)\s*$/.test(before));
 }
 
 async function typeNativeEnter(): Promise<void> {
@@ -100,6 +87,9 @@ function traceInputRoute(
 	startedAt: number,
 	versionMatch = true,
 ): void {
+	if (!inputRouteTraceEnabled()) {
+		return;
+	}
 	diagnostic('inputRoute', {
 		operation: 'insertNewline',
 		outcome,

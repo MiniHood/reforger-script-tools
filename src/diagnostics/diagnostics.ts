@@ -6,12 +6,14 @@ import { diagnosticsConfig, diagnosticsLogs } from '../extensionConfig/diagnosti
 type DiagnosticField = string | number | boolean | undefined;
 
 let enabled = false;
+let inputRouteTrace = false;
 let session = '';
 let logPath = '';
 let writeQueue: Promise<void> = Promise.resolve();
 
 export function initializeDiagnostics(context: vscode.ExtensionContext): void {
-	enabled = vscode.workspace.getConfiguration(diagnosticsConfig.section).get<boolean>(diagnosticsConfig.settings.enabled, false);
+	enabled = vscode.workspace.getConfiguration(diagnosticsConfig.section).get<boolean>(diagnosticsConfig.settings.enabled, true);
+	inputRouteTrace = enabled && context.extensionMode === vscode.ExtensionMode.Development;
 	session = `${Date.now()}-${process.pid}`;
 	logPath = path.join(context.globalStorageUri.fsPath, diagnosticsLogs.rootFolder, diagnosticsLogs.extensionFile);
 	if (!enabled) {
@@ -23,6 +25,10 @@ export function initializeDiagnostics(context: vscode.ExtensionContext): void {
 
 export function diagnosticsEnabled(): boolean {
 	return enabled;
+}
+
+export function inputRouteTraceEnabled(): boolean {
+	return enabled && inputRouteTrace;
 }
 
 export function languageServerDiagnosticPath(context: vscode.ExtensionContext): string | undefined {

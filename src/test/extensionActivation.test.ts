@@ -233,23 +233,40 @@ suite('extension activation', () => {
 		const position = new vscode.Position(0, 14);
 		editor.selection = new vscode.Selection(position, position);
 		const requests: unknown[] = [];
-		await executeInsertNewline(editor, {
-			sendRequest: async (_method: string, request: unknown) => {
-				requests.push(request);
-				return {
-					edits: [{ range: { start: { line: 0, character: 14 }, end: { line: 1, character: 0 } }, newText: '\n{\n\tdefault:\n\t\t\n}' }],
-					selectionRange: { start: { line: 2, character: 1 }, end: { line: 2, character: 8 } },
-					owner: 'controlHeader',
-				};
-			},
-		} as never);
+		const changes: vscode.TextDocumentChangeEvent[] = [];
+		let suggestionRequests = 0;
+		const listener = vscode.workspace.onDidChangeTextDocument(event => {
+			if (event.document.uri.toString() === document.uri.toString()) {
+				changes.push(event);
+			}
+		});
+		try {
+			await executeInsertNewline(editor, {
+				sendRequest: async (_method: string, request: unknown) => {
+					requests.push(request);
+					return {
+						edits: [{ range: { start: { line: 0, character: 14 }, end: { line: 1, character: 0 } }, newText: '\n{\n\tdefault:\n\t\t\n}' }],
+						selectionRange: { start: { line: 2, character: 1 }, end: { line: 2, character: 8 } },
+						owner: 'controlHeader',
+						triggerSuggest: true,
+					};
+				},
+			} as never, undefined, async () => {
+				suggestionRequests += 1;
+			});
+		} finally {
+			listener.dispose();
+		}
 		assert.strictEqual(document.getText(), 'switch (value)\n{\n\tdefault:\n\t\t\n}');
 		assert.deepStrictEqual(editor.selection.anchor, new vscode.Position(2, 1));
 		assert.deepStrictEqual(editor.selection.active, new vscode.Position(2, 8));
+		assert.strictEqual(suggestionRequests, 1);
+		assert.strictEqual(changes.length, 1, 'routed Enter must not trigger a post-native correction');
 		assert.deepStrictEqual(requests, [{
 			textDocument: { uri: document.uri.toString() },
 			version: 1,
 			operation: 'insertNewline',
+			trace: false,
 			selections: [{ start: { line: 0, character: 14 }, end: { line: 0, character: 14 } }],
 			options: { tabSize: 4, insertSpaces: true },
 		}]);
@@ -371,13 +388,14 @@ suite('extension activation', () => {
 		}
 	});
 
-	test('keeps local diagnostic logging opt-in by default', () => {
+	test('keeps input-route traces out of the user configuration', () => {
 		const extension = vscode.extensions.all.find(
 			candidate => candidate.packageJSON.name === 'reforger-sript-tools',
 		);
 		assert.ok(extension, 'development extension is discoverable');
 		const properties = extension.packageJSON.contributes.configuration.properties as Record<string, { default?: unknown }>;
-		assert.strictEqual(properties['reforgerScriptTools.diagnostics.enabled'].default, false);
+		assert.strictEqual(properties['reforgerScriptTools.diagnostics.enabled'].default, true);
+		assert.strictEqual(properties['reforgerScriptTools.diagnostics.inputRouteTrace'], undefined);
 	});
 
 	test('enables Experimental Auto Formatting by default', () => {
