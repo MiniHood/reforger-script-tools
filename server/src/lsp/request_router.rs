@@ -166,17 +166,27 @@ impl<W: Write> LspServer<W> {
             return Ok(false);
         }
 
-        if message.id.is_some()
-            && source_backed_request_method(method)
-            && self.defer_request_while_document_analysis_is_pending(&message, value.clone())?
-        {
-            return Ok(false);
+        if message.id.is_some() && source_backed_request_method(method) {
+            let (deferred, effects) = self
+                .document_runtime
+                .defer_document_request(&message, value.clone())?;
+            for effect in effects {
+                self.deliver_effect(effect)?;
+            }
+            if deferred {
+                return Ok(false);
+            }
         }
 
         match method {
             "$/cancelRequest" => {
                 if let Some(id) = message.params.as_ref().and_then(|params| params.get("id")) {
-                    self.cancel_deferred_semantic_token_request(id);
+                    for effect in self
+                        .document_runtime
+                        .cancel_deferred_semantic_token_request(id)
+                    {
+                        self.deliver_effect(effect)?;
+                    }
                 }
             }
             "initialize" => {
@@ -1277,21 +1287,29 @@ impl<W: Write> LspServer<W> {
                         start.elapsed().as_millis()
                     ));
                     if defer_current_request {
-                        self.defer_semantic_token_request(
+                        let effects = self.document_runtime.defer_semantic_token_request(
                             &log_uri,
                             revision,
                             external_generation,
                             id,
-                        )?;
+                        );
+                        for effect in effects {
+                            self.deliver_effect(effect)?;
+                        }
                     } else {
                         self.respond(id, result)?;
                     }
                     if let Some((uri, rich_revision, rich_external_generation)) = rich_work {
-                        self.schedule_rich_semantic_tokens(
+                        let external_indexes = self.external_index.snapshot();
+                        let effects = self.document_runtime.admit_rich_semantic_tokens(
                             &uri,
                             rich_revision,
+                            external_indexes,
                             rich_external_generation,
-                        )?;
+                        );
+                        for effect in effects {
+                            self.deliver_effect(effect)?;
+                        }
                     }
                 }
             }

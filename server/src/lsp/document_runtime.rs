@@ -481,6 +481,7 @@ impl DocumentRuntime {
     pub(super) fn interpret_analysis_event(
         &mut self,
         event: ServerEvent,
+        external_indexes: ExternalIndexSnapshot,
         external_generation: u64,
     ) -> Option<Result<Vec<RuntimeEffect>, String>> {
         match event {
@@ -526,17 +527,12 @@ impl DocumentRuntime {
                         }
                     }
                 }
-                if self.documents.get(&uri).is_some_and(|document| {
-                    document
-                        .semantic_tokens
-                        .needs_rich_projection(revision, external_generation)
-                }) {
-                    effects.push(RuntimeEffect::ScheduleRich {
-                        uri: uri.clone(),
-                        revision,
-                        external_generation,
-                    });
-                }
+                effects.extend(self.admit_rich_semantic_tokens(
+                    &uri,
+                    revision,
+                    external_indexes,
+                    external_generation,
+                ));
                 effects.push(RuntimeEffect::Log(format!(
                     "documentAnalysis ready uri={} revision={} elapsed_ms={}",
                     uri, revision, elapsed_ms
@@ -808,6 +804,290 @@ impl DocumentRuntime {
         ))];
         self.request_semantic_tokens_refresh_effect(&mut effects);
         effects
+    }
+
+    pub(super) fn admit_rich_semantic_tokens(
+        &mut self,
+        uri: &str,
+        revision: u64,
+        external_indexes: ExternalIndexSnapshot,
+        generation: u64,
+    ) -> Vec<RuntimeEffect> {
+        let start = Instant::now();
+        let Some(document) = self.documents.get(uri) else {
+            return vec![RuntimeEffect::Log(format!(
+                "semanticTokensRich skipped uri={} revision={} reason=missing-document-before-schedule elapsed_ms={}", uri, revision, start.elapsed().as_millis()
+            ))];
+        };
+        if document.revision != revision
+            || !document
+                .semantic_tokens
+                .needs_rich_projection(revision, generation)
+        {
+            return Vec::new();
+        }
+        let analysis = document.analysis().clone();
+        let snapshot = self
+            .runtime
+            .latest(uri)
+            .expect("open document has a runtime snapshot");
+        let request_id = self.next_server_request_id;
+        self.next_server_request_id += 1;
+        let task = match self.runtime.admit(
+            TaskClass::Rich,
+            snapshot,
+            request_id,
+            Instant::now() + Duration::from_secs(30),
+        ) {
+            AdmissionDisposition::Enqueued { .. } => self
+                .runtime
+                .take_next()
+                .expect("admitted rich task is runnable"),
+            AdmissionDisposition::DroppedOverload {
+                retained_jobs,
+                retained_bytes,
+                ..
+            } => {
+                return vec![RuntimeEffect::Log(format!(
+                    "semanticTokensRich skipped uri={} revision={} external_generation={} reason=runtime-overload retained_jobs={} retained_bytes={}",
+                    uri, revision, generation, retained_jobs, retained_bytes
+                ))];
+            }
+        };
+        self.documents
+            .get_mut(uri)
+            .expect("document remains present for admitted rich task")
+            .semantic_tokens
+            .mark_pending(revision, generation, task.cancellation_token());
+        let Some(scheduler) = self.analysis_scheduler.clone() else {
+            let projection = semantic_tokens_for_cached_analysis_with_external_indexes(
+                task.snapshot().text(),
+                &analysis,
+                external_indexes.workspace.as_deref(),
+                external_indexes.game_data.as_deref(),
+            );
+            return self
+                .interpret_rich_ready_event(
+                    ServerEvent::RichSemanticTokensReady {
+                        task: task.identity().clone(),
+                        uri: uri.to_string(),
+                        revision,
+                        external_generation: generation,
+                        external_status: external_indexes.status,
+                        projection,
+                        elapsed_ms: start.elapsed().as_millis(),
+                    },
+                    generation,
+                )
+                .expect("constructed rich event is handled");
+        };
+        vec![RuntimeEffect::ScheduleRich {
+            scheduler,
+            job: RichSemanticTokensJob {
+                task,
+                uri: uri.to_string(),
+                revision,
+                external_generation: generation,
+                scheduled_at: start,
+                analysis,
+                external_snapshot: external_indexes,
+            },
+        }]
+    }
+
+    pub(super) fn defer_document_request(
+        &mut self,
+        message: &RpcMessage,
+        value: Value,
+    ) -> Result<(bool, Vec<RuntimeEffect>), String> {
+        let Some(uri) = request_document_uri(message.params.as_ref()) else {
+            return Ok((false, Vec::new()));
+        };
+        let Some(document) = self.documents.get(&uri) else {
+            return Ok((false, Vec::new()));
+        };
+        if document.analysis_ready() {
+            return Ok((false, Vec::new()));
+        }
+        let revision = document.revision;
+        let mut effects = Vec::new();
+        if document.analysis_rejected() {
+            if let Some(id) = message.id.clone() {
+                effects.push(RuntimeEffect::Error {
+                    id,
+                    code: -32801,
+                    message: "Content modified".to_string(),
+                });
+            }
+            effects.push(RuntimeEffect::Log(format!(
+                "request deferred rejected uri={} revision={} reason=analysis-overload",
+                uri, revision
+            )));
+            return Ok((true, effects));
+        }
+        let pending = self
+            .deferred_document_requests
+            .entry(uri.clone())
+            .or_default();
+        if pending.len() >= MAX_PENDING_DOCUMENT_REQUESTS_PER_URI {
+            if let Some(id) = message.id.clone() {
+                effects.push(RuntimeEffect::Error {
+                    id,
+                    code: -32801,
+                    message: "Content modified".to_string(),
+                });
+            }
+            effects.push(RuntimeEffect::Log(format!(
+                "request deferred rejected uri={} revision={} reason=capacity",
+                uri, revision
+            )));
+            return Ok((true, effects));
+        }
+        pending.push(DeferredDocumentRequest {
+            revision,
+            received_at: Instant::now(),
+            value,
+        });
+        effects.push(RuntimeEffect::Log(format!(
+            "request deferred uri={} revision={} pending_requests={}",
+            uri,
+            revision,
+            pending.len()
+        )));
+        Ok((true, effects))
+    }
+
+    pub(super) fn defer_semantic_token_request(
+        &mut self,
+        uri: &str,
+        revision: u64,
+        external_generation: u64,
+        id: Value,
+    ) -> Vec<RuntimeEffect> {
+        let pending = self
+            .deferred_semantic_token_requests
+            .entry(uri.to_string())
+            .or_default();
+        if pending.len() >= MAX_PENDING_DOCUMENT_REQUESTS_PER_URI {
+            return vec![
+                RuntimeEffect::Error { id, code: -32802, message: "Semantic tokens superseded".to_string() },
+                RuntimeEffect::Log(format!(
+                    "semanticTokens deferred uri={} revision={} external_generation={} outcome=server-cancelled reason=capacity pending_requests={}",
+                    uri, revision, external_generation, pending.len()
+                )),
+            ];
+        }
+        pending.push(DeferredSemanticTokenRequest {
+            id,
+            revision,
+            external_generation,
+            received_at: Instant::now(),
+        });
+        vec![RuntimeEffect::Log(format!(
+            "semanticTokens deferred uri={} revision={} external_generation={} pending_requests={}",
+            uri,
+            revision,
+            external_generation,
+            pending.len()
+        ))]
+    }
+
+    pub(super) fn discard_deferred_semantic_token_requests(
+        &mut self,
+        uri: &str,
+        current_revision: u64,
+        reason: &str,
+    ) -> Vec<RuntimeEffect> {
+        let mut effects = Vec::new();
+        self.discard_deferred_semantic_requests_for_revision(
+            uri,
+            current_revision,
+            reason,
+            &mut effects,
+        );
+        effects
+    }
+
+    pub(super) fn cancel_deferred_semantic_token_request(
+        &mut self,
+        id: &Value,
+    ) -> Vec<RuntimeEffect> {
+        let mut cancellations = Vec::new();
+        self.deferred_semantic_token_requests
+            .retain(|uri, pending| {
+                let before = pending.len();
+                pending.retain(|request| &request.id != id);
+                let removed = before - pending.len();
+                if removed > 0 {
+                    cancellations.push((uri.clone(), removed));
+                }
+                !pending.is_empty()
+            });
+        if cancellations.is_empty() {
+            return vec![RuntimeEffect::Log(
+                "semanticTokens deferred cancellation ignored reason=not-pending".to_string(),
+            )];
+        }
+        cancellations
+            .into_iter()
+            .map(|(uri, removed)| {
+                RuntimeEffect::Log(format!(
+                    "semanticTokens deferred cancelled uri={} requests={}",
+                    uri, removed
+                ))
+            })
+            .collect()
+    }
+
+    /// The single owner for worker completion interpretation. The composition
+    /// root supplies the external generation it captured, then only delivers
+    /// the effects produced here.
+    pub(super) fn interpret_event(
+        &mut self,
+        event: ServerEvent,
+        current_external_generation: u64,
+        external_indexes: ExternalIndexSnapshot,
+    ) -> Option<Result<Vec<RuntimeEffect>, String>> {
+        match event {
+            ServerEvent::Incoming { .. } => None,
+            event @ ServerEvent::RichSemanticTokensReady { .. } => Some(Ok(
+                self.interpret_rich_ready_event(event, current_external_generation)?
+            )),
+            event @ ServerEvent::RichSemanticTokensSkipped { .. } => {
+                Some(Ok(self.interpret_rich_skipped_event(event)?))
+            }
+            event @ ServerEvent::ForegroundDocumentReady { .. } => {
+                Some(Ok(self.interpret_foreground_event(event)?))
+            }
+            event @ ServerEvent::DebugRequestReady { .. } => {
+                Some(Ok(self.interpret_debug_event(event)?))
+            }
+            ServerEvent::ForegroundDocumentSkipped {
+                task,
+                reason,
+                elapsed_ms,
+            } => {
+                let current = self.runtime.complete(&task);
+                if current {
+                    if let Some(document) = self.documents.get_mut(task.uri()) {
+                        if document.revision == task.revision() {
+                            document.reject_pending_analysis();
+                        }
+                    }
+                }
+                Some(Ok(vec![RuntimeEffect::Log(format!(
+                    "foreground skipped uri={} revision={} reason={} elapsed_ms={}",
+                    task.uri(),
+                    task.revision(),
+                    reason,
+                    elapsed_ms
+                ))]))
+            }
+            event @ ServerEvent::DocumentAnalysisReady { .. }
+            | event @ ServerEvent::DocumentAnalysisSkipped { .. } => {
+                self.interpret_analysis_event(event, external_indexes, current_external_generation)
+            }
+        }
     }
 }
 
