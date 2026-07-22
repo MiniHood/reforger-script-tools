@@ -2,7 +2,8 @@ import * as vscode from 'vscode';
 import type { LanguageClient } from 'vscode-languageclient/node';
 import { languageClientLanguage, languageClientRequests } from '../extensionConfig/languageClient';
 import { diagnostic } from '../diagnostics/diagnostics';
-import { applyVersionedEditorEdits, isCurrentSingleCaret, type VersionedEditResponse } from './versionedEditorEdit';
+import { type VersionedEditResponse } from './versionedEditorEdit';
+import { isCurrentSingleVersionedEditorCaret, VersionedEditorTransaction } from './versionedEditorTransaction';
 import { blockCommentPairPosition, enterAfterPosition, tabAfterPosition, typingAssistRequest } from './typingAssistBridge';
 
 interface BlockCommentPairResponse extends VersionedEditResponse {}
@@ -15,6 +16,7 @@ export function registerBlockCommentPair(getClient: () => LanguageClient | undef
 		if (pending && pending.document.uri.toString() === event.document.uri.toString()
 			&& event.document.version > pending.version) {
 			diagnostic('formatting.commentPair', { outcome: 'superseded', version: pending.version });
+			pending.reject();
 			pending = undefined;
 		}
 		if (event.document.languageId !== languageClientLanguage.id) {
@@ -24,18 +26,17 @@ export function registerBlockCommentPair(getClient: () => LanguageClient | undef
 		if (!position) {
 			return;
 		}
-		const transaction: BlockCommentPairTransaction = {
-			document: event.document,
-			version: event.document.version,
-			prePairPosition: event.contentChanges[0].range.start,
-			position,
-			caretReady: hasSingleEmptyCaretAt(event.document, position, event.document.version),
-		};
+		const transaction = new VersionedEditorTransaction<BlockCommentPairResponse>(
+			event.document, event.document.version, position, event.contentChanges[0].range.start,
+		);
 		pending = transaction;
 		queueMicrotask(() => {
 			if (pending === transaction) {
 				void requestBlockCommentPair(transaction, getClient, () => pending === transaction, () => {
-					pending = undefined;
+					transaction.reject();
+					if (pending === transaction) {
+						pending = undefined;
+					}
 				});
 			}
 		});
@@ -45,30 +46,25 @@ export function registerBlockCommentPair(getClient: () => LanguageClient | undef
 		if (!transaction || event.textEditor.document.uri.toString() !== transaction.document.uri.toString()) {
 			return;
 		}
-		if (hasSingleEmptyCaretAt(transaction.document, transaction.position, transaction.version)) {
-			transaction.caretReady = true;
+		if (transaction.observeSelection() === 'ready') {
 			void applyPendingBlockCommentPair(transaction, () => pending === transaction, () => {
-				pending = undefined;
+				transaction.reject();
+				if (pending === transaction) {
+					pending = undefined;
+				}
 			});
 			return;
 		}
-		if (transaction.document.version !== transaction.version
-			|| !hasSingleEmptyCaretAt(transaction.document, transaction.prePairPosition, transaction.version)) {
+		if (transaction.observeSelection() === 'moved') {
 			diagnostic('formatting.commentPair', { outcome: 'caretMoved', version: transaction.version });
+			transaction.reject();
 			pending = undefined;
 		}
 	});
 	return vscode.Disposable.from(documentChanges, selectionChanges);
 }
 
-interface BlockCommentPairTransaction {
-	document: vscode.TextDocument;
-	version: number;
-	prePairPosition: vscode.Position;
-	position: vscode.Position;
-	caretReady: boolean;
-	response?: BlockCommentPairResponse;
-}
+type BlockCommentPairTransaction = VersionedEditorTransaction<BlockCommentPairResponse>;
 
 async function requestBlockCommentPair(
 	transaction: BlockCommentPairTransaction,
@@ -87,9 +83,9 @@ async function requestBlockCommentPair(
 	try {
 		const response = await activeClient.sendRequest<BlockCommentPairResponse>(
 			languageClientRequests.blockCommentPair,
-			typingAssistRequest(transaction.document, transaction.position, editor),
+			typingAssistRequest(transaction.document, transaction.expectedPosition, editor),
 		);
-		if (!isCurrent() || transaction.document.version !== transaction.version || response.edits.length === 0) {
+		if (!isCurrent() || !transaction.accept(response)) {
 			diagnostic('formatting.commentPair', {
 				outcome: response.edits.length === 0 ? 'noEdits' : 'staleResponse',
 				version: transaction.version,
@@ -97,7 +93,6 @@ async function requestBlockCommentPair(
 			clear();
 			return;
 		}
-		transaction.response = response;
 		await applyPendingBlockCommentPair(transaction, isCurrent, clear);
 	} catch {
 		diagnostic('formatting.commentPair', { outcome: 'requestError', version: transaction.version });
@@ -110,25 +105,19 @@ async function applyPendingBlockCommentPair(
 	isCurrent: () => boolean,
 	clear: () => void,
 ): Promise<void> {
-	if (!transaction.response || !transaction.caretReady) {
-		return;
-	}
-	if (!isCurrent() || transaction.document.version !== transaction.version
-		|| !hasSingleEmptyCaretAt(transaction.document, transaction.position, transaction.version)) {
+	if (!isCurrent()) {
 		diagnostic('formatting.commentPair', { outcome: 'staleResponse', version: transaction.version });
 		clear();
 		return;
 	}
-	const editor = vscode.window.activeTextEditor;
-	if (!editor) {
-		clear();
+	const outcome = await transaction.apply();
+	if (outcome === 'pending') {
 		return;
 	}
-	const applied = await applyVersionedEditorEdits(editor, transaction.response);
 	diagnostic('formatting.commentPair', {
-		outcome: applied ? 'applied' : 'editRejected',
+		outcome: outcome === 'stale' ? 'staleResponse' : outcome,
 		version: transaction.version,
-		edits: transaction.response.edits.length,
+		edits: transaction.response?.edits.length,
 	});
 	clear();
 }
@@ -139,6 +128,7 @@ export function registerEnterTypingAssist(getClient: () => LanguageClient | unde
 		if (pending && pending.document.uri.toString() === event.document.uri.toString()
 			&& event.document.version > pending.version) {
 			diagnostic('formatting.enter', { outcome: 'superseded', version: pending.version });
+			pending.reject();
 			pending = undefined;
 		}
 		if (event.document.languageId !== languageClientLanguage.id) {
@@ -154,19 +144,20 @@ export function registerEnterTypingAssist(getClient: () => LanguageClient | unde
 			return;
 		}
 		const change = event.contentChanges[0];
-		const transaction: EnterTypingAssistTransaction = {
-			document: event.document,
-			version: event.document.version,
-			preEnterPosition: change.range.start,
-			position,
-			trigger: enterPosition ? '\n' : '\t',
-			caretReady: hasSingleEmptyCaretAt(event.document, position, event.document.version),
-		};
+		const transaction = Object.assign(
+			new VersionedEditorTransaction<EnterTypingAssistResponse>(
+				event.document, event.document.version, position, change.range.start,
+			),
+			{ trigger: enterPosition ? '\n' as const : '\t' as const },
+		);
 		pending = transaction;
 		queueMicrotask(() => {
 			if (pending === transaction) {
 				void requestEnterTypingAssist(transaction, getClient, () => pending === transaction, () => {
-					pending = undefined;
+					transaction.reject();
+					if (pending === transaction) {
+						pending = undefined;
+					}
 				});
 			}
 		});
@@ -178,33 +169,31 @@ export function registerEnterTypingAssist(getClient: () => LanguageClient | unde
 		}
 		if (transaction.document.version !== transaction.version) {
 			diagnostic('formatting.enter', { outcome: 'superseded', version: transaction.version });
+			transaction.reject();
 			pending = undefined;
 			return;
 		}
-		if (hasSingleEmptyCaretAt(transaction.document, transaction.position, transaction.version)) {
-			transaction.caretReady = true;
+		if (transaction.observeSelection() === 'ready') {
 			void applyPendingEnterTypingAssist(transaction, () => pending === transaction, () => {
-				pending = undefined;
+				transaction.reject();
+				if (pending === transaction) {
+					pending = undefined;
+				}
 			});
 			return;
 		}
-		if (!hasSingleEmptyCaretAt(transaction.document, transaction.preEnterPosition, transaction.version)) {
+		if (transaction.observeSelection() === 'moved') {
 			diagnostic('formatting.enter', { outcome: 'caretMoved', version: transaction.version });
+			transaction.reject();
 			pending = undefined;
 		}
 	});
 	return vscode.Disposable.from(documentChanges, selectionChanges);
 }
 
-interface EnterTypingAssistTransaction {
-	document: vscode.TextDocument;
-	version: number;
-	preEnterPosition: vscode.Position;
-	position: vscode.Position;
+type EnterTypingAssistTransaction = VersionedEditorTransaction<EnterTypingAssistResponse> & {
 	trigger: '\n' | '\t';
-	caretReady: boolean;
-	response?: EnterTypingAssistResponse;
-}
+};
 
 async function requestEnterTypingAssist(
 	transaction: EnterTypingAssistTransaction,
@@ -223,13 +212,13 @@ async function requestEnterTypingAssist(
 	diagnostic('formatting.enter', {
 		outcome: 'admitted',
 		version: transaction.version,
-		line: transaction.position.line,
-		character: transaction.position.character,
+		line: transaction.expectedPosition.line,
+		character: transaction.expectedPosition.character,
 	});
 	try {
 		const response = await activeClient.sendRequest<EnterTypingAssistResponse>(
 			languageClientRequests.enterTypingAssist,
-			typingAssistRequest(transaction.document, transaction.position, editor, transaction.trigger),
+			typingAssistRequest(transaction.document, transaction.expectedPosition, editor, transaction.trigger),
 		);
 		if (!isCurrent() || transaction.document.version !== transaction.version) {
 			diagnostic('formatting.enter', { outcome: 'staleResponse', version: transaction.version, reason: 'documentChanged' });
@@ -241,7 +230,11 @@ async function requestEnterTypingAssist(
 			clear();
 			return;
 		}
-		transaction.response = response;
+		if (!transaction.accept(response)) {
+			diagnostic('formatting.enter', { outcome: 'staleResponse', version: transaction.version, reason: 'caretMoved' });
+			clear();
+			return;
+		}
 		if (!transaction.caretReady) {
 			diagnostic('formatting.enter', { outcome: 'awaitingCaret', version: transaction.version });
 		}
@@ -258,25 +251,19 @@ async function applyPendingEnterTypingAssist(
 	isCurrent: () => boolean,
 	clear: () => void,
 ): Promise<void> {
-	if (!transaction.response || !transaction.caretReady) {
-		return;
-	}
-	if (!isCurrent() || transaction.document.version !== transaction.version
-		|| !hasSingleEmptyCaretAt(transaction.document, transaction.position, transaction.version)) {
+	if (!isCurrent()) {
 		diagnostic('formatting.enter', { outcome: 'staleResponse', version: transaction.version, reason: 'caretMoved' });
 		clear();
 		return;
 	}
-	const editor = vscode.window.activeTextEditor;
-	if (!editor) {
-		clear();
+	const outcome = await transaction.apply();
+	if (outcome === 'pending') {
 		return;
 	}
-	const applied = await applyVersionedEditorEdits(editor, transaction.response);
 	diagnostic('formatting.enter', {
-		outcome: applied ? 'applied' : 'editRejected',
+		outcome: outcome === 'stale' ? 'staleResponse' : outcome,
 		version: transaction.version,
-		edits: transaction.response.edits.length,
+		edits: transaction.response?.edits.length,
 	});
 	clear();
 }
@@ -289,16 +276,7 @@ export function isCurrentSingleTypingAssistCaret(
 	selectionActive: vscode.Position,
 	expectedPosition: vscode.Position,
 ): boolean {
-	return documentVersion === expectedVersion
-		&& selectionCount === 1
-		&& selectionIsEmpty
-		&& selectionActive.isEqual(expectedPosition);
-}
-
-function hasSingleEmptyCaretAt(
-	document: vscode.TextDocument,
-	position: vscode.Position,
-	expectedVersion: number,
-): boolean {
-	return isCurrentSingleCaret(document, expectedVersion, position);
+	return isCurrentSingleVersionedEditorCaret(
+		documentVersion, expectedVersion, selectionCount, selectionIsEmpty, selectionActive, expectedPosition,
+	);
 }

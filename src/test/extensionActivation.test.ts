@@ -11,6 +11,9 @@ import {
 	tabAfterPosition,
 } from '../languageClient/languageClient';
 import { positionFromByteOffset } from '../languageClient/symbolLocationBridge';
+import { registerEnterTypingAssist } from '../languageClient/typingAssistTransactionBridge';
+import { registerBlockCommentPair } from '../languageClient/typingAssistTransactionBridge';
+import { VersionedEditorTransaction } from '../languageClient/versionedEditorTransaction';
 
 suite('extension activation', () => {
 	test('registers editor-facing commands', async () => {
@@ -163,6 +166,86 @@ suite('extension activation', () => {
 			isCurrentSingleTypingAssistCaret(12, 12, 1, true, new vscode.Position(8, 5), position),
 			false,
 		);
+	});
+
+	test('applies one current versioned assist response and preserves its selection', async () => {
+		const document = await vscode.workspace.openTextDocument({ language: 'enforce', content: 'value' });
+		const editor = await vscode.window.showTextDocument(document);
+		const position = new vscode.Position(0, 5);
+		editor.selection = new vscode.Selection(position, position);
+		const transaction = new VersionedEditorTransaction(document, document.version, position, position);
+		assert.strictEqual(transaction.accept({
+			edits: [{ range: { start: { line: 0, character: 5 }, end: { line: 0, character: 5 } }, newText: ';' }],
+			selection: { line: 0, character: 6 },
+		}), true);
+		assert.strictEqual(await transaction.apply(), 'applied');
+		assert.strictEqual(document.getText(), 'value;');
+		assert.deepStrictEqual(editor.selection.active, new vscode.Position(0, 6));
+		assert.strictEqual(await transaction.apply(), 'pending');
+	});
+
+	test('rejects empty and stale versioned assist responses', async () => {
+		const document = await vscode.workspace.openTextDocument({ language: 'enforce', content: 'value' });
+		const editor = await vscode.window.showTextDocument(document);
+		const position = new vscode.Position(0, 5);
+		editor.selection = new vscode.Selection(position, position);
+		const transaction = new VersionedEditorTransaction(document, document.version, position, position);
+		assert.strictEqual(transaction.accept({ edits: [] }), false);
+		assert.strictEqual(transaction.accept({
+			edits: [{ range: { start: { line: 0, character: 5 }, end: { line: 0, character: 5 } }, newText: ';' }],
+		}), true);
+		editor.selections = [
+			new vscode.Selection(position, position),
+			new vscode.Selection(position, position),
+		];
+		assert.strictEqual(await transaction.apply(), 'stale');
+		assert.strictEqual(document.getText(), 'value');
+	});
+
+	test('applies a Rust-authored Tab assist through the editor bridge', async () => {
+		const document = await vscode.workspace.openTextDocument({ language: 'enforce', content: 'value' });
+		const editor = await vscode.window.showTextDocument(document);
+		editor.selection = new vscode.Selection(new vscode.Position(0, 5), new vscode.Position(0, 5));
+		const requests: unknown[] = [];
+		const disposable = registerEnterTypingAssist(() => ({
+			sendRequest: async (_method: string, params: unknown) => {
+				requests.push(params);
+				return {
+					edits: [{ range: { start: { line: 0, character: 6 }, end: { line: 0, character: 6 } }, newText: ';' }],
+				};
+			},
+		} as never));
+		try {
+			await vscode.commands.executeCommand('type', { text: '\t' });
+			await new Promise(resolve => setTimeout(resolve, 20));
+			assert.strictEqual(document.getText(), 'value\t;');
+			assert.strictEqual(requests.length, 1);
+		} finally {
+			disposable.dispose();
+		}
+	});
+
+	test('applies a Rust-authored block-comment assist through the native pair event', async () => {
+		const document = await vscode.workspace.openTextDocument({ language: 'enforce', content: '' });
+		await vscode.window.showTextDocument(document);
+		const requests: unknown[] = [];
+		const disposable = registerBlockCommentPair(() => ({
+			sendRequest: async (_method: string, params: unknown) => {
+				requests.push(params);
+				return {
+					edits: [{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 4 } }, newText: '/** */' }],
+				};
+			},
+		} as never));
+		try {
+			await vscode.commands.executeCommand('type', { text: '/' });
+			await vscode.commands.executeCommand('type', { text: '*' });
+			await new Promise(resolve => setTimeout(resolve, 20));
+			assert.strictEqual(document.getText(), '/** */');
+			assert.strictEqual(requests.length, 1);
+		} finally {
+			disposable.dispose();
+		}
 	});
 
 	test('admits only literal Tab indentation edits for the Rust typing assist', () => {

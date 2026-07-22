@@ -42,7 +42,9 @@ not perform language analysis itself.
 Within the language-client bridge, the composition root retains server lifecycle
 and restart policy. Focused bridges own workspace-script notifications, hover
 rendering, diagnostic command UI, development-server watching, completion UI
-transactions, and typing-assist transactions. Each bridge transports
+transactions, and typing-assist transactions. Typing-assist bridges share a
+small versioned editor-edit transaction contract while retaining their own
+trigger and Rust request policy. Each bridge transports
 Rust-authored facts or applies editor behavior; none interprets Enfusion source.
 
 Within the LSP, transport framing, incoming-message scheduling, request routing,
