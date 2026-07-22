@@ -471,12 +471,20 @@ impl<W: Write> LspServer<W> {
                 superseded_changes,
             );
         }
-        self.handle_feature_or_workspace_message(
+        let outcome = feature_dispatch::execute_feature_or_workspace_message(
+            &self.logger,
+            &mut self.external_index,
+            &mut self.document_runtime,
+            self.shutdown_requested,
             value,
             queue_ms,
             coalesced_changes,
             superseded_changes,
-        )
+        )?;
+        for effect in outcome.effects {
+            self.deliver_effect(effect)?;
+        }
+        Ok(outcome.should_exit)
     }
 
     fn handle_document_close_command(&mut self, routed: RoutedRequest) -> Result<bool, String> {

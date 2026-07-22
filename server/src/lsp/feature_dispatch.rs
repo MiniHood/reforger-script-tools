@@ -18,29 +18,59 @@ use super::{
     signature_help_report_for_cached_analysis_with_external_indexes,
     signature_help_report_for_pending_snapshot, source_backed_request_method, symbol_kind_label,
     BlockCommentPairParams, DebugCompletionJob, DebugHoverJob, DebugRequestJob, DocumentQuery,
-    DocumentQueryState, DocumentSymbolParams, EnterTypingAssistParams, HoverParams,
-    HoverSelectionSource, LspPositionIndex, LspSemanticTokensFull, LspServer, QueryQuality,
-    RangeFormattingParams, TextSpan, TokenProjectionKind, TokenResultDisposition,
-    BLOCK_COMMENT_PAIR_METHOD, DEBUG_COMPLETION_METHOD, DEBUG_HOVER_METHOD,
-    ENTER_TYPING_ASSIST_METHOD, RANGE_FORMATTING_METHOD, WORKSPACE_FILE_CHANGED_METHOD,
-    WORKSPACE_FILE_DELETED_METHOD,
+    DocumentQueryState, DocumentRuntime, DocumentSymbolParams, EnterTypingAssistParams,
+    ExternalIndexHandle, HoverParams, HoverSelectionSource, LspLogger, LspPositionIndex,
+    LspSemanticTokensFull, QueryQuality, RangeFormattingParams, RuntimeEffect, TextSpan,
+    TokenProjectionKind, TokenResultDisposition, BLOCK_COMMENT_PAIR_METHOD,
+    DEBUG_COMPLETION_METHOD, DEBUG_HOVER_METHOD, ENTER_TYPING_ASSIST_METHOD,
+    RANGE_FORMATTING_METHOD, WORKSPACE_FILE_CHANGED_METHOD, WORKSPACE_FILE_DELETED_METHOD,
 };
 use serde_json::{json, Value};
-use std::io::Write;
 use std::time::Instant;
 
-/// Executes the non-lifecycle, non-document remainder at the composition
-/// root. `RequestRouter` deliberately remains the pure classifier above;
-/// this compatibility executor is kept here only until feature projections
-/// are pulled into their own typed contracts.
-impl<W: Write> LspServer<W> {
-    pub(super) fn handle_feature_or_workspace_message(
+/// Executes feature and workspace commands from the explicit state they
+/// require, returning effects for the composition root to deliver.
+pub(super) struct FeatureDispatchOutcome {
+    pub(super) should_exit: bool,
+    pub(super) effects: Vec<RuntimeEffect>,
+}
+
+struct FeatureDispatcher<'a> {
+    logger: &'a LspLogger,
+    external_index: &'a mut ExternalIndexHandle,
+    document_runtime: &'a mut DocumentRuntime,
+    shutdown_requested: bool,
+    effects: Vec<RuntimeEffect>,
+}
+
+pub(super) fn execute_feature_or_workspace_message(
+    logger: &LspLogger,
+    external_index: &mut ExternalIndexHandle,
+    document_runtime: &mut DocumentRuntime,
+    shutdown_requested: bool,
+    value: Value,
+    queue_ms: Option<u128>,
+    coalesced_changes: usize,
+    superseded_changes: usize,
+) -> Result<FeatureDispatchOutcome, String> {
+    FeatureDispatcher {
+        logger,
+        external_index,
+        document_runtime,
+        shutdown_requested,
+        effects: Vec::new(),
+    }
+    .dispatch(value, queue_ms, coalesced_changes, superseded_changes)
+}
+
+impl FeatureDispatcher<'_> {
+    fn dispatch(
         &mut self,
         value: Value,
         queue_ms: Option<u128>,
         coalesced_changes: usize,
         superseded_changes: usize,
-    ) -> Result<bool, String> {
+    ) -> Result<FeatureDispatchOutcome, String> {
         let started_at = Instant::now();
         let routed = classify_request(value)?;
         let RoutedRequest {
@@ -57,7 +87,7 @@ impl<W: Write> LspServer<W> {
             {
                 self.deliver_effect(effect)?;
             }
-            return Ok(false);
+            return Ok(self.finish(false));
         };
         self.logger.diagnostic(
             "rpc.received",
@@ -80,7 +110,7 @@ impl<W: Write> LspServer<W> {
                     "notification ignored after shutdown method={method}"
                 ));
             }
-            return Ok(false);
+            return Ok(self.finish(false));
         }
 
         if let Some(error) = parameter_error {
@@ -91,7 +121,7 @@ impl<W: Write> LspServer<W> {
                     "notification ignored invalid_params method={method} error={error}"
                 ));
             }
-            return Ok(false);
+            return Ok(self.finish(false));
         }
 
         if message.id.is_some() && source_backed_request_method(method) {
@@ -102,7 +132,7 @@ impl<W: Write> LspServer<W> {
                 self.deliver_effect(effect)?;
             }
             if deferred {
-                return Ok(false);
+                return Ok(self.finish(false));
             }
         }
 
@@ -1109,7 +1139,7 @@ impl<W: Write> LspServer<W> {
                                                 -32801,
                                                 "Debug capture unavailable",
                                             )?;
-                                            return Ok(false);
+                                            return Ok(self.finish(false));
                                         }
                                     };
                                     self.document_runtime.schedule_debug(DebugRequestJob::Hover(
@@ -1125,7 +1155,7 @@ impl<W: Write> LspServer<W> {
                                             external_status,
                                         },
                                     ));
-                                    return Ok(false);
+                                    return Ok(self.finish(false));
                                 }
                             }
                         }
@@ -1226,7 +1256,7 @@ impl<W: Write> LspServer<W> {
                                                 -32801,
                                                 "Debug capture unavailable",
                                             )?;
-                                            return Ok(false);
+                                            return Ok(self.finish(false));
                                         }
                                     };
                                     self.document_runtime.schedule_debug(
@@ -1241,7 +1271,7 @@ impl<W: Write> LspServer<W> {
                                             external_snapshot: indexes,
                                         }),
                                     );
-                                    return Ok(false);
+                                    return Ok(self.finish(false));
                                 }
                             }
                         }
@@ -1351,6 +1381,36 @@ impl<W: Write> LspServer<W> {
                 "elapsedMs": started_at.elapsed().as_millis(),
             }),
         );
-        Ok(should_exit)
+        Ok(self.finish(should_exit))
+    }
+
+    fn finish(&mut self, should_exit: bool) -> FeatureDispatchOutcome {
+        FeatureDispatchOutcome {
+            should_exit,
+            effects: std::mem::take(&mut self.effects),
+        }
+    }
+
+    fn deliver_effect(&mut self, effect: RuntimeEffect) -> Result<(), String> {
+        self.effects.push(effect);
+        Ok(())
+    }
+
+    fn log(&mut self, message: &str) {
+        self.effects.push(RuntimeEffect::Log(message.to_string()));
+    }
+
+    fn respond(&mut self, id: Value, result: Value) -> Result<(), String> {
+        self.effects.push(RuntimeEffect::Response { id, result });
+        Ok(())
+    }
+
+    fn respond_error(&mut self, id: Value, code: i32, message: &str) -> Result<(), String> {
+        self.effects.push(RuntimeEffect::Error {
+            id,
+            code,
+            message: message.to_string(),
+        });
+        Ok(())
     }
 }
