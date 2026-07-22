@@ -455,7 +455,11 @@ impl FeatureDispatcher<'_> {
                                 cursor,
                                 params.options.tab_size,
                                 params.options.insert_spaces,
-                            ).map(|plan| (plan, "ifHeader"))) else {
+                            ).map(|plan| (plan, "ifHeader")))
+                            .or_else(|| on_type_formatting::semicolon_before_enter_plan(
+                                &document.text,
+                                cursor,
+                            ).map(|plan| (plan, "semicolon"))) else {
                                 return None;
                             };
                             trace = params.trace.then_some(("applied", owner, true, "eligible"));

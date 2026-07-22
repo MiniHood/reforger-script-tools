@@ -162,12 +162,12 @@ source text or identifiers. It is disabled in ordinary use.
 _Avoid_: source logging, per-feature console log
 
 **Input Route Migration Boundary**:
-The initial router migrates only established automatic edits: the control-header
-Enter auto-block first, followed by block-comment expansion as a future
-text-insert feature. Legacy post-edit incomplete-`if` repair and automatic
-semicolon insertion are retired rather than preserved as silent defaults.
-Completion and snippet transactions and native language configuration remain
-outside the router.
+The initial router migrates established automatic edits: control-header Enter
+auto-blocks and the narrow automatic-semicolon case run as pre-native atomic
+edits. Block-comment expansion is a future text-insert feature. Legacy
+post-edit incomplete-`if` repair is retired rather than preserved as a silent
+default. Completion and snippet transactions and native language configuration
+remain outside the router.
 _Avoid_: migrate every existing typing assist, input-router completion layer
 
 **Single Input Mutation Path**:

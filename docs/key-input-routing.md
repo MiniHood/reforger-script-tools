@@ -108,11 +108,13 @@ selects `default`, and may request suggestion UI; it must not insert a second
 snippet. Plain `else` retains native body behavior.
 
 The prior post-native Enter typing assist is removed with this migration,
-including its duplicate control-block logic, incomplete-`if` repair, and
-automatic semicolon insertion. Block-comment expansion is a future
-`insertText` feature: it must become pre-native before it is migrated. Existing
-completion and snippet transactions and language configuration remain outside
-this module.
+including its duplicate control-block logic and incomplete-`if` repair. Its
+narrow automatic-semicolon behavior is preserved as a pre-native owner: when
+the physical line is an unambiguous complete call, typed declaration, or
+`return` statement, the owner atomically inserts the semicolon and newline.
+Block-comment expansion is a future `insertText` feature: it must become
+pre-native before it is migrated. Existing completion and snippet transactions
+and language configuration remain outside this module.
 
 Required evidence for a delivery is Rust decision tests for supported and
 declined source shapes; TypeScript tests for fallback, failure, stale state,

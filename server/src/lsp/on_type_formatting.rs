@@ -1,4 +1,3 @@
-#[cfg(test)]
 use crate::lexer::Operator;
 use crate::lexer::{lex, Keyword, TextSpan, Token, TokenKind};
 
@@ -207,6 +206,48 @@ pub(super) fn if_header_body_before_enter_plan(
             .count() as u32
             + 1,
         selection_character: body_indent
+            .chars()
+            .map(|character| character.len_utf16() as u32)
+            .sum(),
+        switch_arm_selection_end: None,
+    })
+}
+
+/// Plans the narrow automatic-semicolon case before VS Code performs Enter.
+/// The edit preserves the source line and its indentation while producing the
+/// same completed statement and body position as the former post-Enter assist.
+pub(super) fn semicolon_before_enter_plan(
+    source: &str,
+    cursor: usize,
+) -> Option<AutoBlockControlHeaderPlan> {
+    if source.len() > MAX_ON_TYPE_SOURCE_BYTES || cursor > source.len() {
+        return None;
+    }
+    let line_end = source[cursor..]
+        .find(['\r', '\n'])
+        .map_or(source.len(), |offset| cursor + offset);
+    if cursor != line_end {
+        return None;
+    }
+    let newline = if source.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
+    let virtual_source = format!("{}{}{}", &source[..cursor], newline, &source[cursor..]);
+    let insertion = semicolon_insertion_offset(&virtual_source, cursor + newline.len())?;
+    let line_start = source[..cursor].rfind('\n').map_or(0, |index| index + 1);
+    let indent = &source[line_start..cursor];
+    let indent = &indent[..indent.len() - indent.trim_start_matches(char::is_whitespace).len()];
+    Some(AutoBlockControlHeaderPlan {
+        span: TextSpan::new(insertion, cursor),
+        replacement: format!(";{}{}", &source[insertion..cursor], newline) + indent,
+        selection_line: source[..cursor]
+            .bytes()
+            .filter(|byte| *byte == b'\n')
+            .count() as u32
+            + 1,
+        selection_character: indent
             .chars()
             .map(|character| character.len_utf16() as u32)
             .sum(),
@@ -490,7 +531,6 @@ pub(super) fn block_comment_pair_plan(
 /// declaration, or value-return statement on the physical line before the
 /// cursor. Every uncertain, malformed, or unsupported shape is a no-edit
 /// result.
-#[cfg(test)]
 pub(super) fn semicolon_insertion_offset(source: &str, cursor: usize) -> Option<usize> {
     if source.len() > MAX_ON_TYPE_SOURCE_BYTES || cursor > source.len() {
         return None;
@@ -568,13 +608,11 @@ pub(super) fn semicolon_insertion_offset(source: &str, cursor: usize) -> Option<
     Some(previous_line_start + insertion_in_line)
 }
 
-#[cfg(test)]
 fn line_start_before(source: &str, cursor: usize) -> Option<usize> {
     let before_cursor = &source[..cursor];
     before_cursor.rfind('\n').map(|newline| newline + 1)
 }
 
-#[cfg(test)]
 fn trim_line_ending(source: &str, line_start: usize) -> usize {
     let mut end = line_start.saturating_sub(1);
     if end > 0 && source.as_bytes().get(end - 1) == Some(&b'\r') {
@@ -583,7 +621,6 @@ fn trim_line_ending(source: &str, line_start: usize) -> usize {
     end
 }
 
-#[cfg(test)]
 fn is_complete_call_expression(tokens: &[Token]) -> bool {
     let mut index = 0;
     if !is_receiver_start(tokens.get(index).map(|token| token.kind)) {
@@ -626,7 +663,6 @@ fn is_complete_call_expression(tokens: &[Token]) -> bool {
     ends_with_call
 }
 
-#[cfg(test)]
 fn is_receiver_start(kind: Option<TokenKind>) -> bool {
     matches!(
         kind,
@@ -634,7 +670,6 @@ fn is_receiver_start(kind: Option<TokenKind>) -> bool {
     )
 }
 
-#[cfg(test)]
 fn is_complete_value_return_statement(tokens: &[Token]) -> bool {
     if tokens.first().map(|token| token.kind) != Some(TokenKind::Keyword(Keyword::Return)) {
         return false;
@@ -654,7 +689,6 @@ fn is_complete_value_return_statement(tokens: &[Token]) -> bool {
 /// sequence. This bounded lexical check rejects control keywords and adjacent
 /// primary values (for example `owner GetOwner()`), which are not a complete
 /// Enforce expression and therefore must not receive an automatic edit.
-#[cfg(test)]
 fn is_complete_value_expression(tokens: &[Token]) -> bool {
     let Some(first) = tokens.first() else {
         return false;
@@ -682,7 +716,6 @@ fn is_complete_value_expression(tokens: &[Token]) -> bool {
 /// Primitive keywords can only participate in a returned expression as type
 /// arguments of a `new Type<...>(...)` construction. Scanning back to the
 /// construction keyword is bounded by the already-small physical line.
-#[cfg(test)]
 fn is_new_type_keyword(tokens: &[Token], index: usize) -> bool {
     if !matches!(
         tokens[index].kind,
@@ -717,7 +750,6 @@ fn is_new_type_keyword(tokens: &[Token], index: usize) -> bool {
 /// `new Type` is syntactically unfinished until its constructor argument list
 /// closes.  Keep this explicit instead of relying on generic delimiter balance
 /// so the typing assist remains fail-closed around construction expressions.
-#[cfg(test)]
 fn has_only_complete_new_expressions(tokens: &[Token]) -> bool {
     let mut index = 0;
     while index < tokens.len() {
@@ -748,7 +780,6 @@ fn has_only_complete_new_expressions(tokens: &[Token]) -> bool {
     true
 }
 
-#[cfg(test)]
 fn is_value_expression_token(kind: TokenKind) -> bool {
     !matches!(kind, TokenKind::Keyword(keyword) if !matches!(
         keyword,
@@ -756,7 +787,6 @@ fn is_value_expression_token(kind: TokenKind) -> bool {
     ))
 }
 
-#[cfg(test)]
 fn can_start_value_expression(kind: TokenKind) -> bool {
     matches!(
         kind,
@@ -784,7 +814,6 @@ fn can_start_value_expression(kind: TokenKind) -> bool {
     )
 }
 
-#[cfg(test)]
 fn can_end_value_expression(kind: TokenKind) -> bool {
     matches!(
         kind,
@@ -803,7 +832,6 @@ fn can_end_value_expression(kind: TokenKind) -> bool {
 /// Recognizes a complete typed variable declaration without resolving its
 /// type. A `Type name` shape is unambiguously a declaration in statement
 /// position; callable headers and controls cannot satisfy this grammar.
-#[cfg(test)]
 fn is_complete_variable_declaration(tokens: &[Token]) -> bool {
     let mut index = 0;
     while matches!(
@@ -860,7 +888,6 @@ fn is_complete_variable_declaration(tokens: &[Token]) -> bool {
     }
 }
 
-#[cfg(test)]
 fn is_local_type_start(kind: Option<TokenKind>) -> bool {
     matches!(
         kind,
@@ -877,7 +904,6 @@ fn is_local_type_start(kind: Option<TokenKind>) -> bool {
     )
 }
 
-#[cfg(test)]
 fn consume_generic_arguments(tokens: &[Token], mut index: usize) -> Option<usize> {
     if tokens.get(index).map(|token| token.kind) != Some(TokenKind::Operator(Operator::Less)) {
         return Some(index);
@@ -899,7 +925,6 @@ fn consume_generic_arguments(tokens: &[Token], mut index: usize) -> Option<usize
     None
 }
 
-#[cfg(test)]
 fn consume_initializer(tokens: &[Token], mut index: usize) -> Option<usize> {
     let start = index;
     let mut closes = Vec::new();
@@ -927,7 +952,6 @@ fn consume_initializer(tokens: &[Token], mut index: usize) -> Option<usize> {
     Some(index)
 }
 
-#[cfg(test)]
 fn ends_in_incomplete_expression(kind: TokenKind) -> bool {
     matches!(
         kind,
@@ -935,7 +959,6 @@ fn ends_in_incomplete_expression(kind: TokenKind) -> bool {
     )
 }
 
-#[cfg(test)]
 fn consume_balanced(tokens: &[Token], start: usize, close: TokenKind) -> Option<usize> {
     let mut stack = vec![close];
     let mut index = start + 1;
@@ -965,7 +988,7 @@ mod tests {
     use super::{
         auto_block_control_header_enter_plan, block_comment_pair_plan,
         control_header_block_before_enter_plan, if_header_body_before_enter_plan,
-        incomplete_if_header_enter_plan, semicolon_insertion_offset,
+        incomplete_if_header_enter_plan, semicolon_before_enter_plan, semicolon_insertion_offset,
     };
 
     fn insertion(source: &str) -> Option<usize> {
@@ -980,6 +1003,21 @@ mod tests {
             insertion("Run(value, Other())\n"),
             Some("Run(value, Other())".len())
         );
+    }
+
+    #[test]
+    fn plans_a_semicolon_and_enter_as_one_atomic_edit() {
+        let plan = semicolon_before_enter_plan("\tRun()", "\tRun()".len()).unwrap();
+        assert_eq!(plan.span, TextSpan::new("\tRun()".len(), "\tRun()".len()));
+        assert_eq!(plan.replacement, ";\n\t");
+        assert_eq!(plan.selection_line, 1);
+        assert_eq!(plan.selection_character, 1);
+
+        let source = "Run() // keep this";
+        let plan = semicolon_before_enter_plan(source, source.len()).unwrap();
+        assert_eq!(plan.replacement, "; // keep this\n");
+
+        assert!(semicolon_before_enter_plan("Run() trailing", "Run()".len()).is_none());
     }
 
     #[test]
