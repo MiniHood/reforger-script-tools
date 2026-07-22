@@ -260,22 +260,23 @@ impl<W: Write> LspServer<W> {
                 result,
                 elapsed_ms,
             } => {
-                if !self.runtime.complete(&task) {
-                    self.log(&format!(
-                        "request {} discarded uri={} revision={} reason=runtime-stale async=true elapsed_ms={}",
-                        method, uri, revision, elapsed_ms
-                    ));
-                    return self.deliver_effect(RuntimeEffect::Error {
+                let effects = self
+                    .document_runtime
+                    .interpret_debug_event(ServerEvent::DebugRequestReady {
+                        task,
                         id,
-                        code: -32801,
-                        message: "Content modified".to_string(),
-                    });
+                        method,
+                        uri,
+                        revision,
+                        details,
+                        result,
+                        elapsed_ms,
+                    })
+                    .expect("debug event is handled by the document runtime");
+                for effect in effects {
+                    self.deliver_effect(effect)?;
                 }
-                self.log(&format!(
-                    "request {} uri={} revision={} {} async=true elapsed_ms={}",
-                    method, uri, revision, details, elapsed_ms
-                ));
-                self.deliver_effect(RuntimeEffect::Response { id, result })
+                Ok(())
             }
         }
     }

@@ -8,6 +8,7 @@ use super::{
     DidChangeTextDocumentParams, DidOpenTextDocumentParams, ForegroundDocumentJob, OpenDocument,
     OpenDocumentAnalysisJob, PositionIndex, RichSemanticTokensJob, RpcMessage, RuntimeWorkExecutor,
     RuntimeEffect, TaskClass, MAX_PENDING_DOCUMENT_REQUESTS_PER_URI,
+    ServerEvent,
 };
 use crate::analysis_runtime::{AdmissionLimits, AnalysisRuntime, UpsertOutcome};
 use serde_json::{json, Value};
@@ -265,6 +266,33 @@ impl DocumentRuntime {
             effects.push(RuntimeEffect::Error { id: request.id, code: -32802, message: "Semantic tokens superseded".to_string() });
         }
         effects.push(RuntimeEffect::Log(format!("semanticTokens deferred discarded uri={} current_revision={} reason={} outcome=server-cancelled", uri, current_revision, reason)));
+    }
+
+    /// Interprets completion events whose only observable outcome is a
+    /// request response. Freshness belongs to the runtime that admitted the
+    /// task; the composition root only delivers the returned effects.
+    pub(super) fn interpret_debug_event(&mut self, event: ServerEvent) -> Option<Vec<RuntimeEffect>> {
+        let ServerEvent::DebugRequestReady {
+            task, id, method, uri, revision, details, result, elapsed_ms,
+        } = event else {
+            return None;
+        };
+        if !self.runtime.complete(&task) {
+            return Some(vec![
+                RuntimeEffect::Log(format!(
+                    "request {} discarded uri={} revision={} reason=runtime-stale async=true elapsed_ms={}",
+                    method, uri, revision, elapsed_ms
+                )),
+                RuntimeEffect::Error { id, code: -32801, message: "Content modified".to_string() },
+            ]);
+        }
+        Some(vec![
+            RuntimeEffect::Log(format!(
+                "request {} uri={} revision={} {} async=true elapsed_ms={}",
+                method, uri, revision, details, elapsed_ms
+            )),
+            RuntimeEffect::Response { id, result },
+        ])
     }
 }
 
