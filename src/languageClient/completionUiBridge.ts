@@ -341,6 +341,15 @@ async function normalizeIfSpaceCommit(args: readonly unknown[]): Promise<void> {
 		|| !editor.selection.isEmpty) {
 		return;
 	}
+	// Current VS Code can insert Space before applying the snippet edit. In that
+	// ordering the commit character moves after `if ()`, while the snippet
+	// caret remains inside the parentheses. Remove only that exact character.
+	if (editor.selection.active.isEqual(contract.caret)
+		&& editor.document.getText(contract.trailingDeletion) === contract.expectedCommit) {
+		diagnostic('completion.ifSpaceCommit', { outcome: 'preCompletionCommitObserved' });
+		await removeIfSpaceCommitCharacter(editor, contract.trailingDeletion, contract.caret);
+		return;
+	}
 	if (editor.selection.active.isEqual(contract.deletion.end)
 		&& latestEditorDocumentChange?.documentUri === editor.document.uri.toString()
 		&& latestEditorDocumentChange.version === editor.document.version
@@ -383,6 +392,7 @@ async function applyDirectiveSeparator(directive: unknown): Promise<void> {
 interface IfSpaceCommitContract {
 	expectedCommit: string;
 	deletion: vscode.Range;
+	trailingDeletion: vscode.Range;
 	caret: vscode.Position;
 }
 
@@ -391,7 +401,12 @@ export function ifSpaceCommitContractFromCommandArguments(args: readonly unknown
 	if (typeof value !== 'object' || value === null) {
 		return undefined;
 	}
-	const contract = value as { expectedCommit?: unknown; deletion?: { start?: unknown; end?: unknown }; caret?: unknown };
+	const contract = value as {
+		expectedCommit?: unknown;
+		deletion?: { start?: unknown; end?: unknown };
+		trailingDeletion?: { start?: unknown; end?: unknown };
+		caret?: unknown;
+	};
 	const position = (candidate: unknown): vscode.Position | undefined => {
 		if (typeof candidate !== 'object' || candidate === null) {
 			return undefined;

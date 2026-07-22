@@ -37,9 +37,11 @@ suite('extension activation', () => {
 		const contract = ifSpaceCommitContractFromCommandArguments([{
 			expectedCommit: ' ',
 			deletion: { start: { line: 3, character: 9 }, end: { line: 3, character: 10 } },
+			trailingDeletion: { start: { line: 3, character: 10 }, end: { line: 3, character: 11 } },
 			caret: { line: 3, character: 9 },
 		}]);
 		assert.deepStrictEqual(contract?.deletion, new vscode.Range(3, 9, 3, 10));
+		assert.deepStrictEqual(contract?.trailingDeletion, new vscode.Range(3, 10, 3, 11));
 		assert.deepStrictEqual(contract?.caret, new vscode.Position(3, 9));
 		assert.strictEqual(ifSpaceCommitContractFromCommandArguments([{ expectedCommit: ' ' }]), undefined);
 	});
@@ -53,6 +55,21 @@ suite('extension activation', () => {
 		await vscode.commands.executeCommand(languageClientCommands.normalizeIfSpaceCommit, {
 			expectedCommit: ' ',
 			deletion: { start: { line: 0, character: 4 }, end: { line: 0, character: 5 } },
+			trailingDeletion: { start: { line: 0, character: 5 }, end: { line: 0, character: 6 } },
+			caret: { line: 0, character: 4 },
+		});
+		assert.strictEqual(document.getText(), 'if ()');
+		assert.deepStrictEqual(editor.selection.active, new vscode.Position(0, 4));
+	});
+
+	test('removes a Space committed before VS Code applies the if snippet', async () => {
+		const document = await vscode.workspace.openTextDocument({ language: 'enforce', content: 'if () ' });
+		const editor = await vscode.window.showTextDocument(document);
+		editor.selection = new vscode.Selection(new vscode.Position(0, 4), new vscode.Position(0, 4));
+		await vscode.commands.executeCommand(languageClientCommands.normalizeIfSpaceCommit, {
+			expectedCommit: ' ',
+			deletion: { start: { line: 0, character: 4 }, end: { line: 0, character: 5 } },
+			trailingDeletion: { start: { line: 0, character: 5 }, end: { line: 0, character: 6 } },
 			caret: { line: 0, character: 4 },
 		});
 		assert.strictEqual(document.getText(), 'if ()');
@@ -63,6 +80,7 @@ suite('extension activation', () => {
 		const contract = {
 			expectedCommit: ' ',
 			deletion: { start: { line: 0, character: 4 }, end: { line: 0, character: 5 } },
+			trailingDeletion: { start: { line: 0, character: 5 }, end: { line: 0, character: 6 } },
 			caret: { line: 0, character: 4 },
 		};
 		const document = await vscode.workspace.openTextDocument({ language: 'enforce', content: 'if ( )' });

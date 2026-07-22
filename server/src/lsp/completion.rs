@@ -3690,6 +3690,10 @@ fn keyword_completion_items(
                             "start": { "line": edit_range.start.line, "character": edit_range.start.character + 4 },
                             "end": { "line": edit_range.start.line, "character": edit_range.start.character + 5 },
                         },
+                        "trailingDeletion": {
+                            "start": { "line": edit_range.start.line, "character": edit_range.start.character + 5 },
+                            "end": { "line": edit_range.start.line, "character": edit_range.start.character + 6 },
+                        },
                         "caret": { "line": edit_range.start.line, "character": edit_range.start.character + 4 },
                     })]),
                 }),
@@ -5929,6 +5933,7 @@ ArmaReforgerScripted GetGame();
             Some(&vec![json!({
                 "expectedCommit": " ",
                 "deletion": { "start": { "line": 0, "character": 4 }, "end": { "line": 0, "character": 5 } },
+                "trailingDeletion": { "start": { "line": 0, "character": 5 }, "end": { "line": 0, "character": 6 } },
                 "caret": { "line": 0, "character": 4 },
             })]),
         );

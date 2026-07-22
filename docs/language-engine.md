@@ -46,6 +46,11 @@ game-data downloads. Enfusion behavior must be established from
 Workbench/compiler evidence first; see the [system overview](overview.md) for
 the complete evidence order.
 
+For the `if` keyword completion, Rust owns the snippet and an opaque
+caret-local Space-commit contract. The TypeScript client may remove only the
+single committed Space identified by that contract, whether VS Code applies it
+before or after the snippet edit; it must not infer or rewrite ordinary source.
+
 Run focused Rust tests while iterating and `cargo test` from `server/` for the
 engine suite. Use the [development guide](development.md) for extension-level
 verification.

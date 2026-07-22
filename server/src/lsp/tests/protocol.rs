@@ -772,6 +772,7 @@ fn framed_lsp_if_completion_carries_rust_normalization_contract() {
     assert!(output.contains("\"label\":\"if\""));
     assert!(output.contains("\"expectedCommit\":\" \""));
     assert!(output.contains("\"deletion\":{\"end\":{\"character\":5,\"line\":0},\"start\":{\"character\":4,\"line\":0}}"));
+    assert!(output.contains("\"trailingDeletion\":{\"end\":{\"character\":6,\"line\":0},\"start\":{\"character\":5,\"line\":0}}"));
     assert!(output.contains("\"caret\":{\"character\":4,\"line\":0}"));
 }
 
