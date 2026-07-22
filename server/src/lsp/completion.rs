@@ -16,6 +16,7 @@ use crate::lsp::{
     LspMarkupContent, LspPosition, LspRange,
 };
 use crate::model::{SourceKind, SymbolKind};
+use crate::preprocessor::{completion_context_at_offset, CompletionContext, COMPLETION_DIRECTIVES};
 use crate::resolver::{CandidateSource, IdentifierContext, ReferenceCandidate, ReferenceResolver};
 use crate::syntax::SyntaxNode;
 use serde::{ser::SerializeMap, Serialize, Serializer};
@@ -51,6 +52,8 @@ const COMMAND_TRIGGER_SUGGEST_AT_SNIPPET_PLACEHOLDER: &str =
 /// exact caret-local contract and never classifies ordinary source text.
 const COMMAND_NORMALIZE_IF_SPACE_COMMIT: &str =
     "reforger-sript-tools.completion.normalizeIfSpaceCommit";
+const COMMAND_APPLY_DIRECTIVE_SEPARATOR: &str =
+    "reforger-sript-tools.completion.applyDirectiveSeparator";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LspCompletionList {
@@ -241,7 +244,7 @@ pub(crate) fn completion_report_for_cached_analysis_with_external_indexes(
     let Some(offset) = offset_for_position(source, position) else {
         return empty_completion_report(analysis.parse_diagnostics);
     };
-    if completion_cursor_is_in_comment(&analysis.lexer_tokens, offset) {
+    if completion_cursor_is_in_comment_or_string(&analysis.lexer_tokens, offset) {
         return empty_completion_report(analysis.parse_diagnostics);
     }
     completion_report_for_offset(source, analysis, offset, workspace_index, game_data_index)
@@ -275,8 +278,24 @@ pub(crate) fn completion_report_for_lexical_source_at_offset_with_external_index
     workspace_index: Option<&SymbolIndex>,
     game_data_index: Option<&SymbolIndex>,
 ) -> LspCompletionReport {
+    if current_snapshot_cursor_is_in_comment_or_string(source, offset) {
+        return empty_completion_report(0);
+    }
+    if let Some(context) = completion_context_at_offset(source, offset) {
+        let empty_local_index = SymbolIndex::default();
+        return preprocessor_completion_report(
+            source,
+            0,
+            context,
+            &empty_local_index,
+            workspace_index,
+            game_data_index,
+            Duration::ZERO,
+            Instant::now(),
+        );
+    }
     let Some(region) = BoundedCompletionRegion::new(source, offset) else {
-        if current_snapshot_cursor_is_in_comment(source, offset) {
+        if current_snapshot_cursor_is_in_comment_or_string(source, offset) {
             return empty_completion_report(0);
         }
         // The fixed window can end inside a valid multi-line comment or
@@ -292,7 +311,7 @@ pub(crate) fn completion_report_for_lexical_source_at_offset_with_external_index
         );
         return unavailable_completion_report(report, "invalid-or-unterminated-lexical-window");
     };
-    if completion_cursor_is_in_comment(&region.tokens, offset) {
+    if completion_cursor_is_in_comment_or_string(&region.tokens, offset) {
         return empty_completion_report(0);
     }
     let context = unavailable_completion_context(&region.tokens, offset);
@@ -322,7 +341,7 @@ pub(crate) fn completion_report_for_current_local_scope_at_offset_with_external_
     // Preserve the preceding line at the bounded-window edge so the current
     // class header remains available to unqualified member recovery.
     let region = BoundedCompletionRegion::for_current_override(source, offset)?;
-    (!completion_cursor_is_in_comment(&region.tokens, offset)).then_some(())?;
+    (!completion_cursor_is_in_comment_or_string(&region.tokens, offset)).then_some(())?;
     if !matches!(
         unavailable_completion_context(&region.tokens, offset),
         UnavailableCompletionContext::TopLevel | UnavailableCompletionContext::Argument
@@ -354,7 +373,7 @@ pub(crate) fn completion_report_for_current_override_at_offset_with_external_ind
 ) -> Option<LspCompletionReport> {
     let start = Instant::now();
     let region = BoundedCompletionRegion::for_current_override(source, offset)?;
-    (!completion_cursor_is_in_comment(&region.tokens, offset)).then_some(())?;
+    (!completion_cursor_is_in_comment_or_string(&region.tokens, offset)).then_some(())?;
     let context = region.current_override_context(source, offset)?;
     if start.elapsed() > LOCAL_SCOPE_QUERY_DEADLINE {
         return None;
@@ -471,7 +490,7 @@ pub(crate) fn completion_report_for_current_receiver_at_offset_with_external_ind
 ) -> Option<LspCompletionReport> {
     let start = Instant::now();
     let region = BoundedCompletionRegion::new(source, offset)?;
-    (!completion_cursor_is_in_comment(&region.tokens, offset)).then_some(())?;
+    (!completion_cursor_is_in_comment_or_string(&region.tokens, offset)).then_some(())?;
     if unavailable_completion_context(&region.tokens, offset)
         != UnavailableCompletionContext::Member
     {
@@ -637,7 +656,7 @@ pub(crate) fn completion_report_for_current_argument_labels_at_offset_with_exter
 ) -> Option<LspCompletionReport> {
     let start = Instant::now();
     let region = BoundedCompletionRegion::new(source, offset)?;
-    (!completion_cursor_is_in_comment(&region.tokens, offset)).then_some(())?;
+    (!completion_cursor_is_in_comment_or_string(&region.tokens, offset)).then_some(())?;
     if unavailable_completion_context(&region.tokens, offset)
         != UnavailableCompletionContext::Argument
     {
@@ -1777,7 +1796,7 @@ fn unavailable_completion_context(
     UnavailableCompletionContext::TopLevel
 }
 
-fn completion_cursor_is_in_comment(tokens: &[Token], offset: usize) -> bool {
+fn completion_cursor_is_in_comment_or_string(tokens: &[Token], offset: usize) -> bool {
     tokens.iter().any(|token| {
         token.span.start < offset
             && offset <= token.span.end
@@ -1788,6 +1807,8 @@ fn completion_cursor_is_in_comment(tokens: &[Token], offset: usize) -> bool {
                     | TokenKind::BlockComment
                     | TokenKind::DocBlockComment
                     | TokenKind::UnterminatedBlockComment
+                    | TokenKind::String
+                    | TokenKind::UnterminatedString
             )
     })
 }
@@ -1796,9 +1817,9 @@ fn completion_cursor_is_in_comment(tokens: &[Token], offset: usize) -> bool {
 /// unfinished block comment in a bounded-size snapshot, use the same current
 /// snapshot recovery budget solely to suppress completion rather than emit a
 /// top-level fallback from comment text.
-fn current_snapshot_cursor_is_in_comment(source: &str, offset: usize) -> bool {
+fn current_snapshot_cursor_is_in_comment_or_string(source: &str, offset: usize) -> bool {
     source.len() <= LEXICAL_CONTEXT_RECOVERY_MAX_SOURCE_BYTES
-        && completion_cursor_is_in_comment(&lex(source), offset)
+        && completion_cursor_is_in_comment_or_string(&lex(source), offset)
 }
 
 fn lexical_completion_prefix_span(tokens: &[crate::lexer::Token], offset: usize) -> TextSpan {
@@ -2088,11 +2109,23 @@ fn completion_report_for_offset(
     workspace_index: Option<&SymbolIndex>,
     game_data_index: Option<&SymbolIndex>,
 ) -> LspCompletionReport {
-    if completion_cursor_is_in_comment(&analysis.lexer_tokens, offset) {
+    if completion_cursor_is_in_comment_or_string(&analysis.lexer_tokens, offset) {
         return empty_completion_report(analysis.parse_diagnostics);
     }
     let total_start = Instant::now();
     let context_start = Instant::now();
+    if let Some(context) = completion_context_at_offset(source, offset) {
+        return preprocessor_completion_report(
+            source,
+            analysis.parse_diagnostics,
+            context,
+            &analysis.index,
+            workspace_index,
+            game_data_index,
+            context_start.elapsed(),
+            total_start,
+        );
+    }
     let resolver = ReferenceResolver::new_with_parse_scope_and_external_indexes(
         source,
         &analysis.index,
@@ -2238,6 +2271,120 @@ fn completion_report_for_offset(
         return top_level_report;
     }
     top_level_report
+}
+
+#[allow(clippy::too_many_arguments)]
+fn preprocessor_completion_report(
+    source: &str,
+    parse_diagnostics: usize,
+    context: CompletionContext,
+    local_index: &SymbolIndex,
+    workspace_index: Option<&SymbolIndex>,
+    game_data_index: Option<&SymbolIndex>,
+    context_detection: Duration,
+    total_start: Instant,
+) -> LspCompletionReport {
+    let lookup_start = Instant::now();
+    let (prefix, items, source_kind_counts, origin_counts) = match context {
+        CompletionContext::Directive { prefix, span } => {
+            let range = range_for_span(source, span);
+            let items = COMPLETION_DIRECTIVES
+                .iter()
+                .filter(|directive| completion_name_match_rank(directive, &prefix).is_some())
+                .enumerate()
+                .map(|(order, directive)| {
+                    preprocessor_directive_completion_item(directive, range.clone(), &prefix, order)
+                })
+                .collect();
+            (prefix, items, BTreeMap::new(), BTreeMap::new())
+        }
+        CompletionContext::Macro { prefix, span } => {
+            let mut candidates =
+                IndexQuery::new(local_index).completion_preprocessor_macros(&prefix);
+            if let Some(index) = workspace_index {
+                candidates.extend(IndexQuery::new(index).completion_preprocessor_macros(&prefix));
+            }
+            if let Some(index) = game_data_index {
+                candidates.extend(IndexQuery::new(index).completion_preprocessor_macros(&prefix));
+            }
+            let (mut items, source_kind_counts, origin_counts) = completion_items_for_candidates(
+                &candidates,
+                range_for_span(source, span),
+                Some("PreprocessorMacro"),
+                CompletionInsertContext::Normal,
+                Some(&prefix),
+                CompletionRenderContext::new(local_index, workspace_index, game_data_index),
+            );
+            for (item, candidate) in items.iter_mut().zip(&candidates) {
+                item.detail = Some(format!(
+                    "#define {} ({})",
+                    candidate.display.label,
+                    candidate.source_kind.as_str()
+                ));
+            }
+            (prefix, items, source_kind_counts, origin_counts)
+        }
+    };
+    let is_incomplete = false;
+    LspCompletionReport {
+        candidate_count: items.len(),
+        list: LspCompletionList {
+            is_incomplete,
+            items,
+        },
+        query_quality: QueryQuality::Exact,
+        recovery_reason: None,
+        parse_diagnostics,
+        completion_context: "preprocessor".to_string(),
+        receiver_text: None,
+        owner_type: None,
+        prefix,
+        source_kind_counts,
+        origin_counts,
+        failure_reason: None,
+        timings: LspCompletionTimings {
+            context_detection,
+            candidate_lookup: lookup_start.elapsed(),
+            total: total_start.elapsed(),
+            ..LspCompletionTimings::default()
+        },
+    }
+}
+
+fn preprocessor_directive_completion_item(
+    directive: &str,
+    range: LspRange,
+    prefix: &str,
+    order: usize,
+) -> LspCompletionItem {
+    let takes_operand = matches!(directive, "define" | "ifdef" | "ifndef");
+    LspCompletionItem {
+        label: format!("#{directive}"),
+        label_details: None,
+        kind: 14,
+        detail: Some("Preprocessor Directive".to_string()),
+        documentation: None,
+        sort_text: Some(format!(
+            "{:03}:{}",
+            completion_name_match_rank(directive, prefix).unwrap_or(u16::MAX),
+            order
+        )),
+        filter_text: Some(directive.to_string()),
+        insert_text_format: None,
+        commit_characters: None,
+        command: takes_operand.then(|| LspCommand {
+            title: "Apply directive separator".to_string(),
+            command: COMMAND_APPLY_DIRECTIVE_SEPARATOR.to_string(),
+            arguments: Some(vec![Value::String(format!("#{directive}"))]),
+        }),
+        text_edit: LspTextEdit {
+            range,
+            new_text: directive.to_string(),
+            replace_range: None,
+        },
+        required_parameter_count: 0,
+        optional_parameter_count: 0,
+    }
 }
 
 pub(crate) fn merge_argument_label_and_value_reports(
@@ -5943,5 +6090,91 @@ enum SecondChoice { Second }"#,
             Some("array")
         );
         assert_eq!(callable_type_owner("int").as_deref(), Some("int"));
+    }
+
+    #[test]
+    fn preprocessor_completion_offers_directives_and_active_local_macros() {
+        let directives = completion_report_for_source_position_with_external(
+            "\t#defi",
+            LspPosition {
+                line: 0,
+                character: 6,
+            },
+            None,
+        );
+        assert_eq!(directives.completion_context, "preprocessor");
+        let define = directives
+            .list
+            .items
+            .iter()
+            .find(|item| item.label == "#define")
+            .expect("expected #define directive completion");
+        assert_eq!(define.text_edit.new_text, "define");
+        assert_eq!(
+            define
+                .command
+                .as_ref()
+                .map(|command| command.command.as_str()),
+            Some(COMMAND_APPLY_DIRECTIVE_SEPARATOR)
+        );
+
+        let all_directives = completion_report_for_source_position_with_external(
+            "#",
+            LspPosition {
+                line: 0,
+                character: 1,
+            },
+            None,
+        );
+        assert_eq!(all_directives.list.items.len(), COMPLETION_DIRECTIVES.len());
+
+        let string = completion_report_for_source_position_with_external(
+            "\"#define",
+            LspPosition {
+                line: 0,
+                character: 8,
+            },
+            None,
+        );
+        assert!(string.list.items.is_empty());
+
+        let macros = completion_report_for_source_position_with_external(
+            "#define ACTIVE_FLAG\n//#define COMMENTED_FLAG\n#ifdef ACT",
+            LspPosition {
+                line: 2,
+                character: 10,
+            },
+            None,
+        );
+        let active = macros
+            .list
+            .items
+            .iter()
+            .find(|item| item.label == "ACTIVE_FLAG")
+            .expect("expected active Macro completion");
+        assert_eq!(active.text_edit.new_text, "ACTIVE_FLAG");
+        assert_eq!(
+            active.detail.as_deref(),
+            Some("#define ACTIVE_FLAG (Workspace)")
+        );
+        assert!(!macros
+            .list
+            .items
+            .iter()
+            .any(|item| item.label == "COMMENTED_FLAG"));
+
+        let empty_operand = completion_report_for_source_position_with_external(
+            "#define ACTIVE_FLAG\n#ifdef ",
+            LspPosition {
+                line: 1,
+                character: 7,
+            },
+            None,
+        );
+        assert!(empty_operand
+            .list
+            .items
+            .iter()
+            .any(|item| item.label == "ACTIVE_FLAG"));
     }
 }

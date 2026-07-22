@@ -305,6 +305,45 @@ suite('extension activation', () => {
 		assert.strictEqual(properties['reforgerScriptTools.diagnostics.enabled'].default, true);
 	});
 
+	test('enables Experimental Auto Formatting by default', () => {
+		const extension = vscode.extensions.all.find(
+			candidate => candidate.packageJSON.name === 'reforger-sript-tools',
+		);
+		assert.ok(extension, 'development extension is discoverable');
+		const properties = extension.packageJSON.contributes.configuration.properties as Record<string, {
+			default?: unknown;
+			title?: unknown;
+		}>;
+		const setting = properties['reforgerScriptTools.experimentalAutoFormatting'];
+		assert.strictEqual(setting.default, true);
+		assert.strictEqual(setting.title, 'Experimental: Auto Formatting');
+	});
+
+	test('applies directive separators only while Experimental Auto Formatting is enabled', async () => {
+		const extension = vscode.extensions.all.find(
+			candidate => candidate.packageJSON.name === 'reforger-sript-tools',
+		);
+		assert.ok(extension, 'development extension is discoverable');
+		await extension.activate();
+		const enabled = await vscode.workspace.openTextDocument({ language: 'enforce', content: '#ifdef' });
+		const enabledEditor = await vscode.window.showTextDocument(enabled);
+		enabledEditor.selection = new vscode.Selection(new vscode.Position(0, 6), new vscode.Position(0, 6));
+		await vscode.commands.executeCommand(languageClientCommands.applyDirectiveSeparator, '#ifdef');
+		assert.strictEqual(enabled.getText(), '#ifdef ');
+
+		const configuration = vscode.workspace.getConfiguration('reforgerScriptTools');
+		await configuration.update('experimentalAutoFormatting', false, vscode.ConfigurationTarget.Global);
+		try {
+			const disabled = await vscode.workspace.openTextDocument({ language: 'enforce', content: '#ifndef' });
+			const disabledEditor = await vscode.window.showTextDocument(disabled);
+			disabledEditor.selection = new vscode.Selection(new vscode.Position(0, 7), new vscode.Position(0, 7));
+			await vscode.commands.executeCommand(languageClientCommands.applyDirectiveSeparator, '#ifndef');
+			assert.strictEqual(disabled.getText(), '#ifndef');
+		} finally {
+			await configuration.update('experimentalAutoFormatting', undefined, vscode.ConfigurationTarget.Global);
+		}
+	});
+
 	test('keeps Enter available for line breaks in Enforce suggestions', () => {
 		const extension = vscode.extensions.all.find(
 			candidate => candidate.packageJSON.name === 'reforger-sript-tools',

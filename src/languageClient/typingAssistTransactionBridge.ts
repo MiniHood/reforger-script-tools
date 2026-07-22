@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import type { LanguageClient } from 'vscode-languageclient/node';
+import { experimentalAutoFormattingEnabled } from '../extensionConfig/experimentalAutoFormatting';
 import { languageClientLanguage, languageClientRequests } from '../extensionConfig/languageClient';
 import { diagnostic } from '../diagnostics/diagnostics';
 import { type VersionedEditResponse } from './versionedEditorEdit';
@@ -13,6 +14,9 @@ interface EnterTypingAssistResponse extends VersionedEditResponse {}
 export function registerBlockCommentPair(getClient: () => LanguageClient | undefined): vscode.Disposable {
 	let pending: BlockCommentPairTransaction | undefined;
 	const documentChanges = vscode.workspace.onDidChangeTextDocument(event => {
+		if (!experimentalAutoFormattingEnabled()) {
+			return;
+		}
 		if (pending && pending.document.uri.toString() === event.document.uri.toString()
 			&& event.document.version > pending.version) {
 			diagnostic('formatting.commentPair', { outcome: 'superseded', version: pending.version });
@@ -105,6 +109,10 @@ async function applyPendingBlockCommentPair(
 	isCurrent: () => boolean,
 	clear: () => void,
 ): Promise<void> {
+	if (!experimentalAutoFormattingEnabled()) {
+		clear();
+		return;
+	}
 	if (!isCurrent()) {
 		diagnostic('formatting.commentPair', { outcome: 'staleResponse', version: transaction.version });
 		clear();
@@ -125,6 +133,9 @@ async function applyPendingBlockCommentPair(
 export function registerEnterTypingAssist(getClient: () => LanguageClient | undefined): vscode.Disposable {
 	let pending: EnterTypingAssistTransaction | undefined;
 	const documentChanges = vscode.workspace.onDidChangeTextDocument(event => {
+		if (!experimentalAutoFormattingEnabled()) {
+			return;
+		}
 		if (pending && pending.document.uri.toString() === event.document.uri.toString()
 			&& event.document.version > pending.version) {
 			diagnostic('formatting.enter', { outcome: 'superseded', version: pending.version });
@@ -251,6 +262,10 @@ async function applyPendingEnterTypingAssist(
 	isCurrent: () => boolean,
 	clear: () => void,
 ): Promise<void> {
+	if (!experimentalAutoFormattingEnabled()) {
+		clear();
+		return;
+	}
 	if (!isCurrent()) {
 		diagnostic('formatting.enter', { outcome: 'staleResponse', version: transaction.version, reason: 'caretMoved' });
 		clear();

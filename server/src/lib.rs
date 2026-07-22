@@ -10,6 +10,7 @@ pub mod lexer;
 pub mod lsp;
 pub mod model;
 pub mod parser;
+pub mod preprocessor;
 pub mod reference_finder;
 pub mod resolver;
 pub mod scope;

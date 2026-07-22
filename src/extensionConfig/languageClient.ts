@@ -17,12 +17,18 @@ export const languageClientCompletion = {
 	snippetSuggestTransactionTimeoutMs: 30_000,
 } as const;
 
+export const experimentalAutoFormattingConfig = {
+	section: 'reforgerScriptTools',
+	setting: 'experimentalAutoFormatting',
+} as const;
+
 export const languageClientCommands = {
 	debugHoverAtCursor: 'reforger-sript-tools.debug.hoverAtCursor',
 	debugCompletionAtCursor: 'reforger-sript-tools.debug.completionAtCursor',
 	triggerSuggestAtSnippetPlaceholder: 'reforger-sript-tools.completion.triggerSuggestAtSnippetPlaceholder',
 	advanceSnippetPlaceholderAfterAccept: 'reforger-sript-tools.completion.advanceSnippetPlaceholderAfterAccept',
 	normalizeIfSpaceCommit: 'reforger-sript-tools.completion.normalizeIfSpaceCommit',
+	applyDirectiveSeparator: 'reforger-sript-tools.completion.applyDirectiveSeparator',
 	openSymbolLocation: 'reforger-sript-tools.openSymbolLocation',
 } as const;
 

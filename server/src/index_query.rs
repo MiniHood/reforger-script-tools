@@ -146,6 +146,36 @@ impl<'index> IndexQuery<'index> {
         self.completion_top_level_limited(prefix, mode, usize::MAX)
     }
 
+    /// Returns every indexed active Macro. Unlike ordinary editor completion,
+    /// preprocessor operands intentionally include every source layer.
+    pub fn completion_preprocessor_macros(&self, prefix: &str) -> Vec<EditorCompletionCandidate> {
+        let mut candidates = self
+            .index
+            .symbols()
+            .iter()
+            .filter(|symbol| symbol.kind == SymbolKind::PreprocessorMacro)
+            .filter(|symbol| {
+                symbol
+                    .name
+                    .as_deref()
+                    .is_some_and(|name| completion_name_match_rank(name, prefix).is_some())
+            })
+            .filter_map(|symbol| {
+                self.editor_symbol_completion_candidate(symbol.id, EditorCompletionOrigin::Unknown)
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_by(|left, right| {
+            completion_name_match_rank(&left.display.label, prefix)
+                .unwrap_or(u16::MAX)
+                .cmp(&completion_name_match_rank(&right.display.label, prefix).unwrap_or(u16::MAX))
+                .then_with(|| right.source_priority.cmp(&left.source_priority))
+                .then_with(|| left.display.label.cmp(&right.display.label))
+                .then_with(|| left.id.file_id.cmp(&right.id.file_id))
+                .then_with(|| left.id.symbol_id.cmp(&right.id.symbol_id))
+        });
+        candidates
+    }
+
     pub fn completion_top_level_limited(
         &self,
         prefix: &str,

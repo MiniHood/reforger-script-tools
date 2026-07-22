@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { experimentalAutoFormattingEnabled } from '../extensionConfig/experimentalAutoFormatting';
 import { languageClientCommands, languageClientCompletion, languageClientLanguage } from '../extensionConfig/languageClient';
 import { diagnostic } from '../diagnostics/diagnostics';
 import { completionItemCount, completionPresentationMetadata, isCompletionListIncomplete, type CompletionMiddlewareCallbacks } from './completionMiddleware';
@@ -326,6 +327,9 @@ function isVscodeCommand(value: unknown): value is vscode.Command {
  * contract.
  */
 async function normalizeIfSpaceCommit(args: readonly unknown[]): Promise<void> {
+	if (!experimentalAutoFormattingEnabled()) {
+		return;
+	}
 	const contract = ifSpaceCommitContractFromCommandArguments(args);
 	if (!contract) {
 		return;
@@ -355,6 +359,25 @@ async function normalizeIfSpaceCommit(args: readonly unknown[]): Promise<void> {
 		...contract,
 	};
 	diagnostic('completion.ifSpaceCommit', { outcome: 'awaitingCommitCharacter' });
+}
+
+/** Applies the Rust-authored separator only when the user has enabled editor
+ * automatic edits and the completion left the caret after that exact directive. */
+async function applyDirectiveSeparator(directive: unknown): Promise<void> {
+	if (typeof directive !== 'string' || !experimentalAutoFormattingEnabled()) {
+		return;
+	}
+	const editor = vscode.window.activeTextEditor;
+	if (!editor || editor.document.languageId !== languageClientLanguage.id
+		|| editor.selections.length !== 1 || !editor.selection.isEmpty) {
+		return;
+	}
+	const caret = editor.selection.active;
+	const linePrefix = editor.document.lineAt(caret.line).text.slice(0, caret.character);
+	if (!linePrefix.endsWith(directive)) {
+		return;
+	}
+	await editor.edit(edit => edit.insert(caret, ' '));
 }
 
 interface IfSpaceCommitContract {
@@ -532,5 +555,6 @@ export function registerCompletionUiBridge(): vscode.Disposable[] {
 		vscode.commands.registerCommand(languageClientCommands.triggerSuggestAtSnippetPlaceholder, (...expectedSelectionTexts: unknown[]) => triggerSuggestAtSnippetPlaceholder(...expectedSelectionTexts)),
 		vscode.commands.registerCommand(languageClientCommands.advanceSnippetPlaceholderAfterAccept, (transactionId: unknown, originalCommand: unknown) => advanceSnippetPlaceholderAfterAccept(transactionId, originalCommand)),
 		vscode.commands.registerCommand(languageClientCommands.normalizeIfSpaceCommit, (...args: unknown[]) => normalizeIfSpaceCommit(args)),
+		vscode.commands.registerCommand(languageClientCommands.applyDirectiveSeparator, (directive: unknown) => applyDirectiveSeparator(directive)),
 	];
 }
