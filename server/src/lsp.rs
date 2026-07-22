@@ -226,6 +226,17 @@ pub struct LspDocumentSymbol {
     pub selection_range: LspRange,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<LspDocumentSymbol>,
+    #[serde(skip)]
+    pub(crate) repaired_full_range: Option<LspRange>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DocumentSymbolRangeRepair {
+    pub(crate) kind: u32,
+    pub(crate) original_range: LspRange,
+    pub(crate) selection_range: LspRange,
+    pub(crate) repaired_range: LspRange,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -797,6 +808,7 @@ fn lexical_document_symbols(source: &str, positions: &PositionIndex) -> Vec<LspD
                         range,
                         selection_range,
                         children: Vec::new(),
+                        repaired_full_range: None,
                     });
                     index = next_index;
                     continue;
@@ -905,6 +917,40 @@ pub fn document_symbol_count(symbols: &[LspDocumentSymbol]) -> usize {
         .sum()
 }
 
+/// Returns a bounded, source-free record of declaration-range recovery that
+/// the request boundary can write to the structured diagnostic log.
+pub(crate) fn document_symbol_range_repairs(
+    symbols: &[LspDocumentSymbol],
+    sample_limit: usize,
+) -> (usize, Vec<DocumentSymbolRangeRepair>) {
+    let mut count = 0usize;
+    let mut samples = Vec::new();
+    collect_document_symbol_range_repairs(symbols, sample_limit, &mut count, &mut samples);
+    (count, samples)
+}
+
+fn collect_document_symbol_range_repairs(
+    symbols: &[LspDocumentSymbol],
+    sample_limit: usize,
+    count: &mut usize,
+    samples: &mut Vec<DocumentSymbolRangeRepair>,
+) {
+    for symbol in symbols {
+        if let Some(original_range) = symbol.repaired_full_range {
+            *count += 1;
+            if samples.len() < sample_limit {
+                samples.push(DocumentSymbolRangeRepair {
+                    kind: symbol.kind,
+                    original_range,
+                    selection_range: symbol.selection_range,
+                    repaired_range: symbol.range,
+                });
+            }
+        }
+        collect_document_symbol_range_repairs(&symbol.children, sample_limit, count, samples);
+    }
+}
+
 fn document_symbols_from_index(
     positions: &LspPositionIndex,
     index: &SymbolIndex,
@@ -935,15 +981,18 @@ fn document_symbol_for_id(
         .iter()
         .filter_map(|child| document_symbol_for_id(positions, index, query, *child))
         .collect::<Vec<_>>();
+    let original_range = positions.range_for_span(symbol.span);
     let selection_range = positions.range_for_span(symbol.selection_span);
+    let range = document_symbol_full_range(original_range, selection_range);
 
     Some(LspDocumentSymbol {
         name: display.label,
         detail: display.detail.or(display.signature),
         kind: document_symbol_kind(symbol.kind),
-        range: document_symbol_full_range(positions.range_for_span(symbol.span), selection_range),
+        range,
         selection_range,
         children,
+        repaired_full_range: (range != original_range).then_some(original_range),
     })
 }
 

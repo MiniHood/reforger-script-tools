@@ -196,6 +196,48 @@ fn document_symbol_full_range_encloses_a_recovery_selection_range() {
 }
 
 #[test]
+fn document_symbol_range_repairs_are_bounded_and_exclude_symbol_names() {
+    let original_range = LspRange {
+        start: LspPosition {
+            line: 2,
+            character: 0,
+        },
+        end: LspPosition {
+            line: 2,
+            character: 5,
+        },
+    };
+    let selection_range = LspRange {
+        start: LspPosition {
+            line: 2,
+            character: 7,
+        },
+        end: LspPosition {
+            line: 2,
+            character: 11,
+        },
+    };
+    let repaired_range = document_symbol_full_range(original_range, selection_range);
+    let repaired = LspDocumentSymbol {
+        name: "SecretIdentifier".to_string(),
+        detail: None,
+        kind: 6,
+        range: repaired_range,
+        selection_range,
+        children: Vec::new(),
+        repaired_full_range: Some(original_range),
+    };
+
+    let (count, samples) = document_symbol_range_repairs(&[repaired], 1);
+
+    assert_eq!(count, 1);
+    let encoded = serde_json::to_string(&samples).unwrap();
+    assert!(encoded.contains("originalRange"));
+    assert!(encoded.contains("repairedRange"));
+    assert!(!encoded.contains("SecretIdentifier"));
+}
+
+#[test]
 fn offset_conversion_uses_utf16_positions() {
     let source = "class Sm😀ke {}\n";
     let offset = source.find("ke").unwrap();

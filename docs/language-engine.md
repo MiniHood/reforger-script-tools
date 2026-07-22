@@ -62,6 +62,12 @@ moves to the body. At that arm, Rust offers the structural `case value` snippet
 and opens ordinary value completion for its selected value. The client owns only
 applying the returned versioned edit and snippet, never inferring source shape.
 
+Document-symbol responses enforce the LSP invariant that a symbol's full range
+contains its selection range, including parser-recovery states. When recovery
+requires that range repair, the server emits a bounded structured diagnostic
+record with only structural range coordinates and symbol kinds; it never logs
+source text or symbol names.
+
 Run focused Rust tests while iterating and `cargo test` from `server/` for the
 engine suite. Use the [development guide](development.md) for extension-level
 verification.

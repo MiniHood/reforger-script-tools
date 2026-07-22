@@ -12,10 +12,11 @@ use super::{
     completion_report_for_lexical_source_with_external_indexes,
     debug_hover_report_for_cached_analysis_with_external_indexes,
     definition_report_for_cached_analysis_with_external_indexes,
-    definition_report_for_pending_snapshot, document_symbol_count, empty_completion_list,
-    hover_report_for_cached_analysis_with_external_indexes, hover_report_for_pending_snapshot,
-    offset_for_position, on_type_formatting, position_for_offset, selected_label_from_debug_report,
-    signature_help_debug_markdown, signature_help_report_for_cached_analysis_with_external_indexes,
+    definition_report_for_pending_snapshot, document_symbol_count, document_symbol_range_repairs,
+    empty_completion_list, hover_report_for_cached_analysis_with_external_indexes,
+    hover_report_for_pending_snapshot, offset_for_position, on_type_formatting,
+    position_for_offset, selected_label_from_debug_report, signature_help_debug_markdown,
+    signature_help_report_for_cached_analysis_with_external_indexes,
     signature_help_report_for_pending_snapshot, source_backed_request_method, symbol_kind_label,
     DebugCompletionJob, DebugHoverJob, DebugRequestJob, DocumentQuery, DocumentQueryState,
     DocumentRuntime, ExternalIndexHandle, HoverSelectionSource, LspPositionIndex, QueryQuality,
@@ -178,6 +179,8 @@ impl FeatureDispatcher<'_> {
                     let mut cached_projection = false;
                     let mut outline_quality = "Exact";
                     let mut projection_ms = 0u128;
+                    let mut range_repair_count = 0usize;
+                    let mut range_repair_samples = Vec::new();
                     let result = params
                         .and_then(|params| {
                             log_uri = params.text_document.uri;
@@ -192,13 +195,15 @@ impl FeatureDispatcher<'_> {
                                     projection_ms = projection.projection_ms;
                                     parse_diagnostics = projection.parse_diagnostics;
                                     symbol_count = document_symbol_count(&projection.symbols);
+                                    (range_repair_count, range_repair_samples) =
+                                        document_symbol_range_repairs(&projection.symbols, 8);
                                     projection.symbols
                                 })
                         })
                         .map(|symbols| serde_json::to_value(symbols).unwrap_or(Value::Null))
                         .unwrap_or(Value::Null);
                     self.log(&format!(
-                        "request documentSymbol uri={} bytes={} revision={} query_quality={} document_symbols_cached={} document_symbol_ms={} symbols={} parse_diagnostics={} queue_ms={} elapsed_ms={}",
+                        "request documentSymbol uri={} bytes={} revision={} query_quality={} document_symbols_cached={} document_symbol_ms={} symbols={} parse_diagnostics={} range_repairs={} queue_ms={} elapsed_ms={}",
                         log_uri,
                         bytes,
                         revision,
@@ -207,9 +212,21 @@ impl FeatureDispatcher<'_> {
                         projection_ms,
                         symbol_count,
                         parse_diagnostics,
+                        range_repair_count,
                         queue_ms,
                         start.elapsed().as_millis()
                     ));
+                    if range_repair_count > 0 {
+                        self.deliver_effect(RuntimeEffect::Diagnostic {
+                            event: "documentSymbol.rangeRepaired",
+                            data: json!({
+                                "revision": revision,
+                                "bytes": bytes,
+                                "repairCount": range_repair_count,
+                                "samples": range_repair_samples,
+                            }),
+                        })?;
+                    }
                     self.respond(id, result)?;
                 }
             }
