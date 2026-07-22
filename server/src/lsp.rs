@@ -47,6 +47,7 @@ mod runtime_scheduler;
 mod semantic_tokens;
 mod signature_help;
 mod transport;
+mod workspace_requests;
 
 use background_events::interpret_background_event;
 use completion::{
@@ -125,6 +126,7 @@ pub use signature_help::{
     LspSignatureHelpReport, LspSignatureHelpTimings, LspSignatureInformation,
 };
 use transport::read_message;
+use workspace_requests::{WorkspaceFileChangedParams, WorkspaceFileDeletedParams};
 
 const SERVER_NAME: &str = "reforger-language-server";
 const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -372,21 +374,6 @@ fn coalescible_full_sync_did_change(value: &Value) -> Option<CoalescibleDidChang
 #[serde(rename_all = "camelCase")]
 struct DidCloseTextDocumentParams {
     text_document: TextDocumentIdentifier,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct WorkspaceFileChangedParams {
-    path: String,
-    text: String,
-    sequence: u64,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct WorkspaceFileDeletedParams {
-    path: String,
-    sequence: u64,
 }
 
 #[derive(Debug, Deserialize)]

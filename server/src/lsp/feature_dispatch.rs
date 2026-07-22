@@ -1,4 +1,5 @@
 use super::request_router::{classify_request, RoutedRequest};
+use super::workspace_requests::{delete_workspace_file, update_workspace_file};
 use super::{
     completion, completion_debug_markdown,
     completion_report_for_cached_analysis_with_external_indexes,
@@ -20,13 +21,12 @@ use super::{
     DocumentQueryState, DocumentSymbolParams, EnterTypingAssistParams, HoverParams,
     HoverSelectionSource, LspPositionIndex, LspSemanticTokensFull, LspServer, QueryQuality,
     RangeFormattingParams, TextSpan, TokenProjectionKind, TokenResultDisposition,
-    WorkspaceFileChangedParams, WorkspaceFileDeletedParams, BLOCK_COMMENT_PAIR_METHOD,
-    DEBUG_COMPLETION_METHOD, DEBUG_HOVER_METHOD, ENTER_TYPING_ASSIST_METHOD,
-    RANGE_FORMATTING_METHOD, WORKSPACE_FILE_CHANGED_METHOD, WORKSPACE_FILE_DELETED_METHOD,
+    BLOCK_COMMENT_PAIR_METHOD, DEBUG_COMPLETION_METHOD, DEBUG_HOVER_METHOD,
+    ENTER_TYPING_ASSIST_METHOD, RANGE_FORMATTING_METHOD, WORKSPACE_FILE_CHANGED_METHOD,
+    WORKSPACE_FILE_DELETED_METHOD,
 };
 use serde_json::{json, Value};
 use std::io::Write;
-use std::path::PathBuf;
 use std::time::Instant;
 
 /// Executes the non-lifecycle, non-document remainder at the composition
@@ -118,85 +118,13 @@ impl<W: Write> LspServer<W> {
                 }
             }
             WORKSPACE_FILE_CHANGED_METHOD => {
-                if let Some(params) =
-                    parse_params::<WorkspaceFileChangedParams>(message.params, method)?
-                {
-                    let start = Instant::now();
-                    let path = PathBuf::from(params.path);
-                    let bytes = params.text.len();
-                    let result = self.external_index.update_workspace_file(
-                        path.clone(),
-                        params.text,
-                        params.sequence,
-                    );
-                    match result {
-                        Ok(Some((symbols, parse_diagnostics))) => {
-                            let status = self.external_index.status_summary();
-                            self.log(&format!(
-                                "notification workspaceFileChanged path={} sequence={} bytes={} symbols={} parse_diagnostics={} overlay_status={} overlay_generation={} overlay_files={} overlay_symbols={} elapsed_ms={}",
-                                path.display(),
-                                params.sequence,
-                                bytes,
-                                symbols,
-                                parse_diagnostics,
-                                status.status,
-                                status.generation,
-                                status.files,
-                                status.symbols,
-                                start.elapsed().as_millis()
-                            ));
-                        }
-                        Ok(None) => self.log(&format!(
-                            "notification workspaceFileChanged ignored path={} sequence={} bytes={} elapsed_ms={}",
-                            path.display(),
-                            params.sequence,
-                            bytes,
-                            start.elapsed().as_millis()
-                        )),
-                        Err(error) => {
-                            self.log(&format!(
-                                "notification workspaceFileChanged path={} sequence={} bytes={} error={} elapsed_ms={}",
-                                path.display(),
-                                params.sequence,
-                                bytes,
-                                error,
-                                start.elapsed().as_millis()
-                            ));
-                        }
-                    }
+                for effect in update_workspace_file(&mut self.external_index, message.params)? {
+                    self.deliver_effect(effect)?;
                 }
             }
             WORKSPACE_FILE_DELETED_METHOD => {
-                if let Some(params) =
-                    parse_params::<WorkspaceFileDeletedParams>(message.params, method)?
-                {
-                    let start = Instant::now();
-                    let path = PathBuf::from(params.path);
-                    let removed = self
-                        .external_index
-                        .delete_workspace_file(&path, params.sequence);
-                    let status = self.external_index.status_summary();
-                    match removed {
-                        Some(removed) => {
-                            self.log(&format!(
-                                "notification workspaceFileDeleted path={} sequence={} removed={} overlay_status={} overlay_generation={} overlay_files={} overlay_symbols={} elapsed_ms={}",
-                                path.display(),
-                                params.sequence,
-                                removed,
-                                status.status,
-                                status.generation,
-                                status.files,
-                                status.symbols,
-                                start.elapsed().as_millis()
-                            ));
-                        }
-                        None => self.log(&format!(
-                            "notification workspaceFileDeleted ignored path={} sequence={} elapsed_ms={}",
-                            path.display(),
-                            params.sequence,
-                            start.elapsed().as_millis()
-                        )),
-                    }
+                for effect in delete_workspace_file(&mut self.external_index, message.params)? {
+                    self.deliver_effect(effect)?;
                 }
             }
             "textDocument/documentSymbol" => {
