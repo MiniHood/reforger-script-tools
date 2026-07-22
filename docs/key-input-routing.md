@@ -104,7 +104,10 @@ are available in extension development diagnostics.
 
 The first Input Feature Owners are control-header `insertNewline`: `for`,
 `foreach`, `while`, and `switch` create their braced bodies before native
-Enter. A completed `if` or `else if` condition entered from inside its paired
+Enter only when the caret is on the completed header's physical line. A caret
+on a later line always falls through to native Enter.
+
+A completed `if` or `else if` condition entered from inside its paired
 parentheses instead preserves that header and creates one indented, unbraced
 body line. The `switch` result embeds `default:` in its one primary edit,
 selects `default`, and may request suggestion UI; it must not insert a second

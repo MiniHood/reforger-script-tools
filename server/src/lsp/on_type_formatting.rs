@@ -62,14 +62,12 @@ pub(super) fn auto_block_control_header_enter_plan(
             }
             let close = matching_right_paren(&tokens, index + 1)?;
             let header_end = tokens[close].span.end;
-            let immediately_after_header = source.get(header_end..cursor).is_some_and(|between| {
-                between.chars().all(char::is_whitespace)
-                        // The native Enter produces exactly one line break.
-                        // Do not reach back across an unrelated blank line.
-                        && between.bytes().filter(|byte| *byte == b'\n').count() <= 1
-            });
-            (token.span.start <= cursor && (cursor <= header_end || immediately_after_header))
-                .then_some((index, close))
+            // A control-body assist belongs only to the physical line that
+            // contains the completed header. Once the caret is below it,
+            // Enter must retain its native line-break behavior.
+            let cursor_is_on_header_line =
+                cursor <= header_end && !source[cursor..header_end].contains(['\r', '\n']);
+            (token.span.start <= cursor && cursor_is_on_header_line).then_some((index, close))
         })
         .last()?;
     let close = tokens[close_index];
@@ -1350,7 +1348,7 @@ mod tests {
             assert_eq!(plan.switch_arm_selection_end, None);
         }
 
-        let switch_source = "switch (value)\n";
+        let switch_source = "switch (value)";
         let plan =
             auto_block_control_header_enter_plan(switch_source, switch_source.len(), 2, true)
                 .unwrap();
@@ -1490,10 +1488,24 @@ mod tests {
         assert!(auto_block_control_header_enter_plan(do_while, do_while.len(), 4, true).is_none());
         let do_while = "do Work(); while (running)\n";
         assert!(auto_block_control_header_enter_plan(do_while, do_while.len(), 4, true).is_none());
-        let source = "for (;;) {}\nwhile (running)\n";
+        let source = "for (;;) {}\nwhile (running)";
         let plan = auto_block_control_header_enter_plan(source, source.len(), 4, true).unwrap();
-        assert_eq!(plan.span.start, source.len() - 1);
+        assert_eq!(plan.span.start, source.len());
         assert_eq!(plan.replacement, "\n{\n    \n}");
+    }
+
+    #[test]
+    fn declines_enter_below_a_completed_control_header() {
+        for source in [
+            "for (t)\n",
+            "for (t)\n        // ordinary line break",
+            "while (running)\r\n    nextLine",
+        ] {
+            assert!(
+                control_header_block_before_enter_plan(source, source.len(), 4, true).is_none(),
+                "{source:?}"
+            );
+        }
     }
 
     #[test]

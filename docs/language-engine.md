@@ -54,7 +54,8 @@ or after the snippet edit; it must not infer or rewrite ordinary source.
 
 The Enter typing-assist request is a bounded structural edit, not a formatter.
 For `for`, `foreach`, `while`, and `switch` headers with a matched closing
-parenthesis, Rust may append a braced body while preserving the header exactly.
+parenthesis, Rust may append a braced body only while the caret remains on the
+header's physical line, preserving the header exactly.
 It declines existing-brace, non-header, comment/string, multi-caret, stale, and
 disabled-setting cases. A generated `switch` body begins with a Rust-authored
 `default` snippet: typing replaces its selected arm, while Tab retains it and
