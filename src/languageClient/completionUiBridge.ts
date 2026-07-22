@@ -418,11 +418,19 @@ export function ifSpaceCommitContractFromCommandArguments(args: readonly unknown
 	};
 	const start = position(contract.deletion?.start);
 	const end = position(contract.deletion?.end);
+	const trailingStart = position(contract.trailingDeletion?.start);
+	const trailingEnd = position(contract.trailingDeletion?.end);
 	const caret = position(contract.caret);
-	if (typeof contract.expectedCommit !== 'string' || contract.expectedCommit.length !== 1 || !start || !end || !caret) {
+	if (typeof contract.expectedCommit !== 'string' || contract.expectedCommit.length !== 1
+		|| !start || !end || !trailingStart || !trailingEnd || !caret) {
 		return undefined;
 	}
-	return { expectedCommit: contract.expectedCommit, deletion: new vscode.Range(start, end), caret };
+	return {
+		expectedCommit: contract.expectedCommit,
+		deletion: new vscode.Range(start, end),
+		trailingDeletion: new vscode.Range(trailingStart, trailingEnd),
+		caret,
+	};
 }
 
 function registerIfSpaceCommitCleanup(): vscode.Disposable {

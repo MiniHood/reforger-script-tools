@@ -76,6 +76,22 @@ suite('extension activation', () => {
 		assert.deepStrictEqual(editor.selection.active, new vscode.Position(0, 4));
 	});
 
+	test('removes a Space committed after the if snippet before VS Code advances the selection', async () => {
+		const document = await vscode.workspace.openTextDocument({ language: 'enforce', content: 'if ()' });
+		const editor = await vscode.window.showTextDocument(document);
+		editor.selection = new vscode.Selection(new vscode.Position(0, 4), new vscode.Position(0, 4));
+		await vscode.commands.executeCommand(languageClientCommands.normalizeIfSpaceCommit, {
+			expectedCommit: ' ',
+			deletion: { start: { line: 0, character: 4 }, end: { line: 0, character: 5 } },
+			trailingDeletion: { start: { line: 0, character: 5 }, end: { line: 0, character: 6 } },
+			caret: { line: 0, character: 4 },
+		});
+		await editor.edit(edit => edit.insert(new vscode.Position(0, 4), ' '));
+		await new Promise(resolve => setTimeout(resolve, 20));
+		assert.strictEqual(document.getText(), 'if ()');
+		assert.deepStrictEqual(editor.selection.active, new vscode.Position(0, 4));
+	});
+
 	test('rejects an if completion contract after a caret or selection change', async () => {
 		const contract = {
 			expectedCommit: ' ',
