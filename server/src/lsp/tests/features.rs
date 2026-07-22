@@ -73,13 +73,12 @@ fn full_shared_executor_evicts_or_drops_rich_before_semantic() {
 fn semantic_token_refresh_coalesces_until_the_client_acknowledges_it() {
     let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
 
-    server.request_semantic_tokens_refresh().unwrap();
-    server.request_semantic_tokens_refresh().unwrap();
-    assert_eq!(
-        server.semantic_tokens_refresh_in_flight.as_deref(),
-        Some("server-1")
-    );
-    assert!(server.semantic_tokens_refresh_dirty);
+    let mut effects = Vec::new();
+    server.document_runtime.request_semantic_tokens_refresh_effect(&mut effects);
+    server.document_runtime.request_semantic_tokens_refresh_effect(&mut effects);
+    for effect in effects {
+        server.deliver_effect(effect).unwrap();
+    }
     assert_eq!(
         String::from_utf8_lossy(&server.writer)
             .matches("workspace/semanticTokens/refresh")
@@ -96,11 +95,6 @@ fn semantic_token_refresh_coalesces_until_the_client_acknowledges_it() {
         )
         .unwrap();
 
-    assert_eq!(
-        server.semantic_tokens_refresh_in_flight.as_deref(),
-        Some("server-2")
-    );
-    assert!(!server.semantic_tokens_refresh_dirty);
     assert_eq!(
         String::from_utf8_lossy(&server.writer)
             .matches("workspace/semanticTokens/refresh")

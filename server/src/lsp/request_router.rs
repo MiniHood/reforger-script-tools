@@ -123,7 +123,12 @@ impl<W: Write> LspServer<W> {
         } = routed;
         let queue_ms = queue_ms.unwrap_or(0);
         let Some(method) = message.method.as_deref() else {
-            self.handle_semantic_tokens_refresh_response(&message)?;
+            for effect in self
+                .document_runtime
+                .acknowledge_semantic_tokens_refresh(&message)
+            {
+                self.deliver_effect(effect)?;
+            }
             return Ok(false);
         };
         self.logger.diagnostic(
@@ -1780,7 +1785,13 @@ impl<W: Write> LspServer<W> {
                 }
             }
         };
-        self.request_semantic_tokens_refresh_if_external_generation_changed()?;
+        let external_status = self.external_index.status_summary();
+        for effect in self.document_runtime.observe_semantic_external_generation(
+            external_status.generation,
+            external_status.status,
+        ) {
+            self.deliver_effect(effect)?;
+        }
         let should_exit = self.shutdown_requested && method == "exit";
         self.logger.diagnostic(
             "rpc.completed",
@@ -1815,7 +1826,10 @@ mod tests {
                 json!({"method": "reforger/workspaceFileChanged", "params": {"uri": "file:///a.c"}}),
                 RequestCommand::WorkspaceIndex,
             ),
-            (json!({"method": "$/cancelRequest"}), RequestCommand::Cancellation),
+            (
+                json!({"method": "$/cancelRequest"}),
+                RequestCommand::Cancellation,
+            ),
         ];
 
         for (value, expected) in cases {

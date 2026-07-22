@@ -660,7 +660,12 @@ impl<W: Write> LspServer<W> {
         // root so the request router never needs transport or shutdown
         // ownership for these commands.
         if routed.command == RequestCommand::Lifecycle && routed.message.method.is_some() {
-            return self.handle_lifecycle_command(routed, queue_ms, coalesced_changes, superseded_changes);
+            return self.handle_lifecycle_command(
+                routed,
+                queue_ms,
+                coalesced_changes,
+                superseded_changes,
+            );
         }
         if routed.command == RequestCommand::Document
             && routed.message.method.as_deref() == Some("textDocument/didClose")
@@ -701,7 +706,10 @@ impl<W: Write> LspServer<W> {
             routed.message.params.unwrap_or(Value::Null),
         )
         .map_err(|error| format!("Invalid textDocument/didClose params: {error}"))?;
-        for effect in self.document_runtime.close_document(&params.text_document.uri) {
+        for effect in self
+            .document_runtime
+            .close_document(&params.text_document.uri)
+        {
             self.deliver_effect(effect)?;
         }
         Ok(false)
@@ -714,24 +722,34 @@ impl<W: Write> LspServer<W> {
         coalesced_changes: usize,
         superseded_changes: usize,
     ) -> Result<bool, String> {
-        let method = routed.message.method.as_deref().expect("document command has a method");
+        let method = routed
+            .message
+            .method
+            .as_deref()
+            .expect("document command has a method");
         if let Some(error) = routed.parameter_error {
             if let Some(id) = routed.message.id {
                 self.respond_error(id, -32602, &error)?;
             } else {
-                self.log(&format!("notification ignored invalid_params method={method} error={error}"));
+                self.log(&format!(
+                    "notification ignored invalid_params method={method} error={error}"
+                ));
             }
             return Ok(false);
         }
         let effects = match method {
             "textDocument/didOpen" => self.document_runtime.open_document(
-                serde_json::from_value::<DidOpenTextDocumentParams>(routed.message.params.unwrap_or(Value::Null))
-                    .map_err(|error| format!("Invalid textDocument/didOpen params: {error}"))?,
+                serde_json::from_value::<DidOpenTextDocumentParams>(
+                    routed.message.params.unwrap_or(Value::Null),
+                )
+                .map_err(|error| format!("Invalid textDocument/didOpen params: {error}"))?,
                 queue_ms,
             )?,
             "textDocument/didChange" => self.document_runtime.change_document(
-                serde_json::from_value::<DidChangeTextDocumentParams>(routed.message.params.unwrap_or(Value::Null))
-                    .map_err(|error| format!("Invalid textDocument/didChange params: {error}"))?,
+                serde_json::from_value::<DidChangeTextDocumentParams>(
+                    routed.message.params.unwrap_or(Value::Null),
+                )
+                .map_err(|error| format!("Invalid textDocument/didChange params: {error}"))?,
                 queue_ms,
                 coalesced_changes,
                 superseded_changes,
@@ -773,7 +791,9 @@ impl<W: Write> LspServer<W> {
             if let Some(id) = routed.message.id {
                 self.respond_error(id, -32600, "Server has already received shutdown")?;
             } else {
-                self.log(&format!("notification ignored after shutdown method={method}"));
+                self.log(&format!(
+                    "notification ignored after shutdown method={method}"
+                ));
             }
             return Ok(false);
         }

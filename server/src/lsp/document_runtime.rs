@@ -1,17 +1,16 @@
 use super::{
-    clear_diagnostics_message,
-    document_symbol_count, document_symbols_from_cached_analysis, file_index_for_source_with_timings,
-    lex, parse_source, publish_diagnostics_message,
+    clear_diagnostics_message, document_symbol_count, document_symbols_from_cached_analysis,
+    file_index_for_source_with_timings, lex, parse_source, publish_diagnostics_message,
     request_document_uri, semantic_tokens_for_cached_analysis_with_external_indexes,
-    AdmissionDisposition, AnalysisTask, DocumentQuery, ExternalIndexSnapshot, FileIndexAnalysis,
-    FileIndexAnalysisTimings, LspSemanticTokenProjection, LspSemanticTokensFull, LspServer,
-    DidChangeTextDocumentParams, DidOpenTextDocumentParams, ForegroundDocumentJob, OpenDocument,
-    OpenDocumentAnalysisJob, PositionIndex, RichSemanticTokensJob, RpcMessage, RuntimeWorkExecutor,
-    RuntimeEffect, TaskClass, MAX_PENDING_DOCUMENT_REQUESTS_PER_URI,
-    ServerEvent,
+    AdmissionDisposition, AnalysisTask, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
+    DocumentQuery, ExternalIndexSnapshot, FileIndexAnalysis, FileIndexAnalysisTimings,
+    ForegroundDocumentJob, LspSemanticTokenProjection, LspSemanticTokensFull, LspServer,
+    OpenDocument, OpenDocumentAnalysisJob, PositionIndex, RichSemanticTokensJob, RpcMessage,
+    RuntimeEffect, RuntimeWorkExecutor, ServerEvent, TaskClass,
+    MAX_PENDING_DOCUMENT_REQUESTS_PER_URI,
 };
 use crate::analysis_runtime::{AdmissionLimits, AnalysisRuntime, UpsertOutcome};
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::{Duration, Instant};
@@ -91,7 +90,9 @@ impl DocumentRuntime {
             }
         }
         effects.push(RuntimeEffect::Notification(clear_diagnostics_message(uri)));
-        effects.push(RuntimeEffect::Log(format!("notification didClose uri={uri}")));
+        effects.push(RuntimeEffect::Log(format!(
+            "notification didClose uri={uri}"
+        )));
         effects
     }
 
@@ -111,12 +112,19 @@ impl DocumentRuntime {
             self.runtime.close(&uri, previous.snapshot.revision());
         }
         let UpsertOutcome::Accepted = self.runtime.upsert(uri.clone(), version, text) else {
-            return Err(format!("didOpen could not install document snapshot for {uri}"));
+            return Err(format!(
+                "didOpen could not install document snapshot for {uri}"
+            ));
         };
         let snapshot = self.runtime.latest(&uri).expect("accepted snapshot");
         let revision = snapshot.revision();
         self.discard_deferred_document_requests_for_revision(&uri, revision, &mut effects)?;
-        self.discard_deferred_semantic_requests_for_revision(&uri, revision, "opened", &mut effects);
+        self.discard_deferred_semantic_requests_for_revision(
+            &uri,
+            revision,
+            "opened",
+            &mut effects,
+        );
 
         if let Some(scheduler) = self.analysis_scheduler.clone() {
             let mut document = OpenDocument::pending(snapshot);
@@ -130,16 +138,28 @@ impl DocumentRuntime {
         } else {
             let mut document = OpenDocument::new(snapshot);
             let symbol_start = Instant::now();
-            let symbols = document_symbols_from_cached_analysis(document.snapshot.text(), document.analysis());
+            let symbols = document_symbols_from_cached_analysis(
+                document.snapshot.text(),
+                document.analysis(),
+            );
             let document_symbol_ms = symbol_start.elapsed().as_millis();
             let symbol_count = document_symbol_count(&symbols);
             document.set_document_symbols(symbols);
             let parse_diagnostics = document.parse_diagnostic_count();
             let analysis_timings = document.analysis_timings();
-            let diagnostics = document.syntax().expect("ready test document has syntax").diagnostics.clone();
+            let diagnostics = document
+                .syntax()
+                .expect("ready test document has syntax")
+                .diagnostics
+                .clone();
             let source = document.snapshot.text().to_string();
             self.documents.insert(uri.clone(), document);
-            effects.push(RuntimeEffect::Notification(publish_diagnostics_message(&uri, version, &source, &diagnostics)));
+            effects.push(RuntimeEffect::Notification(publish_diagnostics_message(
+                &uri,
+                version,
+                &source,
+                &diagnostics,
+            )));
             effects.push(RuntimeEffect::Log(format!(
                 "notification didOpen uri={} bytes={} version={} revision={} cached_analysis=true document_symbols_cached=true symbols={} parse_diagnostics={} analysis_parse_ms={} analysis_catalog_ms={} analysis_index_ms={} analysis_scope_ms={} analysis_build_ms={} document_symbol_ms={} queue_ms={} analysis_elapsed_ms={}",
                 uri, bytes, version, revision, symbol_count, parse_diagnostics,
@@ -167,22 +187,42 @@ impl DocumentRuntime {
         let text = change.text;
         let bytes = text.len();
         let mut effects = Vec::new();
-        let Some(current_version) = self.runtime.latest(&uri).map(|snapshot| snapshot.version()) else {
-            effects.push(RuntimeEffect::Log(format!("notification didChange ignored uri={} version={} reason=not_open", uri, version)));
+        let Some(current_version) = self.runtime.latest(&uri).map(|snapshot| snapshot.version())
+        else {
+            effects.push(RuntimeEffect::Log(format!(
+                "notification didChange ignored uri={} version={} reason=not_open",
+                uri, version
+            )));
             return Ok(effects);
         };
-        if version <= current_version || !matches!(self.runtime.upsert(uri.clone(), version, text), UpsertOutcome::Accepted) {
-            effects.push(RuntimeEffect::Log(format!("notification didChange ignored uri={} version={} current_version={} reason=stale", uri, version, current_version)));
+        if version <= current_version
+            || !matches!(
+                self.runtime.upsert(uri.clone(), version, text),
+                UpsertOutcome::Accepted
+            )
+        {
+            effects.push(RuntimeEffect::Log(format!(
+                "notification didChange ignored uri={} version={} current_version={} reason=stale",
+                uri, version, current_version
+            )));
             return Ok(effects);
         }
         let snapshot = self.runtime.latest(&uri).expect("accepted snapshot");
         let revision = {
-            let document = self.documents.get_mut(&uri).expect("open document exists after version check");
+            let document = self
+                .documents
+                .get_mut(&uri)
+                .expect("open document exists after version check");
             document.replace(snapshot);
             document.mark_analysis_pending();
             document.snapshot.revision()
         };
-        self.discard_deferred_semantic_requests_for_revision(&uri, revision, "superseded", &mut effects);
+        self.discard_deferred_semantic_requests_for_revision(
+            &uri,
+            revision,
+            "superseded",
+            &mut effects,
+        );
         if let Some(scheduler) = self.analysis_scheduler.clone() {
             self.discard_deferred_document_requests_for_revision(&uri, revision, &mut effects)?;
             self.admit_foreground(&uri, revision, scheduler);
@@ -193,10 +233,24 @@ impl DocumentRuntime {
         } else {
             let snapshot = self.runtime.latest(&uri).expect("accepted snapshot");
             let document = self.documents.get_mut(&uri).expect("open document exists");
-            assert!(document.install_foreground(revision, PositionIndex::new(snapshot.text()), lex(snapshot.text()), parse_source(snapshot.text())));
-            let diagnostics = document.syntax().expect("foreground installation supplies syntax").diagnostics.clone();
+            assert!(document.install_foreground(
+                revision,
+                PositionIndex::new(snapshot.text()),
+                lex(snapshot.text()),
+                parse_source(snapshot.text())
+            ));
+            let diagnostics = document
+                .syntax()
+                .expect("foreground installation supplies syntax")
+                .diagnostics
+                .clone();
             let source = snapshot.text().to_string();
-            effects.push(RuntimeEffect::Notification(publish_diagnostics_message(&uri, version, &source, &diagnostics)));
+            effects.push(RuntimeEffect::Notification(publish_diagnostics_message(
+                &uri,
+                version,
+                &source,
+                &diagnostics,
+            )));
             let (analysis, timings) = file_index_for_source_with_timings(snapshot.text());
             effects.push(RuntimeEffect::Log(format!(
                 "notification didChange uri={} bytes={} version={} revision={} cached_analysis=true document_symbols_cached=false symbols=pending parse_diagnostics={} analysis_parse_ms={} analysis_catalog_ms={} analysis_index_ms={} analysis_scope_ms={} analysis_build_ms={} queue_ms={} coalesced_changes={} superseded_changes={} analysis_elapsed_ms={}",
@@ -216,7 +270,9 @@ impl DocumentRuntime {
         analysis: FileIndexAnalysis,
         timings: FileIndexAnalysisTimings,
     ) {
-        let Some(document) = self.documents.get_mut(uri) else { return; };
+        let Some(document) = self.documents.get_mut(uri) else {
+            return;
+        };
         let _ = document.install_analysis(revision, analysis, timings);
     }
 
@@ -224,12 +280,24 @@ impl DocumentRuntime {
         let request_id = self.next_server_request_id;
         self.next_server_request_id += 1;
         let snapshot = self.runtime.latest(uri).expect("accepted snapshot");
-        match self.runtime.admit(TaskClass::Foreground, snapshot, request_id, Instant::now() + Duration::from_secs(30)) {
-            AdmissionDisposition::Enqueued { .. } => scheduler.schedule_foreground(ForegroundDocumentJob {
-                task: self.runtime.take_next().expect("admitted foreground task is runnable"),
-                scheduled_at: Instant::now(),
-            }),
-            AdmissionDisposition::DroppedOverload { .. } => self.documents.get_mut(uri)
+        match self.runtime.admit(
+            TaskClass::Foreground,
+            snapshot,
+            request_id,
+            Instant::now() + Duration::from_secs(30),
+        ) {
+            AdmissionDisposition::Enqueued { .. } => {
+                scheduler.schedule_foreground(ForegroundDocumentJob {
+                    task: self
+                        .runtime
+                        .take_next()
+                        .expect("admitted foreground task is runnable"),
+                    scheduled_at: Instant::now(),
+                })
+            }
+            AdmissionDisposition::DroppedOverload { .. } => self
+                .documents
+                .get_mut(uri)
                 .expect("pending document exists")
                 .reject_pending_analysis(),
         }
@@ -242,15 +310,24 @@ impl DocumentRuntime {
         current_revision: u64,
         effects: &mut Vec<RuntimeEffect>,
     ) -> Result<(), String> {
-        let Some(pending) = self.deferred_document_requests.remove(uri) else { return Ok(()); };
+        let Some(pending) = self.deferred_document_requests.remove(uri) else {
+            return Ok(());
+        };
         for request in pending {
             let message: RpcMessage = serde_json::from_value(request.value)
                 .map_err(|error| format!("Invalid deferred JSON-RPC message: {error}"))?;
             if let Some(id) = message.id {
-                effects.push(RuntimeEffect::Error { id, code: -32801, message: "Content modified".to_string() });
+                effects.push(RuntimeEffect::Error {
+                    id,
+                    code: -32801,
+                    message: "Content modified".to_string(),
+                });
             }
         }
-        effects.push(RuntimeEffect::Log(format!("request deferred discarded uri={} current_revision={} reason=superseded", uri, current_revision)));
+        effects.push(RuntimeEffect::Log(format!(
+            "request deferred discarded uri={} current_revision={} reason=superseded",
+            uri, current_revision
+        )));
         Ok(())
     }
 
@@ -261,9 +338,15 @@ impl DocumentRuntime {
         reason: &str,
         effects: &mut Vec<RuntimeEffect>,
     ) {
-        let Some(pending) = self.deferred_semantic_token_requests.remove(uri) else { return; };
+        let Some(pending) = self.deferred_semantic_token_requests.remove(uri) else {
+            return;
+        };
         for request in pending {
-            effects.push(RuntimeEffect::Error { id: request.id, code: -32802, message: "Semantic tokens superseded".to_string() });
+            effects.push(RuntimeEffect::Error {
+                id: request.id,
+                code: -32802,
+                message: "Semantic tokens superseded".to_string(),
+            });
         }
         effects.push(RuntimeEffect::Log(format!("semanticTokens deferred discarded uri={} current_revision={} reason={} outcome=server-cancelled", uri, current_revision, reason)));
     }
@@ -271,10 +354,21 @@ impl DocumentRuntime {
     /// Interprets completion events whose only observable outcome is a
     /// request response. Freshness belongs to the runtime that admitted the
     /// task; the composition root only delivers the returned effects.
-    pub(super) fn interpret_debug_event(&mut self, event: ServerEvent) -> Option<Vec<RuntimeEffect>> {
+    pub(super) fn interpret_debug_event(
+        &mut self,
+        event: ServerEvent,
+    ) -> Option<Vec<RuntimeEffect>> {
         let ServerEvent::DebugRequestReady {
-            task, id, method, uri, revision, details, result, elapsed_ms,
-        } = event else {
+            task,
+            id,
+            method,
+            uri,
+            revision,
+            details,
+            result,
+            elapsed_ms,
+        } = event
+        else {
             return None;
         };
         if !self.runtime.complete(&task) {
@@ -295,27 +389,47 @@ impl DocumentRuntime {
         ])
     }
 
-    pub(super) fn interpret_foreground_event(&mut self, event: ServerEvent) -> Option<Vec<RuntimeEffect>> {
-        let ServerEvent::ForegroundDocumentReady { task, positions, lexer_tokens, syntax, elapsed_ms } = event else {
+    pub(super) fn interpret_foreground_event(
+        &mut self,
+        event: ServerEvent,
+    ) -> Option<Vec<RuntimeEffect>> {
+        let ServerEvent::ForegroundDocumentReady {
+            task,
+            positions,
+            lexer_tokens,
+            syntax,
+            elapsed_ms,
+        } = event
+        else {
             return None;
         };
         if !self.runtime.complete(&task) {
             return Some(vec![RuntimeEffect::Log(format!(
                 "foreground discarded uri={} revision={} reason=runtime-stale elapsed_ms={}",
-                task.uri(), task.revision(), elapsed_ms
+                task.uri(),
+                task.revision(),
+                elapsed_ms
             ))]);
         }
-        let Some(document) = self.documents.get_mut(task.uri()) else { return Some(Vec::new()); };
+        let Some(document) = self.documents.get_mut(task.uri()) else {
+            return Some(Vec::new());
+        };
         if !document.install_foreground(task.revision(), positions, lexer_tokens, syntax) {
             return Some(vec![RuntimeEffect::Log(format!(
                 "foreground discarded uri={} revision={} reason=stale-install elapsed_ms={}",
-                task.uri(), task.revision(), elapsed_ms
+                task.uri(),
+                task.revision(),
+                elapsed_ms
             ))]);
         }
         let uri = task.uri().to_string();
         let version = document.version;
         let revision = document.revision;
-        let diagnostics = document.syntax().expect("foreground installation supplies syntax").diagnostics.clone();
+        let diagnostics = document
+            .syntax()
+            .expect("foreground installation supplies syntax")
+            .diagnostics
+            .clone();
         let source = document.snapshot.text().to_string();
         let _ = document;
         self.admit_semantic_after_foreground_runtime(&uri, revision);
@@ -329,20 +443,36 @@ impl DocumentRuntime {
     }
 
     fn admit_semantic_after_foreground_runtime(&mut self, uri: &str, revision: u64) {
-        let Some(scheduler) = self.analysis_scheduler.clone() else { return; };
-        let Some(document) = self.documents.get(uri) else { return; };
-        if document.revision != revision || !document.foreground_ready() { return; }
+        let Some(scheduler) = self.analysis_scheduler.clone() else {
+            return;
+        };
+        let Some(document) = self.documents.get(uri) else {
+            return;
+        };
+        if document.revision != revision || !document.foreground_ready() {
+            return;
+        }
         let snapshot = document.snapshot.clone();
         let request_id = self.next_server_request_id;
         self.next_server_request_id += 1;
-        match self.runtime.admit(TaskClass::Semantic, snapshot, request_id, Instant::now() + Duration::from_secs(30)) {
+        match self.runtime.admit(
+            TaskClass::Semantic,
+            snapshot,
+            request_id,
+            Instant::now() + Duration::from_secs(30),
+        ) {
             AdmissionDisposition::Enqueued { .. } => scheduler.schedule(OpenDocumentAnalysisJob {
-                task: self.runtime.take_next().expect("foreground dependency admits a runnable semantic task"),
+                task: self
+                    .runtime
+                    .take_next()
+                    .expect("foreground dependency admits a runnable semantic task"),
                 scheduled_at: Instant::now(),
             }),
             AdmissionDisposition::DroppedOverload { .. } => {
                 if let Some(document) = self.documents.get_mut(uri) {
-                    if document.revision == revision { document.reject_pending_analysis(); }
+                    if document.revision == revision {
+                        document.reject_pending_analysis();
+                    }
                 }
             }
         }
@@ -354,7 +484,12 @@ impl DocumentRuntime {
         external_generation: u64,
     ) -> Option<Result<Vec<RuntimeEffect>, String>> {
         match event {
-            ServerEvent::DocumentAnalysisReady { task, analysis, timings, elapsed_ms } => {
+            ServerEvent::DocumentAnalysisReady {
+                task,
+                analysis,
+                timings,
+                elapsed_ms,
+            } => {
                 if !self.runtime.complete(&task) {
                     return Some(Ok(vec![RuntimeEffect::Log(format!(
                         "documentAnalysis discarded uri={} revision={} reason=runtime-stale elapsed_ms={}",
@@ -363,57 +498,316 @@ impl DocumentRuntime {
                 }
                 let uri = task.uri().to_string();
                 let revision = task.revision();
-                let Some(document) = self.documents.get_mut(&uri) else { return Some(Ok(Vec::new())); };
-                if !document.install_analysis(revision, analysis, timings) { return Some(Ok(Vec::new())); }
-                let pending = self.deferred_document_requests.remove(&uri).unwrap_or_default();
+                let Some(document) = self.documents.get_mut(&uri) else {
+                    return Some(Ok(Vec::new()));
+                };
+                if !document.install_analysis(revision, analysis, timings) {
+                    return Some(Ok(Vec::new()));
+                }
+                let pending = self
+                    .deferred_document_requests
+                    .remove(&uri)
+                    .unwrap_or_default();
                 let mut effects = Vec::new();
                 for request in pending {
                     if request.revision == revision {
-                        effects.push(RuntimeEffect::ReplayDeferred { value: request.value, queue_ms: request.received_at.elapsed().as_millis() });
-                    } else if let Ok(message) = serde_json::from_value::<RpcMessage>(request.value) {
-                        if let Some(id) = message.id { effects.push(RuntimeEffect::Error { id, code: -32801, message: "Content modified".to_string() }); }
+                        effects.push(RuntimeEffect::ReplayDeferred {
+                            value: request.value,
+                            queue_ms: request.received_at.elapsed().as_millis(),
+                        });
+                    } else if let Ok(message) = serde_json::from_value::<RpcMessage>(request.value)
+                    {
+                        if let Some(id) = message.id {
+                            effects.push(RuntimeEffect::Error {
+                                id,
+                                code: -32801,
+                                message: "Content modified".to_string(),
+                            });
+                        }
                     }
                 }
-                if self.documents.get(&uri).is_some_and(|document| document.semantic_tokens.needs_rich_projection(revision, external_generation)) {
-                    effects.push(RuntimeEffect::ScheduleRich { uri: uri.clone(), revision, external_generation });
+                if self.documents.get(&uri).is_some_and(|document| {
+                    document
+                        .semantic_tokens
+                        .needs_rich_projection(revision, external_generation)
+                }) {
+                    effects.push(RuntimeEffect::ScheduleRich {
+                        uri: uri.clone(),
+                        revision,
+                        external_generation,
+                    });
                 }
-                effects.push(RuntimeEffect::Log(format!("documentAnalysis ready uri={} revision={} elapsed_ms={}", uri, revision, elapsed_ms)));
+                effects.push(RuntimeEffect::Log(format!(
+                    "documentAnalysis ready uri={} revision={} elapsed_ms={}",
+                    uri, revision, elapsed_ms
+                )));
                 Some(Ok(effects))
             }
-            ServerEvent::DocumentAnalysisSkipped { task, reason, elapsed_ms } => {
+            ServerEvent::DocumentAnalysisSkipped {
+                task,
+                reason,
+                elapsed_ms,
+            } => {
                 let current = self.runtime.complete(&task);
                 let mut effects = Vec::new();
                 if reason == "scheduler-capacity-evicted" && current {
                     if let Some(document) = self.documents.get_mut(task.uri()) {
                         if document.revision == task.revision() && !document.analysis_ready() {
                             document.reject_pending_analysis();
-                            if let Err(error) = self.discard_deferred_document_requests_for_revision(task.uri(), task.revision(), &mut effects) {
+                            if let Err(error) = self
+                                .discard_deferred_document_requests_for_revision(
+                                    task.uri(),
+                                    task.revision(),
+                                    &mut effects,
+                                )
+                            {
                                 return Some(Err(error));
                             }
-                            self.discard_deferred_semantic_requests_for_revision(task.uri(), task.revision(), "analysis-skipped", &mut effects);
+                            self.discard_deferred_semantic_requests_for_revision(
+                                task.uri(),
+                                task.revision(),
+                                "analysis-skipped",
+                                &mut effects,
+                            );
                         }
                     }
                 }
-                effects.push(RuntimeEffect::Log(format!("documentAnalysis skipped uri={} revision={} reason={} elapsed_ms={}", task.uri(), task.revision(), reason, elapsed_ms)));
+                effects.push(RuntimeEffect::Log(format!(
+                    "documentAnalysis skipped uri={} revision={} reason={} elapsed_ms={}",
+                    task.uri(),
+                    task.revision(),
+                    reason,
+                    elapsed_ms
+                )));
                 Some(Ok(effects))
             }
             _ => None,
         }
     }
 
-    pub(super) fn interpret_rich_skipped_event(&mut self, event: ServerEvent) -> Option<Vec<RuntimeEffect>> {
-        let ServerEvent::RichSemanticTokensSkipped { task, uri, revision, external_generation, reason, elapsed_ms } = event else { return None; };
+    pub(super) fn interpret_rich_skipped_event(
+        &mut self,
+        event: ServerEvent,
+    ) -> Option<Vec<RuntimeEffect>> {
+        let ServerEvent::RichSemanticTokensSkipped {
+            task,
+            uri,
+            revision,
+            external_generation,
+            reason,
+            elapsed_ms,
+        } = event
+        else {
+            return None;
+        };
         self.runtime.complete(&task);
         if let Some(document) = self.documents.get_mut(&uri) {
-            document.semantic_tokens.cancel_pending_if_matches(revision, external_generation);
+            document
+                .semantic_tokens
+                .cancel_pending_if_matches(revision, external_generation);
         }
         let mut effects = Vec::new();
-        self.discard_deferred_semantic_requests_for_revision(&uri, revision, "rich-skipped", &mut effects);
+        self.discard_deferred_semantic_requests_for_revision(
+            &uri,
+            revision,
+            "rich-skipped",
+            &mut effects,
+        );
         effects.push(RuntimeEffect::Log(format!(
             "semanticTokensRich skipped uri={} revision={} external_generation={} reason={} elapsed_ms={}",
             uri, revision, external_generation, reason, elapsed_ms
         )));
         Some(effects)
+    }
+
+    /// Applies a completed rich-token projection. The caller supplies only
+    /// the external generation it captured at the composition boundary; all
+    /// document freshness, deferred response policy, and refresh coalescing
+    /// remain owned here.
+    pub(super) fn interpret_rich_ready_event(
+        &mut self,
+        event: ServerEvent,
+        current_external_generation: u64,
+    ) -> Option<Vec<RuntimeEffect>> {
+        let ServerEvent::RichSemanticTokensReady {
+            task,
+            uri,
+            revision,
+            external_generation,
+            external_status,
+            projection,
+            elapsed_ms,
+        } = event
+        else {
+            return None;
+        };
+        if !self.runtime.complete(&task) {
+            return Some(vec![RuntimeEffect::Log(format!(
+                "semanticTokensRich discarded uri={} revision={} reason=runtime-stale elapsed_ms={}",
+                uri, revision, elapsed_ms
+            ))]);
+        }
+        let Some(document) = self.documents.get_mut(&uri) else {
+            return Some(vec![RuntimeEffect::Log(format!(
+                "semanticTokensRich discarded uri={} revision={} reason=missing-document elapsed_ms={}",
+                uri, revision, elapsed_ms
+            ))]);
+        };
+        if document.revision != revision {
+            return Some(vec![RuntimeEffect::Log(format!(
+                "semanticTokensRich discarded uri={} revision={} current_revision={} reason=stale-revision elapsed_ms={}",
+                uri, revision, document.revision, elapsed_ms
+            ))]);
+        }
+        if current_external_generation != external_generation {
+            return Some(vec![RuntimeEffect::Log(format!(
+                "semanticTokensRich discarded uri={} revision={} external_generation={} current_external_generation={} reason=stale-external-index elapsed_ms={}",
+                uri, revision, external_generation, current_external_generation, elapsed_ms
+            ))]);
+        }
+        let token_count = projection.token_count;
+        let parse_diagnostics = projection.parse_diagnostics;
+        let timings = projection.timings.clone();
+        document
+            .semantic_tokens
+            .set_rich(revision, external_generation, projection);
+        let mut effects = vec![RuntimeEffect::Log(format!(
+            "semanticTokensRich ready uri={} revision={} external_generation={} tokens={} external_index_status={} parse_diagnostics={} lex_ms={} token_loop_ms={} resolver_ms={} resolver_calls={} encode_ms={} elapsed_ms={}",
+            uri, revision, external_generation, token_count, external_status, parse_diagnostics,
+            timings.lex_ms, timings.token_loop_ms, timings.resolver_ms,
+            timings.identifier_resolver_calls, timings.encode_ms, elapsed_ms
+        ))];
+        let published = self.publish_deferred_semantic_token_effects(
+            &uri,
+            revision,
+            external_generation,
+            &mut effects,
+        );
+        if published == 0 {
+            self.request_semantic_tokens_refresh_effect(&mut effects);
+        } else {
+            effects.push(RuntimeEffect::Log(format!(
+                "semanticTokensRich delivered uri={} revision={} external_generation={} deferred_requests={} refresh=false",
+                uri, revision, external_generation, published
+            )));
+        }
+        Some(effects)
+    }
+
+    pub(super) fn publish_deferred_semantic_token_effects(
+        &mut self,
+        uri: &str,
+        revision: u64,
+        external_generation: u64,
+        effects: &mut Vec<RuntimeEffect>,
+    ) -> usize {
+        let Some(projection) = self
+            .documents
+            .get(uri)
+            .and_then(|document| {
+                document
+                    .semantic_tokens
+                    .rich_for_revision_and_external_generation(revision, external_generation)
+            })
+            .cloned()
+        else {
+            return 0;
+        };
+        let pending = self
+            .deferred_semantic_token_requests
+            .remove(uri)
+            .unwrap_or_default();
+        let mut published = 0;
+        for request in pending {
+            if request.revision == revision && request.external_generation == external_generation {
+                let result = serde_json::to_value(LspSemanticTokensFull::from_tokens(
+                    format!("reforger:{}:rich:{}", revision, external_generation),
+                    &projection.tokens,
+                ))
+                .unwrap_or(Value::Null);
+                effects.push(RuntimeEffect::Response {
+                    id: request.id,
+                    result,
+                });
+                effects.push(RuntimeEffect::Log(format!(
+                    "semanticTokens deferred published uri={} revision={} external_generation={} wait_ms={}",
+                    uri, revision, external_generation, request.received_at.elapsed().as_millis()
+                )));
+                published += 1;
+            } else {
+                effects.push(RuntimeEffect::Error {
+                    id: request.id,
+                    code: -32802,
+                    message: "Semantic tokens superseded".to_string(),
+                });
+            }
+        }
+        published
+    }
+
+    pub(super) fn request_semantic_tokens_refresh_effect(
+        &mut self,
+        effects: &mut Vec<RuntimeEffect>,
+    ) {
+        if self.semantic_tokens_refresh_in_flight.is_some() {
+            self.semantic_tokens_refresh_dirty = true;
+            return;
+        }
+        let id = format!("server-{}", self.next_server_request_id);
+        self.next_server_request_id += 1;
+        self.semantic_tokens_refresh_in_flight = Some(id.clone());
+        effects.push(RuntimeEffect::Log(format!(
+            "request workspace/semanticTokens/refresh id={id}"
+        )));
+        effects.push(RuntimeEffect::RequestSemanticTokensRefresh { id });
+    }
+
+    pub(super) fn acknowledge_semantic_tokens_refresh(
+        &mut self,
+        message: &RpcMessage,
+    ) -> Vec<RuntimeEffect> {
+        let Some(id) = message.id.as_ref().and_then(Value::as_str) else {
+            return Vec::new();
+        };
+        if self.semantic_tokens_refresh_in_flight.as_deref() != Some(id) {
+            return Vec::new();
+        }
+        self.semantic_tokens_refresh_in_flight = None;
+        let mut effects = Vec::new();
+        if self.semantic_tokens_refresh_dirty {
+            self.semantic_tokens_refresh_dirty = false;
+            self.request_semantic_tokens_refresh_effect(&mut effects);
+        }
+        effects
+    }
+
+    pub(super) fn observe_semantic_external_generation(
+        &mut self,
+        generation: u64,
+        status: &'static str,
+    ) -> Vec<RuntimeEffect> {
+        if self.documents.is_empty() {
+            self.last_semantic_external_generation = generation;
+            return Vec::new();
+        }
+        if generation == self.last_semantic_external_generation {
+            return Vec::new();
+        }
+        self.last_semantic_external_generation = generation;
+        for document in self.documents.values_mut() {
+            document
+                .semantic_tokens
+                .cancel_pending_for_other_external_generation(generation);
+            document
+                .semantic_tokens
+                .discard_rich_for_other_external_generation(generation);
+        }
+        let mut effects = vec![RuntimeEffect::Log(format!(
+            "semanticTokens external overlay changed generation={} status={} documents={} requesting_refresh=true",
+            generation, status, self.documents.len()
+        ))];
+        self.request_semantic_tokens_refresh_effect(&mut effects);
+        effects
     }
 }
 
@@ -590,52 +984,6 @@ impl<W: Write> LspServer<W> {
                 ));
             }
         }
-    }
-
-    pub(super) fn publish_deferred_semantic_token_requests(
-        &mut self,
-        uri: &str,
-        revision: u64,
-        external_generation: u64,
-    ) -> Result<usize, String> {
-        let Some(projection) = self
-            .documents
-            .get(uri)
-            .and_then(|document| {
-                document
-                    .semantic_tokens
-                    .rich_for_revision_and_external_generation(revision, external_generation)
-            })
-            .cloned()
-        else {
-            return Ok(0);
-        };
-        let pending = self
-            .deferred_semantic_token_requests
-            .remove(uri)
-            .unwrap_or_default();
-        let mut published = 0usize;
-        for request in pending {
-            if request.revision == revision && request.external_generation == external_generation {
-                let result = serde_json::to_value(LspSemanticTokensFull::from_tokens(
-                    format!("reforger:{}:rich:{}", revision, external_generation),
-                    &projection.tokens,
-                ))
-                .unwrap_or(Value::Null);
-                self.respond(request.id, result)?;
-                published += 1;
-                self.log(&format!(
-                    "semanticTokens deferred published uri={} revision={} external_generation={} wait_ms={}",
-                    uri,
-                    revision,
-                    external_generation,
-                    request.received_at.elapsed().as_millis()
-                ));
-            } else {
-                self.respond_error(request.id, -32802, "Semantic tokens superseded")?;
-            }
-        }
-        Ok(published)
     }
 
     pub(super) fn install_document_analysis(
@@ -847,17 +1195,28 @@ impl<W: Write> LspServer<W> {
             encode_ms,
             start.elapsed().as_millis()
         ));
-        let published =
-            self.publish_deferred_semantic_token_requests(uri, revision, external_generation)?;
+        let mut effects = Vec::new();
+        let published = self
+            .document_runtime
+            .publish_deferred_semantic_token_effects(
+                uri,
+                revision,
+                external_generation,
+                &mut effects,
+            );
         if published == 0 {
-            self.request_semantic_tokens_refresh()
+            self.document_runtime
+                .request_semantic_tokens_refresh_effect(&mut effects);
         } else {
-            self.log(&format!(
+            effects.push(RuntimeEffect::Log(format!(
                 "semanticTokensRich delivered uri={} revision={} external_generation={} deferred_requests={} refresh=false",
                 uri, revision, external_generation, published
-            ));
-            Ok(())
+            )));
         }
+        for effect in effects {
+            self.deliver_effect(effect)?;
+        }
+        Ok(())
     }
 
     /// Debug captures share the optional rich lane rather than creating a
@@ -907,80 +1266,13 @@ impl<W: Write> LspServer<W> {
             indexes.game_data.as_deref(),
         ))
     }
-
-    pub(super) fn request_semantic_tokens_refresh(&mut self) -> Result<(), String> {
-        if self.semantic_tokens_refresh_in_flight.is_some() {
-            self.semantic_tokens_refresh_dirty = true;
-            return Ok(());
-        }
-        let request_id = self.next_server_request_id;
-        self.next_server_request_id += 1;
-        let id = format!("server-{request_id}");
-        self.semantic_tokens_refresh_in_flight = Some(id.clone());
-        self.log(&format!(
-            "request workspace/semanticTokens/refresh id=server-{request_id}"
-        ));
-        self.write_message(json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "method": "workspace/semanticTokens/refresh",
-            "params": null
-        }))
-    }
-
-    pub(super) fn handle_semantic_tokens_refresh_response(
-        &mut self,
-        message: &RpcMessage,
-    ) -> Result<(), String> {
-        let Some(id) = message.id.as_ref().and_then(Value::as_str) else {
-            return Ok(());
-        };
-        if self.semantic_tokens_refresh_in_flight.as_deref() != Some(id) {
-            return Ok(());
-        }
-        self.semantic_tokens_refresh_in_flight = None;
-        if self.semantic_tokens_refresh_dirty {
-            self.semantic_tokens_refresh_dirty = false;
-            self.request_semantic_tokens_refresh()?;
-        }
-        Ok(())
-    }
-
-    pub(super) fn request_semantic_tokens_refresh_if_external_generation_changed(
-        &mut self,
-    ) -> Result<(), String> {
-        if self.documents.is_empty() {
-            self.last_semantic_external_generation =
-                self.external_index.status_summary().generation;
-            return Ok(());
-        }
-        let status = self.external_index.status_summary();
-        if status.generation == self.last_semantic_external_generation {
-            return Ok(());
-        }
-        self.last_semantic_external_generation = status.generation;
-        for document in self.documents.values_mut() {
-            document
-                .semantic_tokens
-                .cancel_pending_for_other_external_generation(status.generation);
-            document
-                .semantic_tokens
-                .discard_rich_for_other_external_generation(status.generation);
-        }
-        self.log(&format!(
-            "semanticTokens external overlay changed generation={} status={} documents={} requesting_refresh=true",
-            status.generation,
-            status.status,
-            self.documents.len()
-        ));
-        self.request_semantic_tokens_refresh()
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::analysis_runtime::UpsertOutcome;
+    use serde_json::json;
 
     #[test]
     fn captured_query_pairs_the_open_snapshot_with_the_supplied_external_snapshot() {
@@ -1011,11 +1303,78 @@ mod tests {
     }
 
     #[test]
+    fn rich_ready_emits_refresh_effect_and_coalesces_a_follow_up_until_acknowledged() {
+        let mut runtime = DocumentRuntime::new(None);
+        let uri = "file:///rich-ready.c";
+        assert_eq!(
+            runtime.runtime.upsert(uri, 1, "class Ready {}".to_string()),
+            UpsertOutcome::Accepted
+        );
+        let snapshot = runtime.runtime.latest(uri).expect("accepted snapshot");
+        runtime
+            .documents
+            .insert(uri.to_string(), OpenDocument::new(snapshot.clone()));
+        let task = match runtime.runtime.admit(
+            TaskClass::Rich,
+            snapshot,
+            1,
+            Instant::now() + Duration::from_secs(1),
+        ) {
+            AdmissionDisposition::Enqueued { .. } => runtime.runtime.take_next().unwrap(),
+            other => panic!("unexpected admission disposition: {other:?}"),
+        };
+        let projection = {
+            let document = runtime.documents.get(uri).unwrap();
+            semantic_tokens_for_cached_analysis_with_external_indexes(
+                &document.text,
+                document.analysis(),
+                None,
+                None,
+            )
+        };
+        let effects = runtime
+            .interpret_rich_ready_event(
+                ServerEvent::RichSemanticTokensReady {
+                    task: task.identity().clone(),
+                    uri: uri.to_string(),
+                    revision: 1,
+                    external_generation: 0,
+                    external_status: "missing",
+                    projection,
+                    elapsed_ms: 0,
+                },
+                0,
+            )
+            .expect("rich event belongs to the document runtime");
+        assert!(effects.iter().any(|effect| matches!(
+            effect,
+            RuntimeEffect::RequestSemanticTokensRefresh { id } if id == "server-1"
+        )));
+
+        let mut follow_up = Vec::new();
+        runtime.request_semantic_tokens_refresh_effect(&mut follow_up);
+        assert!(follow_up.is_empty());
+        assert!(runtime.semantic_tokens_refresh_dirty);
+
+        let ack: RpcMessage = serde_json::from_value(json!({
+            "jsonrpc": "2.0", "id": "server-1", "result": null
+        }))
+        .unwrap();
+        let effects = runtime.acknowledge_semantic_tokens_refresh(&ack);
+        assert!(effects.iter().any(|effect| matches!(
+            effect,
+            RuntimeEffect::RequestSemanticTokensRefresh { id } if id == "server-2"
+        )));
+    }
+
+    #[test]
     fn closing_a_document_cancels_its_snapshot_and_emits_only_transport_effects() {
         let mut runtime = DocumentRuntime::new(None);
         let uri = "file:///closed.c";
         assert_eq!(
-            runtime.runtime.upsert(uri, 1, "class Closed {}".to_string()),
+            runtime
+                .runtime
+                .upsert(uri, 1, "class Closed {}".to_string()),
             UpsertOutcome::Accepted
         );
         let snapshot = runtime.runtime.latest(uri).expect("accepted snapshot");
@@ -1030,7 +1389,9 @@ mod tests {
         assert!(effects
             .iter()
             .any(|effect| matches!(effect, RuntimeEffect::Notification(_))));
-        assert!(effects.iter().any(|effect| matches!(effect, RuntimeEffect::Log(_))));
+        assert!(effects
+            .iter()
+            .any(|effect| matches!(effect, RuntimeEffect::Log(_))));
     }
 
     #[test]

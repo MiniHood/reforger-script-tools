@@ -97,7 +97,13 @@ impl<W: Write> LspServer<W> {
                 }) => return Err(error),
                 Ok(event) => self.handle_internal_event(event)?,
                 Err(mpsc::RecvTimeoutError::Timeout) => {
-                    self.request_semantic_tokens_refresh_if_external_generation_changed()?
+                    let external_status = self.external_index.status_summary();
+                    for effect in self.document_runtime.observe_semantic_external_generation(
+                        external_status.generation,
+                        external_status.status,
+                    ) {
+                        self.deliver_effect(effect)?;
+                    }
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }

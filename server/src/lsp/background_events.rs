@@ -14,107 +14,33 @@ impl<W: Write> LspServer<W> {
                 .document_runtime
                 .interpret_analysis_event(event, external_generation)
                 .expect("analysis event is handled by the document runtime")?;
-            for effect in effects { self.deliver_effect(effect)?; }
+            for effect in effects {
+                self.deliver_effect(effect)?;
+            }
             return Ok(());
         }
         if matches!(&event, ServerEvent::RichSemanticTokensSkipped { .. }) {
-            let effects = self.document_runtime.interpret_rich_skipped_event(event)
+            let effects = self
+                .document_runtime
+                .interpret_rich_skipped_event(event)
                 .expect("rich skipped event is handled by the document runtime");
-            for effect in effects { self.deliver_effect(effect)?; }
+            for effect in effects {
+                self.deliver_effect(effect)?;
+            }
             return Ok(());
         }
         match event {
             ServerEvent::Incoming { .. } => Ok(()),
-            ServerEvent::RichSemanticTokensReady {
-                task,
-                uri,
-                revision,
-                external_generation,
-                external_status,
-                projection,
-                elapsed_ms,
-            } => {
-                if !self.runtime.complete(&task) {
-                    self.log(&format!(
-                        "semanticTokensRich discarded uri={} revision={} reason=runtime-stale elapsed_ms={}",
-                        uri, revision, elapsed_ms
-                    ));
-                    return Ok(());
-                }
-                let token_count = projection.token_count;
-                let parse_diagnostics = projection.parse_diagnostics;
-                let lex_ms = projection.timings.lex_ms;
-                let token_loop_ms = projection.timings.token_loop_ms;
-                let resolver_ms = projection.timings.resolver_ms;
-                let resolver_calls = projection.timings.identifier_resolver_calls;
-                let encode_ms = projection.timings.encode_ms;
-                let Some(current_revision) =
-                    self.documents.get(&uri).map(|document| document.revision)
-                else {
-                    self.log(&format!(
-                        "semanticTokensRich discarded uri={} revision={} reason=missing-document elapsed_ms={}",
-                        uri,
-                        revision,
-                        elapsed_ms
-                    ));
-                    return Ok(());
-                };
-                if current_revision != revision {
-                    self.log(&format!(
-                        "semanticTokensRich discarded uri={} revision={} current_revision={} reason=stale-revision elapsed_ms={}",
-                        uri,
-                        revision,
-                        current_revision,
-                        elapsed_ms
-                    ));
-                    return Ok(());
-                }
+            event @ ServerEvent::RichSemanticTokensReady { .. } => {
                 let current_external_generation = self.external_index.status_summary().generation;
-                if current_external_generation != external_generation {
-                    self.log(&format!(
-                        "semanticTokensRich discarded uri={} revision={} external_generation={} current_external_generation={} reason=stale-external-index elapsed_ms={}",
-                        uri,
-                        revision,
-                        external_generation,
-                        current_external_generation,
-                        elapsed_ms
-                    ));
-                    return Ok(());
+                let effects = self
+                    .document_runtime
+                    .interpret_rich_ready_event(event, current_external_generation)
+                    .expect("rich ready event is handled by the document runtime");
+                for effect in effects {
+                    self.deliver_effect(effect)?;
                 }
-                if let Some(document) = self.documents.get_mut(&uri) {
-                    document
-                        .semantic_tokens
-                        .set_rich(revision, external_generation, projection);
-                }
-                self.log(&format!(
-                    "semanticTokensRich ready uri={} revision={} external_generation={} tokens={} external_index_status={} parse_diagnostics={} lex_ms={} token_loop_ms={} resolver_ms={} resolver_calls={} encode_ms={} elapsed_ms={}",
-                    uri,
-                    revision,
-                    external_generation,
-                    token_count,
-                    external_status,
-                    parse_diagnostics,
-                    lex_ms,
-                    token_loop_ms,
-                    resolver_ms,
-                    resolver_calls,
-                    encode_ms,
-                    elapsed_ms
-                ));
-                let published = self.publish_deferred_semantic_token_requests(
-                    &uri,
-                    revision,
-                    external_generation,
-                )?;
-                if published == 0 {
-                    self.request_semantic_tokens_refresh()
-                } else {
-                    self.log(&format!(
-                        "semanticTokensRich delivered uri={} revision={} external_generation={} deferred_requests={} refresh=false",
-                        uri, revision, external_generation, published
-                    ));
-                    Ok(())
-                }
+                Ok(())
             }
             ServerEvent::RichSemanticTokensSkipped {
                 task,
@@ -144,10 +70,19 @@ impl<W: Write> LspServer<W> {
                 syntax,
                 elapsed_ms,
             } => {
-                let effects = self.document_runtime.interpret_foreground_event(
-                    ServerEvent::ForegroundDocumentReady { task, positions, lexer_tokens, syntax, elapsed_ms },
-                ).expect("foreground event is handled by the document runtime");
-                for effect in effects { self.deliver_effect(effect)?; }
+                let effects = self
+                    .document_runtime
+                    .interpret_foreground_event(ServerEvent::ForegroundDocumentReady {
+                        task,
+                        positions,
+                        lexer_tokens,
+                        syntax,
+                        elapsed_ms,
+                    })
+                    .expect("foreground event is handled by the document runtime");
+                for effect in effects {
+                    self.deliver_effect(effect)?;
+                }
                 Ok(())
             }
             ServerEvent::ForegroundDocumentSkipped {
