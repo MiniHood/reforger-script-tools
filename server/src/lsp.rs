@@ -456,7 +456,8 @@ impl<W: Write> LspServer<W> {
         // Lifecycle has no document-owned state. Keep it at the composition
         // root so the request router never needs transport or shutdown
         // ownership for these commands.
-        if routed.command == RequestCommand::Lifecycle && routed.message.method.is_some() {
+        if matches!(routed.command, RequestCommand::Lifecycle(_)) && routed.message.method.is_some()
+        {
             return self.handle_lifecycle_command(
                 routed,
                 queue_ms,
@@ -464,17 +465,18 @@ impl<W: Write> LspServer<W> {
                 superseded_changes,
             );
         }
-        if routed.command == RequestCommand::Document
-            && routed.message.method.as_deref() == Some("textDocument/didClose")
-        {
+        if matches!(
+            routed.command,
+            RequestCommand::Document(request_router::DocumentCommand::Close)
+        ) {
             return self.handle_document_close_command(routed);
         }
-        if routed.command == RequestCommand::Document
-            && matches!(
-                routed.message.method.as_deref(),
-                Some("textDocument/didOpen" | "textDocument/didChange")
+        if matches!(
+            routed.command,
+            RequestCommand::Document(
+                request_router::DocumentCommand::Open | request_router::DocumentCommand::Change
             )
-        {
+        ) {
             return self.handle_document_update_command(
                 routed,
                 queue_ms.unwrap_or(0),
