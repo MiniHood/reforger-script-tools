@@ -27,6 +27,14 @@ and keep the goal active unless the platform's blocked-state threshold has
 actually been met. Use commentary for progress and re-check the checklist
 before declaring completion.
 
+Treat manual, live-editor, Workbench, visual, exploratory, and acceptance
+validation as final acceptance evidence. Do not request it, pause for it, or
+mark a goal blocked because of it while implementation, automated tests,
+cleanup, review, documentation, commit/push, or tracker work remains. Request
+or rely on that validation only after every other acceptance criterion is
+complete and verified; only then can unavailable manual evidence be the sole
+external dependency considered under the normal blocked-state rule.
+
 ## Public seams
 
 Test behavior through public interfaces, never implementation details. A test
