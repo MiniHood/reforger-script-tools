@@ -5,6 +5,7 @@ use std::io::Write;
 /// A transport action requested by runtime-owned work. Only `LspServer`
 /// delivers these effects, keeping JSON-RPC framing out of the runtime.
 pub(super) enum RuntimeEffect {
+    Log(String),
     Notification(Value),
     Response {
         id: Value,
@@ -20,6 +21,10 @@ pub(super) enum RuntimeEffect {
 impl<W: Write> LspServer<W> {
     pub(super) fn deliver_effect(&mut self, effect: RuntimeEffect) -> Result<(), String> {
         match effect {
+            RuntimeEffect::Log(message) => {
+                self.log(&message);
+                Ok(())
+            }
             RuntimeEffect::Notification(message) => self.write_message(message),
             RuntimeEffect::Response { id, result } => self.respond(id, result),
             RuntimeEffect::Error { id, code, message } => self.respond_error(id, code, &message),

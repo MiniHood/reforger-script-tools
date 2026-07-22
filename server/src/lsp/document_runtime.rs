@@ -1,9 +1,10 @@
 use super::{
+    clear_diagnostics_message,
     request_document_uri, semantic_tokens_for_cached_analysis_with_external_indexes,
     AdmissionDisposition, AnalysisTask, DocumentQuery, ExternalIndexSnapshot, FileIndexAnalysis,
     FileIndexAnalysisTimings, LspSemanticTokenProjection, LspSemanticTokensFull, LspServer,
     OpenDocument, OpenDocumentAnalysisJob, RichSemanticTokensJob, RpcMessage, RuntimeWorkExecutor,
-    TaskClass, MAX_PENDING_DOCUMENT_REQUESTS_PER_URI,
+    RuntimeEffect, TaskClass, MAX_PENDING_DOCUMENT_REQUESTS_PER_URI,
 };
 use crate::analysis_runtime::{AdmissionLimits, AnalysisRuntime};
 use serde_json::{json, Value};
@@ -52,6 +53,42 @@ impl DocumentRuntime {
             document: self.documents.get(uri)?,
             external_indexes,
         })
+    }
+
+    /// Closes a document and turns every transport-visible consequence into
+    /// effects for the composition root. No coordinator outside this runtime
+    /// may retain deferred work for the closed snapshot.
+    pub(super) fn close_document(&mut self, uri: &str) -> Vec<RuntimeEffect> {
+        let mut effects = Vec::new();
+        if let Some(mut document) = self.documents.remove(uri) {
+            document.semantic_tokens.cancel_pending();
+            self.runtime.close(uri, document.snapshot.revision());
+        }
+        if let Some(pending) = self.deferred_document_requests.remove(uri) {
+            for request in pending {
+                if let Ok(message) = serde_json::from_value::<RpcMessage>(request.value) {
+                    if let Some(id) = message.id {
+                        effects.push(RuntimeEffect::Error {
+                            id,
+                            code: -32801,
+                            message: "Content modified".to_string(),
+                        });
+                    }
+                }
+            }
+        }
+        if let Some(pending) = self.deferred_semantic_token_requests.remove(uri) {
+            for request in pending {
+                effects.push(RuntimeEffect::Error {
+                    id: request.id,
+                    code: -32802,
+                    message: "Semantic tokens superseded".to_string(),
+                });
+            }
+        }
+        effects.push(RuntimeEffect::Notification(clear_diagnostics_message(uri)));
+        effects.push(RuntimeEffect::Log(format!("notification didClose uri={uri}")));
+        effects
     }
 }
 
@@ -689,5 +726,28 @@ mod tests {
         assert_eq!(query.document.version, 7);
         assert_eq!(query.document.snapshot.text(), "class Query {}");
         assert_eq!(query.external_indexes.status, "missing");
+    }
+
+    #[test]
+    fn closing_a_document_cancels_its_snapshot_and_emits_only_transport_effects() {
+        let mut runtime = DocumentRuntime::new(None);
+        let uri = "file:///closed.c";
+        assert_eq!(
+            runtime.runtime.upsert(uri, 1, "class Closed {}".to_string()),
+            UpsertOutcome::Accepted
+        );
+        let snapshot = runtime.runtime.latest(uri).expect("accepted snapshot");
+        runtime
+            .documents
+            .insert(uri.to_string(), OpenDocument::new(snapshot));
+
+        let effects = runtime.close_document(uri);
+
+        assert!(!runtime.documents.contains_key(uri));
+        assert!(runtime.runtime.latest(uri).is_none());
+        assert!(effects
+            .iter()
+            .any(|effect| matches!(effect, RuntimeEffect::Notification(_))));
+        assert!(effects.iter().any(|effect| matches!(effect, RuntimeEffect::Log(_))));
     }
 }

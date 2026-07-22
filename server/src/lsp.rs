@@ -98,7 +98,7 @@ pub(crate) use open_documents::{
     file_index_for_source_with_timings, FileIndexAnalysisTimings, OpenDocument,
     TokenProjectionKind, TokenResultDisposition,
 };
-use request_router::RequestRouter;
+use request_router::{classify_request, RequestCommand, RequestRouter, RoutedRequest};
 use response_writer::RuntimeEffect;
 use runtime_scheduler::{ForegroundDocumentJob, OpenDocumentAnalysisJob, RuntimeWorkExecutor};
 pub use semantic_tokens::{
@@ -656,12 +656,126 @@ impl<W: Write> LspServer<W> {
         coalesced_changes: usize,
         superseded_changes: usize,
     ) -> Result<bool, String> {
+        let routed = classify_request(value.clone())?;
+        // Lifecycle has no document-owned state. Keep it at the composition
+        // root so the request router never needs transport or shutdown
+        // ownership for these commands.
+        if routed.command == RequestCommand::Lifecycle && routed.message.method.is_some() {
+            return self.handle_lifecycle_command(routed, queue_ms, coalesced_changes, superseded_changes);
+        }
+        if routed.command == RequestCommand::Document
+            && routed.message.method.as_deref() == Some("textDocument/didClose")
+        {
+            return self.handle_document_close_command(routed);
+        }
         RequestRouter::new(self).handle_message(
             value,
             queue_ms,
             coalesced_changes,
             superseded_changes,
         )
+    }
+
+    fn handle_document_close_command(&mut self, routed: RoutedRequest) -> Result<bool, String> {
+        if let Some(error) = routed.parameter_error {
+            if let Some(id) = routed.message.id {
+                self.respond_error(id, -32602, &error)?;
+            } else {
+                self.log(&format!("notification ignored invalid_params method=textDocument/didClose error={error}"));
+            }
+            return Ok(false);
+        }
+        let params = serde_json::from_value::<DidCloseTextDocumentParams>(
+            routed.message.params.unwrap_or(Value::Null),
+        )
+        .map_err(|error| format!("Invalid textDocument/didClose params: {error}"))?;
+        for effect in self.document_runtime.close_document(&params.text_document.uri) {
+            self.deliver_effect(effect)?;
+        }
+        Ok(false)
+    }
+
+    fn handle_lifecycle_command(
+        &mut self,
+        routed: RoutedRequest,
+        queue_ms: Option<u128>,
+        coalesced_changes: usize,
+        superseded_changes: usize,
+    ) -> Result<bool, String> {
+        let started_at = Instant::now();
+        let queue_ms = queue_ms.unwrap_or(0);
+        let method = routed
+            .message
+            .method
+            .as_deref()
+            .expect("lifecycle command has a method");
+        self.logger.diagnostic(
+            "rpc.received",
+            json!({
+                "method": method,
+                "command": "Lifecycle",
+                "request": routed.message.id.is_some(),
+                "queueMs": queue_ms,
+                "coalescedChanges": coalesced_changes,
+                "supersededChanges": superseded_changes,
+            }),
+        );
+        if self.shutdown_requested && method != "exit" {
+            if let Some(id) = routed.message.id {
+                self.respond_error(id, -32600, "Server has already received shutdown")?;
+            } else {
+                self.log(&format!("notification ignored after shutdown method={method}"));
+            }
+            return Ok(false);
+        }
+        match method {
+            "initialize" => {
+                self.log("request initialize");
+                if let Some(id) = routed.message.id {
+                    self.respond(id, json!({
+                        "capabilities": {
+                            "textDocumentSync": {"openClose": true, "change": 1},
+                            "documentSymbolProvider": true,
+                            "documentRangeFormattingProvider": true,
+                            "hoverProvider": true,
+                            "definitionProvider": true,
+                            "completionProvider": {"triggerCharacters": [".", "["]},
+                            "signatureHelpProvider": {
+                                "triggerCharacters": SIGNATURE_HELP_TRIGGER_CHARACTERS,
+                                "retriggerCharacters": SIGNATURE_HELP_RETRIGGER_CHARACTERS
+                            },
+                            "semanticTokensProvider": {
+                                "legend": {"tokenTypes": SEMANTIC_TOKEN_TYPES, "tokenModifiers": SEMANTIC_TOKEN_MODIFIERS},
+                                "full": true,
+                                "range": false
+                            }
+                        },
+                        "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION}
+                    }))?;
+                }
+            }
+            "initialized" => self.log("notification initialized"),
+            "shutdown" => {
+                self.log("request shutdown");
+                self.shutdown_requested = true;
+                if let Some(id) = routed.message.id {
+                    self.respond(id, Value::Null)?;
+                }
+            }
+            "exit" => {
+                self.log("notification exit");
+                if !self.shutdown_requested {
+                    return Err("LSP exit received before shutdown".to_string());
+                }
+            }
+            _ => unreachable!("only lifecycle methods reach the lifecycle executor"),
+        }
+        let should_exit = self.shutdown_requested && method == "exit";
+        self.logger.diagnostic(
+            "rpc.completed",
+            json!({"method": method, "outcome": if should_exit { "exit" } else { "complete" }, "elapsedMs": started_at.elapsed().as_millis()}),
+        );
+        Ok(should_exit)
     }
 
     fn handle_internal_event(&mut self, event: ServerEvent) -> Result<(), String> {
