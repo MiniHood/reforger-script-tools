@@ -1,19 +1,14 @@
-use super::{LspServer, ServerEvent};
-use std::io::Write;
+//! Worker-event interpretation boundary.
+//!
+//! The composition root supplies its captured immutable external snapshot;
+//! document runtime turns the event into transport-neutral effects.
+use super::{DocumentRuntime, ExternalIndexSnapshot, RuntimeEffect, ServerEvent};
 
-impl<W: Write> LspServer<W> {
-    pub(super) fn handle_background_event(&mut self, event: ServerEvent) -> Result<(), String> {
-        let external_generation = self.external_index.status_summary().generation;
-        let external_indexes = self.external_index.snapshot();
-        let Some(result) =
-            self.document_runtime
-                .interpret_event(event, external_generation, external_indexes)
-        else {
-            return Ok(());
-        };
-        for effect in result? {
-            self.deliver_effect(effect)?;
-        }
-        Ok(())
-    }
+pub(super) fn interpret_background_event(
+    runtime: &mut DocumentRuntime,
+    event: ServerEvent,
+    external_generation: u64,
+    external_indexes: ExternalIndexSnapshot,
+) -> Option<Result<Vec<RuntimeEffect>, String>> {
+    runtime.interpret_event(event, external_generation, external_indexes)
 }

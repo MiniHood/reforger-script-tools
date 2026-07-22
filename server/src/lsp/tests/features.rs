@@ -4203,7 +4203,7 @@ fn semantic_tokens_keep_existing_rich_display_until_current_rich_result() {
             None, 0, 0,
         )
         .unwrap();
-    assert!(server.documents[uri].semantic_tokens.has_rich_display());
+    assert!(server.document_runtime.documents[uri].semantic_tokens.has_rich_display());
 
     server
         .handle_message(

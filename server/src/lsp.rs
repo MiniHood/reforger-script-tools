@@ -1,6 +1,5 @@
 use crate::analysis_runtime::{
     AdmissionDisposition, AnalysisTask, PositionIndex, QueryQuality, TaskClass, TaskIdentity,
-    UpsertOutcome,
 };
 #[cfg(test)]
 use crate::analysis_runtime::{AdmissionLimits, AnalysisRuntime};
@@ -16,7 +15,6 @@ use std::cell::Cell;
 #[cfg(test)]
 use std::collections::BTreeMap;
 use std::io::{self, BufReader, Read, Write};
-use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 use std::sync::mpsc;
 #[cfg(test)]
@@ -36,6 +34,7 @@ mod document_query;
 mod document_runtime;
 mod external_indexes;
 mod external_overlay;
+mod feature_dispatch;
 mod hover;
 mod hover_render;
 mod incoming_scheduler;
@@ -49,6 +48,7 @@ mod semantic_tokens;
 mod signature_help;
 mod transport;
 
+use background_events::interpret_background_event;
 use completion::{
     completion_debug_markdown, completion_report_for_cached_analysis_with_external_indexes,
     completion_report_for_current_argument_labels_at_offset_with_external_indexes,
@@ -257,23 +257,6 @@ struct LspServer<W: Write> {
     external_index: ExternalIndexHandle,
     document_runtime: DocumentRuntime,
     shutdown_requested: bool,
-}
-
-// Transitional bridge while request routing and background publication move to
-// typed Document Runtime commands and effects. It keeps the first ownership
-// extraction behavior-preserving; no new code may rely on this forwarding.
-impl<W: Write> Deref for LspServer<W> {
-    type Target = DocumentRuntime;
-
-    fn deref(&self) -> &Self::Target {
-        &self.document_runtime
-    }
-}
-
-impl<W: Write> DerefMut for LspServer<W> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.document_runtime
-    }
 }
 
 enum ServerEvent {
@@ -848,7 +831,20 @@ impl<W: Write> LspServer<W> {
     }
 
     fn handle_internal_event(&mut self, event: ServerEvent) -> Result<(), String> {
-        self.handle_background_event(event)
+        let external_generation = self.external_index.status_summary().generation;
+        let external_indexes = self.external_index.snapshot();
+        let Some(result) = interpret_background_event(
+            &mut self.document_runtime,
+            event,
+            external_generation,
+            external_indexes,
+        ) else {
+            return Ok(());
+        };
+        for effect in result? {
+            self.deliver_effect(effect)?;
+        }
+        Ok(())
     }
 
     fn new(writer: W, options: LspServerOptions) -> Self {

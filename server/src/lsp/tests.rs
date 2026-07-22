@@ -4,6 +4,7 @@ use super::runtime_scheduler::{
 };
 use super::semantic_tokens::{fast_semantic_tokens_for_cached_analysis, LspSemanticTokens};
 use super::*;
+use crate::analysis_runtime::UpsertOutcome;
 use crate::resolver::{CandidateSource, IdentifierContext, ResolutionReason};
 use crate::syntax::ParseDiagnostic;
 use std::cell::Cell;
@@ -97,6 +98,7 @@ fn install_next_foreground(
             .expect("foreground worker event");
         server.handle_internal_event(event).unwrap();
         if server
+            .document_runtime
             .documents
             .values()
             .any(OpenDocument::foreground_ready)

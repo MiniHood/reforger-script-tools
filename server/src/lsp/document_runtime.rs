@@ -4,15 +4,13 @@ use super::{
     request_document_uri, semantic_tokens_for_cached_analysis_with_external_indexes,
     AdmissionDisposition, AnalysisTask, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
     DocumentQuery, ExternalIndexSnapshot, FileIndexAnalysis, FileIndexAnalysisTimings,
-    ForegroundDocumentJob, LspSemanticTokenProjection, LspSemanticTokensFull, LspServer,
-    OpenDocument, OpenDocumentAnalysisJob, PositionIndex, RichSemanticTokensJob, RpcMessage,
-    RuntimeEffect, RuntimeWorkExecutor, ServerEvent, TaskClass,
-    MAX_PENDING_DOCUMENT_REQUESTS_PER_URI,
+    ForegroundDocumentJob, LspSemanticTokensFull, OpenDocument, OpenDocumentAnalysisJob,
+    PositionIndex, RichSemanticTokensJob, RpcMessage, RuntimeEffect, RuntimeWorkExecutor,
+    ServerEvent, TaskClass, MAX_PENDING_DOCUMENT_REQUESTS_PER_URI,
 };
 use crate::analysis_runtime::{AdmissionLimits, AnalysisRuntime, UpsertOutcome};
 use serde_json::Value;
 use std::collections::BTreeMap;
-use std::io::Write;
 use std::time::{Duration, Instant};
 
 /// Owns all mutable state whose lifetime is bounded by open documents and
@@ -992,6 +990,7 @@ impl DocumentRuntime {
         ))]
     }
 
+    #[cfg(test)]
     pub(super) fn discard_deferred_semantic_token_requests(
         &mut self,
         uri: &str,
@@ -1037,6 +1036,33 @@ impl DocumentRuntime {
                 ))
             })
             .collect()
+    }
+
+    /// Admits a debug capture on the runtime's rich lane. The returned task
+    /// identity remains the sole authority for its worker result.
+    pub(super) fn admit_debug_capture(
+        &mut self,
+        uri: &str,
+    ) -> Result<AnalysisTask, (usize, usize)> {
+        let request_id = self.next_server_request_id;
+        self.next_server_request_id += 1;
+        let snapshot = self.runtime.latest(uri).expect("current debug snapshot");
+        match self.runtime.admit(
+            TaskClass::Rich,
+            snapshot,
+            request_id,
+            Instant::now() + Duration::from_secs(30),
+        ) {
+            AdmissionDisposition::Enqueued { .. } => Ok(self
+                .runtime
+                .take_next()
+                .expect("admitted debug task is runnable")),
+            AdmissionDisposition::DroppedOverload {
+                retained_jobs,
+                retained_bytes,
+                ..
+            } => Err((retained_jobs, retained_bytes)),
+        }
     }
 
     /// The single owner for worker completion interpretation. The composition
@@ -1108,451 +1134,16 @@ pub(super) struct DeferredSemanticTokenRequest {
     pub(super) received_at: Instant,
 }
 
-impl<W: Write> LspServer<W> {
-    pub(super) fn defer_request_while_document_analysis_is_pending(
-        &mut self,
-        message: &RpcMessage,
-        value: Value,
-    ) -> Result<bool, String> {
-        let Some(uri) = request_document_uri(message.params.as_ref()) else {
-            return Ok(false);
-        };
-        let Some(document) = self.documents.get(&uri) else {
-            return Ok(false);
-        };
-        if document.analysis_ready() {
-            return Ok(false);
-        }
-        let revision = document.revision;
-        let analysis_rejected = document.analysis_rejected();
-        if analysis_rejected {
-            if let Some(id) = message.id.clone() {
-                self.respond_error(id, -32801, "Content modified")?;
-            }
-            self.log(&format!(
-                "request deferred rejected uri={} revision={} reason=analysis-overload",
-                uri, revision
-            ));
-            return Ok(true);
-        }
-        let pending = self
-            .deferred_document_requests
-            .entry(uri.clone())
-            .or_default();
-        if pending.len() >= MAX_PENDING_DOCUMENT_REQUESTS_PER_URI {
-            if let Some(id) = message.id.clone() {
-                self.respond_error(id, -32801, "Content modified")?;
-            }
-            self.log(&format!(
-                "request deferred rejected uri={} revision={} reason=capacity",
-                uri, revision
-            ));
-            return Ok(true);
-        }
-        pending.push(DeferredDocumentRequest {
-            revision,
-            received_at: Instant::now(),
-            value,
-        });
-        let pending_count = pending.len();
-        self.log(&format!(
-            "request deferred uri={} revision={} pending_requests={}",
-            uri, revision, pending_count
-        ));
-        Ok(true)
-    }
-
-    pub(super) fn discard_deferred_document_requests(
-        &mut self,
-        uri: &str,
-        current_revision: u64,
-    ) -> Result<(), String> {
-        let Some(pending) = self.deferred_document_requests.remove(uri) else {
-            return Ok(());
-        };
-        for request in pending {
-            let message: RpcMessage = serde_json::from_value(request.value)
-                .map_err(|error| format!("Invalid deferred JSON-RPC message: {error}"))?;
-            if let Some(id) = message.id {
-                self.respond_error(id, -32801, "Content modified")?;
-            }
-        }
-        self.log(&format!(
-            "request deferred discarded uri={} current_revision={} reason=superseded",
-            uri, current_revision
-        ));
-        Ok(())
-    }
-
-    pub(super) fn defer_semantic_token_request(
-        &mut self,
-        uri: &str,
-        revision: u64,
-        external_generation: u64,
-        id: Value,
-    ) -> Result<(), String> {
-        let pending_count = self
-            .deferred_semantic_token_requests
-            .get(uri)
-            .map_or(0, Vec::len);
-        if pending_count >= MAX_PENDING_DOCUMENT_REQUESTS_PER_URI {
-            self.respond_error(id, -32802, "Semantic tokens superseded")?;
-            self.log(&format!(
-                "semanticTokens deferred uri={} revision={} external_generation={} outcome=server-cancelled reason=capacity pending_requests={}",
-                uri, revision, external_generation, pending_count
-            ));
-            return Ok(());
-        }
-        let pending_count = {
-            let pending = self
-                .deferred_semantic_token_requests
-                .entry(uri.to_string())
-                .or_default();
-            pending.push(DeferredSemanticTokenRequest {
-                id,
-                revision,
-                external_generation,
-                received_at: Instant::now(),
-            });
-            pending.len()
-        };
-        self.log(&format!(
-            "semanticTokens deferred uri={} revision={} external_generation={} pending_requests={}",
-            uri, revision, external_generation, pending_count
-        ));
-        Ok(())
-    }
-
-    pub(super) fn discard_deferred_semantic_token_requests(
-        &mut self,
-        uri: &str,
-        current_revision: u64,
-        reason: &str,
-    ) -> Result<(), String> {
-        let Some(pending) = self.deferred_semantic_token_requests.remove(uri) else {
-            return Ok(());
-        };
-        for request in pending {
-            self.respond_error(request.id, -32802, "Semantic tokens superseded")?;
-        }
-        self.log(&format!(
-            "semanticTokens deferred discarded uri={} current_revision={} reason={} outcome=server-cancelled",
-            uri, current_revision, reason
-        ));
-        Ok(())
-    }
-
-    pub(super) fn cancel_deferred_semantic_token_request(&mut self, id: &Value) {
-        let mut cancellations = Vec::new();
-        self.deferred_semantic_token_requests
-            .retain(|uri, pending| {
-                let before = pending.len();
-                pending.retain(|request| &request.id != id);
-                let removed = before - pending.len();
-                if removed > 0 {
-                    cancellations.push((uri.clone(), removed));
-                }
-                !pending.is_empty()
-            });
-        if cancellations.is_empty() {
-            self.log("semanticTokens deferred cancellation ignored reason=not-pending");
-        } else {
-            for (uri, removed) in cancellations {
-                self.log(&format!(
-                    "semanticTokens deferred cancelled uri={} requests={}",
-                    uri, removed
-                ));
-            }
-        }
-    }
-
-    pub(super) fn install_document_analysis(
-        &mut self,
-        uri: &str,
-        revision: u64,
-        analysis: FileIndexAnalysis,
-        timings: FileIndexAnalysisTimings,
-        elapsed_ms: u128,
-    ) -> Result<(), String> {
-        let Some(document) = self.documents.get_mut(uri) else {
-            self.log(&format!(
-                "documentAnalysis discarded uri={} revision={} reason=missing-document elapsed_ms={}",
-                uri, revision, elapsed_ms
-            ));
-            return Ok(());
-        };
-        if !document.install_analysis(revision, analysis, timings) {
-            let current_revision = document.revision;
-            let _ = document;
-            self.log(&format!(
-                "documentAnalysis discarded uri={} revision={} current_revision={} reason=stale elapsed_ms={}",
-                uri, revision, current_revision, elapsed_ms
-            ));
-            return Ok(());
-        }
-        let version = document.version;
-        let bytes = document.text.len();
-        let parse_diagnostics = document.analysis().parse_diagnostics;
-        let analysis_timings = document.analysis_timings();
-        let _ = document;
-        self.log(&format!(
-            "documentAnalysis ready uri={} bytes={} version={} revision={} cached_analysis=true semantic_idle_delay_ms=0 parse_diagnostics={} analysis_parse_ms={} analysis_catalog_ms={} analysis_index_ms={} analysis_scope_ms={} analysis_build_ms={} elapsed_ms={}",
-            uri,
-            bytes,
-            version,
-            revision,
-            parse_diagnostics,
-            analysis_timings.parse_ms,
-            analysis_timings.catalog_ms,
-            analysis_timings.index_ms,
-            analysis_timings.scope_ms,
-            analysis_timings.total_ms,
-            elapsed_ms
-        ));
-        let pending = self
-            .deferred_document_requests
-            .remove(uri)
-            .unwrap_or_default();
-        for request in pending {
-            if request.revision == revision {
-                self.handle_message(
-                    request.value,
-                    Some(request.received_at.elapsed().as_millis()),
-                    0,
-                    0,
-                )?;
-            } else {
-                let message: RpcMessage = serde_json::from_value(request.value)
-                    .map_err(|error| format!("Invalid deferred JSON-RPC message: {error}"))?;
-                if let Some(id) = message.id {
-                    self.respond_error(id, -32801, "Content modified")?;
-                }
-            }
-        }
-        Ok(())
-    }
-
-    pub(super) fn schedule_rich_semantic_tokens(
-        &mut self,
-        uri: &str,
-        revision: u64,
-        external_generation: u64,
-    ) -> Result<(), String> {
-        if let Some(scheduler) = self.analysis_scheduler.clone() {
-            let start = Instant::now();
-            let Some(document) = self.documents.get(uri) else {
-                self.log(&format!(
-                    "semanticTokensRich skipped uri={} revision={} reason=missing-document-before-schedule elapsed_ms={}",
-                    uri,
-                    revision,
-                    start.elapsed().as_millis()
-                ));
-                return Ok(());
-            };
-            if document.revision != revision {
-                self.log(&format!(
-                    "semanticTokensRich skipped uri={} revision={} reason=stale-revision-before-schedule elapsed_ms={}",
-                    uri,
-                    revision,
-                    start.elapsed().as_millis()
-                ));
-                return Ok(());
-            }
-            let analysis = document.analysis().clone();
-            let _ = document;
-            let snapshot = self.runtime.latest(uri).expect("current rich snapshot");
-            let request_id = self.next_server_request_id;
-            self.next_server_request_id += 1;
-            let task = match self.runtime.admit(
-                TaskClass::Rich,
-                snapshot,
-                request_id,
-                Instant::now() + Duration::from_secs(30),
-            ) {
-                AdmissionDisposition::Enqueued { .. } => self
-                    .runtime
-                    .take_next()
-                    .expect("admitted rich task is runnable"),
-                AdmissionDisposition::DroppedOverload {
-                    retained_jobs,
-                    retained_bytes,
-                    ..
-                } => {
-                    self.log(&format!(
-                        "semanticTokensRich skipped uri={} revision={} external_generation={} reason=runtime-overload retained_jobs={} retained_bytes={}",
-                        uri, revision, external_generation, retained_jobs, retained_bytes
-                    ));
-                    return Ok(());
-                }
-            };
-            self.documents
-                .get_mut(uri)
-                .expect("document remains present for admitted rich task")
-                .semantic_tokens
-                .mark_pending(revision, external_generation, task.cancellation_token());
-            let job = RichSemanticTokensJob {
-                task,
-                uri: uri.to_string(),
-                revision,
-                external_generation,
-                scheduled_at: start,
-                analysis,
-                external_snapshot: self.external_index.snapshot(),
-            };
-            scheduler.schedule_rich(job);
-            return Ok(());
-        }
-
-        let start = Instant::now();
-        let mut external_index_status = self.external_index.status_summary().status;
-        let Some(projection) =
-            self.rich_semantic_tokens_for_revision(uri, revision, &mut external_index_status)
-        else {
-            self.log(&format!(
-                "semanticTokensRich skipped uri={} revision={} reason=stale-or-missing-document elapsed_ms={}",
-                uri,
-                revision,
-                start.elapsed().as_millis()
-            ));
-            return Ok(());
-        };
-        let token_count = projection.token_count;
-        let parse_diagnostics = projection.parse_diagnostics;
-        let lex_ms = projection.timings.lex_ms;
-        let token_loop_ms = projection.timings.token_loop_ms;
-        let resolver_ms = projection.timings.resolver_ms;
-        let resolver_calls = projection.timings.identifier_resolver_calls;
-        let encode_ms = projection.timings.encode_ms;
-        let Some(current_revision) = self.documents.get(uri).map(|document| document.revision)
-        else {
-            self.log(&format!(
-                "semanticTokensRich discarded uri={} revision={} reason=missing-document elapsed_ms={}",
-                uri,
-                revision,
-                start.elapsed().as_millis()
-            ));
-            return Ok(());
-        };
-        if current_revision != revision {
-            self.log(&format!(
-                "semanticTokensRich discarded uri={} revision={} current_revision={} reason=stale-revision elapsed_ms={}",
-                uri,
-                revision,
-                current_revision,
-                start.elapsed().as_millis()
-            ));
-            return Ok(());
-        }
-        let current_external_generation = self.external_index.status_summary().generation;
-        if current_external_generation != external_generation {
-            self.log(&format!(
-                "semanticTokensRich discarded uri={} revision={} external_generation={} current_external_generation={} reason=stale-external-index elapsed_ms={}",
-                uri,
-                revision,
-                external_generation,
-                current_external_generation,
-                start.elapsed().as_millis()
-            ));
-            return Ok(());
-        }
-        if let Some(document) = self.documents.get_mut(uri) {
-            document
-                .semantic_tokens
-                .set_rich(revision, external_generation, projection);
-        }
-        self.log(&format!(
-            "semanticTokensRich ready uri={} revision={} external_generation={} tokens={} external_index_status={} parse_diagnostics={} lex_ms={} token_loop_ms={} resolver_ms={} resolver_calls={} encode_ms={} elapsed_ms={}",
-            uri,
-            revision,
-            external_generation,
-            token_count,
-            external_index_status,
-            parse_diagnostics,
-            lex_ms,
-            token_loop_ms,
-            resolver_ms,
-            resolver_calls,
-            encode_ms,
-            start.elapsed().as_millis()
-        ));
-        let mut effects = Vec::new();
-        let published = self
-            .document_runtime
-            .publish_deferred_semantic_token_effects(
-                uri,
-                revision,
-                external_generation,
-                &mut effects,
-            );
-        if published == 0 {
-            self.document_runtime
-                .request_semantic_tokens_refresh_effect(&mut effects);
-        } else {
-            effects.push(RuntimeEffect::Log(format!(
-                "semanticTokensRich delivered uri={} revision={} external_generation={} deferred_requests={} refresh=false",
-                uri, revision, external_generation, published
-            )));
-        }
-        for effect in effects {
-            self.deliver_effect(effect)?;
-        }
-        Ok(())
-    }
-
-    /// Debug captures share the optional rich lane rather than creating a
-    /// second background owner. The returned identity remains the only
-    /// authority for responding to the request after worker execution.
-    pub(super) fn admit_debug_capture(
-        &mut self,
-        uri: &str,
-    ) -> Result<AnalysisTask, (usize, usize)> {
-        let request_id = self.next_server_request_id;
-        self.next_server_request_id += 1;
-        let snapshot = self.runtime.latest(uri).expect("current debug snapshot");
-        match self.runtime.admit(
-            TaskClass::Rich,
-            snapshot,
-            request_id,
-            Instant::now() + Duration::from_secs(30),
-        ) {
-            AdmissionDisposition::Enqueued { .. } => Ok(self
-                .runtime
-                .take_next()
-                .expect("admitted debug task is runnable")),
-            AdmissionDisposition::DroppedOverload {
-                retained_jobs,
-                retained_bytes,
-                ..
-            } => Err((retained_jobs, retained_bytes)),
-        }
-    }
-
-    pub(super) fn rich_semantic_tokens_for_revision(
-        &self,
-        uri: &str,
-        revision: u64,
-        external_index_status: &mut &'static str,
-    ) -> Option<LspSemanticTokenProjection> {
-        let document = self.documents.get(uri)?;
-        if document.revision != revision {
-            return None;
-        }
-        let indexes = self.external_index.snapshot();
-        *external_index_status = indexes.status;
-        Some(semantic_tokens_for_cached_analysis_with_external_indexes(
-            &document.text,
-            document.analysis(),
-            indexes.workspace.as_deref(),
-            indexes.game_data.as_deref(),
-        ))
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        semantic_tokens_for_cached_analysis_with_external_indexes, AdmissionDisposition,
+        DidChangeTextDocumentParams, DidOpenTextDocumentParams, DocumentRuntime,
+        ExternalIndexSnapshot, OpenDocument, RpcMessage, RuntimeEffect, ServerEvent, TaskClass,
+    };
     use crate::analysis_runtime::UpsertOutcome;
     use serde_json::json;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn captured_query_pairs_the_open_snapshot_with_the_supplied_external_snapshot() {
