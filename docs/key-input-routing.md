@@ -2,16 +2,20 @@
 
 ## Decision
 
-Use VS Code commands and narrowly-scoped keybindings for an editor action that
-must replace a native keystroke atomically. Keep generic structural editing in
-`language-configuration.json`, and use completions/snippets for keyword
-expansion and editable scaffolds. Do not attempt a global keyboard relay.
+Use a versioned, closed vocabulary of semantic editor operations for actions
+that must replace native input atomically. An operation has one extension entry
+command; its keybinding, a completion flow, or a future extension action may
+invoke that command. Keep generic structural editing in
+`language-configuration.json`, and keep completion/snippet presentation in
+its existing ownership boundary. Do not attempt a global keyboard relay.
 
-The TypeScript bridge may perform only cheap, conservative admission checks
-(editor language, one empty selection, visible suggestion/snippet state, and a
-local candidate shape). Rust is the sole authority that decides whether an
-Enfusion action is valid and returns its edit. If Rust declines, the bridge
-executes the known native command without changing the document first.
+Every operation remains native unless an input feature claims its exact editor
+state. TypeScript owns editor transport, conservative candidate screening, and
+one atomic application. Rust is the sole authority for feature eligibility,
+priority, and the result. It either declines or returns one atomic text-edit
+result with final selections. On decline or a request failure, the bridge calls
+the operation's known Native Fallback directly; it never re-dispatches the
+original keybinding.
 
 ## Evidence
 
@@ -49,35 +53,66 @@ executes the known native command without changing the document first.
 
 | Input | Preferred owner | Use it for | Do not use it for |
 | --- | --- | --- | --- |
-| Enter | Narrow keybinding -> bridge -> Rust | A proven, single control-header block edit applied before native Enter | General formatting or situations where Rust declines |
+| `insertNewline` | Operation entry command -> TypeScript bridge -> Rust | A proven control-header block edit applied before native Enter | General formatting or situations where Rust declines |
 | Typing `{`, `(`, `)`, indentation | Language configuration | Bracket pairing, ordinary indentation, and other regex-local rules | Syntax-aware scaffolding |
 | Completion acceptance | Rust completion result plus VS Code snippet support | Keyword skeletons and editable defaults | Reimplementing Tab navigation |
-| Space | Completion commit character only | An unambiguous completion that conventionally commits on Space | A global Space relay |
-| Tab | VS Code default bindings/snippet mode | Suggestion acceptance, indentation, and placeholder navigation | An extension override except a separately proven, non-overlapping context |
+| Future operation, e.g. `insertText` | Operation entry command -> TypeScript bridge -> Rust | A separately proven action such as atomic block-comment expansion | A free-form relay for every printable key |
+
+An operation vocabulary entry has a canonical Native Fallback and tests. Rust
+cannot request an arbitrary VS Code command name. VS Code keybinding
+precedence remains authoritative: user remappings, platform-reserved input,
+and IME composition may bypass an operation command by design.
 
 ## Performance and Correctness Contract
 
 1. Do not bind every printable key or maintain a semantic `when` context on
    every cursor/edit event. Leave non-candidates to VS Code's default bindings.
-2. In a key-owning command, reject immediately without an LSP request unless
-   the editor, language, selection, and cheap local shape can possibly qualify.
-   This screening is routing only; it must not duplicate Enfusion parsing.
-3. Send at most one versioned request for a candidate keystroke. Apply the
-   Rust-produced edit as one editor operation, including the final selection or
-   snippet, so native input is never first inserted and then repaired.
-4. Before falling back, verify the document version and caret still match the
-   command's starting state. If they do not, do nothing rather than inserting a
-   late native character into changed text.
-5. Keep `suggestWidgetVisible` and snippet mode out of the custom Enter/Tab
-   binding. VS Code's completion and snippet contract owns those interactions.
+2. A TypeScript candidate gate may reject impossible cases using editor state
+   and local shape, but must not duplicate Enfusion parsing or ownership
+   decisions. Rust selects the one Input Feature Owner through explicit,
+   tested priority; features never compose.
+3. The initial eligibility boundary is one empty caret. The request represents
+   all selections, but non-empty selections and multiple cursors fall through
+   natively until a feature defines correct semantics for them.
+4. A plausible candidate sends one versioned request and waits for its Rust
+   decision without an arbitrary timeout. On request failure or server
+   unavailability it immediately uses Native Fallback and ignores a late
+   result.
+5. Apply a handled result as one source edit and final selection state. It may
+   declaratively request that suggestion UI opens afterwards, but it cannot
+   run arbitrary VS Code commands, insert a follow-up snippet, or perform a
+   second source mutation.
+6. A decision is valid only for the exact document version and selection it
+   inspected. A stale response is discarded and Native Fallback runs at the
+   editor's then-current state.
+7. Completion lists, active snippet placeholders, IME/composition input, and
+   read-only editors retain native behavior unless a future feature explicitly
+   defines compatible semantics.
+8. Once a behavior is migrated, no `onDidChangeTextDocument` listener may
+   mutate the document to reproduce it. Observers may only trace or clean up
+   state.
+
+Optional centralized route traces record operation kind, eligibility or
+decline reason, selected feature, version match, result, and elapsed time. They
+never record source text or identifiers and are disabled in ordinary use.
 
 ## Implication for Reforger Script Tools
 
-The existing control-header Enter command is the correct mechanism for atomic
-loop/switch body creation. Its `mayBeControlHeader` check should remain a
-conservative transport gate; `server/` must continue to decide whether the
-header is complete, whether a body is appropriate, and the exact edit. Future
-keyword expansion should prefer server-provided snippets/completions over
-custom Space or Tab commands. Add a custom keybinding only after there is one
-unambiguous Enfusion action and a test proves that it does not overlap native
-suggestion, snippet, multi-cursor, read-only, or selection behavior.
+The first Input Feature Owner is control-header `insertNewline`: `for`,
+`foreach`, `while`, and `switch` create their braced bodies before native
+Enter. The `switch` result embeds `default:` in its one primary edit, selects
+`default`, and may request suggestion UI; it must not insert a second snippet.
+`if` and `else` retain native body behavior.
+
+The prior post-native Enter typing assist is removed with this migration,
+including its duplicate control-block logic, incomplete-`if` repair, and
+automatic semicolon insertion. Block-comment expansion is a future
+`insertText` feature: it must become pre-native before it is migrated. Existing
+completion and snippet transactions and language configuration remain outside
+this module.
+
+Required evidence for a delivery is Rust decision tests for supported and
+declined source shapes; TypeScript tests for fallback, failure, stale state,
+special modes, selections, and presentation; an extension-host test that the
+legacy post-edit path does not run; and a manual VS Code check for no visible
+correction or cursor flash.
