@@ -1,10 +1,9 @@
 use super::{
     request_document_uri, semantic_tokens_for_cached_analysis_with_external_indexes,
-    AdmissionDisposition, AnalysisTask, FileIndexAnalysis, FileIndexAnalysisTimings,
-    LspSemanticTokenProjection, LspSemanticTokensFull, LspServer,
-    OpenDocument, OpenDocumentAnalysisJob, RichSemanticTokensJob, RpcMessage,
-    RuntimeWorkExecutor, TaskClass,
-    MAX_PENDING_DOCUMENT_REQUESTS_PER_URI,
+    AdmissionDisposition, AnalysisTask, DocumentQuery, ExternalIndexSnapshot, FileIndexAnalysis,
+    FileIndexAnalysisTimings, LspSemanticTokenProjection, LspSemanticTokensFull, LspServer,
+    OpenDocument, OpenDocumentAnalysisJob, RichSemanticTokensJob, RpcMessage, RuntimeWorkExecutor,
+    TaskClass, MAX_PENDING_DOCUMENT_REQUESTS_PER_URI,
 };
 use crate::analysis_runtime::{AdmissionLimits, AnalysisRuntime};
 use serde_json::{json, Value};
@@ -41,6 +40,18 @@ impl DocumentRuntime {
             semantic_tokens_refresh_dirty: false,
             last_semantic_external_generation: 0,
         }
+    }
+
+    /// Captures the coherent input for one document-backed feature request.
+    pub(super) fn capture_query<'a>(
+        &'a self,
+        uri: &str,
+        external_indexes: ExternalIndexSnapshot,
+    ) -> Option<DocumentQuery<'a>> {
+        Some(DocumentQuery {
+            document: self.documents.get(uri)?,
+            external_indexes,
+        })
     }
 }
 

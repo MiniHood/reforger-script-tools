@@ -1,6 +1,4 @@
-use super::{
-    publish_diagnostics_message, LspServer, ServerEvent,
-};
+use super::{publish_diagnostics_message, LspServer, ServerEvent};
 use std::io::Write;
 
 impl<W: Write> LspServer<W> {

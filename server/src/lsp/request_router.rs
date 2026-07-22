@@ -11,29 +11,25 @@ use super::{
     definition_report_for_cached_analysis_with_external_indexes,
     definition_report_for_pending_snapshot, document_symbol_count,
     document_symbols_from_cached_analysis, empty_completion_list,
-    hover_report_for_cached_analysis_with_external_indexes, hover_report_for_pending_snapshot,
-    lexical_document_symbols_for_snapshot, lexical_semantic_tokens_for_source,
-    on_type_formatting,
-    offset_for_position, parse_params, parse_source, position_for_offset,
-    selected_label_from_debug_report,
-    signature_help_debug_markdown,
+    file_index_for_source_with_timings, hover_report_for_cached_analysis_with_external_indexes,
+    hover_report_for_pending_snapshot, lex, lexical_document_symbols_for_snapshot,
+    lexical_semantic_tokens_for_source, offset_for_position, on_type_formatting, parse_params,
+    parse_source, position_for_offset, publish_diagnostics_message,
+    selected_label_from_debug_report, signature_help_debug_markdown,
     signature_help_report_for_cached_analysis_with_external_indexes,
-    signature_help_report_for_pending_snapshot, source_backed_request_method,
-    symbol_kind_label, validate_message_params,
-    AdmissionDisposition, BlockCommentPairParams, DebugCompletionJob, DebugHoverJob,
-    DebugRequestJob, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
+    signature_help_report_for_pending_snapshot, source_backed_request_method, symbol_kind_label,
+    validate_message_params, AdmissionDisposition, BlockCommentPairParams, DebugCompletionJob,
+    DebugHoverJob, DebugRequestJob, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
     DidOpenTextDocumentParams, DocumentQuery, DocumentQueryState, DocumentSymbolParams,
     EnterTypingAssistParams, ForegroundDocumentJob, HoverParams, HoverSelectionSource,
-    LspPositionIndex, LspSemanticTokensFull, LspServer, OpenDocument,
-    PositionIndex,
-    QueryQuality, RangeFormattingParams, RpcMessage, TaskClass, TextSpan,
-    TokenProjectionKind, TokenResultDisposition, UpsertOutcome, WorkspaceFileChangedParams,
-    WorkspaceFileDeletedParams, BLOCK_COMMENT_PAIR_METHOD, DEBUG_COMPLETION_METHOD,
-    DEBUG_HOVER_METHOD, ENTER_TYPING_ASSIST_METHOD, RANGE_FORMATTING_METHOD,
-    SEMANTIC_TOKEN_MODIFIERS, SEMANTIC_TOKEN_TYPES, SERVER_NAME, SERVER_VERSION,
-    SIGNATURE_HELP_RETRIGGER_CHARACTERS, SIGNATURE_HELP_TRIGGER_CHARACTERS,
-    WORKSPACE_FILE_CHANGED_METHOD, WORKSPACE_FILE_DELETED_METHOD,
-    file_index_for_source_with_timings, lex, publish_diagnostics_message,
+    LspPositionIndex, LspSemanticTokensFull, LspServer, OpenDocument, PositionIndex, QueryQuality,
+    RangeFormattingParams, RpcMessage, TaskClass, TextSpan, TokenProjectionKind,
+    TokenResultDisposition, UpsertOutcome, WorkspaceFileChangedParams, WorkspaceFileDeletedParams,
+    BLOCK_COMMENT_PAIR_METHOD, DEBUG_COMPLETION_METHOD, DEBUG_HOVER_METHOD,
+    ENTER_TYPING_ASSIST_METHOD, RANGE_FORMATTING_METHOD, SEMANTIC_TOKEN_MODIFIERS,
+    SEMANTIC_TOKEN_TYPES, SERVER_NAME, SERVER_VERSION, SIGNATURE_HELP_RETRIGGER_CHARACTERS,
+    SIGNATURE_HELP_TRIGGER_CHARACTERS, WORKSPACE_FILE_CHANGED_METHOD,
+    WORKSPACE_FILE_DELETED_METHOD,
 };
 use serde_json::{json, Value};
 use std::io::Write;
@@ -600,7 +596,9 @@ impl<W: Write> LspServer<W> {
                     let result = params
                         .and_then(|params| {
                             log_uri = params.text_document.uri;
-                            self.document_query(&log_uri).map(|query| {
+                            self.document_runtime
+                                .capture_query(&log_uri, self.external_index.snapshot())
+                                .map(|query| {
                                 let DocumentQuery {
                                     document,
                                     external_indexes: indexes,
@@ -1004,7 +1002,9 @@ impl<W: Write> LspServer<W> {
                     let result = params
                         .and_then(|params| {
                             log_uri = params.text_document.uri;
-                            self.document_query(&log_uri).map(|query| {
+                            self.document_runtime
+                                .capture_query(&log_uri, self.external_index.snapshot())
+                                .map(|query| {
                                 let DocumentQuery {
                                     document,
                                     external_indexes: indexes,
@@ -1239,73 +1239,75 @@ impl<W: Write> LspServer<W> {
                     let result = params
                         .and_then(|params| {
                             log_uri = params.text_document.uri;
-                            self.document_query(&log_uri).map(|query| {
-                                query_quality = query.quality();
-                                let DocumentQuery {
-                                    document,
-                                    external_indexes: indexes,
-                                } = query;
-                                bytes = document.text.len();
-                                revision = document.revision;
-                                external_index_status = indexes.status;
-                                external_index_layers = indexes.available_layers();
-                                let report = match DocumentQuery::state_for(document) {
-                                    DocumentQueryState::Cached(analysis) => {
-                                        hover_report_for_cached_analysis_with_external_indexes(
-                                            &document.text,
-                                            analysis,
-                                            &log_uri,
-                                            params.position,
-                                            indexes.workspace.as_deref(),
-                                            indexes.game_data.as_deref(),
-                                        )
+                            self.document_runtime
+                                .capture_query(&log_uri, self.external_index.snapshot())
+                                .map(|query| {
+                                    query_quality = query.quality();
+                                    let DocumentQuery {
+                                        document,
+                                        external_indexes: indexes,
+                                    } = query;
+                                    bytes = document.text.len();
+                                    revision = document.revision;
+                                    external_index_status = indexes.status;
+                                    external_index_layers = indexes.available_layers();
+                                    let report = match DocumentQuery::state_for(document) {
+                                        DocumentQueryState::Cached(analysis) => {
+                                            hover_report_for_cached_analysis_with_external_indexes(
+                                                &document.text,
+                                                analysis,
+                                                &log_uri,
+                                                params.position,
+                                                indexes.workspace.as_deref(),
+                                                indexes.game_data.as_deref(),
+                                            )
+                                        }
+                                        DocumentQueryState::Foreground(foreground) => {
+                                            hover_report_for_pending_snapshot(
+                                                &document.snapshot,
+                                                foreground,
+                                                params.position,
+                                                document.parse_diagnostic_count(),
+                                            )
+                                        }
+                                        DocumentQueryState::Pending => return None,
+                                    };
+                                    parse_diagnostics = report.parse_diagnostics;
+                                    hit = report.is_hit();
+                                    selection_source = report.selection_source;
+                                    selected_source = report
+                                        .selected_source
+                                        .map(|source| source.as_str())
+                                        .unwrap_or("<none>");
+                                    resolver_reason = report
+                                        .resolver_reason
+                                        .map(|reason| reason.as_str())
+                                        .unwrap_or("<none>");
+                                    identifier_context = report
+                                        .identifier_context
+                                        .map(|context| context.as_str())
+                                        .unwrap_or("<none>");
+                                    resolver_candidate_count = report.resolver_candidate_count;
+                                    if let Some(receiver) = report.receiver_resolution.as_ref() {
+                                        receiver_owner = receiver
+                                            .owner_type
+                                            .as_deref()
+                                            .unwrap_or("<none>")
+                                            .to_string();
+                                        receiver_failure = receiver
+                                            .failure_reason
+                                            .as_deref()
+                                            .unwrap_or("<none>")
+                                            .to_string();
                                     }
-                                    DocumentQueryState::Foreground(foreground) => {
-                                        hover_report_for_pending_snapshot(
-                                            &document.snapshot,
-                                            foreground,
-                                            params.position,
-                                            document.parse_diagnostic_count(),
-                                        )
+                                    if let Some(label) = report.selected_label {
+                                        selected_label = label;
                                     }
-                                    DocumentQueryState::Pending => return None,
-                                };
-                                parse_diagnostics = report.parse_diagnostics;
-                                hit = report.is_hit();
-                                selection_source = report.selection_source;
-                                selected_source = report
-                                    .selected_source
-                                    .map(|source| source.as_str())
-                                    .unwrap_or("<none>");
-                                resolver_reason = report
-                                    .resolver_reason
-                                    .map(|reason| reason.as_str())
-                                    .unwrap_or("<none>");
-                                identifier_context = report
-                                    .identifier_context
-                                    .map(|context| context.as_str())
-                                    .unwrap_or("<none>");
-                                resolver_candidate_count = report.resolver_candidate_count;
-                                if let Some(receiver) = report.receiver_resolution.as_ref() {
-                                    receiver_owner = receiver
-                                        .owner_type
-                                        .as_deref()
-                                        .unwrap_or("<none>")
-                                        .to_string();
-                                    receiver_failure = receiver
-                                        .failure_reason
-                                        .as_deref()
-                                        .unwrap_or("<none>")
-                                        .to_string();
-                                }
-                                if let Some(label) = report.selected_label {
-                                    selected_label = label;
-                                }
-                                if let Some(kind) = report.selected_kind {
-                                    selected_kind = symbol_kind_label(kind);
-                                }
-                                report.hover
-                            })
+                                    if let Some(kind) = report.selected_kind {
+                                        selected_kind = symbol_kind_label(kind);
+                                    }
+                                    report.hover
+                                })
                         })
                         .flatten()
                         .map(|hover| serde_json::to_value(hover).unwrap_or(Value::Null))
@@ -1357,17 +1359,19 @@ impl<W: Write> LspServer<W> {
                     let result = params
                         .and_then(|params| {
                             log_uri = params.text_document.uri;
-                            self.document_query(&log_uri).map(|query| {
-                                query_quality = query.quality();
-                                let DocumentQuery {
-                                    document,
-                                    external_indexes: indexes,
-                                } = query;
-                                bytes = document.text.len();
-                                revision = document.revision;
-                                external_index_status = indexes.status;
-                                external_index_layers = indexes.available_layers();
-                                let report = match DocumentQuery::state_for(document) {
+                            self.document_runtime
+                                .capture_query(&log_uri, self.external_index.snapshot())
+                                .map(|query| {
+                                    query_quality = query.quality();
+                                    let DocumentQuery {
+                                        document,
+                                        external_indexes: indexes,
+                                    } = query;
+                                    bytes = document.text.len();
+                                    revision = document.revision;
+                                    external_index_status = indexes.status;
+                                    external_index_layers = indexes.available_layers();
+                                    let report = match DocumentQuery::state_for(document) {
                                     DocumentQueryState::Cached(analysis) => {
                                         definition_report_for_cached_analysis_with_external_indexes(
                                             &document.text,
@@ -1389,29 +1393,29 @@ impl<W: Write> LspServer<W> {
                                     }
                                     DocumentQueryState::Pending => return Vec::new(),
                                 };
-                                parse_diagnostics = report.parse_diagnostics;
-                                hit = report.is_hit();
-                                selected_source = report
-                                    .selected_source
-                                    .map(|source| source.as_str())
-                                    .unwrap_or("<none>");
-                                resolver_reason = report
-                                    .resolver_reason
-                                    .map(|reason| reason.as_str())
-                                    .unwrap_or("<none>");
-                                identifier_context = report
-                                    .identifier_context
-                                    .map(|context| context.as_str())
-                                    .unwrap_or("<none>");
-                                resolver_candidate_count = report.resolver_candidate_count;
-                                if let Some(label) = report.selected_label {
-                                    selected_label = label;
-                                }
-                                if let Some(kind) = report.selected_kind {
-                                    selected_kind = symbol_kind_label(kind);
-                                }
-                                report.links
-                            })
+                                    parse_diagnostics = report.parse_diagnostics;
+                                    hit = report.is_hit();
+                                    selected_source = report
+                                        .selected_source
+                                        .map(|source| source.as_str())
+                                        .unwrap_or("<none>");
+                                    resolver_reason = report
+                                        .resolver_reason
+                                        .map(|reason| reason.as_str())
+                                        .unwrap_or("<none>");
+                                    identifier_context = report
+                                        .identifier_context
+                                        .map(|context| context.as_str())
+                                        .unwrap_or("<none>");
+                                    resolver_candidate_count = report.resolver_candidate_count;
+                                    if let Some(label) = report.selected_label {
+                                        selected_label = label;
+                                    }
+                                    if let Some(kind) = report.selected_kind {
+                                        selected_kind = symbol_kind_label(kind);
+                                    }
+                                    report.links
+                                })
                         })
                         .map(|links| serde_json::to_value(links).unwrap_or(Value::Null))
                         .unwrap_or(Value::Null);
@@ -1443,7 +1447,10 @@ impl<W: Write> LspServer<W> {
                     let start = Instant::now();
                     let params = parse_params::<HoverParams>(message.params, method)?;
                     if let Some(ref params) = params {
-                        if let Some(query) = self.document_query(&params.text_document.uri) {
+                        if let Some(query) = self.document_runtime.capture_query(
+                            &params.text_document.uri,
+                            self.external_index.snapshot(),
+                        ) {
                             let DocumentQuery {
                                 document,
                                 external_indexes: indexes,
@@ -1502,20 +1509,22 @@ impl<W: Write> LspServer<W> {
                     let result = params
                         .and_then(|params| {
                             log_uri = params.text_document.uri;
-                            self.document_query(&log_uri).and_then(|query| {
-                                let DocumentQuery {
-                                    document,
-                                    external_indexes: indexes,
-                                } = query;
-                                let DocumentQueryState::Cached(analysis) =
-                                    DocumentQuery::state_for(document)
-                                else {
-                                    return None;
-                                };
-                                bytes = document.text.len();
-                                revision = document.revision;
-                                let external_status = self.external_index.status_summary();
-                                let report =
+                            self.document_runtime
+                                .capture_query(&log_uri, self.external_index.snapshot())
+                                .and_then(|query| {
+                                    let DocumentQuery {
+                                        document,
+                                        external_indexes: indexes,
+                                    } = query;
+                                    let DocumentQueryState::Cached(analysis) =
+                                        DocumentQuery::state_for(document)
+                                    else {
+                                        return None;
+                                    };
+                                    bytes = document.text.len();
+                                    revision = document.revision;
+                                    let external_status = self.external_index.status_summary();
+                                    let report =
                                     debug_hover_report_for_cached_analysis_with_external_indexes(
                                         &document.text,
                                         analysis,
@@ -1525,12 +1534,12 @@ impl<W: Write> LspServer<W> {
                                         indexes.game_data.as_deref(),
                                         Some(&external_status),
                                     );
-                                hit = report.contains("Selected Symbol: yes");
-                                if let Some(label) = selected_label_from_debug_report(&report) {
-                                    selected_label = label;
-                                }
-                                Some(Value::String(report))
-                            })
+                                    hit = report.contains("Selected Symbol: yes");
+                                    if let Some(label) = selected_label_from_debug_report(&report) {
+                                        selected_label = label;
+                                    }
+                                    Some(Value::String(report))
+                                })
                         })
                         .unwrap_or_else(|| {
                             Value::String(format!(
@@ -1555,7 +1564,10 @@ impl<W: Write> LspServer<W> {
                     let start = Instant::now();
                     let params = parse_params::<HoverParams>(message.params, method)?;
                     if let Some(ref params) = params {
-                        if let Some(query) = self.document_query(&params.text_document.uri) {
+                        if let Some(query) = self.document_runtime.capture_query(
+                            &params.text_document.uri,
+                            self.external_index.snapshot(),
+                        ) {
                             let DocumentQuery {
                                 document,
                                 external_indexes: indexes,
@@ -1616,7 +1628,9 @@ impl<W: Write> LspServer<W> {
                     let result = params
                         .and_then(|params| {
                             log_uri = params.text_document.uri;
-                            self.document_query(&log_uri).and_then(|query| {
+                            self.document_runtime
+                                .capture_query(&log_uri, self.external_index.snapshot())
+                                .and_then(|query| {
                                 let DocumentQuery {
                                     document,
                                     external_indexes: indexes,

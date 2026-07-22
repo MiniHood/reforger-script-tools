@@ -4235,7 +4235,12 @@ fn trigger_suggest_at_snippet_placeholder_command(placeholder_defaults: Vec<Stri
         // The extension uses this ordered sequence only to recognize VS
         // Code's selected snippet fields. It never parses or classifies
         // source text, symbols, or parameters.
-        arguments: Some(placeholder_defaults.into_iter().map(Value::String).collect()),
+        arguments: Some(
+            placeholder_defaults
+                .into_iter()
+                .map(Value::String)
+                .collect(),
+        ),
     }
 }
 

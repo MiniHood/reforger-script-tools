@@ -2,8 +2,7 @@ use super::{
     file_index_for_source_with_timings,
     semantic_tokens_for_cached_analysis_with_external_indexes_cancelled, DebugRequestJob,
     RichSemanticTokensJob, ServerEvent, DEBUG_COMPLETION_METHOD, DEBUG_HOVER_METHOD,
-    FOREGROUND_RUNTIME_WORKERS, MAX_BACKGROUND_RUNTIME_WORKERS,
-    MAX_PENDING_DOCUMENT_ANALYSIS_JOBS,
+    FOREGROUND_RUNTIME_WORKERS, MAX_BACKGROUND_RUNTIME_WORKERS, MAX_PENDING_DOCUMENT_ANALYSIS_JOBS,
 };
 use crate::analysis_runtime::{AnalysisTask, PositionIndex, TaskClass};
 use crate::lexer::lex;

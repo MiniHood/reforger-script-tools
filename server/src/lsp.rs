@@ -1,6 +1,6 @@
 use crate::analysis_runtime::{
-    AdmissionDisposition, AnalysisTask, PositionIndex,
-    QueryQuality, TaskClass, TaskIdentity, UpsertOutcome,
+    AdmissionDisposition, AnalysisTask, PositionIndex, QueryQuality, TaskClass, TaskIdentity,
+    UpsertOutcome,
 };
 #[cfg(test)]
 use crate::analysis_runtime::{AdmissionLimits, AnalysisRuntime};
@@ -15,12 +15,12 @@ use serde_json::{json, Value};
 use std::cell::Cell;
 #[cfg(test)]
 use std::collections::BTreeMap;
-#[cfg(test)]
-use std::sync::{Arc, Condvar, Mutex};
 use std::io::{self, BufReader, Read, Write};
 use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 use std::sync::mpsc;
+#[cfg(test)]
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 #[cfg(test)]
 use std::time::Duration;
@@ -648,14 +648,6 @@ struct TextDocumentIdentifier {
 impl<W: Write> LspServer<W> {
     fn new(writer: W, options: LspServerOptions) -> Self {
         Self::new_with_runtime_senders(writer, options, None, None, None)
-    }
-
-    fn document_query(&self, uri: &str) -> Option<DocumentQuery<'_>> {
-        let document = self.documents.get(uri)?;
-        Some(DocumentQuery {
-            document,
-            external_indexes: self.external_index.snapshot(),
-        })
     }
 
     fn new_with_runtime_senders(
