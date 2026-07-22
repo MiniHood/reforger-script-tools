@@ -19,9 +19,9 @@ use super::{
     signature_help_report_for_pending_snapshot, source_backed_request_method, symbol_kind_label,
     DebugCompletionJob, DebugHoverJob, DebugRequestJob, DocumentQuery, DocumentQueryState,
     DocumentRuntime, ExternalIndexHandle, HoverSelectionSource, LspPositionIndex, QueryQuality,
-    RuntimeEffect, TextSpan, BLOCK_COMMENT_PAIR_METHOD, DEBUG_COMPLETION_METHOD,
-    DEBUG_HOVER_METHOD, ENTER_TYPING_ASSIST_METHOD, RANGE_FORMATTING_METHOD,
-    WORKSPACE_FILE_CHANGED_METHOD, WORKSPACE_FILE_DELETED_METHOD,
+    RuntimeEffect, TextSpan, BLOCK_COMMENT_PAIR_METHOD, CONTROL_HEADER_ENTER_METHOD,
+    DEBUG_COMPLETION_METHOD, DEBUG_HOVER_METHOD, ENTER_TYPING_ASSIST_METHOD,
+    RANGE_FORMATTING_METHOD, WORKSPACE_FILE_CHANGED_METHOD, WORKSPACE_FILE_DELETED_METHOD,
 };
 use serde_json::{json, Value};
 use std::time::Instant;
@@ -411,6 +411,48 @@ impl FeatureDispatcher<'_> {
                         queue_ms,
                         start.elapsed().as_millis()
                     ));
+                    self.respond(id, result)?;
+                }
+            }
+            CONTROL_HEADER_ENTER_METHOD => {
+                if let Some(id) = message.id {
+                    let RequestCommand::Feature(FeatureCommand::ControlHeaderEnter(params)) =
+                        &command
+                    else {
+                        unreachable!("control-header Enter has typed parameters");
+                    };
+                    let result = params
+                        .clone()
+                        .and_then(|params| {
+                            let query = self
+                                .document_runtime
+                                .capture_query(&params.text_document.uri, self.external_index.snapshot())?;
+                            let document = query.document;
+                            if document.version != params.version {
+                                return None;
+                            }
+                            let cursor = offset_for_position(&document.text, params.position)?;
+                            let plan = on_type_formatting::control_header_block_before_enter_plan(
+                                &document.text,
+                                cursor,
+                                params.options.tab_size,
+                                params.options.insert_spaces,
+                            )?;
+                            let start = position_for_offset(&document.text, plan.span.start);
+                            Some(json!({
+                                "edits": [{
+                                    "range": {
+                                        "start": start,
+                                        "end": position_for_offset(&document.text, plan.span.end),
+                                    },
+                                    "newText": plan.replacement,
+                                }],
+                                "selection": { "line": plan.selection_line, "character": plan.selection_character },
+                                "snippet": plan.switch_arm_snippet,
+                                "triggerSuggest": plan.switch_arm_snippet.is_some(),
+                            }))
+                        })
+                        .unwrap_or_else(|| json!({ "edits": [] }));
                     self.respond(id, result)?;
                 }
             }

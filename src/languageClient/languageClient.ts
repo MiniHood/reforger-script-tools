@@ -47,6 +47,7 @@ import {
 	registerBlockCommentPair,
 	registerEnterTypingAssist,
 } from './typingAssistTransactionBridge';
+import { registerControlHeaderEnter } from './controlHeaderEnterBridge';
 
 export { blockCommentPairPosition, enterAfterPosition } from './typingAssistBridge';
 export { isCurrentSingleTypingAssistCaret } from './typingAssistTransactionBridge';
@@ -116,6 +117,7 @@ export function registerLanguageClientFeatures(context: vscode.ExtensionContext)
 	context.subscriptions.push(debugOutputChannel);
 	context.subscriptions.push(completionDebugOutputChannel);
 	context.subscriptions.push(registerEnterTypingAssist(() => client));
+	context.subscriptions.push(registerControlHeaderEnter(() => client));
 	context.subscriptions.push(registerBlockCommentPair(() => client));
 	context.subscriptions.push(...registerCompletionUiBridge());
 	context.subscriptions.push(...registerDebugCommandBridge(

@@ -29,6 +29,7 @@ export const languageClientCommands = {
 	advanceSnippetPlaceholderAfterAccept: 'reforger-sript-tools.completion.advanceSnippetPlaceholderAfterAccept',
 	normalizeIfSpaceCommit: 'reforger-sript-tools.completion.normalizeIfSpaceCommit',
 	applyDirectiveSeparator: 'reforger-sript-tools.completion.applyDirectiveSeparator',
+	controlHeaderEnter: 'reforger-sript-tools.controlHeaderEnter',
 	openSymbolLocation: 'reforger-sript-tools.openSymbolLocation',
 } as const;
 
@@ -63,6 +64,7 @@ export const languageClientRequests = {
 	debugHover: 'reforger/debugHover',
 	debugCompletion: 'reforger/debugCompletion',
 	enterTypingAssist: 'reforger/enterTypingAssist',
+	controlHeaderEnter: 'reforger/controlHeaderEnter',
 	blockCommentPair: 'reforger/blockCommentPair',
 } as const;
 

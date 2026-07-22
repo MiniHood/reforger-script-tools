@@ -115,7 +115,11 @@ pub(super) fn auto_block_control_header_enter_plan(
     } else {
         format!("{header_closure}{newline}{indent}{{{newline}{indent}{unit}{newline}{indent}}}")
     };
-    let selection_line = source[..header_end]
+    let selection_line = source[..if normalized_header.is_some() {
+        keyword.span.start
+    } else {
+        header_end
+    }]
         .bytes()
         .filter(|byte| *byte == b'\n')
         .count() as u32;
@@ -140,6 +144,43 @@ pub(super) fn auto_block_control_header_enter_plan(
         // newline, so the snippet adds only one body indentation unit.
         switch_arm_snippet: is_switch.then(|| format!("${{1:default}}:{newline}{unit}${{0}}")),
     })
+}
+
+/// Plans a control-header Enter before VS Code performs its native line split.
+/// The virtual split lets the ordinary planner retain ownership of the syntax
+/// while the returned range remains anchored to the unmodified document.
+pub(super) fn control_header_block_before_enter_plan(
+    source: &str,
+    cursor: usize,
+    tab_size: usize,
+    insert_spaces: bool,
+) -> Option<AutoBlockControlHeaderPlan> {
+    if cursor > source.len() {
+        return None;
+    }
+    let line_start = source[..cursor].rfind('\n').map_or(0, |index| index + 1);
+    let indentation = source[line_start..cursor]
+        .chars()
+        .take_while(|character| character.is_whitespace())
+        .collect::<String>();
+    let newline = if source.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
+    let inserted = format!("{newline}{indentation}");
+    let mut virtual_source = String::with_capacity(source.len() + inserted.len());
+    virtual_source.push_str(&source[..cursor]);
+    virtual_source.push_str(&inserted);
+    virtual_source.push_str(&source[cursor..]);
+    let mut plan = auto_block_control_header_enter_plan(
+        &virtual_source,
+        cursor + inserted.len(),
+        tab_size,
+        insert_spaces,
+    )?;
+    plan.span.end = plan.span.end.checked_sub(inserted.len())?;
+    Some(plan)
 }
 
 fn matching_right_paren(tokens: &[Token], open: usize) -> Option<usize> {
@@ -867,9 +908,12 @@ fn consume_balanced(tokens: &[Token], start: usize, close: TokenKind) -> Option<
 
 #[cfg(test)]
 mod tests {
+    use crate::lexer::TextSpan;
+
     use super::{
         auto_block_control_header_enter_plan, block_comment_pair_plan,
-        incomplete_if_header_enter_plan, semicolon_insertion_offset,
+        control_header_block_before_enter_plan, incomplete_if_header_enter_plan,
+        semicolon_insertion_offset,
     };
 
     fn insertion(source: &str) -> Option<usize> {
@@ -1060,9 +1104,24 @@ mod tests {
         .unwrap();
         assert_eq!(plan.span.start, 8);
         assert_eq!(plan.span.end, source.len());
+        assert_eq!(plan.selection_line, 2);
         assert_eq!(
             plan.replacement,
             "while (true)\r\n        {\r\n            \r\n        }"
+        );
+    }
+
+    #[test]
+    fn creates_a_control_block_before_native_enter_splits_the_header() {
+        let source = "        while (true)";
+        let plan =
+            control_header_block_before_enter_plan(source, "        while (true".len(), 4, true)
+                .unwrap();
+        assert_eq!(plan.span, TextSpan::new(8, source.len()));
+        assert_eq!(plan.selection_line, 2);
+        assert_eq!(
+            plan.replacement,
+            "while (true)\n        {\n            \n        }"
         );
     }
 

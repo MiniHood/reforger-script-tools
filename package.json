@@ -65,6 +65,10 @@
         "title": "Reforger Script Tools: Trigger Snippet Suggestions"
       },
       {
+        "command": "reforger-sript-tools.controlHeaderEnter",
+        "title": "Reforger Script Tools: Control Header Enter"
+      },
+      {
         "command": "reforger-sript-tools.gameData.checkForUpdates",
         "title": "Reforger Script Tools: Check Game Data Updates"
       },
@@ -109,12 +113,21 @@
         "command": "reforger-sript-tools.debug.completionAtCursor",
         "key": "ctrl+f2",
         "when": "suggestWidgetVisible && editorLangId == enforce"
+      },
+      {
+        "command": "reforger-sript-tools.controlHeaderEnter",
+        "key": "enter",
+        "when": "editorTextFocus && editorLangId == enforce && !editorReadonly && !suggestWidgetVisible && !inSnippetMode"
       }
     ],
     "menus": {
       "commandPalette": [
         {
           "command": "reforger-sript-tools.completion.triggerSuggestAtSnippetPlaceholder",
+          "when": "false"
+        },
+        {
+          "command": "reforger-sript-tools.controlHeaderEnter",
           "when": "false"
         }
       ]

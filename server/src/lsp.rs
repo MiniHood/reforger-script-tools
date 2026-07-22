@@ -142,6 +142,7 @@ const DEBUG_HOVER_METHOD: &str = "reforger/debugHover";
 const DEBUG_COMPLETION_METHOD: &str = "reforger/debugCompletion";
 const BLOCK_COMMENT_PAIR_METHOD: &str = "reforger/blockCommentPair";
 const ENTER_TYPING_ASSIST_METHOD: &str = "reforger/enterTypingAssist";
+const CONTROL_HEADER_ENTER_METHOD: &str = "reforger/controlHeaderEnter";
 const RANGE_FORMATTING_METHOD: &str = "textDocument/rangeFormatting";
 const WORKSPACE_FILE_CHANGED_METHOD: &str = "reforger/workspaceFileChanged";
 const WORKSPACE_FILE_DELETED_METHOD: &str = "reforger/workspaceFileDeleted";
@@ -1105,6 +1106,7 @@ fn validate_message_params(method: &str, params: &Option<Value>) -> Result<(), S
         RANGE_FORMATTING_METHOD => validate_params::<RangeFormattingParams>(params, method),
         BLOCK_COMMENT_PAIR_METHOD => validate_params::<BlockCommentPairParams>(params, method),
         ENTER_TYPING_ASSIST_METHOD => validate_params::<EnterTypingAssistParams>(params, method),
+        CONTROL_HEADER_ENTER_METHOD => validate_params::<EnterTypingAssistParams>(params, method),
         _ => Ok(()),
     }
 }
