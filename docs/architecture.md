@@ -56,6 +56,12 @@ code cannot accidentally combine facts from different generations. Logging is
 best-effort observation; it cannot participate in request admission or response
 delivery.
 
+LSP tests live in a test-only child module rather than the production
+composition root. They are organized by observable behavior domains—protocol,
+documents, runtime, and features—and use framed LSP traffic by default. A
+separate test module may use only narrow `#[cfg(test)]` seams where deterministic
+runtime or document-state setup cannot be observed through the protocol.
+
 ## Language Engine
 
 The Rust engine is organized as a compiler-style pipeline:
