@@ -102,7 +102,7 @@ pub(super) fn auto_block_control_header_enter_plan(
         .filter(|newline| *newline < cursor);
     let normalized_header = inserted_header_newline.map(|_| {
         source[keyword.span.start..close.span.start]
-            .split('\n')
+            .lines()
             .map(str::trim_start)
             .collect::<String>()
     });
@@ -1048,6 +1048,21 @@ mod tests {
         assert_eq!(
             plan.replacement,
             "while (true)\n        {\n            \n        }"
+        );
+
+        let source = "        while (true\r\n        )";
+        let plan = auto_block_control_header_enter_plan(
+            source,
+            "        while (true\r\n        ".len(),
+            4,
+            true,
+        )
+        .unwrap();
+        assert_eq!(plan.span.start, 8);
+        assert_eq!(plan.span.end, source.len());
+        assert_eq!(
+            plan.replacement,
+            "while (true)\r\n        {\r\n            \r\n        }"
         );
     }
 
