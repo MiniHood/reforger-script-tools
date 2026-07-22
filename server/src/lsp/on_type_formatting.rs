@@ -213,7 +213,7 @@ pub(super) fn if_header_body_before_enter_plan(
     })
 }
 
-pub(super) fn paired_brace_if_body_before_enter_plan(
+pub(super) fn paired_brace_control_body_before_enter_plan(
     source: &str,
     cursor: usize,
     tab_size: usize,
@@ -244,17 +244,24 @@ pub(super) fn paired_brace_if_body_before_enter_plan(
         .into_iter()
         .filter(|token| !token.kind.is_trivia() && token.kind != TokenKind::Eof)
         .collect::<Vec<_>>();
-    let if_index = match tokens.first().map(|token| token.kind) {
-        Some(TokenKind::Keyword(Keyword::If)) => 0,
+    let (header_keyword_index, is_plain_else) = match tokens.first().map(|token| token.kind) {
+        Some(TokenKind::Keyword(
+            Keyword::If | Keyword::For | Keyword::Foreach | Keyword::While | Keyword::Switch,
+        )) => (0, false),
         Some(TokenKind::Keyword(Keyword::Else))
             if tokens.get(1).map(|token| token.kind) == Some(TokenKind::Keyword(Keyword::If)) =>
         {
-            1
+            (1, false)
         }
+        Some(TokenKind::Keyword(Keyword::Else)) if tokens.len() == 1 => (0, true),
         _ => return None,
     };
-    if tokens.get(if_index + 1).map(|token| token.kind) != Some(TokenKind::LeftParen)
-        || matching_right_paren(&tokens, if_index + 1)? + 1 != tokens.len()
+    if !is_plain_else
+        && (tokens
+            .get(header_keyword_index + 1)
+            .map(|token| token.kind)
+            != Some(TokenKind::LeftParen)
+            || matching_right_paren(&tokens, header_keyword_index + 1)? + 1 != tokens.len())
     {
         return None;
     }
@@ -1111,7 +1118,7 @@ mod tests {
     use super::{
         auto_block_control_header_enter_plan, block_comment_pair_plan,
         control_header_block_before_enter_plan, if_header_body_before_enter_plan,
-        incomplete_if_header_enter_plan, paired_brace_if_body_before_enter_plan,
+        incomplete_if_header_enter_plan, paired_brace_control_body_before_enter_plan,
         semicolon_before_enter_plan, semicolon_insertion_offset,
     };
 
@@ -1327,9 +1334,10 @@ mod tests {
             "while (running)",
             "switch (kind)",
         ] {
-            let cursor = source.len();
-            let plan = control_header_block_before_enter_plan(source, cursor, 4, true).unwrap();
-            assert!(plan.replacement.contains("\n{"), "{source:?}");
+            for cursor in [source.len() - 1, source.len()] {
+                let plan = control_header_block_before_enter_plan(source, cursor, 4, true).unwrap();
+                assert!(plan.replacement.contains("\n{"), "{source:?} at {cursor}");
+            }
         }
 
         let source = "while (tr|ue)";
@@ -1359,14 +1367,27 @@ mod tests {
     }
 
     #[test]
-    fn plans_a_paired_brace_body_below_an_if_header() {
-        let source = "        if (true)\n        {}";
-        let cursor = source.find("{}").unwrap() + 1;
-        let plan = paired_brace_if_body_before_enter_plan(source, cursor, 4, true).unwrap();
-        assert_eq!(plan.span, TextSpan::new(cursor - 1, cursor + 1));
-        assert_eq!(plan.replacement, "{\n    $0\n}");
-        assert_eq!(plan.selection_line, 2);
-        assert_eq!(plan.selection_character, 12);
+    fn plans_a_paired_brace_body_below_every_supported_control_header() {
+        for header in [
+            "if (true)",
+            "else if (true)",
+            "else",
+            "for (int i = 0; i < count; i++)",
+            "foreach (entry in entries)",
+            "while (running)",
+            "switch (kind)",
+        ] {
+            let source = format!("        {header}\n        {{}}");
+            let cursor = source.find("{}").unwrap() + 1;
+            let plan = paired_brace_control_body_before_enter_plan(&source, cursor, 4, true)
+                .unwrap();
+            assert_eq!(plan.span, TextSpan::new(cursor - 1, cursor + 1), "{header}");
+            assert_eq!(plan.replacement, "{\n    $0\n}", "{header}");
+            assert_eq!(plan.selection_line, 2, "{header}");
+            assert_eq!(plan.selection_character, 12, "{header}");
+        }
+        assert!(paired_brace_control_body_before_enter_plan("        {}", 9, 4, true).is_none());
+        assert!(paired_brace_control_body_before_enter_plan("        do\n        {}", 20, 4, true).is_none());
     }
 
     #[test]

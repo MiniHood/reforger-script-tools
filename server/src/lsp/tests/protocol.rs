@@ -510,11 +510,11 @@ fn input_route_moves_if_enter_to_the_unbraced_body_without_moving_the_parenthesi
 }
 
 #[test]
-fn input_route_replaces_a_paired_if_brace_with_an_indented_body_snippet() {
+fn input_route_replaces_paired_control_braces_with_an_indented_body_snippet() {
     let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
-    let uri = "file:///Scripts/IfBraceEnter.c";
+    let uri = "file:///Scripts/ControlBraceEnter.c";
     server.handle_message(json!({ "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
-        "textDocument": { "uri": uri, "languageId": "enforce", "version": 1, "text": "        if (true)\n        {}" }
+        "textDocument": { "uri": uri, "languageId": "enforce", "version": 1, "text": "        while (true)\n        {}" }
     }}), None, 0, 0).unwrap();
     server.writer.clear();
     server.handle_message(json!({ "jsonrpc": "2.0", "id": 1, "method": CONTROL_HEADER_ENTER_METHOD, "params": {
@@ -523,7 +523,7 @@ fn input_route_replaces_a_paired_if_brace_with_an_indented_body_snippet() {
         "options": { "tabSize": 4, "insertSpaces": true }
     }}), None, 0, 0).unwrap();
     let output = String::from_utf8_lossy(&server.writer);
-    assert!(output.contains("\"owner\":\"ifBraceBody\""), "{output}");
+    assert!(output.contains("\"owner\":\"pairedBraceBody\""), "{output}");
     assert!(
         output.contains("\"snippet\":\"{\\n    $0\\n}\""),
         "{output}"

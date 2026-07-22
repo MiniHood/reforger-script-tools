@@ -118,6 +118,12 @@ Block-comment expansion is a future `insertText` feature: it must become
 pre-native before it is migrated. Existing completion and snippet transactions
 and language configuration remain outside this module.
 
+When an author has manually typed an empty paired brace body directly below a
+completed supported control header (`if`, `else if`, `else`, `for`, `foreach`,
+`while`, or `switch`), Enter inside that pair is also one atomic snippet replacement.
+It produces the same normal braced-body indentation for every supported header
+without exposing a native line break and correction.
+
 Required evidence for a delivery is Rust decision tests for supported and
 declined source shapes; TypeScript tests for fallback, failure, stale state,
 special modes, selections, and presentation; an extension-host test that the

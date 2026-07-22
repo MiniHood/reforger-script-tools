@@ -228,24 +228,26 @@ suite('extension activation', () => {
 		assert.strictEqual(await transaction.apply(), 'pending');
 	});
 
-	test('keeps a paired brace body indented when it follows an if header', async () => {
-		const document = await vscode.workspace.openTextDocument({
-			language: 'enforce',
-			content: '        if (true)\n        {}',
-		});
-		const editor = await vscode.window.showTextDocument(document);
-		const position = new vscode.Position(1, 9);
-		editor.selection = new vscode.Selection(position, position);
-		await executeInsertNewline(editor, {
-			sendRequest: async () => ({
-				edits: [{ range: { start: { line: 1, character: 8 }, end: { line: 1, character: 10 } }, newText: '' }],
-				snippet: '{\n    $0\n}',
-				snippetRange: { start: { line: 1, character: 8 }, end: { line: 1, character: 10 } },
-				owner: 'ifBraceBody',
-			}),
-		} as never);
-		assert.strictEqual(document.getText(), '        if (true)\n        {\n            \n        }');
-		assert.deepStrictEqual(editor.selection.active, new vscode.Position(2, 12));
+	test('keeps paired control braces indented for every supported header', async () => {
+		for (const header of ['if (true)', 'else if (true)', 'else', 'for (;;) ', 'foreach (entry in entries)', 'while (true)', 'switch (kind)']) {
+			const document = await vscode.workspace.openTextDocument({
+				language: 'enforce',
+				content: `        ${header.trimEnd()}\n        {}`,
+			});
+			const editor = await vscode.window.showTextDocument(document);
+			const position = new vscode.Position(1, 9);
+			editor.selection = new vscode.Selection(position, position);
+			await executeInsertNewline(editor, {
+				sendRequest: async () => ({
+					edits: [{ range: { start: { line: 1, character: 8 }, end: { line: 1, character: 10 } }, newText: '' }],
+					snippet: '{\n    $0\n}',
+					snippetRange: { start: { line: 1, character: 8 }, end: { line: 1, character: 10 } },
+					owner: 'pairedBraceBody',
+				}),
+			} as never);
+			assert.strictEqual(document.getText(), `        ${header.trimEnd()}\n        {\n            \n        }`, header);
+			assert.deepStrictEqual(editor.selection.active, new vscode.Position(2, 12), header);
+		}
 	});
 
 	test('routes a switch Enter as one atomic edit with default selected', async () => {

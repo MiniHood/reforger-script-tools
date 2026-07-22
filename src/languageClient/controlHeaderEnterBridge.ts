@@ -9,7 +9,7 @@ import { applyVersionedEditorEdits, isCurrentSingleCaret, type VersionedEditResp
 const nativeTypeCommand = 'type';
 
 interface InputRouteResult extends VersionedEditResponse {
-	owner?: 'controlHeader' | 'ifHeader' | 'ifBraceBody' | 'semicolon';
+	owner?: 'controlHeader' | 'ifHeader' | 'pairedBraceBody' | 'semicolon';
 	reason?: string;
 }
 

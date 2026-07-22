@@ -473,19 +473,19 @@ impl FeatureDispatcher<'_> {
                                 params.options.tab_size,
                                 params.options.insert_spaces,
                             ).map(|plan| (plan, "ifHeader")))
-                            .or_else(|| on_type_formatting::paired_brace_if_body_before_enter_plan(
+                            .or_else(|| on_type_formatting::paired_brace_control_body_before_enter_plan(
                                 &document.text,
                                 cursor,
                                 params.options.tab_size,
                                 params.options.insert_spaces,
-                            ).map(|plan| (plan, "ifBraceBody")))
+                            ).map(|plan| (plan, "pairedBraceBody")))
                             .or_else(|| on_type_formatting::semicolon_before_enter_plan(
                                 &document.text,
                                 cursor,
                             ).map(|plan| (plan, "semicolon"))) else {
                                 return None;
                             };
-                            let use_snippet = owner == "ifBraceBody";
+                            let use_snippet = owner == "pairedBraceBody";
                             trace = params.trace.then_some(("applied", owner, true, "eligible"));
                             let start = position_for_offset(&document.text, plan.span.start);
                             Some(json!({
