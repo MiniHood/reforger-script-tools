@@ -69,6 +69,10 @@
         "title": "Reforger Script Tools: Insert Newline"
       },
       {
+        "command": "reforger-sript-tools.input.indent",
+        "title": "Reforger Script Tools: Indent"
+      },
+      {
         "command": "reforger-sript-tools.gameData.checkForUpdates",
         "title": "Reforger Script Tools: Check Game Data Updates"
       },
@@ -126,6 +130,11 @@
         "args": {
           "dismissSuggest": true
         }
+      },
+      {
+        "command": "reforger-sript-tools.input.indent",
+        "key": "tab",
+        "when": "editorTextFocus && editorLangId == enforce && !editorReadonly && !suggestWidgetVisible && !inSnippetMode"
       }
     ],
     "menus": {
@@ -136,6 +145,10 @@
         },
         {
           "command": "reforger-sript-tools.input.insertNewline",
+          "when": "false"
+        },
+        {
+          "command": "reforger-sript-tools.input.indent",
           "when": "false"
         }
       ]

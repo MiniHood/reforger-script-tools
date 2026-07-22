@@ -11,17 +11,22 @@ export interface TypingAssistRequest {
 export interface InputRouteRequest {
 	textDocument: { uri: string };
 	version: number;
-	operation: 'insertNewline';
+	operation: 'insertNewline' | 'indent';
 	trace: boolean;
 	selections: Array<{ start: { line: number; character: number }; end: { line: number; character: number } }>;
 	options: { tabSize: vscode.TextEditorOptions['tabSize']; insertSpaces: vscode.TextEditorOptions['insertSpaces'] };
 }
 
-export function inputRouteRequest(document: vscode.TextDocument, editor: vscode.TextEditor, trace: boolean): InputRouteRequest {
+export function inputRouteRequest(
+	document: vscode.TextDocument,
+	editor: vscode.TextEditor,
+	trace: boolean,
+	operation: InputRouteRequest['operation'] = 'insertNewline',
+): InputRouteRequest {
 	return {
 		textDocument: { uri: document.uri.toString() },
 		version: document.version,
-		operation: 'insertNewline',
+		operation,
 		trace,
 		selections: editor.selections.map(selection => ({
 			start: { line: selection.start.line, character: selection.start.character },

@@ -54,7 +54,8 @@ original keybinding.
 | Input | Preferred owner | Use it for | Do not use it for |
 | --- | --- | --- | --- |
 | `insertNewline` | Operation entry command -> TypeScript bridge -> Rust | A proven control-header block edit applied before native Enter | General formatting or situations where Rust declines |
-| Typing `{`, `(`, `)`, indentation | Language configuration | Bracket pairing, ordinary indentation, and other regex-local rules | Syntax-aware scaffolding |
+| Typing `{`, `(`, `)` | Language configuration | Bracket pairing and other regex-local rules | Syntax-aware scaffolding |
+| `indent` | Operation entry command -> TypeScript bridge -> Rust | A proven blank line following a complete unbraced `if` body | General Tab behavior, snippet navigation, or uncertain control scope |
 | Completion acceptance | Rust completion result plus VS Code snippet support | Keyword skeletons and editable defaults | Reimplementing Tab navigation |
 | Future operation, e.g. `insertText` | Operation entry command -> TypeScript bridge -> Rust | A separately proven action such as atomic block-comment expansion | A free-form relay for every printable key |
 
@@ -123,6 +124,12 @@ completed supported control header (`if`, `else if`, `else`, `for`, `foreach`,
 `while`, or `switch`), Enter inside that pair is also one atomic snippet replacement.
 It produces the same normal braced-body indentation for every supported header
 without exposing a native line break and correction.
+
+`indent` remains native except on an otherwise blank line following a proven
+complete one-line unbraced `if` or `else if` body. The owner may cross at most
+eight blank physical lines to find that body, then replaces the blank line's
+whitespace with the header indentation. This closes the completed statement's
+scope without claiming general Tab or snippet-tab behavior.
 
 Required evidence for a delivery is Rust decision tests for supported and
 declined source shapes; TypeScript tests for fallback, failure, stale state,

@@ -30,6 +30,7 @@ export const languageClientCommands = {
 	normalizeIfSpaceCommit: 'reforger-sript-tools.completion.normalizeIfSpaceCommit',
 	applyDirectiveSeparator: 'reforger-sript-tools.completion.applyDirectiveSeparator',
 	insertNewline: 'reforger-sript-tools.input.insertNewline',
+	indent: 'reforger-sript-tools.input.indent',
 	openSymbolLocation: 'reforger-sript-tools.openSymbolLocation',
 } as const;
 

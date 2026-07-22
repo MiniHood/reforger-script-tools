@@ -442,7 +442,7 @@ impl FeatureDispatcher<'_> {
                     let result = params
                         .clone()
                         .and_then(|params| {
-                            if params.operation != "insertNewline" {
+                            if !matches!(params.operation.as_str(), "insertNewline" | "indent") {
                                 trace = params.trace.then_some(("declined", "none", true, "unsupportedOperation"));
                                 return None;
                             }
@@ -460,12 +460,16 @@ impl FeatureDispatcher<'_> {
                                 return None;
                             }
                             let cursor = offset_for_position(&document.text, params.selections[0].end)?;
-                            let Some((plan, owner)) = on_type_formatting::control_header_block_before_enter_plan(
-                                &document.text,
-                                cursor,
-                                params.options.tab_size,
-                                params.options.insert_spaces,
-                            )
+                            let plan = if params.operation == "indent" {
+                                on_type_formatting::unbraced_if_body_indent_plan(&document.text, cursor)
+                                    .map(|plan| (plan, "unbracedIfBody"))
+                            } else {
+                                on_type_formatting::control_header_block_before_enter_plan(
+                                    &document.text,
+                                    cursor,
+                                    params.options.tab_size,
+                                    params.options.insert_spaces,
+                                )
                             .map(|plan| (plan, "controlHeader"))
                             .or_else(|| on_type_formatting::if_header_body_before_enter_plan(
                                 &document.text,
@@ -482,7 +486,9 @@ impl FeatureDispatcher<'_> {
                             .or_else(|| on_type_formatting::semicolon_before_enter_plan(
                                 &document.text,
                                 cursor,
-                            ).map(|plan| (plan, "semicolon"))) else {
+                            ).map(|plan| (plan, "semicolon")))
+                            };
+                            let Some((plan, owner)) = plan else {
                                 return None;
                             };
                             let use_snippet = owner == "pairedBraceBody";
@@ -507,7 +513,8 @@ impl FeatureDispatcher<'_> {
                         .unwrap_or_else(|| json!({ "edits": [], "reason": "declined" }));
                     if let Some((outcome, owner, version_match, reason)) = trace {
                         self.log(&format!(
-                            "inputRoute operation=insertNewline outcome={outcome} reason={reason} owner={owner} version_match={version_match} elapsed_ms={}",
+                            "inputRoute operation={} outcome={outcome} reason={reason} owner={owner} version_match={version_match} elapsed_ms={}",
+                            params.as_ref().map(|params| params.operation.as_str()).unwrap_or("unknown"),
                             started_at.elapsed().as_millis()
                         ));
                     }

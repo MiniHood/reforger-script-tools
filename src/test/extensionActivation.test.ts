@@ -10,7 +10,7 @@ import {
 } from '../languageClient/languageClient';
 import { positionFromByteOffset } from '../languageClient/symbolLocationBridge';
 import { registerBlockCommentPair } from '../languageClient/typingAssistTransactionBridge';
-import { executeInsertNewline } from '../languageClient/controlHeaderEnterBridge';
+import { executeIndent, executeInsertNewline } from '../languageClient/controlHeaderEnterBridge';
 import { VersionedEditorTransaction } from '../languageClient/versionedEditorTransaction';
 import { completionPresentationObservationForDocument, completionUiMiddlewareCallbacks } from '../languageClient/completionUiBridge';
 
@@ -321,6 +321,37 @@ suite('extension activation', () => {
 		}
 	});
 
+	test('routes Tab after a completed unbraced if body before native indentation', async () => {
+		const document = await vscode.workspace.openTextDocument({
+			language: 'enforce',
+			content: '        if (true)\n            return;\n\n',
+		});
+		const editor = await vscode.window.showTextDocument(document);
+		const position = new vscode.Position(2, 0);
+		editor.selection = new vscode.Selection(position, position);
+		const requests: unknown[] = [];
+		await executeIndent(editor, {
+			sendRequest: async (_method: string, request: unknown) => {
+				requests.push(request);
+				return {
+					edits: [{ range: { start: { line: 2, character: 0 }, end: { line: 2, character: 0 } }, newText: '        ' }],
+					selection: { line: 2, character: 8 },
+					owner: 'unbracedIfBody',
+				};
+			},
+		} as never);
+		assert.strictEqual(document.lineAt(2).text, '        ');
+		assert.deepStrictEqual(editor.selection.active, new vscode.Position(2, 8));
+		assert.deepStrictEqual(requests, [{
+			textDocument: { uri: document.uri.toString() },
+			version: 1,
+			operation: 'indent',
+			trace: false,
+			selections: [{ start: { line: 2, character: 0 }, end: { line: 2, character: 0 } }],
+			options: { tabSize: 4, insertSpaces: true },
+		}]);
+	});
+
 	test('dismisses completion before routing Enter without accepting its selection', async () => {
 		const document = await vscode.workspace.openTextDocument({ language: 'enforce', content: 'if (tr)' });
 		const editor = await vscode.window.showTextDocument(document);
@@ -538,6 +569,10 @@ suite('extension activation', () => {
 			&& binding.when?.includes('suggestWidgetVisible')
 			&& !binding.when.includes('!suggestWidgetVisible'));
 		assert.strictEqual(suggestEnter?.args?.dismissSuggest, true);
+		const routedIndent = keybindings.find(binding => binding.command === languageClientCommands.indent);
+		assert.match(routedIndent?.when ?? '', /!editorReadonly/);
+		assert.match(routedIndent?.when ?? '', /!suggestWidgetVisible/);
+		assert.match(routedIndent?.when ?? '', /!inSnippetMode/);
 	});
 
 });

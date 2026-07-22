@@ -67,9 +67,12 @@ For a custom language, the least-invasive progression is therefore:
 3. Add targeted `onEnterRules` only for Enter-specific syntax that generic rules
    cannot express.
 
-Do not bind Tab or apply editor edits merely to correct auto-indentation. That
-would compete with VS Code's indentation engine and its user-controlled
-setting.
+Do not bind Tab or apply editor edits merely to correct auto-indentation. A
+single explicit exception may use the input router when Rust proves a blank
+line follows a completed one-line unbraced `if` body; that route replaces only
+that line's whitespace with the header indentation. It must decline every
+other Tab shape so VS Code retains its normal indentation, snippet, and user
+setting behavior.
 
 ## Repository observation
 
@@ -84,6 +87,6 @@ Code defaults to `"full"`.
 | Native setting ownership | `package.json` does not override `[enforce].editor.autoIndent`. | Aligned: the extension inherits VS Code's default and the user's editor policy. | Keep it unset. |
 | Declarative Enter behavior | `language-configuration.json` has two narrow `onEnterRules` for `if`/`else` headers and their immediate body line. | Aligned: these are synchronous, editor-native rules with bounded textual scope. | Keep and validate them against Workbench/compiler-supported syntax as the language surface expands. |
 | Braces and pairs | The language configuration declares `{}`, `[]`, and `()` pairs. It has no `indentationRules`. | Aligned for now: native bracket behavior remains available; no broad regex has been asserted as Enfusion truth. | Add declarative rules only when primary evidence establishes a stable language-wide rule. |
-| Post-edit control-body correction | No typing assist observes Tab or corrects unbraced control-body indentation. | Aligned: VS Code owns indentation synchronously, without a second post-edit caret move. | Keep Tab outside the extension's typing-assist path. |
+| Completed unbraced-body scope | The pre-native `indent` input route handles only a blank line following a lexically proven completed one-line unbraced `if` body, across at most eight blank lines. | Aligned: the atomic route does not expose a native indent then correction. | Keep all other Tab behavior native. |
 | Other typing assists | The same bridge also handles incomplete `if` headers, semicolon insertion, and empty block-comment expansion. | Out of scope for the Tab/auto-indent decision; they are separate, explicit typing assists. | Review independently before changing. |
 | Explicit formatting | The current LSP range formatter is limited to comment regions; it is not a general Enfusion formatter. | Expected current state, not a native-auto-indent substitute. | When the parser/formatter is ready, offer explicit parser-backed formatting rather than a Tab correction. |

@@ -2,6 +2,7 @@ use crate::lexer::Operator;
 use crate::lexer::{lex, Keyword, TextSpan, Token, TokenKind};
 
 const MAX_ON_TYPE_SOURCE_BYTES: usize = 64 * 1024;
+const MAX_UNBRACED_CONTROL_BODY_BLANK_LINES: usize = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct BlockCommentPairPlan {
@@ -346,10 +347,13 @@ fn unbraced_if_body_indent(source: &str, body_line_start: usize, cursor: usize) 
     let body_line = &source[body_line_start..cursor];
     let body_indent_end = body_line.len() - body_line.trim_start_matches(char::is_whitespace).len();
     let body_indent = &body_line[..body_indent_end];
-    let body_tokens = lex(body_line)
+    let mut body_tokens = lex(body_line)
         .into_iter()
         .filter(|token| !token.kind.is_trivia() && token.kind != TokenKind::Eof)
         .collect::<Vec<_>>();
+    if body_tokens.last().map(|token| token.kind) == Some(TokenKind::Semicolon) {
+        body_tokens.pop();
+    }
     if !is_complete_value_return_statement(&body_tokens) {
         return None;
     }
@@ -383,6 +387,47 @@ fn unbraced_if_body_indent(source: &str, body_line_start: usize, cursor: usize) 
     }
     let close_index = matching_right_paren(&tokens, if_index + 1)?;
     (close_index + 1 == tokens.len()).then_some(header_indent)
+}
+
+/// Plans Tab on an otherwise blank line after a proven single-line unbraced
+/// `if` body. The only edit is the header indentation, so ordinary Tab input
+/// remains native whenever the small lexical proof does not hold.
+pub(super) fn unbraced_if_body_indent_plan(
+    source: &str,
+    cursor: usize,
+) -> Option<AutoBlockControlHeaderPlan> {
+    if source.len() > MAX_ON_TYPE_SOURCE_BYTES || cursor > source.len() {
+        return None;
+    }
+    let current_line_start = source[..cursor].rfind('\n').map_or(0, |newline| newline + 1);
+    let current_line_end = source[cursor..]
+        .find(['\r', '\n'])
+        .map_or(source.len(), |offset| cursor + offset);
+    if !source[current_line_start..current_line_end]
+        .chars()
+        .all(char::is_whitespace)
+    {
+        return None;
+    }
+    let (body_line_start, body_line_end) = previous_nonempty_line(
+        source,
+        current_line_start,
+        MAX_UNBRACED_CONTROL_BODY_BLANK_LINES,
+    )?;
+    let header_indent = unbraced_if_body_indent(source, body_line_start, body_line_end)?;
+    Some(AutoBlockControlHeaderPlan {
+        span: TextSpan::new(current_line_start, current_line_end),
+        replacement: header_indent.to_string(),
+        selection_line: source[..current_line_start]
+            .bytes()
+            .filter(|byte| *byte == b'\n')
+            .count() as u32,
+        selection_character: header_indent
+            .chars()
+            .map(|character| character.len_utf16() as u32)
+            .sum(),
+        switch_arm_selection_end: None,
+    })
 }
 
 fn matching_right_paren(tokens: &[Token], open: usize) -> Option<usize> {
@@ -749,6 +794,28 @@ fn trim_line_ending(source: &str, line_start: usize) -> usize {
         end = end.saturating_sub(1);
     }
     end
+}
+
+fn previous_nonempty_line(
+    source: &str,
+    current_line_start: usize,
+    max_blank_lines: usize,
+) -> Option<(usize, usize)> {
+    let mut line_end = trim_line_ending(source, current_line_start);
+    let mut blank_lines = 0usize;
+    loop {
+        let line_start = source[..line_end]
+            .rfind('\n')
+            .map_or(0, |newline| newline + 1);
+        if !source[line_start..line_end].trim().is_empty() {
+            return Some((line_start, line_end));
+        }
+        blank_lines += 1;
+        if blank_lines > max_blank_lines || line_start == 0 {
+            return None;
+        }
+        line_end = trim_line_ending(source, line_start);
+    }
 }
 
 fn is_complete_call_expression(tokens: &[Token]) -> bool {

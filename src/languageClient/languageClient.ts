@@ -114,7 +114,7 @@ export function registerLanguageClientFeatures(context: vscode.ExtensionContext)
 	context.subscriptions.push(outputChannel);
 	context.subscriptions.push(debugOutputChannel);
 	context.subscriptions.push(completionDebugOutputChannel);
-	context.subscriptions.push(registerControlHeaderEnter(() => client));
+	context.subscriptions.push(...registerControlHeaderEnter(() => client));
 	context.subscriptions.push(registerBlockCommentPair(() => client));
 	context.subscriptions.push(...registerCompletionUiBridge());
 	context.subscriptions.push(...registerDebugCommandBridge(
