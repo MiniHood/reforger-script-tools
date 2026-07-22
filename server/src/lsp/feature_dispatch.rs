@@ -143,8 +143,9 @@ impl<W: Write> LspServer<W> {
                         .and_then(|params| {
                             log_uri = params.text_document.uri;
                             self.document_runtime
-                                .document_symbols(&log_uri)
-                                .map(|projection| {
+                                .capture_query(&log_uri, self.external_index.snapshot())
+                                .map(|query| {
+                                    let projection = query.document_symbols();
                                     bytes = projection.bytes;
                                     revision = projection.revision;
                                     cached_projection = projection.cached;

@@ -1,6 +1,10 @@
 use super::external_overlay::ExternalIndexSnapshot;
 use super::open_documents::{FileIndexAnalysis, ForegroundQuerySnapshot, OpenDocument};
+use super::{
+    document_symbols_from_cached_analysis, lexical_document_symbols_for_snapshot, LspDocumentSymbol,
+};
 use crate::analysis_runtime::QueryQuality;
+use std::time::Instant;
 
 /// A request-local view of one immutable document snapshot and one captured
 /// external-index snapshot. Request routing admits this before projecting any
@@ -14,6 +18,17 @@ pub(super) enum DocumentQueryState<'a> {
     Cached(&'a FileIndexAnalysis),
     Foreground(&'a ForegroundQuerySnapshot),
     Pending,
+}
+
+/// Immutable outline projection captured from one `DocumentQuery`.
+pub(super) struct DocumentSymbolProjection {
+    pub(super) symbols: Vec<LspDocumentSymbol>,
+    pub(super) bytes: usize,
+    pub(super) revision: u64,
+    pub(super) parse_diagnostics: usize,
+    pub(super) cached: bool,
+    pub(super) quality: &'static str,
+    pub(super) projection_ms: u128,
 }
 
 impl<'a> DocumentQuery<'a> {
@@ -32,6 +47,38 @@ impl<'a> DocumentQuery<'a> {
             DocumentQueryState::Cached(_) => QueryQuality::Exact,
             DocumentQueryState::Foreground(_) | DocumentQueryState::Pending => {
                 QueryQuality::Unavailable
+            }
+        }
+    }
+
+    pub(super) fn document_symbols(&self) -> DocumentSymbolProjection {
+        let document = self.document;
+        let projection_start = Instant::now();
+        if let DocumentQueryState::Cached(analysis) = Self::state_for(document) {
+            let cached = document.document_symbols_ready();
+            let symbols = if cached {
+                document.document_symbols().to_vec()
+            } else {
+                document_symbols_from_cached_analysis(&document.text, analysis)
+            };
+            DocumentSymbolProjection {
+                symbols,
+                bytes: document.text.len(),
+                revision: document.revision,
+                parse_diagnostics: analysis.parse_diagnostics,
+                cached,
+                quality: "Exact",
+                projection_ms: projection_start.elapsed().as_millis(),
+            }
+        } else {
+            DocumentSymbolProjection {
+                symbols: lexical_document_symbols_for_snapshot(&document.snapshot),
+                bytes: document.text.len(),
+                revision: document.revision,
+                parse_diagnostics: 0,
+                cached: false,
+                quality: "Unavailable",
+                projection_ms: projection_start.elapsed().as_millis(),
             }
         }
     }
