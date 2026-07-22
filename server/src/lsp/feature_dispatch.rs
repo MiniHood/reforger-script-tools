@@ -1,4 +1,4 @@
-use super::request_router::{classify_request, RoutedRequest};
+use super::request_router::RoutedRequest;
 use super::workspace_requests::{delete_workspace_file, update_workspace_file};
 use super::{
     completion, completion_debug_markdown,
@@ -48,7 +48,7 @@ pub(super) fn execute_feature_or_workspace_message(
     external_index: &mut ExternalIndexHandle,
     document_runtime: &mut DocumentRuntime,
     shutdown_requested: bool,
-    value: Value,
+    routed: RoutedRequest,
     queue_ms: Option<u128>,
     coalesced_changes: usize,
     superseded_changes: usize,
@@ -60,19 +60,18 @@ pub(super) fn execute_feature_or_workspace_message(
         shutdown_requested,
         effects: Vec::new(),
     }
-    .dispatch(value, queue_ms, coalesced_changes, superseded_changes)
+    .dispatch(routed, queue_ms, coalesced_changes, superseded_changes)
 }
 
 impl FeatureDispatcher<'_> {
     fn dispatch(
         &mut self,
-        value: Value,
+        routed: RoutedRequest,
         queue_ms: Option<u128>,
         coalesced_changes: usize,
         superseded_changes: usize,
     ) -> Result<FeatureDispatchOutcome, String> {
         let started_at = Instant::now();
-        let routed = classify_request(value)?;
         let RoutedRequest {
             command,
             message,

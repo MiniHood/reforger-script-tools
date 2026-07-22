@@ -476,7 +476,7 @@ impl<W: Write> LspServer<W> {
             &mut self.external_index,
             &mut self.document_runtime,
             self.shutdown_requested,
-            value,
+            routed,
             queue_ms,
             coalesced_changes,
             superseded_changes,
