@@ -33,10 +33,22 @@ use super::{
 };
 use serde_json::{json, Value};
 use std::io::Write;
+use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-impl<W: Write> LspServer<W> {
+/// The protocol-routing boundary. It borrows the composition root only for
+/// the transition period while document commands finish moving to
+/// `DocumentRuntime`; it owns no durable server state.
+pub(super) struct RequestRouter<'server, W: Write> {
+    server: &'server mut LspServer<W>,
+}
+
+impl<'server, W: Write> RequestRouter<'server, W> {
+    pub(super) fn new(server: &'server mut LspServer<W>) -> Self {
+        Self { server }
+    }
+
     pub(super) fn handle_message(
         &mut self,
         value: Value,
@@ -1716,5 +1728,19 @@ impl<W: Write> LspServer<W> {
             }),
         );
         Ok(should_exit)
+    }
+}
+
+impl<W: Write> Deref for RequestRouter<'_, W> {
+    type Target = LspServer<W>;
+
+    fn deref(&self) -> &Self::Target {
+        self.server
+    }
+}
+
+impl<W: Write> DerefMut for RequestRouter<'_, W> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.server
     }
 }

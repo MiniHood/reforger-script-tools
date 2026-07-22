@@ -49,6 +49,7 @@ mod semantic_tokens;
 mod signature_help;
 mod transport;
 
+use background_events::BackgroundEvents;
 use completion::{
     completion_debug_markdown, completion_report_for_cached_analysis_with_external_indexes,
     completion_report_for_current_argument_labels_at_offset_with_external_indexes,
@@ -97,6 +98,7 @@ pub(crate) use open_documents::{
     file_index_for_source_with_timings, FileIndexAnalysisTimings, OpenDocument,
     TokenProjectionKind, TokenResultDisposition,
 };
+use request_router::RequestRouter;
 use response_writer::RuntimeEffect;
 use runtime_scheduler::{ForegroundDocumentJob, OpenDocumentAnalysisJob, RuntimeWorkExecutor};
 pub use semantic_tokens::{
@@ -647,6 +649,25 @@ struct TextDocumentIdentifier {
 }
 
 impl<W: Write> LspServer<W> {
+    fn handle_message(
+        &mut self,
+        value: Value,
+        queue_ms: Option<u128>,
+        coalesced_changes: usize,
+        superseded_changes: usize,
+    ) -> Result<bool, String> {
+        RequestRouter::new(self).handle_message(
+            value,
+            queue_ms,
+            coalesced_changes,
+            superseded_changes,
+        )
+    }
+
+    fn handle_internal_event(&mut self, event: ServerEvent) -> Result<(), String> {
+        BackgroundEvents::new(self).handle_internal_event(event)
+    }
+
     fn new(writer: W, options: LspServerOptions) -> Self {
         Self::new_with_runtime_senders(writer, options, None, None, None)
     }
