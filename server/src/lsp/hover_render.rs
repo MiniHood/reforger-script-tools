@@ -369,6 +369,7 @@ fn hover_kind_label(kind: SymbolKind) -> &'static str {
         SymbolKind::Method | SymbolKind::Function => "Function",
         SymbolKind::LocalVariable => "variable",
         SymbolKind::EnumMember => "Enum Value",
+        SymbolKind::PreprocessorMacro => "Preprocessor Macro",
         _ => symbol_kind_label(kind),
     }
 }
@@ -683,11 +684,27 @@ fn render_colored_plain_declaration(
         | SymbolKind::GlobalField
         | SymbolKind::LocalVariable
         | SymbolKind::Parameter => render_typed_name_declaration(display, declaration, context),
-        SymbolKind::EnumMember | SymbolKind::PreprocessorMacro => {
-            render_name_first_declaration(display, declaration, context)
+        SymbolKind::EnumMember => render_name_first_declaration(display, declaration, context),
+        SymbolKind::PreprocessorMacro => {
+            render_preprocessor_macro_declaration(display, declaration, context)
         }
         _ => escape_html_text(declaration),
     }
+}
+
+fn render_preprocessor_macro_declaration(
+    display: &SymbolDisplayInfo,
+    declaration: &str,
+    context: Option<&HoverRenderContext<'_, '_>>,
+) -> String {
+    let Some(name) = declaration.strip_prefix("#define ") else {
+        return escape_html_text(declaration);
+    };
+    format!(
+        "{} {}",
+        colored_text("#define", "preprocessor"),
+        linked_symbol_text(name, hover_token_type(display.kind), display, context)
+    )
 }
 
 fn render_keyword_name_declaration(
@@ -1269,6 +1286,33 @@ mod tests {
         assert!(!markdown.contains("**Detail:** `type ref array<int>`"));
         assert!(!markdown.contains("Modifiers: protected"));
         assert!(!markdown.contains("Attributes: Attribute"));
+    }
+
+    #[test]
+    fn renders_preprocessor_macro_with_directive_coloring() {
+        let index = index("#define ENABLE_BASE_DESTRUCTION\n");
+        let query = IndexQuery::new(&index);
+        let display = query
+            .symbol_display(find(
+                &index,
+                SymbolKind::PreprocessorMacro,
+                "ENABLE_BASE_DESTRUCTION",
+            ))
+            .unwrap();
+
+        let markdown = render_hover_markdown(
+            &display,
+            Some(HoverRenderContext {
+                query: &query,
+                member_summary_query: None,
+                links: None,
+            }),
+        );
+
+        assert!(markdown.contains("Preprocessor Macro"));
+        assert!(markdown.contains("data-code=\"#define ENABLE_BASE_DESTRUCTION\""));
+        assert!(markdown.contains("<span style=\"color:#d4fd95;\">#define</span>"));
+        assert!(markdown.contains("<span style=\"color:#cfcfcf;\">ENABLE_BASE_DESTRUCTION</span>"));
     }
 
     #[test]
