@@ -657,3 +657,37 @@ impl<W: Write> LspServer<W> {
         self.request_semantic_tokens_refresh()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::analysis_runtime::UpsertOutcome;
+
+    #[test]
+    fn captured_query_pairs_the_open_snapshot_with_the_supplied_external_snapshot() {
+        let mut runtime = DocumentRuntime::new(None);
+        let uri = "file:///query.c";
+        assert_eq!(
+            runtime.runtime.upsert(uri, 7, "class Query {}".to_string()),
+            UpsertOutcome::Accepted
+        );
+        let snapshot = runtime.runtime.latest(uri).expect("accepted snapshot");
+        runtime
+            .documents
+            .insert(uri.to_string(), OpenDocument::new(snapshot));
+        let query = runtime
+            .capture_query(
+                uri,
+                ExternalIndexSnapshot {
+                    status: "missing",
+                    workspace: None,
+                    game_data: None,
+                },
+            )
+            .expect("open document query");
+
+        assert_eq!(query.document.version, 7);
+        assert_eq!(query.document.snapshot.text(), "class Query {}");
+        assert_eq!(query.external_indexes.status, "missing");
+    }
+}
