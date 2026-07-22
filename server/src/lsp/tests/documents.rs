@@ -176,6 +176,26 @@ class Example
 }
 
 #[test]
+fn document_symbol_full_range_encloses_a_recovery_selection_range() {
+    let full_range = LspRange {
+        start: LspPosition { line: 4, character: 2 },
+        end: LspPosition { line: 4, character: 10 },
+    };
+    let selection_range = LspRange {
+        start: LspPosition { line: 3, character: 9 },
+        end: LspPosition { line: 5, character: 1 },
+    };
+
+    assert_eq!(
+        document_symbol_full_range(full_range, selection_range),
+        LspRange {
+            start: selection_range.start,
+            end: selection_range.end,
+        }
+    );
+}
+
+#[test]
 fn offset_conversion_uses_utf16_positions() {
     let source = "class Sm😀ke {}\n";
     let offset = source.find("ke").unwrap();

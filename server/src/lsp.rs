@@ -935,15 +935,39 @@ fn document_symbol_for_id(
         .iter()
         .filter_map(|child| document_symbol_for_id(positions, index, query, *child))
         .collect::<Vec<_>>();
+    let selection_range = positions.range_for_span(symbol.selection_span);
 
     Some(LspDocumentSymbol {
         name: display.label,
         detail: display.detail.or(display.signature),
         kind: document_symbol_kind(symbol.kind),
-        range: positions.range_for_span(symbol.span),
-        selection_range: positions.range_for_span(symbol.selection_span),
+        range: document_symbol_full_range(positions.range_for_span(symbol.span), selection_range),
+        selection_range,
         children,
     })
+}
+
+/// VS Code rejects a document symbol unless the full range encloses the name
+/// selection. Recovery analysis can legitimately retain a name after its
+/// declaration extent has been shortened, so make that protocol invariant
+/// explicit at the LSP boundary.
+fn document_symbol_full_range(full_range: LspRange, selection_range: LspRange) -> LspRange {
+    LspRange {
+        start: position_min(full_range.start, selection_range.start),
+        end: position_max(full_range.end, selection_range.end),
+    }
+}
+
+fn position_min(left: LspPosition, right: LspPosition) -> LspPosition {
+    ((left.line, left.character) <= (right.line, right.character))
+        .then_some(left)
+        .unwrap_or(right)
+}
+
+fn position_max(left: LspPosition, right: LspPosition) -> LspPosition {
+    ((left.line, left.character) >= (right.line, right.character))
+        .then_some(left)
+        .unwrap_or(right)
 }
 
 #[derive(Debug)]
