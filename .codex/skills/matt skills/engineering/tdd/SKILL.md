@@ -11,16 +11,21 @@ rules before and during every cycle. When exploring a codebase, read
 
 ## Goal gate
 
-For ticket work, create a slash goal before acting. Keep it active until every
-stated requirement is implemented and checked, relevant public-behavior tests
-and required verification pass, the change is reviewed, required documentation
-is updated, the coherent result is committed, and the ticket tracker reaches
-its required final state.
+For ticket work, create a slash goal before acting. Translate the ticket into
+an explicit completion checklist, including every stated acceptance criterion,
+test, verification step, documentation obligation, commit/push requirement,
+and tracker transition. Keep the goal active until every checklist item is
+evidenced and the ticket tracker reaches its required final state (normally
+closed).
 
-Continue while the goal is active. A response may end the run only when the
-goal is complete or genuinely blocked by required user input or external state.
-Use commentary for progress. A partial implementation, check, review, or
-commit is not a terminal state.
+Pursue that goal continuously while it is active. Never treat a partial
+implementation, passing subset of checks, review, commit, push, or a report of
+remaining work as a terminal state. A response may end the run only when the
+goal is complete, or when a required checklist item is genuinely blocked by
+needed user input or unavailable external state. In the latter case, keep the
+goal active, report the exact unmet item and blocker, and resume from it when
+the blocker clears. Use commentary for progress and re-check the checklist
+before declaring completion.
 
 ## Public seams
 
