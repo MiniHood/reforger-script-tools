@@ -107,13 +107,6 @@ declaration-tail behavior.
   candidate. Exclude its parameter-label item before argument labels merge
   with ordinary value completion; do not solve that category error by adding
   an RPC-specific rank or changing the general completion ranking.
-- Do not specialize completion, insertion, or follow-up UI based on a feature
-  label such as RPC when the same language fact applies to ordinary callables.
-  Share the general path; introduce a branch only when a proven semantic or
-  structural distinction requires different behavior.
-- Avoid fallback feature paths when the authoritative semantic path can serve
-  the request. A fallback is an explicitly provisional recovery for a proven
-  unavailable fact, never a parallel normal path that can race or diverge.
 - An empty generic slot is a type position, not a value position. Returning
   value completion there exposes statement keywords and hides the standard
   types, `ref`, and indexed classes.
