@@ -89,9 +89,12 @@ findings. The next line explicitly reports Workbench's successful or failed
 validation outcome. It then lists only project-contained findings as clickable
 source locations with severity and compiler messages. The displayed location
 is workspace-relative, never absolute, and the complete location-plus-message
-after the severity is one link to the exact source line. Detailed timing
-remains in the sanitized extension diagnostic log rather than this user-focused
-output. Unmapped finding details stay out of the output.
+after the severity is one link to the projected diagnostic range. Activating
+that link opens the source in preview, selects the same range used by the
+Workbench Compiler Diagnostic, places the active cursor at the range start,
+and reveals it in the editor. Detailed timing remains in the sanitized
+extension diagnostic log rather than this user-focused output. Unmapped
+finding details stay out of the output.
 _Avoid_: payload log, compiler history, raw NET API response
 
 **Provisional Parser Diagnostic**:

@@ -94,15 +94,34 @@ suite('Workbench compiler validation', () => {
 			const findingLine = "[ERROR] Scripts/Game/Example.c:2 — Undefined function 'Run'";
 			assert.ok(output.includes(findingLine));
 			assert.doesNotMatch(output, new RegExp(escapeRegExp(workspace.uri.fsPath)));
-			assert.deepStrictEqual(
-				(await observeWorkbenchCompiler()).validationOutputLinks,
-				[{
-					line: 3,
-					startCharacter: '[ERROR] '.length,
-					endCharacter: findingLine.length,
-					target: sourceUri.with({ fragment: 'L2,1' }).toString(),
-				}],
+			const [outputLink] = (await observeWorkbenchCompiler()).validationOutputLinks;
+			assert.ok(outputLink);
+			const { target, ...outputLinkRange } = outputLink;
+			assert.deepStrictEqual(outputLinkRange, {
+				line: 3,
+				startCharacter: '[ERROR] '.length,
+				endCharacter: findingLine.length,
+			});
+			const navigationTarget = vscode.Uri.parse(target);
+			assert.strictEqual(navigationTarget.scheme, 'command');
+			assert.strictEqual(
+				navigationTarget.path,
+				workbenchCommands.openCompilerDiagnostic,
 			);
+			const navigationArguments = JSON.parse(
+				decodeURIComponent(navigationTarget.query),
+			) as unknown[];
+			assert.strictEqual(navigationArguments.length, 1);
+			await vscode.commands.executeCommand(
+				navigationTarget.path,
+				...navigationArguments,
+			);
+			const navigatedEditor = vscode.window.activeTextEditor;
+			assert.ok(navigatedEditor);
+			assert.strictEqual(navigatedEditor.document.uri.toString(), sourceUri.toString());
+			assert.deepStrictEqual(navigatedEditor.selection.start, new vscode.Position(1, 0));
+			assert.deepStrictEqual(navigatedEditor.selection.end, new vscode.Position(1, 1));
+			assert.deepStrictEqual(navigatedEditor.selection.active, new vscode.Position(1, 0));
 		} finally {
 			await peer.close();
 		}

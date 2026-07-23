@@ -78,10 +78,12 @@ interface ValidationTiming {
 }
 
 interface ValidationOutputLink {
+	id: string;
 	line: number;
 	lineText: string;
 	startCharacter: number;
-	target: vscode.Uri;
+	sourceUri: vscode.Uri;
+	sourceRange: vscode.Range;
 	tooltip: string;
 }
 
@@ -140,6 +142,7 @@ class WorkbenchCompilerController implements vscode.Disposable {
 	private lastValidationTiming: ValidationTiming | undefined;
 	private latestValidationOutput = '';
 	private latestValidationOutputLinks: ValidationOutputLink[] = [];
+	private validationOutputGeneration = 0;
 	private staleReason: string | undefined;
 	private disposed = false;
 
@@ -160,6 +163,10 @@ class WorkbenchCompilerController implements vscode.Disposable {
 			vscode.commands.registerCommand(
 				workbenchCommands.validateScripts,
 				() => this.requestManualValidation(),
+			),
+			vscode.commands.registerCommand(
+				workbenchCommands.openCompilerDiagnostic,
+				id => this.openValidationOutputLink(id),
 			),
 			vscode.workspace.onDidChangeConfiguration(event => {
 				if (event.affectsConfiguration(workbenchConfig.section)) {
@@ -526,6 +533,7 @@ class WorkbenchCompilerController implements vscode.Disposable {
 			lines.push('');
 		}
 		const links: ValidationOutputLink[] = [];
+		const outputGeneration = ++this.validationOutputGeneration;
 		for (const item of projected.located) {
 			const severity = `[${item.compilerDiagnostic.severity.toUpperCase()}]`;
 			const relativePath = vscode.workspace.asRelativePath(item.uri, false)
@@ -534,13 +542,13 @@ class WorkbenchCompilerController implements vscode.Disposable {
 			const location = `${relativePath}:${item.compilerDiagnostic.location.line}`;
 			const lineText = `${severity} ${location} — ${item.compilerDiagnostic.message}`;
 			links.push({
+				id: `${outputGeneration}:${links.length}`,
 				line: lines.length,
 				lineText,
 				startCharacter: severity.length + 1,
-				target: item.uri.with({
-					fragment: `L${item.compilerDiagnostic.location.line},1`,
-				}),
-				tooltip: `Open ${location}`,
+				sourceUri: item.uri,
+				sourceRange: item.diagnostic.range,
+				tooltip: `Open and select ${location}`,
 			});
 			lines.push(lineText);
 		}
@@ -566,12 +574,46 @@ class WorkbenchCompilerController implements vscode.Disposable {
 					candidate.line,
 					candidate.lineText.length,
 				),
-				candidate.target,
+				this.validationOutputLinkTarget(candidate),
 			);
 			link.tooltip = candidate.tooltip;
 			links.push(link);
 		}
 		return links;
+	}
+
+	private validationOutputLinkTarget(candidate: ValidationOutputLink): vscode.Uri {
+		const argumentsJson = encodeURIComponent(JSON.stringify([candidate.id]));
+		return vscode.Uri.parse(
+			`command:${workbenchCommands.openCompilerDiagnostic}?${argumentsJson}`,
+		);
+	}
+
+	private async openValidationOutputLink(id: unknown): Promise<void> {
+		if (this.disposed || typeof id !== 'string') {
+			return;
+		}
+		const candidate = this.latestValidationOutputLinks.find(link => link.id === id);
+		if (!candidate) {
+			return;
+		}
+		try {
+			const editor = await vscode.window.showTextDocument(candidate.sourceUri, {
+				preview: true,
+			});
+			editor.selection = new vscode.Selection(
+				candidate.sourceRange.end,
+				candidate.sourceRange.start,
+			);
+			editor.revealRange(
+				candidate.sourceRange,
+				vscode.TextEditorRevealType.InCenterIfOutsideViewport,
+			);
+		} catch {
+			diagnostic('workbenchDiagnosticNavigationFailed', {
+				category: 'source-unavailable',
+			});
+		}
 	}
 
 	private markDiagnosticsStale(reason: string): void {
@@ -732,7 +774,7 @@ class WorkbenchCompilerController implements vscode.Disposable {
 				line: link.line,
 				startCharacter: link.startCharacter,
 				endCharacter: link.lineText.length,
-				target: link.target.toString(),
+				target: this.validationOutputLinkTarget(link).toString(),
 			})),
 			...(this.lastValidationResult
 				? { lastValidationResult: cloneValidationResult(this.lastValidationResult) }

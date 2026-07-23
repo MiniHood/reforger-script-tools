@@ -409,7 +409,11 @@ and Workbench timing remains available only in the sanitized extension
 diagnostic log. The user output then renders only project-contained findings
 with a severity followed by one clickable workspace-relative
 `path:line — message` range. The severity is not part of the link, and absolute
-paths are not displayed.
+paths are not displayed. Activating a finding link opens its source in preview,
+selects the same exact token, line, or recovery range used by the diagnostic,
+places the active cursor at the range start, and reveals the selection. The
+private navigation command resolves only an opaque current-output link ID,
+rather than accepting an arbitrary source path from command arguments.
 
 The Gateway discards duplicate diagnostic records with the same message,
 resource path, absolute path, addon, and line from a single Workbench response.

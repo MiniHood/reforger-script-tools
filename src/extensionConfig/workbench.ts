@@ -19,6 +19,7 @@ export const workbenchDefaults = {
 
 export const workbenchCommands = {
 	validateScripts: 'reforger-sript-tools.workbench.validateScripts',
+	openCompilerDiagnostic: 'reforger-sript-tools.workbench.openCompilerDiagnostic',
 } as const;
 
 export const workbenchTestCommands = {

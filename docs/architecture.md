@@ -173,7 +173,12 @@ in the sanitized extension diagnostic log without source paths, messages, or
 payload data; they are not shown in the end-user compiler output.
 Project-contained findings show a workspace-relative `path:line`, severity,
 and compiler message. Everything after the severity is one document link to
-the exact source line; absolute paths are kept out of the displayed result.
+the projected diagnostic range; absolute paths are kept out of the displayed
+result. Activating the link runs a private extension command that opens the
+source in preview, selects that same range, places the active cursor at its
+start, and reveals it in the editor. The command accepts only an opaque ID for
+a current output link, so it cannot open an arbitrary path or a superseded
+result.
 Unmapped finding details remain in the typed Gateway result and are represented
 only by sanitized counts in logging and user output. Manual validation reveals
 the output, and automatic validation reveals it when project-contained
