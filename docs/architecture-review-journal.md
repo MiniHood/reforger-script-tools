@@ -1,7 +1,8 @@
 # Architecture Review Journal
 
-Status: in progress  
+Status: complete  
 Started: 2026-07-23  
+Completed: 2026-07-23  
 Scope: every repository-owned coding file: TypeScript, Rust, JavaScript tooling,
 and executable configuration. The current authoritative inventory is 192 files:
 91 under `server/`, 74 under `tools/` (including fixtures), 22 under `src/`,
@@ -9,7 +10,7 @@ and five root executable/configuration files. Fixtures are reviewed where their
 structure or coverage affects the code they evidence; generated output and
 dependencies are excluded.
 
-This journal is an evidence log for the ongoing architecture review. It records
+This journal is an evidence log for the completed architecture review. It records
 each reviewed slice, the files covered, and findings that survive the deletion
 test. It intentionally does not prescribe implementation interfaces; those
 belong to a later design discussion.
@@ -34,11 +35,11 @@ belong to a later design discussion.
 | Repository inventory, build/configuration | 5 | completed | `package.json`, `esbuild.js`, `eslint.config.mjs`, `tsconfig.json`, `language-configuration.json` |
 | Extension composition and configuration | 8 | completed | `src/extension.ts`, `src/extensionConfig/`, diagnostics, game data |
 | Editor/LSP bridges and extension tests | 15 | completed | 14 language-client modules and `src/test/extensionActivation.test.ts` |
-| Rust language foundations | pending | pending | `server/src/*.rs` excluding LSP subtree |
-| Rust LSP runtime and features | pending | pending | `server/src/lsp/` and submodules |
-| Rust binary and examples | pending | pending | `server/src/bin/`, `server/examples/` |
-| Developer tools and tool tests | pending | pending | `tools/*.mjs` and tests |
-| Cross-cutting synthesis | pending | pending | Findings, performance, overlaps, coverage |
+| Rust language foundations | 21 | completed | Non-LSP `server/src/` language foundations and composition root |
+| Rust LSP runtime and features | 31 | completed | `server/src/lsp/` runtime, transport, features, and tests |
+| Rust binary and examples | 38 | completed | `server/src/bin/` plus all `server/examples/` report programs |
+| Developer tools and tool tests | 74 | completed | 40 JavaScript tools/tests and 34 Enfusion fixtures |
+| Cross-cutting synthesis | 192 | completed | Coverage audit, prioritized findings, performance, and ownership synthesis |
 
 ## Findings
 
