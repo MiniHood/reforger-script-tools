@@ -8,10 +8,9 @@ export interface NetApiPeerRequest {
 	payload: unknown;
 }
 
-export interface NetApiPeerResponse {
-	errorCode: string;
-	payload: unknown;
-}
+export type NetApiPeerResponse =
+	| { errorCode: string; payload: unknown; raw?: Buffer }
+	| { silent: true };
 
 export interface NetApiPeer {
 	port: number;
@@ -33,9 +32,12 @@ export async function startNetApiPeer(
 			const request = decodeRequest(Buffer.concat(chunks));
 			requests.push(request);
 			void Promise.resolve(handle(request)).then(response => {
-				socket.end(Buffer.concat([
-					encodeString(response.errorCode),
-					encodeString(JSON.stringify(response.payload)),
+				if ('silent' in response) {
+					return;
+				}
+				socket.end(response.raw ?? Buffer.concat([
+					encodeNetApiString(response.errorCode),
+					encodeNetApiString(JSON.stringify(response.payload)),
 				]));
 			});
 		});
@@ -86,7 +88,7 @@ function decodeString(buffer: Buffer, offset: number): { value: string; offset: 
 	return { value: buffer.toString('utf8', start, end), offset: end };
 }
 
-function encodeString(value: string): Buffer {
+export function encodeNetApiString(value: string): Buffer {
 	const encoded = Buffer.from(value, 'utf8');
 	const length = Buffer.allocUnsafe(4);
 	length.writeInt32LE(encoded.length);

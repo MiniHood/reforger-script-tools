@@ -204,6 +204,8 @@ suite('Workbench compiler validation', () => {
 				return current[0]?.source?.endsWith('(stale)') ? current[0] : undefined;
 			});
 			assert.match(stale.message, /^\[Stale Workbench result/);
+			assert.match(workbenchCompilerObservation().text, /stale/i);
+			assert.match(workbenchCompilerObservation().tooltip, /Compiler result: stale/);
 
 			await vscode.commands.executeCommand(workbenchCommands.validateScripts);
 			await waitFor(() => workbenchDiagnosticsFor(sourceUri).length === 0 ? true : undefined);
@@ -252,6 +254,46 @@ suite('Workbench compiler validation', () => {
 		}
 	});
 
+	test('applies validation-delay changes to queued and future edits immediately', async () => {
+		const workspace = onlyWorkspaceFolder();
+		const sourcePath = path.join(workspace.uri.fsPath, 'Scripts', 'Game', 'Example.c');
+		const original = await fs.readFile(sourcePath, 'utf8');
+		const peer = await startNetApiPeer(request => {
+			const payload = request.payload as { APIFunc?: string };
+			return payload.APIFunc === 'IsWorkbenchRunning'
+				? { errorCode: '', payload: { IsRunning: true, ScriptsCompiled: true } }
+				: { errorCode: '', payload: { Errors: [], Warnings: [], Success: true } };
+		});
+		try {
+			await configurePeer(peer.port, 0.2);
+			const document = await vscode.workspace.openTextDocument(sourcePath);
+			await vscode.window.showTextDocument(document);
+			await applyAppend(document, '// queued before delay change');
+			const configuration = vscode.workspace.getConfiguration(workbenchConfig.section);
+			await configuration.update(
+				workbenchConfig.settings.validationDelaySeconds,
+				0,
+				vscode.ConfigurationTarget.Global,
+			);
+			await new Promise(resolve => setTimeout(resolve, 300));
+			assert.strictEqual(validationRequests(peer).length, 0);
+			assert.strictEqual(document.isDirty, true);
+
+			await configuration.update(
+				workbenchConfig.settings.validationDelaySeconds,
+				0.05,
+				vscode.ConfigurationTarget.Global,
+			);
+			await applyAppend(document, '// edit after delay change');
+			await waitFor(() => validationRequests(peer).length === 1 ? true : undefined);
+			assert.strictEqual(document.isDirty, false);
+		} finally {
+			await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
+			await fs.writeFile(sourcePath, original, 'utf8');
+			await peer.close();
+		}
+	});
+
 	test('retains stale findings and reports save-failed when the active script cannot be saved', async () => {
 		const workspace = onlyWorkspaceFolder();
 		const sourcePath = path.join(workspace.uri.fsPath, 'Scripts', 'Game', 'Example.c');
@@ -296,6 +338,55 @@ suite('Workbench compiler validation', () => {
 		} finally {
 			await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
 			await fs.writeFile(sourcePath, original, 'utf8');
+			await peer.close();
+		}
+	});
+
+	test('retains findings as stale when the configured Workbench endpoint becomes unavailable', async () => {
+		const workspace = onlyWorkspaceFolder();
+		const sourceUri = vscode.Uri.file(path.join(
+			workspace.uri.fsPath,
+			'Scripts',
+			'Game',
+			'Example.c',
+		));
+		const peer = await startNetApiPeer(request => {
+			const payload = request.payload as { APIFunc?: string };
+			return payload.APIFunc === 'IsWorkbenchRunning'
+				? { errorCode: '', payload: { IsRunning: true, ScriptsCompiled: true } }
+				: {
+					errorCode: '',
+					payload: {
+						Errors: [{
+							error: 'Finding retained through outage',
+							file: 'Scripts/Game/Example.c',
+							line: 1,
+						}],
+						Warnings: [],
+						Success: false,
+					},
+				};
+		});
+		const unavailablePeer = await startNetApiPeer(() => ({ silent: true }));
+		const unavailablePort = unavailablePeer.port;
+		await unavailablePeer.close();
+		try {
+			await configurePeer(peer.port, 0);
+			await vscode.commands.executeCommand(workbenchCommands.validateScripts);
+			await waitFor(() => workbenchDiagnosticsFor(sourceUri).length === 1 ? true : undefined);
+			const configuration = vscode.workspace.getConfiguration(workbenchConfig.section);
+			await configuration.update(
+				workbenchConfig.settings.port,
+				unavailablePort,
+				vscode.ConfigurationTarget.Global,
+			);
+
+			await waitFor(() => workbenchCompilerObservation().phase === 'unavailable' ? true : undefined);
+			const retained = workbenchDiagnosticsFor(sourceUri);
+			assert.strictEqual(retained.length, 1);
+			assert.match(retained[0].source ?? '', /\(stale\)$/);
+			assert.match(workbenchCompilerObservation().tooltip, /Compiler result: stale/);
+		} finally {
 			await peer.close();
 		}
 	});
@@ -349,8 +440,64 @@ suite('Workbench compiler validation', () => {
 				['Relative contained location'],
 			);
 			assert.deepStrictEqual(workbenchDiagnosticsFor(vscode.Uri.file(externalPath)), []);
+			assert.strictEqual(
+				workbenchCompilerObservation().lastValidationResult?.diagnostics.length,
+				4,
+			);
 		} finally {
 			await fs.unlink(externalPath).catch(() => undefined);
+			await peer.close();
+		}
+	});
+
+	test('keeps a result stale when scripts change during its validation request', async () => {
+		const workspace = onlyWorkspaceFolder();
+		const sourcePath = path.join(workspace.uri.fsPath, 'Scripts', 'Game', 'Example.c');
+		const sourceUri = vscode.Uri.file(sourcePath);
+		let releaseValidation: (() => void) | undefined;
+		const validationGate = new Promise<void>(resolve => {
+			releaseValidation = resolve;
+		});
+		let validationStarted = false;
+		const peer = await startNetApiPeer(async request => {
+			const payload = request.payload as { APIFunc?: string };
+			if (payload.APIFunc === 'IsWorkbenchRunning') {
+				return { errorCode: '', payload: { IsRunning: true, ScriptsCompiled: true } };
+			}
+			validationStarted = true;
+			await validationGate;
+			return {
+				errorCode: '',
+				payload: {
+					Errors: [{
+						error: 'Finding for the older saved snapshot',
+						file: 'Scripts/Game/Example.c',
+						line: 1,
+					}],
+					Warnings: [],
+					Success: false,
+				},
+			};
+		});
+		try {
+			await configurePeer(peer.port, 0);
+			const document = await vscode.workspace.openTextDocument(sourcePath);
+			await vscode.window.showTextDocument(document);
+			const command = vscode.commands.executeCommand(workbenchCommands.validateScripts);
+			await waitFor(() => validationStarted ? true : undefined);
+			await applyAppend(document, '// edit during validation');
+			releaseValidation?.();
+			await command;
+
+			const stale = await waitFor(() => {
+				const current = workbenchDiagnosticsFor(sourceUri);
+				return current[0]?.source?.endsWith('(stale)') ? current[0] : undefined;
+			});
+			assert.match(stale.message, /Finding for the older saved snapshot/);
+			assert.match(workbenchCompilerObservation().tooltip, /Compiler result: stale/);
+		} finally {
+			releaseValidation?.();
+			await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
 			await peer.close();
 		}
 	});
@@ -457,4 +604,9 @@ async function applyAppend(document: vscode.TextDocument, text: string): Promise
 function workbenchDiagnosticsFor(uri: vscode.Uri): vscode.Diagnostic[] {
 	return vscode.languages.getDiagnostics(uri)
 		.filter(diagnostic => diagnostic.source?.startsWith(workbenchDiagnostics.source));
+}
+
+function validationRequests(peer: { requests: Array<{ payload: unknown }> }): unknown[] {
+	return peer.requests.filter(request =>
+		(request.payload as { APIFunc?: string }).APIFunc === 'ValidateScripts');
 }

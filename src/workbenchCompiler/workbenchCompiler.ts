@@ -31,6 +31,7 @@ export interface WorkbenchCompilerObservation {
 	phase: WorkbenchUiPhase;
 	text: string;
 	tooltip: string;
+	lastValidationResult?: WorkbenchValidationResult;
 }
 
 type WorkbenchObservationGlobal = typeof globalThis & {
@@ -41,16 +42,25 @@ export function workbenchCompilerObservation(): WorkbenchCompilerObservation {
 	const observation = (globalThis as WorkbenchObservationGlobal)
 		.__reforgerScriptToolsWorkbenchCompilerObservation;
 	return observation
-		? { ...observation }
+		? {
+			...observation,
+			...(observation.lastValidationResult
+				? { lastValidationResult: cloneValidationResult(observation.lastValidationResult) }
+				: {}),
+		}
 		: { phase: 'connecting', text: '', tooltip: '' };
 }
+
+type ValidationProfileSelection =
+	| { kind: 'supported'; value: WorkbenchValidationProfile }
+	| { kind: 'unsupported'; configuredValue: string };
 
 interface WorkbenchConfiguration {
 	enabled: boolean;
 	host: string;
 	port: number;
 	validationDelaySeconds: number;
-	validationProfile: string;
+	validationProfile: ValidationProfileSelection;
 }
 
 interface RenderedDiagnosticSet {
@@ -85,16 +95,19 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		100,
 	);
 	private readonly disposables: vscode.Disposable[] = [];
-	private readonly freshDiagnostics = new Map<string, RenderedDiagnosticSet>();
+	private readonly retainedDiagnostics = new Map<string, RenderedDiagnosticSet>();
 	private probeTimer: NodeJS.Timeout | undefined;
 	private validationTimer: NodeJS.Timeout | undefined;
 	private pendingValidation: ValidationRequest | undefined;
 	private readonly savesStartedByValidation = new Set<string>();
 	private configurationGeneration = 0;
+	private scriptEditGeneration = 0;
 	private validating = false;
 	private phase: WorkbenchUiPhase = 'connecting';
 	private lastOutcome = 'No validation has completed.';
 	private lastFailure: WorkbenchCompilerFailure | undefined;
+	private lastValidationResult: WorkbenchValidationResult | undefined;
+	private staleReason: string | undefined;
 
 	public start(): void {
 		this.statusItem.name = 'Reforger Workbench';
@@ -153,7 +166,7 @@ class WorkbenchCompilerController implements vscode.Disposable {
 			this.markDiagnosticsStale('Workbench NET API integration is disabled');
 			return;
 		}
-		if (this.configuration.validationProfile !== 'WORKBENCH') {
+		if (this.configuration.validationProfile.kind === 'unsupported') {
 			this.noteFailure({
 				category: 'unsupported',
 				recoveryHint: 'Select the supported WORKBENCH validation profile.',
@@ -178,6 +191,7 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		if (!eligibleDocument(document)) {
 			return;
 		}
+		this.scriptEditGeneration += 1;
 		this.markDiagnosticsStale('the script has newer edits');
 		if (vscode.window.activeTextEditor?.document.uri.toString() === document.uri.toString()) {
 			this.scheduleValidation({ generation: this.configurationGeneration, documentToSave: document });
@@ -238,7 +252,7 @@ class WorkbenchCompilerController implements vscode.Disposable {
 				this.scheduleProbe(readyHeartbeatMs, request.generation);
 				return;
 			}
-			await this.validate(request.generation);
+			await this.validate(request.generation, this.scriptEditGeneration);
 		} finally {
 			this.validating = false;
 			const pending = this.pendingValidation;
@@ -264,12 +278,19 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		}
 	}
 
-	private async validate(generation: number): Promise<void> {
+	private async validate(generation: number, editGeneration: number): Promise<void> {
 		if (generation !== this.configurationGeneration) {
 			return;
 		}
+		if (this.configuration.validationProfile.kind === 'unsupported') {
+			this.noteFailure({
+				category: 'unsupported',
+				recoveryHint: 'Select the supported WORKBENCH validation profile.',
+			});
+			return;
+		}
 		const result = await this.gateway.validateScripts(
-			this.configuration.validationProfile as WorkbenchValidationProfile,
+			this.configuration.validationProfile.value,
 		);
 		if (generation !== this.configurationGeneration) {
 			return;
@@ -281,13 +302,21 @@ class WorkbenchCompilerController implements vscode.Disposable {
 			return;
 		}
 		this.publishValidationResult(result.value);
+		const resultBecameStale = editGeneration !== this.scriptEditGeneration;
+		if (resultBecameStale) {
+			this.markDiagnosticsStale('scripts changed while validation was running');
+		}
 		this.lastFailure = undefined;
-		this.lastOutcome = result.value.success
-			? `Validation succeeded at ${new Date().toLocaleTimeString()}.`
-			: `Validation completed with ${result.value.diagnostics.length} finding(s) at ${new Date().toLocaleTimeString()}.`;
+		this.lastOutcome = resultBecameStale
+			? `Validation completed for an older saved snapshot at ${new Date().toLocaleTimeString()}.`
+			: result.value.success
+				? `Validation succeeded at ${new Date().toLocaleTimeString()}.`
+				: `Validation completed with ${result.value.diagnostics.length} finding(s) at ${new Date().toLocaleTimeString()}.`;
 		this.setPhase('ready');
 		diagnostic('workbenchCompilerDiagnosticSet', {
-			outcome: result.value.success ? 'success' : 'compiler-findings',
+			outcome: resultBecameStale
+				? 'stale-result'
+				: result.value.success ? 'success' : 'compiler-findings',
 			diagnosticCount: result.value.diagnostics.length,
 		});
 		this.scheduleProbe(readyHeartbeatMs, generation);
@@ -306,17 +335,19 @@ class WorkbenchCompilerController implements vscode.Disposable {
 			}
 		}
 		const entries: Array<[vscode.Uri, readonly vscode.Diagnostic[] | undefined]> = [];
-		for (const previous of this.freshDiagnostics.values()) {
+		for (const previous of this.retainedDiagnostics.values()) {
 			entries.push([previous.uri, undefined]);
 		}
 		for (const current of next.values()) {
 			entries.push([current.uri, current.diagnostics]);
 		}
 		this.compilerDiagnostics.set(entries);
-		this.freshDiagnostics.clear();
+		this.retainedDiagnostics.clear();
 		for (const [key, value] of next) {
-			this.freshDiagnostics.set(key, value);
+			this.retainedDiagnostics.set(key, value);
 		}
+		this.lastValidationResult = cloneValidationResult(result);
+		this.staleReason = undefined;
 		if (projected.unresolved > 0) {
 			diagnostic('workbenchUnresolvedDiagnosticLocations', {
 				count: projected.unresolved,
@@ -325,11 +356,12 @@ class WorkbenchCompilerController implements vscode.Disposable {
 	}
 
 	private markDiagnosticsStale(reason: string): void {
-		if (this.freshDiagnostics.size === 0) {
+		if (!this.lastValidationResult) {
 			return;
 		}
+		this.staleReason = reason;
 		const entries: Array<[vscode.Uri, readonly vscode.Diagnostic[]]> = [];
-		for (const set of this.freshDiagnostics.values()) {
+		for (const set of this.retainedDiagnostics.values()) {
 			entries.push([set.uri, set.diagnostics.map(original => {
 				const stale = new vscode.Diagnostic(
 					original.range,
@@ -342,6 +374,7 @@ class WorkbenchCompilerController implements vscode.Disposable {
 			})]);
 		}
 		this.compilerDiagnostics.set(entries);
+		this.setPhase(this.phase);
 	}
 
 	private async probe(generation: number): Promise<void> {
@@ -420,9 +453,12 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		}
 		this.phase = phase;
 		const presentation = statusPresentation(phase);
-		this.statusItem.text = phase === 'unavailable' && this.lastFailure?.category === 'save-failed'
+		const baseText = phase === 'unavailable' && this.lastFailure?.category === 'save-failed'
 			? '$(warning) Workbench save failed'
 			: presentation.text;
+		this.statusItem.text = this.staleReason
+			? `${baseText} — result stale`
+			: baseText;
 		const detail = phase === 'unavailable' && this.lastFailure?.category === 'save-failed'
 			? 'Compiler validation stopped because the active script could not be saved.'
 			: presentation.detail;
@@ -430,7 +466,12 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		this.statusItem.tooltip = [
 			detail,
 			`Endpoint: ${endpoint}`,
-			`Profile: ${this.configuration.validationProfile}`,
+			`Profile: ${validationProfileLabel(this.configuration.validationProfile)}`,
+			this.staleReason
+				? `Compiler result: stale — ${this.staleReason}.`
+				: this.lastValidationResult
+					? 'Compiler result: fresh.'
+					: 'Compiler result: not yet available.',
 			this.lastOutcome,
 			...(this.lastFailure
 				? [`Failure: ${this.lastFailure.category}. ${this.lastFailure.recoveryHint}`]
@@ -443,6 +484,9 @@ class WorkbenchCompilerController implements vscode.Disposable {
 			phase,
 			text: this.statusItem.text,
 			tooltip: this.statusItem.tooltip,
+			...(this.lastValidationResult
+				? { lastValidationResult: cloneValidationResult(this.lastValidationResult) }
+				: {}),
 		};
 	}
 }
@@ -457,10 +501,10 @@ function readConfiguration(): WorkbenchConfiguration {
 			workbenchConfig.settings.validationDelaySeconds,
 			workbenchDefaults.validationDelaySeconds,
 		),
-		validationProfile: configuration.get(
+		validationProfile: readValidationProfile(configuration.get(
 			workbenchConfig.settings.validationProfile,
 			workbenchDefaults.validationProfile,
-		),
+		)),
 	};
 }
 
@@ -479,6 +523,28 @@ function createGateway(configuration: WorkbenchConfiguration): WorkbenchGateway 
 			});
 		},
 	});
+}
+
+function readValidationProfile(configuredValue: string): ValidationProfileSelection {
+	return configuredValue === 'WORKBENCH'
+		? { kind: 'supported', value: configuredValue }
+		: { kind: 'unsupported', configuredValue };
+}
+
+function validationProfileLabel(selection: ValidationProfileSelection): string {
+	return selection.kind === 'supported'
+		? selection.value
+		: selection.configuredValue;
+}
+
+function cloneValidationResult(result: WorkbenchValidationResult): WorkbenchValidationResult {
+	return {
+		...result,
+		diagnostics: result.diagnostics.map(compilerDiagnostic => ({
+			...compilerDiagnostic,
+			location: { ...compilerDiagnostic.location },
+		})),
+	};
 }
 
 function statusPresentation(phase: WorkbenchUiPhase): { text: string; detail: string } {
