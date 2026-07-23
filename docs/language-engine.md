@@ -79,6 +79,21 @@ family. Their source-defined arity supplies one through six type slots using
 the same type-completion and final-caret bridge as collections; they do not
 receive collection construction or declaration-tail behavior.
 
+### Completion gotchas
+
+- An empty generic slot is a type position, not a value position. Returning
+  value completion there exposes statement keywords and hides the standard
+  types, `ref`, and indexed classes.
+- Do not grow a hard-coded owner-name list when another generic class is
+  discovered. The base-game corpus includes generic classes beyond collections
+  and tuples, so generic snippet arity and empty-slot recovery must ultimately
+  come from the indexed generic-owner declaration. The current built-in
+  collection and `Tuple1`–`Tuple6` recognition is a bounded compatibility
+  bridge, with removal condition: replace it when generic-class metadata drives
+  this path.
+- Collection-only construction and declaration-tail behavior remains limited to
+  `array`, `set`, and `map`; generic classes and tuples receive type slots only.
+
 The collection declaration-tail owner is similarly bounded: it lexically
 proves a complete single `array`, `set`, or `map` field/local and rejects all
 other contexts before returning the one native Space edit plus a suggestion
