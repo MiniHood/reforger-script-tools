@@ -512,8 +512,8 @@ class WorkbenchCompilerController implements vscode.Disposable {
 			: '';
 		const workbenchDurationMs = timing.completedAtMs - timing.validationStartedAtMs;
 		const lines = [
-			`Compilation in ${formatValidationDuration(workbenchDurationMs)}`
-				+ ` - ${new Date(timing.completedAtMs).toLocaleTimeString()} - `
+			`[${formatValidationClockTime(timing.completedAtMs)}] `
+				+ `Compilation in ${formatValidationDuration(workbenchDurationMs)} — `
 				+ `${projectErrorCount} project error${projectErrorCount === 1 ? '' : 's'}, `
 				+ `${projectWarningCount} project warning${projectWarningCount === 1 ? '' : 's'}`
 				+ hiddenSummary,
@@ -817,6 +817,15 @@ function formatValidationDuration(durationMs: number): string {
 	return roundedDurationMs < 1_000
 		? `${roundedDurationMs} ms`
 		: `${(roundedDurationMs / 1_000).toFixed(1)} s`;
+}
+
+function formatValidationClockTime(timestampMs: number): string {
+	const completedAt = new Date(timestampMs);
+	return [
+		completedAt.getHours(),
+		completedAt.getMinutes(),
+		completedAt.getSeconds(),
+	].map(part => part.toString().padStart(2, '0')).join(':');
 }
 
 interface ProjectedDiagnostics {

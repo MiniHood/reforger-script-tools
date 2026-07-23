@@ -400,15 +400,16 @@ nearest preceding non-blank source line through the reported line. This shows
 the likely missing-semicolon source expression together with the line where
 Workbench recovered, while skipping blank lines when choosing the start.
 
-The dedicated latest-result output starts with a compact completion line
-containing Workbench request duration, completion time, project error/warning
-counts, and a count of hidden non-project findings. A separate outcome line
-explicitly says whether Workbench reported success or failure. Detailed
-idle/queue, save/preparation, and Workbench timing remains available only in
-the sanitized extension diagnostic log. The user output then renders only
-project-contained findings with a severity followed by one clickable
-workspace-relative `path:line — message` range. The severity is not part of
-the link, and absolute paths are not displayed.
+The dedicated latest-result output starts with a compact completion line whose
+bracketed local 24-hour timestamp is visually separated at the front. Workbench
+request duration follows, then project error/warning counts and a count of
+hidden non-project findings. A separate outcome line explicitly says whether
+Workbench reported success or failure. Detailed idle/queue, save/preparation,
+and Workbench timing remains available only in the sanitized extension
+diagnostic log. The user output then renders only project-contained findings
+with a severity followed by one clickable workspace-relative
+`path:line — message` range. The severity is not part of the link, and absolute
+paths are not displayed.
 
 The Gateway discards duplicate diagnostic records with the same message,
 resource path, absolute path, addon, and line from a single Workbench response.

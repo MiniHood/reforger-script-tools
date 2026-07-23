@@ -87,7 +87,7 @@ suite('Workbench compiler validation', () => {
 			assert.ok(output);
 			assert.match(
 				output,
-				/^Compilation in (?:\d+ ms|\d+\.\d s) - .+ - 1 project error, 0 project warnings\r?\n/,
+				/^\[\d{2}:\d{2}:\d{2}\] Compilation in (?:\d+ ms|\d+\.\d s) — 1 project error, 0 project warnings\r?\n/,
 			);
 			assert.match(output, /^\[FAILED\] Workbench reported compilation errors\.$/m);
 			assert.doesNotMatch(output, /^Timing:/m);
@@ -825,7 +825,7 @@ suite('Workbench compiler validation', () => {
 			const output = (await observeWorkbenchCompiler()).validationOutput;
 			assert.match(
 				output,
-				/^Compilation in (?:\d+ ms|\d+\.\d s) - .+ - 1 project error, 1 project warning \(4 non-project findings hidden\)\r?\n/,
+				/^\[\d{2}:\d{2}:\d{2}\] Compilation in (?:\d+ ms|\d+\.\d s) — 1 project error, 1 project warning \(4 non-project findings hidden\)\r?\n/,
 			);
 			assert.ok(output.includes(
 				'[ERROR] Scripts/Game/Example.c:1 — Relative contained location',

@@ -82,15 +82,16 @@ publication.
 _Avoid_: LSP compiler diagnostics, shared diagnostic collection, Rust output
 
 **Workbench Compiler Output**:
-The user-facing latest-result output. Its compact first line reports Workbench
-request duration, completion time, project error/warning counts, and the count
-of hidden non-project findings. The next line explicitly reports Workbench's
-successful or failed validation outcome. It then lists only project-contained
-findings as clickable source locations with severity and compiler messages.
-The displayed location is workspace-relative, never absolute, and the complete
-location-plus-message after the severity is one link to the exact source line.
-Detailed timing remains in the sanitized extension diagnostic log rather than
-this user-focused output. Unmapped finding details stay out of the output.
+The user-facing latest-result output. Its compact first line begins with a
+bracketed local 24-hour completion timestamp, then reports Workbench request
+duration, project error/warning counts, and the count of hidden non-project
+findings. The next line explicitly reports Workbench's successful or failed
+validation outcome. It then lists only project-contained findings as clickable
+source locations with severity and compiler messages. The displayed location
+is workspace-relative, never absolute, and the complete location-plus-message
+after the severity is one link to the exact source line. Detailed timing
+remains in the sanitized extension diagnostic log rather than this user-focused
+output. Unmapped finding details stay out of the output.
 _Avoid_: payload log, compiler history, raw NET API response
 
 **Provisional Parser Diagnostic**:
