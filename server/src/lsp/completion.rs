@@ -4962,7 +4962,7 @@ fn callable_completion_render(
                     call,
                     CallableInsertText {
                         text: insert_text,
-                        snippet_placeholder_defaults: rpl_rpc_snippet_placeholder_defaults(),
+                        enum_placeholder_defaults: rpl_rpc_enum_placeholder_defaults(),
                     },
                 ));
             }
@@ -4980,7 +4980,7 @@ fn callable_completion_render(
                     call,
                     CallableInsertText {
                         text: insert_text,
-                        snippet_placeholder_defaults: rpl_rpc_snippet_placeholder_defaults(),
+                        enum_placeholder_defaults: rpl_rpc_enum_placeholder_defaults(),
                     },
                 ));
             }
@@ -5008,7 +5008,7 @@ struct CallableCompletionRender {
 
 impl CallableCompletionRender {
     fn from_insert(call: CallableSignatureParts, insert: CallableInsertText) -> Self {
-        if insert.snippet_placeholder_defaults.is_empty() {
+        if insert.enum_placeholder_defaults.is_empty() {
             if sole_function_reference_parameter(&call).is_some() {
                 Self::trigger_suggest_at_snippet_placeholders(
                     call,
@@ -5022,7 +5022,7 @@ impl CallableCompletionRender {
             Self::trigger_suggest_at_snippet_placeholders(
                 call,
                 insert.text,
-                insert.snippet_placeholder_defaults,
+                insert.enum_placeholder_defaults,
             )
         }
     }
@@ -5071,10 +5071,10 @@ fn callable_insert_text(label: &str, call: &CallableSignatureParts) -> String {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CallableInsertText {
     text: String,
-    /// Complete selected text for every required snippet field, in source
-    /// signature order. Rust determines the sequence; the TypeScript bridge
-    /// observes each field, opens Suggest, and advances after acceptance.
-    snippet_placeholder_defaults: Vec<String>,
+    /// Complete selected snippet-field text for every required enum parameter,
+    /// in source signature order. Rust determines this from indexed type facts;
+    /// the TypeScript bridge only observes the selected fields and opens Suggest.
+    enum_placeholder_defaults: Vec<String>,
 }
 
 /// `RplRpc` has two required enum arguments but the engine's canonical RPC
@@ -5109,7 +5109,7 @@ fn rpl_rpc_attribute_template(
 
 const RPL_RPC_ENUM_PLACEHOLDER_DEFAULTS: [&str; 2] = ["RplChannel.Reliable", "RplRcver.Server"];
 
-fn rpl_rpc_snippet_placeholder_defaults() -> Vec<String> {
+fn rpl_rpc_enum_placeholder_defaults() -> Vec<String> {
     RPL_RPC_ENUM_PLACEHOLDER_DEFAULTS
         .into_iter()
         .map(str::to_string)
@@ -5125,41 +5125,47 @@ fn callable_insert_text_with_context(
     if call.parameters_info.is_empty() {
         return CallableInsertText {
             text: format!("{label}()"),
-            snippet_placeholder_defaults: Vec::new(),
+            enum_placeholder_defaults: Vec::new(),
         };
     }
     if required.is_empty() {
         return CallableInsertText {
             text: format!("{label}($0)"),
-            snippet_placeholder_defaults: Vec::new(),
+            enum_placeholder_defaults: Vec::new(),
         };
     }
     if sole_function_reference_parameter(call).is_some() {
         return CallableInsertText {
             text: format!("{label}(${{1:}})"),
-            snippet_placeholder_defaults: Vec::new(),
+            enum_placeholder_defaults: Vec::new(),
         };
     }
 
-    let mut snippet_placeholder_defaults = Vec::new();
+    let mut enum_placeholder_defaults = Vec::new();
     let mut arguments = Vec::new();
     for (index, parameter) in required.iter().enumerate() {
-        let placeholder = if let Some(owner) = enum_parameter_owner(parameter, render_context) {
-            format!("{owner}.")
+        let argument = if let Some(owner) = enum_parameter_owner(parameter, render_context) {
+            let placeholder = format!("{owner}.");
+            enum_placeholder_defaults.push(placeholder.clone());
+            format!(
+                "${{{}:{}}}",
+                index + 1,
+                snippet_placeholder_text(&placeholder)
+            )
         } else {
-            parameter.name.clone()
+            let placeholder = parameter.name.clone();
+            format!(
+                "${{{}:{}}}",
+                index + 1,
+                snippet_placeholder_text(&placeholder)
+            )
         };
-        snippet_placeholder_defaults.push(placeholder.clone());
-        arguments.push(format!(
-            "${{{}:{}}}",
-            index + 1,
-            snippet_placeholder_text(&placeholder)
-        ));
+        arguments.push(argument);
     }
     let arguments = arguments.join(", ");
     CallableInsertText {
         text: format!("{label}({arguments})"),
-        snippet_placeholder_defaults,
+        enum_placeholder_defaults,
     }
 }
 
@@ -6970,7 +6976,7 @@ ArmaReforgerScripted GetGame();
             call,
             CallableInsertText {
                 text: insert_text,
-                snippet_placeholder_defaults: Vec::new(),
+                enum_placeholder_defaults: Vec::new(),
             },
         );
 
@@ -6987,26 +6993,21 @@ ArmaReforgerScripted GetGame();
     }
 
     #[test]
-    fn ordinary_parameter_snippet_advances_through_each_required_placeholder() {
+    fn ordinary_parameter_snippet_keeps_parameter_hints() {
         let call = callable_signature_parts(
             "TestNumFun2",
             "Example.TestNumFun2(int input, float number, string text = \"\") -> int",
         )
         .unwrap();
-        let insert = callable_insert_text_with_context("TestNumFun2", &call, None);
-        let render = CallableCompletionRender::from_insert(call, insert);
+        let render = CallableCompletionRender::from_insert(
+            call,
+            CallableInsertText {
+                text: "TestNumFun2(${1:input}, ${2:number})".to_string(),
+                enum_placeholder_defaults: Vec::new(),
+            },
+        );
 
-        assert_eq!(
-            render.follow_up_command.command,
-            COMMAND_TRIGGER_SUGGEST_AT_SNIPPET_PLACEHOLDER
-        );
-        assert_eq!(
-            render.follow_up_command.arguments,
-            Some(vec![
-                Value::String("input".to_string()),
-                Value::String("number".to_string()),
-            ])
-        );
+        assert_eq!(render.follow_up_command.command, COMMAND_TRIGGER_PARAMETER_HINTS);
     }
 
     #[test]
@@ -7030,12 +7031,8 @@ enum SecondChoice { Second }"#,
             "Run(${1:FirstChoice.}, ${2:SecondChoice.}, ${3:count})"
         );
         assert_eq!(
-            insert.snippet_placeholder_defaults,
-            vec![
-                "FirstChoice.".to_string(),
-                "SecondChoice.".to_string(),
-                "count".to_string(),
-            ]
+            insert.enum_placeholder_defaults,
+            vec!["FirstChoice.".to_string(), "SecondChoice.".to_string()]
         );
     }
 

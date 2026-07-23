@@ -3039,7 +3039,7 @@ class Example
 }
 
 #[test]
-fn callable_completion_advances_through_required_parameters_after_insert() {
+fn callable_completion_triggers_signature_help_after_insert() {
     let source = r#"class GRAY_TEST2
 {
 	int TestNumFun2(int input, float num, string test = "eeeeee");
@@ -3075,13 +3075,7 @@ class Example
         item.command
             .as_ref()
             .map(|command| command.command.as_str()),
-        Some("reforger-sript-tools.completion.triggerSuggestAtSnippetPlaceholder")
-    );
-    assert_eq!(
-        item.command
-            .as_ref()
-            .and_then(|command| command.arguments.as_ref()),
-        Some(&vec![serde_json::json!("input"), serde_json::json!("num")])
+        Some("editor.action.triggerParameterHints")
     );
 }
 
@@ -3125,8 +3119,7 @@ class Example
             .and_then(|command| command.arguments.as_ref()),
         Some(&vec![
             serde_json::json!("FirstChoice."),
-            serde_json::json!("SecondChoice."),
-            serde_json::json!("count")
+            serde_json::json!("SecondChoice.")
         ])
     );
 
@@ -3167,8 +3160,7 @@ class Example
             .and_then(|command| command.arguments.as_ref()),
         Some(&vec![
             serde_json::json!("FirstChoice."),
-            serde_json::json!("SecondChoice."),
-            serde_json::json!("count")
+            serde_json::json!("SecondChoice.")
         ])
     );
 
@@ -3207,8 +3199,7 @@ class Example
             .and_then(|command| command.arguments.as_ref()),
         Some(&vec![
             serde_json::json!("FirstChoice."),
-            serde_json::json!("SecondChoice."),
-            serde_json::json!("count")
+            serde_json::json!("SecondChoice.")
         ])
     );
 }
