@@ -395,6 +395,27 @@ module, both callers must reconstruct the same language lookup traversal. This
 deepens the index query seam, gives language changes one authority, and keeps
 feature modules focused on their respective result projections.
 
+### AR-018 — The language-server executable silently discards invalid launch arguments
+
+**Strength:** Strong
+**Files:** `server/src/bin/reforger_language_server.rs:7-46`; `src/languageClient/languageClient.ts:430-481`
+
+The executable's argument loop ignores every unknown flag and also silently
+accepts a recognized flag when its value is missing. Those options carry the
+external-index contract: `--game-data-scripts`, `--index-cache`, metadata, and
+workspace roots. A spelling or version mismatch between the thin TypeScript
+launcher and the bundled binary can therefore start a working stdio server
+without the intended index rather than producing an actionable startup error.
+The binary has no parser tests for this public invocation contract.
+
+Make command-line admission one small module that returns either validated
+`LspServerOptions` or a concise usage error. It should reject unknown flags,
+require a value for value-taking flags, and have table-driven tests for the
+launcher-owned option set. The deletion test passes: without a single parser,
+each startup path has to rediscover argument validity. This keeps the
+TypeScript-to-Rust process seam explicit and turns configuration loss into a
+diagnosable failure.
+
 ## Reviewed slices
 
 ### 2026-07-23 — Repository inventory, build/configuration
