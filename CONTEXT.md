@@ -77,8 +77,10 @@ _Avoid_: LSP compiler diagnostics, shared diagnostic collection, Rust output
 
 **Workbench Compiler Output**:
 The user-facing latest-result output. Its first line reports completion time,
-duration, project error/warning counts, and the count of hidden non-project
-findings. It then lists only project-contained findings as clickable source
+trigger-to-result duration, project error/warning counts, and the count of
+hidden non-project findings. A second line separates idle/queue,
+save/preparation, and Workbench request time. It then lists only
+project-contained findings as clickable source
 locations with severity and compiler messages. The displayed location is
 workspace-relative, never absolute, and the complete location-plus-message
 after the severity is one link to the exact source line. Unmapped finding
@@ -121,8 +123,10 @@ _Avoid_: current compiler error, discarded validation, parser diagnostic
 
 **Workbench Compiler Diagnostic Set**:
 The complete compiler-diagnostic result of one successful Validation Profile
-run. The extension replaces the profile's displayed set atomically; an
-unsuccessful run retains the preceding set only as stale evidence.
+run. Exact duplicate records in one Workbench response normalize to one
+diagnostic before publication. The extension replaces the profile's displayed
+set atomically; an unsuccessful run retains the preceding set only as stale
+evidence.
 _Avoid_: incremental compiler output, merged run history, partial refresh
 
 ## LSP Runtime

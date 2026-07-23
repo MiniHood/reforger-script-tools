@@ -244,12 +244,13 @@ function decodeValidation(
 	if (!errors || !warnings) {
 		return failure('protocol', 'Restart Workbench and verify that its NET API is compatible.');
 	}
+	const diagnostics = uniqueDiagnostics([...errors, ...warnings]);
 	return {
 		ok: true,
 		value: {
 			profile,
 			success: value.Success,
-			diagnostics: [...errors, ...warnings],
+			diagnostics,
 		},
 	};
 }
@@ -280,6 +281,27 @@ function decodeDiagnostics(
 		});
 	}
 	return diagnostics;
+}
+
+function uniqueDiagnostics(
+	diagnostics: WorkbenchCompilerDiagnostic[],
+): WorkbenchCompilerDiagnostic[] {
+	const seen = new Set<string>();
+	return diagnostics.filter(diagnostic => {
+		const identity = JSON.stringify([
+			diagnostic.severity,
+			diagnostic.message,
+			diagnostic.location.file,
+			diagnostic.location.fileAbs ?? '',
+			diagnostic.location.addon ?? '',
+			diagnostic.location.line,
+		]);
+		if (seen.has(identity)) {
+			return false;
+		}
+		seen.add(identity);
+		return true;
+	});
 }
 
 function transact(

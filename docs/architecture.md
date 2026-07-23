@@ -152,8 +152,13 @@ path is never replaced by a plausible relative guess. Rust language diagnostics
 remain in their independent LSP-owned collection throughout.
 
 Every completed validation also replaces the dedicated **Reforger Workbench
-Compiler** output. Its first line reports completion time, request duration,
-project error/warning counts, and a count of hidden non-project findings.
+Compiler** output. Its first line reports completion time, trigger-to-result
+duration, project error/warning counts, and a count of hidden non-project
+findings. A timing breakdown separates idle/queue, save/preparation, and the
+Workbench request so the user-visible latency is not confused with compiler
+execution time.
+The same trigger and timing stages are written to the sanitized extension
+diagnostic log without source paths, messages, or payload data.
 Project-contained findings show a workspace-relative `path:line`, severity,
 and compiler message. Everything after the severity is one document link to
 the exact source line; absolute paths are kept out of the displayed result.
@@ -161,6 +166,10 @@ Unmapped finding details remain in the typed Gateway result and are represented
 only by sanitized counts in logging and user output. Manual validation reveals
 the output, and automatic validation reveals it when project-contained
 findings exist.
+
+The Gateway normalizes exact duplicate diagnostics in one Workbench response
+before the extension projects or renders them. Different severities, messages,
+locations, or source identities remain distinct findings.
 
 Within the language-client bridge, the composition root retains server lifecycle
 and restart policy. Focused bridges own workspace-script notifications, hover

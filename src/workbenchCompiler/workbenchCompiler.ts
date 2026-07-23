@@ -62,13 +62,18 @@ interface RenderedDiagnosticSet {
 
 interface ValidationRequest {
 	generation: number;
+	trigger: 'edit' | 'save' | 'manual';
+	requestedAtMs: number;
 	documentToSave?: vscode.TextDocument;
 	revealOutput?: boolean;
 }
 
 interface ValidationTiming {
+	trigger: ValidationRequest['trigger'];
+	requestedAtMs: number;
+	queuedAtMs: number;
+	validationStartedAtMs: number;
 	completedAtMs: number;
-	durationMs: number;
 }
 
 interface ValidationOutputLink {
@@ -234,6 +239,8 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		const activeDocument = eligibleActiveDocument();
 		await this.queueValidation({
 			generation: this.configurationGeneration,
+			trigger: 'manual',
+			requestedAtMs: Date.now(),
 			revealOutput: true,
 			...(activeDocument?.isDirty ? { documentToSave: activeDocument } : {}),
 		});
@@ -246,7 +253,12 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		this.scriptEditGeneration += 1;
 		this.markDiagnosticsStale('the script has newer edits');
 		if (vscode.window.activeTextEditor?.document.uri.toString() === document.uri.toString()) {
-			this.scheduleValidation({ generation: this.configurationGeneration, documentToSave: document });
+			this.scheduleValidation({
+				generation: this.configurationGeneration,
+				trigger: 'edit',
+				requestedAtMs: Date.now(),
+				documentToSave: document,
+			});
 		}
 	}
 
@@ -255,7 +267,11 @@ class WorkbenchCompilerController implements vscode.Disposable {
 			|| this.savesStartedByValidation.has(document.uri.toString())) {
 			return;
 		}
-		this.scheduleValidation({ generation: this.configurationGeneration });
+		this.scheduleValidation({
+			generation: this.configurationGeneration,
+			trigger: 'save',
+			requestedAtMs: Date.now(),
+		});
 	}
 
 	private scheduleValidation(request: ValidationRequest): void {
@@ -269,6 +285,10 @@ class WorkbenchCompilerController implements vscode.Disposable {
 			this.pendingValidation = undefined;
 		}
 		const delayMs = this.configuration.validationDelaySeconds * 1_000;
+		diagnostic('workbenchValidationScheduled', {
+			trigger: request.trigger,
+			delayMs,
+		});
 		this.validationTimer = setTimeout(() => {
 			this.validationTimer = undefined;
 			if (request.generation !== this.configurationGeneration) {
@@ -291,6 +311,7 @@ class WorkbenchCompilerController implements vscode.Disposable {
 			this.pendingValidation = request;
 			return;
 		}
+		const queuedAtMs = Date.now();
 		this.validating = true;
 		this.clearProbeTimer();
 		this.setPhase('validating');
@@ -310,9 +331,9 @@ class WorkbenchCompilerController implements vscode.Disposable {
 				return;
 			}
 			await this.validate(
-				request.generation,
+				request,
 				this.scriptEditGeneration,
-				request.revealOutput === true,
+				queuedAtMs,
 			);
 		} finally {
 			this.validating = false;
@@ -343,11 +364,11 @@ class WorkbenchCompilerController implements vscode.Disposable {
 	}
 
 	private async validate(
-		generation: number,
+		request: ValidationRequest,
 		editGeneration: number,
-		revealOutput: boolean,
+		queuedAtMs: number,
 	): Promise<void> {
-		if (this.disposed || generation !== this.configurationGeneration) {
+		if (this.disposed || request.generation !== this.configurationGeneration) {
 			return;
 		}
 		if (this.configuration.validationProfile.kind === 'unsupported') {
@@ -363,13 +384,13 @@ class WorkbenchCompilerController implements vscode.Disposable {
 			this.configuration.validationProfile.value,
 		);
 		const completedAtMs = Date.now();
-		if (this.disposed || generation !== this.configurationGeneration) {
+		if (this.disposed || request.generation !== this.configurationGeneration) {
 			return;
 		}
 		if (!result.ok) {
 			this.lastOutcome = `Validation failed: ${result.failure.category}.`;
 			this.noteFailure(result.failure);
-			this.scheduleProbe(unavailableRetryMs, generation);
+			this.scheduleProbe(unavailableRetryMs, request.generation);
 			return;
 		}
 		const staleReason = editGeneration !== this.scriptEditGeneration
@@ -380,11 +401,14 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		this.publishValidationResult(
 			result.value,
 			{
+				trigger: request.trigger,
+				requestedAtMs: request.requestedAtMs,
+				queuedAtMs,
+				validationStartedAtMs,
 				completedAtMs,
-				durationMs: completedAtMs - validationStartedAtMs,
 			},
 			staleReason,
-			revealOutput,
+			request.revealOutput === true,
 		);
 		this.lastFailure = undefined;
 		this.lastOutcome = staleReason
@@ -399,7 +423,15 @@ class WorkbenchCompilerController implements vscode.Disposable {
 				: result.value.success ? 'success' : 'compiler-findings',
 			diagnosticCount: result.value.diagnostics.length,
 		});
-		this.scheduleProbe(readyHeartbeatMs, generation);
+		diagnostic('workbenchValidationTiming', {
+			trigger: request.trigger,
+			totalDurationMs: completedAtMs - request.requestedAtMs,
+			idleQueueDurationMs: queuedAtMs - request.requestedAtMs,
+			savePreparationDurationMs: validationStartedAtMs - queuedAtMs,
+			workbenchDurationMs: completedAtMs - validationStartedAtMs,
+			presentationDurationMs: Date.now() - completedAtMs,
+		});
+		this.scheduleProbe(readyHeartbeatMs, request.generation);
 	}
 
 	private publishValidationResult(
@@ -466,12 +498,20 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		const hiddenSummary = hiddenFindingCount > 0
 			? ` (${hiddenFindingCount} non-project finding${hiddenFindingCount === 1 ? '' : 's'} hidden)`
 			: '';
+		const totalDurationMs = timing.completedAtMs - timing.requestedAtMs;
+		const idleQueueDurationMs = timing.queuedAtMs - timing.requestedAtMs;
+		const savePreparationDurationMs = timing.validationStartedAtMs - timing.queuedAtMs;
+		const workbenchDurationMs = timing.completedAtMs - timing.validationStartedAtMs;
 		const lines = [
-			`Compilation completed in ${formatValidationDuration(timing.durationMs)} `
+			`Compilation results ready ${validationTriggerDescription(timing.trigger)} `
+				+ `in ${formatValidationDuration(totalDurationMs)} `
 				+ `at ${new Date(timing.completedAtMs).toLocaleTimeString()} — `
 				+ `${projectErrorCount} project error${projectErrorCount === 1 ? '' : 's'}, `
 				+ `${projectWarningCount} project warning${projectWarningCount === 1 ? '' : 's'}`
 				+ `${hiddenSummary}.`,
+			`Timing: idle/queue ${formatValidationDuration(idleQueueDurationMs)}; `
+				+ `save/preparation ${formatValidationDuration(savePreparationDurationMs)}; `
+				+ `Workbench ${formatValidationDuration(workbenchDurationMs)}.`,
 			...(staleReason ? [`Result status: may be out of date — ${staleReason}.`] : []),
 		];
 		if (projected.located.length > 0) {
@@ -768,6 +808,17 @@ function formatValidationDuration(durationMs: number): string {
 	return roundedDurationMs < 1_000
 		? `${roundedDurationMs} ms`
 		: `${(roundedDurationMs / 1_000).toFixed(1)} s`;
+}
+
+function validationTriggerDescription(trigger: ValidationTiming['trigger']): string {
+	switch (trigger) {
+		case 'edit':
+			return 'after the last edit';
+		case 'save':
+			return 'after save';
+		case 'manual':
+			return 'after the manual request';
+	}
 }
 
 interface ProjectedDiagnostics {

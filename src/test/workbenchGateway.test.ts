@@ -45,6 +45,12 @@ suite('Workbench Gateway', () => {
 						fileAbs: 'C:\\Addon\\scripts\\Game\\Example.c',
 						addon: 'ExampleAddon',
 						line: 12,
+					}, {
+						error: "Undefined function 'Run'",
+						file: 'scripts/Game/Example.c',
+						fileAbs: 'C:\\Addon\\scripts\\Game\\Example.c',
+						addon: 'ExampleAddon',
+						line: 12,
 					}],
 					Warnings: [{
 						error: "Variable 'unused' is not used",

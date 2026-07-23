@@ -30,6 +30,12 @@
           "**/scripts/**/*.c"
         ],
         "configuration": "./language-configuration.json"
+      },
+      {
+        "id": "reforger-workbench-compiler-output",
+        "aliases": [
+          "Reforger Workbench Compiler Output"
+        ]
       }
     ],
     "themes": [

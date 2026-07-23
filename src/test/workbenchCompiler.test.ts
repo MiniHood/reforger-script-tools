@@ -85,7 +85,11 @@ suite('Workbench compiler validation', () => {
 			assert.ok(output);
 			assert.match(
 				output,
-				/^Compilation completed in (?:\d+ ms|\d+\.\d s) at .+ — 1 project error, 0 project warnings\./,
+				/^Compilation results ready after the manual request in (?:\d+ ms|\d+\.\d s) at .+ — 1 project error, 0 project warnings\./,
+			);
+			assert.match(
+				output,
+				/Timing: idle\/queue (?:\d+ ms|\d+\.\d s); save\/preparation (?:\d+ ms|\d+\.\d s); Workbench (?:\d+ ms|\d+\.\d s)\./,
 			);
 			const findingLine = "[ERROR] Scripts/Game/Example.c:2 — Undefined function 'Run'";
 			assert.ok(output.includes(findingLine));
@@ -93,7 +97,7 @@ suite('Workbench compiler validation', () => {
 			assert.deepStrictEqual(
 				(await observeWorkbenchCompiler()).validationOutputLinks,
 				[{
-					line: 2,
+					line: 3,
 					startCharacter: '[ERROR] '.length,
 					endCharacter: findingLine.length,
 					target: sourceUri.with({ fragment: 'L2,1' }).toString(),
@@ -785,7 +789,7 @@ suite('Workbench compiler validation', () => {
 			const output = (await observeWorkbenchCompiler()).validationOutput;
 			assert.match(
 				output,
-				/^Compilation completed in (?:\d+ ms|\d+\.\d s) at .+ — 1 project error, 1 project warning \(4 non-project findings hidden\)\./,
+				/^Compilation results ready after the manual request in (?:\d+ ms|\d+\.\d s) at .+ — 1 project error, 1 project warning \(4 non-project findings hidden\)\./,
 			);
 			assert.ok(output.includes(
 				'[ERROR] Scripts/Game/Example.c:1 — Relative contained location',
