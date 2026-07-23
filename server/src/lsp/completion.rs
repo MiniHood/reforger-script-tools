@@ -2095,7 +2095,12 @@ fn top_level_fallback_report_for_prefix_span_with_mode(
         &empty_local_index,
         workspace_index,
         game_data_index,
-        32,
+        // The fallback is the list VS Code receives while current-document
+        // analysis is pending. It must retain the same useful candidate
+        // horizon as a normal response, otherwise VS Code treats a smaller
+        // list as final and cannot discover a later prefix match as the user
+        // keeps typing.
+        MAX_COMPLETION_ITEMS + 1,
     );
     let render_context =
         CompletionRenderContext::new(&empty_local_index, workspace_index, game_data_index);
@@ -5426,6 +5431,31 @@ mod tests {
             report.recovery_reason.as_deref(),
             Some("current-revision-local-facts-pending")
         );
+    }
+
+    #[test]
+    fn lexical_pending_completion_keeps_later_prefix_matches_for_incremental_typing() {
+        let mut external_source = String::new();
+        for index in 0..32 {
+            external_source.push_str(&format!("class R{index:02} {{}}\n"));
+        }
+        external_source.push_str("class Resource {}\nclass ResourceName {}\n");
+        let external = file_index_for_source(&external_source).index;
+        let report = completion_report_for_lexical_source_with_external_indexes(
+            "r",
+            LspPosition {
+                line: 0,
+                character: 1,
+            },
+            Some(&external),
+            None,
+        );
+
+        assert!(report
+            .list
+            .items
+            .iter()
+            .any(|item| item.label == "ResourceName"));
     }
 
     #[test]
