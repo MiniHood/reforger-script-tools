@@ -310,6 +310,26 @@ would otherwise need to build or scan coordinate state independently. This
 deepens the snapshot interface, removes repeated editor-path work, and
 guarantees every feature applies the same CRLF/UTF-16 conversion policy.
 
+### AR-014 — Developer report commands duplicate and disagree on Cargo execution policy
+
+**Strength:** Strong
+**Files:** `tools/ast-corpus-report.mjs:3-45`; `tools/lsp-hover-report.mjs:3-35`; `tools/lsp-signature-help-report.mjs:2-27`; `tools/lsp-workspace-overlay-report.mjs:2-28`, plus the analogous report wrappers
+
+The report wrappers repeat the same Cargo-example launch in many files, but
+the copies disagree: some honor `CARGO`, some only probe the Windows user Cargo
+location; some set the repository as `cwd`, some inherit the caller's working
+directory; and Windows shell selection varies. The report name is the only
+meaningful difference, yet equivalent developer commands therefore have
+different environment and path behavior.
+
+Introduce one developer-only Cargo example runner whose interface accepts the
+example name, display label, and forwarded arguments. Keep each report command
+as a tiny executable declaration of those values. The deletion test passes:
+removing the runner would force every wrapper to reconstruct Cargo discovery,
+process policy, and error handling. This gives the tool layer a single,
+deterministic execution policy without becoming an extension runtime
+dependency.
+
 ## Reviewed slices
 
 ### 2026-07-23 — Repository inventory, build/configuration
