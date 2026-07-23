@@ -3,6 +3,14 @@ import type { LanguageClientOptions } from 'vscode-languageclient/node';
 
 type CompletionResult = vscode.CompletionList | readonly vscode.CompletionItem[] | null | undefined;
 
+export interface CompletionPresentationItem {
+	label: string;
+	insertText: string;
+	insertTextKind: 'snippet' | 'plain' | 'label';
+	rangeKind: 'plain' | 'insertReplace' | 'none';
+	command: string;
+}
+
 export function completionItemLabels(result: CompletionResult): string[] {
 	const items = !result ? [] : ('items' in result ? result.items : result);
 	return items.map(item => typeof item.label === 'string' ? item.label : item.label.label);
@@ -13,6 +21,35 @@ export function completionItemCount(result: CompletionResult): number {
 		return 0;
 	}
 	return 'items' in result ? result.items.length : result.length;
+}
+
+/**
+ * Captures the editor-native shape after vscode-languageclient has converted
+ * the LSP response. This is deliberately separate from the server's debug
+ * report: it proves what the VS Code suggest pipeline can actually insert.
+ */
+export function completionPresentationItems(result: CompletionResult): CompletionPresentationItem[] {
+	const items = !result ? [] : ('items' in result ? result.items : result);
+	return items.map(item => {
+		const insertText = item.insertText;
+		const insertTextKind = insertText instanceof vscode.SnippetString
+			? 'snippet'
+			: typeof insertText === 'string'
+				? 'plain'
+				: 'label';
+		const rangeKind = !item.range
+			? 'none'
+			: item.range instanceof vscode.Range
+				? 'plain'
+				: 'insertReplace';
+		return {
+			label: typeof item.label === 'string' ? item.label : item.label.label,
+			insertText: insertText instanceof vscode.SnippetString ? insertText.value : insertText ?? '',
+			insertTextKind,
+			rangeKind,
+			command: item.command?.command ?? '',
+		};
+	});
 }
 
 export function isCompletionListIncomplete(result: CompletionResult): boolean {
