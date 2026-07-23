@@ -6246,6 +6246,7 @@ class Widget
 	void Run()
 	{
 		array<ref array<string>> values = { {} };
+		array<string> extra = {};
 		Widget instance = new Widget();
 		bool comparison = 1 < 2;
 		string text = "([{}])";
@@ -6264,8 +6265,10 @@ class Widget
         ("array<string>", '<', "class"),
         ("string>> values", '>', "class"),
         ("> values = ", '>', "class"),
-        ("= { {} }", '{', "class"),
-        ("{} }", '{', "class"),
+        ("= { {} }", '{', "punctuation"),
+        ("{} }", '{', "punctuation"),
+        ("extra = {}", '{', "punctuation"),
+        ("extra = {}", '}', "punctuation"),
         ("new Widget()", '(', "class"),
         ("new Widget()", ')', "class"),
         ("1 < 2", '<', "operator"),

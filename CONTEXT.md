@@ -153,7 +153,8 @@ A matched Enfusion curly-brace, parenthesis, square-bracket, or parser-proven ge
 Calls and index expressions use their callable or indexed symbol as that anchor; a block uses the declaration or control header that introduces it.
 Generic angle brackets use their nearest generic/type owner as that anchor.
 Nested Scope Delimiters retain their own anchors; a containing scope never recolors an anchored inner pair.
-Initializer braces use their expected initializer type as their anchor.
+Initializer braces retain ordinary theme punctuation coloring while remaining
+Scope Delimiters for active innermost-pair matching.
 Attribute square brackets and attribute-call parentheses use the attribute/decorator as their anchor.
 Constructor-call parentheses use the constructed type as their anchor.
 Angle brackets in comparison expressions are not Scope Delimiters.

@@ -14,6 +14,7 @@ const MAX_RESOLVED_SCOPE_DELIMITER_OWNERS: usize = 4_096;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ScopeDelimiterAnchorKind {
     SemanticToken,
+    Punctuation,
     ResolvedCall,
     ResolvedConstructor,
     ResolvedIndex,
@@ -98,7 +99,7 @@ fn collect_scope_delimiters(
         should_cancel,
         visited_nodes: 0,
     };
-    collector.collect_node(&parse.root, None, None)?;
+    collector.collect_node(&parse.root, None)?;
     collector.collect_indexed_type_angles()?;
     Some(collector.delimiters.into_values().collect())
 }
@@ -149,7 +150,6 @@ impl DelimiterCollector<'_> {
         &mut self,
         node: &SyntaxNode,
         inherited_anchor: Option<ScopeDelimiterAnchor>,
-        inherited_initializer_anchor: Option<ScopeDelimiterAnchor>,
     ) -> Option<()> {
         if self.visited_nodes % 64 == 0
             && self
@@ -163,28 +163,7 @@ impl DelimiterCollector<'_> {
             return Some(());
         }
 
-        let initializer_anchor = if matches!(
-            node.kind,
-            SyntaxKind::FieldDecl | SyntaxKind::LocalDeclStatement
-        ) {
-            first_child(node, SyntaxKind::TypeRef)
-                .and_then(first_name_token)
-                .map(|token| ScopeDelimiterAnchor {
-                    span: token.span,
-                    kind: ScopeDelimiterAnchorKind::SemanticToken,
-                })
-                .or(inherited_initializer_anchor)
-        } else {
-            inherited_initializer_anchor
-        };
-        let anchor = self
-            .node_anchor(node)
-            .or(if node.kind == SyntaxKind::InitializerExpression {
-                initializer_anchor
-            } else {
-                None
-            })
-            .or(inherited_anchor);
+        let anchor = self.node_anchor(node).or(inherited_anchor);
         if standard_delimiter_node(node.kind) {
             let tokens = direct_tokens(node);
             self.collect_standard_pairs(node, &tokens, anchor);
@@ -196,7 +175,7 @@ impl DelimiterCollector<'_> {
 
         for child in &node.children {
             if let SyntaxElement::Node(child) = child {
-                self.collect_node(child, anchor, initializer_anchor)?;
+                self.collect_node(child, anchor)?;
             }
         }
         Some(())
@@ -255,8 +234,11 @@ impl DelimiterCollector<'_> {
                 ScopeDelimiterAnchorKind::SemanticToken,
             ),
             SyntaxKind::InitializerExpression => (
-                self.initializer_type_anchor(node)?,
-                ScopeDelimiterAnchorKind::SemanticToken,
+                direct_tokens(node)
+                    .into_iter()
+                    .find(|token| token.kind == TokenKind::LeftBrace)?
+                    .span,
+                ScopeDelimiterAnchorKind::Punctuation,
             ),
             SyntaxKind::NameExpression | SyntaxKind::TypeRef => (
                 first_name_token(node)?.span,
@@ -265,30 +247,6 @@ impl DelimiterCollector<'_> {
             _ => return None,
         };
         Some(ScopeDelimiterAnchor { span, kind })
-    }
-
-    fn initializer_type_anchor(&self, node: &SyntaxNode) -> Option<TextSpan> {
-        self.index?
-            .symbols()
-            .iter()
-            .filter(|symbol| {
-                symbol.span.start <= node.span.start
-                    && node.span.end <= symbol.span.end
-                    && symbol.detail.type_text_span.is_some()
-            })
-            .min_by_key(|symbol| symbol.span.len())
-            .and_then(|symbol| symbol.detail.type_text_span)
-            .and_then(|span| {
-                self.lexer_tokens
-                    .iter()
-                    .copied()
-                    .find(|token| {
-                        span.start <= token.span.start
-                            && token.span.end <= span.end
-                            && is_name_token(token.kind)
-                    })
-                    .map(|token| token.span)
-            })
     }
 
     fn collect_standard_pairs(
@@ -463,7 +421,7 @@ impl DelimiterCollector<'_> {
 fn delimiter_anchor_is_structurally_proven(delimiter: &ScopeDelimiter) -> bool {
     matches!(
         delimiter.anchor_kind,
-        ScopeDelimiterAnchorKind::SemanticToken
+        ScopeDelimiterAnchorKind::SemanticToken | ScopeDelimiterAnchorKind::Punctuation
     )
 }
 
@@ -499,7 +457,7 @@ fn delimiter_anchor_is_proven(
         return false;
     };
     match delimiter.anchor_kind {
-        ScopeDelimiterAnchorKind::SemanticToken => true,
+        ScopeDelimiterAnchorKind::SemanticToken | ScopeDelimiterAnchorKind::Punctuation => true,
         ScopeDelimiterAnchorKind::ResolvedCall => matches!(
             candidate.kind,
             SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor
@@ -638,4 +596,35 @@ fn matching_delimiters(opener: TokenKind, closer: TokenKind) -> bool {
             | (TokenKind::LeftParen, TokenKind::RightParen)
             | (TokenKind::LeftBracket, TokenKind::RightBracket)
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{active_scope_delimiters, scope_delimiters_for_syntax, ScopeDelimiterAnchorKind};
+    use crate::{lexer::lex, parser::parse_source};
+
+    #[test]
+    fn initializer_braces_keep_active_pair_matching_with_punctuation_color() {
+        let source = "class Example\n{\n\tvoid Run()\n\t{\n\t\tarray<string> extra = {};\n\t}\n}\n";
+        let opener = source.find("extra = {").expect("initializer") + "extra = ".len();
+        let closer = opener + 1;
+        let delimiters = scope_delimiters_for_syntax(&parse_source(source), &lex(source));
+        let initializer = delimiters
+            .iter()
+            .find(|delimiter| delimiter.opener.start == opener)
+            .expect("initializer delimiter");
+
+        assert_eq!(
+            initializer.anchor_kind,
+            ScopeDelimiterAnchorKind::Punctuation
+        );
+        assert_eq!(
+            initializer.closer.expect("matched initializer").start,
+            closer
+        );
+        assert_eq!(
+            active_scope_delimiters(&delimiters, &[closer]),
+            vec![*initializer]
+        );
+    }
 }
