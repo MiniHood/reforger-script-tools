@@ -50,6 +50,12 @@ completion, update the owning document when the change affects its contract.
   parsing, indexing, completion, or semantic decisions out of Rust.
 - Use one authoritative path for a feature. Temporary migrations need an
   explicit removal condition.
+- Avoid fallbacks when the authoritative path can serve the request. A
+  fallback must be explicitly provisional for a proven unavailable fact, not a
+  parallel normal path that can race or diverge.
+- Do not branch behavior on a feature, API, or owner label when the same
+  semantic or structural fact applies generally. Add a special case only for a
+  proven distinction that requires different behavior.
 - Marketplace installs must be self-contained: no user-installed Rust, Cargo,
   Node.js, npm dependencies, or separate language server.
 

@@ -105,6 +105,11 @@ publish a later generation without changing that request's meaning.
 - Put a change in the module that owns its contract.
 - Preserve one language authority: Rust.
 - Add a cross-module path only when a concrete contract requires it.
+- Prefer one authoritative implementation path. Use a fallback only as
+  explicitly provisional recovery when the authoritative facts are proven
+  unavailable; it must not compete with normal behavior.
+- Generalize from semantic or structural facts. Do not branch on feature, API,
+  or owner labels unless a proven distinction requires different behavior.
 - Keep editor bridges event-driven and narrow; they transport or apply
   Rust-authored results rather than classify source.
 - Keep expensive analysis out of extension activation and the editor UI path.
