@@ -588,14 +588,40 @@ recorded above.
 | Root configuration and test runner | 5 | completed | Build/configuration slice |
 | Extension, configuration, diagnostics, game-data | 7 | completed | Extension composition slice |
 | Language-client bridges and extension test | 15 | completed | Editor/LSP bridge slice |
-| Rust language foundations and composition root | 21 | in progress | Foundation slice and AR-007/016/017 |
-| Rust LSP runtime, transport, and features | 31 | in progress | Feature and LSP-test slices |
+| Rust language foundations and composition root | 21 | completed | Foundation slice and AR-007/016/017 |
+| Rust LSP runtime, transport, and features | 31 | completed | Feature and LSP-test slices |
 | Rust executable | 1 | completed | AR-018 executable argument review |
-| Rust report programs | 37 | in progress | Report-program family and AR-007/020/021 |
-| JavaScript developer tools and tests | 40 | in progress | Tooling slice and AR-014/015 |
-| Enfusion-script fixtures | 34 | in progress | Foundation fixture-evidence slice |
+| Rust report programs | 37 | completed | Report-program family and AR-007/020/021 |
+| JavaScript developer tools and tests | 40 | completed | Tooling slice and AR-014/015 |
+| Enfusion-script fixtures | 34 | completed | Foundation fixture-evidence slice |
 | Server crate manifest | 1 | completed | Build/configuration review |
 
-Before closure, each in-progress bucket receives a final per-path comparison
-against this accounting and its status is updated only if no path remains
-unreviewed.
+Final comparison against the inventory found no path outside these completed
+buckets. The review is complete; the following is prioritization, not a new
+implementation plan.
+
+## Closing synthesis
+
+### First: correctness and editor responsiveness
+
+Address AR-008 (manual cache identity), AR-010 (workspace aggregate work on
+the incoming request path), AR-011 (external definition disk I/O), and AR-013
+(repeated coordinate conversion) first. They directly affect whether editor
+answers are current and whether ordinary saves/navigation stall. AR-001 is the
+same source-identity area and should be designed with AR-008, not separately.
+
+### Next: one compiler-owned language fact path
+
+Address AR-007, AR-012, AR-016, AR-017, and AR-019 as one coherent deepening
+effort. They all expose the same systemic issue: declaration, preprocessor,
+member lookup, built-in attribute, and callable-parameter facts are projected
+or reparsed in more than one place. The target is a small set of compiler/index
+query modules that provides immutable facts to every LSP projection.
+
+### Then: lifecycle and developer-tool integrity
+
+AR-003, AR-006, and AR-018 improve publication and process-lifecycle
+correctness. AR-014, AR-015, AR-020, and AR-021 make developer evidence and
+commit guarantees trustworthy. AR-002, AR-004, AR-005, and AR-009 remain
+worth pursuing after the higher-leverage work, because they simplify seams or
+bound routine session cost without representing an immediate correctness loss.
