@@ -114,6 +114,31 @@ end the action in all paths, and return the resulting entity identities. The
 official tutorial documents the begin/end pairing as the route into the editor's
 Undo history ([World Editor plugin tutorial](https://community.bistudio.com/wiki/Arma_Reforger:World_Editor_Plugin)).
 
+## Intended full plugin capability portfolio
+
+The optional plugin is not limited to health checks, compiler validation, or
+read-only asset inspection. Its intended destination is the Workbench half of a
+full editor co-pilot: a typed capability layer through which MCP can inspect,
+visually understand, and deliberately operate a live Reforger project. The
+following groups should be reserved in the capability manifest now, even where
+their operations remain future research and validation work:
+
+| Capability group | Desired future operations | Contract requirements |
+| --- | --- | --- |
+| `project` | Active project/addon identity, mounts/content roots, editor state, logs, and context needed to relate files to Workbench resources. | Canonical identities; no broad filesystem escape. |
+| `resource` | Search, resolve, inspect, preview, create, register, import, rebuild, repair, and validate supported prefabs, materials, textures, terrain, animations, and dependencies. | Typed resource kinds, bounded search/results, project containment, affected-resource report. |
+| `world` | Inspect selection, find entities, read hierarchy/transforms/components, create/place/duplicate/configure/remove entities, and run domain operations such as composition or spawn configuration. | Stable entity IDs, preview, explicit consent, one named undo transaction, verification. |
+| `editor` | Open/focus resources and modules, enter/leave relevant editor modes where supported, and expose an explicit current-editor context. | User-visible effect classification and actionable error results. |
+| `compiler` | Query readiness, validate scripts, run explicitly selected build/test/autotest operations, and return normalized diagnostics/artifacts. | Explicit invocation/configuration, timeouts, structured locations and results. |
+| `visual` | Capture a viewport screenshot; return asset thumbnails, prefab/material previews, and before/after captures for an operation. | Proven image transfer, dimensions/byte limits, capture source/time, no arbitrary file transfer. |
+| `workflow` | Project-specific high-level tools built on the above groups, such as audit/repair flows or a named world-authoring operation. | Stable public name/description/schema; composed from approved domain commands, never arbitrary script execution. |
+
+The group names are an architectural reservation, not a promise that an
+unimplemented endpoint exists. A `capabilities` response must distinguish
+`available`, `unavailable`, and `unsupported` operations with a reason. This
+lets clients discover the full design vocabulary without treating a missing
+plugin version as permission to guess or emulate editor behavior.
+
 ## Validation backlog
 
 1. Enable the NET API in a disposable Workbench project and identify the

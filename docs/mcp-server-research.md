@@ -64,10 +64,35 @@ requirements before it creates new editor value.
 
 The first three rows are the strongest initial slice: they are useful even when
 Workbench is closed, operate on a known workspace, and complement the existing
-language engine. The next validation step should be compiler-backed script
-validation, because it has a clear, inspectable result. Asset import and world
-mutation are valuable, but they should follow only after their side-effect and
-rollback contracts are demonstrated.
+language engine. They are foundations, not the intended limit of the product.
+The destination is a capable local Reforger editor co-pilot that can understand,
+see, and deliberately operate a live Workbench project. Compiler validation is
+the next useful proof point because it has a clear, inspectable result; it is
+not a statement that asset or world capabilities are less desired.
+
+## Intended full editor capability set
+
+The long-term MCP surface should support the following product capabilities.
+This is a desired feature portfolio, not a claim that every underlying NET API
+operation is already proven. Each capability needs a named, versioned plugin
+contract and live-Workbench validation before it is advertised.
+
+| Product capability | Intended user outcome | Required foundation |
+| --- | --- | --- |
+| Live scene inspection | Read current World Editor selection; find entities by name, prefab, class, tag, or area; inspect transforms, hierarchy, components, and relevant world state. | Stable entity/resource identities, bounded queries, and a World Editor context handler. |
+| Live scene editing | Create, duplicate, place, move, rotate, configure, and delete entities; apply prefab/component changes; execute domain operations such as composition placement or spawn-point setup. | Typed domain commands, preview, explicit approval, one undo group, and post-action verification. |
+| Asset discovery and inspection | Search and understand prefabs, materials, textures, terrain assets, animations, dependencies, metadata, and validation findings. | Canonical resource/path resolution, typed result DTOs, cursors, and provenance. |
+| Asset lifecycle management | Create, register, import, rebuild, repair, or update supported engine-managed assets and return the affected resources/files. | Project containment, deterministic request inputs, preview/diff where meaningful, and outcome verification. |
+| Editor control and verification | Open/focus resources or modules, inspect editor/compiler state, validate scripts, run explicit tests/builds, and return usable diagnostics. | Capability-aware editor actions and compiler/test result normalization. |
+| Visual feedback | Return viewport screenshots, asset thumbnails, prefab/material previews, and optionally before/after captures for a requested action. | A proven bounded Workbench-to-host image contract, dimensions/size limits, and clear capture provenance. |
+| Custom workflow tools | Offer project-specific, high-level operations whose names match a creator's intent rather than raw engine calls. | Plugin-owned toolsets, stable names/schemas, and narrowly scoped authority. |
+| Explainable planning | Combine workspace, language-engine, bundled evidence, and live Workbench facts into plans and previews before an effectful operation. | Shared project/resource identity and explicit authority/provenance on every result. |
+
+This breadth is intentional. The architecture should preserve one path from MCP
+tool to a typed Workbench plugin command so later scene, visual, and asset
+features extend the same capability manifest and result contract rather than
+adding a parallel automation system. Safety requirements shape the contracts;
+they do not narrow the future feature set.
 
 ## Bundled evidence catalogue and search
 
