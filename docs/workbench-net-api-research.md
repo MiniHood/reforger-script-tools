@@ -62,6 +62,16 @@ parameter. `validate_scripts` is the highest-value first integration: its
 documented response includes success, errors/warnings, resource-relative path,
 and sometimes absolute path/addon/line information.
 
+These are the complete built-in endpoints established by the reviewed
+`NetApiDocs.c`; they are not a general Workbench automation or scene-editing
+surface. In particular, the built-ins do not establish generic entity search or
+mutation, current selection inspection, resource search/metadata, asset
+import/rebuild, tests, viewport screenshots/previews, generic logging, or an
+arbitrary command/script execution endpoint. Those are either custom-plugin
+opportunities requiring separate proof, or responsibilities of the direct-file
+and language-engine path. A successful TCP connection must never be treated as
+evidence that any of those richer capabilities exist.
+
 ## Custom handler model and existing evidence
 
 `NetApiHandler` dispatches by the derived Enforce Script class name: the

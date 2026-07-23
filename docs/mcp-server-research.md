@@ -62,6 +62,29 @@ requirements before it creates new editor value.
 | World editing | Inspect selection; run a narrowly named, undo-grouped custom plugin operation. | Custom NET API handler | Preview/confirmation/undo contract |
 | Testing | Run an explicit Workbench/autotest target and return structured report artifacts. | Workbench plugin/API | Explicit invocation |
 
+### Authority boundary: files versus Workbench
+
+Direct files and the Rust language engine are the authoritative path for
+durable workspace content: project tree and metadata, raw source/prefab/config
+content, text and symbol search, syntax/semantic analysis, bundled game-data
+and wiki research, version-checked edits, and diffs. They remain useful when
+Workbench is closed and must not be displaced by an editor RPC layer.
+
+They cannot establish live engine/editor facts: whether Workbench or World
+Editor is running, compiler readiness or compiler diagnostics, active mounted
+project/resource resolution, current selection or unsaved world state, editor
+UI state, Undo history, imported/registered resource state, or what a viewport
+currently renders. Do not fabricate those facts from paths or source text.
+
+The built-in NET API supplies only status, opening/focusing editor UI, and
+compiler validation. Engine-resolved resource inspection, live scene
+inspection/editing, asset import/rebuild/registration, tests, and visual
+captures require named custom Workbench-plugin handlers and validation in a
+live supported Workbench version. A result that combines both worlds must label
+each fact with its authority (`filesystem`, `language-engine`,
+`evidence-catalogue`, or `workbench`) rather than silently merging potentially
+different states.
+
 The first three rows are the strongest initial slice: they are useful even when
 Workbench is closed, operate on a known workspace, and complement the existing
 language engine. They are foundations, not the intended limit of the product.
