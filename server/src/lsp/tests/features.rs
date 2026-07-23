@@ -1657,7 +1657,7 @@ fn completion_expands_builtin_collections_with_type_slots() {
         .iter()
         .find(|item| item.label == "array")
         .expect("expected array collection completion");
-    assert_eq!(item.text_edit.new_text, "array<${1:Type}>");
+    assert_eq!(item.text_edit.new_text, "array<${1}>");
     assert_eq!(item.insert_text_format, Some(2));
     assert_eq!(
         item.command
@@ -1681,7 +1681,7 @@ fn completion_expands_collection_at_an_incomplete_member_declaration_start() {
         .iter()
         .find(|item| item.label == "array")
         .expect("array completion");
-    assert_eq!(array.text_edit.new_text, "array<${1:Type}>");
+    assert_eq!(array.text_edit.new_text, "array<${1}>");
     assert_eq!(array.insert_text_format, Some(2));
 }
 
@@ -1699,7 +1699,13 @@ fn completion_expands_map_and_ref_type_slots() {
         .iter()
         .find(|item| item.label == "map")
         .unwrap();
-    assert_eq!(map.text_edit.new_text, "map<${1:KeyType}, ${2:ValueType}>");
+    assert_eq!(map.text_edit.new_text, "map<${1}, ${2}>");
+    assert_eq!(
+        map.command
+            .as_ref()
+            .and_then(|command| command.arguments.as_ref()),
+        Some(&vec![json!(""), json!("")])
+    );
 
     let ref_source = "class Example { void Run(r value) {} }";
     let ref_report = completion_report_for_source_position_with_external(
@@ -1713,7 +1719,7 @@ fn completion_expands_map_and_ref_type_slots() {
         .iter()
         .find(|item| item.label == "ref")
         .unwrap();
-    assert_eq!(reference.text_edit.new_text, "ref ${1:Type}");
+    assert_eq!(reference.text_edit.new_text, "ref ${1}");
 }
 
 #[test]
@@ -1739,7 +1745,7 @@ fn completion_offers_collection_snippets_in_every_supported_type_position() {
             .iter()
             .find(|item| item.label == "array")
             .unwrap_or_else(|| panic!("missing array completion for {source:?}: {report:?}"));
-        assert_eq!(collection.text_edit.new_text, "array<${1:Type}>");
+        assert_eq!(collection.text_edit.new_text, "array<${1}>");
     }
 }
 
@@ -1764,6 +1770,40 @@ fn generic_collection_type_completion_excludes_void_and_ranks_builtin_types_firs
     let array = labels.iter().position(|label| *label == "array");
     assert!(int < reference, "{labels:?}");
     assert!(reference < array, "{labels:?}");
+}
+
+#[test]
+fn empty_collection_type_slots_open_ranked_type_completion() {
+    for (source, needle) in [
+        ("class Example { void Run(array<> value) {} }", "array<"),
+        (
+            "class Example { void Run(map<int, > value) {} }",
+            "map<int, ",
+        ),
+    ] {
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, needle),
+            None,
+        );
+        let labels = report
+            .list
+            .items
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(report.completion_context, "type");
+        assert!(
+            labels.starts_with(&["int", "auto", "bool", "float"]),
+            "{labels:?}"
+        );
+        assert!(!labels.contains(&"void"));
+        assert!(
+            labels.iter().position(|label| *label == "ref").unwrap()
+                < labels.iter().position(|label| *label == "array").unwrap()
+        );
+    }
 }
 
 #[test]

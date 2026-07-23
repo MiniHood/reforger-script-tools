@@ -184,7 +184,7 @@ function triggerSuggestAtSnippetPlaceholder(...expectedSelectionTexts: unknown[]
 		placeholderCount: expectedSelectionTexts.length,
 	});
 	if (expectedSelectionTexts.length === 0
-		|| expectedSelectionTexts.some(text => typeof text !== 'string' || text.length === 0)) {
+		|| expectedSelectionTexts.some(text => typeof text !== 'string')) {
 		diagnostic('completion.transaction.ignored', { reason: 'invalidPlaceholderArgument' });
 		return;
 	}
@@ -210,8 +210,10 @@ function triggerSuggestAtSnippetPlaceholder(...expectedSelectionTexts: unknown[]
 		const selectionCount = candidate.selections.length;
 		const selectionLength = candidate.selection.end.character - candidate.selection.start.character;
 		const matchesExpected = selectionCount === 1
-			&& !candidate.selection.isEmpty
-			&& candidate.document.getText(candidate.selection) === expectedText;
+			&& (expectedText.length === 0
+				? candidate.selection.isEmpty
+				: !candidate.selection.isEmpty
+					&& candidate.document.getText(candidate.selection) === expectedText);
 		if (!matchesExpected) {
 			if (transaction.selectionProbeCount < maxSnippetSuggestSelectionProbes) {
 				transaction.selectionProbeCount += 1;

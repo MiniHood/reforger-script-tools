@@ -45,7 +45,7 @@ const LOCAL_SCOPE_QUERY_DEADLINE: Duration = Duration::from_millis(50);
 const COMMAND_TRIGGER_PARAMETER_HINTS: &str = "editor.action.triggerParameterHints";
 /// A VS Code UI bridge registered by the extension. Rust decides when an
 /// callable template needs enum completion; the client waits for snippet mode
-/// to select each Rust-authored placeholder before dispatching Suggest.
+/// to place the caret at each Rust-authored placeholder before dispatching Suggest.
 const COMMAND_TRIGGER_SUGGEST_AT_SNIPPET_PLACEHOLDER: &str =
     "reforger-sript-tools.completion.triggerSuggestAtSnippetPlaceholder";
 /// A completion-specific UI adapter which removes the one Space commit
@@ -2276,6 +2276,31 @@ fn completion_report_for_offset(
     ) {
         return report;
     }
+    // A freshly accepted collection snippet has an intentionally empty type
+    // slot (`array<>` or `map<, >`). The incomplete parser has no type node
+    // there yet, so recover that one lexical shape directly and use the normal
+    // type-ranking pipeline while the user chooses the argument.
+    if empty_collection_type_slot_before_offset(source, offset) {
+        let context_elapsed = context_start.elapsed();
+        return top_level_completion_report_for_indexes(
+            source,
+            analysis.parse_diagnostics,
+            "type",
+            String::new(),
+            TextSpan::new(offset, offset),
+            offset,
+            EditorTopLevelCompletionMode::Type,
+            analysis,
+            &analysis.index,
+            workspace_index,
+            game_data_index,
+            LspCompletionTimings {
+                context_detection: context_elapsed,
+                ..LspCompletionTimings::default()
+            },
+            total_start,
+        );
+    }
     let resolver = ReferenceResolver::new_with_parse_scope_and_external_indexes(
         source,
         &analysis.index,
@@ -2395,8 +2420,8 @@ fn completion_report_for_offset(
         EditorTopLevelCompletionMode::Type => "type",
         EditorTopLevelCompletionMode::Value => "top-level",
     };
-    // The type snippets deliberately select these labels before asking VS Code
-    // to trigger completion. They are UI placeholders, not an intended filter:
+    // Older snippets can still select these labels before asking VS Code to
+    // trigger completion. They are UI placeholders, not an intended filter:
     // retain their edit span but query types as though the slot were empty.
     let prefix = if (mode == EditorTopLevelCompletionMode::Type
         && matches!(context.prefix.as_str(), "Type" | "KeyType" | "ValueType"))
@@ -3443,6 +3468,54 @@ fn generic_type_argument_before_offset(source: &str, offset: usize) -> bool {
     false
 }
 
+fn empty_collection_type_slot_before_offset(source: &str, offset: usize) -> bool {
+    let tokens = lex(source)
+        .into_iter()
+        .filter(|token| {
+            !token.kind.is_trivia() && token.kind != TokenKind::Eof && token.span.end <= offset
+        })
+        .collect::<Vec<_>>();
+    let Some(last) = tokens.last() else {
+        return false;
+    };
+    let opener_index = match last.kind {
+        TokenKind::Operator(Operator::Less) => tokens.len().checked_sub(1),
+        TokenKind::Comma => {
+            let mut nested_generic_depth = 0usize;
+            tokens[..tokens.len() - 1]
+                .iter()
+                .enumerate()
+                .rev()
+                .find_map(|(index, token)| match token.kind {
+                    TokenKind::Operator(Operator::Greater) => {
+                        nested_generic_depth += 1;
+                        None
+                    }
+                    TokenKind::Operator(Operator::Less) if nested_generic_depth == 0 => Some(index),
+                    TokenKind::Operator(Operator::Less) => {
+                        nested_generic_depth -= 1;
+                        None
+                    }
+                    _ => None,
+                })
+        }
+        _ => None,
+    };
+    let Some(opener_index) = opener_index else {
+        return false;
+    };
+    let Some(collection_keyword) = opener_index
+        .checked_sub(1)
+        .and_then(|index| tokens.get(index))
+    else {
+        return false;
+    };
+    matches!(
+        &source[collection_keyword.span.start..collection_keyword.span.end],
+        "array" | "map" | "set"
+    )
+}
+
 fn rank_indexed_type_completion_items(items: &mut [LspCompletionItem], prefix: &str) {
     for item in items {
         let match_rank = completion_name_match_rank(&item.label, prefix).unwrap_or(u16::MAX);
@@ -3958,8 +4031,8 @@ fn collection_type_placeholders(
         return None;
     }
     Some(match keyword {
-        "array" | "set" => vec!["Type".to_string()],
-        "map" => vec!["KeyType".to_string(), "ValueType".to_string()],
+        "array" | "set" => vec![String::new()],
+        "map" => vec![String::new(), String::new()],
         _ => return None,
     })
 }
@@ -3970,17 +4043,23 @@ fn ref_type_placeholders(
     declaration_context: bool,
 ) -> Option<Vec<String>> {
     ((mode == EditorTopLevelCompletionMode::Type || declaration_context) && keyword == "ref")
-        .then(|| vec!["Type".to_string()])
+        .then(|| vec![String::new()])
 }
 
 fn collection_type_snippet(keyword: &str, placeholders: &[String]) -> String {
     if keyword == "ref" {
-        return format!("ref ${{1:{}}}", placeholders[0]);
+        return "ref ${1}".to_string();
     }
     let slots = placeholders
         .iter()
         .enumerate()
-        .map(|(index, placeholder)| format!("${{{}:{placeholder}}}", index + 1))
+        .map(|(index, placeholder)| {
+            if placeholder.is_empty() {
+                format!("${{{}}}", index + 1)
+            } else {
+                format!("${{{}:{placeholder}}}", index + 1)
+            }
+        })
         .collect::<Vec<_>>()
         .join(", ");
     format!("{keyword}<{slots}>")
@@ -5025,7 +5104,7 @@ mod tests {
             .expect("array completion");
 
         assert_eq!(array.kind, 14);
-        assert_eq!(array.text_edit.new_text, "array<${1:Type}>");
+        assert_eq!(array.text_edit.new_text, "array<${1}>");
         assert_eq!(array.insert_text_format, Some(2));
         assert_eq!(
             report
