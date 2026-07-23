@@ -2024,7 +2024,7 @@ fn top_level_fallback_report_for_prefix_span(
     context: UnavailableCompletionContext,
 ) -> LspCompletionReport {
     let total_start = Instant::now();
-    let mode = if empty_collection_type_slot_before_offset(source, prefix_span.end) {
+    let mode = if empty_generic_type_slot_before_offset(source, prefix_span.end) {
         EditorTopLevelCompletionMode::Type
     } else {
         EditorTopLevelCompletionMode::Value
@@ -2301,11 +2301,11 @@ fn completion_report_for_offset(
     ) {
         return report;
     }
-    // A freshly accepted collection snippet has an intentionally empty type
-    // slot (`array<>` or `map<, >`). The incomplete parser has no type node
-    // there yet, so recover that one lexical shape directly and use the normal
-    // type-ranking pipeline while the user chooses the argument.
-    if empty_collection_type_slot_before_offset(source, offset) {
+    // A freshly accepted supported generic snippet has an intentionally empty
+    // type slot (`array<>`, `map<, >`, or `Tuple2<, >`). The incomplete parser
+    // has no type node there yet, so recover that lexical shape directly and
+    // use the normal type-ranking pipeline while the user chooses the argument.
+    if empty_generic_type_slot_before_offset(source, offset) {
         let context_elapsed = context_start.elapsed();
         return top_level_completion_report_for_indexes(
             source,
@@ -3496,7 +3496,7 @@ fn generic_type_argument_before_offset(source: &str, offset: usize) -> bool {
     false
 }
 
-fn empty_collection_type_slot_before_offset(source: &str, offset: usize) -> bool {
+fn empty_generic_type_slot_before_offset(source: &str, offset: usize) -> bool {
     let tokens = lex(source)
         .into_iter()
         .filter(|token| {
@@ -3532,16 +3532,17 @@ fn empty_collection_type_slot_before_offset(source: &str, offset: usize) -> bool
     let Some(opener_index) = opener_index else {
         return false;
     };
-    let Some(collection_keyword) = opener_index
+    let Some(generic_type) = opener_index
         .checked_sub(1)
         .and_then(|index| tokens.get(index))
     else {
         return false;
     };
     matches!(
-        &source[collection_keyword.span.start..collection_keyword.span.end],
+        &source[generic_type.span.start..generic_type.span.end],
         "array" | "map" | "set"
-    )
+    ) || tuple_type_argument_count(&source[generic_type.span.start..generic_type.span.end])
+        .is_some()
 }
 
 fn rank_indexed_type_completion_items(items: &mut [LspCompletionItem], prefix: &str) {
@@ -4140,10 +4141,16 @@ fn type_keyword_snippet(
         })
 }
 
-fn tuple_type_snippet(label: &str) -> Option<GenericTypeSnippet> {
+fn tuple_type_argument_count(label: &str) -> Option<usize> {
     let type_argument_count = label.strip_prefix("Tuple")?.parse::<usize>().ok()?;
-    (1..=6).contains(&type_argument_count).then_some(GenericTypeSnippet {
-        type_argument_count,
+    (1..=6)
+        .contains(&type_argument_count)
+        .then_some(type_argument_count)
+}
+
+fn tuple_type_snippet(label: &str) -> Option<GenericTypeSnippet> {
+    Some(GenericTypeSnippet {
+        type_argument_count: tuple_type_argument_count(label)?,
     })
 }
 
@@ -5243,8 +5250,8 @@ mod tests {
     }
 
     #[test]
-    fn lexical_pending_empty_collection_slot_keeps_indexed_type_candidates() {
-        let source = "class Example { void Run(array<> value) {} }";
+    fn lexical_pending_empty_generic_slot_keeps_indexed_type_candidates() {
+        let source = "class Example { void Run(Tuple2<int, > value) {} }";
         let external = file_index_for_source("class GameCollectionElement {}").index;
         assert!(top_level_source_completion_candidates(
             "",
@@ -5256,8 +5263,8 @@ mod tests {
         )
         .iter()
         .any(|candidate| candidate.name.as_deref() == Some("GameCollectionElement")));
-        let offset = source.find("array<").unwrap() + "array<".len();
-        assert!(empty_collection_type_slot_before_offset(source, offset));
+        let offset = source.find("Tuple2<int, ").unwrap() + "Tuple2<int, ".len();
+        assert!(empty_generic_type_slot_before_offset(source, offset));
         let report = completion_report_for_lexical_source_with_external_indexes(
             source,
             range_for_span(source, TextSpan::new(0, offset)).end,

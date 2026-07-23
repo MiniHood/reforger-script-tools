@@ -2026,6 +2026,49 @@ fn empty_collection_type_slots_open_ranked_type_completion() {
 }
 
 #[test]
+fn empty_tuple_type_slots_open_ranked_type_completion() {
+    let external = file_index_for_source("class GameTupleElement {}").index;
+    for (source, needle) in [
+        ("class Example { void Run(Tuple1<> value) {} }", "Tuple1<"),
+        (
+            "class Example { void Run(Tuple2<int, > value) {} }",
+            "Tuple2<int, ",
+        ),
+    ] {
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, needle),
+            Some(&external),
+        );
+        let labels = report
+            .list
+            .items
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(report.completion_context, "type");
+        assert!(
+            labels.starts_with(&["int", "auto", "bool", "float"]),
+            "{labels:?}"
+        );
+        assert!(!labels.contains(&"void"));
+        assert!(
+            labels.iter().position(|label| *label == "ref").unwrap()
+                < labels.iter().position(|label| *label == "array").unwrap()
+        );
+        assert!(
+            labels.iter().position(|label| *label == "array").unwrap()
+                < labels
+                    .iter()
+                    .position(|label| *label == "GameTupleElement")
+                    .unwrap(),
+            "{labels:?}"
+        );
+    }
+}
+
+#[test]
 fn precise_indexed_type_match_beats_weaker_builtin_prefix() {
     let source = "class Example { void Run(fl value) {} }";
     let external = file_index_for_source("class FL {}").index;
