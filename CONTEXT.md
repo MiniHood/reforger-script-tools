@@ -75,10 +75,11 @@ Compiler Diagnostics. Workbench supplies a source line but no column. The
 extension underlines a uniquely named subject from the compiler message when
 that exact subject occurs on the saved source line; otherwise it underlines
 the line's non-whitespace content. A missing-semicolon broken-expression
-recovery range starts at the nearest preceding non-blank source line and ends
-at the reported line, showing both the likely cause and Workbench's recovery
-point. It is independent of the language server's provisional diagnostic
-publication.
+diagnostic underlines only the reported line's non-whitespace content. The
+nearest preceding non-blank source line is attached as separate related
+information, preserving recovery context without underlining intervening
+indentation, blank lines, or newlines. It is independent of the language
+server's provisional diagnostic publication.
 _Avoid_: LSP compiler diagnostics, shared diagnostic collection, Rust output
 
 **Workbench Compiler Output**:

@@ -1,28 +1,61 @@
 import * as assert from 'node:assert';
 import {
-	workbenchDiagnosticRange,
+	workbenchDiagnosticProjection,
 	workbenchDiagnosticSpan,
 } from '../workbenchCompiler/workbenchDiagnosticSpan';
 
 suite('Workbench compiler diagnostic span', () => {
-	test('traces a broken expression across blank lines to the preceding source expression', () => {
+	test('does not underline indentation or blank lines for broken-expression recovery', () => {
+		const sourceLines = [
+			'        sadadsad',
+			'',
+			'        if (true)',
+		];
+
+		const projection = workbenchDiagnosticProjection(
+			sourceLines,
+			2,
+			"Broken expression (missing ';'?)",
+		);
+
+		assert.deepStrictEqual(projection.primaryRange, {
+			startLine: 2,
+			startCharacter: sourceLines[2].indexOf('if'),
+			endLine: 2,
+			endCharacter: sourceLines[2].length,
+		});
+		assert.deepStrictEqual(projection.recoveryContextRange, {
+			startLine: 0,
+			startCharacter: sourceLines[0].indexOf('sadadsad'),
+			endLine: 0,
+			endCharacter: sourceLines[0].length,
+		});
+	});
+
+	test('keeps the preceding expression as separate broken-expression recovery context', () => {
 		const sourceLines = [
 			'        int testnum45 = 5',
 			'        ',
 			'        int testnum = 5;',
 		];
 
-		const range = workbenchDiagnosticRange(
+		const projection = workbenchDiagnosticProjection(
 			sourceLines,
 			2,
 			"Broken expression (missing ';'?)",
 		);
 
-		assert.deepStrictEqual(range, {
-			startLine: 0,
-			startCharacter: sourceLines[0].indexOf('int'),
+		assert.deepStrictEqual(projection.primaryRange, {
+			startLine: 2,
+			startCharacter: sourceLines[2].indexOf('int'),
 			endLine: 2,
 			endCharacter: sourceLines[2].length,
+		});
+		assert.deepStrictEqual(projection.recoveryContextRange, {
+			startLine: 0,
+			startCharacter: sourceLines[0].indexOf('int'),
+			endLine: 0,
+			endCharacter: sourceLines[0].length,
 		});
 	});
 
@@ -32,18 +65,19 @@ suite('Workbench compiler diagnostic span', () => {
 			'        int testnum = 5;',
 		];
 
-		const range = workbenchDiagnosticRange(
+		const projection = workbenchDiagnosticProjection(
 			sourceLines,
 			1,
 			"Broken expression (missing ';'?)",
 		);
 
-		assert.deepStrictEqual(range, {
+		assert.deepStrictEqual(projection.primaryRange, {
 			startLine: 1,
 			startCharacter: sourceLines[1].indexOf('int'),
 			endLine: 1,
 			endCharacter: sourceLines[1].length,
 		});
+		assert.strictEqual(projection.recoveryContextRange, undefined);
 	});
 
 	test('highlights the named variable instead of leading indentation', () => {

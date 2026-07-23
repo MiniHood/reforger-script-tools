@@ -395,10 +395,12 @@ in `Variable 'testnum' is not used`. When the message provides no unique
 subject on that line, it underlines the line's complete non-whitespace content.
 Leading and trailing whitespace are never selected; a whitespace-only line
 uses an empty range at its end. Workbench's specific
-`Broken expression (missing ';'?)` recovery message is projected from the
-nearest preceding non-blank source line through the reported line. This shows
-the likely missing-semicolon source expression together with the line where
-Workbench recovered, while skipping blank lines when choosing the start.
+`Broken expression (missing ';'?)` recovery message keeps its primary range on
+the reported line's non-whitespace content. The nearest preceding non-blank
+source line is attached as separate diagnostic related information. This keeps
+the recovery context without using a continuous multi-line range, which would
+necessarily underline intervening indentation, blank lines, and newlines in
+VS Code.
 
 The dedicated output represents the current operation before it represents the
 latest result. As soon as `ValidateScripts` is dispatched, it atomically shows
@@ -420,7 +422,7 @@ log. The user output then renders only project-contained findings with a
 severity followed by one clickable workspace-relative
 `path:line — message` range. The severity is not part of the link, and absolute
 paths are not displayed. Activating a finding link opens its source in preview,
-selects the same exact token, line, or recovery range used by the diagnostic,
+selects the same exact token or line used by the primary diagnostic,
 places the active cursor at the range start, and reveals the selection. The
 private navigation command resolves only an opaque current-output link ID,
 rather than accepting an arbitrary source path from command arguments.

@@ -158,10 +158,12 @@ reads that saved source line and selects a uniquely occurring subject quoted by
 the compiler message when available; otherwise it selects the complete
 non-whitespace content of the line. It never deliberately underlines leading
 or trailing whitespace. For Workbench's specific missing-semicolon
-broken-expression recovery message, the range starts at the nearest preceding
-non-blank source line and ends at the reported line so both the likely cause
-and compiler recovery point are visible. Rust language diagnostics remain in
-their independent LSP-owned collection throughout.
+broken-expression recovery message, the primary range stays on the reported
+line's non-whitespace content. The nearest preceding non-blank source line is
+attached as separate diagnostic related information. No primary compiler range
+crosses a line boundary, because a continuous VS Code range would necessarily
+underline intervening indentation, blank lines, and newlines. Rust language
+diagnostics remain in their independent LSP-owned collection throughout.
 
 Once the `ValidateScripts` call is dispatched, the dedicated **Reforger
 Workbench Compiler** output atomically shows a timestamped one-line state that

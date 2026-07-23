@@ -10,30 +10,35 @@ export interface WorkbenchDiagnosticRange {
 	endCharacter: number;
 }
 
-export function workbenchDiagnosticRange(
+export interface WorkbenchDiagnosticProjection {
+	primaryRange: WorkbenchDiagnosticRange;
+	recoveryContextRange?: WorkbenchDiagnosticRange;
+}
+
+export function workbenchDiagnosticProjection(
 	sourceLines: readonly string[],
 	reportedLine: number,
 	message: string,
-): WorkbenchDiagnosticRange {
+): WorkbenchDiagnosticProjection {
 	if (message === "Broken expression (missing ';'?)") {
 		const reportedSpan = lineContentSpan(sourceLines[reportedLine] ?? '');
 		const precedingLine = precedingContentLine(sourceLines, reportedLine);
 		return {
-			startLine: precedingLine ?? reportedLine,
-			startCharacter: precedingLine === undefined
-				? reportedSpan.startCharacter
-				: lineContentSpan(sourceLines[precedingLine] ?? '').startCharacter,
-			endLine: reportedLine,
-			endCharacter: reportedSpan.endCharacter,
+			primaryRange: singleLineRange(reportedLine, reportedSpan),
+			...(precedingLine === undefined
+				? {}
+				: {
+					recoveryContextRange: singleLineRange(
+						precedingLine,
+						lineContentSpan(sourceLines[precedingLine] ?? ''),
+					),
+				}),
 		};
 	}
 
 	const span = workbenchDiagnosticSpan(sourceLines[reportedLine] ?? '', message);
 	return {
-		startLine: reportedLine,
-		startCharacter: span.startCharacter,
-		endLine: reportedLine,
-		endCharacter: span.endCharacter,
+		primaryRange: singleLineRange(reportedLine, span),
 	};
 }
 
@@ -49,6 +54,18 @@ export function workbenchDiagnosticSpan(
 	}
 
 	return lineContentSpan(lineText);
+}
+
+function singleLineRange(
+	line: number,
+	span: WorkbenchDiagnosticSpan,
+): WorkbenchDiagnosticRange {
+	return {
+		startLine: line,
+		startCharacter: span.startCharacter,
+		endLine: line,
+		endCharacter: span.endCharacter,
+	};
 }
 
 function lineContentSpan(lineText: string): WorkbenchDiagnosticSpan {

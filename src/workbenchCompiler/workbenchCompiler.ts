@@ -17,7 +17,10 @@ import {
 	WorkbenchValidationProfile,
 	WorkbenchValidationResult,
 } from '../workbenchGateway/workbenchGateway';
-import { workbenchDiagnosticRange } from './workbenchDiagnosticSpan';
+import {
+	WorkbenchDiagnosticRange,
+	workbenchDiagnosticProjection,
+} from './workbenchDiagnosticSpan';
 
 const unavailableRetryMs = 1_000;
 const readyHeartbeatMs = 5_000;
@@ -936,27 +939,42 @@ function projectDiagnostics(diagnostics: WorkbenchCompilerDiagnostic[]): Project
 			continue;
 		}
 		const line = Math.max(0, compilerDiagnostic.location.line - 1);
-		const range = workbenchDiagnosticRange(
+		const projection = workbenchDiagnosticProjection(
 			readSourceLines(uri.fsPath, sourceLinesByFile),
 			line,
 			compilerDiagnostic.message,
 		);
 		const rendered = new vscode.Diagnostic(
-			new vscode.Range(
-				range.startLine,
-				range.startCharacter,
-				range.endLine,
-				range.endCharacter,
-			),
+			asVscodeRange(projection.primaryRange),
 			compilerDiagnostic.message,
 			compilerDiagnostic.severity === 'error'
 				? vscode.DiagnosticSeverity.Error
 				: vscode.DiagnosticSeverity.Warning,
 		);
 		rendered.source = workbenchDiagnostics.source;
+		if (projection.recoveryContextRange) {
+			rendered.relatedInformation = [
+				new vscode.DiagnosticRelatedInformation(
+					new vscode.Location(
+						uri,
+						asVscodeRange(projection.recoveryContextRange),
+					),
+					'Previous non-blank source line before Workbench recovered.',
+				),
+			];
+		}
 		located.push({ uri, diagnostic: rendered, compilerDiagnostic });
 	}
 	return { located, unresolved };
+}
+
+function asVscodeRange(range: WorkbenchDiagnosticRange): vscode.Range {
+	return new vscode.Range(
+		range.startLine,
+		range.startCharacter,
+		range.endLine,
+		range.endCharacter,
+	);
 }
 
 function readSourceLines(
@@ -1048,5 +1066,6 @@ function renderStaleDiagnostic(
 	);
 	stale.source = `${workbenchDiagnostics.source} (possibly outdated)`;
 	stale.code = original.code;
+	stale.relatedInformation = original.relatedInformation;
 	return stale;
 }
