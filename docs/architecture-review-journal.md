@@ -3,9 +3,11 @@
 Status: in progress  
 Started: 2026-07-23  
 Scope: every repository-owned coding file: TypeScript, Rust, JavaScript tooling,
-and executable configuration. Fixtures are reviewed where their structure or
-coverage affects the code they evidence; generated output and dependencies are
-excluded.
+and executable configuration. The current authoritative inventory is 192 files:
+91 under `server/`, 74 under `tools/` (including fixtures), 22 under `src/`,
+and five root executable/configuration files. Fixtures are reviewed where their
+structure or coverage affects the code they evidence; generated output and
+dependencies are excluded.
 
 This journal is an evidence log for the ongoing architecture review. It records
 each reviewed slice, the files covered, and findings that survive the deletion
