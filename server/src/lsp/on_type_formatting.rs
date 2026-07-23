@@ -967,16 +967,16 @@ fn is_complete_value_expression(tokens: &[Token]) -> bool {
         if !(is_value_expression_token(kind) || is_new_type_keyword(tokens, index)) {
             return false;
         }
-        if let Some(next) = tokens.get(index + 1) {
-            if can_end_value_expression(kind)
-                && can_start_value_expression(next.kind)
-                && next.kind != TokenKind::LeftParen
-            {
-                return false;
-            }
-        }
     }
-    true
+    !has_adjacent_primary_values(tokens)
+}
+
+fn has_adjacent_primary_values(tokens: &[Token]) -> bool {
+    tokens.windows(2).any(|pair| {
+        can_end_value_expression(pair[0].kind)
+            && can_start_value_expression(pair[1].kind)
+            && pair[1].kind != TokenKind::LeftParen
+    })
 }
 
 /// Type-name keywords and generic ownership modifiers can only participate in
@@ -997,6 +997,7 @@ fn is_new_type_keyword(tokens: &[Token], index: usize) -> bool {
                 | Keyword::String
                 | Keyword::Vector
                 | Keyword::Typename
+                | Keyword::Func
         )
     ) {
         return false;
@@ -1238,6 +1239,7 @@ fn is_generic_type_name(kind: TokenKind) -> bool {
                     | Keyword::String
                     | Keyword::Vector
                     | Keyword::Typename
+                    | Keyword::Func
                     | Keyword::Auto
             )
     )
@@ -1271,6 +1273,7 @@ fn consume_initializer(tokens: &[Token], mut index: usize) -> Option<usize> {
         || !closes.is_empty()
         || (complete_new_expression_end != Some(index)
             && ends_in_incomplete_expression(tokens[start..index].last()?.kind))
+        || has_adjacent_primary_values(&tokens[start..index])
     {
         return None;
     }
@@ -1387,6 +1390,7 @@ mod tests {
             "GetGameMaterialsResponse response = new GetGameMaterialsResponse\n",
             "return new array<ref SCR_WorkshopItem>\n",
             "ref ScriptInvoker callback = new ScriptInvoker // callback args\n",
+            "ScriptInvokerBase<func> callback = new ScriptInvokerBase<func>\n",
             "map<string /* key */, int> values = new map<string /* key */, int>() /* keep */\n",
         ] {
             let expected = source
@@ -1479,6 +1483,8 @@ mod tests {
             "map<int, int> values = new map<int,>()\n",
             "map<int, int> values = new map<int, int\n",
             "Managed first = new Managed(), second = new\n",
+            "Managed value = new Managed garbage // malformed\n",
+            "Managed value = new Managed() garbage // malformed\n",
             "void Run\n",
             "int Run()\n",
             "int first = 1,\n",
