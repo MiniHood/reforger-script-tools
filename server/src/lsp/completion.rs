@@ -2701,7 +2701,7 @@ fn completion_report_for_offset(
         );
     }
     if let Some(new_keyword) =
-        new_operand_space_keyword_before_offset(source, &analysis.lexer_tokens, offset)
+        new_operand_keyword_before_offset(source, &analysis.lexer_tokens, offset)
     {
         let query = ConstructionQuery::new(
             source,
@@ -2713,12 +2713,19 @@ fn completion_report_for_offset(
         );
         if let Some(context) = query.context_at_new(new_keyword.span) {
             let candidates = query.compatible_candidates(&context);
+            let completes_bare_keyword = new_keyword.span.end == offset;
+            let replacement_span = if completes_bare_keyword {
+                new_keyword.span
+            } else {
+                TextSpan::new(offset, offset)
+            };
             return contextual_constructor_completion_report(
                 source,
                 analysis.parse_diagnostics,
                 context.type_text,
                 candidates,
-                offset,
+                replacement_span,
+                completes_bare_keyword,
                 &analysis.index,
                 workspace_index,
                 game_data_index,
@@ -2991,7 +2998,7 @@ fn completion_report_for_offset(
     top_level_report
 }
 
-fn new_operand_space_keyword_before_offset(
+fn new_operand_keyword_before_offset(
     source: &str,
     tokens: &[Token],
     offset: usize,
@@ -3003,7 +3010,7 @@ fn new_operand_space_keyword_before_offset(
             token.span.end <= offset && !token.kind.is_trivia() && token.kind != TokenKind::Eof
         })
         .copied()?;
-    if keyword.kind != TokenKind::Keyword(Keyword::New) || keyword.span.end >= offset {
+    if keyword.kind != TokenKind::Keyword(Keyword::New) || keyword.span.end > offset {
         return None;
     }
     let operand_space = source.get(keyword.span.end..offset)?;
@@ -3017,7 +3024,8 @@ fn contextual_constructor_completion_report(
     parse_diagnostics: usize,
     contextual_type: String,
     candidates: Vec<EditorCompletionCandidate>,
-    offset: usize,
+    replacement_span: TextSpan,
+    completes_bare_keyword: bool,
     local_index: &SymbolIndex,
     workspace_index: Option<&SymbolIndex>,
     game_data_index: Option<&SymbolIndex>,
@@ -3029,7 +3037,10 @@ fn contextual_constructor_completion_report(
     };
     if matches!(owner.as_str(), "array" | "set" | "map") {
         let spelling = strip_all_type_prefixes(&contextual_type).trim();
-        let constructor_text = format!("{spelling}()");
+        let constructor_text = format!(
+            "{}{spelling}()",
+            if completes_bare_keyword { "new " } else { "" }
+        );
         let item = LspCompletionItem {
             label: constructor_text.clone(),
             label_details: None,
@@ -3043,7 +3054,7 @@ fn contextual_constructor_completion_report(
             commit_characters: None,
             command: None,
             text_edit: LspTextEdit {
-                range: range_for_span(source, TextSpan::new(offset, offset)),
+                range: range_for_span(source, replacement_span),
                 new_text: constructor_text,
                 replace_range: None,
             },
@@ -3078,7 +3089,7 @@ fn contextual_constructor_completion_report(
         CompletionRenderContext::new(local_index, workspace_index, game_data_index);
     let (mut items, source_kind_counts, origin_counts) = completion_items_for_candidates(
         &candidates,
-        range_for_span(source, TextSpan::new(offset, offset)),
+        range_for_span(source, replacement_span),
         Some("ContextualConstructor"),
         CompletionInsertContext::ContextualConstructorCall,
         None,
@@ -3087,6 +3098,11 @@ fn contextual_constructor_completion_report(
     let has_exact = items.iter().any(|item| item.label == owner);
     for (index, item) in items.iter_mut().enumerate() {
         let exact = item.label == owner;
+        if completes_bare_keyword {
+            item.label = format!("new {}", item.label);
+            item.filter_text = Some(item.label.clone());
+            item.text_edit.new_text = format!("new {}", item.text_edit.new_text);
+        }
         if let Some(preview) =
             constructor_completion_preview_suffix(&item.label, &item.text_edit.new_text)
         {

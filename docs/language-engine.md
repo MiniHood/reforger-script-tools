@@ -102,10 +102,12 @@ Constructor edits contain only the parenthesized expression. Required
 parameters become ordered named snippet fields, optional parameters are
 omitted, and a class without an indexed constructor signature remains
 available as `Type()`. The label plus label details previews that accepted
-source text. No constructor item owns a semicolon, assignment, initializer
-brace, or fluent suffix. Space-triggered requests outside this exact context
-return an empty complete list; manual prefix and explicit completion retain
-their existing behavior.
+source text. When completion is invoked on a bare typed `new`, the item instead
+previews the whole `new Type(...)` expression and atomically replaces the
+keyword; after `new `, it edits only the operand. No constructor item owns a
+semicolon, assignment, initializer brace, or fluent suffix. Space-triggered
+requests outside this exact context return an empty complete list; manual
+prefix and explicit completion retain their existing behavior.
 
 When a user retypes an already-present completion label, Rust keeps the
 existing syntax authoritative. A type completion immediately before a generic

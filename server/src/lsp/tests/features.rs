@@ -3886,6 +3886,77 @@ class Example
 }
 
 #[test]
+fn manual_completion_on_bare_new_previews_the_whole_contextual_expression() {
+    let source = r#"class Example
+{
+	void Run()
+	{
+		array<int> tesyArray = new
+	}
+}
+"#;
+
+    let report = completion_report_for_source_position_with_external(
+        source,
+        position_after_needle(source, "tesyArray = new"),
+        None,
+    );
+    assert_eq!(report.completion_context, "constructor");
+    assert_eq!(report.owner_type.as_deref(), Some("array<int>"));
+    assert_eq!(report.list.items.len(), 1);
+    let item = &report.list.items[0];
+    assert_eq!(item.label, "new array<int>()");
+    assert_eq!(item.text_edit.new_text, "new array<int>()");
+    assert_eq!(
+        item.text_edit.range.start,
+        position_after_needle(source, "tesyArray = "),
+        "acceptance should begin at the typed keyword"
+    );
+    assert_eq!(
+        item.text_edit.range.end,
+        position_after_needle(source, "tesyArray = new"),
+        "acceptance should replace the complete typed keyword"
+    );
+    assert_eq!(item.preselect, Some(true));
+}
+
+#[test]
+fn manual_completion_on_bare_new_previews_class_constructor_arguments() {
+    let source = r#"class Managed
+{
+	void Managed(int id, bool enabled = true);
+}
+class Example
+{
+	void Run()
+	{
+		Managed value = new
+	}
+}
+"#;
+
+    let report = completion_report_for_source_position_with_external(
+        source,
+        position_after_needle(source, "value = new"),
+        None,
+    );
+    let item = report
+        .list
+        .items
+        .iter()
+        .find(|item| item.label == "new Managed")
+        .expect("the contextual constructor should replace the typed new keyword");
+    assert_eq!(
+        item.label_details
+            .as_ref()
+            .and_then(|details| details.detail.as_deref()),
+        Some("(id)")
+    );
+    assert_eq!(item.text_edit.new_text, "new Managed(${1:id})");
+    assert_eq!(item.preselect, Some(true));
+}
+
+#[test]
 fn manual_constructor_prefix_does_not_invent_an_unindexed_signature() {
     let source = r#"class NoIndexedConstructor {}
 class Example
