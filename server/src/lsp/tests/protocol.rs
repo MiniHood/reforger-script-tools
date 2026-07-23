@@ -491,17 +491,46 @@ fn input_route_declines_multiple_or_nonempty_selections() {
 }
 
 #[test]
+fn input_route_inserts_space_and_opens_collection_tail_prompt_for_eligible_declaration() {
+    let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
+    let uri = "file:///Scripts/CollectionTail.c";
+    server.handle_message(json!({ "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+        "textDocument": { "uri": uri, "languageId": "enforce", "version": 1, "text": "class Example\n{\n\tarray<int> values\n}" }
+    }}), None, 0, 0).unwrap();
+    server.writer.clear();
+    server.handle_message(json!({ "jsonrpc": "2.0", "id": 1, "method": CONTROL_HEADER_ENTER_METHOD, "params": {
+        "textDocument": { "uri": uri }, "operation": "insertSpace", "version": 1,
+        "selections": [{ "start": { "line": 2, "character": 18 }, "end": { "line": 2, "character": 18 } }],
+        "options": { "tabSize": 4, "insertSpaces": true }
+    }}), None, 0, 0).unwrap();
+    let output = String::from_utf8_lossy(&server.writer);
+    assert!(output.contains("\"newText\":\" \""), "{output}");
+    assert!(
+        output.contains("\"owner\":\"collectionDeclarationTail\""),
+        "{output}"
+    );
+    assert!(output.contains("\"triggerSuggest\":true"), "{output}");
+}
+
+#[test]
 fn input_route_outdents_blank_lines_after_a_completed_unbraced_if_body() {
     let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
     let uri = "file:///Scripts/IfBodyIndent.c";
-    server.handle_message(json!({ "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
-        "textDocument": {
-            "uri": uri,
-            "languageId": "enforce",
-            "version": 1,
-            "text": "        if (true)\n            return;\n\n"
-        }
-    }}), None, 0, 0).unwrap();
+    server
+        .handle_message(
+            json!({ "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "enforce",
+                    "version": 1,
+                    "text": "        if (true)\n            return;\n\n"
+                }
+            }}),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
     server.writer.clear();
     server.handle_message(json!({ "jsonrpc": "2.0", "id": 1, "method": CONTROL_HEADER_ENTER_METHOD, "params": {
         "textDocument": { "uri": uri }, "operation": "indent", "version": 1,
@@ -511,7 +540,10 @@ fn input_route_outdents_blank_lines_after_a_completed_unbraced_if_body() {
     let output = String::from_utf8_lossy(&server.writer);
     assert!(output.contains("\"newText\":\"        \""), "{output}");
     assert!(output.contains("\"owner\":\"unbracedIfBody\""), "{output}");
-    assert!(output.contains("\"selection\":{\"character\":8,\"line\":2}"), "{output}");
+    assert!(
+        output.contains("\"selection\":{\"character\":8,\"line\":2}"),
+        "{output}"
+    );
 }
 
 #[test]

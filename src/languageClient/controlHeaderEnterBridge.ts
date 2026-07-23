@@ -3,13 +3,13 @@ import type { LanguageClient } from 'vscode-languageclient/node';
 import { experimentalAutoFormattingEnabled } from '../extensionConfig/experimentalAutoFormatting';
 import { languageClientCommands, languageClientLanguage, languageClientRequests } from '../extensionConfig/languageClient';
 import { diagnostic, inputRouteTraceEnabled } from '../diagnostics/diagnostics';
-import { inputRouteRequest } from './typingAssistBridge';
+import { inputRouteRequest, type InputRouteRequest } from './typingAssistBridge';
 import { applyVersionedEditorEdits, isCurrentSingleCaret, type VersionedEditResponse } from './versionedEditorEdit';
 
 const nativeTypeCommand = 'type';
 
 interface InputRouteResult extends VersionedEditResponse {
-	owner?: 'controlHeader' | 'ifHeader' | 'semicolon' | 'unbracedIfBody';
+	owner?: 'controlHeader' | 'ifHeader' | 'semicolon' | 'unbracedIfBody' | 'collectionDeclarationTail';
 	reason?: string;
 }
 
@@ -25,6 +25,8 @@ export function registerControlHeaderEnter(getClient: () => LanguageClient | und
 		);
 	}), vscode.commands.registerCommand(languageClientCommands.indent, async () => {
 		await executeIndent(vscode.window.activeTextEditor, getClient());
+	}), vscode.commands.registerCommand(languageClientCommands.insertSpace, async () => {
+		await executeInsertSpace(vscode.window.activeTextEditor, getClient());
 	})];
 }
 
@@ -45,10 +47,19 @@ export async function executeIndent(
 	await executeInputRoute(editor, client, 'indent', typeNativeIndent);
 }
 
+export async function executeInsertSpace(
+	editor: vscode.TextEditor | undefined,
+	client: LanguageClient | undefined,
+	nativeFallback: () => Promise<void> = typeNativeSpace,
+	triggerSuggest: () => Thenable<unknown> = () => vscode.commands.executeCommand('editor.action.triggerSuggest'),
+): Promise<void> {
+	await executeInputRoute(editor, client, 'insertSpace', nativeFallback, triggerSuggest);
+}
+
 async function executeInputRoute(
 	editor: vscode.TextEditor | undefined,
 	client: LanguageClient | undefined,
-	operation: 'insertNewline' | 'indent',
+	operation: InputRouteRequest['operation'],
 	nativeFallback: () => Promise<void>,
 	triggerSuggest: () => Thenable<unknown> = () => vscode.commands.executeCommand('editor.action.triggerSuggest'),
 	dismissSuggest?: () => Thenable<unknown>,
@@ -113,8 +124,12 @@ async function typeNativeIndent(): Promise<void> {
 	await vscode.commands.executeCommand('editor.action.indentLines');
 }
 
+async function typeNativeSpace(): Promise<void> {
+	await vscode.commands.executeCommand(nativeTypeCommand, { text: ' ' });
+}
+
 function traceInputRoute(
-	operation: 'insertNewline' | 'indent',
+	operation: InputRouteRequest['operation'],
 	outcome: 'applied' | 'nativeFallback',
 	reason: string | undefined,
 	owner: InputRouteResult['owner'],

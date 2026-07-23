@@ -6,7 +6,7 @@ use crate::expression_type::{
     ExpressionTypeEnvironment,
 };
 use crate::index::{GlobalSymbolId, IndexedFile, IndexedSymbol, SymbolIndex};
-use crate::lexer::{lex, Keyword, TextSpan, Token, TokenKind};
+use crate::lexer::{lex, Keyword, Operator, TextSpan, Token, TokenKind};
 use crate::model::{SourceCategory, SourceKind, SymbolKind};
 use crate::parser::parse_source;
 use crate::scope::LexicalScopeModel;
@@ -589,10 +589,16 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
             return None;
         }
 
+        let identifier_context = self.identifier_context(prefix_span);
+        let identifier_context = if identifier_context == IdentifierContext::TypePosition {
+            identifier_context
+        } else {
+            completion_recovery_type_context(self.source, tokens, prefix_span)
+        };
         Some(TopLevelCompletionContext {
             prefix,
             prefix_span,
-            identifier_context: self.identifier_context(prefix_span),
+            identifier_context,
         })
     }
 
@@ -1213,6 +1219,33 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
             .min_by_key(|symbol| symbol.span.len())
             .map(|symbol| symbol.id)
     }
+}
+
+/// Completion prefixes are commonly incomplete and therefore absent from the
+/// indexed declaration/type spans. Recover only two unambiguous grammar slots
+/// here: the operand of `new` and a builtin collection's type argument.
+fn completion_recovery_type_context(
+    source: &str,
+    tokens: &[Token],
+    prefix_span: TextSpan,
+) -> IdentifierContext {
+    let Some(previous_index) = previous_non_trivia_token_index(tokens, prefix_span.start) else {
+        return IdentifierContext::ValueOrCallable;
+    };
+    let previous = tokens[previous_index];
+    if previous.kind == TokenKind::Keyword(Keyword::New) {
+        return IdentifierContext::TypePosition;
+    }
+    if previous.kind != TokenKind::Operator(Operator::Less) || previous_index == 0 {
+        return IdentifierContext::ValueOrCallable;
+    }
+    let collection = tokens[previous_index - 1];
+    (collection.kind == TokenKind::Identifier
+        && source
+            .get(collection.span.start..collection.span.end)
+            .is_some_and(|name| matches!(name, "array" | "set" | "map")))
+    .then_some(IdentifierContext::TypePosition)
+    .unwrap_or(IdentifierContext::ValueOrCallable)
 }
 
 #[derive(Debug, Clone)]

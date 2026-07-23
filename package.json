@@ -65,12 +65,20 @@
         "title": "Reforger Script Tools: Trigger Snippet Suggestions"
       },
       {
+        "command": "reforger-sript-tools.completion.triggerSuggestAfterCustomCollectionInitializer",
+        "title": "Reforger Script Tools: Trigger Custom Collection Initializer Suggestions"
+      },
+      {
         "command": "reforger-sript-tools.input.insertNewline",
         "title": "Reforger Script Tools: Insert Newline"
       },
       {
         "command": "reforger-sript-tools.input.indent",
         "title": "Reforger Script Tools: Indent"
+      },
+      {
+        "command": "reforger-sript-tools.input.insertSpace",
+        "title": "Reforger Script Tools: Insert Space"
       },
       {
         "command": "reforger-sript-tools.gameData.checkForUpdates",
@@ -135,6 +143,11 @@
         "command": "reforger-sript-tools.input.indent",
         "key": "tab",
         "when": "editorTextFocus && editorLangId == enforce && !editorReadonly && !suggestWidgetVisible && !inSnippetMode"
+      },
+      {
+        "command": "reforger-sript-tools.input.insertSpace",
+        "key": "space",
+        "when": "editorTextFocus && editorLangId == enforce && !editorReadonly && !suggestWidgetVisible && !inSnippetMode"
       }
     ],
     "menus": {
@@ -144,11 +157,19 @@
           "when": "false"
         },
         {
+          "command": "reforger-sript-tools.completion.triggerSuggestAfterCustomCollectionInitializer",
+          "when": "false"
+        },
+        {
           "command": "reforger-sript-tools.input.insertNewline",
           "when": "false"
         },
         {
           "command": "reforger-sript-tools.input.indent",
+          "when": "false"
+        },
+        {
+          "command": "reforger-sript-tools.input.insertSpace",
           "when": "false"
         }
       ]

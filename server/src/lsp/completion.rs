@@ -5,12 +5,13 @@ use crate::index_query::{
     completion_name_match_rank, EditorCompletionCandidate, EditorCompletionOrigin,
     EditorTopLevelCompletionMode, IndexQuery,
 };
-use crate::lexer::{lex, Keyword, TextSpan, Token, TokenKind};
+use crate::lexer::{lex, Keyword, Operator, TextSpan, Token, TokenKind};
 use crate::lsp::callable::{
     callable_argument_context_at_offset, callable_signature_parts, callable_type_owner,
     CallableParameter, CallableSignatureParts, CallableTarget,
 };
 use crate::lsp::external_indexes::ExternalIndexes;
+use crate::lsp::on_type_formatting::collection_declaration_before_cursor;
 use crate::lsp::{
     file_index_for_source, offset_for_position, range_for_span, FileIndexAnalysis,
     LspMarkupContent, LspPosition, LspRange,
@@ -47,6 +48,8 @@ const COMMAND_TRIGGER_PARAMETER_HINTS: &str = "editor.action.triggerParameterHin
 /// to select each Rust-authored placeholder before dispatching Suggest.
 const COMMAND_TRIGGER_SUGGEST_AT_SNIPPET_PLACEHOLDER: &str =
     "reforger-sript-tools.completion.triggerSuggestAtSnippetPlaceholder";
+const COMMAND_TRIGGER_SUGGEST_AFTER_CUSTOM_COLLECTION_INITIALIZER: &str =
+    "reforger-sript-tools.completion.triggerSuggestAfterCustomCollectionInitializer";
 /// A completion-specific UI adapter which removes the one Space commit
 /// character that VS Code appends after this item's snippet edit. It has an
 /// exact caret-local contract and never classifies ordinary source text.
@@ -294,6 +297,11 @@ pub(crate) fn completion_report_for_lexical_source_at_offset_with_external_index
             Instant::now(),
         );
     }
+    if let Some(report) =
+        collection_declaration_tail_completion_report(source, 0, offset, Instant::now())
+    {
+        return report;
+    }
     let Some(region) = BoundedCompletionRegion::new(source, offset) else {
         if current_snapshot_cursor_is_in_comment_or_string(source, offset) {
             return empty_completion_report(0);
@@ -324,6 +332,108 @@ pub(crate) fn completion_report_for_lexical_source_at_offset_with_external_index
         context,
     );
     unavailable_completion_report(report, context.reason())
+}
+
+fn collection_declaration_tail_completion_report(
+    source: &str,
+    parse_diagnostics: usize,
+    offset: usize,
+    total_start: Instant,
+) -> Option<LspCompletionReport> {
+    let declaration = collection_declaration_before_cursor(source, offset, true)?;
+    let whitespace = source.get(declaration.name_span.end..offset)?;
+    if whitespace.is_empty() || !whitespace.chars().all(char::is_whitespace) {
+        return None;
+    }
+    let type_text = source.get(declaration.type_span.start..declaration.type_span.end)?;
+    let range = range_for_span(source, TextSpan::new(declaration.name_span.end, offset));
+    let item =
+        |label: &str, detail: &str, new_text: String, order: usize, command: Option<LspCommand>| {
+            LspCompletionItem {
+                label: label.to_string(),
+                label_details: None,
+                kind: 15,
+                detail: Some(detail.to_string()),
+                documentation: None,
+                sort_text: Some(format!("000:collection-tail:{order:03}:{label}")),
+                filter_text: Some(label.to_string()),
+                insert_text_format: None,
+                commit_characters: None,
+                command,
+                text_edit: LspTextEdit {
+                    range: range.clone(),
+                    new_text,
+                    replace_range: None,
+                },
+                required_parameter_count: 0,
+                optional_parameter_count: 0,
+            }
+        };
+    let mut items = Vec::new();
+    if declaration.collection == "array" {
+        items.push(item(
+            "Initialize with empty literal",
+            "= {};",
+            " = {};".to_string(),
+            0,
+            None,
+        ));
+        items.push(item(
+            "Initialize with new array",
+            "= new array<T>;",
+            format!(" = new {type_text};"),
+            1,
+            None,
+        ));
+    } else {
+        items.push(item(
+            "Initialize with new collection",
+            "= new collection<T>;",
+            format!(" = new {type_text};"),
+            0,
+            None,
+        ));
+    }
+    let order = items.len();
+    items.push(item(
+        "Declare without initializer",
+        ";",
+        ";".to_string(),
+        order,
+        None,
+    ));
+    items.push(item(
+        "Custom initializer…",
+        "= ",
+        " = ".to_string(),
+        order + 1,
+        Some(LspCommand {
+            title: "Suggest custom collection initializer".to_string(),
+            command: COMMAND_TRIGGER_SUGGEST_AFTER_CUSTOM_COLLECTION_INITIALIZER.to_string(),
+            arguments: None,
+        }),
+    ));
+    Some(LspCompletionReport {
+        candidate_count: items.len(),
+        list: LspCompletionList {
+            is_incomplete: false,
+            items,
+        },
+        query_quality: QueryQuality::Exact,
+        recovery_reason: None,
+        parse_diagnostics,
+        completion_context: "collection-declaration-tail".to_string(),
+        receiver_text: None,
+        owner_type: None,
+        prefix: String::new(),
+        source_kind_counts: BTreeMap::new(),
+        origin_counts: BTreeMap::new(),
+        failure_reason: None,
+        timings: LspCompletionTimings {
+            total: total_start.elapsed(),
+            ..LspCompletionTimings::default()
+        },
+    })
 }
 
 /// Handles the source forms that are complete from the current snapshot alone
@@ -2153,6 +2263,14 @@ fn completion_report_for_offset(
             total_start,
         );
     }
+    if let Some(report) = collection_declaration_tail_completion_report(
+        source,
+        analysis.parse_diagnostics,
+        offset,
+        total_start,
+    ) {
+        return report;
+    }
     let resolver = ReferenceResolver::new_with_parse_scope_and_external_indexes(
         source,
         &analysis.index,
@@ -2272,12 +2390,22 @@ fn completion_report_for_offset(
         EditorTopLevelCompletionMode::Type => "type",
         EditorTopLevelCompletionMode::Value => "top-level",
     };
+    // The type snippets deliberately select these labels before asking VS Code
+    // to trigger completion. They are UI placeholders, not an intended filter:
+    // retain their edit span but query types as though the slot were empty.
+    let prefix = if mode == EditorTopLevelCompletionMode::Type
+        && matches!(context.prefix.as_str(), "Type" | "KeyType" | "ValueType")
+    {
+        String::new()
+    } else {
+        context.prefix
+    };
 
     let top_level_report = top_level_completion_report_for_indexes(
         source,
         analysis.parse_diagnostics,
         completion_context,
-        context.prefix,
+        prefix,
         context.prefix_span,
         offset,
         mode,
@@ -3244,6 +3372,11 @@ fn top_level_completion_report_for_indexes(
     );
     let mut keyword_items =
         keyword_completion_items(&prefix, edit_range, mode, declaration_context);
+    if mode == EditorTopLevelCompletionMode::Type
+        && generic_type_argument_before_offset(source, prefix_span.start)
+    {
+        keyword_items.retain(|item| item.label != "void");
+    }
     if !keyword_items.is_empty() {
         *origin_counts.entry("Keyword".to_string()).or_default() += keyword_items.len();
         remove_items_shadowed_by_keywords(&mut items, &keyword_items);
@@ -3275,6 +3408,30 @@ fn top_level_completion_report_for_indexes(
         failure_reason: None,
         timings,
     }
+}
+
+fn generic_type_argument_before_offset(source: &str, offset: usize) -> bool {
+    let tokens = lex(source)
+        .into_iter()
+        .filter(|token| {
+            !token.kind.is_trivia() && token.kind != TokenKind::Eof && token.span.end <= offset
+        })
+        .collect::<Vec<_>>();
+    let mut depth = 0usize;
+    for token in tokens.iter().rev() {
+        match token.kind {
+            TokenKind::Operator(Operator::Greater) => depth += 1,
+            TokenKind::Operator(Operator::Less) => {
+                if depth == 0 {
+                    return true;
+                }
+                depth -= 1;
+            }
+            TokenKind::Semicolon | TokenKind::LeftBrace | TokenKind::RightBrace => return false,
+            _ => {}
+        }
+    }
+    false
 }
 
 fn top_level_source_completion_candidates(
@@ -3669,7 +3826,18 @@ fn keyword_completion_items(
         }
     }
     keywords.sort_by(|left, right| {
-        keyword_completion_sort_key(left, prefix).cmp(&keyword_completion_sort_key(right, prefix))
+        (
+            keyword_completion_match_rank(left, prefix),
+            type_keyword_category_rank(left, mode),
+            left.chars().count(),
+            *left,
+        )
+            .cmp(&(
+                keyword_completion_match_rank(right, prefix),
+                type_keyword_category_rank(right, mode),
+                right.chars().count(),
+                *right,
+            ))
     });
     keywords.dedup();
     keywords
@@ -3681,6 +3849,8 @@ fn keyword_completion_items(
             // Rust-authored completion edit so VS Code applies it atomically,
             // rather than observing a later Space/Enter edit from the client.
             let is_control_header = matches!(keyword, "if" | "for" | "foreach" | "while" | "switch");
+            let type_placeholders = collection_type_placeholders(keyword, mode)
+                .or_else(|| ref_type_placeholders(keyword, mode));
             let (new_text, insert_text_format, commit_characters) = if is_control_header {
                 (
                     format!("{keyword} ($0)"),
@@ -3690,6 +3860,12 @@ fn keyword_completion_items(
                     // observed post-keypress rewrite, so it cannot race the
                     // document, caret, or native Enter indentation.
                     Some(vec![" ".to_string()]),
+                )
+            } else if let Some(placeholders) = type_placeholders.as_ref() {
+                (
+                    collection_type_snippet(keyword, placeholders),
+                    Some(2),
+                    None,
                 )
             } else {
                 (keyword.to_string(), None, None)
@@ -3701,7 +3877,8 @@ fn keyword_completion_items(
                 detail: Some("keyword".to_string()),
                 documentation: None,
                 sort_text: Some(format!(
-                    "00:00:{:03}:{:03}:{}",
+                    "00:{:02}:{:03}:{:03}:{}",
+                    type_keyword_category_rank(keyword, mode),
                     keyword_completion_match_rank(keyword, prefix),
                     keyword.chars().count(),
                     keyword
@@ -3709,10 +3886,11 @@ fn keyword_completion_items(
                 filter_text: Some(keyword.to_string()),
                 insert_text_format,
                 commit_characters,
-                command: is_control_header.then_some(LspCommand {
-                    title: "Normalize control header Space commit".to_string(),
-                    command: COMMAND_NORMALIZE_IF_SPACE_COMMIT.to_string(),
-                    arguments: Some(vec![json!({
+                command: if is_control_header {
+                    Some(LspCommand {
+                        title: "Normalize control header Space commit".to_string(),
+                        command: COMMAND_NORMALIZE_IF_SPACE_COMMIT.to_string(),
+                        arguments: Some(vec![json!({
                         "expectedCommit": " ",
                         "deletion": {
                             "start": { "line": edit_range.start.line, "character": edit_range.start.character + keyword.len() as u32 + 2 },
@@ -3723,8 +3901,11 @@ fn keyword_completion_items(
                             "end": { "line": edit_range.start.line, "character": edit_range.start.character + keyword.len() as u32 + 4 },
                         },
                         "caret": { "line": edit_range.start.line, "character": edit_range.start.character + keyword.len() as u32 + 2 },
-                    })]),
-                }),
+                        })]),
+                    })
+                } else {
+                    type_placeholders.map(trigger_suggest_at_snippet_placeholder_command)
+                },
                 text_edit: LspTextEdit {
                     range: edit_range,
                     new_text,
@@ -3735,6 +3916,50 @@ fn keyword_completion_items(
             }
         })
         .collect()
+}
+
+fn type_keyword_category_rank(keyword: &str, mode: EditorTopLevelCompletionMode) -> u8 {
+    if mode != EditorTopLevelCompletionMode::Type {
+        return 0;
+    }
+    match keyword {
+        "bool" | "int" | "float" | "string" | "vector" | "typename" | "auto" | "void" => 0,
+        "ref" => 1,
+        "array" | "set" | "map" => 2,
+        _ => 3,
+    }
+}
+
+fn collection_type_placeholders(
+    keyword: &str,
+    mode: EditorTopLevelCompletionMode,
+) -> Option<Vec<String>> {
+    if mode != EditorTopLevelCompletionMode::Type {
+        return None;
+    }
+    Some(match keyword {
+        "array" | "set" => vec!["Type".to_string()],
+        "map" => vec!["KeyType".to_string(), "ValueType".to_string()],
+        _ => return None,
+    })
+}
+
+fn ref_type_placeholders(keyword: &str, mode: EditorTopLevelCompletionMode) -> Option<Vec<String>> {
+    (mode == EditorTopLevelCompletionMode::Type && keyword == "ref")
+        .then(|| vec!["Type".to_string()])
+}
+
+fn collection_type_snippet(keyword: &str, placeholders: &[String]) -> String {
+    if keyword == "ref" {
+        return format!("ref ${{1:{}}}", placeholders[0]);
+    }
+    let slots = placeholders
+        .iter()
+        .enumerate()
+        .map(|(index, placeholder)| format!("${{{}:{placeholder}}}", index + 1))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{keyword}<{slots}>")
 }
 
 /// The generated first switch arm is deliberately a tiny completion surface.
@@ -3805,17 +4030,6 @@ fn switch_arm_placeholder_completion_items(
     ])
 }
 
-fn keyword_completion_sort_key<'keyword>(
-    keyword: &'keyword str,
-    prefix: &str,
-) -> (u16, usize, &'keyword str) {
-    (
-        keyword_completion_match_rank(keyword, prefix),
-        keyword.chars().count(),
-        keyword,
-    )
-}
-
 fn keyword_completion_match_rank(keyword: &str, prefix: &str) -> u16 {
     completion_name_match_rank(keyword, prefix).unwrap_or(u16::MAX)
 }
@@ -3847,7 +4061,8 @@ const DECLARATION_COMPLETION_KEYWORDS: &[&str] = &[
 ];
 
 const TYPE_COMPLETION_KEYWORDS: &[&str] = &[
-    "void", "int", "float", "bool", "string", "vector", "typename", "auto",
+    "void", "int", "float", "bool", "string", "vector", "typename", "auto", "ref", "array", "set",
+    "map",
 ];
 
 fn declaration_keyword_context(source: &str, offset: usize) -> bool {

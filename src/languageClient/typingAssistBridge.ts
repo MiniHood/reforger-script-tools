@@ -11,7 +11,7 @@ export interface TypingAssistRequest {
 export interface InputRouteRequest {
 	textDocument: { uri: string };
 	version: number;
-	operation: 'insertNewline' | 'indent';
+	operation: 'insertNewline' | 'indent' | 'insertSpace';
 	trace: boolean;
 	selections: Array<{ start: { line: number; character: number }; end: { line: number; character: number } }>;
 	options: { tabSize: vscode.TextEditorOptions['tabSize']; insertSpaces: vscode.TextEditorOptions['insertSpaces'] };

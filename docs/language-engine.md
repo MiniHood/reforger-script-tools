@@ -63,6 +63,21 @@ moves to the body. At that arm, Rust offers the structural `case value` snippet
 and opens ordinary value completion for its selected value. The client owns only
 applying the returned versioned edit and snippet, never inferring source shape.
 
+Collection type completion is a parser/resolver-backed type-position feature.
+`array<T>`, `set<T>`, and `map<K, V>` insert snippets with selected type slots;
+the client opens ordinary type completion at each slot. Exact and prefix
+matches retain priority, then the engine ranks standard value types, `ref`,
+nested collections, and indexed enums/classes. `void` is excluded from a
+collection type argument. Recovery recognizes only an incomplete operand of
+`new` and a builtin collection type argument, so completion remains available
+while the user is constructing these otherwise valid type positions.
+
+The collection declaration-tail owner is similarly bounded: it lexically
+proves a complete single `array`, `set`, or `map` field/local and rejects all
+other contexts before returning the one native Space edit plus a suggestion
+request. The tail choices are Rust-authored completion edits, not a formatter
+or a client-side post-edit rewrite.
+
 Document-symbol responses enforce the LSP invariant that a symbol's full range
 contains its selection range, including parser-recovery states. When recovery
 requires that range repair, the server emits a bounded structured diagnostic

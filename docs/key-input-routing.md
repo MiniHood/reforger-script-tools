@@ -56,6 +56,7 @@ original keybinding.
 | `insertNewline` | Operation entry command -> TypeScript bridge -> Rust | A proven control-header block edit applied before native Enter | General formatting or situations where Rust declines |
 | Typing `{`, `(`, `)` | Language configuration | Bracket pairing and other regex-local rules | Syntax-aware scaffolding |
 | `indent` | Operation entry command -> TypeScript bridge -> Rust | A proven blank line following a complete unbraced `if` body | General Tab behavior, snippet navigation, or uncertain control scope |
+| `insertSpace` | Operation entry command -> TypeScript bridge -> Rust | Opening a declaration-tail choice list after a complete, uninitialized `array`, `set`, or `map` field/local | General Space behavior or declarations whose shape is not proven |
 | Completion acceptance | Rust completion result plus VS Code snippet support | Keyword skeletons and editable defaults | Reimplementing Tab navigation |
 | Future operation, e.g. `insertText` | Operation entry command -> TypeScript bridge -> Rust | A separately proven action such as atomic block-comment expansion | A free-form relay for every printable key |
 
@@ -67,7 +68,11 @@ and IME composition may bypass an operation command by design.
 ## Performance and Correctness Contract
 
 1. Do not bind every printable key or maintain a semantic `when` context on
-   every cursor/edit event. Leave non-candidates to VS Code's default bindings.
+   every cursor/edit event. The one narrow printable-key exception is
+   `insertSpace`: it routes only outside snippets and visible suggestion UI,
+   and Rust immediately falls back to native Space unless it proves the
+   collection-declaration shape. Leave all other non-candidates to VS Code's
+   default bindings.
 2. A TypeScript candidate gate may reject impossible cases using editor state
    and local shape, but must not duplicate Enfusion parsing or ownership
    decisions. Rust selects the one Input Feature Owner through explicit,
@@ -127,6 +132,16 @@ complete one-line unbraced `if` or `else if` body. The owner may cross at most
 eight blank physical lines to find that body, then replaces the blank line's
 whitespace with the header indentation. This closes the completed statement's
 scope without claiming general Tab or snippet-tab behavior.
+
+`insertSpace` remains native except immediately after one complete,
+uninitialized `array<T>`, `set<T>`, or `map<K, V>` field or local declaration.
+When proven, Rust returns the one native Space edit and requests suggestion UI;
+the resulting declaration-tail list owns all subsequent insertion. Its
+source-faithful defaults are `= {};` then `= new array<T>;` for arrays, and
+`= new set<T>;` or `= new map<K, V>;` for sets and maps. The list also offers
+declare-only and custom-expression paths. Parameters, returns, initializers,
+multi-declarators, comments/strings, snippets, nonempty selections, and
+multiple carets remain native.
 
 Required evidence for a delivery is Rust decision tests for supported and
 declined source shapes; TypeScript tests for fallback, failure, stale state,

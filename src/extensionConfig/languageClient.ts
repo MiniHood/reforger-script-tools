@@ -26,11 +26,13 @@ export const languageClientCommands = {
 	debugHoverAtCursor: 'reforger-sript-tools.debug.hoverAtCursor',
 	debugCompletionAtCursor: 'reforger-sript-tools.debug.completionAtCursor',
 	triggerSuggestAtSnippetPlaceholder: 'reforger-sript-tools.completion.triggerSuggestAtSnippetPlaceholder',
+	triggerSuggestAfterCustomCollectionInitializer: 'reforger-sript-tools.completion.triggerSuggestAfterCustomCollectionInitializer',
 	advanceSnippetPlaceholderAfterAccept: 'reforger-sript-tools.completion.advanceSnippetPlaceholderAfterAccept',
 	normalizeIfSpaceCommit: 'reforger-sript-tools.completion.normalizeIfSpaceCommit',
 	applyDirectiveSeparator: 'reforger-sript-tools.completion.applyDirectiveSeparator',
 	insertNewline: 'reforger-sript-tools.input.insertNewline',
 	indent: 'reforger-sript-tools.input.indent',
+	insertSpace: 'reforger-sript-tools.input.insertSpace',
 	openSymbolLocation: 'reforger-sript-tools.openSymbolLocation',
 } as const;
 

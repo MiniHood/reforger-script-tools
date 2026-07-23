@@ -10,7 +10,7 @@ import {
 } from '../languageClient/languageClient';
 import { positionFromByteOffset } from '../languageClient/symbolLocationBridge';
 import { registerBlockCommentPair } from '../languageClient/typingAssistTransactionBridge';
-import { executeIndent, executeInsertNewline } from '../languageClient/controlHeaderEnterBridge';
+import { executeIndent, executeInsertNewline, executeInsertSpace } from '../languageClient/controlHeaderEnterBridge';
 import { VersionedEditorTransaction } from '../languageClient/versionedEditorTransaction';
 import { completionPresentationObservationForDocument, completionUiMiddlewareCallbacks } from '../languageClient/completionUiBridge';
 
@@ -330,6 +330,38 @@ suite('extension activation', () => {
 		}]);
 	});
 
+	test('routes an eligible collection declaration Space as one prompt-opening edit', async () => {
+		const document = await vscode.workspace.openTextDocument({ language: 'enforce', content: 'class Example\n{\n\tarray<int> values\n}' });
+		const editor = await vscode.window.showTextDocument(document);
+		const position = new vscode.Position(2, 18);
+		editor.selection = new vscode.Selection(position, position);
+		const requests: unknown[] = [];
+		let suggestionRequests = 0;
+		await executeInsertSpace(editor, {
+			sendRequest: async (_method: string, request: unknown) => {
+				requests.push(request);
+				return {
+					edits: [{ range: { start: { line: 2, character: 18 }, end: { line: 2, character: 18 } }, newText: ' ' }],
+					selection: { line: 2, character: 19 },
+					owner: 'collectionDeclarationTail',
+					triggerSuggest: true,
+				};
+			},
+		} as never, undefined, async () => {
+			suggestionRequests += 1;
+		});
+		assert.strictEqual(document.lineAt(2).text, '\tarray<int> values ');
+		assert.strictEqual(suggestionRequests, 1);
+		assert.deepStrictEqual(requests, [{
+			textDocument: { uri: document.uri.toString() },
+			version: 1,
+			operation: 'insertSpace',
+			trace: false,
+			selections: [{ start: { line: 2, character: 18 }, end: { line: 2, character: 18 } }],
+			options: { tabSize: 4, insertSpaces: false },
+		}]);
+	});
+
 	test('dismisses completion before routing Enter without accepting its selection', async () => {
 		const document = await vscode.workspace.openTextDocument({ language: 'enforce', content: 'if (tr)' });
 		const editor = await vscode.window.showTextDocument(document);
@@ -551,6 +583,10 @@ suite('extension activation', () => {
 		assert.match(routedIndent?.when ?? '', /!editorReadonly/);
 		assert.match(routedIndent?.when ?? '', /!suggestWidgetVisible/);
 		assert.match(routedIndent?.when ?? '', /!inSnippetMode/);
+		const routedSpace = keybindings.find(binding => binding.command === languageClientCommands.insertSpace);
+		assert.match(routedSpace?.when ?? '', /!editorReadonly/);
+		assert.match(routedSpace?.when ?? '', /!suggestWidgetVisible/);
+		assert.match(routedSpace?.when ?? '', /!inSnippetMode/);
 	});
 
 });

@@ -74,8 +74,12 @@ fn semantic_token_refresh_coalesces_until_the_client_acknowledges_it() {
     let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
 
     let mut effects = Vec::new();
-    server.document_runtime.request_semantic_tokens_refresh_effect(&mut effects);
-    server.document_runtime.request_semantic_tokens_refresh_effect(&mut effects);
+    server
+        .document_runtime
+        .request_semantic_tokens_refresh_effect(&mut effects);
+    server
+        .document_runtime
+        .request_semantic_tokens_refresh_effect(&mut effects);
     for effect in effects {
         server.deliver_effect(effect).unwrap();
     }
@@ -1196,7 +1200,10 @@ class GRAY_TEST2
     let method_definition = definition_at(source, "test44.TestNumFun", "TestNumFun");
     assert!(method_definition.is_hit(), "{method_definition:?}");
     assert_eq!(method_definition.selected_kind, Some(SymbolKind::Method));
-    assert_eq!(method_definition.selected_label.as_deref(), Some("TestNumFun"));
+    assert_eq!(
+        method_definition.selected_label.as_deref(),
+        Some("TestNumFun")
+    );
 }
 
 #[test]
@@ -1631,6 +1638,139 @@ void SCR_Function();
             .map(|item| item.label.as_str())
             .collect::<Vec<_>>(),
         vec!["SCR_Widget"]
+    );
+}
+
+#[test]
+fn completion_expands_builtin_collections_with_type_slots() {
+    let source = "class Example { void Run(arr value) {} }";
+    let report = completion_report_for_source_position_with_external(
+        source,
+        position_after_needle(source, "arr"),
+        None,
+    );
+
+    assert_eq!(report.completion_context, "type");
+    let item = report
+        .list
+        .items
+        .iter()
+        .find(|item| item.label == "array")
+        .expect("expected array collection completion");
+    assert_eq!(item.text_edit.new_text, "array<${1:Type}>");
+    assert_eq!(item.insert_text_format, Some(2));
+    assert_eq!(
+        item.command
+            .as_ref()
+            .map(|command| command.command.as_str()),
+        Some("reforger-sript-tools.completion.triggerSuggestAtSnippetPlaceholder")
+    );
+}
+
+#[test]
+fn completion_expands_map_and_ref_type_slots() {
+    let map_source = "class Example { void Run(m value) {} }";
+    let map_report = completion_report_for_source_position_with_external(
+        map_source,
+        position_after_needle(map_source, "Run(m"),
+        None,
+    );
+    let map = map_report
+        .list
+        .items
+        .iter()
+        .find(|item| item.label == "map")
+        .unwrap();
+    assert_eq!(map.text_edit.new_text, "map<${1:KeyType}, ${2:ValueType}>");
+
+    let ref_source = "class Example { void Run(r value) {} }";
+    let ref_report = completion_report_for_source_position_with_external(
+        ref_source,
+        position_after_needle(ref_source, "Run(r"),
+        None,
+    );
+    let reference = ref_report
+        .list
+        .items
+        .iter()
+        .find(|item| item.label == "ref")
+        .unwrap();
+    assert_eq!(reference.text_edit.new_text, "ref ${1:Type}");
+}
+
+#[test]
+fn completion_offers_collection_snippets_in_every_supported_type_position() {
+    let samples = [
+        "class Example { arr value; }",
+        "class Example { void Run() { arr value; } }",
+        "class Example { void Run(arr value) {} }",
+        "class Example { arr Run() {} }",
+        "class Base {} class Example : arr {}",
+        "class Example { void Run() { new arr; } }",
+    ];
+
+    for source in samples {
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, "arr"),
+            None,
+        );
+        let collection = report
+            .list
+            .items
+            .iter()
+            .find(|item| item.label == "array")
+            .unwrap_or_else(|| panic!("missing array completion for {source:?}: {report:?}"));
+        assert_eq!(collection.text_edit.new_text, "array<${1:Type}>");
+    }
+}
+
+#[test]
+fn generic_collection_type_completion_excludes_void_and_ranks_builtin_types_first() {
+    let source = "class Example { void Run(array<Type value) {} }";
+    let report = completion_report_for_source_position_with_external(
+        source,
+        position_after_needle(source, "array<Type"),
+        None,
+    );
+    let labels = report
+        .list
+        .items
+        .iter()
+        .map(|item| item.label.as_str())
+        .collect::<Vec<_>>();
+
+    assert!(!labels.contains(&"void"));
+    let int = labels.iter().position(|label| *label == "int");
+    let reference = labels.iter().position(|label| *label == "ref");
+    let array = labels.iter().position(|label| *label == "array");
+    assert!(int < reference, "{labels:?}");
+    assert!(reference < array, "{labels:?}");
+}
+
+#[test]
+fn completion_offers_collection_declaration_tail_choices_after_space() {
+    let source = "class Example\n{\n\tarray<int> values \n}";
+    let report = completion_report_for_source_position_with_external(
+        source,
+        position_after_needle(source, "values "),
+        None,
+    );
+
+    assert_eq!(report.completion_context, "collection-declaration-tail");
+    assert_eq!(
+        report
+            .list
+            .items
+            .iter()
+            .map(|item| (item.label.as_str(), item.text_edit.new_text.as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            ("Initialize with empty literal", " = {};"),
+            ("Initialize with new array", " = new array<int>;"),
+            ("Declare without initializer", ";"),
+            ("Custom initializer…", " = "),
+        ]
     );
 }
 
@@ -4242,7 +4382,13 @@ fn semantic_tokens_keep_existing_rich_display_until_current_rich_result() {
             None, 0, 0,
         )
         .unwrap();
-    assert!(server.document_runtime.test_document_state(uri).unwrap().rich_semantic_tokens);
+    assert!(
+        server
+            .document_runtime
+            .test_document_state(uri)
+            .unwrap()
+            .rich_semantic_tokens
+    );
 
     server
         .handle_message(

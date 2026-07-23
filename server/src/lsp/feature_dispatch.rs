@@ -442,7 +442,7 @@ impl FeatureDispatcher<'_> {
                     let result = params
                         .clone()
                         .and_then(|params| {
-                            if !matches!(params.operation.as_str(), "insertNewline" | "indent") {
+                            if !matches!(params.operation.as_str(), "insertNewline" | "indent" | "insertSpace") {
                                 trace = params.trace.then_some(("declined", "none", true, "unsupportedOperation"));
                                 return None;
                             }
@@ -460,6 +460,24 @@ impl FeatureDispatcher<'_> {
                                 return None;
                             }
                             let cursor = offset_for_position(&document.text, params.selections[0].end)?;
+                            if params.operation == "insertSpace" {
+                                on_type_formatting::collection_declaration_before_cursor(
+                                    &document.text,
+                                    cursor,
+                                    false,
+                                )?;
+                                trace = params.trace.then_some(("applied", "collectionDeclarationTail", true, "eligible"));
+                                let position = position_for_offset(&document.text, cursor);
+                                return Some(json!({
+                                    "edits": [{
+                                        "range": { "start": position, "end": position },
+                                        "newText": " ",
+                                    }],
+                                    "owner": "collectionDeclarationTail",
+                                    "selection": { "line": position.line, "character": position.character + 1 },
+                                    "triggerSuggest": true,
+                                }));
+                            }
                             let plan = if params.operation == "indent" {
                                 on_type_formatting::unbraced_if_body_indent_plan(&document.text, cursor)
                                     .map(|plan| (plan, "unbracedIfBody"))
