@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { experimentalAutoFormattingEnabled } from '../extensionConfig/experimentalAutoFormatting';
 import { languageClientCommands, languageClientCompletion, languageClientLanguage } from '../extensionConfig/languageClient';
 import { diagnostic } from '../diagnostics/diagnostics';
-import { completionItemCount, completionPresentationItems, completionPresentationMetadata, isCompletionListIncomplete, type CompletionMiddlewareCallbacks, type CompletionPresentationItem } from './completionMiddleware';
+import { completionItemCount, completionItemLabels, completionPresentationMetadata, isCompletionListIncomplete, type CompletionMiddlewareCallbacks } from './completionMiddleware';
 
 let completionTransactionSequence = 0;
 let pendingSnippetSuggestTransaction: SnippetSuggestTransaction | undefined;
@@ -68,7 +68,7 @@ interface CompletionPresentationObservation {
 	line: number;
 	character: number;
 	triggerKind: number;
-	items: CompletionPresentationItem[];
+	labels: string[];
 }
 
 function registerEmptyCompletionRefresh(): vscode.Disposable {
@@ -668,14 +668,13 @@ export function completionPresentationObservationForDocument(documentUri: string
 		`- Response document version: ${observation.responseVersion}`,
 		`- Cursor: line ${observation.line}, character ${observation.character}`,
 		`- Trigger kind: ${observation.triggerKind}`,
-		`- Item count: ${observation.items.length}`,
+		`- Item count: ${observation.labels.length}`,
 		'',
-		'| # | Label | Insert Text | Insert Kind | Range | Command |',
-		'| ---: | --- | --- | --- | --- | --- |',
+		'| # | Label |',
+		'| ---: | --- |',
 	);
-	for (const [index, item] of observation.items.entries()) {
-		const escapeCell = (value: string) => value.replaceAll('|', '\\|').replaceAll('`', '\\`');
-		lines.push(`| ${index + 1} | ${escapeCell(item.label)} | ${escapeCell(item.insertText)} | ${item.insertTextKind} | ${item.rangeKind} | ${escapeCell(item.command)} |`);
+	for (const [index, label] of observation.labels.entries()) {
+		lines.push(`| ${index + 1} | ${label.replaceAll('|', '\\|')} |`);
 	}
 	return lines.join('\n');
 }
@@ -697,14 +696,14 @@ export const completionUiMiddlewareCallbacks: CompletionMiddlewareCallbacks = {
 			.find(event => event.documentUri === document.uri.toString() && event.event === 'request');
 		const line = typeof latestRequest?.fields.line === 'number' ? latestRequest.fields.line : -1;
 		const character = typeof latestRequest?.fields.character === 'number' ? latestRequest.fields.character : -1;
-		const items = completionPresentationItems(result);
+		const labels = completionItemLabels(result);
 		completionPresentationObservations.set(document.uri.toString(), {
 			requestVersion,
 			responseVersion: document.version,
 			line,
 			character,
 			triggerKind,
-			items,
+			labels,
 		});
 		recordCompletionLifecycle(document.uri.toString(), 'response', { requestVersion, currentVersion: document.version, triggerKind, itemCount: completionItemCount(result), isIncomplete: isCompletionListIncomplete(result), elapsedMs, ...completionPresentationMetadata(result) });
 		armEmptyCompletionRefresh(document, requestVersion, result);
