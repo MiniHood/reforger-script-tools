@@ -443,6 +443,47 @@ passes: without this projection, every callable consumer must parse a display
 format to regain language facts. This keeps parameter semantics local to the
 index and makes rendering a one-way operation.
 
+### AR-020 — Rust corpus reports repeat their source-discovery and invocation policy
+
+**Strength:** Strong
+**Files:** `server/examples/{lexer,parser,ast,expression,index}_corpus_report.rs` and analogous corpus/report examples
+
+The Rust report programs independently implement the same `--scripts`/`--out`
+parser, default VS Code storage location, repository-root resolution, recursive
+`.c` discovery, lossy decode behavior, report-directory creation, and Markdown
+write policy. The only material variation is the analysis projection and report
+name. This repeats the same discovery and path semantics already duplicated at
+the JavaScript wrapper layer (AR-014), so a storage-location or traversal change
+must be made and verified across many tools.
+
+Extract a developer-only corpus runner module that owns invocation, source
+enumeration, decoding, and report publication, and let each example provide its
+analysis projection. The deletion test passes: removing that module forces each
+report to recreate the same developer environment policy. This makes report
+analysis modules deeper and keeps corpus-source semantics in one place without
+adding an extension runtime dependency.
+
+### AR-021 — Parser corpus reporting embeds a path-and-text-specific recovery exception
+
+**Strength:** Worth exploring
+**Files:** `server/examples/parser_corpus_report.rs:160-169`
+
+`expected_recovery_node_count` recognizes exactly a relative path ending in
+`Game\\game.c` and source text containing `#ifdef BREAK_COMPILATION`, then
+declares every error node in that file expected. This exceptional evidence is
+not represented in the fixture corpus or a review-input manifest; it is hidden
+inside a general parser report. A path rename or a second known malformed
+source silently changes report interpretation, while the exception cannot be
+reviewed alongside other corpus allowances.
+
+Move known corpus exceptions into a small data manifest keyed by stable source
+identity and an explicit reason, or report them as ordinary diagnostics until
+such evidence exists. The report runner should consume that manifest rather
+than recognize source prose. The deletion test passes because without the
+manifest, every report must encode its own exceptional evidence. This makes the
+special case reviewable and preserves the distinction between parser behavior
+and corpus policy.
+
 ## Reviewed slices
 
 ### 2026-07-23 — Repository inventory, build/configuration
