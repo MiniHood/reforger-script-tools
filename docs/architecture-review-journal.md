@@ -427,3 +427,16 @@ language-specific rewrite, unbounded debug retention, and non-coalescing
 server restarts. Workspace notifications are deliberately debounced and carry
 per-file sequence numbers; their Rust-side ordering behavior remains to be
 reviewed with the runtime slice.
+
+### 2026-07-23 — Language-foundation and fixture evidence (in progress)
+
+Reviewed the lexer, syntax tree, parser recovery paths, AST/model entry points,
+preprocessor completion classifier, semantic-file construction, scope model,
+symbol display, index query, resolver/type-inference member paths, and the
+fixture inventory (34 Enfusion-script fixtures). The fixtures are explicitly
+labelled by evidence status and cover parser recovery, lexical forms,
+documentation formatting, semantic contribution ID remapping, and workspace
+overlay precedence. No fixture was treated as Workbench truth merely because it
+was present. AR-016 and AR-017 were established in this continuing slice; the
+remaining language-foundation modules and the full report/example programs are
+still under review.
