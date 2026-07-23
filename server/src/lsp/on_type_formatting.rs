@@ -815,20 +815,12 @@ pub(super) fn semicolon_insertion_offset(source: &str, cursor: usize) -> Option<
     }
 
     let tokens = lex(line);
-    let comment_start = tokens
+    let insertion_in_line = tokens
         .iter()
-        .find(|token| {
-            matches!(
-                token.kind,
-                TokenKind::LineComment | TokenKind::DocLineComment
-            )
-        })
-        .map(|token| token.span.start);
-    let code_end = comment_start.unwrap_or(line.len());
-    let insertion_in_line = line[..code_end].trim_end_matches(char::is_whitespace).len();
-    if insertion_in_line == 0 {
-        return None;
-    }
+        .rev()
+        .find(|token| !token.kind.is_trivia() && token.kind != TokenKind::Eof)?
+        .span
+        .end;
 
     let code_tokens = tokens
         .iter()
@@ -1395,9 +1387,11 @@ mod tests {
             "GetGameMaterialsResponse response = new GetGameMaterialsResponse\n",
             "return new array<ref SCR_WorkshopItem>\n",
             "ref ScriptInvoker callback = new ScriptInvoker // callback args\n",
+            "map<string /* key */, int> values = new map<string /* key */, int>() /* keep */\n",
         ] {
             let expected = source
-                .find(" //")
+                .find(" /* keep */")
+                .or_else(|| source.find(" //"))
                 .unwrap_or_else(|| source.find('\n').unwrap());
             assert_eq!(insertion(source), Some(expected), "{source:?}");
         }
@@ -1443,8 +1437,11 @@ mod tests {
     }
 
     #[test]
-    fn inserts_before_a_trailing_line_comment() {
+    fn inserts_before_trailing_comments() {
         let source = "Run() // keep this\n";
+        assert_eq!(insertion(source), Some("Run()".len()));
+
+        let source = "Run() /* keep this */\n";
         assert_eq!(insertion(source), Some("Run()".len()));
     }
 
