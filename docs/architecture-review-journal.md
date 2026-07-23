@@ -419,6 +419,30 @@ each startup path has to rediscover argument validity. This keeps the
 TypeScript-to-Rust process seam explicit and turns configuration loss into a
 diagnosable failure.
 
+### AR-019 — Signature help parses the index's display signature back into semantic parameters
+
+**Strength:** Strong
+**Files:** `server/src/index.rs:1110-1157, 1689-1711`; `server/src/index_query.rs:26-27, 435-445, 650-658`; `server/src/lsp/callable.rs:59-86, 557-641`; `server/src/lsp/signature_help.rs:137-157, 487-647`
+
+`SymbolIndex` renders a callable into a string such as
+`Owner.Run(out int value = 1) -> void`, `IndexQuery` carries that display string
+in a completion candidate, and signature help then reparses it to recover
+parameter names, modifiers, defaults, and result text. The re-parser contains
+its own parenthesis/generic/string/default splitting logic. This is not a
+presentation-only convenience: active named-parameter selection and parameter
+documentation depend on the reconstructed facts. Any change in signature
+rendering or a source form the re-parser does not preserve can make signature
+help disagree with the indexed declaration.
+
+Give the index-query module a typed callable projection built directly from
+the callable symbol and its indexed parameter children. Signature help can use
+that projection for parameter identity and render the final LSP label from the
+same fact. Keep source-call argument context in `callable`, but delete its
+display-signature parser from the semantic result path. The deletion test
+passes: without this projection, every callable consumer must parse a display
+format to regain language facts. This keeps parameter semantics local to the
+index and makes rendering a one-way operation.
+
 ## Reviewed slices
 
 ### 2026-07-23 — Repository inventory, build/configuration
