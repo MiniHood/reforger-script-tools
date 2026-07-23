@@ -30,6 +30,11 @@ interface SnippetSuggestTransaction {
 	suggestDispatchScheduled: boolean;
 	awaitingCompletionResponse: boolean;
 	awaitingSnippetAdvance: boolean;
+	finalTabstop: boolean;
+}
+
+interface SnippetSuggestCommandOptions {
+	finalTabstop?: boolean;
 }
 
 interface EmptyCompletionRefresh {
@@ -180,16 +185,23 @@ function dispatchEmptyCompletionRefresh(document: vscode.TextDocument, source: '
 }
 
 function triggerSuggestAtSnippetPlaceholder(...expectedSelectionTexts: unknown[]): void {
+	const commandOptions = expectedSelectionTexts.at(-1);
+	const finalTabstop = isSnippetSuggestCommandOptions(commandOptions)
+		&& commandOptions.finalTabstop === true;
+	const placeholderArguments = finalTabstop
+		? expectedSelectionTexts.slice(0, -1)
+		: expectedSelectionTexts;
 	diagnostic('completion.transaction.commandReceived', {
 		traceVersion: snippetSuggestTraceVersion,
-		placeholderCount: expectedSelectionTexts.length,
+		placeholderCount: placeholderArguments.length,
+		finalTabstop,
 	});
-	if (expectedSelectionTexts.length === 0
-		|| expectedSelectionTexts.some(text => typeof text !== 'string')) {
+	if (placeholderArguments.length === 0
+		|| placeholderArguments.some(text => typeof text !== 'string')) {
 		diagnostic('completion.transaction.ignored', { reason: 'invalidPlaceholderArgument' });
 		return;
 	}
-	const expectedSelectionTextSequence = expectedSelectionTexts as string[];
+	const expectedSelectionTextSequence = placeholderArguments as string[];
 	const editor = vscode.window.activeTextEditor;
 	if (!editor || editor.document.languageId !== languageClientLanguage.id) {
 		diagnostic('completion.transaction.ignored', { reason: 'noActiveEnforceEditor' });
@@ -279,6 +291,7 @@ function triggerSuggestAtSnippetPlaceholder(...expectedSelectionTexts: unknown[]
 		suggestDispatchScheduled: false,
 		awaitingCompletionResponse: false,
 		awaitingSnippetAdvance: false,
+		finalTabstop,
 	};
 	resetSnippetSuggestTransactionTimeout(pendingSnippetSuggestTransaction, 'placeholderNotObserved');
 	diagnostic('completion.transaction.armed', {
@@ -309,6 +322,8 @@ function wrapBridgeCompletionCommands(
 	for (const item of items) {
 		let originalCommand = item.command;
 		const transaction = pendingSnippetSuggestTransaction;
+		let moveToFinalTabstop = transaction?.finalTabstop === true
+			&& transaction.nextPlaceholderIndex + 1 >= transaction.expectedSelectionTexts.length;
 		if (transaction?.expectedSelectionTexts[transaction.nextPlaceholderIndex - 1] === 'default'
 			&& item.label === 'case') {
 			item.insertText = new vscode.SnippetString('case ${1:value}');
@@ -317,11 +332,12 @@ function wrapBridgeCompletionCommands(
 				command: languageClientCommands.triggerSuggestAtSnippetPlaceholder,
 				arguments: ['value'],
 			};
+			moveToFinalTabstop = false;
 		}
 		item.command = {
 			title: 'Advance enum snippet placeholder',
 			command: languageClientCommands.advanceSnippetPlaceholderAfterAccept,
-			arguments: [transactionId, originalCommand],
+			arguments: [transactionId, originalCommand, moveToFinalTabstop],
 		};
 	}
 }
@@ -329,6 +345,7 @@ function wrapBridgeCompletionCommands(
 async function advanceSnippetPlaceholderAfterAccept(
 	transactionId: unknown,
 	originalCommand: unknown,
+	moveToFinalTabstop: unknown,
 ): Promise<void> {
 	if (isVscodeCommand(originalCommand)) {
 		await vscode.commands.executeCommand(
@@ -338,9 +355,14 @@ async function advanceSnippetPlaceholderAfterAccept(
 	}
 
 	const transaction = pendingSnippetSuggestTransaction;
-	if (typeof transactionId !== 'number'
-		|| transaction?.id !== transactionId
+	if (typeof transactionId !== 'number') {
+		return;
+	}
+	if (transaction?.id !== transactionId
 		|| transaction.nextPlaceholderIndex >= transaction.expectedSelectionTexts.length) {
+		if (moveToFinalTabstop === true) {
+			await moveToFinalSnippetTabstop(transactionId);
+		}
 		return;
 	}
 
@@ -362,6 +384,21 @@ async function advanceSnippetPlaceholderAfterAccept(
 			placeholderIndex: transaction.nextPlaceholderIndex,
 		});
 	}
+}
+
+async function moveToFinalSnippetTabstop(transactionId: number): Promise<void> {
+	try {
+		await vscode.commands.executeCommand('jumpToNextSnippetPlaceholder');
+		diagnostic('completion.transaction.finalTabstopDispatched', { transactionId });
+	} catch {
+		diagnostic('completion.transaction.finalTabstopDispatchError', { transactionId });
+	}
+}
+
+function isSnippetSuggestCommandOptions(value: unknown): value is SnippetSuggestCommandOptions {
+	return typeof value === 'object'
+		&& value !== null
+		&& 'finalTabstop' in value;
 }
 
 function isVscodeCommand(value: unknown): value is vscode.Command {
@@ -675,7 +712,7 @@ export function registerCompletionUiBridge(): vscode.Disposable[] {
 		registerEmptyCompletionRefresh(),
 		registerIfSpaceCommitCleanup(),
 		vscode.commands.registerCommand(languageClientCommands.triggerSuggestAtSnippetPlaceholder, (...expectedSelectionTexts: unknown[]) => triggerSuggestAtSnippetPlaceholder(...expectedSelectionTexts)),
-		vscode.commands.registerCommand(languageClientCommands.advanceSnippetPlaceholderAfterAccept, (transactionId: unknown, originalCommand: unknown) => advanceSnippetPlaceholderAfterAccept(transactionId, originalCommand)),
+		vscode.commands.registerCommand(languageClientCommands.advanceSnippetPlaceholderAfterAccept, (transactionId: unknown, originalCommand: unknown, moveToFinalTabstop: unknown) => advanceSnippetPlaceholderAfterAccept(transactionId, originalCommand, moveToFinalTabstop)),
 		vscode.commands.registerCommand(languageClientCommands.normalizeIfSpaceCommit, (...args: unknown[]) => normalizeIfSpaceCommit(args)),
 		vscode.commands.registerCommand(languageClientCommands.applyDirectiveSeparator, (directive: unknown) => applyDirectiveSeparator(directive)),
 	];

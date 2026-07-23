@@ -4017,7 +4017,13 @@ fn keyword_completion_items(
                         })]),
                     })
                 } else {
-                    type_placeholders.map(trigger_suggest_at_snippet_placeholder_command)
+                    type_placeholders.map(|placeholders| {
+                        if matches!(keyword, "array" | "set" | "map") {
+                            trigger_suggest_at_collection_type_placeholder_command(placeholders)
+                        } else {
+                            trigger_suggest_at_snippet_placeholder_command(placeholders)
+                        }
+                    })
                 },
                 text_edit: LspTextEdit {
                     range: edit_range,
@@ -4083,7 +4089,10 @@ fn collection_type_snippet(keyword: &str, placeholders: &[String]) -> String {
         })
         .collect::<Vec<_>>()
         .join(", ");
-    format!("{keyword}<{slots}>")
+    // The final tabstop is deliberately outside the closing delimiter. After
+    // accepting the final type argument, the UI bridge advances there instead
+    // of leaving the caret at the end of the accepted type name.
+    format!("{keyword}<{slots}>$0")
 }
 
 /// The generated first switch arm is deliberately a tiny completion surface.
@@ -4815,18 +4824,33 @@ fn trigger_parameter_hints_command() -> LspCommand {
 }
 
 fn trigger_suggest_at_snippet_placeholder_command(placeholder_defaults: Vec<String>) -> LspCommand {
+    trigger_suggest_at_snippet_placeholder_command_with_options(placeholder_defaults, false)
+}
+
+fn trigger_suggest_at_collection_type_placeholder_command(
+    placeholder_defaults: Vec<String>,
+) -> LspCommand {
+    trigger_suggest_at_snippet_placeholder_command_with_options(placeholder_defaults, true)
+}
+
+fn trigger_suggest_at_snippet_placeholder_command_with_options(
+    placeholder_defaults: Vec<String>,
+    final_tabstop: bool,
+) -> LspCommand {
+    let mut arguments = placeholder_defaults
+        .into_iter()
+        .map(Value::String)
+        .collect::<Vec<_>>();
+    if final_tabstop {
+        arguments.push(json!({ "finalTabstop": true }));
+    }
     LspCommand {
         title: "Trigger enum suggestions".to_string(),
         command: COMMAND_TRIGGER_SUGGEST_AT_SNIPPET_PLACEHOLDER.to_string(),
         // The extension uses this ordered sequence only to recognize VS
         // Code's selected snippet fields. It never parses or classifies
         // source text, symbols, or parameters.
-        arguments: Some(
-            placeholder_defaults
-                .into_iter()
-                .map(Value::String)
-                .collect(),
-        ),
+        arguments: Some(arguments),
     }
 }
 
@@ -5125,7 +5149,7 @@ mod tests {
             .expect("array completion");
 
         assert_eq!(array.kind, 14);
-        assert_eq!(array.text_edit.new_text, "array<${1}>");
+        assert_eq!(array.text_edit.new_text, "array<${1}>$0");
         assert_eq!(array.insert_text_format, Some(2));
         assert_eq!(
             report

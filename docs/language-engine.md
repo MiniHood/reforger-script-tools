@@ -65,7 +65,8 @@ applying the returned versioned edit and snippet, never inferring source shape.
 
 Collection type completion is a parser/resolver-backed type-position feature.
 `array<T>`, `set<T>`, and `map<K, V>` insert snippets with selected type slots;
-the client opens ordinary type completion at each slot. Exact and prefix
+the client opens ordinary type completion at each slot and, after the final
+type is accepted, places the caret after the closing `>`. Exact and prefix
 matches retain priority, then the engine ranks standard value types, `ref`,
 nested collections, and indexed enums/classes. `void` is excluded from a
 collection type argument. Recovery recognizes only an incomplete operand of
