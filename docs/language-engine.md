@@ -73,7 +73,10 @@ collection type argument. Recovery recognizes only an incomplete operand of
 `new`, a lone prospective callable-parameter type before its required
 parameter name, and an empty type slot of a supported built-in collection or
 base-game tuple, so completion remains available while the user is
-constructing these otherwise valid type positions.
+constructing these otherwise valid type positions. The same prospective
+parameter-type recovery runs on the current-snapshot completion lane before
+argument-label lookup, so its initial character receives the generic snippet
+rather than a plain indexed class completion.
 
 Base-game `Tuple1` through `Tuple6` are a separate generic-class completion
 family. Their source-defined arity supplies one through six type slots using

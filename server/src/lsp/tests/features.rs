@@ -1791,10 +1791,10 @@ fn completion_expands_builtin_collections_with_type_slots() {
 
 #[test]
 fn completion_treats_an_incomplete_callable_parameter_as_a_type_position() {
-    let source = "class Example { int TestNumFun(arr) {} }";
+    let source = "class Example { int TestNumFun(a) {} }";
     let report = completion_report_for_source_position_with_external(
         source,
-        position_after_needle(source, "arr"),
+        position_after_needle(source, "TestNumFun(a"),
         None,
     );
 
@@ -1811,9 +1811,33 @@ fn completion_treats_an_incomplete_callable_parameter_as_a_type_position() {
         !semantic
             .decoded
             .iter()
-            .any(|token| token.text == "arr" && token.token_type == "parameter"),
+            .any(|token| token.text == "a" && token.token_type == "parameter"),
         "{:#?}",
         semantic.decoded
+    );
+}
+
+#[test]
+fn completion_treats_a_first_parameter_character_as_a_type_in_an_unfinished_method() {
+    let source = "class Example { int TestNumFun(a)";
+    let report = completion_report_for_current_incomplete_callable_parameter_type_at_offset_with_external_indexes(
+        source,
+        source.find("TestNumFun(a").unwrap() + "TestNumFun(a".len(),
+        None,
+        None,
+    ).expect("expected current-snapshot type recovery");
+
+    assert_eq!(report.completion_context, "type");
+    assert_eq!(
+        report
+            .list
+            .items
+            .iter()
+            .find(|item| item.label == "array")
+            .expect("expected array type completion")
+            .text_edit
+            .new_text,
+        "array<${1}>$0"
     );
 }
 

@@ -54,6 +54,7 @@ use background_events::interpret_background_event;
 use completion::{
     completion_debug_markdown, completion_report_for_cached_analysis_with_external_indexes,
     completion_report_for_current_argument_labels_at_offset_with_external_indexes,
+    completion_report_for_current_incomplete_callable_parameter_type_at_offset_with_external_indexes,
     completion_report_for_current_local_scope_at_offset_with_external_indexes,
     completion_report_for_current_override_at_offset_with_external_indexes,
     completion_report_for_current_preprocessor_at_offset_with_external_indexes,

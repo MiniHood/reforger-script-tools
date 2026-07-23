@@ -464,6 +464,33 @@ pub(crate) fn completion_report_for_current_preprocessor_at_offset_with_external
     ))
 }
 
+/// Recovers a prospective method parameter type before the pending-analysis
+/// fast path asks for argument labels. This is the current-snapshot counterpart
+/// to the complete-analysis recovery in `completion_report_for_offset`: without
+/// it, typing the first letter in `int Method(a)` can surface the plain external
+/// `array` class instead of the generic collection snippet.
+pub(crate) fn completion_report_for_current_incomplete_callable_parameter_type_at_offset_with_external_indexes(
+    source: &str,
+    offset: usize,
+    workspace_index: Option<&SymbolIndex>,
+    game_data_index: Option<&SymbolIndex>,
+) -> Option<LspCompletionReport> {
+    if current_snapshot_cursor_is_in_comment_or_string(source, offset)
+        || !incomplete_callable_parameter_type_before_offset(source, offset)
+    {
+        return None;
+    }
+    let prefix_span = raw_completion_prefix_span(source, offset);
+    Some(top_level_fallback_report_for_prefix_span_with_mode(
+        source,
+        prefix_span,
+        workspace_index,
+        game_data_index,
+        UnavailableCompletionContext::TopLevel,
+        EditorTopLevelCompletionMode::Type,
+    ))
+}
+
 /// Runs `LocalScopeQuery` over a fixed lexical/syntax window from the current
 /// revision. It supplies unqualified values both at ordinary value positions
 /// and inside an argument expression, without parsing, indexing, or projecting
@@ -2023,12 +2050,30 @@ fn top_level_fallback_report_for_prefix_span(
     game_data_index: Option<&SymbolIndex>,
     context: UnavailableCompletionContext,
 ) -> LspCompletionReport {
-    let total_start = Instant::now();
     let mode = if empty_generic_type_slot_before_offset(source, prefix_span.end) {
         EditorTopLevelCompletionMode::Type
     } else {
         EditorTopLevelCompletionMode::Value
     };
+    top_level_fallback_report_for_prefix_span_with_mode(
+        source,
+        prefix_span,
+        workspace_index,
+        game_data_index,
+        context,
+        mode,
+    )
+}
+
+fn top_level_fallback_report_for_prefix_span_with_mode(
+    source: &str,
+    prefix_span: TextSpan,
+    workspace_index: Option<&SymbolIndex>,
+    game_data_index: Option<&SymbolIndex>,
+    context: UnavailableCompletionContext,
+    mode: EditorTopLevelCompletionMode,
+) -> LspCompletionReport {
+    let total_start = Instant::now();
     let prefix = source
         .get(prefix_span.start..prefix_span.end)
         .unwrap_or_default()
