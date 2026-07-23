@@ -157,7 +157,7 @@ for lifecycle tests.
 
 ### AR-007 — Two declaration-extraction pipelines duplicate language facts
 
-**Strength:** Strong  
+**Strength:** Strong
 **Files:** `server/src/model.rs:303-1090`; `server/src/semantic_file.rs:146-971`; `server/src/index.rs:229-376, 381-709`
 
 Production document and external-index paths build `SemanticFile` from the
