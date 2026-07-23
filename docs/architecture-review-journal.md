@@ -52,6 +52,11 @@ Reforger scripts tree is expected to contain at least 5,000 files, so this is a
 full serial filesystem traversal in the normal, not exceptional, startup path.
 It also repeats immediately after selecting the same folder.
 
+The server then independently performs another recursive traversal before each
+manual-folder cache load, collecting the file count, byte count, and latest
+mtime (`server/src/index_cache.rs:2530-2626`). This doubles the normal
+activation filesystem work without sharing a source-identity fact.
+
 The warning needs the *threshold result*, not an exact count, and neither the
 server restart nor source resolution needs the count. Make manual-source
 validation a deep module whose interface answers whether the source is usable
@@ -178,6 +183,66 @@ to a single `SemanticFile`-to-index projection. If a legacy constructor must
 remain temporarily, make it a thin adapter over semantic facts rather than an
 independent traversal. That restores one language authority and improves
 locality for corpus verification.
+
+### AR-008 — Manual game-data cache fingerprints can treat changed source as current
+
+**Strength:** Strong
+**Files:** `server/src/index_cache.rs:112-122, 2530-2626`
+
+The manual-source fingerprint consists only of canonical root path, aggregate
+file count, aggregate byte count, and the maximum modification timestamp. Two
+different script trees can have the same values: for example, replacing a
+non-latest file with equal-length contents while preserving (or not exceeding)
+the existing maximum timestamp. The cache then loads an external index built
+from old source under a fingerprint that appears current.
+
+Put manual source identity behind one cache-source adapter that uses an exact
+manifest of relative path, byte length, and per-file modification identity (or
+a durable content hash when metadata cannot be trusted). The adapter can
+produce both the cache key and the user-facing validation summary, eliminating
+the duplicate traversal called out in AR-001. Its interface gives cache loading
+a single authoritative identity fact and makes correctness tests local.
+
+### AR-009 — Top-level completion does full-index work before enforcing its result limit
+
+**Strength:** Strong
+**Files:** `server/src/index_query.rs:182-255`; `server/src/lsp/completion.rs:4021-4029`
+
+Every top-level completion request scans every top-level name, performs fuzzy
+matching, allocates string completion keys, groups duplicate candidates, sorts
+each group, builds display data, and finally truncates to its caller's limit.
+The normal LSP path invokes it for both local and external indexes. An empty
+type-prefix request is explicitly allowed, making this full scan a normal
+editor interaction rather than an exceptional search.
+
+Give `SymbolIndex` a completion-candidate retrieval interface that can supply
+prefix groups and a bounded ranked frontier; keep fuzzy matching/ranking inside
+that module. `IndexQuery` should project only the candidates it will return.
+The deletion test passes because callers would otherwise each need to learn
+index traversal, shadowing, and cap behavior. This concentrates a hot-path
+performance policy and preserves one ranking authority.
+
+### AR-010 — Every workspace file event rebuilds the whole workspace index on the request path
+
+**Strength:** Strong
+**Files:** `server/src/lsp/workspace_requests.rs:26-85`; `server/src/lsp/feature_dispatch.rs:148-166`; `server/src/lsp/external_overlay.rs:117-215, 820-838`
+
+Workspace change notifications are dispatched synchronously by the LSP feature
+dispatcher. Updating one file parses that file, then `publish_workspace_change`
+clones the entire retained workspace-file map and rebuilds a `SymbolIndex` from
+every contribution before the notification handler returns. The TypeScript
+watcher emits these notifications for ordinary saves/changes, so a large
+workspace pays full aggregation cost per changed file on the server's incoming
+request path.
+
+Make workspace publication an immutable-generation module with a bounded,
+coalescing background builder. The notification interface should only publish
+the latest per-file contribution and generation; one builder captures a batch,
+constructs the next aggregate outside the lock, and atomically publishes it if
+its generation remains current. Queries retain the last immutable External
+Index Snapshot until the new one is ready. This matches the documented
+snapshot contract, removes editor-path whole-workspace work, and keeps
+generation correctness local.
 
 ## Reviewed slices
 
