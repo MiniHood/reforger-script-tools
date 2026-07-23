@@ -88,6 +88,25 @@ That includes base-game tuples and game-defined generic classes such as
 `SCR_BTParam<T>`; only collections receive collection construction or
 declaration-tail behavior.
 
+Constructor completion is a semantic projection at a proven `new` operand
+space. The server advertises Space as a completion trigger, but returns a list
+for that trigger only when the current snapshot establishes one contextual
+type from a declaration, resolved assignment target, callable return, call
+argument, or collection-initializer element. The exact accessible class is
+preselected; compatible classes with accessible constructors follow.
+Inaccessible or unindexed contextual classes have no default, but compatible
+constructible subtypes remain available. Dynamic collections preserve their
+complete generic spelling.
+
+Constructor edits contain only the parenthesized expression. Required
+parameters become ordered named snippet fields, optional parameters are
+omitted, and a class without an indexed constructor signature remains
+available as `Type()`. The label plus label details previews that accepted
+source text. No constructor item owns a semicolon, assignment, initializer
+brace, or fluent suffix. Space-triggered requests outside this exact context
+return an empty complete list; manual prefix and explicit completion retain
+their existing behavior.
+
 When a user retypes an already-present completion label, Rust keeps the
 existing syntax authoritative. A type completion immediately before a generic
 closer replaces that closer and uses its final tabstop; this also handles the

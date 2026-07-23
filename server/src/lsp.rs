@@ -25,7 +25,6 @@ use std::time::Duration;
 use std::time::Instant;
 
 mod background_events;
-mod callable;
 mod collection_declaration;
 mod completion;
 mod debug_hover;
@@ -413,6 +412,22 @@ struct HoverParams {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct CompletionParams {
+    text_document: TextDocumentIdentifier,
+    position: LspPosition,
+    #[serde(default)]
+    context: Option<CompletionRequestContext>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CompletionRequestContext {
+    #[serde(default)]
+    trigger_character: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct InputRouteParams {
     text_document: TextDocumentIdentifier,
     version: i32,
@@ -640,7 +655,7 @@ impl<W: Write> LspServer<W> {
                             "documentRangeFormattingProvider": true,
                             "hoverProvider": true,
                             "definitionProvider": true,
-                            "completionProvider": {"triggerCharacters": [".", "[", "#"]},
+                            "completionProvider": {"triggerCharacters": [".", "[", "#", " "]},
                             "signatureHelpProvider": {
                                 "triggerCharacters": SIGNATURE_HELP_TRIGGER_CHARACTERS,
                                 "retriggerCharacters": SIGNATURE_HELP_RETRIGGER_CHARACTERS
@@ -1179,8 +1194,8 @@ fn validate_message_params(method: &str, params: &Option<Value>) -> Result<(), S
         "textDocument/documentSymbol" | "textDocument/semanticTokens/full" => {
             validate_params::<DocumentSymbolParams>(params, method)
         }
-        "textDocument/completion"
-        | "textDocument/signatureHelp"
+        "textDocument/completion" => validate_params::<CompletionParams>(params, method),
+        "textDocument/signatureHelp"
         | "textDocument/hover"
         | "textDocument/definition"
         | DEBUG_HOVER_METHOD

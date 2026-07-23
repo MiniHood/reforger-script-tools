@@ -1,3 +1,5 @@
+//! Shared callable syntax and signature queries used by semantic features.
+
 use crate::ast::Expression;
 use crate::lexer::{lex, Operator, TextSpan, TokenKind};
 use crate::syntax::{SyntaxElement, SyntaxKind, SyntaxNode};

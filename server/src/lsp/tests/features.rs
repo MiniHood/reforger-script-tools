@@ -3301,6 +3301,617 @@ class Example
 }
 
 #[test]
+fn constructor_completion_uses_the_declared_type_after_new() {
+    let source = r#"class Managed
+{
+	void Managed(int id, bool enabled = true);
+}
+
+class Widget : Managed
+{
+	void Widget(string name, bool enabled = true);
+}
+
+class Other
+{
+	void Other();
+}
+
+class Example
+{
+	void Run()
+	{
+		Managed value = new // caret
+	}
+}
+"#;
+
+    let report = completion_report_for_source_position_with_external(
+        source,
+        position_after_needle(source, "Managed value = new "),
+        None,
+    );
+
+    assert_eq!(report.completion_context, "constructor");
+    assert_eq!(report.owner_type.as_deref(), Some("Managed"));
+    let labels = report
+        .list
+        .items
+        .iter()
+        .map(|item| item.label.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(labels, vec!["Managed", "Widget"]);
+
+    let exact = &report.list.items[0];
+    assert_eq!(exact.text_edit.new_text, "Managed(${1:id})");
+    assert_eq!(
+        format!(
+            "{}{}",
+            exact.label,
+            exact
+                .label_details
+                .as_ref()
+                .and_then(|details| details.detail.as_deref())
+                .unwrap_or_default()
+        ),
+        "Managed(id)"
+    );
+    assert_eq!(
+        serde_json::to_value(exact)
+            .unwrap()
+            .get("preselect")
+            .and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        exact
+            .command
+            .as_ref()
+            .map(|command| command.command.as_str()),
+        Some("editor.action.triggerParameterHints")
+    );
+
+    let subtype = &report.list.items[1];
+    assert_eq!(subtype.text_edit.new_text, "Widget(${1:name})");
+    assert!(
+        !subtype.text_edit.new_text.contains(';'),
+        "constructor completion must not author the statement terminator"
+    );
+}
+
+#[test]
+fn constructor_completion_preserves_nested_ref_collection_spelling() {
+    let source = r#"class Managed {}
+class Example
+{
+	void Run()
+	{
+		ref array<array<ref Managed>> values = new // caret
+	}
+}
+"#;
+
+    let report = completion_report_for_source_position_with_external(
+        source,
+        position_after_needle(source, "values = new "),
+        None,
+    );
+
+    assert_eq!(report.completion_context, "constructor");
+    assert_eq!(
+        report.owner_type.as_deref(),
+        Some("ref array<array<ref Managed>>")
+    );
+    assert_eq!(report.list.items.len(), 1);
+    let item = &report.list.items[0];
+    assert_eq!(item.label, "array<array<ref Managed>>()");
+    assert_eq!(item.text_edit.new_text, "array<array<ref Managed>>()");
+    assert_eq!(item.preselect, Some(true));
+    assert!(!report.list.items.iter().any(|item| item.label == "{}"));
+}
+
+#[test]
+fn constructor_completion_uses_field_and_array_initializer_element_types() {
+    let field_source = r#"class Managed
+{
+	void Managed();
+}
+class Widget : Managed {}
+class Example
+{
+	Managed m_Field = new // field caret
+}
+"#;
+    let array_source = r#"class Managed
+{
+	void Managed();
+}
+class Widget : Managed {}
+class Example
+{
+
+	void Run()
+	{
+		array<Managed> values = { new  }
+	}
+}
+"#;
+
+    for (source, needle) in [
+        (field_source, "m_Field = new "),
+        (array_source, "{ new "),
+    ] {
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, needle),
+            None,
+        );
+        assert_eq!(
+            report.owner_type.as_deref(),
+            Some("Managed"),
+            "{needle} should supply Managed as the contextual type"
+        );
+        assert_eq!(
+            report
+                .list
+                .items
+                .iter()
+                .map(|item| item.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Managed", "Widget"]
+        );
+        assert!(report
+            .list
+            .items
+            .iter()
+            .all(|item| !item.text_edit.new_text.contains(';')));
+    }
+}
+
+#[test]
+fn constructor_completion_uses_resolved_assignment_return_and_argument_types() {
+    let assignment_source = r#"class Managed
+{
+	void Managed();
+}
+class Widget : Managed
+{
+	void Widget(int count);
+}
+class Example
+{
+	Managed m_Value;
+
+	void Run()
+	{
+		m_Value = new // assignment caret
+	}
+}
+"#;
+    let return_source = r#"class Managed
+{
+	void Managed();
+}
+class Widget : Managed
+{
+	void Widget(int count);
+}
+class Example
+{
+	Managed Build()
+	{
+		return new // return caret
+	}
+}
+"#;
+    let argument_source = r#"class Managed
+{
+	void Managed();
+}
+class Widget : Managed
+{
+	void Widget(int count);
+}
+class Example
+{
+	void Use(Managed value);
+
+	void Run()
+	{
+		Use(new )
+	}
+}
+"#;
+
+    for (source, needle, expected_context) in [
+        (assignment_source, "m_Value = new ", "assignment"),
+        (return_source, "return new ", "return"),
+        (argument_source, "Use(new ", "argument"),
+    ] {
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, needle),
+            None,
+        );
+        assert_eq!(
+            report.completion_context, "constructor",
+            "{expected_context} should establish a constructor context"
+        );
+        assert_eq!(report.owner_type.as_deref(), Some("Managed"));
+        assert_eq!(
+            report
+                .list
+                .items
+                .iter()
+                .map(|item| item.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Managed", "Widget"]
+        );
+    }
+}
+
+#[test]
+fn automatic_constructor_completion_requires_a_direct_expected_value() {
+    let cases = [
+        (
+            r#"class Managed {}
+class Example
+{
+	Managed m_Value;
+	void Run()
+	{
+		m_Value = 1 + new // caret
+	}
+}
+"#,
+            "1 + new ",
+            "assignment",
+        ),
+        (
+            r#"class Managed {}
+class Example
+{
+	Managed Build()
+	{
+		return 1 + new // caret
+	}
+}
+"#,
+            "1 + new ",
+            "return",
+        ),
+        (
+            r#"class Managed {}
+class Example
+{
+	void Use(Managed value);
+	void Run()
+	{
+		Use(1 + new )
+	}
+}
+"#,
+            "1 + new ",
+            "call argument",
+        ),
+        (
+            r#"class Managed {}
+class Example
+{
+	void Run()
+	{
+		array<Managed> values = { 1 + new  }
+	}
+}
+"#,
+            "1 + new ",
+            "initializer element",
+        ),
+    ];
+
+    for (source, needle, description) in cases {
+        let report = completion_report_for_source_position_with_external(
+            source,
+            position_after_needle(source, needle),
+            None,
+        );
+        let report = completion::apply_automatic_trigger_policy(report, Some(" "));
+        assert!(
+            report.list.items.is_empty(),
+            "{description} must not treat a nested operand as the directly expected value"
+        );
+    }
+}
+
+#[test]
+fn automatic_constructor_completion_declines_output_arguments() {
+    for modifier in ["out", "inout"] {
+        let source = format!(
+            r#"class Managed {{}}
+class Example
+{{
+	void Use({modifier} Managed value);
+	void Run()
+	{{
+		Use(new )
+	}}
+}}
+"#
+        );
+        let report = completion_report_for_source_position_with_external(
+            &source,
+            position_after_needle(&source, "Use(new "),
+            None,
+        );
+        let report = completion::apply_automatic_trigger_policy(report, Some(" "));
+        assert!(
+            report.list.items.is_empty(),
+            "{modifier} arguments cannot accept a constructed rvalue"
+        );
+    }
+}
+
+#[test]
+fn constructor_completion_leaves_an_unindexed_base_unselected() {
+    let source = r#"class Concrete : ConstructionContract
+{
+	void Concrete(int value);
+}
+class Other {}
+class Example
+{
+	void Run()
+	{
+		ConstructionContract value = new // caret
+	}
+}
+"#;
+
+    let report = completion_report_for_source_position_with_external(
+        source,
+        position_after_needle(source, "value = new "),
+        None,
+    );
+
+    assert_eq!(
+        report
+            .list
+            .items
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Concrete"]
+    );
+    assert_eq!(report.list.items[0].preselect, None);
+    assert_eq!(
+        report.list.items[0].text_edit.new_text,
+        "Concrete(${1:value})"
+    );
+}
+
+#[test]
+fn constructor_completion_excludes_an_inaccessible_contextual_constructor() {
+    let source = r#"class ConstructionContract
+{
+	protected void ConstructionContract();
+}
+class Concrete : ConstructionContract
+{
+	void Concrete();
+}
+class Example
+{
+	void Run()
+	{
+		ConstructionContract value = new // caret
+	}
+}
+"#;
+
+    let report = completion_report_for_source_position_with_external(
+        source,
+        position_after_needle(source, "value = new "),
+        None,
+    );
+
+    assert_eq!(
+        report
+            .list
+            .items
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Concrete"]
+    );
+    assert_eq!(report.list.items[0].preselect, None);
+}
+
+#[test]
+fn constructor_completion_renders_missing_and_optional_only_signatures() {
+    let source = r#"class NoIndexedConstructor {}
+class OptionalConstructor
+{
+	void OptionalConstructor(int value = 1);
+}
+class Example
+{
+	void Run()
+	{
+		NoIndexedConstructor first = new // first caret
+		OptionalConstructor second = new // second caret
+	}
+}
+"#;
+
+    let missing = completion_report_for_source_position_with_external(
+        source,
+        position_after_needle(source, "first = new "),
+        None,
+    );
+    assert_eq!(
+        missing.list.items[0].text_edit.new_text,
+        "NoIndexedConstructor()"
+    );
+
+    let optional = completion_report_for_source_position_with_external(
+        source,
+        position_after_needle(source, "second = new "),
+        None,
+    );
+    assert_eq!(
+        optional.list.items[0].text_edit.new_text,
+        "OptionalConstructor($0)"
+    );
+    assert_eq!(optional.list.items[0].required_parameter_count, 0);
+    assert_eq!(optional.list.items[0].optional_parameter_count, 1);
+}
+
+#[test]
+fn constructor_completion_edits_only_the_new_operand_before_a_fluent_chain() {
+    let source = r#"class Managed
+{
+	void Managed();
+	Managed Configure();
+}
+class Example
+{
+	void Run()
+	{
+		Managed value = new .Configure()
+	}
+}
+"#;
+
+    let report = completion_report_for_source_position_with_external(
+        source,
+        position_after_needle(source, "value = new "),
+        None,
+    );
+    let item = &report.list.items[0];
+    assert_eq!(item.text_edit.new_text, "Managed()");
+    assert_eq!(item.text_edit.range.start, item.text_edit.range.end);
+    assert!(!item.text_edit.new_text.contains(';'));
+    assert!(!item.text_edit.new_text.contains(".Configure"));
+}
+
+#[test]
+fn automatic_space_completion_declines_unresolved_ambiguous_and_non_new_contexts() {
+    let ambiguous = r#"class Managed {}
+class Other {}
+class Example
+{
+	void Use(Managed value);
+	void Use(Other value);
+	void Run()
+	{
+		Use(new )
+	}
+}
+"#;
+    let cases = [
+        (
+            ambiguous,
+            position_after_needle(ambiguous, "Use(new "),
+            "ambiguous call argument",
+        ),
+        (
+            "class Example { void Run() { missing = new  } }",
+            position_after_needle(
+                "class Example { void Run() { missing = new  } }",
+                "new ",
+            ),
+            "unresolved assignment",
+        ),
+        (
+            "class Example ",
+            position_after_needle("class Example ", "class Example "),
+            "ordinary space",
+        ),
+        (
+            "class Example { void Run() { // new \n } }",
+            position_after_needle("class Example { void Run() { // new \n } }", "new "),
+            "comment",
+        ),
+        (
+            "class Example { string text = \"new \"; }",
+            position_after_needle("class Example { string text = \"new \"; }", "new "),
+            "string",
+        ),
+        (
+            "#define VALUE new ",
+            position_after_needle("#define VALUE new ", "new "),
+            "directive",
+        ),
+    ];
+
+    for (source, position, description) in cases {
+        let report =
+            completion_report_for_source_position_with_external(source, position, None);
+        let report = completion::apply_automatic_trigger_policy(report, Some(" "));
+        assert!(
+            report.list.items.is_empty(),
+            "{description} must not open automatic constructor completion"
+        );
+    }
+}
+
+#[test]
+fn manual_constructor_prefix_completion_remains_available() {
+    let source = r#"class Managed
+{
+	void Managed(int value);
+}
+class Example
+{
+	void Run()
+	{
+		Managed value = new Man
+	}
+}
+"#;
+
+    let report = completion_report_for_source_position_with_external(
+        source,
+        position_after_needle(source, "new Man"),
+        None,
+    );
+
+    let item = report
+        .list
+        .items
+        .iter()
+        .find(|item| item.label == "Managed")
+        .expect("manual typed-prefix completion should retain constructor discovery");
+    assert_eq!(item.text_edit.new_text, "Managed(${1:value})");
+}
+
+#[test]
+fn manual_constructor_prefix_does_not_invent_an_unindexed_signature() {
+    let source = r#"class NoIndexedConstructor {}
+class Example
+{
+	void Run()
+	{
+		NoIndexedConstructor value = new NoInd
+	}
+}
+"#;
+
+    let report = completion_report_for_source_position_with_external(
+        source,
+        position_after_needle(source, "new NoInd"),
+        None,
+    );
+    let item = report
+        .list
+        .items
+        .iter()
+        .find(|item| item.label == "NoIndexedConstructor")
+        .expect("manual typed-prefix completion should retain the type candidate");
+    assert_eq!(item.text_edit.new_text, "NoIndexedConstructor");
+}
+
+#[test]
 fn callable_completion_keeps_a_function_parameter_as_a_normal_selected_placeholder() {
     let source = r#"class GenericComponent
 {

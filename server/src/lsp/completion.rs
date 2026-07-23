@@ -1,15 +1,16 @@
 use crate::analysis_runtime::QueryQuality;
-use crate::expression_type::expression_type_from_index_symbol;
+use crate::callable::{
+    callable_argument_context_at_offset, callable_signature_parts, callable_type_owner,
+    CallableParameter, CallableSignatureParts, CallableTarget,
+};
+use crate::construction::ConstructionQuery;
+use crate::expression_type::{expression_type_from_index_symbol, strip_all_type_prefixes};
 use crate::index::SymbolIndex;
 use crate::index_query::{
     completion_name_match_rank, EditorCompletionCandidate, EditorCompletionOrigin,
     EditorTopLevelCompletionMode, IndexQuery,
 };
 use crate::lexer::{lex, Keyword, Operator, TextSpan, Token, TokenKind};
-use crate::lsp::callable::{
-    callable_argument_context_at_offset, callable_signature_parts, callable_type_owner,
-    CallableParameter, CallableSignatureParts, CallableTarget,
-};
 use crate::lsp::collection_declaration::collection_declaration_before_cursor;
 use crate::lsp::external_indexes::ExternalIndexes;
 use crate::lsp::{
@@ -77,6 +78,10 @@ pub struct LspCompletionItem {
     pub sort_text: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub filter_text: Option<String>,
+    /// Marks the uniquely proven contextual constructor as the editor's
+    /// initially selected suggestion without accepting or inserting it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preselect: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub insert_text_format: Option<u32>,
     /// Characters which accept this item through the editor's single native
@@ -478,6 +483,7 @@ fn collection_declaration_tail_completion_report(
                 documentation: None,
                 sort_text: Some(format!("000:collection-tail:{order:03}:{label}")),
                 filter_text: Some(label.to_string()),
+                preselect: None,
                 insert_text_format: new_text.contains("${").then_some(2),
                 commit_characters: None,
                 command,
@@ -1673,6 +1679,7 @@ impl BoundedCompletionFacts {
                         documentation: None,
                         sort_text: Some(format!("000:local:{}", declaration.name)),
                         filter_text: Some(declaration.name.clone()),
+                        preselect: None,
                         insert_text_format: None,
                         commit_characters: None,
                         command: None,
@@ -2120,6 +2127,7 @@ fn bounded_completion_item(
         documentation: None,
         sort_text: Some(format!("000:bounded:{label}")),
         filter_text: Some(label.clone()),
+        preselect: None,
         insert_text_format: None,
         commit_characters: None,
         command: None,
@@ -2692,6 +2700,33 @@ fn completion_report_for_offset(
             total_start,
         );
     }
+    if let Some(new_keyword) =
+        new_operand_space_keyword_before_offset(source, &analysis.lexer_tokens, offset)
+    {
+        let query = ConstructionQuery::new(
+            source,
+            &analysis.parse,
+            &analysis.lexer_tokens,
+            &analysis.index,
+            &analysis.scope,
+            ExternalIndexes::new(workspace_index, game_data_index).ordered(),
+        );
+        if let Some(context) = query.context_at_new(new_keyword.span) {
+            let candidates = query.compatible_candidates(&context);
+            return contextual_constructor_completion_report(
+                source,
+                analysis.parse_diagnostics,
+                context.type_text,
+                candidates,
+                offset,
+                &analysis.index,
+                workspace_index,
+                game_data_index,
+                context_start.elapsed(),
+                total_start,
+            );
+        }
+    }
     if let Some(report) = collection_declaration_tail_completion_report(
         source,
         analysis.parse_diagnostics,
@@ -2956,6 +2991,172 @@ fn completion_report_for_offset(
     top_level_report
 }
 
+fn new_operand_space_keyword_before_offset(
+    source: &str,
+    tokens: &[Token],
+    offset: usize,
+) -> Option<Token> {
+    let keyword = tokens
+        .iter()
+        .rev()
+        .find(|token| {
+            token.span.end <= offset && !token.kind.is_trivia() && token.kind != TokenKind::Eof
+        })
+        .copied()?;
+    if keyword.kind != TokenKind::Keyword(Keyword::New) || keyword.span.end >= offset {
+        return None;
+    }
+    let operand_space = source.get(keyword.span.end..offset)?;
+    (!operand_space.contains(['\n', '\r']) && operand_space.chars().all(char::is_whitespace))
+        .then_some(keyword)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn contextual_constructor_completion_report(
+    source: &str,
+    parse_diagnostics: usize,
+    contextual_type: String,
+    candidates: Vec<EditorCompletionCandidate>,
+    offset: usize,
+    local_index: &SymbolIndex,
+    workspace_index: Option<&SymbolIndex>,
+    game_data_index: Option<&SymbolIndex>,
+    context_detection: Duration,
+    total_start: Instant,
+) -> LspCompletionReport {
+    let Some(owner) = callable_type_owner(&contextual_type) else {
+        return empty_completion_report(parse_diagnostics);
+    };
+    if matches!(owner.as_str(), "array" | "set" | "map") {
+        let spelling = strip_all_type_prefixes(&contextual_type).trim();
+        let constructor_text = format!("{spelling}()");
+        let item = LspCompletionItem {
+            label: constructor_text.clone(),
+            label_details: None,
+            kind: 4,
+            detail: Some("contextual collection constructor".to_string()),
+            documentation: None,
+            sort_text: Some(format!("000:contextual-constructor:{constructor_text}")),
+            filter_text: Some(spelling.to_string()),
+            preselect: Some(true),
+            insert_text_format: None,
+            commit_characters: None,
+            command: None,
+            text_edit: LspTextEdit {
+                range: range_for_span(source, TextSpan::new(offset, offset)),
+                new_text: constructor_text,
+                replace_range: None,
+            },
+            required_parameter_count: 0,
+            optional_parameter_count: 0,
+        };
+        return LspCompletionReport {
+            list: LspCompletionList {
+                is_incomplete: false,
+                items: vec![item],
+            },
+            query_quality: QueryQuality::Exact,
+            recovery_reason: None,
+            parse_diagnostics,
+            completion_context: "constructor".to_string(),
+            receiver_text: None,
+            owner_type: Some(contextual_type),
+            prefix: String::new(),
+            candidate_count: 1,
+            source_kind_counts: BTreeMap::new(),
+            origin_counts: BTreeMap::from([("ContextualCollection".to_string(), 1)]),
+            failure_reason: None,
+            timings: LspCompletionTimings {
+                context_detection,
+                total: total_start.elapsed(),
+                ..LspCompletionTimings::default()
+            },
+        };
+    }
+    let render_start = Instant::now();
+    let render_context =
+        CompletionRenderContext::new(local_index, workspace_index, game_data_index);
+    let (mut items, source_kind_counts, origin_counts) = completion_items_for_candidates(
+        &candidates,
+        range_for_span(source, TextSpan::new(offset, offset)),
+        Some("ContextualConstructor"),
+        CompletionInsertContext::ContextualConstructorCall,
+        None,
+        render_context,
+    );
+    let has_exact = items.iter().any(|item| item.label == owner);
+    for (index, item) in items.iter_mut().enumerate() {
+        let exact = item.label == owner;
+        if let Some(preview) =
+            constructor_completion_preview_suffix(&item.label, &item.text_edit.new_text)
+        {
+            let description = item
+                .label_details
+                .as_ref()
+                .and_then(|details| details.description.clone());
+            item.label_details = Some(LspCompletionItemLabelDetails {
+                detail: Some(preview),
+                description,
+            });
+        }
+        item.preselect = (exact && has_exact).then_some(true);
+        item.sort_text = Some(format!(
+            "{}:contextual-constructor:{index:05}:{}",
+            if exact { "000" } else { "100" },
+            item.label
+        ));
+    }
+    let render_elapsed = render_start.elapsed();
+
+    LspCompletionReport {
+        candidate_count: items.len(),
+        list: LspCompletionList {
+            is_incomplete: false,
+            items,
+        },
+        query_quality: QueryQuality::Exact,
+        recovery_reason: None,
+        parse_diagnostics,
+        completion_context: "constructor".to_string(),
+        receiver_text: None,
+        owner_type: Some(contextual_type),
+        prefix: String::new(),
+        source_kind_counts,
+        origin_counts,
+        failure_reason: None,
+        timings: LspCompletionTimings {
+            context_detection,
+            item_rendering: render_elapsed,
+            total: total_start.elapsed(),
+            ..LspCompletionTimings::default()
+        },
+    }
+}
+
+fn constructor_completion_preview_suffix(label: &str, insert_text: &str) -> Option<String> {
+    let suffix = insert_text.strip_prefix(label)?;
+    let mut preview = String::new();
+    let mut rest = suffix;
+    while !rest.is_empty() {
+        if let Some(after) = rest.strip_prefix("$0") {
+            rest = after;
+            continue;
+        }
+        if let Some(after_open) = rest.strip_prefix("${") {
+            let colon = after_open.find(':')?;
+            let after_colon = &after_open[colon + 1..];
+            let close = after_colon.find('}')?;
+            preview.push_str(&after_colon[..close]);
+            rest = &after_colon[close + 1..];
+            continue;
+        }
+        let ch = rest.chars().next()?;
+        preview.push(ch);
+        rest = &rest[ch.len_utf8()..];
+    }
+    Some(preview)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn preprocessor_completion_report(
     source: &str,
@@ -3053,6 +3254,7 @@ fn preprocessor_directive_completion_item(
             order
         )),
         filter_text: Some(directive.to_string()),
+        preselect: None,
         insert_text_format: None,
         commit_characters: None,
         command: takes_operand.then(|| LspCommand {
@@ -3635,6 +3837,7 @@ fn completion_item_for_parameter_label(
             parameter.name
         )),
         filter_text: Some(parameter.name.clone()),
+        preselect: None,
         insert_text_format: Some(2),
         commit_characters: None,
         command,
@@ -3689,6 +3892,7 @@ enum CompletionInsertContext {
     Normal,
     Type,
     ConstructorCall,
+    ContextualConstructorCall,
 }
 
 #[derive(Debug, Clone)]
@@ -4550,6 +4754,7 @@ fn completion_item_for_override_candidate(
             order,
         )),
         filter_text: Some(label),
+        preselect: None,
         insert_text_format: Some(2),
         commit_characters: None,
         command: None,
@@ -4679,6 +4884,7 @@ fn keyword_completion_items(
                     keyword
                 )),
                 filter_text: Some(keyword.to_string()),
+                preselect: None,
                 insert_text_format,
                 commit_characters,
                 command: if is_control_header {
@@ -4889,6 +5095,7 @@ fn switch_arm_placeholder_completion_items(
         documentation: None,
         sort_text: Some(format!("00:00:000:{label}")),
         filter_text: Some(label.to_string()),
+        preselect: None,
         insert_text_format: format,
         commit_characters: None,
         command,
@@ -5297,6 +5504,18 @@ pub(crate) fn empty_completion_list() -> LspCompletionList {
     }
 }
 
+pub(crate) fn apply_automatic_trigger_policy(
+    report: LspCompletionReport,
+    trigger_character: Option<&str>,
+) -> LspCompletionReport {
+    if trigger_character != Some(" ") || report.completion_context == "constructor" {
+        return report;
+    }
+    let mut empty = empty_completion_report(report.parse_diagnostics);
+    empty.timings = report.timings;
+    empty
+}
+
 fn empty_completion_report(parse_diagnostics: usize) -> LspCompletionReport {
     LspCompletionReport {
         list: empty_completion_list(),
@@ -5377,6 +5596,7 @@ fn completion_item_for_candidate(
         documentation,
         sort_text: Some(completion_sort_text(candidate, &label, match_prefix, order)),
         filter_text: Some(filter_text),
+        preselect: None,
         insert_text_format,
         commit_characters: None,
         command,
@@ -5409,9 +5629,26 @@ fn callable_completion_render(
         | SymbolKind::Method
         | SymbolKind::Constructor
         | SymbolKind::Destructor => candidate.signature.as_deref()?,
-        SymbolKind::Class if insert_context == CompletionInsertContext::ConstructorCall => {
-            let signature = candidate.constructor_signature.as_deref()?;
-            let call = callable_signature_parts(label, signature)?;
+        SymbolKind::Class
+            if matches!(
+                insert_context,
+                CompletionInsertContext::ConstructorCall
+                    | CompletionInsertContext::ContextualConstructorCall
+            ) =>
+        {
+            let call = candidate
+                .constructor_signature
+                .as_deref()
+                .and_then(|signature| callable_signature_parts(label, signature))
+                .or_else(|| {
+                    (insert_context == CompletionInsertContext::ContextualConstructorCall).then(
+                        || CallableSignatureParts {
+                            parameters: "()".to_string(),
+                            parameters_info: Vec::new(),
+                            result: None,
+                        },
+                    )
+                })?;
             if let Some(insert_text) = rpl_rpc_attribute_template(label, &call, false) {
                 return Some(CallableCompletionRender::from_insert(
                     call,

@@ -821,7 +821,7 @@ fn framed_lsp_smoke_test_handles_hover() {
     assert!(output_text.contains("\"hoverProvider\":true"));
     assert!(output_text.contains("\"signatureHelpProvider\""));
     assert!(
-        output_text.contains("\"completionProvider\":{\"triggerCharacters\":[\".\",\"[\",\"#\"]}")
+        output_text.contains("\"completionProvider\":{\"triggerCharacters\":[\".\",\"[\",\"#\",\" \"]}")
     );
     assert!(output_text.contains("void Run(int value)"));
     assert!(output_text.contains("\"kind\":\"markdown\""));
@@ -966,6 +966,101 @@ fn framed_lsp_if_completion_carries_rust_normalization_contract() {
 }
 
 #[test]
+fn framed_lsp_space_trigger_stays_silent_outside_contextual_new() {
+    let source = "class Example ";
+    let mut input = Vec::new();
+    write_test_message(
+        &mut input,
+        json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {} }),
+    );
+    write_test_message(
+        &mut input,
+        json!({
+            "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+                "textDocument": {
+                    "uri": "file:///Scripts/SpaceTrigger.c",
+                    "languageId": "enforce",
+                    "version": 1,
+                    "text": source
+                }
+            }
+        }),
+    );
+    write_test_message(
+        &mut input,
+        json!({
+            "jsonrpc": "2.0", "id": 2, "method": "textDocument/completion", "params": {
+                "textDocument": { "uri": "file:///Scripts/SpaceTrigger.c" },
+                "position": { "line": 0, "character": source.len() },
+                "context": { "triggerKind": 2, "triggerCharacter": " " }
+            }
+        }),
+    );
+    write_test_message(
+        &mut input,
+        json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown", "params": null }),
+    );
+    write_test_message(
+        &mut input,
+        json!({ "jsonrpc": "2.0", "method": "exit", "params": null }),
+    );
+
+    let mut output = Vec::new();
+    run(input.as_slice(), &mut output, LspServerOptions::default()).unwrap();
+    let output = String::from_utf8(output).unwrap();
+    assert!(output.contains("\"id\":2,\"jsonrpc\":\"2.0\",\"result\":{\"isIncomplete\":false,\"items\":[]}"));
+}
+
+#[test]
+fn framed_lsp_space_trigger_surfaces_a_contextual_constructor() {
+    let source = "class Managed\n{\n\tvoid Managed(int value);\n}\nclass Example\n{\n\tvoid Run()\n\t{\n\t\tManaged value = new \n\t}\n}\n";
+    let position = position_after_needle(source, "value = new ");
+    let mut input = Vec::new();
+    write_test_message(
+        &mut input,
+        json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {} }),
+    );
+    write_test_message(
+        &mut input,
+        json!({
+            "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+                "textDocument": {
+                    "uri": "file:///Scripts/NewTrigger.c",
+                    "languageId": "enforce",
+                    "version": 1,
+                    "text": source
+                }
+            }
+        }),
+    );
+    write_test_message(
+        &mut input,
+        json!({
+            "jsonrpc": "2.0", "id": 2, "method": "textDocument/completion", "params": {
+                "textDocument": { "uri": "file:///Scripts/NewTrigger.c" },
+                "position": { "line": position.line, "character": position.character },
+                "context": { "triggerKind": 2, "triggerCharacter": " " }
+            }
+        }),
+    );
+    write_test_message(
+        &mut input,
+        json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown", "params": null }),
+    );
+    write_test_message(
+        &mut input,
+        json!({ "jsonrpc": "2.0", "method": "exit", "params": null }),
+    );
+
+    let mut output = Vec::new();
+    run(input.as_slice(), &mut output, LspServerOptions::default()).unwrap();
+    let output = String::from_utf8(output).unwrap();
+    assert!(output.contains("\"label\":\"Managed\""));
+    assert!(output.contains("\"newText\":\"Managed(${1:value})\""));
+    assert!(output.contains("\"preselect\":true"));
+}
+
+#[test]
 fn framed_lsp_preprocessor_completion_exposes_directives_and_active_macro_operands() {
     let mut input = Vec::new();
     write_test_message(
@@ -1092,7 +1187,7 @@ fn framed_lsp_smoke_test_handles_member_completion() {
 
     let output_text = String::from_utf8(output).unwrap();
     assert!(
-        output_text.contains("\"completionProvider\":{\"triggerCharacters\":[\".\",\"[\",\"#\"]}")
+        output_text.contains("\"completionProvider\":{\"triggerCharacters\":[\".\",\"[\",\"#\",\" \"]}")
     );
     assert!(output_text.contains("\"isIncomplete\":false"));
     assert!(output_text.contains("\"label\":\"SetVisible\""));

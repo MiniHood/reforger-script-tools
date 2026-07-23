@@ -1,13 +1,13 @@
 use crate::analysis_runtime::DocumentSnapshot;
+use crate::callable::{
+    callable_argument_context_at_offset, callable_signature_parts, CallableArgumentContext,
+    CallableParameter, CallableSignatureParts, CallableTarget,
+};
 use crate::index::SymbolIndex;
 use crate::index_query::{
     EditorCompletionCandidate, EditorCompletionOrigin, EditorTopLevelCompletionMode, IndexQuery,
 };
 use crate::lexer::{Token, TokenKind};
-use crate::lsp::callable::{
-    callable_argument_context_at_offset, callable_signature_parts, CallableArgumentContext,
-    CallableParameter, CallableSignatureParts, CallableTarget,
-};
 use crate::lsp::open_documents::ForegroundQuerySnapshot;
 use crate::lsp::{
     file_index_for_source, offset_for_position, FileIndexAnalysis, LspMarkupContent, LspPosition,

@@ -262,6 +262,11 @@ impl FeatureDispatcher<'_> {
                     let mut external_index_layers = "none";
                     let result = params
                         .and_then(|params| {
+                            let trigger_character = params
+                                .context
+                                .as_ref()
+                                .and_then(|context| context.trigger_character.as_deref())
+                                .map(str::to_string);
                             log_uri = params.text_document.uri;
                             self.document_runtime
                                 .capture_query(&log_uri, self.external_index.snapshot())
@@ -380,6 +385,10 @@ impl FeatureDispatcher<'_> {
                                         )
                                     }
                                 };
+                                let report = completion::apply_automatic_trigger_policy(
+                                    report,
+                                    trigger_character.as_deref(),
+                                );
                                 parse_diagnostics = report.parse_diagnostics;
                                 query_quality = report.query_quality;
                                 recovery_reason = report
