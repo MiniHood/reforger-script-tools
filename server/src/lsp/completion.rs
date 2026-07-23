@@ -3962,8 +3962,7 @@ fn keyword_completion_items(
             // Rust-authored completion edit so VS Code applies it atomically,
             // rather than observing a later Space/Enter edit from the client.
             let is_control_header = matches!(keyword, "if" | "for" | "foreach" | "while" | "switch");
-            let type_placeholders = collection_type_placeholders(keyword, mode, declaration_context)
-                .or_else(|| ref_type_placeholders(keyword, mode, declaration_context));
+            let type_snippet = type_keyword_snippet(keyword, mode, declaration_context);
             let (new_text, insert_text_format, commit_characters) = if is_control_header {
                 (
                     format!("{keyword} ($0)"),
@@ -3974,9 +3973,9 @@ fn keyword_completion_items(
                     // document, caret, or native Enter indentation.
                     Some(vec![" ".to_string()]),
                 )
-            } else if let Some(placeholders) = type_placeholders.as_ref() {
+            } else if let Some(type_snippet) = type_snippet.as_ref() {
                 (
-                    collection_type_snippet(keyword, placeholders),
+                    type_snippet.snippet(keyword),
                     Some(2),
                     None,
                 )
@@ -4017,13 +4016,7 @@ fn keyword_completion_items(
                         })]),
                     })
                 } else {
-                    type_placeholders.map(|placeholders| {
-                        if matches!(keyword, "array" | "set" | "map") {
-                            trigger_suggest_at_collection_type_placeholder_command(placeholders)
-                        } else {
-                            trigger_suggest_at_snippet_placeholder_command(placeholders)
-                        }
-                    })
+                    type_snippet.map(TypeKeywordSnippet::follow_up_command)
                 },
                 text_edit: LspTextEdit {
                     range: edit_range,
@@ -4049,50 +4042,76 @@ fn type_keyword_category_rank(keyword: &str, mode: EditorTopLevelCompletionMode)
     }
 }
 
-fn collection_type_placeholders(
+#[derive(Clone, Copy)]
+struct CollectionTypeSnippet {
+    type_argument_count: usize,
+}
+
+impl CollectionTypeSnippet {
+    fn for_keyword(
+        keyword: &str,
+        mode: EditorTopLevelCompletionMode,
+        declaration_context: bool,
+    ) -> Option<Self> {
+        if mode != EditorTopLevelCompletionMode::Type && !declaration_context {
+            return None;
+        }
+        let type_argument_count = match keyword {
+            "array" | "set" => 1,
+            "map" => 2,
+            _ => return None,
+        };
+        Some(Self { type_argument_count })
+    }
+
+    fn snippet(self, keyword: &str) -> String {
+        let slots = (1..=self.type_argument_count)
+            .map(|index| format!("${{{index}}}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        // The final tabstop is deliberately outside the closing delimiter.
+        format!("{keyword}<{slots}>$0")
+    }
+
+    fn follow_up_command(self) -> LspCommand {
+        trigger_suggest_at_collection_type_placeholder_command(
+            std::iter::repeat_n(String::new(), self.type_argument_count).collect(),
+        )
+    }
+}
+
+enum TypeKeywordSnippet {
+    Collection(CollectionTypeSnippet),
+    Ref,
+}
+
+impl TypeKeywordSnippet {
+    fn snippet(&self, keyword: &str) -> String {
+        match self {
+            Self::Collection(collection) => collection.snippet(keyword),
+            Self::Ref => "ref ${1}".to_string(),
+        }
+    }
+
+    fn follow_up_command(self) -> LspCommand {
+        match self {
+            Self::Collection(collection) => collection.follow_up_command(),
+            Self::Ref => trigger_suggest_at_snippet_placeholder_command(vec![String::new()]),
+        }
+    }
+}
+
+fn type_keyword_snippet(
     keyword: &str,
     mode: EditorTopLevelCompletionMode,
     declaration_context: bool,
-) -> Option<Vec<String>> {
-    if mode != EditorTopLevelCompletionMode::Type && !declaration_context {
-        return None;
-    }
-    Some(match keyword {
-        "array" | "set" => vec![String::new()],
-        "map" => vec![String::new(), String::new()],
-        _ => return None,
-    })
-}
-
-fn ref_type_placeholders(
-    keyword: &str,
-    mode: EditorTopLevelCompletionMode,
-    declaration_context: bool,
-) -> Option<Vec<String>> {
-    ((mode == EditorTopLevelCompletionMode::Type || declaration_context) && keyword == "ref")
-        .then(|| vec![String::new()])
-}
-
-fn collection_type_snippet(keyword: &str, placeholders: &[String]) -> String {
-    if keyword == "ref" {
-        return "ref ${1}".to_string();
-    }
-    let slots = placeholders
-        .iter()
-        .enumerate()
-        .map(|(index, placeholder)| {
-            if placeholder.is_empty() {
-                format!("${{{}}}", index + 1)
-            } else {
-                format!("${{{}:{placeholder}}}", index + 1)
-            }
+) -> Option<TypeKeywordSnippet> {
+    CollectionTypeSnippet::for_keyword(keyword, mode, declaration_context)
+        .map(TypeKeywordSnippet::Collection)
+        .or_else(|| {
+            ((mode == EditorTopLevelCompletionMode::Type || declaration_context) && keyword == "ref")
+                .then_some(TypeKeywordSnippet::Ref)
         })
-        .collect::<Vec<_>>()
-        .join(", ");
-    // The final tabstop is deliberately outside the closing delimiter. After
-    // accepting the final type argument, the UI bridge advances there instead
-    // of leaving the caret at the end of the accepted type name.
-    format!("{keyword}<{slots}>$0")
 }
 
 /// The generated first switch arm is deliberately a tiny completion surface.
