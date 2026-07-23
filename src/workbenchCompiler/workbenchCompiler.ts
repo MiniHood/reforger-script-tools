@@ -485,6 +485,7 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		this.publishValidationOutput(
 			projected,
 			timing,
+			result.success,
 			staleReason,
 			revealOutput || projected.located.length > 0,
 		);
@@ -498,6 +499,7 @@ class WorkbenchCompilerController implements vscode.Disposable {
 	private publishValidationOutput(
 		projected: ProjectedDiagnostics,
 		timing: ValidationTiming,
+		successful: boolean,
 		staleReason: string | undefined,
 		revealOutput: boolean,
 	): void {
@@ -508,20 +510,16 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		const hiddenSummary = hiddenFindingCount > 0
 			? ` (${hiddenFindingCount} non-project finding${hiddenFindingCount === 1 ? '' : 's'} hidden)`
 			: '';
-		const totalDurationMs = timing.completedAtMs - timing.requestedAtMs;
-		const idleQueueDurationMs = timing.queuedAtMs - timing.requestedAtMs;
-		const savePreparationDurationMs = timing.validationStartedAtMs - timing.queuedAtMs;
 		const workbenchDurationMs = timing.completedAtMs - timing.validationStartedAtMs;
 		const lines = [
-			`Compilation results ready ${validationTriggerDescription(timing.trigger)} `
-				+ `in ${formatValidationDuration(totalDurationMs)} `
-				+ `at ${new Date(timing.completedAtMs).toLocaleTimeString()} — `
+			`Compilation in ${formatValidationDuration(workbenchDurationMs)}`
+				+ ` - ${new Date(timing.completedAtMs).toLocaleTimeString()} - `
 				+ `${projectErrorCount} project error${projectErrorCount === 1 ? '' : 's'}, `
 				+ `${projectWarningCount} project warning${projectWarningCount === 1 ? '' : 's'}`
-				+ `${hiddenSummary}.`,
-			`Timing: idle/queue ${formatValidationDuration(idleQueueDurationMs)}; `
-				+ `save/preparation ${formatValidationDuration(savePreparationDurationMs)}; `
-				+ `Workbench ${formatValidationDuration(workbenchDurationMs)}.`,
+				+ hiddenSummary,
+			successful
+				? '[SUCCESS] Compilation completed successfully.'
+				: '[FAILED] Workbench reported compilation errors.',
 			...(staleReason ? [`Result status: may be out of date — ${staleReason}.`] : []),
 		];
 		if (projected.located.length > 0) {
@@ -592,6 +590,7 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		this.publishValidationOutput(
 			projectDiagnostics(this.lastValidationResult.diagnostics),
 			this.lastValidationTiming,
+			this.lastValidationResult.success,
 			reason,
 			false,
 		);
@@ -818,17 +817,6 @@ function formatValidationDuration(durationMs: number): string {
 	return roundedDurationMs < 1_000
 		? `${roundedDurationMs} ms`
 		: `${(roundedDurationMs / 1_000).toFixed(1)} s`;
-}
-
-function validationTriggerDescription(trigger: ValidationTiming['trigger']): string {
-	switch (trigger) {
-		case 'edit':
-			return 'after the last edit';
-		case 'save':
-			return 'after save';
-		case 'manual':
-			return 'after the manual request';
-	}
 }
 
 interface ProjectedDiagnostics {

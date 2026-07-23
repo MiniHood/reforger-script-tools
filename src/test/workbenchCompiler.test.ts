@@ -87,12 +87,10 @@ suite('Workbench compiler validation', () => {
 			assert.ok(output);
 			assert.match(
 				output,
-				/^Compilation results ready after the manual request in (?:\d+ ms|\d+\.\d s) at .+ — 1 project error, 0 project warnings\./,
+				/^Compilation in (?:\d+ ms|\d+\.\d s) - .+ - 1 project error, 0 project warnings\r?\n/,
 			);
-			assert.match(
-				output,
-				/Timing: idle\/queue (?:\d+ ms|\d+\.\d s); save\/preparation (?:\d+ ms|\d+\.\d s); Workbench (?:\d+ ms|\d+\.\d s)\./,
-			);
+			assert.match(output, /^\[FAILED\] Workbench reported compilation errors\.$/m);
+			assert.doesNotMatch(output, /^Timing:/m);
 			const findingLine = "[ERROR] Scripts/Game/Example.c:2 — Undefined function 'Run'";
 			assert.ok(output.includes(findingLine));
 			assert.doesNotMatch(output, new RegExp(escapeRegExp(workspace.uri.fsPath)));
@@ -394,6 +392,10 @@ suite('Workbench compiler validation', () => {
 			await vscode.commands.executeCommand(workbenchCommands.validateScripts);
 			await waitFor(() => workbenchDiagnosticsFor(sourceUri).length === 0 ? true : undefined);
 			assert.deepStrictEqual(workbenchDiagnosticsFor(sourceUri), []);
+			assert.match(
+				(await observeWorkbenchCompiler()).validationOutput,
+				/^\[SUCCESS\] Compilation completed successfully\.$/m,
+			);
 			assert.ok(vscode.languages.getDiagnostics(sourceUri).some(
 				diagnostic => diagnostic.source === 'Provisional Parser',
 			));
@@ -823,7 +825,7 @@ suite('Workbench compiler validation', () => {
 			const output = (await observeWorkbenchCompiler()).validationOutput;
 			assert.match(
 				output,
-				/^Compilation results ready after the manual request in (?:\d+ ms|\d+\.\d s) at .+ — 1 project error, 1 project warning \(4 non-project findings hidden\)\./,
+				/^Compilation in (?:\d+ ms|\d+\.\d s) - .+ - 1 project error, 1 project warning \(4 non-project findings hidden\)\r?\n/,
 			);
 			assert.ok(output.includes(
 				'[ERROR] Scripts/Game/Example.c:1 — Relative contained location',
