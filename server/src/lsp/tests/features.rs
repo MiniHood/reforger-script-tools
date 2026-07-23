@@ -280,8 +280,16 @@ class map<Class TKey, Class TValue> {}
         ("set", "set<int>\nset<int> complete;", "set<int>"),
         ("set", "set\nset<int> complete;", "set"),
         ("set", "set<>\nset<int> complete;", "set<>"),
-        ("map", "map<int, string> complete;", "map<int, string> complete;"),
-        ("map", "map<int, string>\nmap<int, string> complete;", "map<int, string>"),
+        (
+            "map",
+            "map<int, string> complete;",
+            "map<int, string> complete;",
+        ),
+        (
+            "map",
+            "map<int, string>\nmap<int, string> complete;",
+            "map<int, string>",
+        ),
         ("map", "map\nmap<int, string> complete;", "map"),
         ("map", "map<>\nmap<int, string> complete;", "map<>"),
         ("map", "map<int,>\nmap<int, string> complete;", "map<int,>"),
@@ -302,13 +310,14 @@ class map<Class TKey, Class TValue> {}
             semantic.decoded
         );
 
-        let hover = hover_report_for_source_position_with_external(
-            &source,
-            position,
-            Some(&external),
-        );
+        let hover =
+            hover_report_for_source_position_with_external(&source, position, Some(&external));
         assert!(hover.is_hit(), "{declaration}: {hover:?}");
-        assert_eq!(hover.selected_kind, Some(SymbolKind::Class), "{declaration}");
+        assert_eq!(
+            hover.selected_kind,
+            Some(SymbolKind::Class),
+            "{declaration}"
+        );
         assert_eq!(hover.selected_label.as_deref(), Some(name), "{declaration}");
     }
 }
@@ -360,9 +369,27 @@ class GenericBox<Class T> {}
     .index;
     let cases = [
         ("int", "int\nint complete;", "int", "keyword", None),
-        ("string", "string\nstring complete;", "string", "class", Some("string")),
-        ("vector", "vector\nvector complete;", "vector", "class", Some("vector")),
-        ("Widget", "Widget\nWidget complete;", "Widget", "class", Some("Widget")),
+        (
+            "string",
+            "string\nstring complete;",
+            "string",
+            "class",
+            Some("string"),
+        ),
+        (
+            "vector",
+            "vector\nvector complete;",
+            "vector",
+            "class",
+            Some("vector"),
+        ),
+        (
+            "Widget",
+            "Widget\nWidget complete;",
+            "Widget",
+            "class",
+            Some("Widget"),
+        ),
         (
             "GenericBox",
             "GenericBox<int>\nGenericBox<int> complete;",
@@ -370,7 +397,13 @@ class GenericBox<Class T> {}
             "class",
             Some("GenericBox"),
         ),
-        ("Widget", "ref Widget\nWidget complete;", "ref Widget", "class", Some("Widget")),
+        (
+            "Widget",
+            "ref Widget\nWidget complete;",
+            "ref Widget",
+            "class",
+            Some("Widget"),
+        ),
     ];
 
     for (name, body, declaration, token_type, hover_label) in cases {
@@ -388,14 +421,19 @@ class GenericBox<Class T> {}
         );
 
         if let Some(hover_label) = hover_label {
-            let hover = hover_report_for_source_position_with_external(
-                &source,
-                position,
-                Some(&external),
-            );
+            let hover =
+                hover_report_for_source_position_with_external(&source, position, Some(&external));
             assert!(hover.is_hit(), "{declaration}: {hover:?}");
-            assert_eq!(hover.selected_kind, Some(SymbolKind::Class), "{declaration}");
-            assert_eq!(hover.selected_label.as_deref(), Some(hover_label), "{declaration}");
+            assert_eq!(
+                hover.selected_kind,
+                Some(SymbolKind::Class),
+                "{declaration}"
+            );
+            assert_eq!(
+                hover.selected_label.as_deref(),
+                Some(hover_label),
+                "{declaration}"
+            );
         }
     }
 }
@@ -2018,8 +2056,15 @@ fn completion_keeps_collection_snippet_after_an_incomplete_preceding_line() {
             .find(|item| item.label == "array")
             .unwrap_or_else(|| panic!("array completion after {preceding_line:?}: {report:?}"));
 
-        assert_eq!(array.text_edit.new_text, "array<${1}>$0", "after {preceding_line:?}");
-        assert_eq!(array.insert_text_format, Some(2), "after {preceding_line:?}");
+        assert_eq!(
+            array.text_edit.new_text, "array<${1}>$0",
+            "after {preceding_line:?}"
+        );
+        assert_eq!(
+            array.insert_text_format,
+            Some(2),
+            "after {preceding_line:?}"
+        );
     }
 }
 
@@ -2048,7 +2093,10 @@ fn completion_keeps_all_type_candidates_after_an_incomplete_preceding_line() {
             .iter()
             .find(|item| item.label == label)
             .unwrap_or_else(|| panic!("{label} completion after incomplete line: {report:?}"));
-        assert_eq!(item.text_edit.new_text, new_text, "{label} after incomplete line");
+        assert_eq!(
+            item.text_edit.new_text, new_text,
+            "{label} after incomplete line"
+        );
     }
 }
 
@@ -2237,8 +2285,15 @@ fn completion_offers_collection_snippets_in_every_supported_type_position() {
                 .iter()
                 .find(|item| item.label == label)
                 .unwrap_or_else(|| panic!("missing {label} completion for {source:?}: {report:?}"));
-            assert_eq!(collection.text_edit.new_text, snippet, "{label} in {source:?}");
-            assert_eq!(collection.insert_text_format, Some(2), "{label} in {source:?}");
+            assert_eq!(
+                collection.text_edit.new_text, snippet,
+                "{label} in {source:?}"
+            );
+            assert_eq!(
+                collection.insert_text_format,
+                Some(2),
+                "{label} in {source:?}"
+            );
         }
     }
 }
@@ -3437,10 +3492,7 @@ class Example
 }
 "#;
 
-    for (source, needle) in [
-        (field_source, "m_Field = new "),
-        (array_source, "{ new "),
-    ] {
+    for (source, needle) in [(field_source, "m_Field = new "), (array_source, "{ new ")] {
         let report = completion_report_for_source_position_with_external(
             source,
             position_after_needle(source, needle),
@@ -3816,10 +3868,7 @@ class Example
         ),
         (
             "class Example { void Run() { missing = new  } }",
-            position_after_needle(
-                "class Example { void Run() { missing = new  } }",
-                "new ",
-            ),
+            position_after_needle("class Example { void Run() { missing = new  } }", "new "),
             "unresolved assignment",
         ),
         (
@@ -3845,8 +3894,7 @@ class Example
     ];
 
     for (source, position, description) in cases {
-        let report =
-            completion_report_for_source_position_with_external(source, position, None);
+        let report = completion_report_for_source_position_with_external(source, position, None);
         let report = completion::apply_automatic_trigger_policy(report, Some(" "));
         assert!(
             report.list.items.is_empty(),
@@ -6227,6 +6275,108 @@ class Example<T>
     ] {
         assert_semantic_delimiter_at(source, &report, needle, delimiter, token_type);
     }
+}
+
+#[test]
+fn bracket_coloring_modes_choose_semantic_punctuation_or_native_delimiters() {
+    let source =
+        "class Example<T>\n{\n\tvoid Run(array<ref array<int>> values)\n\t{\n\t\tbool less = 1 < 2;\n\t\tbool greater = 2 > 1;\n\t\tint shifted = 8 >> 1;\n\t}\n}\n";
+
+    let semantic = semantic_tokens_report_for_source_with_bracket_coloring(
+        source,
+        BracketColoringMode::Semantic,
+    );
+    assert_semantic_delimiter_at(source, &semantic, "Example<T>\n{", '{', "class");
+    assert_semantic_delimiter_at(source, &semantic, "Example<T>", '<', "class");
+    assert_semantic_delimiter_at(source, &semantic, "Example<T>", '>', "class");
+    assert_semantic_delimiter_at(source, &semantic, "Run(array", '(', "method");
+    assert_semantic_delimiter_at(source, &semantic, "values)\n\t{", ')', "method");
+
+    let punctuation = semantic_tokens_report_for_source_with_bracket_coloring(
+        source,
+        BracketColoringMode::Punctuation,
+    );
+    for (needle, delimiter) in [
+        ("Example<T>\n{", '{'),
+        ("Example<T>", '<'),
+        ("Example<T>", '>'),
+        ("Run(array", '('),
+        ("values)\n\t{", ')'),
+        ("values)\n\t{", '{'),
+    ] {
+        assert_semantic_delimiter_at(source, &punctuation, needle, delimiter, "punctuation");
+    }
+
+    let vscode = semantic_tokens_report_for_source_with_bracket_coloring(
+        source,
+        BracketColoringMode::VsCode,
+    );
+    for (needle, delimiter) in [
+        ("Example<T>\n{", '{'),
+        ("Example<T>", '<'),
+        ("Example<T>", '>'),
+        ("array<ref array<int>>", '<'),
+        ("array<ref array<int>>", '>'),
+        ("Run(array", '('),
+        ("values)\n\t{", ')'),
+        ("values)\n\t{", '{'),
+    ] {
+        let needle_start = source.find(needle).expect("delimiter needle");
+        let delimiter_offset = needle
+            .find(delimiter)
+            .map(|offset| needle_start + offset)
+            .expect("delimiter in needle");
+        let range = range_for_span(
+            source,
+            TextSpan::new(delimiter_offset, delimiter_offset + delimiter.len_utf8()),
+        );
+        assert!(
+            !vscode.decoded.iter().any(|token| token.range == range),
+            "native VS Code mode must not emit a custom delimiter token at {range:?}: {:?}",
+            vscode.decoded,
+        );
+    }
+    assert_semantic_delimiter_at(source, &vscode, "1 < 2", '<', "operator");
+    assert_semantic_delimiter_at(source, &vscode, "2 > 1", '>', "operator");
+    assert!(
+        vscode
+            .decoded
+            .iter()
+            .any(|token| token.text == ">>" && token.token_type == "operator"),
+        "native mode must preserve non-delimiter shift operators: {:?}",
+        vscode.decoded,
+    );
+}
+
+#[test]
+fn bracket_coloring_modes_preserve_the_unproven_half_of_a_recovery_operator() {
+    let source = "class Example { array<int>> value; }";
+    let closers = source.find(">>").unwrap();
+    let first = range_for_span(source, TextSpan::new(closers, closers + 1));
+    let second = range_for_span(source, TextSpan::new(closers + 1, closers + 2));
+
+    let punctuation = semantic_tokens_report_for_source_with_bracket_coloring(
+        source,
+        BracketColoringMode::Punctuation,
+    );
+    assert!(punctuation
+        .decoded
+        .iter()
+        .any(|token| token.range == first && token.token_type == "punctuation"));
+    assert!(punctuation
+        .decoded
+        .iter()
+        .any(|token| token.range == second && token.token_type == "operator"));
+
+    let vscode = semantic_tokens_report_for_source_with_bracket_coloring(
+        source,
+        BracketColoringMode::VsCode,
+    );
+    assert!(!vscode.decoded.iter().any(|token| token.range == first));
+    assert!(vscode
+        .decoded
+        .iter()
+        .any(|token| token.range == second && token.token_type == "operator"));
 }
 
 #[test]

@@ -11,6 +11,11 @@ import {
 	TransportKind,
 } from 'vscode-languageclient/node';
 import { gameDataConfig, gameDataStorage } from '../extensionConfig/gameData';
+import {
+	bracketColoringConfig,
+	type BracketColoringMode,
+	getBracketColoringMode,
+} from '../extensionConfig/bracketColoring';
 import { diagnostic, languageServerDiagnosticPath } from '../diagnostics/diagnostics';
 import {
 	languageClientCrashHandling,
@@ -48,13 +53,19 @@ import {
 } from './typingAssistTransactionBridge';
 import { registerControlHeaderEnter } from './controlHeaderEnterBridge';
 import { registerActiveScopeDelimiterBridge } from './activeScopeDelimiterBridge';
+import {
+	applyBracketColoringEditorMode,
+	bracketColoringServerArguments,
+	usesCustomScopeDelimiterPresentation,
+} from './bracketColoringBridge';
+import { RestartCoordinator } from './restartCoordinator';
 
 export { blockCommentPairPosition } from './typingAssistBridge';
 export { ifSpaceCommitContractFromCommandArguments } from './completionUiBridge';
 
 let client: LanguageClient | undefined;
 let clientDisposables: vscode.Disposable[] = [];
-let restartingClient = false;
+const restartCoordinator = new RestartCoordinator();
 let initialStartup: Promise<void> | undefined;
 const workspaceWatcherDebounceMs = 250;
 const startupTimingSessionStartMs = Date.now();
@@ -131,8 +142,16 @@ export function registerLanguageClientFeatures(context: vscode.ExtensionContext)
 		(args: unknown) => openSymbolLocation(args),
 	));
 	context.subscriptions.push(registerFirstDocumentOpenTiming(context));
+	context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(event => {
+		const setting = `${bracketColoringConfig.section}.${bracketColoringConfig.setting}`;
+		if (event.affectsConfiguration(setting)) {
+			void restartLanguageClient(context, outputChannel, 'bracket coloring changed');
+		}
+	}));
 
-	const startup = startLanguageClient(context, outputChannel);
+	const bracketColoring = getBracketColoringMode();
+	const startup = synchronizeBracketColoringEditorMode(bracketColoring, outputChannel)
+		.then(() => startLanguageClient(context, outputChannel, bracketColoring));
 	initialStartup = startup;
 	void startup.finally(() => {
 		if (initialStartup === startup) {
@@ -193,6 +212,7 @@ export async function deactivateLanguageClient(): Promise<void> {
 async function startLanguageClient(
 	context: vscode.ExtensionContext,
 	outputChannel: vscode.LogOutputChannel,
+	bracketColoring: BracketColoringMode,
 ): Promise<void> {
 	logLanguageClientStartupTiming(context, 'languageClientStartBegin');
 	const serverPath = await resolveServerPath(context);
@@ -219,6 +239,7 @@ async function startLanguageClient(
 		path.join(logsRoot, languageClientLogs.serverLogFile),
 		'--index-cache',
 		path.join(context.globalStorageUri.fsPath, languageClientIndexCache.rootFolder, languageClientIndexCache.gameDataIndexFile),
+		...bracketColoringServerArguments(bracketColoring),
 	];
 	const diagnosticPath = languageServerDiagnosticPath(context);
 	if (diagnosticPath) {
@@ -240,6 +261,7 @@ async function startLanguageClient(
 		hasGameDataMetadata: Boolean(gameDataPaths.metadata),
 		workspaceScriptRoots: workspaceScriptRoots.length,
 		serverArgs: serverArgs.length,
+		bracketColoring,
 	});
 
 	const serverOptions: ServerOptions = {
@@ -305,7 +327,9 @@ async function startLanguageClient(
 		}
 		clientDisposables.push(registerHtmlHoverBridge(client, outputChannel));
 		clientDisposables.push(...registerWorkspaceScriptWatchBridge(client, outputChannel));
-		clientDisposables.push(registerActiveScopeDelimiterBridge(client));
+		if (usesCustomScopeDelimiterPresentation(bracketColoring)) {
+			clientDisposables.push(registerActiveScopeDelimiterBridge(client));
+		}
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		outputChannel.appendLine(`Language server failed to start: ${message}`);
@@ -374,12 +398,7 @@ async function restartLanguageClient(
 	outputChannel: vscode.LogOutputChannel,
 	reason: string,
 ): Promise<void> {
-	if (restartingClient) {
-		return;
-	}
-
-	restartingClient = true;
-	try {
+	await restartCoordinator.run(async () => {
 		const startup = initialStartup;
 		if (startup) {
 			await startup;
@@ -396,9 +415,22 @@ async function restartLanguageClient(
 			const message = error instanceof Error ? error.message : String(error);
 			outputChannel.appendLine(`Language server stop during restart reported: ${message}`);
 		}
-		await startLanguageClient(context, outputChannel);
-	} finally {
-		restartingClient = false;
+		const bracketColoring = getBracketColoringMode();
+		await synchronizeBracketColoringEditorMode(bracketColoring, outputChannel);
+		await startLanguageClient(context, outputChannel, bracketColoring);
+	});
+}
+
+async function synchronizeBracketColoringEditorMode(
+	mode: BracketColoringMode,
+	outputChannel: vscode.LogOutputChannel,
+): Promise<void> {
+	try {
+		await applyBracketColoringEditorMode(mode);
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		outputChannel.appendLine(`Could not apply ${mode} bracket presentation: ${message}`);
+		diagnostic('languageClient.bracketColoringConfigurationFailed', { mode, message });
 	}
 }
 

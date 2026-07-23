@@ -1,4 +1,4 @@
-use reforger_language_server::lsp::{run_stdio, LspServerOptions};
+use reforger_language_server::lsp::{run_stdio, BracketColoringMode, LspServerOptions};
 use std::env;
 use std::path::PathBuf;
 
@@ -10,7 +10,10 @@ fn main() {
 }
 
 fn parse_args() -> LspServerOptions {
-    let mut args = env::args().skip(1);
+    parse_args_from(env::args().skip(1))
+}
+
+fn parse_args_from(mut args: impl Iterator<Item = String>) -> LspServerOptions {
     let mut options = LspServerOptions::default();
 
     while let Some(arg) = args.next() {
@@ -45,9 +48,18 @@ fn parse_args() -> LspServerOptions {
                     options.workspace_scripts.push(PathBuf::from(value));
                 }
             }
+            "--bracket-coloring" => {
+                if let Some(value) = args.next() {
+                    options.bracket_coloring = match value.as_str() {
+                        "punctuation" => BracketColoringMode::Punctuation,
+                        "vscode" => BracketColoringMode::VsCode,
+                        _ => BracketColoringMode::Semantic,
+                    };
+                }
+            }
             "--help" | "-h" => {
                 println!(
-                    "Usage: reforger_language_server [--log <path>] [--diagnostic-log <path>] [--game-data-scripts <path>] [--game-data-metadata <path>] [--index-cache <path>] [--workspace-scripts <path>]..."
+                    "Usage: reforger_language_server [--log <path>] [--diagnostic-log <path>] [--game-data-scripts <path>] [--game-data-metadata <path>] [--index-cache <path>] [--workspace-scripts <path>]... [--bracket-coloring <semantic|punctuation|vscode>]"
                 );
                 std::process::exit(0);
             }
@@ -56,4 +68,23 @@ fn parse_args() -> LspServerOptions {
     }
 
     options
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_args_from;
+    use reforger_language_server::lsp::BracketColoringMode;
+
+    #[test]
+    fn bracket_coloring_argument_accepts_every_extension_setting_value() {
+        for (value, expected) in [
+            ("semantic", BracketColoringMode::Semantic),
+            ("punctuation", BracketColoringMode::Punctuation),
+            ("vscode", BracketColoringMode::VsCode),
+        ] {
+            let options =
+                parse_args_from(["--bracket-coloring".to_string(), value.to_string()].into_iter());
+            assert_eq!(options.bracket_coloring, expected);
+        }
+    }
 }

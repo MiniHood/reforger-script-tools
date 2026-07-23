@@ -46,6 +46,14 @@ selects a compatible symbol; unresolved or category-invalid candidates remain
 punctuation. Attribute delimiters use the semantic `decorator` token kind
 without changing the attribute class name's existing classification.
 
+`reforgerScriptTools.bracketColoring` selects one presentation for the whole
+projection. `semantic`, the default, uses the owner classification above.
+`punctuation` emits every code delimiter as the theme's ordinary semantic
+`punctuation` token while retaining parser-proven active-pair matching.
+`vscode` omits code delimiters from the custom semantic-token projection so
+VS Code owns both their foreground colors and matching presentation. No mode
+hard-codes a foreground color, so theme customization remains authoritative.
+
 `reforger/activeScopeDelimiters` is a bounded, version-aware projection for all
 current carets. It selects the innermost matched semantic pair at each caret,
 coalesces duplicate pairs, and may use the current foreground parse while
@@ -57,6 +65,11 @@ foreground task returns a terminal empty result rather than a retry signal.
 After every source edit, the semantic-token request returns the current
 snapshot's lexical baseline immediately, replacing any editor-tracked rich
 delimiter ranges before background analysis publishes the updated overlay.
+For punctuation and native VS Code modes, that baseline consumes parser-proven
+generic-angle offsets only when the foreground worker has published them for
+the current snapshot. While foreground syntax is pending, angle operators keep
+their lexical operator classification; the request path neither reparses nor
+reuses stale delimiter facts.
 New text typed beside or inside a delimiter therefore cannot inherit that
 delimiter's foreground while the richer projection is pending.
 Active-pair requests decline documents larger than 128 KiB and cap caret input.

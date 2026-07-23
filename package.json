@@ -117,6 +117,23 @@
           "title": "Experimental: Auto Formatting",
           "description": "Apply experimental automatic source edits, including typing assists and preprocessor directive separators."
         },
+        "reforgerScriptTools.bracketColoring": {
+          "type": "string",
+          "default": "semantic",
+          "scope": "application",
+          "enum": [
+            "semantic",
+            "punctuation",
+            "vscode"
+          ],
+          "enumItemLabels": [
+            "Semantic Owner Colors",
+            "Punctuation Color",
+            "Visual Studio Code Colors"
+          ],
+          "title": "Bracket Coloring",
+          "markdownDescription": "Choose how Enfusion Script brackets are colored across VS Code windows. **Semantic Owner Colors** follows the nearest type, callable, variable, decorator, or keyword. **Punctuation Color** uses the theme's ordinary punctuation color. **Visual Studio Code Colors** uses native bracket-pair coloring and matching. This setting controls the Enforce-specific VS Code bracket presentation settings."
+        },
         "reforgerScriptTools.workbench.enabled": {
           "type": "boolean",
           "default": true,

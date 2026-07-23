@@ -211,9 +211,15 @@ transactions, typing-assist transactions, and active scope-delimiter
 presentation. The scope-delimiter bridge forwards current carets to the
 version-aware Rust request and applies the returned ranges with the standard
 theme bracket-match background and border; semantic tokens retain sole
-ownership of foreground color. Enfusion defaults disable VS Code's native
-bracket coloring and matching presentation while preserving its structural
-typing behavior and user override path. Typing-assist bridges share a small
+ownership of foreground color. The single application-scoped bracket-coloring
+setting selects semantic-owner colors, ordinary punctuation, or native VS Code
+presentation consistently across VS Code windows.
+The language client synchronizes VS Code's language-specific bracket-coloring
+and matching controls with that mode and restarts the server with the same
+selection. Semantic-owner and punctuation modes disable native presentation
+and retain the custom active-pair bridge; native mode emits no custom delimiter
+foregrounds and does not register that bridge. Structural bracket typing is
+unchanged. Typing-assist bridges share a small
 versioned editor-edit transaction contract while retaining their own trigger
 and Rust request policy. Each bridge transports Rust-authored facts or applies
 editor behavior; none interprets Enfusion source.

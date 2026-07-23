@@ -25,6 +25,12 @@ import {
 	refreshActiveScopeDelimiterDecorationForSnapshot,
 	registerActiveScopeDelimiterBridge,
 } from '../languageClient/activeScopeDelimiterBridge';
+import {
+	applyBracketColoringEditorMode,
+	bracketColoringServerArguments,
+	usesCustomScopeDelimiterPresentation,
+} from '../languageClient/bracketColoringBridge';
+import { RestartCoordinator } from '../languageClient/restartCoordinator';
 
 suite('extension activation', () => {
 	test('renders the completion response observed by the VS Code suggest pipeline', async () => {
@@ -225,6 +231,7 @@ suite('extension activation', () => {
 			path.join(extension.extensionPath, 'language-configuration.json'),
 			'utf8',
 		)) as {
+			colorizedBracketPairs: string[][];
 			autoClosingPairs: Array<{ open: string; close: string; notIn?: string[] }>;
 			onEnterRules?: Array<{
 				beforeText?: string;
@@ -232,6 +239,13 @@ suite('extension activation', () => {
 				action?: { indent?: string };
 			}>;
 		};
+		const allBracketPairs = [
+			['{', '}'],
+			['[', ']'],
+			['(', ')'],
+			['<', '>'],
+		];
+		assert.deepStrictEqual(configuration.colorizedBracketPairs, allBracketPairs);
 		assert.deepStrictEqual(
 			configuration.autoClosingPairs.find(pair => pair.open === '/*'),
 			{ open: '/*', close: '*/', notIn: ['string', 'comment'] },
@@ -273,6 +287,113 @@ suite('extension activation', () => {
 		};
 		assert.strictEqual(languageDefaults['editor.bracketPairColorization.enabled'], false);
 		assert.strictEqual(languageDefaults['editor.matchBrackets'], 'never');
+	});
+
+	test('contributes one three-mode bracket coloring setting with semantic ownership by default', () => {
+		const extension = vscode.extensions.all.find(
+			candidate => candidate.packageJSON.name === 'reforger-sript-tools',
+		);
+		assert.ok(extension, 'development extension is discoverable');
+		const properties = extension.packageJSON.contributes.configuration.properties as Record<string, {
+			default?: unknown;
+			enum?: unknown[];
+			enumItemLabels?: string[];
+			scope?: string;
+		}>;
+		const setting = properties['reforgerScriptTools.bracketColoring'];
+
+		assert.ok(setting);
+		assert.strictEqual(setting.default, 'semantic');
+		assert.strictEqual(setting.scope, 'application');
+		assert.deepStrictEqual(setting.enum, ['semantic', 'punctuation', 'vscode']);
+		assert.deepStrictEqual(setting.enumItemLabels, [
+			'Semantic Owner Colors',
+			'Punctuation Color',
+			'Visual Studio Code Colors',
+		]);
+	});
+
+	test('uses the bracket coloring mode as the sole Enforce native presentation control', async () => {
+		const scope = { languageId: 'enforce' };
+		const editorConfiguration = () => vscode.workspace.getConfiguration('editor', scope);
+		try {
+			await applyBracketColoringEditorMode('vscode');
+			assert.strictEqual(
+				editorConfiguration().get('bracketPairColorization.enabled'),
+				true,
+			);
+			assert.strictEqual(editorConfiguration().get('matchBrackets'), 'always');
+
+			await applyBracketColoringEditorMode('punctuation');
+			assert.strictEqual(
+				editorConfiguration().get('bracketPairColorization.enabled'),
+				false,
+			);
+			assert.strictEqual(editorConfiguration().get('matchBrackets'), 'never');
+
+			await applyBracketColoringEditorMode('semantic');
+			assert.strictEqual(
+				editorConfiguration().get('bracketPairColorization.enabled'),
+				false,
+			);
+			assert.strictEqual(editorConfiguration().get('matchBrackets'), 'never');
+		} finally {
+			await editorConfiguration().update(
+				'bracketPairColorization.enabled',
+				undefined,
+				vscode.ConfigurationTarget.Global,
+				true,
+			);
+			await editorConfiguration().update(
+				'matchBrackets',
+				undefined,
+				vscode.ConfigurationTarget.Global,
+				true,
+			);
+		}
+	});
+
+	test('passes each bracket mode to Rust and reserves active matching for custom modes', () => {
+		assert.deepStrictEqual(
+			bracketColoringServerArguments('semantic'),
+			['--bracket-coloring', 'semantic'],
+		);
+		assert.deepStrictEqual(
+			bracketColoringServerArguments('punctuation'),
+			['--bracket-coloring', 'punctuation'],
+		);
+		assert.deepStrictEqual(
+			bracketColoringServerArguments('vscode'),
+			['--bracket-coloring', 'vscode'],
+		);
+		assert.strictEqual(usesCustomScopeDelimiterPresentation('semantic'), true);
+		assert.strictEqual(usesCustomScopeDelimiterPresentation('punctuation'), true);
+		assert.strictEqual(usesCustomScopeDelimiterPresentation('vscode'), false);
+	});
+
+	test('coalesces overlapping language-server restarts to the latest request', async () => {
+		const coordinator = new RestartCoordinator();
+		const events: string[] = [];
+		let releaseFirst: (() => void) | undefined;
+		const firstBlocked = new Promise<void>(resolve => {
+			releaseFirst = resolve;
+		});
+
+		const first = coordinator.run(async () => {
+			events.push('semantic:start');
+			await firstBlocked;
+			events.push('semantic:end');
+		});
+		const superseded = coordinator.run(async () => {
+			events.push('punctuation');
+		});
+		const latest = coordinator.run(async () => {
+			events.push('vscode');
+		});
+		releaseFirst?.();
+		await Promise.all([first, superseded, latest]);
+
+		assert.deepStrictEqual(events, ['semantic:start', 'semantic:end', 'vscode']);
 	});
 
 	test('uses theme bracket-match emphasis without replacing semantic foregrounds', () => {

@@ -5,9 +5,9 @@ use super::{
     file_index_for_source_with_timings, selected_label_from_debug_report,
     semantic_tokens_for_cached_analysis_with_external_indexes_cancelled,
     signature_help_debug_markdown, signature_help_report_for_cached_analysis_with_external_indexes,
-    ExternalIndexSnapshot, ExternalIndexStatusSummary, FileIndexAnalysis, FileIndexAnalysisTimings,
-    LspPosition, DEBUG_COMPLETION_METHOD, DEBUG_HOVER_METHOD, FOREGROUND_RUNTIME_WORKERS,
-    MAX_BACKGROUND_RUNTIME_WORKERS, MAX_PENDING_DOCUMENT_ANALYSIS_JOBS,
+    BracketColoringMode, ExternalIndexSnapshot, ExternalIndexStatusSummary, FileIndexAnalysis,
+    FileIndexAnalysisTimings, LspPosition, DEBUG_COMPLETION_METHOD, DEBUG_HOVER_METHOD,
+    FOREGROUND_RUNTIME_WORKERS, MAX_BACKGROUND_RUNTIME_WORKERS, MAX_PENDING_DOCUMENT_ANALYSIS_JOBS,
 };
 use crate::analysis_runtime::{AnalysisTask, PositionIndex, TaskClass, TaskIdentity};
 use crate::lexer::{lex, Token};
@@ -84,6 +84,7 @@ pub(super) struct RichSemanticTokensJob {
     pub(super) scheduled_at: Instant,
     pub(super) analysis: FileIndexAnalysis,
     pub(super) external_snapshot: ExternalIndexSnapshot,
+    pub(super) bracket_coloring: BracketColoringMode,
 }
 
 pub(super) enum DebugRequestJob {
@@ -535,6 +536,7 @@ impl RuntimeWorkExecutor {
                         &job.analysis,
                         job.external_snapshot.workspace.as_deref(),
                         job.external_snapshot.game_data.as_deref(),
+                        job.bracket_coloring,
                         &|| job.task.is_cancelled(),
                     );
                 let event = match projection {

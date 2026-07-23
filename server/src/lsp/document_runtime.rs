@@ -1,18 +1,21 @@
 use super::request_router::{RequestCommand, RoutedRequest};
 #[cfg(test)]
 use super::semantic_tokens::{
-    fast_semantic_tokens_for_cached_analysis, LspSemanticTokenProjection,
+    fast_semantic_tokens_for_cached_analysis,
+    semantic_tokens_for_cached_analysis_with_external_indexes, LspSemanticTokenProjection,
 };
 use super::{
     clear_diagnostics_message, document_symbol_count, document_symbols_from_cached_analysis,
-    file_index_for_source_with_timings, lex, lexical_semantic_tokens_for_source, parse_source,
+    file_index_for_source_with_timings, generic_angle_offsets_for_delimiters, lex,
+    lexical_semantic_tokens_for_source_with_bracket_coloring, parse_source,
     publish_diagnostics_message, request_document_uri,
-    semantic_tokens_for_cached_analysis_with_external_indexes, AdmissionDisposition, AnalysisTask,
-    DebugRequestJob, DidChangeTextDocumentParams, DidOpenTextDocumentParams, DocumentQuery,
-    ExternalIndexSnapshot, FileIndexAnalysis, FileIndexAnalysisTimings, ForegroundDocumentJob,
-    LspSemanticTokensFull, OpenDocument, OpenDocumentAnalysisJob, PositionIndex,
-    RichSemanticTokensJob, RpcMessage, RuntimeEffect, RuntimeWorkExecutor, ServerEvent, TaskClass,
-    TokenProjectionKind, TokenResultDisposition, MAX_PENDING_DOCUMENT_REQUESTS_PER_URI,
+    semantic_tokens_for_cached_analysis_with_external_indexes_and_bracket_coloring,
+    AdmissionDisposition, AnalysisTask, BracketColoringMode, DebugRequestJob,
+    DidChangeTextDocumentParams, DidOpenTextDocumentParams, DocumentQuery, ExternalIndexSnapshot,
+    FileIndexAnalysis, FileIndexAnalysisTimings, ForegroundDocumentJob, LspSemanticTokensFull,
+    OpenDocument, OpenDocumentAnalysisJob, PositionIndex, RichSemanticTokensJob, RpcMessage,
+    RuntimeEffect, RuntimeWorkExecutor, ServerEvent, TaskClass, TokenProjectionKind,
+    TokenResultDisposition, MAX_PENDING_DOCUMENT_REQUESTS_PER_URI,
 };
 use crate::analysis_runtime::{AdmissionLimits, AnalysisRuntime, UpsertOutcome};
 use serde_json::Value;
@@ -31,6 +34,7 @@ pub(super) struct DocumentRuntime {
     runtime: AnalysisRuntime,
     analysis_scheduler: Option<RuntimeWorkExecutor>,
     deferred_document_requests: BTreeMap<String, Vec<DeferredDocumentRequest>>,
+    bracket_coloring: BracketColoringMode,
     next_server_request_id: u64,
     semantic_tokens_refresh_in_flight: Option<String>,
     semantic_tokens_refresh_dirty: bool,
@@ -67,12 +71,21 @@ pub(super) struct DocumentRuntimeTestState {
 }
 
 impl DocumentRuntime {
+    #[cfg(test)]
     pub(super) fn new(analysis_scheduler: Option<RuntimeWorkExecutor>) -> Self {
+        Self::new_with_bracket_coloring(analysis_scheduler, BracketColoringMode::Semantic)
+    }
+
+    pub(super) fn new_with_bracket_coloring(
+        analysis_scheduler: Option<RuntimeWorkExecutor>,
+        bracket_coloring: BracketColoringMode,
+    ) -> Self {
         Self {
             documents: BTreeMap::new(),
             runtime: AnalysisRuntime::new(AdmissionLimits::new(64, 64 * 1024 * 1024)),
             analysis_scheduler,
             deferred_document_requests: BTreeMap::new(),
+            bracket_coloring,
             next_server_request_id: 1,
             semantic_tokens_refresh_in_flight: None,
             semantic_tokens_refresh_dirty: false,
@@ -191,11 +204,23 @@ impl DocumentRuntime {
         selection.bytes = document.text.len();
         selection.revision = document.revision;
         let source = document.text.clone();
+        let generic_angle_offsets = document
+            .foreground()
+            .map(|foreground| {
+                generic_angle_offsets_for_delimiters(&source, foreground.scope_delimiters())
+            })
+            .unwrap_or_default();
         let (kind, result_id, disposition, projection) = {
             let selected = document.semantic_tokens.select_or_insert_lexical(
                 document.revision,
                 external_generation,
-                || lexical_semantic_tokens_for_source(&source),
+                || {
+                    lexical_semantic_tokens_for_source_with_bracket_coloring(
+                        &source,
+                        self.bracket_coloring,
+                        &generic_angle_offsets,
+                    )
+                },
             );
             (
                 selected.kind,
@@ -907,12 +932,14 @@ impl DocumentRuntime {
             .semantic_tokens
             .mark_pending(revision, generation, task.cancellation_token());
         let Some(scheduler) = self.analysis_scheduler.as_ref() else {
-            let projection = semantic_tokens_for_cached_analysis_with_external_indexes(
-                task.snapshot().text(),
-                &analysis,
-                external_indexes.workspace.as_deref(),
-                external_indexes.game_data.as_deref(),
-            );
+            let projection =
+                semantic_tokens_for_cached_analysis_with_external_indexes_and_bracket_coloring(
+                    task.snapshot().text(),
+                    &analysis,
+                    external_indexes.workspace.as_deref(),
+                    external_indexes.game_data.as_deref(),
+                    self.bracket_coloring,
+                );
             return self
                 .interpret_rich_ready_event(
                     ServerEvent::RichSemanticTokensReady {
@@ -936,6 +963,7 @@ impl DocumentRuntime {
             scheduled_at: start,
             analysis,
             external_snapshot: external_indexes,
+            bracket_coloring: self.bracket_coloring,
         });
         Vec::new()
     }
@@ -1107,8 +1135,9 @@ pub(super) struct DeferredDocumentRequest {
 mod tests {
     use super::{
         semantic_tokens_for_cached_analysis_with_external_indexes, AdmissionDisposition,
-        DidChangeTextDocumentParams, DidOpenTextDocumentParams, DocumentRuntime,
-        ExternalIndexSnapshot, OpenDocument, RpcMessage, RuntimeEffect, ServerEvent, TaskClass,
+        BracketColoringMode, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
+        DocumentRuntime, ExternalIndexSnapshot, OpenDocument, RpcMessage, RuntimeEffect,
+        ServerEvent, TaskClass,
     };
     use crate::analysis_runtime::UpsertOutcome;
     use serde_json::json;
@@ -1338,5 +1367,96 @@ mod tests {
         let changed = runtime.select_semantic_tokens(&uri, 0);
         assert_eq!(changed.tokens.result_id, "reforger:2:lexical");
         assert!(changed.rich_work.is_some());
+    }
+
+    #[test]
+    fn current_foreground_generic_facts_drive_the_first_punctuation_projection() {
+        let mut runtime =
+            DocumentRuntime::new_with_bracket_coloring(None, BracketColoringMode::Punctuation);
+        let uri = "file:///punctuation-baseline.c".to_string();
+        let source = "class Example { array<int>> value; }";
+        runtime
+            .open_document(
+                DidOpenTextDocumentParams {
+                    text_document: super::super::TextDocumentItem {
+                        uri: uri.clone(),
+                        version: 1,
+                        text: source.to_string(),
+                    },
+                },
+                0,
+            )
+            .expect("open succeeds");
+
+        let selection = runtime.select_semantic_tokens(&uri, 0);
+        let closers = source.find(">>").unwrap();
+        let punctuation_type = super::super::SEMANTIC_TOKEN_TYPES
+            .iter()
+            .position(|token_type| *token_type == "punctuation")
+            .unwrap() as u32;
+        let operator_type = super::super::SEMANTIC_TOKEN_TYPES
+            .iter()
+            .position(|token_type| *token_type == "operator")
+            .unwrap() as u32;
+
+        assert_eq!(selection.tokens.result_id, "reforger:1:lexical");
+        assert_eq!(
+            semantic_token_type_at_offset(&selection.tokens.data, closers),
+            Some(punctuation_type),
+        );
+        assert_eq!(
+            semantic_token_type_at_offset(&selection.tokens.data, closers + 1),
+            Some(operator_type),
+        );
+    }
+
+    #[test]
+    fn current_foreground_generic_facts_do_not_remove_semantic_baseline_operators() {
+        let mut runtime =
+            DocumentRuntime::new_with_bracket_coloring(None, BracketColoringMode::Semantic);
+        let uri = "file:///semantic-baseline.c".to_string();
+        let source = "class Example { array<int> value; }";
+        runtime
+            .open_document(
+                DidOpenTextDocumentParams {
+                    text_document: super::super::TextDocumentItem {
+                        uri: uri.clone(),
+                        version: 1,
+                        text: source.to_string(),
+                    },
+                },
+                0,
+            )
+            .expect("open succeeds");
+
+        let selection = runtime.select_semantic_tokens(&uri, 0);
+        let generic_open = source.find('<').unwrap();
+        let operator_type = super::super::SEMANTIC_TOKEN_TYPES
+            .iter()
+            .position(|token_type| *token_type == "operator")
+            .unwrap() as u32;
+
+        assert_eq!(selection.tokens.result_id, "reforger:1:lexical");
+        assert_eq!(
+            semantic_token_type_at_offset(&selection.tokens.data, generic_open),
+            Some(operator_type),
+        );
+    }
+
+    fn semantic_token_type_at_offset(data: &[u32], offset: usize) -> Option<u32> {
+        let mut line = 0usize;
+        let mut character = 0usize;
+        for token in data.chunks_exact(5) {
+            line += token[0] as usize;
+            character = if token[0] == 0 {
+                character + token[1] as usize
+            } else {
+                token[1] as usize
+            };
+            if line == 0 && character <= offset && offset < character + token[2] as usize {
+                return Some(token[3]);
+            }
+        }
+        None
     }
 }

@@ -110,6 +110,7 @@ fn framed_lsp_smoke_test_handles_open_and_document_symbol() {
             game_data_metadata: None,
             index_cache: None,
             workspace_scripts: Vec::new(),
+            bracket_coloring: BracketColoringMode::Semantic,
         },
     )
     .unwrap();
@@ -309,6 +310,7 @@ fn framed_lsp_reuses_cached_document_symbols_for_repeated_requests() {
             game_data_metadata: None,
             index_cache: None,
             workspace_scripts: Vec::new(),
+            bracket_coloring: BracketColoringMode::Semantic,
         },
     )
     .unwrap();
@@ -416,6 +418,7 @@ fn framed_lsp_did_change_defers_document_symbol_projection_until_requested() {
             game_data_metadata: None,
             index_cache: None,
             workspace_scripts: Vec::new(),
+            bracket_coloring: BracketColoringMode::Semantic,
         },
     )
     .unwrap();
@@ -501,9 +504,18 @@ fn input_route_creates_a_body_for_a_modded_class_with_inheritance() {
         )
         .unwrap();
     let output = String::from_utf8_lossy(&server.writer);
-    assert!(output.contains("\"newText\":\"\\n{\\n    \\n}\""), "{output}");
-    assert!(output.contains("\"owner\":\"classDeclaration\""), "{output}");
-    assert!(output.contains("\"selection\":{\"character\":4,\"line\":2}"), "{output}");
+    assert!(
+        output.contains("\"newText\":\"\\n{\\n    \\n}\""),
+        "{output}"
+    );
+    assert!(
+        output.contains("\"owner\":\"classDeclaration\""),
+        "{output}"
+    );
+    assert!(
+        output.contains("\"selection\":{\"character\":4,\"line\":2}"),
+        "{output}"
+    );
 }
 
 #[test]
@@ -535,9 +547,15 @@ fn input_route_creates_a_body_for_a_protected_method() {
         )
         .unwrap();
     let output = String::from_utf8_lossy(&server.writer);
-    assert!(output.contains("\"newText\":\"\\n    {\\n        \\n    }\""), "{output}");
+    assert!(
+        output.contains("\"newText\":\"\\n    {\\n        \\n    }\""),
+        "{output}"
+    );
     assert!(output.contains("\"owner\":\"protectedMethod\""), "{output}");
-    assert!(output.contains("\"selection\":{\"character\":8,\"line\":4}"), "{output}");
+    assert!(
+        output.contains("\"selection\":{\"character\":8,\"line\":4}"),
+        "{output}"
+    );
 }
 
 #[test]
@@ -672,20 +690,26 @@ fn input_route_finishes_an_unambiguous_statement_with_a_semicolon_before_enter()
 fn input_route_finishes_a_new_map_declaration_before_its_trailing_comment() {
     let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
     let uri = "file:///Scripts/NewMapSemicolonEnter.c";
-    let source =
-        "map<int, int> testmap = new map<int, int>()// pressing enter here";
+    let source = "map<int, int> testmap = new map<int, int>()// pressing enter here";
     server.handle_message(json!({ "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
         "textDocument": { "uri": uri, "languageId": "enforce", "version": 1, "text": source }
     }}), None, 0, 0).unwrap();
     server.writer.clear();
-    server.handle_message(json!({ "jsonrpc": "2.0", "id": 1, "method": CONTROL_HEADER_ENTER_METHOD, "params": {
-        "textDocument": { "uri": uri }, "operation": "insertNewline", "version": 1,
-        "selections": [{
-            "start": { "line": 0, "character": source.len() },
-            "end": { "line": 0, "character": source.len() }
-        }],
-        "options": { "tabSize": 4, "insertSpaces": true }
-    }}), None, 0, 0).unwrap();
+    server
+        .handle_message(
+            json!({ "jsonrpc": "2.0", "id": 1, "method": CONTROL_HEADER_ENTER_METHOD, "params": {
+                "textDocument": { "uri": uri }, "operation": "insertNewline", "version": 1,
+                "selections": [{
+                    "start": { "line": 0, "character": source.len() },
+                    "end": { "line": 0, "character": source.len() }
+                }],
+                "options": { "tabSize": 4, "insertSpaces": true }
+            }}),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
 
     let output = String::from_utf8_lossy(&server.writer);
     assert!(
@@ -705,17 +729,27 @@ fn input_route_finishes_a_parenthesis_free_nested_constructor() {
         "textDocument": { "uri": uri, "languageId": "enforce", "version": 1, "text": source }
     }}), None, 0, 0).unwrap();
     server.writer.clear();
-    server.handle_message(json!({ "jsonrpc": "2.0", "id": 1, "method": CONTROL_HEADER_ENTER_METHOD, "params": {
-        "textDocument": { "uri": uri }, "operation": "insertNewline", "version": 1,
-        "selections": [{
-            "start": { "line": 0, "character": source.len() },
-            "end": { "line": 0, "character": source.len() }
-        }],
-        "options": { "tabSize": 4, "insertSpaces": true }
-    }}), None, 0, 0).unwrap();
+    server
+        .handle_message(
+            json!({ "jsonrpc": "2.0", "id": 1, "method": CONTROL_HEADER_ENTER_METHOD, "params": {
+                "textDocument": { "uri": uri }, "operation": "insertNewline", "version": 1,
+                "selections": [{
+                    "start": { "line": 0, "character": source.len() },
+                    "end": { "line": 0, "character": source.len() }
+                }],
+                "options": { "tabSize": 4, "insertSpaces": true }
+            }}),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
 
     let output = String::from_utf8_lossy(&server.writer);
-    assert!(output.contains("\"newText\":\"; //--- Min, max\\n\""), "{output}");
+    assert!(
+        output.contains("\"newText\":\"; //--- Min, max\\n\""),
+        "{output}"
+    );
     assert!(output.contains("\"owner\":\"semicolon\""), "{output}");
 }
 
@@ -864,6 +898,7 @@ fn framed_lsp_smoke_test_handles_hover() {
             game_data_metadata: None,
             index_cache: None,
             workspace_scripts: Vec::new(),
+            bracket_coloring: BracketColoringMode::Semantic,
         },
     )
     .unwrap();
@@ -871,9 +906,8 @@ fn framed_lsp_smoke_test_handles_hover() {
     let output_text = String::from_utf8(output).unwrap();
     assert!(output_text.contains("\"hoverProvider\":true"));
     assert!(output_text.contains("\"signatureHelpProvider\""));
-    assert!(
-        output_text.contains("\"completionProvider\":{\"triggerCharacters\":[\".\",\"[\",\"#\",\" \"]}")
-    );
+    assert!(output_text
+        .contains("\"completionProvider\":{\"triggerCharacters\":[\".\",\"[\",\"#\",\" \"]}"));
     assert!(output_text.contains("void Run(int value)"));
     assert!(output_text.contains("\"kind\":\"markdown\""));
 }
@@ -953,6 +987,7 @@ fn framed_lsp_smoke_test_handles_definition() {
             game_data_metadata: None,
             index_cache: None,
             workspace_scripts: Vec::new(),
+            bracket_coloring: BracketColoringMode::Semantic,
         },
     )
     .unwrap();
@@ -1059,7 +1094,8 @@ fn framed_lsp_space_trigger_stays_silent_outside_contextual_new() {
     let mut output = Vec::new();
     run(input.as_slice(), &mut output, LspServerOptions::default()).unwrap();
     let output = String::from_utf8(output).unwrap();
-    assert!(output.contains("\"id\":2,\"jsonrpc\":\"2.0\",\"result\":{\"isIncomplete\":false,\"items\":[]}"));
+    assert!(output
+        .contains("\"id\":2,\"jsonrpc\":\"2.0\",\"result\":{\"isIncomplete\":false,\"items\":[]}"));
 }
 
 #[test]
@@ -1113,8 +1149,7 @@ fn framed_lsp_space_trigger_surfaces_a_contextual_constructor() {
 
 #[test]
 fn framed_lsp_completion_on_partial_new_returns_the_full_constructor_preview() {
-    let source =
-        "class Example\n{\n\tvoid Run()\n\t{\n\t\tarray<int> tesyArray = n\n\t}\n}\n";
+    let source = "class Example\n{\n\tvoid Run()\n\t{\n\t\tarray<int> tesyArray = n\n\t}\n}\n";
     let position = position_after_needle(source, "tesyArray = n");
     let mut input = Vec::new();
     write_test_message(
@@ -1164,8 +1199,7 @@ fn framed_lsp_completion_on_partial_new_returns_the_full_constructor_preview() {
 
 #[test]
 fn framed_lsp_manual_completion_on_bare_new_replaces_the_keyword() {
-    let source =
-        "class Example\n{\n\tvoid Run()\n\t{\n\t\tarray<int> tesyArray = new\n\t}\n}\n";
+    let source = "class Example\n{\n\tvoid Run()\n\t{\n\t\tarray<int> tesyArray = new\n\t}\n}\n";
     let position = position_after_needle(source, "tesyArray = new");
     let mut input = Vec::new();
     write_test_message(
@@ -1338,9 +1372,8 @@ fn framed_lsp_smoke_test_handles_member_completion() {
     run(input.as_slice(), &mut output, LspServerOptions::default()).unwrap();
 
     let output_text = String::from_utf8(output).unwrap();
-    assert!(
-        output_text.contains("\"completionProvider\":{\"triggerCharacters\":[\".\",\"[\",\"#\",\" \"]}")
-    );
+    assert!(output_text
+        .contains("\"completionProvider\":{\"triggerCharacters\":[\".\",\"[\",\"#\",\" \"]}"));
     assert!(output_text.contains("\"isIncomplete\":false"));
     assert!(output_text.contains("\"label\":\"SetVisible\""));
     assert!(output_text.contains("\"newText\":\"SetVisible(${1:visible})\""));
@@ -1809,6 +1842,7 @@ fn framed_lsp_uses_cached_analysis_for_repeated_hover() {
             game_data_metadata: None,
             index_cache: None,
             workspace_scripts: Vec::new(),
+            bracket_coloring: BracketColoringMode::Semantic,
         },
     )
     .unwrap();
@@ -1953,6 +1987,7 @@ fn framed_lsp_did_change_replaces_cached_analysis() {
             game_data_metadata: None,
             index_cache: None,
             workspace_scripts: Vec::new(),
+            bracket_coloring: BracketColoringMode::Semantic,
         },
     )
     .unwrap();
@@ -2048,6 +2083,7 @@ fn framed_lsp_did_close_removes_cached_document() {
             game_data_metadata: None,
             index_cache: None,
             workspace_scripts: Vec::new(),
+            bracket_coloring: BracketColoringMode::Semantic,
         },
     )
     .unwrap();
@@ -2145,6 +2181,7 @@ fn framed_lsp_publishes_and_clears_parser_diagnostics() {
             game_data_metadata: None,
             index_cache: None,
             workspace_scripts: Vec::new(),
+            bracket_coloring: BracketColoringMode::Semantic,
         },
     )
     .unwrap();
@@ -2252,6 +2289,7 @@ fn framed_lsp_ignores_stale_changes_without_regressing_diagnostics_or_symbols() 
             game_data_metadata: None,
             index_cache: None,
             workspace_scripts: Vec::new(),
+            bracket_coloring: BracketColoringMode::Semantic,
         },
     )
     .unwrap();
@@ -2353,6 +2391,7 @@ fn framed_lsp_smoke_test_handles_debug_hover_request() {
             game_data_metadata: None,
             index_cache: None,
             workspace_scripts: Vec::new(),
+            bracket_coloring: BracketColoringMode::Semantic,
         },
     )
     .unwrap();
@@ -2438,6 +2477,7 @@ fn framed_lsp_smoke_test_handles_debug_completion_request() {
             game_data_metadata: None,
             index_cache: None,
             workspace_scripts: Vec::new(),
+            bracket_coloring: BracketColoringMode::Semantic,
         },
     )
     .unwrap();
@@ -2527,6 +2567,7 @@ fn framed_lsp_debug_completion_includes_signature_help_when_inside_call() {
             game_data_metadata: None,
             index_cache: None,
             workspace_scripts: Vec::new(),
+            bracket_coloring: BracketColoringMode::Semantic,
         },
     )
     .unwrap();

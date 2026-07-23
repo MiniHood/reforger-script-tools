@@ -6,6 +6,12 @@
       "*/"
     ]
   },
+  "colorizedBracketPairs": [
+    ["{", "}"],
+    ["[", "]"],
+    ["(", ")"],
+    ["<", ">"]
+  ],
   "autoClosingPairs": [
     {
       "open": "/*",

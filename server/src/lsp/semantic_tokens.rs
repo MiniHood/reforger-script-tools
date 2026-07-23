@@ -8,7 +8,7 @@ use crate::model::SymbolKind;
 use crate::resolver::{CandidateSource, ReferenceCandidate, ReferenceResolver, ResolutionReason};
 use crate::syntax::{SyntaxElement, SyntaxKind, SyntaxNode};
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 pub(crate) const SEMANTIC_TOKEN_TYPES: &[&str] = &[
@@ -124,6 +124,21 @@ pub fn semantic_tokens_report_for_source(source: &str) -> LspSemanticTokenReport
     semantic_tokens_report_for_cached_analysis(source, &analysis)
 }
 
+pub fn semantic_tokens_report_for_source_with_bracket_coloring(
+    source: &str,
+    bracket_coloring: BracketColoringMode,
+) -> LspSemanticTokenReport {
+    let analysis = file_index_for_source(source);
+    semantic_tokens_report_for_cached_analysis_mode(
+        source,
+        &analysis,
+        None,
+        None,
+        SemanticTokenMode::Rich,
+        bracket_coloring,
+    )
+}
+
 pub fn fast_semantic_tokens_report_for_source(source: &str) -> LspSemanticTokenReport {
     let analysis = file_index_for_source(source);
     semantic_tokens_report_for_cached_analysis_mode(
@@ -132,6 +147,7 @@ pub fn fast_semantic_tokens_report_for_source(source: &str) -> LspSemanticTokenR
         None,
         None,
         SemanticTokenMode::Fast,
+        BracketColoringMode::Semantic,
     )
 }
 
@@ -162,11 +178,32 @@ pub fn fast_semantic_tokens_for_source(source: &str) -> LspSemanticTokenProjecti
 /// is safe to use while a newer document revision is awaiting syntax and
 /// semantic analysis. It preserves the shared semantic-token encoding rules,
 /// including UTF-16 positions and CRLF-aware multiline token splitting.
+#[cfg(test)]
 pub(crate) fn lexical_semantic_tokens_for_source(source: &str) -> LspSemanticTokenProjection {
+    lexical_semantic_tokens_for_source_with_bracket_coloring(
+        source,
+        BracketColoringMode::Semantic,
+        &BTreeSet::new(),
+    )
+}
+
+pub(crate) fn lexical_semantic_tokens_for_source_with_bracket_coloring(
+    source: &str,
+    bracket_coloring: BracketColoringMode,
+    generic_angle_offsets: &BTreeSet<usize>,
+) -> LspSemanticTokenProjection {
     let lex_start = Instant::now();
     let lexer_tokens = lex(source);
-    let raw_projection = lexical_raw_tokens(source, &lexer_tokens, lex_start.elapsed(), None)
-        .expect("lexical semantic token projection is not cancellable through this entrypoint");
+    let lex_elapsed = lex_start.elapsed();
+    let raw_projection = lexical_raw_tokens(
+        source,
+        &lexer_tokens,
+        lex_elapsed,
+        bracket_coloring,
+        generic_angle_offsets,
+        None,
+    )
+    .expect("lexical semantic token projection is not cancellable through this entrypoint");
     encode_lexical_projection(source, raw_projection, None)
         .expect("lexical semantic token projection is not cancellable through this entrypoint")
 }
@@ -203,6 +240,7 @@ pub(crate) fn semantic_tokens_report_for_cached_analysis_with_external_indexes(
         workspace_index,
         game_data_index,
         SemanticTokenMode::Rich,
+        BracketColoringMode::Semantic,
     )
 }
 
@@ -212,6 +250,7 @@ fn semantic_tokens_report_for_cached_analysis_mode(
     workspace_index: Option<&SymbolIndex>,
     game_data_index: Option<&SymbolIndex>,
     mode: SemanticTokenMode,
+    bracket_coloring: BracketColoringMode,
 ) -> LspSemanticTokenReport {
     let raw_projection = semantic_raw_tokens(
         source,
@@ -219,6 +258,7 @@ fn semantic_tokens_report_for_cached_analysis_mode(
         workspace_index,
         game_data_index,
         mode,
+        bracket_coloring,
         None,
     )
     .expect("semantic token reports are not cancellable");
@@ -268,12 +308,29 @@ pub(crate) fn semantic_tokens_for_cached_analysis_with_external_indexes(
     workspace_index: Option<&SymbolIndex>,
     game_data_index: Option<&SymbolIndex>,
 ) -> LspSemanticTokenProjection {
+    semantic_tokens_for_cached_analysis_with_external_indexes_and_bracket_coloring(
+        source,
+        analysis,
+        workspace_index,
+        game_data_index,
+        BracketColoringMode::Semantic,
+    )
+}
+
+pub(crate) fn semantic_tokens_for_cached_analysis_with_external_indexes_and_bracket_coloring(
+    source: &str,
+    analysis: &FileIndexAnalysis,
+    workspace_index: Option<&SymbolIndex>,
+    game_data_index: Option<&SymbolIndex>,
+    bracket_coloring: BracketColoringMode,
+) -> LspSemanticTokenProjection {
     let raw_projection = semantic_raw_tokens(
         source,
         analysis,
         workspace_index,
         game_data_index,
         SemanticTokenMode::Rich,
+        bracket_coloring,
         None,
     )
     .expect("rich semantic token projection is not cancellable through this entrypoint");
@@ -286,6 +343,7 @@ pub(crate) fn semantic_tokens_for_cached_analysis_with_external_indexes_cancelle
     analysis: &FileIndexAnalysis,
     workspace_index: Option<&SymbolIndex>,
     game_data_index: Option<&SymbolIndex>,
+    bracket_coloring: BracketColoringMode,
     should_cancel: &dyn Fn() -> bool,
 ) -> Option<LspSemanticTokenProjection> {
     let raw_projection = semantic_raw_tokens(
@@ -294,6 +352,7 @@ pub(crate) fn semantic_tokens_for_cached_analysis_with_external_indexes_cancelle
         workspace_index,
         game_data_index,
         SemanticTokenMode::Rich,
+        bracket_coloring,
         Some(should_cancel),
     )?;
     encode_projection(source, analysis, raw_projection, Some(should_cancel))
@@ -303,9 +362,16 @@ pub(crate) fn fast_semantic_tokens_for_cached_analysis(
     source: &str,
     analysis: &FileIndexAnalysis,
 ) -> LspSemanticTokenProjection {
-    let raw_projection =
-        semantic_raw_tokens(source, analysis, None, None, SemanticTokenMode::Fast, None)
-            .expect("fast semantic token projection is not cancellable");
+    let raw_projection = semantic_raw_tokens(
+        source,
+        analysis,
+        None,
+        None,
+        SemanticTokenMode::Fast,
+        BracketColoringMode::Semantic,
+        None,
+    )
+    .expect("fast semantic token projection is not cancellable");
     encode_projection(source, analysis, raw_projection, None)
         .expect("fast semantic token projection is not cancellable")
 }
@@ -368,12 +434,21 @@ pub enum SemanticTokenMode {
     Rich,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum BracketColoringMode {
+    #[default]
+    Semantic,
+    Punctuation,
+    VsCode,
+}
+
 fn semantic_raw_tokens(
     source: &str,
     analysis: &FileIndexAnalysis,
     workspace_index: Option<&SymbolIndex>,
     game_data_index: Option<&SymbolIndex>,
     mode: SemanticTokenMode,
+    bracket_coloring: BracketColoringMode,
     should_cancel: Option<&dyn Fn() -> bool>,
 ) -> Option<RawSemanticTokenProjection> {
     let lex_elapsed = Duration::default();
@@ -464,6 +539,11 @@ fn semantic_raw_tokens(
                 &mut tokens,
                 raw_semantic(*token, token_type, 0, TYPE_SPAN_PRIORITY),
             );
+        }
+        if bracket_coloring == BracketColoringMode::VsCode
+            && is_standard_bracket_token_kind(token.kind)
+        {
+            continue;
         }
         if let Some(token_type) = lexical_semantic_type(token.kind) {
             let priority = if is_comment_token_kind(token.kind) {
@@ -566,15 +646,6 @@ fn semantic_raw_tokens(
     let declaration_overlay_elapsed = declaration_overlay_start.elapsed();
 
     let delimiter_overlay_start = Instant::now();
-    let mut owner_types = BTreeMap::new();
-    for token in &tokens {
-        let entry = owner_types
-            .entry((token.span.start, token.span.end))
-            .or_insert((token.priority, token.token_type));
-        if token.priority > entry.0 {
-            *entry = (token.priority, token.token_type);
-        }
-    }
     let delimiters = super::scope_delimiters::semantic_scope_delimiters_for_analysis(
         source,
         analysis,
@@ -582,34 +653,58 @@ fn semantic_raw_tokens(
         mode == SemanticTokenMode::Rich,
         should_cancel,
     )?;
-    for (index, delimiter) in delimiters.into_iter().enumerate() {
-        if index % 64 == 0 && should_cancel.is_some_and(|should_cancel| should_cancel()) {
-            return None;
+    let generic_angle_offsets = generic_angle_offsets_for_delimiters(source, &delimiters);
+    let operator_type = semantic_type_index("operator");
+    tokens = tokens
+        .into_iter()
+        .flat_map(|token| {
+            if token.token_type == operator_type {
+                split_raw_token_around_offsets(token, &generic_angle_offsets)
+            } else {
+                vec![token]
+            }
+        })
+        .collect();
+    if bracket_coloring != BracketColoringMode::VsCode {
+        let mut owner_types = BTreeMap::new();
+        for token in &tokens {
+            let entry = owner_types
+                .entry((token.span.start, token.span.end))
+                .or_insert((token.priority, token.token_type));
+            if token.priority > entry.0 {
+                *entry = (token.priority, token.token_type);
+            }
         }
-        let token_type = if delimiter.anchor_kind
-            == super::scope_delimiters::ScopeDelimiterAnchorKind::Punctuation
-        {
-            semantic_type_index("punctuation")
-        } else if let Some((_, token_type)) =
-            owner_types.get(&(delimiter.anchor.start, delimiter.anchor.end))
-        {
-            *token_type
-        } else {
-            continue;
-        };
-        for span in [Some(delimiter.opener), delimiter.closer]
-            .into_iter()
-            .flatten()
-        {
-            push_raw_semantic_token(
-                &mut tokens,
-                RawSemanticToken {
-                    span,
-                    token_type,
-                    modifiers: 0,
-                    priority: 90,
-                },
-            );
+        for (index, delimiter) in delimiters.into_iter().enumerate() {
+            if index % 64 == 0 && should_cancel.is_some_and(|should_cancel| should_cancel()) {
+                return None;
+            }
+            let token_type = if bracket_coloring == BracketColoringMode::Punctuation
+                || delimiter.anchor_kind
+                    == super::scope_delimiters::ScopeDelimiterAnchorKind::Punctuation
+            {
+                semantic_type_index("punctuation")
+            } else if let Some((_, token_type)) =
+                owner_types.get(&(delimiter.anchor.start, delimiter.anchor.end))
+            {
+                *token_type
+            } else {
+                continue;
+            };
+            for span in [Some(delimiter.opener), delimiter.closer]
+                .into_iter()
+                .flatten()
+            {
+                push_raw_semantic_token(
+                    &mut tokens,
+                    RawSemanticToken {
+                        span,
+                        token_type,
+                        modifiers: 0,
+                        priority: 90,
+                    },
+                );
+            }
         }
     }
     let delimiter_overlay_elapsed = delimiter_overlay_start.elapsed();
@@ -663,6 +758,8 @@ fn lexical_raw_tokens(
     source: &str,
     lexer_tokens: &[Token],
     lex_elapsed: Duration,
+    bracket_coloring: BracketColoringMode,
+    generic_angle_offsets: &BTreeSet<usize>,
     should_cancel: Option<&dyn Fn() -> bool>,
 ) -> Option<RawSemanticTokenProjection> {
     if should_cancel.is_some_and(|should_cancel| should_cancel()) {
@@ -725,6 +822,40 @@ fn lexical_raw_tokens(
                 raw_semantic(*token, token_type, 0, TYPE_SPAN_PRIORITY),
             );
         }
+        if bracket_coloring == BracketColoringMode::VsCode
+            && is_standard_bracket_token_kind(token.kind)
+        {
+            continue;
+        }
+        let generic_angles = generic_angle_offsets
+            .range(token.span.start..token.span.end)
+            .copied()
+            .collect::<Vec<_>>();
+        if bracket_coloring != BracketColoringMode::Semantic && !generic_angles.is_empty() {
+            let operator_type = semantic_type_index("operator");
+            if lexical_semantic_type(token.kind) == Some(operator_type) {
+                for residual in split_raw_token_around_offsets(
+                    raw_semantic(*token, operator_type, 0, 10),
+                    generic_angle_offsets,
+                ) {
+                    push_raw_semantic_token(&mut tokens, residual);
+                }
+            }
+            if bracket_coloring == BracketColoringMode::Punctuation {
+                for offset in generic_angles {
+                    push_raw_semantic_token(
+                        &mut tokens,
+                        RawSemanticToken {
+                            span: TextSpan::new(offset, offset + 1),
+                            token_type: semantic_type_index("punctuation"),
+                            modifiers: 0,
+                            priority: 10,
+                        },
+                    );
+                }
+            }
+            continue;
+        }
         if let Some(token_type) = lexical_semantic_type(token.kind) {
             let priority = if is_comment_token_kind(token.kind) {
                 200
@@ -775,6 +906,63 @@ fn lexical_raw_tokens(
             identifier_resolver_calls: 0,
         },
     })
+}
+
+pub(crate) fn generic_angle_offsets_for_delimiters(
+    source: &str,
+    delimiters: &[super::scope_delimiters::ScopeDelimiter],
+) -> BTreeSet<usize> {
+    delimiters
+        .iter()
+        .flat_map(|delimiter| [Some(delimiter.opener), delimiter.closer])
+        .flatten()
+        .filter_map(|span| {
+            source
+                .as_bytes()
+                .get(span.start)
+                .is_some_and(|byte| matches!(byte, b'<' | b'>'))
+                .then_some(span.start)
+        })
+        .collect()
+}
+
+fn split_raw_token_around_offsets(
+    token: RawSemanticToken,
+    excluded_offsets: &BTreeSet<usize>,
+) -> Vec<RawSemanticToken> {
+    let mut residual = Vec::new();
+    let mut start = token.span.start;
+    for offset in excluded_offsets
+        .range(token.span.start..token.span.end)
+        .copied()
+    {
+        if start < offset {
+            residual.push(RawSemanticToken {
+                span: TextSpan::new(start, offset),
+                ..token
+            });
+        }
+        start = offset + 1;
+    }
+    if start < token.span.end {
+        residual.push(RawSemanticToken {
+            span: TextSpan::new(start, token.span.end),
+            ..token
+        });
+    }
+    residual
+}
+
+fn is_standard_bracket_token_kind(kind: TokenKind) -> bool {
+    matches!(
+        kind,
+        TokenKind::LeftBrace
+            | TokenKind::RightBrace
+            | TokenKind::LeftParen
+            | TokenKind::RightParen
+            | TokenKind::LeftBracket
+            | TokenKind::RightBracket
+    )
 }
 
 fn scope_reference_semantic_type(
@@ -1519,6 +1707,7 @@ fn is_preprocessor_directive_token(source: &str, token: Token) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parser::parse_source;
     use std::cell::Cell;
 
     #[test]
@@ -1554,6 +1743,95 @@ mod tests {
                 0,
             ]
         );
+    }
+
+    #[test]
+    fn lexical_bracket_modes_classify_only_parser_proven_generic_angles() {
+        let source = "class Example { array<int> values; array<int>> broken; void Run() { bool less = 1 < 2; int shifted = 8 >> 1; } }";
+        let generic_open = source.find("array<int>").unwrap() + "array".len();
+        let generic_close = generic_open + "<int".len();
+        let mixed_closers = source.find("array<int>> broken").unwrap() + "array<int".len();
+        let comparison = source.find("1 < 2").unwrap() + "1 ".len();
+        let shift = source.find("8 >> 1").unwrap() + "8 ".len();
+        let lexer_tokens = lex(source);
+        let generic_angle_offsets = generic_angle_offsets_for_delimiters(
+            source,
+            &super::super::scope_delimiters::scope_delimiters_for_syntax(
+                &parse_source(source),
+                &lexer_tokens,
+            ),
+        );
+
+        let punctuation = lexical_semantic_tokens_for_source_with_bracket_coloring(
+            source,
+            BracketColoringMode::Punctuation,
+            &generic_angle_offsets,
+        );
+        assert_eq!(
+            lexical_token_type_at_offset(&punctuation, generic_open),
+            Some(semantic_type_index("punctuation")),
+        );
+        assert_eq!(
+            lexical_token_type_at_offset(&punctuation, generic_close),
+            Some(semantic_type_index("punctuation")),
+        );
+        assert_eq!(
+            lexical_token_type_at_offset(&punctuation, mixed_closers),
+            Some(semantic_type_index("punctuation")),
+        );
+        assert_eq!(
+            lexical_token_type_at_offset(&punctuation, mixed_closers + 1),
+            Some(semantic_type_index("operator")),
+        );
+        assert_eq!(
+            lexical_token_type_at_offset(&punctuation, comparison),
+            Some(semantic_type_index("operator")),
+        );
+        assert_eq!(
+            lexical_token_type_at_offset(&punctuation, shift),
+            Some(semantic_type_index("operator")),
+        );
+
+        let vscode = lexical_semantic_tokens_for_source_with_bracket_coloring(
+            source,
+            BracketColoringMode::VsCode,
+            &generic_angle_offsets,
+        );
+        assert_eq!(lexical_token_type_at_offset(&vscode, generic_open), None);
+        assert_eq!(lexical_token_type_at_offset(&vscode, generic_close), None);
+        assert_eq!(lexical_token_type_at_offset(&vscode, mixed_closers), None);
+        assert_eq!(
+            lexical_token_type_at_offset(&vscode, mixed_closers + 1),
+            Some(semantic_type_index("operator")),
+        );
+        assert_eq!(
+            lexical_token_type_at_offset(&vscode, comparison),
+            Some(semantic_type_index("operator")),
+        );
+        assert_eq!(
+            lexical_token_type_at_offset(&vscode, shift),
+            Some(semantic_type_index("operator")),
+        );
+    }
+
+    fn lexical_token_type_at_offset(
+        projection: &LspSemanticTokenProjection,
+        offset: usize,
+    ) -> Option<u32> {
+        let mut line = 0usize;
+        let mut character = 0usize;
+        for token in projection.tokens.data.chunks_exact(5) {
+            line += token[0] as usize;
+            character = if token[0] == 0 {
+                character + token[1] as usize
+            } else {
+                token[1] as usize
+            };
+            if line == 0 && character <= offset && offset < character + token[2] as usize {
+                return Some(token[3]);
+            }
+        }
+        None
     }
 
     #[test]

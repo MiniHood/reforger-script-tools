@@ -43,6 +43,7 @@ fn rich_semantic_tokens_job(
             workspace: None,
             game_data: None,
         },
+        bracket_coloring: BracketColoringMode::Semantic,
     }
 }
 

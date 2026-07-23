@@ -114,11 +114,14 @@ use semantic_tokens::LspSemanticTokenProjection;
 pub use semantic_tokens::{
     fast_semantic_tokens_for_source, fast_semantic_tokens_report_for_source,
     semantic_tokens_for_source_with_external, semantic_tokens_report_for_source,
-    semantic_tokens_report_for_source_with_external, LspSemanticTokenReport,
+    semantic_tokens_report_for_source_with_bracket_coloring,
+    semantic_tokens_report_for_source_with_external, BracketColoringMode, LspSemanticTokenReport,
     LspSemanticTokenTimings, SemanticTokenDebug,
 };
 use semantic_tokens::{
-    lexical_semantic_tokens_for_source, semantic_tokens_for_cached_analysis_with_external_indexes,
+    generic_angle_offsets_for_delimiters,
+    lexical_semantic_tokens_for_source_with_bracket_coloring,
+    semantic_tokens_for_cached_analysis_with_external_indexes_and_bracket_coloring,
     semantic_tokens_for_cached_analysis_with_external_indexes_cancelled, LspSemanticTokensFull,
     SEMANTIC_TOKEN_MODIFIERS, SEMANTIC_TOKEN_TYPES,
 };
@@ -167,6 +170,7 @@ pub struct LspServerOptions {
     pub game_data_metadata: Option<PathBuf>,
     pub index_cache: Option<PathBuf>,
     pub workspace_scripts: Vec<PathBuf>,
+    pub bracket_coloring: BracketColoringMode,
 }
 
 pub fn run_stdio(options: LspServerOptions) -> Result<(), String> {
@@ -742,11 +746,14 @@ impl<W: Write> LspServer<W> {
             writer,
             logger,
             external_index,
-            document_runtime: DocumentRuntime::new(analysis_scheduler),
+            document_runtime: DocumentRuntime::new_with_bracket_coloring(
+                analysis_scheduler,
+                options.bracket_coloring,
+            ),
             shutdown_requested: false,
         };
         server.log(&format!(
-            "startup server={SERVER_NAME} version={SERVER_VERSION} game_data_scripts={} index_cache={} workspace_roots={} external_index_status={}",
+            "startup server={SERVER_NAME} version={SERVER_VERSION} game_data_scripts={} index_cache={} workspace_roots={} bracket_coloring={:?} external_index_status={}",
             options
                 .game_data_scripts
                 .as_ref()
@@ -758,6 +765,7 @@ impl<W: Write> LspServer<W> {
                 .map(|path| path.display().to_string())
                 .unwrap_or_else(|| "<unset>".to_string()),
             format_paths(&options.workspace_scripts),
+            options.bracket_coloring,
             server.external_index.status_summary().status
         ));
         server.logger.diagnostic(
@@ -766,6 +774,7 @@ impl<W: Write> LspServer<W> {
                 "gameDataConfigured": options.game_data_scripts.is_some(),
                 "workspaceRoots": options.workspace_scripts.len(),
                 "indexCacheConfigured": options.index_cache.is_some(),
+                "bracketColoring": format!("{:?}", options.bracket_coloring),
             }),
         );
         server

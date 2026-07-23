@@ -167,6 +167,15 @@ The active Scope Delimiter is the innermost matched pair that contains the caret
 Its active range includes the caret immediately after its opener or immediately before its closer.
 _Avoid_: bracket formatting, rainbow bracket
 
+**Bracket Coloring Mode**:
+The single application-scoped user preference that selects Scope Delimiter
+presentation consistently across VS Code windows.
+`semantic` is the default and uses each delimiter's semantic owner;
+`punctuation` uses the active theme's ordinary punctuation color for every code
+delimiter; `vscode` delegates delimiter foreground and matching presentation to
+VS Code. The first two modes retain custom innermost-pair highlighting. No mode
+defines a hard-coded color.
+
 **Document Runtime**:
 The owner of open-document snapshots, their analysis lifecycle, and the
 admission of document-backed LSP queries.
