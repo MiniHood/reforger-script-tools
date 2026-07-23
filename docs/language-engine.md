@@ -52,6 +52,12 @@ Space-commit contract. The TypeScript client may remove only the single
 committed Space identified by that contract, whether VS Code applies it before
 or after the snippet edit; it must not infer or rewrite ordinary source.
 
+Callable completions with required parameters carry the complete, Rust-authored
+sequence of snippet-field texts. The client may open Suggest at each selected
+field and, only after the user accepts a completion, advance to the next field.
+It must not infer fields from source text or leave the caret at the end of an
+accepted argument.
+
 The Enter typing-assist request is a bounded structural edit, not a formatter.
 For `for`, `foreach`, `while`, and `switch` headers with a matched closing
 parenthesis, Rust may append a braced body only while the caret remains on the
