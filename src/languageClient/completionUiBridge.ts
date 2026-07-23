@@ -7,6 +7,8 @@ import { completionItemCount, completionPresentationItems, completionPresentatio
 let completionTransactionSequence = 0;
 let pendingSnippetSuggestTransaction: SnippetSuggestTransaction | undefined;
 let pendingEmptyCompletionRefresh: EmptyCompletionRefresh | undefined;
+let pendingIncompleteCompletionRefresh: IncompleteCompletionRefresh | undefined;
+let lastIncompleteCompletionRefresh: { documentUri: string; version: number } | undefined;
 let pendingIfSpaceCommit: IfSpaceCommit | undefined;
 let latestEditorDocumentChange: EditorDocumentChange | undefined;
 const completionLifecycleTraceLimit = 80;
@@ -40,6 +42,12 @@ interface SnippetSuggestCommandOptions {
 interface EmptyCompletionRefresh {
 	documentUri: string;
 	requestVersion: number;
+}
+
+interface IncompleteCompletionRefresh {
+	document: vscode.TextDocument;
+	requestVersion: number;
+	timer: ReturnType<typeof setTimeout>;
 }
 
 interface IfSpaceCommit {
@@ -133,6 +141,42 @@ function armEmptyCompletionRefresh(
 	pendingEmptyCompletionRefresh = { documentUri, requestVersion };
 	recordCompletionLifecycle(documentUri, 'emptyRefreshArmed', { requestVersion });
 	diagnostic('completion.emptyRefresh.armed', { requestVersion });
+}
+
+function armIncompleteCompletionRefresh(
+	document: vscode.TextDocument,
+	requestVersion: number,
+	result: vscode.CompletionList | readonly vscode.CompletionItem[] | null | undefined,
+): void {
+	if (!isCompletionListIncomplete(result)
+		|| document.version !== requestVersion
+		|| !isActiveEnforceDocument(document)
+		|| (lastIncompleteCompletionRefresh?.documentUri === document.uri.toString()
+			&& lastIncompleteCompletionRefresh.version === requestVersion)) {
+		return;
+	}
+	if (pendingIncompleteCompletionRefresh) {
+		clearTimeout(pendingIncompleteCompletionRefresh.timer);
+	}
+	const documentUri = document.uri.toString();
+	const timer = setTimeout(() => {
+		const refresh = pendingIncompleteCompletionRefresh;
+		pendingIncompleteCompletionRefresh = undefined;
+		if (!refresh
+			|| refresh.document.version !== refresh.requestVersion
+			|| !isActiveEnforceDocument(refresh.document)) {
+			recordCompletionLifecycle(documentUri, 'incompleteRefreshCancelled', { requestVersion });
+			return;
+		}
+		lastIncompleteCompletionRefresh = { documentUri, version: requestVersion };
+		recordCompletionLifecycle(documentUri, 'incompleteRefreshDispatchRequested', { requestVersion });
+		void vscode.commands.executeCommand('editor.action.triggerSuggest').then(
+			() => recordCompletionLifecycle(documentUri, 'incompleteRefreshSuggestDispatched', { requestVersion }),
+			() => recordCompletionLifecycle(documentUri, 'incompleteRefreshSuggestDispatchError', { requestVersion }),
+		);
+	}, languageClientCompletion.incompleteRefreshDelayMs);
+	pendingIncompleteCompletionRefresh = { document, requestVersion, timer };
+	recordCompletionLifecycle(documentUri, 'incompleteRefreshArmed', { requestVersion });
 }
 
 function isRefreshableEmptyCompletion(
@@ -708,6 +752,7 @@ export const completionUiMiddlewareCallbacks: CompletionMiddlewareCallbacks = {
 		});
 		recordCompletionLifecycle(document.uri.toString(), 'response', { requestVersion, currentVersion: document.version, triggerKind, itemCount: completionItemCount(result), isIncomplete: isCompletionListIncomplete(result), elapsedMs, ...completionPresentationMetadata(result) });
 		armEmptyCompletionRefresh(document, requestVersion, result);
+		armIncompleteCompletionRefresh(document, requestVersion, result);
 		const transaction = pendingSnippetSuggestTransaction;
 		if (transaction && transaction.id === transactionId && transaction.documentUri === document.uri.toString() && transaction.awaitingCompletionResponse) {
 			diagnostic('completion.transaction.response', { transactionId: transaction.id, triggerKind, itemCount: completionItemCount(result), elapsedMs, ...completionPresentationMetadata(result) });

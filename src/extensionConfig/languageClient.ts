@@ -15,6 +15,9 @@ export const languageClientCompletion = {
 	// Cleanup only: it never delays or triggers completion. Keep a multi-field
 	// snippet transaction alive long enough for a person to choose each value.
 	snippetSuggestTransactionTimeoutMs: 30_000,
+	// A single retry lets the current-snapshot semantic completion replace the
+	// bounded fallback that is returned while analysis is still pending.
+	incompleteRefreshDelayMs: 300,
 } as const;
 
 export const experimentalAutoFormattingConfig = {
