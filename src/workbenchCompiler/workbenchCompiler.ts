@@ -13,6 +13,7 @@ import {
 	WorkbenchCompilerDiagnostic,
 	WorkbenchGateway,
 	WorkbenchGatewayFailureCategory,
+	WorkbenchStatus,
 	WorkbenchValidationProfile,
 	WorkbenchValidationResult,
 } from '../workbenchGateway/workbenchGateway';
@@ -23,7 +24,6 @@ const readyHeartbeatMs = 5_000;
 type WorkbenchUiPhase =
 	| 'disabled'
 	| 'connecting'
-	| 'starting'
 	| 'ready'
 	| 'validating'
 	| 'unavailable';
@@ -32,6 +32,7 @@ export interface WorkbenchCompilerObservation {
 	phase: WorkbenchUiPhase;
 	text: string;
 	tooltip: string;
+	validationOutput: string;
 	lastValidationResult?: WorkbenchValidationResult;
 }
 
@@ -55,6 +56,7 @@ interface RenderedDiagnosticSet {
 interface ValidationRequest {
 	generation: number;
 	documentToSave?: vscode.TextDocument;
+	revealOutput?: boolean;
 }
 
 interface WorkbenchCompilerFailure {
@@ -87,6 +89,9 @@ class WorkbenchCompilerController implements vscode.Disposable {
 	private readonly compilerDiagnostics = vscode.languages.createDiagnosticCollection(
 		workbenchDiagnostics.collectionName,
 	);
+	private readonly validationOutput = vscode.window.createOutputChannel(
+		workbenchDiagnostics.outputChannelName,
+	);
 	private readonly statusItem = vscode.window.createStatusBarItem(
 		vscode.StatusBarAlignment.Right,
 		100,
@@ -103,7 +108,9 @@ class WorkbenchCompilerController implements vscode.Disposable {
 	private phase: WorkbenchUiPhase = 'connecting';
 	private lastOutcome = 'No validation has completed.';
 	private lastFailure: WorkbenchCompilerFailure | undefined;
+	private lastStatus: WorkbenchStatus | undefined;
 	private lastValidationResult: WorkbenchValidationResult | undefined;
+	private latestValidationOutput = '';
 	private staleReason: string | undefined;
 	private disposed = false;
 
@@ -114,6 +121,7 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		this.disposables.push(
 			this.statusItem,
 			this.compilerDiagnostics,
+			this.validationOutput,
 			vscode.commands.registerCommand(
 				workbenchCommands.validateScripts,
 				() => this.requestManualValidation(),
@@ -165,6 +173,7 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		this.pendingValidation = undefined;
 		this.markDiagnosticsStale('Workbench configuration changed');
 		this.lastFailure = undefined;
+		this.lastStatus = undefined;
 		if (!this.configuration.enabled) {
 			this.setPhase('disabled');
 			return;
@@ -196,6 +205,7 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		const activeDocument = eligibleActiveDocument();
 		await this.queueValidation({
 			generation: this.configurationGeneration,
+			revealOutput: true,
 			...(activeDocument?.isDirty ? { documentToSave: activeDocument } : {}),
 		});
 	}
@@ -270,7 +280,11 @@ class WorkbenchCompilerController implements vscode.Disposable {
 				this.scheduleProbe(readyHeartbeatMs, request.generation);
 				return;
 			}
-			await this.validate(request.generation, this.scriptEditGeneration);
+			await this.validate(
+				request.generation,
+				this.scriptEditGeneration,
+				request.revealOutput === true,
+			);
 		} finally {
 			this.validating = false;
 			if (this.disposed) {
@@ -299,7 +313,11 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		}
 	}
 
-	private async validate(generation: number, editGeneration: number): Promise<void> {
+	private async validate(
+		generation: number,
+		editGeneration: number,
+		revealOutput: boolean,
+	): Promise<void> {
 		if (this.disposed || generation !== this.configurationGeneration) {
 			return;
 		}
@@ -328,7 +346,7 @@ class WorkbenchCompilerController implements vscode.Disposable {
 			: hadDirtyScriptsAtRequest || hasDirtyEligibleDocuments()
 				? 'other scripts still have unsaved edits'
 				: undefined;
-		this.publishValidationResult(result.value, staleReason);
+		this.publishValidationResult(result.value, staleReason, revealOutput);
 		this.lastFailure = undefined;
 		this.lastOutcome = staleReason
 			? `Validation completed for an older saved snapshot at ${new Date().toLocaleTimeString()}.`
@@ -348,6 +366,7 @@ class WorkbenchCompilerController implements vscode.Disposable {
 	private publishValidationResult(
 		result: WorkbenchValidationResult,
 		staleReason?: string,
+		revealOutput = false,
 	): void {
 		const projected = projectDiagnostics(result.diagnostics);
 		const next = new Map<string, RenderedDiagnosticSet>();
@@ -380,10 +399,63 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		}
 		this.lastValidationResult = cloneValidationResult(result);
 		this.staleReason = staleReason;
-		if (projected.unresolved > 0) {
+		this.publishValidationOutput(
+			result,
+			projected,
+			staleReason,
+			revealOutput || result.diagnostics.length > 0,
+		);
+		if (projected.unresolved.length > 0) {
 			diagnostic('workbenchUnresolvedDiagnosticLocations', {
-				count: projected.unresolved,
+				count: projected.unresolved.length,
 			});
+		}
+	}
+
+	private publishValidationOutput(
+		result: WorkbenchValidationResult,
+		projected: ProjectedDiagnostics,
+		staleReason: string | undefined,
+		revealOutput: boolean,
+	): void {
+		const findingCount = result.diagnostics.length;
+		const lines = [
+			`Workbench Script Validation — ${result.profile}`,
+			result.success && findingCount === 0
+				? 'Result: Validation succeeded with no compiler findings.'
+				: result.success
+					? `Result: Validation completed with ${findingCount} compiler finding${findingCount === 1 ? '' : 's'}.`
+					: `Result: Validation failed: ${findingCount} compiler finding${findingCount === 1 ? '' : 's'}.`,
+			...(staleReason ? [`Freshness: stale — ${staleReason}.`] : ['Freshness: current saved snapshot.']),
+			'',
+		];
+		for (const item of projected.located) {
+			lines.push(
+				`${item.uri.fsPath}:${item.compilerDiagnostic.location.line}:1 `
+				+ `[${item.compilerDiagnostic.severity.toUpperCase()}] `
+				+ item.compilerDiagnostic.message,
+			);
+		}
+		for (const compilerDiagnostic of projected.unresolved) {
+			const addon = compilerDiagnostic.location.addon
+				? ` (${compilerDiagnostic.location.addon})`
+				: '';
+			lines.push(
+				`[${compilerDiagnostic.severity.toUpperCase()}] `
+				+ `${compilerDiagnostic.location.file}:${compilerDiagnostic.location.line}${addon} — `
+				+ `${compilerDiagnostic.message} [location is not mapped to this workspace]`,
+			);
+		}
+		if (findingCount > 0) {
+			lines.push(
+				'',
+				'Open a linked source location, correct the compiler issue, then save or validate again.',
+			);
+		}
+		this.latestValidationOutput = `${lines.join('\n')}\n`;
+		this.validationOutput.replace(this.latestValidationOutput);
+		if (revealOutput) {
+			this.validationOutput.show(true);
 		}
 	}
 
@@ -400,6 +472,12 @@ class WorkbenchCompilerController implements vscode.Disposable {
 			]);
 		}
 		this.compilerDiagnostics.set(entries);
+		this.publishValidationOutput(
+			this.lastValidationResult,
+			projectDiagnostics(this.lastValidationResult.diagnostics),
+			reason,
+			false,
+		);
 		this.setPhase(this.phase);
 	}
 
@@ -420,19 +498,15 @@ class WorkbenchCompilerController implements vscode.Disposable {
 			return;
 		}
 		if (!result.ok) {
+			this.lastStatus = undefined;
 			this.noteFailure(result.failure);
 			this.scheduleProbe(unavailableRetryMs, generation);
 			return;
 		}
 		this.lastFailure = undefined;
-		if (result.value.isRunning && result.value.scriptsCompiled) {
-			this.setPhase('ready');
-			this.scheduleProbe(readyHeartbeatMs, generation);
-		} else {
-			this.markDiagnosticsStale('Workbench scripts are not compiled');
-			this.setPhase('starting');
-			this.scheduleProbe(unavailableRetryMs, generation);
-		}
+		this.lastStatus = result.value;
+		this.setPhase('ready');
+		this.scheduleProbe(readyHeartbeatMs, generation);
 	}
 
 	private noteFailure(
@@ -440,6 +514,7 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		outcome: string = failure.category,
 	): void {
 		this.lastFailure = failure;
+		this.lastStatus = undefined;
 		this.markDiagnosticsStale(
 			failure.category === 'save-failed'
 				? 'the active script could not be saved'
@@ -501,6 +576,14 @@ class WorkbenchCompilerController implements vscode.Disposable {
 			detail,
 			`Endpoint: ${endpoint}`,
 			`Profile: ${validationProfileLabel(this.configuration.validationProfile)}`,
+			...(this.lastStatus
+				? [
+					'Workbench API: connected.',
+					this.lastStatus.scriptsCompiled
+						? 'Scripts: compiled successfully.'
+						: 'Scripts: not compiled successfully; validation remains available.',
+				]
+				: []),
 			this.staleReason
 				? `Compiler result: stale — ${this.staleReason}.`
 				: this.lastValidationResult
@@ -522,6 +605,7 @@ class WorkbenchCompilerController implements vscode.Disposable {
 			tooltip: typeof this.statusItem.tooltip === 'string'
 				? this.statusItem.tooltip
 				: '',
+			validationOutput: this.latestValidationOutput,
 			...(this.lastValidationResult
 				? { lastValidationResult: cloneValidationResult(this.lastValidationResult) }
 				: {}),
@@ -591,10 +675,8 @@ function statusPresentation(phase: WorkbenchUiPhase): { text: string; detail: st
 			return { text: '$(circle-slash) Workbench disabled', detail: 'Workbench NET API integration is disabled.' };
 		case 'connecting':
 			return { text: '$(sync~spin) Workbench connecting', detail: 'Connecting to the configured Workbench endpoint.' };
-		case 'starting':
-			return { text: '$(sync~spin) Workbench starting', detail: 'Workbench is running but scripts are not ready.' };
 		case 'ready':
-			return { text: '$(check) Workbench ready', detail: 'Workbench compiler validation is ready.' };
+			return { text: '$(plug) Workbench API connected', detail: 'Workbench NET API is connected and compiler validation is available.' };
 		case 'validating':
 			return { text: '$(sync~spin) Workbench validating', detail: 'Workbench is validating scripts.' };
 		case 'unavailable':
@@ -602,20 +684,26 @@ function statusPresentation(phase: WorkbenchUiPhase): { text: string; detail: st
 	}
 }
 
-function projectDiagnostics(diagnostics: WorkbenchCompilerDiagnostic[]): {
-	located: Array<{ uri: vscode.Uri; diagnostic: vscode.Diagnostic }>;
-	unresolved: number;
-} {
+interface ProjectedDiagnostics {
+	located: Array<{
+		uri: vscode.Uri;
+		diagnostic: vscode.Diagnostic;
+		compilerDiagnostic: WorkbenchCompilerDiagnostic;
+	}>;
+	unresolved: WorkbenchCompilerDiagnostic[];
+}
+
+function projectDiagnostics(diagnostics: WorkbenchCompilerDiagnostic[]): ProjectedDiagnostics {
 	const workspace = onlyAddonWorkspace();
 	if (!workspace) {
-		return { located: [], unresolved: diagnostics.length };
+		return { located: [], unresolved: diagnostics };
 	}
-	const located: Array<{ uri: vscode.Uri; diagnostic: vscode.Diagnostic }> = [];
-	let unresolved = 0;
+	const located: ProjectedDiagnostics['located'] = [];
+	const unresolved: WorkbenchCompilerDiagnostic[] = [];
 	for (const compilerDiagnostic of diagnostics) {
 		const uri = projectLocation(workspace, compilerDiagnostic);
 		if (!uri) {
-			unresolved += 1;
+			unresolved.push(compilerDiagnostic);
 			continue;
 		}
 		const line = Math.max(0, compilerDiagnostic.location.line - 1);
@@ -627,7 +715,7 @@ function projectDiagnostics(diagnostics: WorkbenchCompilerDiagnostic[]): {
 				: vscode.DiagnosticSeverity.Warning,
 		);
 		rendered.source = workbenchDiagnostics.source;
-		located.push({ uri, diagnostic: rendered });
+		located.push({ uri, diagnostic: rendered, compilerDiagnostic });
 	}
 	return { located, unresolved };
 }

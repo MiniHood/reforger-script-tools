@@ -30,4 +30,5 @@ export const workbenchTestCommands = {
 export const workbenchDiagnostics = {
 	collectionName: 'Workbench',
 	source: 'Workbench Compiler',
+	outputChannelName: 'Reforger Workbench Compiler',
 } as const;

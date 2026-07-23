@@ -20,9 +20,9 @@ Confirmed protocol facts come from the engine-owned extracted source at:
 The current official [Workbench NET API reference](https://community.bistudio.com/wikidata/external-data/arma-reforger/EnfusionScriptAPIPublic/Page_NetApi.html)
 corroborates the request, response, and built-in endpoint contract. The
 official [NetApiHandler reference](https://community.bistudio.com/wikidata/external-data/arma-reforger/EnfusionScriptAPIPublic/interfaceNetApiHandler.html)
-corroborates custom-handler dispatch. No live Workbench probe has yet been run
-for this feature; claims in **Live-validation gaps** must not be promoted to
-facts until that happens.
+corroborates custom-handler dispatch. Live acceptance began against Workbench
+`1.7.0.54` on 2026-07-23; only the observations recorded below are promoted
+from the **Live-validation gaps** backlog.
 
 ## Confirmed built-in contract
 
@@ -95,6 +95,43 @@ errors as different outcomes. `Success` is documented as a field, but its exact
 relationship to errors and warnings needs a live fixture; do not infer it from
 the single example response.
 
+### Initial live response-envelope evidence
+
+Workbench `1.7.0.54` listened on TCP port `5775` and accepted the documented
+transaction through the configured `127.0.0.1` loopback endpoint. A byte-level
+`IsWorkbenchRunning` request returned the response error-code string `Ok` and
+the payload:
+
+```json
+{"IsRunning":true,"ScriptsCompiled":false}
+```
+
+This establishes `Ok` as the successful response-envelope code for the
+supported live Workbench version. An empty error-code string is not the
+successful sentinel. The payload also confirms that a reachable, running
+Workbench can report scripts as not compiled. The following validation proved
+that `ScriptsCompiled: false` also represents a completed compiler failure, so
+it must not be used to present the Workbench API as unavailable or still
+launching.
+
+A live `ValidateScripts` request for `WORKBENCH` used the same `Ok` envelope
+code and returned four compiler errors, an empty `Warnings` array, and
+`Success: false`. Two unpacked-addon diagnostics included `file`, `fileAbs`,
+`addon`, and line values `12` and `138`; both values identified the exact
+declaration on the corresponding one-based source line. This establishes the
+one-based line mapping and confirms that compiler findings are a successful
+NET API transaction even when validation `Success` is false. Clean validation,
+warning behavior, packed-resource locations, and cross-addon projection still
+require live fixtures.
+
+### Live acceptance refinement
+
+Once a status transaction succeeds, the UI presents the Workbench API as
+connected and keeps validation available. It presents `ScriptsCompiled`
+separately as the last Workbench-reported compiler state. Compiler findings are
+rendered in Problems and in a dedicated latest-result output with clickable
+project-contained source locations and explanatory messages.
+
 ## What this cannot validate
 
 The built-in request cannot carry the unsaved text of a VS Code document. The
@@ -135,17 +172,16 @@ is reserved for bounded work.
 | --- | --- | --- |
 | Index not ready | No Workbench state shown yet. | Not started. |
 | Discovering | `$(sync~spin) Looking for Reforger Workbench...` | Unavailable. |
-| Workbench starting | `$(sync~spin) Reforger Workbench is starting...` | Unavailable. |
-| Scripts compiling | `$(sync~spin) Reforger Workbench is preparing scripts...` | Unavailable pending proof that requests are safe here. |
-| Ready | `$(check) Reforger Workbench connected` | `ValidateScripts` available. |
+| Connected | `$(plug) Workbench API connected` | `ValidateScripts` available; compilation state is shown separately. |
 | Validating | `$(sync~spin) Validating scripts in Workbench...` | One validation in flight. |
 | Lost | `$(circle-slash) Reforger Workbench unavailable - retrying` | Unavailable; file and Rust features remain available. |
 
 Probe immediately once the index-ready signal arrives, then every second while
 unavailable. On a healthy connection, use a five-second `IsWorkbenchRunning`
-heartbeat. Readiness is `IsRunning == true` and `ScriptsCompiled == true`, not
-just TCP success. The first compiler feature is built-in and does not depend on
-the future custom plugin or its `capabilities` manifest.
+heartbeat. A successfully decoded status response establishes that the
+configured API is connected. `ScriptsCompiled` remains visible compiler state,
+not an availability gate. The first compiler feature is built-in and does not
+depend on the future custom plugin or its `capabilities` manifest.
 
 ### Commands and automatic modes
 
@@ -348,10 +384,16 @@ paths. Only the extension maps a location to a VS Code URI after proving it is
 inside the Addon Workspace; unresolvable locations are structured result/log
 evidence, never guessed workspace files.
 
-One lower-right Workbench Status Item reports disabled, connecting, starting,
-ready, validating, or unavailable/retrying. It exposes the endpoint, profile,
-last validation outcome/time, and sanitized failure category in its tooltip;
-clicking it runs the explicit validation command. There are no recurring
+The dedicated latest-result output summarizes the validation and renders
+project-contained locations as clickable `path:line:column` entries with
+severity and compiler messages. Unmapped findings remain visible with an
+explicit mapping explanation.
+
+One lower-right Workbench Status Item reports disabled, connecting, API
+connected, validating, or unavailable/retrying. It exposes the endpoint,
+profile, Workbench-reported compilation state, last validation outcome/time,
+and sanitized failure category in its tooltip; clicking it runs the explicit
+validation command and reveals the result output. There are no recurring
 connection-loss notifications.
 
 Gateway outcomes use stable typed categories such as `unavailable`, `timeout`,

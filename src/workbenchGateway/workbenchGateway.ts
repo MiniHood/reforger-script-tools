@@ -3,6 +3,7 @@ import * as net from 'node:net';
 const protocolVersion = 1;
 const clientId = 'ReforgerScriptTools';
 const contentType = 'JsonRPC';
+const successfulErrorCode = 'Ok';
 const defaultGetStatusDeadlineMs = 1_500;
 const defaultValidateScriptsDeadlineMs = 120_000;
 const maximumResponseBytes = 4 * 1024 * 1024;
@@ -59,7 +60,6 @@ export interface WorkbenchValidationResult {
 export type WorkbenchAvailability =
 	| { kind: 'disabled' }
 	| { kind: 'unavailable'; failure: WorkbenchGatewayFailure }
-	| { kind: 'starting' }
 	| { kind: 'ready' };
 
 export type WorkbenchGatewayFailureCategory =
@@ -126,9 +126,7 @@ export class WorkbenchGateway {
 			this.record('getStatus', status.failure.category, startedAt);
 			return status;
 		}
-		this.currentAvailability = status.value.isRunning && status.value.scriptsCompiled
-			? { kind: 'ready' }
-			: { kind: 'starting' };
+		this.currentAvailability = { kind: 'ready' };
 		this.record('getStatus', 'success', startedAt);
 		return status;
 	}
@@ -324,7 +322,7 @@ function transact(
 				finish(failure('protocol', 'Restart Workbench and verify that its NET API is compatible.'));
 				return;
 			}
-			if (decoded.errorCode.length > 0) {
+			if (decoded.errorCode !== successfulErrorCode) {
 				finish(failure('workbench-error', 'Review Workbench state and retry the operation.'));
 				return;
 			}

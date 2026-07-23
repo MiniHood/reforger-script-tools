@@ -113,16 +113,22 @@ Gateway capability surface for the initial feature. The Gateway validates the
 configured loopback endpoint, owns the proprietary framing and response
 decoding, applies capability-specific absolute wall-clock deadlines, and
 returns typed failures. Response activity cannot extend a transaction beyond
-its deadline. It reports only sanitized capability names, outcomes, and
-timings to the extension diagnostic log.
+its deadline. The response error-code string is successful only when it is
+exactly `Ok`; every other value is a typed Workbench failure. The Gateway
+reports only sanitized capability names, outcomes, and timings to the
+extension diagnostic log.
 
 The compiler adapter probes the exact configured endpoint immediately, retries
-an unavailable or starting Workbench once per second, and uses a five-second
-heartbeat while ready. Configuration changes replace the Gateway generation
-immediately; queued work and results from older generations cannot publish.
-Controller disposal likewise invalidates in-flight continuations so they cannot
-publish or restart polling after extension deactivation. The extension never
-scans for another port or rewrites endpoint settings.
+an unavailable endpoint once per second, and uses a five-second heartbeat
+while connected. Any successful status transaction means the Workbench API is
+connected and validation remains available. `ScriptsCompiled` is presented as
+compiler state; it does not downgrade API availability because live Workbench
+uses `false` for completed compilation failures as well as incomplete
+compilation. Configuration changes replace the Gateway generation immediately;
+queued work and results from older generations cannot publish. Controller
+disposal likewise invalidates in-flight continuations so they cannot publish or
+restart polling after extension deactivation. The extension never scans for
+another port or rewrites endpoint settings.
 
 Continuous validation is single-flight. A positive idle delay reacts to an
 eligible save or saves only the active dirty Enfusion Script after the idle
@@ -135,15 +141,22 @@ cannot begin before the newest idle interval has elapsed.
 
 Each completed validation is one atomic compiler diagnostic set. A successful
 clean result removes the old Workbench set; a failed transaction retains it.
-Newer edits, configuration changes, Workbench outages, and a running Workbench
-whose scripts are not compiled re-render retained findings as explicitly
-stale. Because validation is configuration-wide, a result also remains stale
-while any eligible workspace script is dirty, even when the adapter
-successfully saved the active script that triggered the run. The adapter
-projects a location only when its canonical path exists inside the single
-addon workspace. An explicit external absolute path is never replaced by a
-plausible relative guess. Rust language diagnostics remain in their independent
-LSP-owned collection throughout.
+Newer edits, configuration changes, and Workbench outages re-render retained
+findings as explicitly stale. A connected `ScriptsCompiled: false` status does
+not stale a completed validation result. Because validation is
+configuration-wide, a result also remains stale while any eligible workspace
+script is dirty, even when the adapter successfully saved the active script
+that triggered the run. The adapter projects a location only when its canonical
+path exists inside the single addon workspace. An explicit external absolute
+path is never replaced by a plausible relative guess. Rust language diagnostics
+remain in their independent LSP-owned collection throughout.
+
+Every completed validation also replaces the dedicated **Reforger Workbench
+Compiler** output. Project-contained findings use `path:line:column` entries
+that VS Code can open directly and include severity plus the compiler message;
+unmapped findings retain their Workbench resource location and explain that
+they are not mapped to the current workspace. Manual validation reveals the
+output, and automatic validation reveals it when findings exist.
 
 Within the language-client bridge, the composition root retains server lifecycle
 and restart policy. Focused bridges own workspace-script notifications, hover

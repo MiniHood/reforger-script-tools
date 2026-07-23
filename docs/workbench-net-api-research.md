@@ -40,10 +40,12 @@ documented payload is an `APIFunc` object rather than MCP or ordinary JSON-RPC
 2.0 envelopes. The MCP host therefore needs a dedicated NET API codec/adapter,
 never a transport pass-through.
 
-The documentation does not establish the endpoint address/port, authentication,
-TLS, concurrency, request-size limits, or cancellation semantics. Discover
-those from the installed Workbench configuration/source and a loopback probe;
-do not guess or publish the socket.
+The documentation does not establish authentication, TLS, concurrency,
+request-size limits, or cancellation semantics. A live Workbench `1.7.0.54`
+probe on 2026-07-23 confirmed the configured `127.0.0.1:5775` endpoint, the
+documented framing, and the exact successful response error code `Ok`. The
+extension still contacts only its user-configured loopback endpoint; it does
+not discover or probe alternate ports.
 
 ## Placement and ownership
 
@@ -191,12 +193,13 @@ given operation is currently unavailable.
 
 ## Validation backlog
 
-1. Enable the NET API in a disposable Workbench project and identify the
-   configured loopback endpoint/port without scanning unrelated interfaces.
-2. Implement a small external probe that performs only `IsWorkbenchRunning`
-   and records byte-level framing, connection close, latency, and errors.
-3. Verify `ValidateScripts` on both a clean fixture and a deliberate compiler
-   error; reconcile locations with project paths and the Rust language engine.
+1. Repeat the confirmed `127.0.0.1:5775` byte-level probe on every supported
+   Workbench version and record latency, connection-close behavior, and errors.
+2. Verify `ValidateScripts` on a clean fixture and a warning fixture. A live
+   deliberate-error fixture already confirmed `Ok`, `Success: false`, four
+   errors, and one-based unpacked-addon source lines.
+3. Reconcile clean, warning, packed-resource, and cross-addon locations with
+   project paths and the Rust language engine.
 4. Add only a `capabilities` custom handler, reload scripts, and test missing,
    malformed, oversized, and unsupported-version requests.
 5. Add one read handler for a known prefab, then one World Editor mutation and
@@ -226,20 +229,20 @@ Workbench is ongoing availability state. Suggested wording and state are:
 | --- | --- | --- |
 | Initial index pending | No Workbench status yet. | None. |
 | Discovering | `$(sync~spin) Checking for Reforger Workbench…` | None. |
-| Socket reached; Workbench not ready | `$(sync~spin) Reforger Workbench is starting…` | None. |
-| `ScriptsCompiled` is false | `$(sync~spin) Reforger Workbench is compiling scripts…` | Read-only health only. |
-| Built-in health succeeds | `$(plug) Reforger Workbench connected` | Built-in `validate_scripts`; custom-plugin handlers remain unavailable until negotiated. |
+| Built-in status succeeds | `$(plug) Workbench API connected` | Built-in `validate_scripts`; show `ScriptsCompiled` separately as compiler state. |
 | Custom capabilities succeed | `$(plug) Reforger Workbench ready` | Built-in `validate_scripts` plus only handlers named in the capability response. |
 | Connection lost | `$(circle-slash) Reforger Workbench unavailable — retrying` | None until re-established. |
 
 The documented `IsWorkbenchRunning` response supplies both `IsRunning` and
-`ScriptsCompiled`; use those facts rather than a successful TCP connection as
-the readiness decision. Once ready, the built-in `ValidateScripts` capability
-is available without a project plugin. Call the project's custom `capabilities`
-handler separately and cache only that connection's typed plugin allowlist.
-This ensures a Workbench instance with an absent, stale, or incompatible plugin
-still supports the proven compiler route but does not expose speculative custom
-MCP tools.
+`ScriptsCompiled`. A successfully decoded response proves that the configured
+Workbench API is connected. Live Workbench also reports
+`ScriptsCompiled: false` after a completed compiler failure, so that field is
+compiler state rather than an availability gate. The built-in
+`ValidateScripts` capability remains available without a project plugin. Call
+the project's custom `capabilities` handler separately and cache only that
+connection's typed plugin allowlist. This ensures a Workbench instance with an
+absent, stale, or incompatible plugin still supports the proven compiler route
+but does not expose speculative custom MCP tools.
 
 Start with one immediate probe, retry once per second while unavailable, and
 use a five-second heartbeat while ready. Do not poll every 500 ms: each NET API
@@ -258,9 +261,9 @@ edit burst; it must not validate an unsaved buffer or block a save. The detailed
 contract, trigger modes, diagnostics freshness policy, and live acceptance
 experiments are in [Workbench compiler-validation research](workbench-compiler-validation-research.md).
 
-When the ready connection first succeeds, the host should cache the capability
-manifest and its revision. Re-read it after a reconnect and whenever a
-Workbench/plugin reload changes the revision; remove unavailable operations
+When custom capability negotiation first succeeds, the host should cache the
+capability manifest and its revision. Re-read it after a reconnect and whenever
+a Workbench/plugin reload changes the revision; remove unavailable operations
 from the host's effective allowlist immediately. This is the NET API equivalent
 of a live editor tool catalogue: it prevents a stale MCP session from calling a
 handler whose scripts were unloaded or whose contract changed. The host may
@@ -399,8 +402,8 @@ VS Code settings rather than automatic discovery: NET API enablement defaults
 on, the loopback-only host defaults to `127.0.0.1`, and the port defaults to
 `5775`. The Gateway contacts only the configured endpoint and never discovers,
 scans, changes, or repairs it. Its normal status requests remain necessary to
-assess the readiness of that exact configured endpoint; they are not endpoint
-discovery.
+assess whether that exact configured endpoint is connected; they are not
+endpoint discovery.
 
 The compiler-validation-specific scheduling, diagnostic provenance, and live
 acceptance contract are owned by

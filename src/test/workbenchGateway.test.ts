@@ -10,7 +10,7 @@ suite('Workbench Gateway', () => {
 			assert.strictEqual(request.contentType, 'JsonRPC');
 			assert.deepStrictEqual(request.payload, { APIFunc: 'IsWorkbenchRunning' });
 			return {
-				errorCode: '',
+				errorCode: 'Ok',
 				payload: { IsRunning: true, ScriptsCompiled: true },
 			};
 		});
@@ -37,7 +37,7 @@ suite('Workbench Gateway', () => {
 				Configuration: 'WORKBENCH',
 			});
 			return {
-				errorCode: '',
+				errorCode: 'Ok',
 				payload: {
 					Errors: [{
 						error: "Undefined function 'Run'",
@@ -93,7 +93,7 @@ suite('Workbench Gateway', () => {
 	test('reports only a sanitized named-capability outcome to its host', async () => {
 		const records: unknown[] = [];
 		const peer = await startNetApiPeer(() => ({
-			errorCode: '',
+			errorCode: 'Ok',
 			payload: { IsRunning: true, ScriptsCompiled: true },
 		}));
 		try {
@@ -190,9 +190,9 @@ suite('Workbench Gateway', () => {
 
 	test('categorizes a truncated response as a protocol failure', async () => {
 		const peer = await startNetApiPeer(() => ({
-			errorCode: '',
+			errorCode: 'Ok',
 			payload: {},
-			raw: encodeNetApiString(''),
+			raw: encodeNetApiString('Ok'),
 		}));
 		try {
 			const gateway = new WorkbenchGateway({
@@ -213,9 +213,9 @@ suite('Workbench Gateway', () => {
 
 	test('categorizes malformed JSON as a protocol failure', async () => {
 		const peer = await startNetApiPeer(() => ({
-			errorCode: '',
+			errorCode: 'Ok',
 			payload: {},
-			raw: Buffer.concat([encodeNetApiString(''), encodeNetApiString('{not-json')]),
+			raw: Buffer.concat([encodeNetApiString('Ok'), encodeNetApiString('{not-json')]),
 		}));
 		try {
 			const gateway = new WorkbenchGateway({
@@ -234,9 +234,9 @@ suite('Workbench Gateway', () => {
 		}
 	});
 
-	test('reports starting until Workbench says scripts are compiled', async () => {
+	test('reports the Workbench API ready even when scripts did not compile', async () => {
 		const peer = await startNetApiPeer(() => ({
-			errorCode: '',
+			errorCode: 'Ok',
 			payload: { IsRunning: true, ScriptsCompiled: false },
 		}));
 		try {
@@ -246,7 +246,7 @@ suite('Workbench Gateway', () => {
 			});
 
 			assert.strictEqual((await gateway.getStatus()).ok, true);
-			assert.deepStrictEqual(gateway.availability, { kind: 'starting' });
+			assert.deepStrictEqual(gateway.availability, { kind: 'ready' });
 		} finally {
 			await peer.close();
 		}

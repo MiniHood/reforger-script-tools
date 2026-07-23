@@ -18,7 +18,15 @@ let temporaryScriptCounter = 0;
 suite('Workbench compiler validation', () => {
 	teardown(async () => {
 		const configuration = vscode.workspace.getConfiguration(workbenchConfig.section);
+		await configuration.update(
+			workbenchConfig.settings.enabled,
+			false,
+			vscode.ConfigurationTarget.Global,
+		);
 		for (const setting of Object.values(workbenchConfig.settings)) {
+			if (setting === workbenchConfig.settings.enabled) {
+				continue;
+			}
 			await configuration.update(setting, undefined, vscode.ConfigurationTarget.Global);
 		}
 	});
@@ -31,7 +39,7 @@ suite('Workbench compiler validation', () => {
 			const payload = request.payload as { APIFunc?: string };
 			if (payload.APIFunc === 'IsWorkbenchRunning') {
 				return {
-					errorCode: '',
+					errorCode: 'Ok',
 					payload: { IsRunning: true, ScriptsCompiled: true },
 				};
 			}
@@ -40,7 +48,7 @@ suite('Workbench compiler validation', () => {
 				Configuration: 'WORKBENCH',
 			});
 			return {
-				errorCode: '',
+				errorCode: 'Ok',
 				payload: {
 					Errors: [{
 						error: "Undefined function 'Run'",
@@ -71,6 +79,12 @@ suite('Workbench compiler validation', () => {
 			assert.strictEqual(diagnostics[0].source, workbenchDiagnostics.source);
 			assert.strictEqual(diagnostics[0].severity, vscode.DiagnosticSeverity.Error);
 			assert.strictEqual(diagnostics[0].range.start.line, 1);
+			const output = (await observeWorkbenchCompiler() as WorkbenchCompilerObservation & {
+				validationOutput?: string;
+			}).validationOutput;
+			assert.ok(output);
+			assert.match(output, /Validation failed: 1 compiler finding/);
+			assert.ok(output.includes(`${sourcePath}:2:1 [ERROR] Undefined function 'Run'`));
 		} finally {
 			await peer.close();
 		}
@@ -83,8 +97,8 @@ suite('Workbench compiler validation', () => {
 		const peer = await startNetApiPeer(request => {
 			const payload = request.payload as { APIFunc?: string };
 			return payload.APIFunc === 'IsWorkbenchRunning'
-				? { errorCode: '', payload: { IsRunning: true, ScriptsCompiled: true } }
-				: { errorCode: '', payload: { Errors: [], Warnings: [], Success: true } };
+				? { errorCode: 'Ok', payload: { IsRunning: true, ScriptsCompiled: true } }
+				: { errorCode: 'Ok', payload: { Errors: [], Warnings: [], Success: true } };
 		});
 		try {
 			await configurePeer(peer.port, 0.05);
@@ -125,14 +139,14 @@ suite('Workbench compiler validation', () => {
 		const peer = await startNetApiPeer(request => {
 			const payload = request.payload as { APIFunc?: string };
 			return payload.APIFunc === 'IsWorkbenchRunning'
-				? { errorCode: '', payload: { IsRunning: true, ScriptsCompiled: true } }
-				: { errorCode: '', payload: { Errors: [], Warnings: [], Success: true } };
+				? { errorCode: 'Ok', payload: { IsRunning: true, ScriptsCompiled: true } }
+				: { errorCode: 'Ok', payload: { Errors: [], Warnings: [], Success: true } };
 		});
 		try {
 			const configuration = vscode.workspace.getConfiguration(workbenchConfig.section);
 			await configuration.update(
 				workbenchConfig.settings.enabled,
-				true,
+				false,
 				vscode.ConfigurationTarget.Global,
 			);
 			await configuration.update(
@@ -143,6 +157,11 @@ suite('Workbench compiler validation', () => {
 			await configuration.update(
 				workbenchConfig.settings.port,
 				peer.port,
+				vscode.ConfigurationTarget.Global,
+			);
+			await configuration.update(
+				workbenchConfig.settings.enabled,
+				true,
 				vscode.ConfigurationTarget.Global,
 			);
 			const document = await vscode.workspace.openTextDocument(source.filePath);
@@ -178,7 +197,7 @@ suite('Workbench compiler validation', () => {
 		const peer = await startNetApiPeer(async request => {
 			const payload = request.payload as { APIFunc?: string };
 			if (payload.APIFunc === 'IsWorkbenchRunning') {
-				return { errorCode: '', payload: { IsRunning: true, ScriptsCompiled: true } };
+				return { errorCode: 'Ok', payload: { IsRunning: true, ScriptsCompiled: true } };
 			}
 			validationCount += 1;
 			activeValidations += 1;
@@ -187,7 +206,7 @@ suite('Workbench compiler validation', () => {
 				await firstValidationGate;
 			}
 			activeValidations -= 1;
-			return { errorCode: '', payload: { Errors: [], Warnings: [], Success: true } };
+			return { errorCode: 'Ok', payload: { Errors: [], Warnings: [], Success: true } };
 		});
 		try {
 			await configurePeer(peer.port, 0);
@@ -221,13 +240,13 @@ suite('Workbench compiler validation', () => {
 		const peer = await startNetApiPeer(async request => {
 			const payload = request.payload as { APIFunc?: string };
 			if (payload.APIFunc === 'IsWorkbenchRunning') {
-				return { errorCode: '', payload: { IsRunning: true, ScriptsCompiled: true } };
+				return { errorCode: 'Ok', payload: { IsRunning: true, ScriptsCompiled: true } };
 			}
 			validationCount += 1;
 			if (validationCount === 1) {
 				await firstValidationGate;
 			}
-			return { errorCode: '', payload: { Errors: [], Warnings: [], Success: true } };
+			return { errorCode: 'Ok', payload: { Errors: [], Warnings: [], Success: true } };
 		});
 		try {
 			await configurePeer(peer.port, 0.3);
@@ -269,12 +288,12 @@ suite('Workbench compiler validation', () => {
 		const peer = await startNetApiPeer(request => {
 			const payload = request.payload as { APIFunc?: string };
 			if (payload.APIFunc === 'IsWorkbenchRunning') {
-				return { errorCode: '', payload: { IsRunning: true, ScriptsCompiled: true } };
+				return { errorCode: 'Ok', payload: { IsRunning: true, ScriptsCompiled: true } };
 			}
 			validationCount += 1;
 			return validationCount === 1
 				? {
-					errorCode: '',
+					errorCode: 'Ok',
 					payload: {
 						Errors: [{
 							error: 'First compiler finding',
@@ -285,7 +304,7 @@ suite('Workbench compiler validation', () => {
 						Success: false,
 					},
 				}
-				: { errorCode: '', payload: { Errors: [], Warnings: [], Success: true } };
+				: { errorCode: 'Ok', payload: { Errors: [], Warnings: [], Success: true } };
 		});
 		try {
 			await configurePeer(peer.port, 0);
@@ -302,6 +321,10 @@ suite('Workbench compiler validation', () => {
 			assert.match(stale.message, /^\[Stale Workbench result/);
 			assert.match((await observeWorkbenchCompiler()).text, /stale/i);
 			assert.match((await observeWorkbenchCompiler()).tooltip, /Compiler result: stale/);
+			assert.match(
+				(await observeWorkbenchCompiler()).validationOutput,
+				/Freshness: stale — the script has newer edits/,
+			);
 
 			await vscode.commands.executeCommand(workbenchCommands.validateScripts);
 			await waitFor(() => workbenchDiagnosticsFor(sourceUri).length === 0 ? true : undefined);
@@ -319,7 +342,7 @@ suite('Workbench compiler validation', () => {
 
 	test('applies enablement immediately and presents the configured status without probing', async () => {
 		const peer = await startNetApiPeer(() => ({
-			errorCode: '',
+			errorCode: 'Ok',
 			payload: { IsRunning: true, ScriptsCompiled: true },
 		}));
 		try {
@@ -351,20 +374,21 @@ suite('Workbench compiler validation', () => {
 		}
 	});
 
-	test('presents starting while Workbench scripts are not compiled', async () => {
+	test('presents the Workbench API as connected when scripts did not compile', async () => {
 		const peer = await startNetApiPeer(() => ({
-			errorCode: '',
+			errorCode: 'Ok',
 			payload: { IsRunning: true, ScriptsCompiled: false },
 		}));
 		try {
 			await configurePeer(peer.port, 0);
-			const starting = await waitFor(async () => {
+			const connected = await waitFor(async () => {
 				const observation = await observeWorkbenchCompiler();
-				return observation.phase === 'starting' ? observation : undefined;
+				return observation.phase === 'ready' ? observation : undefined;
 			});
 
-			assert.match(starting.text, /starting/i);
-			assert.match(starting.tooltip, /scripts are not ready/i);
+			assert.match(connected.text, /API connected/i);
+			assert.match(connected.tooltip, /Scripts: not compiled successfully/i);
+			assert.match(connected.tooltip, /validation remains available/i);
 		} finally {
 			await peer.close();
 		}
@@ -380,14 +404,14 @@ suite('Workbench compiler validation', () => {
 		const peer = await startNetApiPeer(async request => {
 			const payload = request.payload as { APIFunc?: string };
 			if (payload.APIFunc !== 'IsWorkbenchRunning') {
-				return { errorCode: '', payload: { Errors: [], Warnings: [], Success: true } };
+				return { errorCode: 'Ok', payload: { Errors: [], Warnings: [], Success: true } };
 			}
 			statusRequests += 1;
 			if (statusRequests === 1) {
 				await probeGate;
 			}
 			return {
-				errorCode: '',
+				errorCode: 'Ok',
 				payload: { IsRunning: true, ScriptsCompiled: false },
 			};
 		});
@@ -413,7 +437,7 @@ suite('Workbench compiler validation', () => {
 		}
 	});
 
-	test('marks a prior compiler result stale when Workbench scripts stop being ready', async function () {
+	test('keeps compiler findings fresh when the connected API reports compile failure', async function () {
 		this.timeout(8_000);
 		const workspace = onlyWorkspaceFolder();
 		const sourceUri = vscode.Uri.file(path.join(
@@ -427,12 +451,12 @@ suite('Workbench compiler validation', () => {
 			const payload = request.payload as { APIFunc?: string };
 			if (payload.APIFunc === 'IsWorkbenchRunning') {
 				return {
-					errorCode: '',
+					errorCode: 'Ok',
 					payload: { IsRunning: true, ScriptsCompiled: scriptsCompiled },
 				};
 			}
 			return {
-				errorCode: '',
+				errorCode: 'Ok',
 				payload: {
 					Errors: [{
 						error: 'Finding retained while Workbench starts',
@@ -454,14 +478,16 @@ suite('Workbench compiler validation', () => {
 			scriptsCompiled = false;
 
 			await waitFor(async () =>
-				(await observeWorkbenchCompiler()).phase === 'starting' ? true : undefined,
+				(await observeWorkbenchCompiler()).tooltip.includes(
+					'Scripts: not compiled successfully',
+				) ? true : undefined,
 			6_000);
 
 			const retained = workbenchDiagnosticsFor(sourceUri).filter(diagnostic =>
 				diagnostic.message.includes('Finding retained while Workbench starts'));
 			assert.strictEqual(retained.length, 1);
-			assert.match(retained[0].source ?? '', /\(stale\)$/);
-			assert.match((await observeWorkbenchCompiler()).tooltip, /Compiler result: stale/);
+			assert.strictEqual(retained[0].source, workbenchDiagnostics.source);
+			assert.match((await observeWorkbenchCompiler()).tooltip, /Compiler result: fresh/);
 		} finally {
 			await peer.close();
 		}
@@ -469,7 +495,7 @@ suite('Workbench compiler validation', () => {
 
 	test('rejects an unsupported profile setting without calling validation', async () => {
 		const peer = await startNetApiPeer(() => ({
-			errorCode: '',
+			errorCode: 'Ok',
 			payload: { IsRunning: true, ScriptsCompiled: true },
 		}));
 		try {
@@ -506,8 +532,8 @@ suite('Workbench compiler validation', () => {
 		const peer = await startNetApiPeer(request => {
 			const payload = request.payload as { APIFunc?: string };
 			return payload.APIFunc === 'IsWorkbenchRunning'
-				? { errorCode: '', payload: { IsRunning: true, ScriptsCompiled: true } }
-				: { errorCode: '', payload: { Errors: [], Warnings: [], Success: true } };
+				? { errorCode: 'Ok', payload: { IsRunning: true, ScriptsCompiled: true } }
+				: { errorCode: 'Ok', payload: { Errors: [], Warnings: [], Success: true } };
 		});
 		try {
 			await configurePeer(peer.port, 0.2);
@@ -547,11 +573,11 @@ suite('Workbench compiler validation', () => {
 		const peer = await startNetApiPeer(request => {
 			const payload = request.payload as { APIFunc?: string };
 			if (payload.APIFunc === 'IsWorkbenchRunning') {
-				return { errorCode: '', payload: { IsRunning: true, ScriptsCompiled: true } };
+				return { errorCode: 'Ok', payload: { IsRunning: true, ScriptsCompiled: true } };
 			}
 			validationCount += 1;
 			return {
-				errorCode: '',
+				errorCode: 'Ok',
 				payload: {
 					Errors: [{
 						error: 'Retained finding',
@@ -601,9 +627,9 @@ suite('Workbench compiler validation', () => {
 		const peer = await startNetApiPeer(request => {
 			const payload = request.payload as { APIFunc?: string };
 			return payload.APIFunc === 'IsWorkbenchRunning'
-				? { errorCode: '', payload: { IsRunning: true, ScriptsCompiled: true } }
+				? { errorCode: 'Ok', payload: { IsRunning: true, ScriptsCompiled: true } }
 				: {
-					errorCode: '',
+					errorCode: 'Ok',
 					payload: {
 						Errors: [{
 							error: 'Finding retained through outage',
@@ -653,9 +679,9 @@ suite('Workbench compiler validation', () => {
 		const peer = await startNetApiPeer(request => {
 			const payload = request.payload as { APIFunc?: string };
 			return payload.APIFunc === 'IsWorkbenchRunning'
-				? { errorCode: '', payload: { IsRunning: true, ScriptsCompiled: true } }
+				? { errorCode: 'Ok', payload: { IsRunning: true, ScriptsCompiled: true } }
 				: {
-					errorCode: '',
+					errorCode: 'Ok',
 					payload: {
 						Errors: [{
 							error: 'Relative contained location',
@@ -697,6 +723,10 @@ suite('Workbench compiler validation', () => {
 				(await observeWorkbenchCompiler()).lastValidationResult?.diagnostics.length,
 				4,
 			);
+			assert.match(
+				(await observeWorkbenchCompiler()).validationOutput,
+				/Unresolvable location \[location is not mapped to this workspace\]/,
+			);
 		} finally {
 			await fs.rm(externalDirectory, { recursive: true, force: true });
 			await peer.close();
@@ -715,12 +745,12 @@ suite('Workbench compiler validation', () => {
 		const peer = await startNetApiPeer(async request => {
 			const payload = request.payload as { APIFunc?: string };
 			if (payload.APIFunc === 'IsWorkbenchRunning') {
-				return { errorCode: '', payload: { IsRunning: true, ScriptsCompiled: true } };
+				return { errorCode: 'Ok', payload: { IsRunning: true, ScriptsCompiled: true } };
 			}
 			validationStarted = true;
 			await validationGate;
 			return {
-				errorCode: '',
+				errorCode: 'Ok',
 				payload: {
 					Errors: [{
 						error: 'Finding for the older saved snapshot',
@@ -787,12 +817,12 @@ suite('Workbench compiler validation', () => {
 		const oldPeer = await startNetApiPeer(async request => {
 			const payload = request.payload as { APIFunc?: string };
 			if (payload.APIFunc === 'IsWorkbenchRunning') {
-				return { errorCode: '', payload: { IsRunning: true, ScriptsCompiled: true } };
+				return { errorCode: 'Ok', payload: { IsRunning: true, ScriptsCompiled: true } };
 			}
 			oldValidationStarted = true;
 			await oldValidationGate;
 			return {
-				errorCode: '',
+				errorCode: 'Ok',
 				payload: {
 					Errors: [{
 						error: 'Obsolete endpoint result',
@@ -805,7 +835,7 @@ suite('Workbench compiler validation', () => {
 			};
 		});
 		const newPeer = await startNetApiPeer(() => ({
-			errorCode: '',
+			errorCode: 'Ok',
 			payload: { IsRunning: true, ScriptsCompiled: true },
 		}));
 		try {
@@ -839,7 +869,7 @@ suite('Workbench compiler validation', () => {
 
 async function configurePeer(port: number, delaySeconds: number): Promise<void> {
 	const configuration = vscode.workspace.getConfiguration(workbenchConfig.section);
-	await configuration.update(workbenchConfig.settings.enabled, true, vscode.ConfigurationTarget.Global);
+	await configuration.update(workbenchConfig.settings.enabled, false, vscode.ConfigurationTarget.Global);
 	await configuration.update(workbenchConfig.settings.host, '127.0.0.1', vscode.ConfigurationTarget.Global);
 	await configuration.update(workbenchConfig.settings.port, port, vscode.ConfigurationTarget.Global);
 	await configuration.update(
@@ -847,6 +877,7 @@ async function configurePeer(port: number, delaySeconds: number): Promise<void> 
 		delaySeconds,
 		vscode.ConfigurationTarget.Global,
 	);
+	await configuration.update(workbenchConfig.settings.enabled, true, vscode.ConfigurationTarget.Global);
 }
 
 function onlyWorkspaceFolder(): vscode.WorkspaceFolder {

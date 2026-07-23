@@ -26,9 +26,10 @@ _Avoid_: compiler-delay opt-out, Workbench option, connection preference
 
 **Workbench Status Item**:
 The single extension status-bar item that reports Workbench Availability State,
-current validation activity, and Workbench Compiler Diagnostic freshness. Its
-tooltip exposes configuration and the last sanitized outcome; it does not use
-recurring connection-loss notifications.
+current validation activity, Workbench-reported compilation state, and
+Workbench Compiler Diagnostic freshness. Its tooltip exposes configuration and
+the last sanitized outcome; it does not use recurring connection-loss
+notifications.
 _Avoid_: connection popup, compiler progress notification, NET API console
 
 **Live Gateway Configuration**:
@@ -51,9 +52,9 @@ API endpoint exposed for arbitrary dispatch.
 _Avoid_: API function, handler name, generic command
 
 **Workbench Availability State**:
-The durable, observable Gateway assessment of whether Workbench is unavailable,
-starting, ready, or has a categorized failure. It is derived from short NET
-API transactions and is not a claim that a TCP connection remains open.
+The durable, observable Gateway assessment of whether the configured Workbench
+API is disabled, unavailable, or connected. It is derived from short NET API
+transactions and is not a claim that a TCP connection remains open.
 _Avoid_: socket state, permanent connection, client session
 
 **Workbench Gateway Diagnostic Record**:
@@ -73,6 +74,13 @@ The extension-owned VS Code diagnostic collection that renders Workbench
 Compiler Diagnostics. It is independent of the language server's provisional
 diagnostic publication.
 _Avoid_: LSP compiler diagnostics, shared diagnostic collection, Rust output
+
+**Workbench Compiler Output**:
+The user-facing output containing the latest complete Workbench validation
+summary, clickable project-contained source locations, severity, compiler
+messages, and explicit labels for locations that cannot be mapped to the Addon
+Workspace. It is distinct from the sanitized extension diagnostic log.
+_Avoid_: payload log, compiler history, raw NET API response
 
 **Provisional Parser Diagnostic**:
 A Rust language-engine diagnostic derived from the editor's current document
