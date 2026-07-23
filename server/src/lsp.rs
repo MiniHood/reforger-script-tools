@@ -280,7 +280,14 @@ struct LspServer<W: Write> {
 }
 
 fn source_backed_request_method(method: &str) -> bool {
-    matches!(method, DEBUG_HOVER_METHOD | DEBUG_COMPLETION_METHOD)
+    // Callable completion rendering depends on the current document's
+    // semantic facts.  A bounded foreground query can recover names while
+    // analysis is pending, but cannot prove their callable signatures, which
+    // would let a plain identifier completion race and hide a snippet.
+    matches!(
+        method,
+        "textDocument/completion" | DEBUG_HOVER_METHOD | DEBUG_COMPLETION_METHOD
+    )
 }
 
 fn request_document_uri(params: Option<&Value>) -> Option<String> {

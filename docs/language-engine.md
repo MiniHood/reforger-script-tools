@@ -92,6 +92,12 @@ declaration-tail behavior.
   ready, hiding the callable snippet's parentheses, parameters, and follow-up
   command. Treat `isIncomplete` as result-fidelity metadata, not only as an
   overflow signal.
+- Normal `textDocument/completion` requests wait for and replay against the
+  matching document analysis. Bounded foreground recovery may prove names,
+  but it cannot generally prove callable signatures; sending that partial list
+  first lets a plain identifier completion race and replace the parameterized
+  snippet in the UI. Keep that recovery for explicitly provisional paths and
+  debug inspection, never as the final normal-completion response.
 - An empty generic slot is a type position, not a value position. Returning
   value completion there exposes statement keywords and hides the standard
   types, `ref`, and indexed classes.

@@ -568,8 +568,8 @@ fn deferred_semantic_tokens_are_server_cancelled_when_superseded_or_cancelled() 
 }
 
 #[test]
-fn completion_responds_with_current_lexical_top_level_result_while_analysis_is_pending() {
-    let (sender, _receiver) = mpsc::channel();
+fn completion_waits_for_current_analysis_before_rendering_callable_parameters() {
+    let (sender, receiver) = mpsc::channel();
     let scheduler = OpenDocumentAnalysisScheduler::start(sender);
     let mut server = LspServer::new_with_runtime_senders(
         Vec::new(),
@@ -578,7 +578,9 @@ fn completion_responds_with_current_lexical_top_level_result_while_analysis_is_p
         Some(scheduler),
         None,
     );
-    let uri = "file:///Scripts/PendingCompletion.c";
+    let uri = "file:///Scripts/PendingCallableCompletion.c";
+    let source = "class Example { void TestNumFun2(int input, int num) {} void Run() { TestNumFun } }";
+    let offset = source.find("TestNumFun }").unwrap() + "TestNumFun".len();
     server
         .handle_message(
             json!({
@@ -588,7 +590,7 @@ fn completion_responds_with_current_lexical_top_level_result_while_analysis_is_p
                     "uri": uri,
                     "languageId": "enforce",
                     "version": 1,
-                    "text": "getga"
+                    "text": source
                 }}
             }),
             None,
@@ -604,7 +606,7 @@ fn completion_responds_with_current_lexical_top_level_result_while_analysis_is_p
                 "method": "textDocument/completion",
                 "params": {
                     "textDocument": { "uri": uri },
-                    "position": { "line": 0, "character": 5 }
+                    "position": { "line": 0, "character": offset }
                 }
             }),
             None,
@@ -613,9 +615,24 @@ fn completion_responds_with_current_lexical_top_level_result_while_analysis_is_p
         )
         .unwrap();
 
+    assert!(server.writer.is_empty(), "pending completion must not race analysis");
+    server
+        .handle_internal_event(
+            receiver
+                .recv_timeout(Duration::from_secs(2))
+                .expect("foreground result"),
+        )
+        .unwrap();
+    server
+        .handle_internal_event(
+            receiver
+                .recv_timeout(Duration::from_secs(2))
+                .expect("semantic analysis result"),
+        )
+        .unwrap();
     let output = String::from_utf8(server.writer).unwrap();
     assert!(output.contains("\"id\":1"));
-    assert!(output.contains("\"items\":["));
+    assert!(output.contains("\"newText\":\"TestNumFun2(${1:input}, ${2:num})\""), "{output}");
 }
 
 #[test]
@@ -657,6 +674,7 @@ fn completion_returns_preprocessor_directives_after_foreground_publication() {
     let state = server.document_runtime.test_document_state(uri).unwrap();
     assert!(state.foreground_ready);
     assert!(!state.analysis_ready);
+    server.writer.clear();
     server
         .handle_message(
             json!({
@@ -674,6 +692,14 @@ fn completion_returns_preprocessor_directives_after_foreground_publication() {
         )
         .unwrap();
 
+    assert!(server.writer.is_empty(), "pending completion must wait for analysis");
+    server
+        .handle_internal_event(
+            receiver
+                .recv_timeout(Duration::from_secs(2))
+                .expect("semantic analysis result"),
+        )
+        .unwrap();
     let output = String::from_utf8(server.writer).unwrap();
     for directive in ["#define", "#ifdef", "#ifndef", "#else", "#endif"] {
         assert!(output.contains(&format!("\"label\":\"{directive}\"")), "{directive}");
@@ -924,8 +950,8 @@ fn pending_definition_returns_only_a_current_snapshot_declaration_target() {
 }
 
 #[test]
-fn completion_resolves_current_receiver_before_foreground_publication() {
-    let (sender, _receiver) = mpsc::channel();
+fn completion_waits_for_current_analysis_before_resolving_receiver() {
+    let (sender, receiver) = mpsc::channel();
     let scheduler = OpenDocumentAnalysisScheduler::start(sender);
     let mut server = LspServer::new_with_runtime_senders(
         Vec::new(),
@@ -973,13 +999,28 @@ fn completion_resolves_current_receiver_before_foreground_publication() {
         )
         .unwrap();
 
+    assert!(server.writer.is_empty(), "pending completion must not race analysis");
+    server
+        .handle_internal_event(
+            receiver
+                .recv_timeout(Duration::from_secs(2))
+                .expect("foreground result"),
+        )
+        .unwrap();
+    server
+        .handle_internal_event(
+            receiver
+                .recv_timeout(Duration::from_secs(2))
+                .expect("semantic analysis result"),
+        )
+        .unwrap();
     let output = String::from_utf8(server.writer).unwrap();
     assert!(output.contains("\"id\":1"));
     assert!(output.contains("\"label\":\"GetName\""));
 }
 
 #[test]
-fn completion_returns_current_argument_labels_while_analysis_is_pending() {
+fn completion_waits_for_current_analysis_before_returning_argument_labels() {
     let (sender, receiver) = mpsc::channel();
     let scheduler = OpenDocumentAnalysisScheduler::start(sender);
     let mut server = LspServer::new_with_runtime_senders(
@@ -1016,6 +1057,7 @@ fn completion_returns_current_argument_labels_while_analysis_is_pending() {
                 .expect("foreground result"),
         )
         .unwrap();
+    server.writer.clear();
     server
         .handle_message(
             json!({
@@ -1033,6 +1075,14 @@ fn completion_returns_current_argument_labels_while_analysis_is_pending() {
         )
         .unwrap();
 
+    assert!(server.writer.is_empty(), "pending completion must wait for analysis");
+    server
+        .handle_internal_event(
+            receiver
+                .recv_timeout(Duration::from_secs(2))
+                .expect("semantic analysis result"),
+        )
+        .unwrap();
     let output = String::from_utf8(server.writer).unwrap();
     assert!(output.contains("\"id\":1"));
     assert!(output.contains("\"label\":\"secondValue\""));
