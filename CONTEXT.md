@@ -47,6 +47,61 @@ applies to the next automatic edit without restarting the language server. It
 is exposed as `reforgerScriptTools.experimentalAutoFormatting`.
 _Avoid_: preprocessor formatting, individual auto-edit switches
 
+**Dynamic Collection Type**:
+One of Enfusion's built-in generic collection types: `array<T>`, `set<T>`, or
+`map<TKey, TValue>`. Collection completion and declaration initialization apply
+to this closed set, not static-array syntax, tuples, or arbitrary user-defined
+generics.
+_Avoid_: generic type, container type
+
+**Collection Type Completion**:
+The completion skeleton for a Dynamic Collection Type: one editable element
+type for `array` and `set`; editable key then value types for `map`.
+It is available at every parser-confirmed type position, while its declaration
+initializer remains governed by Collection Scaffold Eligibility. Entering a
+type placeholder opens type completion immediately; standard Enfusion types
+rank before indexed classes. Prefix-match quality takes precedence over this
+category ranking; `ref` ranks after standard types and before indexed enums and
+classes; `void` is excluded.
+_Avoid_: empty generic insertion, collection template
+
+**Empty Collection Initializer**:
+The idiomatic empty declaration form for a Dynamic Collection Type: `= {}` for
+an `array`; `= new set<T>` for a `set`; and `= new map<TKey, TValue>` for a
+`map`. An array declaration-tail prompt presents its literal form before the
+also-valid explicit `new array<T>` form.
+_Avoid_: universal collection constructor, empty collection expression
+
+**Collection Declaration Scaffold**:
+A completed empty Dynamic Collection Type declaration, including its
+initializer and terminating semicolon. It is `array<T> name = {};`, `set<T>
+name = new set<T>;`, or `map<TKey, TValue> name = new map<TKey, TValue>;`.
+_Avoid_: partial collection initializer, unterminated collection declaration
+
+**Collection Scaffold Eligibility**:
+The declaration boundary at which a Collection Declaration Scaffold may be
+created: an otherwise uninitialized, single-declarator local or class field.
+Parameters, return types, loop headers, multi-declarators, and selections are
+ineligible.
+_Avoid_: declaration completion, any collection type occurrence
+
+**Collection Declaration-Tail Prompt**:
+The small completion list opened by Space at Collection Scaffold Eligibility.
+It leaves the typed space intact until the user accepts either the default Empty
+Collection Initializer or a declaration terminator; dismissing it preserves
+native editing for a custom initializer. The Auto-Formatting Gate suppresses
+the prompt entirely, leaving Space native. Tab, click, or a user completion
+binding accepts a choice; Enter dismisses the prompt and remains native. It
+declines in Native Editing Mode and for multi-caret or non-empty selections.
+_Avoid_: automatic collection rewrite, mandatory initializer
+
+**Custom Collection Initializer**:
+The declaration-tail choice that inserts `= `, then opens ordinary expression
+completion in the resulting parsed expression context. It provides values,
+members, and calls without pretending their open-ended set is a collection
+scaffold list.
+_Avoid_: fixed initializer catalog, synthetic expression candidates
+
 **Pre-Native Input Route**:
 A route for an editor operation, such as inserting a newline, text, or an
 indent, that decides its outcome before VS Code performs the native edit. A
