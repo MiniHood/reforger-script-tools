@@ -207,10 +207,16 @@ Different messages, locations, or source identities remain distinct findings.
 Within the language-client bridge, the composition root retains server lifecycle
 and restart policy. Focused bridges own workspace-script notifications, hover
 rendering, diagnostic command UI, development-server watching, completion UI
-transactions, and typing-assist transactions. Typing-assist bridges share a
-small versioned editor-edit transaction contract while retaining their own
-trigger and Rust request policy. Each bridge transports
-Rust-authored facts or applies editor behavior; none interprets Enfusion source.
+transactions, typing-assist transactions, and active scope-delimiter
+presentation. The scope-delimiter bridge forwards current carets to the
+version-aware Rust request and applies the returned ranges with the standard
+theme bracket-match background and border; semantic tokens retain sole
+ownership of foreground color. Enfusion defaults disable VS Code's native
+bracket coloring and matching presentation while preserving its structural
+typing behavior and user override path. Typing-assist bridges share a small
+versioned editor-edit transaction contract while retaining their own trigger
+and Rust request policy. Each bridge transports Rust-authored facts or applies
+editor behavior; none interprets Enfusion source.
 
 Within the LSP, transport framing, incoming-message scheduling, request routing,
 runtime scheduling, background-event publication, response writing, operational

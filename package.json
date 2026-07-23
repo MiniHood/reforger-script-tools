@@ -48,6 +48,7 @@
     "configurationDefaults": {
       "[enforce]": {
         "editor.bracketPairColorization.enabled": false,
+        "editor.matchBrackets": "never",
         "editor.quickSuggestions": {
           "other": "on",
           "comments": "off",

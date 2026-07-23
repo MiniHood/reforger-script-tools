@@ -4,11 +4,12 @@
 //! It does not read document state or perform transport work.
 use super::workspace_requests::{WorkspaceFileChangedParams, WorkspaceFileDeletedParams};
 use super::{
-    validate_message_params, BlockCommentPairParams, CompletionParams, DidChangeTextDocumentParams,
-    DidCloseTextDocumentParams, DidOpenTextDocumentParams, DocumentSymbolParams, HoverParams,
-    InputRouteParams, RangeFormattingParams, RpcMessage, BLOCK_COMMENT_PAIR_METHOD,
-    CONTROL_HEADER_ENTER_METHOD, DEBUG_COMPLETION_METHOD, DEBUG_HOVER_METHOD,
-    RANGE_FORMATTING_METHOD, WORKSPACE_FILE_CHANGED_METHOD, WORKSPACE_FILE_DELETED_METHOD,
+    validate_message_params, ActiveScopeDelimiterParams, BlockCommentPairParams, CompletionParams,
+    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
+    DocumentSymbolParams, HoverParams, InputRouteParams, RangeFormattingParams, RpcMessage,
+    ACTIVE_SCOPE_DELIMITERS_METHOD, BLOCK_COMMENT_PAIR_METHOD, CONTROL_HEADER_ENTER_METHOD,
+    DEBUG_COMPLETION_METHOD, DEBUG_HOVER_METHOD, RANGE_FORMATTING_METHOD,
+    WORKSPACE_FILE_CHANGED_METHOD, WORKSPACE_FILE_DELETED_METHOD,
 };
 use serde_json::Value;
 
@@ -57,6 +58,7 @@ pub(super) enum FeatureCommand {
     DebugCompletion(Option<HoverParams>),
     BlockCommentPair(Option<BlockCommentPairParams>),
     InputRoute(Option<InputRouteParams>),
+    ActiveScopeDelimiters(Option<ActiveScopeDelimiterParams>),
     OtherTextDocument,
 }
 
@@ -125,6 +127,9 @@ pub(super) fn classify_request(value: Value) -> Result<RoutedRequest, String> {
         Some(CONTROL_HEADER_ENTER_METHOD) => RequestCommand::Feature(FeatureCommand::InputRoute(
             parse_typed_params(&message.params),
         )),
+        Some(ACTIVE_SCOPE_DELIMITERS_METHOD) => RequestCommand::Feature(
+            FeatureCommand::ActiveScopeDelimiters(parse_typed_params(&message.params)),
+        ),
         Some(method) if method.starts_with("textDocument/") => {
             RequestCommand::Feature(FeatureCommand::OtherTextDocument)
         }

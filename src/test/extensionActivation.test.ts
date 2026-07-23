@@ -19,6 +19,11 @@ import { executeIndent, executeInsertNewline, executeInsertSpace } from '../lang
 import { VersionedEditorTransaction } from '../languageClient/versionedEditorTransaction';
 import { completionPresentationObservationForDocument, completionUiMiddlewareCallbacks, nestedSnippetTransactionTookOwnership } from '../languageClient/completionUiBridge';
 import { formatUiAutomationPayload } from '../languageClient/suggestWidgetUiReport';
+import {
+	activeScopeDelimiterDecorationOptions,
+	activeScopeDelimiterRangesForSnapshot,
+	registerActiveScopeDelimiterBridge,
+} from '../languageClient/activeScopeDelimiterBridge';
 
 suite('extension activation', () => {
 	test('renders the completion response observed by the VS Code suggest pipeline', async () => {
@@ -260,6 +265,137 @@ suite('extension activation', () => {
 		assert.ok(!bodyLine.test('\t{'));
 		assert.ok(!bodyLine.test('\t// comment'));
 		assert.ok(!bodyLine.test('\t/* comment'));
+
+		const languageDefaults = extension.packageJSON.contributes.configurationDefaults['[enforce]'] as {
+			'editor.bracketPairColorization.enabled'?: boolean;
+			'editor.matchBrackets'?: string;
+		};
+		assert.strictEqual(languageDefaults['editor.bracketPairColorization.enabled'], false);
+		assert.strictEqual(languageDefaults['editor.matchBrackets'], 'never');
+	});
+
+	test('uses theme bracket-match emphasis without replacing semantic foregrounds', () => {
+		const options = activeScopeDelimiterDecorationOptions();
+		assert.strictEqual((options.backgroundColor as vscode.ThemeColor).id, 'editorBracketMatch.background');
+		assert.strictEqual((options.borderColor as vscode.ThemeColor).id, 'editorBracketMatch.border');
+		assert.strictEqual(options.borderStyle, 'solid');
+		assert.strictEqual(options.borderWidth, '1px');
+		assert.strictEqual(options.color, undefined);
+	});
+
+	test('projects current multi-caret scope delimiter responses into editor ranges', async () => {
+		const document = await vscode.workspace.openTextDocument({
+			language: 'enforce',
+			content: 'class Example\n{\n\tvoid Run() {}\n}',
+		});
+		const selections = [
+			new vscode.Selection(2, 10, 2, 10),
+			new vscode.Selection(1, 1, 1, 1),
+		];
+		const requests: Array<{ method: string; params: unknown }> = [];
+		const ranges = await activeScopeDelimiterRangesForSnapshot(
+			document,
+			selections,
+			{
+				sendRequest: async <Result>(method: string, params: unknown) => {
+					requests.push({ method, params });
+					return {
+						version: document.version,
+						pairs: [{
+							opener: { start: { line: 2, character: 9 }, end: { line: 2, character: 10 } },
+							closer: { start: { line: 2, character: 10 }, end: { line: 2, character: 11 } },
+						}],
+					} as Result;
+				},
+			},
+			() => true,
+		);
+
+		assert.deepStrictEqual(requests, [{
+			method: 'reforger/activeScopeDelimiters',
+			params: {
+				textDocument: { uri: document.uri.toString() },
+				version: document.version,
+				positions: [
+					{ line: 2, character: 10 },
+					{ line: 1, character: 1 },
+				],
+			},
+		}]);
+		assert.deepStrictEqual(ranges, [
+			new vscode.Range(2, 9, 2, 10),
+			new vscode.Range(2, 10, 2, 11),
+		]);
+	});
+
+	test('rejects stale active scope delimiter responses', async () => {
+		const document = await vscode.workspace.openTextDocument({
+			language: 'enforce',
+			content: 'class Example {}',
+		});
+		const selection = new vscode.Selection(0, 15, 0, 15);
+		assert.strictEqual(
+			await activeScopeDelimiterRangesForSnapshot(
+				document,
+				[selection],
+				{
+					sendRequest: async <Result>() => ({
+						version: document.version + 1,
+						pairs: [],
+					}) as Result,
+				},
+				() => true,
+			),
+			undefined,
+		);
+		assert.strictEqual(
+			await activeScopeDelimiterRangesForSnapshot(
+				document,
+				[selection],
+				{
+					sendRequest: async <Result>() => ({
+						version: document.version,
+						pairs: [],
+					}) as Result,
+				},
+				() => false,
+			),
+			undefined,
+		);
+	});
+
+	test('refreshes active scope delimiters with caret movement and stops on disposal', async () => {
+		const document = await vscode.workspace.openTextDocument({
+			language: 'enforce',
+			content: 'class Example {}',
+		});
+		const editor = await vscode.window.showTextDocument(document);
+		let requestCount = 0;
+		const registration = registerActiveScopeDelimiterBridge({
+			sendRequest: async <Result>() => {
+				requestCount += 1;
+				return {
+					version: document.version,
+					pairs: [],
+				} as Result;
+			},
+		});
+		try {
+			await new Promise(resolve => setTimeout(resolve, 20));
+			assert.ok(requestCount >= 1, 'registration requests the initial caret pair');
+			const beforeMove = requestCount;
+			editor.selection = new vscode.Selection(0, 7, 0, 7);
+			await new Promise(resolve => setTimeout(resolve, 20));
+			assert.ok(requestCount > beforeMove, 'caret movement refreshes the active pair');
+
+			registration.dispose();
+			const afterDispose = requestCount;
+			editor.selection = new vscode.Selection(0, 8, 0, 8);
+			await new Promise(resolve => setTimeout(resolve, 20));
+			assert.strictEqual(requestCount, afterDispose);
+		} finally {
+			registration.dispose();
+		}
 	});
 
 	test('uses the native block-comment pair event as a narrow typing-assist trigger', async () => {

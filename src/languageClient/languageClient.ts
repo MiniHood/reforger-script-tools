@@ -47,6 +47,7 @@ import {
 	registerBlockCommentPair,
 } from './typingAssistTransactionBridge';
 import { registerControlHeaderEnter } from './controlHeaderEnterBridge';
+import { registerActiveScopeDelimiterBridge } from './activeScopeDelimiterBridge';
 
 export { blockCommentPairPosition } from './typingAssistBridge';
 export { ifSpaceCommitContractFromCommandArguments } from './completionUiBridge';
@@ -304,6 +305,7 @@ async function startLanguageClient(
 		}
 		clientDisposables.push(registerHtmlHoverBridge(client, outputChannel));
 		clientDisposables.push(...registerWorkspaceScriptWatchBridge(client, outputChannel));
+		clientDisposables.push(registerActiveScopeDelimiterBridge(client));
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		outputChannel.appendLine(`Language server failed to start: ${message}`);

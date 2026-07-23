@@ -67,6 +67,7 @@ export const languageClientRequests = {
 	debugCompletion: 'reforger/debugCompletion',
 	inputRoute: 'reforger/inputRoute',
 	blockCommentPair: 'reforger/blockCommentPair',
+	activeScopeDelimiters: 'reforger/activeScopeDelimiters',
 } as const;
 
 export const languageClientNotifications = {

@@ -1262,6 +1262,82 @@ fn pending_hover_returns_only_current_lexical_facts_after_semantic_overload() {
 }
 
 #[test]
+fn active_scope_delimiters_use_current_foreground_syntax_before_semantic_analysis() {
+    let (sender, receiver) = mpsc::channel();
+    let scheduler = OpenDocumentAnalysisScheduler::start(sender);
+    let mut server = LspServer::new_with_runtime_senders(
+        Vec::new(),
+        LspServerOptions::default(),
+        None,
+        Some(scheduler),
+        None,
+    );
+    let uri = "file:///Scripts/PendingScopeDelimiters.c";
+    let source = "class Example\n{\n    void Run()\n    {\n    }\n}";
+
+    server
+        .handle_message(
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": { "textDocument": {
+                    "uri": uri,
+                    "languageId": "enforce",
+                    "version": 1,
+                    "text": source
+                }}
+            }),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+    install_next_foreground(&mut server, &receiver);
+    assert!(
+        !server
+            .document_runtime
+            .test_document_state(uri)
+            .unwrap()
+            .analysis_ready
+    );
+
+    server
+        .handle_message(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "reforger/activeScopeDelimiters",
+                "params": {
+                    "textDocument": { "uri": uri },
+                    "version": 1,
+                    "positions": [{ "line": 2, "character": 13 }]
+                }
+            }),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+
+    let output = String::from_utf8(server.writer).unwrap();
+    let mut reader = BufReader::new(output.as_bytes());
+    let response = loop {
+        let response = read_message(&mut reader)
+            .unwrap()
+            .expect("active scope delimiter response");
+        if response["id"] == 1 {
+            break response;
+        }
+    };
+    assert_eq!(response["result"]["version"], 1);
+    assert_eq!(response["result"]["pairs"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        response["result"]["pairs"][0]["opener"]["start"],
+        json!({ "line": 2, "character": 12 })
+    );
+}
+
+#[test]
 fn pending_document_symbol_request_returns_current_lexical_outline() {
     let (sender, receiver) = mpsc::channel();
     let scheduler = OpenDocumentAnalysisScheduler::start(sender);

@@ -565,6 +565,29 @@ fn semantic_raw_tokens(
     }
     let declaration_overlay_elapsed = declaration_overlay_start.elapsed();
 
+    let delimiter_overlay_start = Instant::now();
+    let owner_tokens = tokens.clone();
+    for delimiter in super::scope_delimiters::scope_delimiters_for_analysis(analysis) {
+        let Some(token_type) = semantic_type_for_anchor(&owner_tokens, delimiter.anchor) else {
+            continue;
+        };
+        for span in [Some(delimiter.opener), delimiter.closer]
+            .into_iter()
+            .flatten()
+        {
+            push_raw_semantic_token(
+                &mut tokens,
+                RawSemanticToken {
+                    span,
+                    token_type,
+                    modifiers: 0,
+                    priority: 90,
+                },
+            );
+        }
+    }
+    let delimiter_overlay_elapsed = delimiter_overlay_start.elapsed();
+
     let sort_filter_split_start = Instant::now();
     tokens.sort_by_key(|token| {
         (
@@ -600,13 +623,22 @@ fn semantic_raw_tokens(
             token_loop_ms: token_loop_elapsed.as_millis(),
             resolver_ms: resolver_elapsed.as_millis(),
             declaration_overlay_ms: type_detail_overlay_elapsed.as_millis()
-                + declaration_overlay_elapsed.as_millis(),
+                + declaration_overlay_elapsed.as_millis()
+                + delimiter_overlay_elapsed.as_millis(),
             sort_filter_split_ms: sort_filter_split_start.elapsed().as_millis(),
             encode_ms: 0,
             decode_debug_ms: 0,
             identifier_resolver_calls,
         },
     })
+}
+
+fn semantic_type_for_anchor(tokens: &[RawSemanticToken], anchor: TextSpan) -> Option<u32> {
+    tokens
+        .iter()
+        .filter(|token| token.span == anchor)
+        .max_by_key(|token| token.priority)
+        .map(|token| token.token_type)
 }
 
 fn lexical_raw_tokens(

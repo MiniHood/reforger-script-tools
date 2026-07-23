@@ -31,6 +31,24 @@ New language behavior belongs in the appropriate shared layer when more than
 one feature can benefit. A feature-specific adapter is appropriate only when
 it projects existing facts into an LSP response.
 
+Scope delimiters are one shared syntax projection used by semantic tokens and
+the active-pair request. Parser-proven `{}`, `()`, `[]`, and generic `<>`
+inherit the semantic token kind of their immediate owner; when a construct has
+no distinct owner, it inherits the nearest enclosing semantic scope. This
+keeps declaration bodies, control bodies, calls, constructors, indexing,
+attributes, initializers, and nested generic types aligned with theme-defined
+semantic colors without hard-coded foregrounds. Comments and strings remain
+lexical, preprocessor directives are excluded, and comparison operators are
+not reclassified as generic delimiters. A parser-proven unmatched opener may
+be colored for recovery, but only matched pairs can become active.
+
+`reforger/activeScopeDelimiters` is a bounded, version-aware projection for all
+current carets. It selects the innermost matched semantic pair at each caret,
+coalesces duplicate pairs, and may use the current foreground parse while
+whole-document semantic analysis is pending. The response contains only the
+document version and delimiter ranges; ownership and color decisions remain in
+Rust and semantic tokens.
+
 ## Snapshot Rules
 
 Open documents are immutable, revisioned snapshots. The analysis runtime owns

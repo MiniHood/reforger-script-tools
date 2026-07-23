@@ -23,9 +23,9 @@ use super::{
     signature_help_report_for_pending_snapshot, source_backed_request_method, symbol_kind_label,
     DebugCompletionJob, DebugHoverJob, DebugRequestJob, DocumentQuery, DocumentQueryState,
     DocumentRuntime, ExternalIndexHandle, HoverSelectionSource, LspPositionIndex, QueryQuality,
-    RuntimeEffect, TextSpan, BLOCK_COMMENT_PAIR_METHOD, CONTROL_HEADER_ENTER_METHOD,
-    DEBUG_COMPLETION_METHOD, DEBUG_HOVER_METHOD, RANGE_FORMATTING_METHOD,
-    WORKSPACE_FILE_CHANGED_METHOD, WORKSPACE_FILE_DELETED_METHOD,
+    RuntimeEffect, TextSpan, ACTIVE_SCOPE_DELIMITERS_METHOD, BLOCK_COMMENT_PAIR_METHOD,
+    CONTROL_HEADER_ENTER_METHOD, DEBUG_COMPLETION_METHOD, DEBUG_HOVER_METHOD,
+    RANGE_FORMATTING_METHOD, WORKSPACE_FILE_CHANGED_METHOD, WORKSPACE_FILE_DELETED_METHOD,
 };
 use serde_json::{json, Value};
 use std::time::Instant;
@@ -637,6 +637,111 @@ impl FeatureDispatcher<'_> {
                         bytes,
                         version,
                         outcome,
+                        start.elapsed().as_millis()
+                    ));
+                    self.respond(id, result)?;
+                }
+            }
+            ACTIVE_SCOPE_DELIMITERS_METHOD => {
+                if let Some(id) = message.id {
+                    let start = Instant::now();
+                    let RequestCommand::Feature(FeatureCommand::ActiveScopeDelimiters(params)) =
+                        &command
+                    else {
+                        unreachable!("active scope delimiter method has typed parameters");
+                    };
+                    let params = params.clone();
+                    let mut log_uri = "<missing>".to_string();
+                    let mut requested_version = -1i32;
+                    let mut response_version = -1i32;
+                    let mut position_count = 0usize;
+                    let mut pair_count = 0usize;
+                    let result = params
+                        .and_then(|params| {
+                            log_uri = params.text_document.uri;
+                            requested_version = params.version;
+                            position_count = params.positions.len();
+                            let query = self
+                                .document_runtime
+                                .capture_query(&log_uri, self.external_index.snapshot())?;
+                            let document = query.document;
+                            response_version = document.version;
+                            if document.version != params.version {
+                                return Some(json!({
+                                    "version": document.version,
+                                    "pairs": [],
+                                }));
+                            }
+                            let delimiters = match DocumentQuery::state_for(document) {
+                                DocumentQueryState::Cached(analysis) => {
+                                    crate::lsp::scope_delimiters::scope_delimiters_for_analysis(
+                                        analysis,
+                                    )
+                                }
+                                DocumentQueryState::Foreground(foreground) => document
+                                    .syntax()
+                                    .map(|parse| {
+                                        crate::lsp::scope_delimiters::scope_delimiters_for_syntax(
+                                            parse,
+                                            foreground.tokens(),
+                                        )
+                                    })
+                                    .unwrap_or_default(),
+                                DocumentQueryState::Pending => Vec::new(),
+                            };
+                            let offsets = params
+                                .positions
+                                .iter()
+                                .take(64)
+                                .filter_map(|position| {
+                                    offset_for_position(&document.text, *position)
+                                })
+                                .collect::<Vec<_>>();
+                            let pairs = crate::lsp::scope_delimiters::active_scope_delimiters(
+                                &delimiters,
+                                &offsets,
+                            )
+                            .into_iter()
+                            .filter_map(|delimiter| {
+                                let closer = delimiter.closer?;
+                                Some(json!({
+                                    "opener": {
+                                        "start": position_for_offset(
+                                            &document.text,
+                                            delimiter.opener.start,
+                                        ),
+                                        "end": position_for_offset(
+                                            &document.text,
+                                            delimiter.opener.end,
+                                        ),
+                                    },
+                                    "closer": {
+                                        "start": position_for_offset(
+                                            &document.text,
+                                            closer.start,
+                                        ),
+                                        "end": position_for_offset(
+                                            &document.text,
+                                            closer.end,
+                                        ),
+                                    },
+                                }))
+                            })
+                            .collect::<Vec<_>>();
+                            pair_count = pairs.len();
+                            Some(json!({
+                                "version": document.version,
+                                "pairs": pairs,
+                            }))
+                        })
+                        .unwrap_or_else(|| json!({ "version": -1, "pairs": [] }));
+                    self.log(&format!(
+                        "request activeScopeDelimiters uri={} requested_version={} response_version={} positions={} pairs={} elapsed_ms={}",
+                        log_uri,
+                        requested_version,
+                        response_version,
+                        position_count,
+                        pair_count,
                         start.elapsed().as_millis()
                     ));
                     self.respond(id, result)?;

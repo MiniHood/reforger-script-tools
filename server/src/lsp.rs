@@ -44,6 +44,7 @@ mod open_documents;
 mod request_router;
 mod response_writer;
 mod runtime_scheduler;
+mod scope_delimiters;
 mod semantic_tokens;
 mod signature_help;
 mod transport;
@@ -145,6 +146,7 @@ const DEBUG_HOVER_METHOD: &str = "reforger/debugHover";
 const DEBUG_COMPLETION_METHOD: &str = "reforger/debugCompletion";
 const BLOCK_COMMENT_PAIR_METHOD: &str = "reforger/blockCommentPair";
 const CONTROL_HEADER_ENTER_METHOD: &str = "reforger/inputRoute";
+const ACTIVE_SCOPE_DELIMITERS_METHOD: &str = "reforger/activeScopeDelimiters";
 const RANGE_FORMATTING_METHOD: &str = "textDocument/rangeFormatting";
 const WORKSPACE_FILE_CHANGED_METHOD: &str = "reforger/workspaceFileChanged";
 const WORKSPACE_FILE_DELETED_METHOD: &str = "reforger/workspaceFileDeleted";
@@ -446,6 +448,14 @@ struct BlockCommentPairParams {
     position: LspPosition,
     version: i32,
     options: BlockCommentPairOptions,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ActiveScopeDelimiterParams {
+    text_document: TextDocumentIdentifier,
+    version: i32,
+    positions: Vec<LspPosition>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -1204,6 +1214,9 @@ fn validate_message_params(method: &str, params: &Option<Value>) -> Result<(), S
         RANGE_FORMATTING_METHOD => validate_params::<RangeFormattingParams>(params, method),
         BLOCK_COMMENT_PAIR_METHOD => validate_params::<BlockCommentPairParams>(params, method),
         CONTROL_HEADER_ENTER_METHOD => validate_params::<InputRouteParams>(params, method),
+        ACTIVE_SCOPE_DELIMITERS_METHOD => {
+            validate_params::<ActiveScopeDelimiterParams>(params, method)
+        }
         _ => Ok(()),
     }
 }
