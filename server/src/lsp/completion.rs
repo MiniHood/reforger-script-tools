@@ -1949,13 +1949,6 @@ fn unavailable_completion_report(
     mut report: LspCompletionReport,
     reason: impl Into<String>,
 ) -> LspCompletionReport {
-    // A lexical fallback is current-revision safe, but it intentionally lacks
-    // whole-file semantic facts. Its eventual semantic response can change an
-    // item's insert text and command (for example, a plain callable label into
-    // a parameter snippet), even when the candidate count is below the cap.
-    // LSP therefore must let the client refresh it rather than treating the
-    // fallback's item shape as final.
-    report.list.is_incomplete = true;
     report.query_quality = QueryQuality::Unavailable;
     report.recovery_reason = Some(reason.into());
     report
@@ -5477,7 +5470,6 @@ mod tests {
             .iter()
             .any(|item| item.label == "GetGameMode"));
         assert_eq!(report.query_quality, QueryQuality::Unavailable);
-        assert!(report.list.is_incomplete);
         assert_eq!(
             report.recovery_reason.as_deref(),
             Some("current-revision-local-facts-pending")
