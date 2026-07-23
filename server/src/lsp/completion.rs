@@ -5012,14 +5012,20 @@ struct CallableCompletionRender {
 
 impl CallableCompletionRender {
     fn from_insert(call: CallableSignatureParts, insert: CallableInsertText) -> Self {
-        if insert.enum_placeholder_defaults.is_empty() {
-            Self::trigger_parameter_hints(call, insert.text)
-        } else {
+        if !insert.enum_placeholder_defaults.is_empty() {
             Self::trigger_suggest_at_snippet_placeholders(
                 call,
                 insert.text,
                 insert.enum_placeholder_defaults,
             )
+        } else if let Some(placeholder) = first_function_reference_parameter_name(&call) {
+            // A `func` parameter is a callable selection, not a scalar value.
+            // Parameter hints explain the slot but cannot offer the current
+            // document's function candidates. The snippet bridge waits for
+            // this exact placeholder selection before opening Suggest.
+            Self::trigger_suggest_at_snippet_placeholders(call, insert.text, vec![placeholder])
+        } else {
+            Self::trigger_parameter_hints(call, insert.text)
         }
     }
 
@@ -5042,6 +5048,11 @@ impl CallableCompletionRender {
             follow_up_command: trigger_suggest_at_snippet_placeholder_command(placeholder_defaults),
         }
     }
+}
+
+fn first_function_reference_parameter_name(call: &CallableSignatureParts) -> Option<String> {
+    let parameter = call.required_parameters().next()?;
+    (parameter.type_and_modifiers.trim() == "func").then(|| parameter.name.clone())
 }
 
 #[cfg(test)]

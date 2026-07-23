@@ -98,6 +98,11 @@ declaration-tail behavior.
   first lets a plain identifier completion race and replace the parameterized
   snippet in the UI. Keep that recovery for explicitly provisional paths and
   debug inspection, never as the final normal-completion response.
+- A callable whose first required parameter is `func` needs the snippet Suggest
+  bridge at that parameter's placeholder. Parameter hints describe `func` but
+  do not open the function-choice completion list; keep ordinary callable
+  parameters on parameter hints and use the bridge only for this
+  signature-proven callable-reference case.
 - An empty generic slot is a type position, not a value position. Returning
   value completion there exposes statement keywords and hides the standard
   types, `ref`, and indexed classes.

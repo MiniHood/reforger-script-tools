@@ -3080,6 +3080,50 @@ class Example
 }
 
 #[test]
+fn rpc_completion_opens_suggest_for_its_function_parameter() {
+    let source = r#"class GenericComponent
+{
+	void Rpc(func method, void p0 = NULL);
+}
+
+class Example
+{
+	void Run()
+	{
+		GenericComponent component;
+		component.Rp
+	}
+}
+"#;
+
+    let report = completion_report_for_source_position_with_external(
+        source,
+        position_after_needle(source, "component.Rp"),
+        None,
+    );
+
+    let item = report
+        .list
+        .items
+        .iter()
+        .find(|item| item.label == "Rpc")
+        .expect("expected RPC completion");
+    assert_eq!(item.text_edit.new_text, "Rpc(${1:method})");
+    assert_eq!(
+        item.command
+            .as_ref()
+            .map(|command| command.command.as_str()),
+        Some("reforger-sript-tools.completion.triggerSuggestAtSnippetPlaceholder")
+    );
+    assert_eq!(
+        item.command
+            .as_ref()
+            .and_then(|command| command.arguments.as_ref()),
+        Some(&vec![serde_json::Value::String("method".to_string())])
+    );
+}
+
+#[test]
 fn callable_enum_placeholders_cover_methods_constructors_and_attributes() {
     let enum_declarations = r#"enum FirstChoice { First }
 enum SecondChoice { Second }
