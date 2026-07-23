@@ -139,6 +139,16 @@ unimplemented endpoint exists. A `capabilities` response must distinguish
 lets clients discover the full design vocabulary without treating a missing
 plugin version as permission to guess or emulate editor behavior.
 
+Each future operation should also carry the parts of the contract that make an
+editor MCP usable by an agent: stable name and description; effect
+classification; input and output DTO versions; declared default/max paging or
+image limits; stable entity/resource identities; and an error/recovery shape.
+For operations that access live editor state, the plugin performs the engine
+call in its Workbench context and the host only transports/maps the result.
+This is how the s&box-style strengths—live tool availability, rich typed
+results, visual feedback, and direct editor control—translate safely across
+Reforger's external NET API boundary.
+
 ## Validation backlog
 
 1. Enable the NET API in a disposable Workbench project and identify the

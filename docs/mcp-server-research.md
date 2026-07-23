@@ -182,6 +182,29 @@ follow stable IDs/cursors for detail. Future visual inspection may return MCP
 image content, but only after a bounded, authenticated Workbench-to-host data
 path is demonstrated; it is not a reason to add a generic binary or file API.
 
+### s&box techniques adopted for Reforger
+
+The [s&box MCP review](sbox-mcp-research.md) is a design input for this server,
+not merely background reading. Adopt its advanced editor-MCP techniques where
+they fit the different Reforger/NET API boundary:
+
+| s&box technique | Reforger design commitment |
+| --- | --- |
+| Live progressive tool discovery | The host publishes a small discovery surface and derives currently available Workbench capabilities from the plugin manifest/revision. It refreshes after reconnect or plugin reload, so a client never plans against stale editor tools. |
+| Toolsets with stable public names | Capability groups and their named operations are durable API. Descriptions state what is returned, limits, effects, and the next operation/identity to use. |
+| Schema-first parameters and outputs | Inputs and repeated result shapes use versioned DTOs. The MCP tool publishes its input schema and structured output schema, rather than requiring the caller to parse prose or invent JSON. |
+| Rich visual results | The `visual` group is a first-class future capability for viewport screenshots, previews, thumbnails, and before/after captures—not an optional UI embellishment. |
+| Small linked results | Search/list tools return totals, limits/cursors, and stable entity/resource identities that feed detail and mutation tools; they never serialize an entire world or resource graph by default. |
+| Clear effect signals | Read-only, navigation/editor-visible, and mutating operations are distinguished in metadata and descriptions; unknown operations are treated as effectful. |
+| Actionable errors | Failures include a stable error code, a concise cause, and the safe next action, such as searching first or opening a required editor context. |
+| Native editor execution | The Workbench plugin owns calls that need editor/world/resource state. The host never attempts to emulate those calls from raw files or run a general external command channel. |
+
+The one deliberate non-adoption is s&box's generic `call_tool` entry point.
+It solves s&box's in-process hotload discovery problem. Reforger's external
+adapter should retain named typed MCP tools and a manifest-derived allowlist,
+so client consent, schemas, audits, and compatibility remain visible at the
+MCP boundary.
+
 ## Cross-cutting operation contract
 
 Every mutating operation should accept a target rooted in the selected project,
