@@ -165,15 +165,16 @@ for lifecycle tests.
 ### AR-007 — Two declaration-extraction pipelines duplicate language facts
 
 **Strength:** Strong
-**Files:** `server/src/model.rs:303-1090`; `server/src/semantic_file.rs:146-971`; `server/src/index.rs:229-376, 381-709`
+**Files:** `server/src/model.rs:303-1090`; `server/src/semantic_file.rs:146-971`; `server/src/index.rs:229-376, 381-709`; `server/examples/{symbol*,resolver_report,lsp_completion_report,lsp_signature_help_report,reference_finder*,scope_corpus_report,expression_type_corpus_report}.rs`
 
 Production document and external-index paths build `SemanticFile` from the
 parser and project it into `SymbolIndex`. The retained `SymbolCatalog` path
 independently walks AST declarations and separately implements callable-form,
 macro, and conditional-branch extraction. The production paths documented in
-`open_documents`, `external_overlay`, and `index_build` use `SemanticFile`;
-the remaining `SymbolCatalog` construction sites are tests and compatibility
-constructors.
+`open_documents`, `external_overlay`, and `index_build` use `SemanticFile`.
+The retained `SymbolCatalog` construction sites include tests, compatibility
+constructors, and developer reports, so even corpus evidence can observe a
+different declaration projection from the runtime.
 
 This is two parallel implementations of Enfusion declaration truth. A parser
 edge case or preprocessor change must be fixed and verified twice, and the
