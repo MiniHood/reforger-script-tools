@@ -563,3 +563,14 @@ snapshot/revision replacement, UTF-16 and CRLF coordinate handling, deferred
 request cancellation, protocol error continuation, and feature projections.
 This establishes regression evidence for AR-009 through AR-013 and AR-019;
 no additional test-ownership or performance finding was established.
+
+### 2026-07-23 — Rust corpus/report program family (in progress)
+
+Reviewed the lexer, parser, AST, expression, index, cache, LSP, resolver,
+scope, symbol, and reference report families by their shared invocation,
+source-acquisition, semantic-pipeline, and output contracts, with detailed
+source review of representative lexer/parser/AST/index corpus programs. AR-020
+records the repeated runner policy; AR-021 records the parser report's hidden
+path/text-specific exception. Legacy `SymbolCatalog` use in this family is
+included in AR-007. Per-report analysis projection and remaining report files
+continue into the final audit.
