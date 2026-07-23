@@ -1371,6 +1371,84 @@ fn active_scope_delimiters_use_current_foreground_syntax_before_semantic_analysi
 }
 
 #[test]
+fn active_scope_delimiters_stop_pending_after_foreground_rejection() {
+    let (sender, receiver) = mpsc::channel();
+    let scheduler = OpenDocumentAnalysisScheduler::start(sender);
+    let mut server = LspServer::new_with_runtime_senders(
+        Vec::new(),
+        LspServerOptions::default(),
+        None,
+        Some(scheduler),
+        None,
+    );
+    let uri = "file:///Scripts/RejectedScopeDelimiters.c";
+    server
+        .handle_message(
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": { "textDocument": {
+                    "uri": uri,
+                    "languageId": "enforce",
+                    "version": 1,
+                    "text": "class Example {}"
+                }}
+            }),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+
+    let skipped = match receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect("foreground result")
+    {
+        ServerEvent::ForegroundDocumentReady { task, .. } => {
+            ServerEvent::ForegroundDocumentSkipped {
+                task,
+                reason: "test rejection".to_string(),
+                elapsed_ms: 0,
+            }
+        }
+        _ => panic!("expected foreground result"),
+    };
+    server.handle_internal_event(skipped).unwrap();
+    server.writer.clear();
+    server
+        .handle_message(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "reforger/activeScopeDelimiters",
+                "params": {
+                    "textDocument": { "uri": uri },
+                    "version": 1,
+                    "positions": [{ "line": 0, "character": 15 }]
+                }
+            }),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+
+    let output = String::from_utf8(server.writer).unwrap();
+    let mut reader = BufReader::new(output.as_bytes());
+    let response = loop {
+        let response = read_message(&mut reader)
+            .unwrap()
+            .expect("rejected active scope delimiter response");
+        if response["id"] == 1 {
+            break response;
+        }
+    };
+    assert_eq!(response["result"]["version"], 1);
+    assert_eq!(response["result"]["pending"], false);
+    assert_eq!(response["result"]["pairs"], json!([]));
+}
+
+#[test]
 fn pending_document_symbol_request_returns_current_lexical_outline() {
     let (sender, receiver) = mpsc::channel();
     let scheduler = OpenDocumentAnalysisScheduler::start(sender);

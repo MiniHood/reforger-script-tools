@@ -686,7 +686,7 @@ impl FeatureDispatcher<'_> {
                             else {
                                 return Some(json!({
                                     "version": document.version,
-                                    "pending": true,
+                                    "pending": !document.analysis_rejected(),
                                     "pairs": [],
                                 }));
                             };
