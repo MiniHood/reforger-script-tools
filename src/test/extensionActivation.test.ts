@@ -13,6 +13,7 @@ import { registerBlockCommentPair } from '../languageClient/typingAssistTransact
 import { executeIndent, executeInsertNewline, executeInsertSpace } from '../languageClient/controlHeaderEnterBridge';
 import { VersionedEditorTransaction } from '../languageClient/versionedEditorTransaction';
 import { completionPresentationObservationForDocument, completionUiMiddlewareCallbacks, nestedSnippetTransactionTookOwnership } from '../languageClient/completionUiBridge';
+import { formatUiAutomationPayload } from '../languageClient/suggestWidgetUiReport';
 
 suite('extension activation', () => {
 	test('renders the completion response observed by the VS Code suggest pipeline', async () => {
@@ -32,6 +33,26 @@ suite('extension activation', () => {
 		assert.match(report, /Trigger kind: 1/);
 		assert.match(report, /\| 1 \| #define \|/);
 		assert.match(report, /\| 2 \| #ifdef \|/);
+	});
+
+	test('renders accessibility-visible suggestion rows separately from the completion payload', () => {
+		const report = formatUiAutomationPayload({
+			status: 'ok',
+			focusedElement: 'GC_Sounds.c',
+			lists: [{
+				name: 'Suggest', automationId: 'suggestWidget', className: 'monaco-list', isOffscreen: false, hasKeyboardFocus: true,
+				bounds: { x: 100, y: 200, width: 300, height: 120 },
+				verticalScrollPercent: 0,
+				items: [
+					{ name: 'Resource', bounds: { x: 100, y: 200, width: 300, height: 20 }, isSelected: false },
+					{ name: 'ResourceName', bounds: { x: 100, y: 220, width: 300, height: 20 }, isSelected: true },
+					{ name: 'ResourceManager', bounds: { x: 100, y: 240, width: 300, height: 20 }, isSelected: false },
+				],
+			}],
+		}, ['Resource', 'ResourceName', 'ResourceManager']);
+		assert.match(report, /Rendered Suggest Widget \(Windows UI Automation\)/);
+		assert.match(report, /Bounds: 100,200 300x120/);
+		assert.match(report, /\| 2 \| yes \| ResourceName \|/);
 	});
 
 	test('registers editor-facing commands', async () => {

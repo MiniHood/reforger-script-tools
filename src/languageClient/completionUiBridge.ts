@@ -678,6 +678,11 @@ export function completionPresentationObservationForDocument(documentUri: string
 	}
 	return lines.join('\n');
 }
+
+/** Labels from the latest completion result passed to VS Code for UIA correlation. */
+export function completionPresentationLabelsForDocument(documentUri: string): readonly string[] {
+	return completionPresentationObservations.get(documentUri)?.labels ?? [];
+}
 export const completionUiMiddlewareCallbacks: CompletionMiddlewareCallbacks = {
 	begin: (document, position, triggerKind) => {
 		const transaction = pendingSnippetSuggestTransaction;
