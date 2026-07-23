@@ -511,3 +511,14 @@ the signature-help display-to-semantics reversal. Coordinate conversion in
 diagnostics and navigation is covered by AR-013; external definition source
 loading is covered by AR-011. Completion and the remaining protocol/runtime
 test source still require the final reconciliation pass.
+
+### 2026-07-23 — LSP protocol, document, runtime, and feature tests
+
+Reviewed `server/src/lsp/tests.rs` and its `support`, `protocol`, `documents`,
+`runtime`, and `features` inclusions. The shared harness constructs the same
+runtime and transport-facing objects as production tests rather than a parallel
+implementation. Coverage explicitly exercises scheduler lanes and capacity,
+snapshot/revision replacement, UTF-16 and CRLF coordinate handling, deferred
+request cancellation, protocol error continuation, and feature projections.
+This establishes regression evidence for AR-009 through AR-013 and AR-019;
+no additional test-ownership or performance finding was established.
