@@ -42,7 +42,7 @@ belong to a later design discussion.
 
 ### AR-001 — Manual game-data validation repeatedly serializes a full directory traversal
 
-**Strength:** Strong  
+**Strength:** Strong
 **Files:** `src/gameData/gameData.ts:100-116, 200-249`
 
 `registerGameDataFeatures` starts validation on every extension activation when
@@ -154,6 +154,30 @@ generation catches up, then stop. Its interface stays one `requestRestart`
 operation while implementation hides overlap and preserves the latest
 authoritative inputs. This removes a timing special case and improves locality
 for lifecycle tests.
+
+### AR-007 — Two declaration-extraction pipelines duplicate language facts
+
+**Strength:** Strong  
+**Files:** `server/src/model.rs:303-1090`; `server/src/semantic_file.rs:146-971`; `server/src/index.rs:229-376, 381-709`
+
+Production document and external-index paths build `SemanticFile` from the
+parser and project it into `SymbolIndex`. The retained `SymbolCatalog` path
+independently walks AST declarations and separately implements callable-form,
+macro, and conditional-branch extraction. The production paths documented in
+`open_documents`, `external_overlay`, and `index_build` use `SemanticFile`;
+the remaining `SymbolCatalog` construction sites are tests and compatibility
+constructors.
+
+This is two parallel implementations of Enfusion declaration truth. A parser
+edge case or preprocessor change must be fixed and verified twice, and the
+legacy route can silently disagree with the runtime one. The deletion test
+passes: deleting `SymbolCatalog` would concentrate its compatibility
+projection at the index ingestion seam, not force callers to rediscover
+declarations. Define a removal condition and migrate test/index constructors
+to a single `SemanticFile`-to-index projection. If a legacy constructor must
+remain temporarily, make it a thin adapter over semantic facts rather than an
+independent traversal. That restores one language authority and improves
+locality for corpus verification.
 
 ## Reviewed slices
 
