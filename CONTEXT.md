@@ -148,6 +148,23 @@ _Avoid_: incremental compiler output, merged run history, partial refresh
 
 ## LSP Runtime
 
+**Scope Delimiter**:
+A matched Enfusion curly-brace, parenthesis, square-bracket, or parser-proven generic-angle-bracket pair whose presentation is classified by its immediate semantic anchor when one exists, otherwise by the syntactic scope that contains it.
+Calls and index expressions use their callable or indexed symbol as that anchor; a block uses the declaration or control header that introduces it.
+Generic angle brackets use their nearest generic/type owner as that anchor.
+Nested Scope Delimiters retain their own anchors; a containing scope never recolors an anchored inner pair.
+Initializer braces use their expected initializer type as their anchor.
+Attribute square brackets and attribute-call parentheses use the attribute/decorator as their anchor.
+Constructor-call parentheses use the constructed type as their anchor.
+Angle brackets in comparison expressions are not Scope Delimiters.
+Delimiter characters in comments inherit comment coloring and are never active Scope Delimiters.
+Delimiter characters in strings inherit string coloring and are never active Scope Delimiters.
+Preprocessor directive text does not participate in delimiter classification or matching.
+When an editing snapshot cannot prove a code delimiter's owner, it retains ordinary punctuation coloring until analysis can classify it.
+The active Scope Delimiter is the innermost matched pair that contains the caret.
+Its active range includes the caret immediately after its opener or immediately before its closer.
+_Avoid_: bracket formatting, rainbow bracket
+
 **Document Runtime**:
 The owner of open-document snapshots, their analysis lifecycle, and the
 admission of document-backed LSP queries.
