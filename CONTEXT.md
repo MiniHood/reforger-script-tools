@@ -168,6 +168,26 @@ An observable action emitted by the Document Runtime for the LSP composition
 root to deliver, such as a response, notification, refresh request, or log.
 _Avoid_: callback, side effect
 
+**Constructor Completion**:
+An accepted completion in a `new` expression that inserts a resolved
+constructible type with its parenthesized constructor call and argument
+placeholders; its list opens automatically after a proven `new` operand space.
+Only required parameters receive placeholders; array-literal initialization is
+a separate collection choice. A constructible type without an indexed
+constructor signature is rendered as a zero-argument call. It never inserts
+statement punctuation.
+_Avoid_: new formatter, automatic constructor expansion
+
+**Contextual Construction Type**:
+The uniquely resolved type expected for a `new` expression by its surrounding
+declaration or expression context. It bounds the constructor-completion list.
+_Avoid_: copied declaration text, guessed constructor type
+
+**Selected Constructor Suggestion**:
+The contextually preferred Constructor Completion shown as the active
+suggestion after `new`, before the author explicitly accepts it.
+_Avoid_: automatic source edit, implicit constructor insertion
+
 ## Enfusion Preprocessing
 
 **Preprocessor Directive**:
