@@ -3987,7 +3987,11 @@ fn apply_generic_type_argument_final_caret_edit(
         {
             item.text_edit.new_text.push_str(closing_text);
             item.text_edit.new_text.push_str("$0");
-            item.text_edit.replace_range = Some(replace_range.clone());
+            // VS Code chooses the insert side of an InsertReplaceEdit at this
+            // caret shape, which would leave the existing `>` behind. Use one
+            // ordinary edit spanning the closer so acceptance always consumes
+            // it before placing the final tabstop after the rebuilt delimiter.
+            item.text_edit.range = replace_range.clone();
             item.insert_text_format = Some(2);
         }
     }

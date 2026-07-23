@@ -2284,8 +2284,8 @@ fn retyped_generic_type_completion_replaces_the_closing_delimiter() {
     assert_eq!(int.text_edit.new_text, "int>$0");
     assert_eq!(int.insert_text_format, Some(2));
     assert_eq!(
-        int.text_edit.replace_range,
-        Some(LspRange {
+        int.text_edit.range,
+        LspRange {
             start: LspPosition {
                 line: 0,
                 character: 22,
@@ -2294,8 +2294,9 @@ fn retyped_generic_type_completion_replaces_the_closing_delimiter() {
                 line: 0,
                 character: 26,
             },
-        })
+        }
     );
+    assert!(int.text_edit.replace_range.is_none());
 }
 
 #[test]
@@ -2315,7 +2316,7 @@ fn retyped_nested_generic_type_completion_replaces_only_its_closing_delimiter() 
 
     assert_eq!(int.text_edit.new_text, "int>$0");
     assert_eq!(int.insert_text_format, Some(2));
-    assert!(int.text_edit.replace_range.is_some());
+    assert!(int.text_edit.replace_range.is_none());
 }
 
 #[test]
