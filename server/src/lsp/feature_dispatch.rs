@@ -505,6 +505,13 @@ impl FeatureDispatcher<'_> {
                                     params.options.insert_spaces,
                                 )
                                 .map(|plan| (plan, "classDeclaration"))
+                                .or_else(|| on_type_formatting::auto_block_protected_method_enter_plan(
+                                    &document.text,
+                                    cursor,
+                                    params.options.tab_size,
+                                    params.options.insert_spaces,
+                                )
+                                .map(|plan| (plan, "protectedMethod")))
                                 .or_else(|| on_type_formatting::control_header_block_before_enter_plan(
                                     &document.text,
                                     cursor,

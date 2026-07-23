@@ -120,6 +120,77 @@ fn is_class_declaration_modifier(kind: TokenKind) -> bool {
     )
 }
 
+/// Plans a braced body for a completed protected method declaration before
+/// VS Code performs Enter. Protection makes this a class-member shape; the
+/// lexical proof deliberately declines incomplete signatures and existing
+/// bodies so ordinary editing remains native.
+pub(super) fn auto_block_protected_method_enter_plan(
+    source: &str,
+    cursor: usize,
+    tab_size: usize,
+    insert_spaces: bool,
+) -> Option<AutoBlockControlHeaderPlan> {
+    if source.len() > MAX_ON_TYPE_SOURCE_BYTES || cursor > source.len() {
+        return None;
+    }
+    let line_start = source[..cursor].rfind('\n').map_or(0, |index| index + 1);
+    let line_end = source[cursor..]
+        .find(['\r', '\n'])
+        .map_or(source.len(), |offset| cursor + offset);
+    if !source[cursor..line_end].chars().all(char::is_whitespace) {
+        return None;
+    }
+    let tokens = lex(&source[line_start..cursor])
+        .into_iter()
+        .filter(|token| !token.kind.is_trivia() && token.kind != TokenKind::Eof)
+        .collect::<Vec<_>>();
+    let close_index = tokens.len().checked_sub(1)?;
+    if tokens[close_index].kind != TokenKind::RightParen {
+        return None;
+    }
+    let open_index = (0..=close_index)
+        .rev()
+        .find(|&index| tokens[index].kind == TokenKind::LeftParen)?;
+    if matching_right_paren(&tokens, open_index)? != close_index
+        || open_index < 2
+        || tokens[open_index - 1].kind != TokenKind::Identifier
+        || !tokens[..open_index - 1]
+            .iter()
+            .any(|token| token.kind == TokenKind::Keyword(Keyword::Protected))
+        || tokens[..open_index - 1].iter().any(|token| {
+            matches!(
+                token.kind,
+                TokenKind::LeftBrace | TokenKind::RightBrace | TokenKind::Semicolon
+            )
+        })
+    {
+        return None;
+    }
+    let line = &source[line_start..cursor];
+    let indent_end = line.len() - line.trim_start_matches(char::is_whitespace).len();
+    let indent = &line[..indent_end];
+    let newline = if source.contains("\r\n") { "\r\n" } else { "\n" };
+    let unit = if insert_spaces {
+        " ".repeat(tab_size.clamp(1, 16))
+    } else {
+        "\t".to_string()
+    };
+    Some(AutoBlockControlHeaderPlan {
+        span: TextSpan::new(cursor, cursor),
+        replacement: format!("{newline}{indent}{{{newline}{indent}{unit}{newline}{indent}}}"),
+        selection_line: source[..cursor]
+            .bytes()
+            .filter(|byte| *byte == b'\n')
+            .count() as u32
+            + 2,
+        selection_character: format!("{indent}{unit}")
+            .chars()
+            .map(|character| character.len_utf16() as u32)
+            .sum(),
+        switch_arm_selection_end: None,
+    })
+}
+
 pub(super) fn auto_block_control_header_enter_plan(
     source: &str,
     cursor: usize,
@@ -1190,6 +1261,7 @@ mod tests {
 
     use super::{
         auto_block_class_declaration_enter_plan, auto_block_control_header_enter_plan,
+        auto_block_protected_method_enter_plan,
         block_comment_pair_plan,
         control_header_block_before_enter_plan, if_header_body_before_enter_plan,
         incomplete_if_header_enter_plan, semicolon_before_enter_plan, semicolon_insertion_offset,
@@ -1378,6 +1450,17 @@ mod tests {
             assert_eq!(plan.selection_line, 2);
             assert_eq!(plan.selection_character, 4);
         }
+    }
+
+    #[test]
+    fn creates_a_braced_body_for_a_protected_method_declaration() {
+        let source = "    protected void TestFunc()";
+        let plan = auto_block_protected_method_enter_plan(source, source.len(), 4, true)
+            .expect("protected method should receive a braced body");
+        assert_eq!(plan.span, TextSpan::new(source.len(), source.len()));
+        assert_eq!(plan.replacement, "\n    {\n        \n    }");
+        assert_eq!(plan.selection_line, 2);
+        assert_eq!(plan.selection_character, 8);
     }
 
     #[test]
