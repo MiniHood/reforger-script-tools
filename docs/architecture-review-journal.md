@@ -372,6 +372,29 @@ recreate directive classification and traversal policy. This improves locality,
 prevents drift between `#define` and conditional recognition, and cuts repeated
 index-build work.
 
+### AR-017 — Resolver and expression typing independently implement member lookup semantics
+
+**Strength:** Strong
+**Files:** `server/src/resolver.rs:1062-1139, 1604-1693`; `server/src/expression_type.rs:787-815, 1130-1417`
+
+Reference resolution and expression-type inference each traverse typedef/class
+owner expansion, search inherited class members, recursively locate enum
+members, filter static members, and recognize the same four pseudo-members
+(`ClassName`, `IsInherited`, `ToString`, and `Type`). The resolver already
+imports `member_lookup_owners` from expression typing, but retains private
+copies of the remaining rules. The two paths are then used together on member
+access: inference determines the receiver and resolution independently decides
+which declaration that receiver member names. A new member rule can therefore
+make a hover/type result disagree with definition/reference navigation.
+
+Extract an index-query module that owns member candidate discovery and its
+semantic distinctions (including enum inheritance, static filtering, and
+pseudo-members). Give resolver and expression typing projections suited to
+their results rather than two rule sets. The deletion test passes: without this
+module, both callers must reconstruct the same language lookup traversal. This
+deepens the index query seam, gives language changes one authority, and keeps
+feature modules focused on their respective result projections.
+
 ## Reviewed slices
 
 ### 2026-07-23 — Repository inventory, build/configuration
