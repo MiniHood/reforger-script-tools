@@ -1,5 +1,6 @@
 import * as assert from 'node:assert';
 import * as fs from 'node:fs/promises';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import {
@@ -369,6 +370,49 @@ suite('Workbench compiler validation', () => {
 		}
 	});
 
+	test('does not resume polling after disposal during an in-flight probe', async function () {
+		this.timeout(5_000);
+		let releaseProbe: (() => void) | undefined;
+		const probeGate = new Promise<void>(resolve => {
+			releaseProbe = resolve;
+		});
+		let statusRequests = 0;
+		const peer = await startNetApiPeer(async request => {
+			const payload = request.payload as { APIFunc?: string };
+			if (payload.APIFunc !== 'IsWorkbenchRunning') {
+				return { errorCode: '', payload: { Errors: [], Warnings: [], Success: true } };
+			}
+			statusRequests += 1;
+			if (statusRequests === 1) {
+				await probeGate;
+			}
+			return {
+				errorCode: '',
+				payload: { IsRunning: true, ScriptsCompiled: false },
+			};
+		});
+		try {
+			await configurePeer(peer.port, 0);
+			await waitFor(() => statusRequests === 1 ? true : undefined);
+			await vscode.commands.executeCommand(workbenchTestCommands.disposeCompiler);
+			releaseProbe?.();
+
+			await new Promise(resolve => setTimeout(resolve, 1_250));
+
+			assert.strictEqual(statusRequests, 1);
+		} finally {
+			releaseProbe?.();
+			await vscode.commands.executeCommand(workbenchTestCommands.restartCompiler);
+			const configuration = vscode.workspace.getConfiguration(workbenchConfig.section);
+			await configuration.update(
+				workbenchConfig.settings.enabled,
+				false,
+				vscode.ConfigurationTarget.Global,
+			);
+			await peer.close();
+		}
+	});
+
 	test('marks a prior compiler result stale when Workbench scripts stop being ready', async function () {
 		this.timeout(8_000);
 		const workspace = onlyWorkspaceFolder();
@@ -600,7 +644,11 @@ suite('Workbench compiler validation', () => {
 		const workspace = onlyWorkspaceFolder();
 		const sourcePath = path.join(workspace.uri.fsPath, 'Scripts', 'Game', 'Example.c');
 		const sourceUri = vscode.Uri.file(sourcePath);
-		const externalPath = path.join(path.dirname(workspace.uri.fsPath), 'ExternalCompilerLocation.c');
+		const externalDirectory = await fs.mkdtemp(path.join(
+			os.tmpdir(),
+			'reforger-script-tools-compiler-location-',
+		));
+		const externalPath = path.join(externalDirectory, 'ExternalCompilerLocation.c');
 		await fs.writeFile(externalPath, 'class ExternalCompilerLocation {}\n', 'utf8');
 		const peer = await startNetApiPeer(request => {
 			const payload = request.payload as { APIFunc?: string };
@@ -650,7 +698,7 @@ suite('Workbench compiler validation', () => {
 				4,
 			);
 		} finally {
-			await fs.unlink(externalPath).catch(() => undefined);
+			await fs.rm(externalDirectory, { recursive: true, force: true });
 			await peer.close();
 		}
 	});

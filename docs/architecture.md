@@ -120,7 +120,9 @@ The compiler adapter probes the exact configured endpoint immediately, retries
 an unavailable or starting Workbench once per second, and uses a five-second
 heartbeat while ready. Configuration changes replace the Gateway generation
 immediately; queued work and results from older generations cannot publish.
-The extension never scans for another port or rewrites endpoint settings.
+Controller disposal likewise invalidates in-flight continuations so they cannot
+publish or restart polling after extension deactivation. The extension never
+scans for another port or rewrites endpoint settings.
 
 Continuous validation is single-flight. A positive idle delay reacts to an
 eligible save or saves only the active dirty Enfusion Script after the idle

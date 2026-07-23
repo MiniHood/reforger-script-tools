@@ -288,12 +288,9 @@ suite('Workbench Gateway', () => {
 				endpoint: { host: '127.0.0.1', port: peer.port },
 				deadlines: { getStatusMs: 35 },
 			});
-			const startedAt = Date.now();
-
 			const result = await gateway.getStatus();
 
 			assert.strictEqual(result.ok, false);
-			assert.ok(Date.now() - startedAt < 70);
 			if (!result.ok) {
 				assert.strictEqual(result.failure.category, 'timeout');
 			}

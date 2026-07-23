@@ -23,6 +23,8 @@ export const workbenchCommands = {
 
 export const workbenchTestCommands = {
 	observeCompiler: 'reforger-sript-tools.test.observeWorkbenchCompiler',
+	disposeCompiler: 'reforger-sript-tools.test.disposeWorkbenchCompiler',
+	restartCompiler: 'reforger-sript-tools.test.restartWorkbenchCompiler',
 } as const;
 
 export const workbenchDiagnostics = {

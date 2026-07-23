@@ -63,9 +63,22 @@ interface WorkbenchCompilerFailure {
 }
 
 export function registerWorkbenchCompilerFeatures(context: vscode.ExtensionContext): void {
-	const controller = new WorkbenchCompilerController();
+	let controller = new WorkbenchCompilerController();
 	controller.start(context.extensionMode);
 	context.subscriptions.push(controller);
+	if (context.extensionMode === vscode.ExtensionMode.Test) {
+		context.subscriptions.push(
+			vscode.commands.registerCommand(workbenchTestCommands.disposeCompiler, () => {
+				controller.dispose();
+			}),
+			vscode.commands.registerCommand(workbenchTestCommands.restartCompiler, () => {
+				controller.dispose();
+				controller = new WorkbenchCompilerController();
+				controller.start(context.extensionMode);
+				context.subscriptions.push(controller);
+			}),
+		);
+	}
 }
 
 class WorkbenchCompilerController implements vscode.Disposable {
@@ -92,6 +105,7 @@ class WorkbenchCompilerController implements vscode.Disposable {
 	private lastFailure: WorkbenchCompilerFailure | undefined;
 	private lastValidationResult: WorkbenchValidationResult | undefined;
 	private staleReason: string | undefined;
+	private disposed = false;
 
 	public start(extensionMode: vscode.ExtensionMode): void {
 		this.statusItem.name = 'Reforger Workbench';
@@ -126,6 +140,12 @@ class WorkbenchCompilerController implements vscode.Disposable {
 	}
 
 	public dispose(): void {
+		if (this.disposed) {
+			return;
+		}
+		this.disposed = true;
+		this.configurationGeneration += 1;
+		this.pendingValidation = undefined;
 		this.clearProbeTimer();
 		this.clearValidationTimer();
 		for (const disposable of this.disposables.splice(0)) {
@@ -134,6 +154,9 @@ class WorkbenchCompilerController implements vscode.Disposable {
 	}
 
 	private applyConfiguration(): void {
+		if (this.disposed) {
+			return;
+		}
 		this.configurationGeneration += 1;
 		this.configuration = readConfiguration();
 		this.gateway = createGateway(this.configuration);
@@ -197,7 +220,9 @@ class WorkbenchCompilerController implements vscode.Disposable {
 	}
 
 	private scheduleValidation(request: ValidationRequest): void {
-		if (!this.configuration.enabled || this.configuration.validationDelaySeconds <= 0) {
+		if (this.disposed
+			|| !this.configuration.enabled
+			|| this.configuration.validationDelaySeconds <= 0) {
 			return;
 		}
 		this.clearValidationTimer();
@@ -220,7 +245,7 @@ class WorkbenchCompilerController implements vscode.Disposable {
 	}
 
 	private async queueValidation(request: ValidationRequest): Promise<void> {
-		if (request.generation !== this.configurationGeneration) {
+		if (this.disposed || request.generation !== this.configurationGeneration) {
 			return;
 		}
 		if (this.validating) {
@@ -248,6 +273,9 @@ class WorkbenchCompilerController implements vscode.Disposable {
 			await this.validate(request.generation, this.scriptEditGeneration);
 		} finally {
 			this.validating = false;
+			if (this.disposed) {
+				return;
+			}
 			const pending = this.pendingValidation;
 			this.pendingValidation = undefined;
 			if (pending && pending.generation === this.configurationGeneration) {
@@ -272,7 +300,7 @@ class WorkbenchCompilerController implements vscode.Disposable {
 	}
 
 	private async validate(generation: number, editGeneration: number): Promise<void> {
-		if (generation !== this.configurationGeneration) {
+		if (this.disposed || generation !== this.configurationGeneration) {
 			return;
 		}
 		if (this.configuration.validationProfile.kind === 'unsupported') {
@@ -286,7 +314,7 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		const result = await this.gateway.validateScripts(
 			this.configuration.validationProfile.value,
 		);
-		if (generation !== this.configurationGeneration) {
+		if (this.disposed || generation !== this.configurationGeneration) {
 			return;
 		}
 		if (!result.ok) {
@@ -376,7 +404,9 @@ class WorkbenchCompilerController implements vscode.Disposable {
 	}
 
 	private async probe(generation: number): Promise<void> {
-		if (generation !== this.configurationGeneration || !this.configuration.enabled) {
+		if (this.disposed
+			|| generation !== this.configurationGeneration
+			|| !this.configuration.enabled) {
 			return;
 		}
 		if (this.validating) {
@@ -384,7 +414,9 @@ class WorkbenchCompilerController implements vscode.Disposable {
 			return;
 		}
 		const result = await this.gateway.getStatus();
-		if (generation !== this.configurationGeneration || this.validating) {
+		if (this.disposed
+			|| generation !== this.configurationGeneration
+			|| this.validating) {
 			return;
 		}
 		if (!result.ok) {
@@ -422,6 +454,9 @@ class WorkbenchCompilerController implements vscode.Disposable {
 	}
 
 	private scheduleProbe(delayMs: number, generation: number): void {
+		if (this.disposed) {
+			return;
+		}
 		this.clearProbeTimer();
 		this.probeTimer = setTimeout(() => {
 			this.probeTimer = undefined;
