@@ -1949,6 +1949,10 @@ fn unavailable_completion_report(
     mut report: LspCompletionReport,
     reason: impl Into<String>,
 ) -> LspCompletionReport {
+    // This response is safe to show while current-document analysis catches
+    // up, but it can lack the signature used to render a callable snippet.
+    // It must therefore stay refreshable even when it is below the item cap.
+    report.list.is_incomplete = true;
     report.query_quality = QueryQuality::Unavailable;
     report.recovery_reason = Some(reason.into());
     report
@@ -5663,6 +5667,27 @@ mod tests {
             .items
             .iter()
             .any(|item| item.label == "GetGameMode"));
+    }
+
+    #[test]
+    fn pending_member_completion_remains_incomplete_until_current_snapshot_facts_are_available() {
+        let external = file_index_for_source("class GetGameMode {}").index;
+        let source = "instance.getga";
+        let report = completion_report_for_lexical_source_with_external_indexes(
+            source,
+            LspPosition {
+                line: 0,
+                character: source.len() as u32,
+            },
+            Some(&external),
+            None,
+        );
+
+        assert_eq!(report.query_quality, QueryQuality::Unavailable);
+        assert!(
+            report.list.is_incomplete,
+            "a fallback without current receiver facts must stay refreshable"
+        );
     }
 
     #[test]

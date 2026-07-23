@@ -3,9 +3,42 @@ import type { LanguageClientOptions } from 'vscode-languageclient/node';
 
 type CompletionResult = vscode.CompletionList | readonly vscode.CompletionItem[] | null | undefined;
 
+export interface CompletionPresentationItem {
+	label: string;
+	insertText: string;
+	insertTextKind: 'snippet' | 'plain' | 'label';
+	rangeKind: 'plain' | 'insertReplace' | 'none';
+	command: string;
+}
+
 export function completionItemLabels(result: CompletionResult): string[] {
 	const items = !result ? [] : ('items' in result ? result.items : result);
 	return items.map(item => typeof item.label === 'string' ? item.label : item.label.label);
+}
+
+/** Captures the editor-native form after VS Code converts the LSP response. */
+export function completionPresentationItems(result: CompletionResult): CompletionPresentationItem[] {
+	const items = !result ? [] : ('items' in result ? result.items : result);
+	return items.map(item => {
+		const insertText = item.insertText;
+		const insertTextKind = insertText instanceof vscode.SnippetString
+			? 'snippet'
+			: typeof insertText === 'string'
+				? 'plain'
+				: 'label';
+		const rangeKind = !item.range
+			? 'none'
+			: item.range instanceof vscode.Range
+				? 'plain'
+				: 'insertReplace';
+		return {
+			label: typeof item.label === 'string' ? item.label : item.label.label,
+			insertText: insertText instanceof vscode.SnippetString ? insertText.value : insertText ?? '',
+			insertTextKind,
+			rangeKind,
+			command: item.command?.command ?? '',
+		};
+	});
 }
 
 export function completionItemCount(result: CompletionResult): number {

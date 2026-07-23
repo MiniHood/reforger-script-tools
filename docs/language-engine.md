@@ -85,6 +85,13 @@ declaration-tail behavior.
 
 ### Completion gotchas
 
+- A completion produced without matching current-document semantic facts is a
+  provisional fallback, even when it has fewer items than the normal cap. It
+  must set LSP `isIncomplete: true` and preserve that state through every
+  merge. Otherwise VS Code can retain a plain callable label after analysis is
+  ready, hiding the callable snippet's parentheses, parameters, and follow-up
+  command. Treat `isIncomplete` as result-fidelity metadata, not only as an
+  overflow signal.
 - An empty generic slot is a type position, not a value position. Returning
   value completion there exposes statement keywords and hides the standard
   types, `ref`, and indexed classes.

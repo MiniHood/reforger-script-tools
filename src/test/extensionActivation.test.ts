@@ -19,20 +19,24 @@ suite('extension activation', () => {
 	test('renders the completion response observed by the VS Code suggest pipeline', async () => {
 		const document = await vscode.workspace.openTextDocument({ language: 'enforce', content: '\t#' });
 		completionUiMiddlewareCallbacks.begin(document, new vscode.Position(0, 2), 1);
+		const callable = new vscode.CompletionItem('TestNumFun2');
+		callable.insertText = new vscode.SnippetString('TestNumFun2(${1:input}, ${2:num})');
+		callable.range = new vscode.Range(0, 0, 0, 4);
+		callable.command = { title: 'Show parameters', command: 'editor.action.triggerParameterHints' };
 		completionUiMiddlewareCallbacks.respond(
 			document,
 			1,
 			document.version,
 			undefined,
-			[new vscode.CompletionItem('#define'), new vscode.CompletionItem('#ifdef')],
+			[callable, new vscode.CompletionItem('#ifdef')],
 			0,
 		);
 
 		const report = completionPresentationObservationForDocument(document.uri.toString());
 		assert.match(report, /Cursor: line 0, character 2/);
 		assert.match(report, /Trigger kind: 1/);
-		assert.match(report, /\| 1 \| #define \|/);
-		assert.match(report, /\| 2 \| #ifdef \|/);
+		assert.match(report, /\| 1 \| TestNumFun2 \| TestNumFun2\(\$\{1:input\}, \$\{2:num\}\) \| snippet \| plain \| editor.action.triggerParameterHints \|/);
+		assert.match(report, /\| 2 \| #ifdef \|  \| label \| none \|  \|/);
 	});
 
 	test('renders accessibility-visible suggestion rows separately from the completion payload', () => {
