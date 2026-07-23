@@ -21,6 +21,10 @@ export const workbenchCommands = {
 	validateScripts: 'reforger-sript-tools.workbench.validateScripts',
 } as const;
 
+export const workbenchTestCommands = {
+	observeCompiler: 'reforger-sript-tools.test.observeWorkbenchCompiler',
+} as const;
+
 export const workbenchDiagnostics = {
 	collectionName: 'Workbench',
 	source: 'Workbench Compiler',

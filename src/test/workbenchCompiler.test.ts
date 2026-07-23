@@ -6,9 +6,12 @@ import {
 	workbenchCommands,
 	workbenchConfig,
 	workbenchDiagnostics,
+	workbenchTestCommands,
 } from '../extensionConfig/workbench';
-import { workbenchCompilerObservation } from '../workbenchCompiler/workbenchCompiler';
+import type { WorkbenchCompilerObservation } from '../workbenchCompiler/workbenchCompiler';
 import { startNetApiPeer } from './netApiPeer';
+
+const workbenchFixtureSource = 'class WorkbenchCompilerFixture\n{\n}\n';
 
 suite('Workbench compiler validation', () => {
 	teardown(async () => {
@@ -104,12 +107,63 @@ suite('Workbench compiler validation', () => {
 			assert.match(await fs.readFile(activePath, 'utf8'), /\/\/ active edit/);
 			assert.strictEqual(await fs.readFile(otherPath, 'utf8'), 'class OtherFixture {}\n');
 			assert.strictEqual(otherDocument.isDirty, true);
+			assert.match((await observeWorkbenchCompiler()).tooltip, /Compiler result: stale/);
 		} finally {
 			await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
 			await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(otherPath));
 			await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
 			await fs.writeFile(activePath, originalActive, 'utf8');
 			await fs.unlink(otherPath).catch(() => undefined);
+			await peer.close();
+		}
+	});
+
+	test('uses the default three-second idle delay for automatic validation', async function () {
+		this.timeout(7_000);
+		const workspace = onlyWorkspaceFolder();
+		const sourcePath = path.join(workspace.uri.fsPath, 'Scripts', 'Game', 'Example.c');
+		await fs.writeFile(sourcePath, workbenchFixtureSource, 'utf8');
+		const peer = await startNetApiPeer(request => {
+			const payload = request.payload as { APIFunc?: string };
+			return payload.APIFunc === 'IsWorkbenchRunning'
+				? { errorCode: '', payload: { IsRunning: true, ScriptsCompiled: true } }
+				: { errorCode: '', payload: { Errors: [], Warnings: [], Success: true } };
+		});
+		try {
+			const configuration = vscode.workspace.getConfiguration(workbenchConfig.section);
+			await configuration.update(
+				workbenchConfig.settings.enabled,
+				true,
+				vscode.ConfigurationTarget.Global,
+			);
+			await configuration.update(
+				workbenchConfig.settings.host,
+				'127.0.0.1',
+				vscode.ConfigurationTarget.Global,
+			);
+			await configuration.update(
+				workbenchConfig.settings.port,
+				peer.port,
+				vscode.ConfigurationTarget.Global,
+			);
+			const document = await vscode.workspace.openTextDocument(sourcePath);
+			await vscode.window.showTextDocument(document);
+			const editedAt = Date.now();
+			await applyAppend(document, '// default idle delay');
+			await new Promise(resolve => setTimeout(resolve, 500));
+			assert.strictEqual(validationRequests(peer).length, 0);
+			assert.strictEqual(document.isDirty, true);
+
+			await waitFor(
+				() => validationRequests(peer).length === 1 ? true : undefined,
+				4_500,
+			);
+			await waitFor(async () =>
+				(await observeWorkbenchCompiler()).phase === 'ready' ? true : undefined);
+			assert.ok(Date.now() - editedAt >= 2_500);
+		} finally {
+			await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
+			await fs.writeFile(sourcePath, workbenchFixtureSource, 'utf8');
 			await peer.close();
 		}
 	});
@@ -143,6 +197,7 @@ suite('Workbench compiler validation', () => {
 
 			const first = vscode.commands.executeCommand(workbenchCommands.validateScripts);
 			await waitFor(() => validationCount === 1 ? true : undefined);
+			assert.strictEqual((await observeWorkbenchCompiler()).phase, 'validating');
 			const second = vscode.commands.executeCommand(workbenchCommands.validateScripts);
 			releaseFirstValidation?.();
 			await Promise.all([first, second]);
@@ -204,8 +259,8 @@ suite('Workbench compiler validation', () => {
 				return current[0]?.source?.endsWith('(stale)') ? current[0] : undefined;
 			});
 			assert.match(stale.message, /^\[Stale Workbench result/);
-			assert.match(workbenchCompilerObservation().text, /stale/i);
-			assert.match(workbenchCompilerObservation().tooltip, /Compiler result: stale/);
+			assert.match((await observeWorkbenchCompiler()).text, /stale/i);
+			assert.match((await observeWorkbenchCompiler()).tooltip, /Compiler result: stale/);
 
 			await vscode.commands.executeCommand(workbenchCommands.validateScripts);
 			await waitFor(() => workbenchDiagnosticsFor(sourceUri).length === 0 ? true : undefined);
@@ -228,8 +283,8 @@ suite('Workbench compiler validation', () => {
 		}));
 		try {
 			await configurePeer(peer.port, 0);
-			const ready = await waitFor(() => {
-				const observation = workbenchCompilerObservation();
+			const ready = await waitFor(async () => {
+				const observation = await observeWorkbenchCompiler();
 				return observation.phase === 'ready' ? observation : undefined;
 			});
 			assert.match(ready.tooltip, new RegExp(`127\\.0\\.0\\.1:${peer.port}`));
@@ -242,13 +297,66 @@ suite('Workbench compiler validation', () => {
 				false,
 				vscode.ConfigurationTarget.Global,
 			);
-			await waitFor(() => workbenchCompilerObservation().phase === 'disabled' ? true : undefined);
+			await waitFor(async () =>
+				(await observeWorkbenchCompiler()).phase === 'disabled' ? true : undefined);
 			const requestCount = peer.requests.length;
 			await vscode.commands.executeCommand(workbenchCommands.validateScripts);
 			await new Promise(resolve => setTimeout(resolve, 100));
 
-			assert.strictEqual(workbenchCompilerObservation().phase, 'disabled');
+			assert.strictEqual((await observeWorkbenchCompiler()).phase, 'disabled');
 			assert.strictEqual(peer.requests.length, requestCount);
+		} finally {
+			await peer.close();
+		}
+	});
+
+	test('presents starting while Workbench scripts are not compiled', async () => {
+		const peer = await startNetApiPeer(() => ({
+			errorCode: '',
+			payload: { IsRunning: true, ScriptsCompiled: false },
+		}));
+		try {
+			await configurePeer(peer.port, 0);
+			const starting = await waitFor(async () => {
+				const observation = await observeWorkbenchCompiler();
+				return observation.phase === 'starting' ? observation : undefined;
+			});
+
+			assert.match(starting.text, /starting/i);
+			assert.match(starting.tooltip, /scripts are not ready/i);
+		} finally {
+			await peer.close();
+		}
+	});
+
+	test('rejects an unsupported profile setting without calling validation', async () => {
+		const peer = await startNetApiPeer(() => ({
+			errorCode: '',
+			payload: { IsRunning: true, ScriptsCompiled: true },
+		}));
+		try {
+			await configurePeer(peer.port, 0);
+			await waitFor(() => peer.requests.length > 0 ? true : undefined);
+			const configuration = vscode.workspace.getConfiguration(workbenchConfig.section);
+			await configuration.update(
+				workbenchConfig.settings.validationProfile,
+				'PC',
+				vscode.ConfigurationTarget.Global,
+			);
+			await waitFor(async () => {
+				const observation = await observeWorkbenchCompiler();
+				return observation.phase === 'ready' && observation.tooltip.includes('Profile: PC')
+					? true
+					: undefined;
+			});
+
+			await vscode.commands.executeCommand(workbenchCommands.validateScripts);
+
+			assert.strictEqual(validationRequests(peer).length, 0);
+			const observation = await observeWorkbenchCompiler();
+			assert.strictEqual(observation.phase, 'unavailable');
+			assert.match(observation.tooltip, /Profile: PC/);
+			assert.match(observation.tooltip, /Failure: unsupported/);
 		} finally {
 			await peer.close();
 		}
@@ -334,7 +442,7 @@ suite('Workbench compiler validation', () => {
 			const retained = workbenchDiagnosticsFor(sourceUri);
 			assert.strictEqual(retained.length, 1);
 			assert.match(retained[0].source ?? '', /\(stale\)$/);
-			assert.match(workbenchCompilerObservation().tooltip, /save-failed/);
+			assert.match((await observeWorkbenchCompiler()).tooltip, /save-failed/);
 		} finally {
 			await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
 			await fs.writeFile(sourcePath, original, 'utf8');
@@ -381,11 +489,12 @@ suite('Workbench compiler validation', () => {
 				vscode.ConfigurationTarget.Global,
 			);
 
-			await waitFor(() => workbenchCompilerObservation().phase === 'unavailable' ? true : undefined);
+			await waitFor(async () =>
+				(await observeWorkbenchCompiler()).phase === 'unavailable' ? true : undefined);
 			const retained = workbenchDiagnosticsFor(sourceUri);
 			assert.strictEqual(retained.length, 1);
 			assert.match(retained[0].source ?? '', /\(stale\)$/);
-			assert.match(workbenchCompilerObservation().tooltip, /Compiler result: stale/);
+			assert.match((await observeWorkbenchCompiler()).tooltip, /Compiler result: stale/);
 		} finally {
 			await peer.close();
 		}
@@ -441,7 +550,7 @@ suite('Workbench compiler validation', () => {
 			);
 			assert.deepStrictEqual(workbenchDiagnosticsFor(vscode.Uri.file(externalPath)), []);
 			assert.strictEqual(
-				workbenchCompilerObservation().lastValidationResult?.diagnostics.length,
+				(await observeWorkbenchCompiler()).lastValidationResult?.diagnostics.length,
 				4,
 			);
 		} finally {
@@ -494,7 +603,7 @@ suite('Workbench compiler validation', () => {
 				return current[0]?.source?.endsWith('(stale)') ? current[0] : undefined;
 			});
 			assert.match(stale.message, /Finding for the older saved snapshot/);
-			assert.match(workbenchCompilerObservation().tooltip, /Compiler result: stale/);
+			assert.match((await observeWorkbenchCompiler()).tooltip, /Compiler result: stale/);
 		} finally {
 			releaseValidation?.();
 			await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
@@ -554,7 +663,10 @@ suite('Workbench compiler validation', () => {
 			await waitFor(() => newPeer.requests.some(request =>
 				(request.payload as { APIFunc?: string }).APIFunc === 'IsWorkbenchRunning'));
 
-			assert.match(workbenchCompilerObservation().tooltip, new RegExp(`127\\.0\\.0\\.1:${newPeer.port}`));
+			assert.match(
+				(await observeWorkbenchCompiler()).tooltip,
+				new RegExp(`127\\.0\\.0\\.1:${newPeer.port}`),
+			);
 			assert.ok(!workbenchDiagnosticsFor(sourceUri).some(
 				diagnostic => diagnostic.message.includes('Obsolete endpoint result'),
 			));
@@ -583,16 +695,27 @@ function onlyWorkspaceFolder(): vscode.WorkspaceFolder {
 	return folders[0];
 }
 
-async function waitFor<T>(read: () => T | undefined, timeoutMs = 4_000): Promise<T> {
+async function waitFor<T>(
+	read: () => T | undefined | Promise<T | undefined>,
+	timeoutMs = 4_000,
+): Promise<T> {
 	const deadline = Date.now() + timeoutMs;
 	while (Date.now() < deadline) {
-		const value = read();
+		const value = await read();
 		if (value !== undefined) {
 			return value;
 		}
 		await new Promise(resolve => setTimeout(resolve, 20));
 	}
 	throw new Error('Timed out waiting for Workbench compiler behavior');
+}
+
+async function observeWorkbenchCompiler(): Promise<WorkbenchCompilerObservation> {
+	const observation = await vscode.commands.executeCommand<WorkbenchCompilerObservation>(
+		workbenchTestCommands.observeCompiler,
+	);
+	assert.ok(observation, 'Workbench compiler test observation command is registered');
+	return observation;
 }
 
 async function applyAppend(document: vscode.TextDocument, text: string): Promise<void> {

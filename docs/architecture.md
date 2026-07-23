@@ -131,10 +131,13 @@ or editor trigger occurs.
 Each completed validation is one atomic compiler diagnostic set. A successful
 clean result removes the old Workbench set; a failed transaction retains it.
 Newer edits, configuration changes, and Workbench outages re-render retained
-findings as explicitly stale. The adapter projects a location only when its
-canonical path exists inside the single addon workspace. An explicit external
-absolute path is never replaced by a plausible relative guess. Rust language
-diagnostics remain in their independent LSP-owned collection throughout.
+findings as explicitly stale. Because validation is configuration-wide, a
+result also remains stale while any eligible workspace script is dirty, even
+when the adapter successfully saved the active script that triggered the run.
+The adapter projects a location only when its canonical path exists inside the
+single addon workspace. An explicit external absolute path is never replaced
+by a plausible relative guess. Rust language diagnostics remain in their
+independent LSP-owned collection throughout.
 
 Within the language-client bridge, the composition root retains server lifecycle
 and restart policy. Focused bridges own workspace-script notifications, hover

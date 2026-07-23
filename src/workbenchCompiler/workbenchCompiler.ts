@@ -7,6 +7,7 @@ import {
 	workbenchConfig,
 	workbenchDefaults,
 	workbenchDiagnostics,
+	workbenchTestCommands,
 } from '../extensionConfig/workbench';
 import {
 	WorkbenchCompilerDiagnostic,
@@ -32,23 +33,6 @@ export interface WorkbenchCompilerObservation {
 	text: string;
 	tooltip: string;
 	lastValidationResult?: WorkbenchValidationResult;
-}
-
-type WorkbenchObservationGlobal = typeof globalThis & {
-	__reforgerScriptToolsWorkbenchCompilerObservation?: WorkbenchCompilerObservation;
-};
-
-export function workbenchCompilerObservation(): WorkbenchCompilerObservation {
-	const observation = (globalThis as WorkbenchObservationGlobal)
-		.__reforgerScriptToolsWorkbenchCompilerObservation;
-	return observation
-		? {
-			...observation,
-			...(observation.lastValidationResult
-				? { lastValidationResult: cloneValidationResult(observation.lastValidationResult) }
-				: {}),
-		}
-		: { phase: 'connecting', text: '', tooltip: '' };
 }
 
 type ValidationProfileSelection =
@@ -80,7 +64,7 @@ interface WorkbenchCompilerFailure {
 
 export function registerWorkbenchCompilerFeatures(context: vscode.ExtensionContext): void {
 	const controller = new WorkbenchCompilerController();
-	controller.start();
+	controller.start(context.extensionMode);
 	context.subscriptions.push(controller);
 }
 
@@ -109,7 +93,7 @@ class WorkbenchCompilerController implements vscode.Disposable {
 	private lastValidationResult: WorkbenchValidationResult | undefined;
 	private staleReason: string | undefined;
 
-	public start(): void {
+	public start(extensionMode: vscode.ExtensionMode): void {
 		this.statusItem.name = 'Reforger Workbench';
 		this.statusItem.command = workbenchCommands.validateScripts;
 		this.statusItem.show();
@@ -132,6 +116,12 @@ class WorkbenchCompilerController implements vscode.Disposable {
 				this.onDocumentSaved(document);
 			}),
 		);
+		if (extensionMode === vscode.ExtensionMode.Test) {
+			this.disposables.push(vscode.commands.registerCommand(
+				workbenchTestCommands.observeCompiler,
+				() => this.observation(),
+			));
+		}
 		this.applyConfiguration();
 	}
 
@@ -289,6 +279,7 @@ class WorkbenchCompilerController implements vscode.Disposable {
 			});
 			return;
 		}
+		const hadDirtyScriptsAtRequest = hasDirtyEligibleDocuments();
 		const result = await this.gateway.validateScripts(
 			this.configuration.validationProfile.value,
 		);
@@ -302,19 +293,23 @@ class WorkbenchCompilerController implements vscode.Disposable {
 			return;
 		}
 		this.publishValidationResult(result.value);
-		const resultBecameStale = editGeneration !== this.scriptEditGeneration;
-		if (resultBecameStale) {
-			this.markDiagnosticsStale('scripts changed while validation was running');
+		const staleReason = editGeneration !== this.scriptEditGeneration
+			? 'scripts changed while validation was running'
+			: hadDirtyScriptsAtRequest || hasDirtyEligibleDocuments()
+				? 'other scripts still have unsaved edits'
+				: undefined;
+		if (staleReason) {
+			this.markDiagnosticsStale(staleReason);
 		}
 		this.lastFailure = undefined;
-		this.lastOutcome = resultBecameStale
+		this.lastOutcome = staleReason
 			? `Validation completed for an older saved snapshot at ${new Date().toLocaleTimeString()}.`
 			: result.value.success
 				? `Validation succeeded at ${new Date().toLocaleTimeString()}.`
 				: `Validation completed with ${result.value.diagnostics.length} finding(s) at ${new Date().toLocaleTimeString()}.`;
 		this.setPhase('ready');
 		diagnostic('workbenchCompilerDiagnosticSet', {
-			outcome: resultBecameStale
+			outcome: staleReason
 				? 'stale-result'
 				: result.value.success ? 'success' : 'compiler-findings',
 			diagnosticCount: result.value.diagnostics.length,
@@ -479,11 +474,15 @@ class WorkbenchCompilerController implements vscode.Disposable {
 			'Workbench validates its currently open project; the built-in API cannot prove that it matches this VS Code workspace.',
 			'Select to validate scripts now.',
 		].join('\n\n');
-		(globalThis as WorkbenchObservationGlobal)
-			.__reforgerScriptToolsWorkbenchCompilerObservation = {
-			phase,
+	}
+
+	private observation(): WorkbenchCompilerObservation {
+		return {
+			phase: this.phase,
 			text: this.statusItem.text,
-			tooltip: this.statusItem.tooltip,
+			tooltip: typeof this.statusItem.tooltip === 'string'
+				? this.statusItem.tooltip
+				: '',
 			...(this.lastValidationResult
 				? { lastValidationResult: cloneValidationResult(this.lastValidationResult) }
 				: {}),
@@ -649,4 +648,9 @@ function eligibleDocument(document: vscode.TextDocument): boolean {
 	const root = realPath(workspace.uri.fsPath);
 	const candidate = realPath(document.uri.fsPath);
 	return Boolean(root && candidate && isContained(root, candidate));
+}
+
+function hasDirtyEligibleDocuments(): boolean {
+	return vscode.workspace.textDocuments.some(document =>
+		document.isDirty && eligibleDocument(document));
 }
