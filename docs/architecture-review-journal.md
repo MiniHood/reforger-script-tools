@@ -330,6 +330,27 @@ process policy, and error handling. This gives the tool layer a single,
 deterministic execution policy without becoming an extension runtime
 dependency.
 
+### AR-015 — The verified auto-commit receipt does not bind the verified change set
+
+**Strength:** Strong
+**Files:** `tools/verified-refactor-auto-commit.mjs:69-107, 109-168`; `tools/verified-refactor-auto-commit.test.mjs:49-67`
+
+`verify` records only branch, `HEAD`, title, and time after its command passes.
+`stop` then runs `git add -A` and commits the entire working tree. It never
+records or compares the index/worktree diff that was actually verified. Any
+edit created after verification—by a person, another process, or a generated
+artifact—therefore satisfies the receipt's `HEAD` check and is committed as
+though it were verified. The existing test codifies the broad staging behavior
+but does not exercise this post-verification mutation.
+
+Make the receipt a change-set module: capture a deterministic staged or
+working-tree patch identity during `verify`, and have `stop` reject any added,
+removed, or modified path outside that identity. Alternatively, make `verify`
+stage the exact reviewed paths and require an unchanged index. The deletion
+test passes because without this policy owner, each auto-commit caller must
+independently reason about verification freshness and staged scope. This keeps
+the tool's stated guarantee local and preserves unrelated user work.
+
 ## Reviewed slices
 
 ### 2026-07-23 — Repository inventory, build/configuration
