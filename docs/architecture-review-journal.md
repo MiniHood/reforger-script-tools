@@ -499,3 +499,15 @@ expression/text scans as discovery-only and do not claim compiler truth. The
 build tool intentionally stops only binaries resolved within this repository
 before replacement. Remaining work in this slice is the report-program source
 that those wrappers run and a final per-path reconciliation.
+
+### 2026-07-23 — LSP feature projections (in progress)
+
+Reviewed diagnostics, definition, hover, semantic tokens, on-type formatting,
+callable context, signature help, collection declarations, and debug hover,
+alongside their dispatch/runtime callers. Definition's override target rule is
+a real semantic distinction, and the on-type assists are bounded conservative
+edits, so neither is recorded as an unjustified special case. AR-019 records
+the signature-help display-to-semantics reversal. Coordinate conversion in
+diagnostics and navigation is covered by AR-013; external definition source
+loading is covered by AR-011. Completion and the remaining protocol/runtime
+test source still require the final reconciliation pass.
