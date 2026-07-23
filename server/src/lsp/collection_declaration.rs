@@ -37,14 +37,17 @@ pub(super) fn collection_declaration_before_cursor(
         return None;
     }
     let close_index = name_index.checked_sub(1)?;
-    if tokens[close_index].kind != TokenKind::Operator(Operator::Greater) {
+    let closing_angle_count = generic_closing_angle_count(tokens[close_index].kind)?;
+    if closing_angle_count == 0 {
         return None;
     }
-    let mut depth = 1usize;
+    let mut depth = closing_angle_count;
     let mut open_index = None;
     for index in (0..close_index).rev() {
         match tokens[index].kind {
-            TokenKind::Operator(Operator::Greater) => depth += 1,
+            kind if generic_closing_angle_count(kind).is_some() => {
+                depth += generic_closing_angle_count(kind)?;
+            }
             TokenKind::Operator(Operator::Less) => {
                 depth = depth.checked_sub(1)?;
                 if depth == 0 {
@@ -73,7 +76,9 @@ pub(super) fn collection_declaration_before_cursor(
     for token in &tokens[open_index + 1..close_index] {
         match token.kind {
             TokenKind::Operator(Operator::Less) => nested_depth += 1,
-            TokenKind::Operator(Operator::Greater) => nested_depth = nested_depth.checked_sub(1)?,
+            kind if generic_closing_angle_count(kind).is_some() => {
+                nested_depth = nested_depth.checked_sub(generic_closing_angle_count(kind)?)?;
+            }
             TokenKind::Comma if nested_depth == 0 => generic_argument_count += 1,
             _ => {}
         }
@@ -126,6 +131,17 @@ pub(super) fn collection_declaration_before_cursor(
     })
 }
 
+/// The lexer preserves shift operators, so nested generic closers such as
+/// `array<array<int>>` arrive as one `>>` token. In a verified type span they
+/// close two generic levels rather than denoting a shift expression.
+fn generic_closing_angle_count(kind: TokenKind) -> Option<usize> {
+    match kind {
+        TokenKind::Operator(Operator::Greater) => Some(1),
+        TokenKind::Operator(Operator::GreaterGreater) => Some(2),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::collection_declaration_before_cursor;
@@ -175,5 +191,35 @@ mod tests {
             false
         )
         .is_none());
+    }
+
+    #[test]
+    fn recognizes_nested_builtin_collections_with_compact_closing_angles() {
+        for (source, collection, type_text) in [
+            (
+                "class Example { array<array<ref Widget>> values }",
+                "array",
+                "array<array<ref Widget>>",
+            ),
+            (
+                "class Example { set<array<int>> values }",
+                "set",
+                "set<array<int>>",
+            ),
+            (
+                "class Example { map<string, array<array<int>>> values }",
+                "map",
+                "map<string, array<array<int>>>",
+            ),
+        ] {
+            let declaration = collection_declaration_before_cursor(
+                source,
+                source.find("values").unwrap() + "values".len(),
+                false,
+            )
+            .expect("expected nested collection declaration");
+            assert_eq!(declaration.collection, collection);
+            assert_eq!(&source[declaration.type_span.start..declaration.type_span.end], type_text);
+        }
     }
 }

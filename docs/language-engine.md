@@ -95,10 +95,11 @@ receive collection construction or declaration-tail behavior.
   `array`, `set`, and `map`; generic classes and tuples receive type slots only.
 
 The collection declaration-tail owner is similarly bounded: it lexically
-proves a complete single `array`, `set`, or `map` field/local and rejects all
-other contexts before returning the one native Space edit plus a suggestion
-request. The tail choices are Rust-authored completion edits, not a formatter
-or a client-side post-edit rewrite.
+proves a complete single `array`, `set`, or `map` field/local (including nested
+generic arguments such as `array<array<int>>`) and rejects all other contexts
+before returning the one native Space edit plus a suggestion request. The tail
+choices are Rust-authored completion edits, not a formatter or a client-side
+post-edit rewrite.
 
 Document-symbol responses enforce the LSP invariant that a symbol's full range
 contains its selection range, including parser-recovery states. When recovery

@@ -3483,6 +3483,7 @@ fn generic_type_argument_before_offset(source: &str, offset: usize) -> bool {
     for token in tokens.iter().rev() {
         match token.kind {
             TokenKind::Operator(Operator::Greater) => depth += 1,
+            TokenKind::Operator(Operator::GreaterGreater) => depth += 2,
             TokenKind::Operator(Operator::Less) => {
                 if depth == 0 {
                     return true;
@@ -3517,6 +3518,10 @@ fn empty_generic_type_slot_before_offset(source: &str, offset: usize) -> bool {
                 .find_map(|(index, token)| match token.kind {
                     TokenKind::Operator(Operator::Greater) => {
                         nested_generic_depth += 1;
+                        None
+                    }
+                    TokenKind::Operator(Operator::GreaterGreater) => {
+                        nested_generic_depth += 2;
                         None
                     }
                     TokenKind::Operator(Operator::Less) if nested_generic_depth == 0 => Some(index),
@@ -5282,6 +5287,13 @@ mod tests {
                 .any(|item| item.label == "GameCollectionElement"),
             "{report:?}"
         );
+    }
+
+    #[test]
+    fn nested_generic_closers_preserve_the_outer_empty_type_slot() {
+        let source = "class Example { map<array<array<int>>, > values; }";
+        let offset = source.find(">, ").unwrap() + 3;
+        assert!(empty_generic_type_slot_before_offset(source, offset));
     }
 
     #[test]

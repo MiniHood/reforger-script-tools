@@ -2134,6 +2134,28 @@ fn completion_offers_collection_declaration_tail_choices_after_space() {
 }
 
 #[test]
+fn completion_offers_declaration_tail_choices_for_nested_collections() {
+    let source = "class Example\n{\n\tmap<string, array<array<int>>> values \n}";
+    let report = completion_report_for_source_position_with_external(
+        source,
+        position_after_needle(source, "values "),
+        None,
+    );
+
+    assert_eq!(report.completion_context, "collection-declaration-tail");
+    assert!(report
+        .list
+        .items
+        .iter()
+        .any(|item| item.text_edit.new_text == " = new map<string, array<array<int>>>;"));
+    assert!(report
+        .list
+        .items
+        .iter()
+        .any(|item| item.text_edit.new_text == ";"));
+}
+
+#[test]
 fn completion_returns_attribute_classes_in_attribute_name_position() {
     let source = r#"class Example
 {
