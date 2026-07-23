@@ -130,3 +130,48 @@ Undo history ([World Editor plugin tutorial](https://community.bistudio.com/wiki
 Until this backlog is complete, the general MCP server should present Workbench
 features as optional/unavailable rather than falling back to guessed filesystem
 semantics.
+
+## Recommended extension connection lifecycle
+
+Workbench availability is an optional capability, never a prerequisite for
+extension activation, game-data acquisition, or language-engine startup. The
+extension should begin discovery only after the language engine has published
+its initial external game-data index. That requires a specific server-ready
+signal in a future implementation; it must not infer readiness merely because
+the server process was spawned.
+
+Use a lower-right status-bar item instead of a perpetual VS Code progress
+notification. A notification is appropriate for bounded work such as the
+existing game-data download; discovering an independently started local
+Workbench is ongoing availability state. Suggested wording and state are:
+
+| State | Status-bar text | Enabled capability |
+| --- | --- | --- |
+| Initial index pending | No Workbench status yet. | None. |
+| Discovering | `$(sync~spin) Checking for Reforger Workbench…` | None. |
+| Socket reached; Workbench not ready | `$(sync~spin) Reforger Workbench is starting…` | None. |
+| `ScriptsCompiled` is false | `$(sync~spin) Reforger Workbench is compiling scripts…` | Read-only health only. |
+| Health plus custom capabilities succeed | `$(plug) Reforger Workbench ready` | Only handlers named in the capability response. |
+| Connection lost | `$(circle-slash) Reforger Workbench unavailable — retrying` | None until re-established. |
+
+The documented `IsWorkbenchRunning` response supplies both `IsRunning` and
+`ScriptsCompiled`; use those facts rather than a successful TCP connection as
+the readiness decision. After it reports ready, call the project's custom
+`capabilities` handler once and cache only that connection's typed allowlist.
+This ensures a Workbench instance with an absent, stale, or incompatible plugin
+does not expose speculative MCP tools.
+
+Start with one immediate probe, retry once per second while unavailable, and
+use a five-second heartbeat while ready. Do not poll every 500 ms: each NET API
+transaction creates a TCP connection, and two connection attempts per second
+has no meaningful user-facing advantage. On a failed heartbeat, transition back
+to one-second discovery. Log state transitions and a sanitized failure category,
+not every failed retry; show no recurring warning popup. A status-bar command
+may offer immediate reconnect and reveal the last error/category in a tooltip.
+
+`ValidateScripts` is compiler-backed verification, not a health check. Offer it
+as an explicit MCP tool/command with a declared configuration (`WORKBENCH`,
+`PC`, and so on), return structured diagnostics, and require normal mutation/
+operation consent. Do not run it automatically at activation, after every
+reconnect, or on every save: it can be expensive and changes the meaning of an
+availability indicator into an unsolicited build.
