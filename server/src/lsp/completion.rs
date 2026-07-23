@@ -3864,8 +3864,8 @@ fn keyword_completion_items(
             // Rust-authored completion edit so VS Code applies it atomically,
             // rather than observing a later Space/Enter edit from the client.
             let is_control_header = matches!(keyword, "if" | "for" | "foreach" | "while" | "switch");
-            let type_placeholders = collection_type_placeholders(keyword, mode)
-                .or_else(|| ref_type_placeholders(keyword, mode));
+            let type_placeholders = collection_type_placeholders(keyword, mode, declaration_context)
+                .or_else(|| ref_type_placeholders(keyword, mode, declaration_context));
             let (new_text, insert_text_format, commit_characters) = if is_control_header {
                 (
                     format!("{keyword} ($0)"),
@@ -3948,8 +3948,9 @@ fn type_keyword_category_rank(keyword: &str, mode: EditorTopLevelCompletionMode)
 fn collection_type_placeholders(
     keyword: &str,
     mode: EditorTopLevelCompletionMode,
+    declaration_context: bool,
 ) -> Option<Vec<String>> {
-    if mode != EditorTopLevelCompletionMode::Type {
+    if mode != EditorTopLevelCompletionMode::Type && !declaration_context {
         return None;
     }
     Some(match keyword {
@@ -3959,8 +3960,12 @@ fn collection_type_placeholders(
     })
 }
 
-fn ref_type_placeholders(keyword: &str, mode: EditorTopLevelCompletionMode) -> Option<Vec<String>> {
-    (mode == EditorTopLevelCompletionMode::Type && keyword == "ref")
+fn ref_type_placeholders(
+    keyword: &str,
+    mode: EditorTopLevelCompletionMode,
+    declaration_context: bool,
+) -> Option<Vec<String>> {
+    ((mode == EditorTopLevelCompletionMode::Type || declaration_context) && keyword == "ref")
         .then(|| vec!["Type".to_string()])
 }
 

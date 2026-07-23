@@ -1668,6 +1668,24 @@ fn completion_expands_builtin_collections_with_type_slots() {
 }
 
 #[test]
+fn completion_expands_collection_at_an_incomplete_member_declaration_start() {
+    let source = "class Example { arr }";
+    let report = completion_report_for_source_position_with_external(
+        source,
+        position_after_needle(source, "arr"),
+        None,
+    );
+    let array = report
+        .list
+        .items
+        .iter()
+        .find(|item| item.label == "array")
+        .expect("array completion");
+    assert_eq!(array.text_edit.new_text, "array<${1:Type}>");
+    assert_eq!(array.insert_text_format, Some(2));
+}
+
+#[test]
 fn completion_expands_map_and_ref_type_slots() {
     let map_source = "class Example { void Run(m value) {} }";
     let map_report = completion_report_for_source_position_with_external(
