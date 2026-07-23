@@ -632,7 +632,7 @@ impl<W: Write> LspServer<W> {
                             "documentRangeFormattingProvider": true,
                             "hoverProvider": true,
                             "definitionProvider": true,
-                            "completionProvider": {"triggerCharacters": [".", "[", "#"]},
+                            "completionProvider": {"triggerCharacters": [".", "[", "#", "("]},
                             "signatureHelpProvider": {
                                 "triggerCharacters": SIGNATURE_HELP_TRIGGER_CHARACTERS,
                                 "retriggerCharacters": SIGNATURE_HELP_RETRIGGER_CHARACTERS

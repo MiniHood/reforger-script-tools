@@ -753,7 +753,7 @@ fn framed_lsp_smoke_test_handles_hover() {
     assert!(output_text.contains("\"hoverProvider\":true"));
     assert!(output_text.contains("\"signatureHelpProvider\""));
     assert!(
-        output_text.contains("\"completionProvider\":{\"triggerCharacters\":[\".\",\"[\",\"#\"]}")
+        output_text.contains("\"completionProvider\":{\"triggerCharacters\":[\".\",\"[\",\"#\",\"(\"]}")
     );
     assert!(output_text.contains("void Run(int value)"));
     assert!(output_text.contains("\"kind\":\"markdown\""));
@@ -1024,7 +1024,7 @@ fn framed_lsp_smoke_test_handles_member_completion() {
 
     let output_text = String::from_utf8(output).unwrap();
     assert!(
-        output_text.contains("\"completionProvider\":{\"triggerCharacters\":[\".\",\"[\",\"#\"]}")
+        output_text.contains("\"completionProvider\":{\"triggerCharacters\":[\".\",\"[\",\"#\",\"(\"]}")
     );
     assert!(output_text.contains("\"isIncomplete\":false"));
     assert!(output_text.contains("\"label\":\"SetVisible\""));

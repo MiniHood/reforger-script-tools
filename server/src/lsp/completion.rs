@@ -5009,15 +5009,7 @@ struct CallableCompletionRender {
 impl CallableCompletionRender {
     fn from_insert(call: CallableSignatureParts, insert: CallableInsertText) -> Self {
         if insert.enum_placeholder_defaults.is_empty() {
-            if sole_function_reference_parameter(&call).is_some() {
-                Self::trigger_suggest_at_snippet_placeholders(
-                    call,
-                    insert.text,
-                    vec![String::new()],
-                )
-            } else {
-                Self::trigger_parameter_hints(call, insert.text)
-            }
+            Self::trigger_parameter_hints(call, insert.text)
         } else {
             Self::trigger_suggest_at_snippet_placeholders(
                 call,
@@ -5046,21 +5038,6 @@ impl CallableCompletionRender {
             follow_up_command: trigger_suggest_at_snippet_placeholder_command(placeholder_defaults),
         }
     }
-}
-
-/// A call with exactly one required `func` argument is a function-reference
-/// selection surface. `GenericComponent.Rpc(func method, ...)` is the
-/// source-backed example: accepting its completion selects `method`, then
-/// opens ordinary completion without globally triggering suggestions for every
-/// opening parenthesis.
-fn sole_function_reference_parameter(call: &CallableSignatureParts) -> Option<String> {
-    let mut required = call.required_parameters();
-    let parameter = required.next()?;
-    required
-        .next()
-        .is_none()
-        .then_some(())?;
-    (parameter.type_and_modifiers.trim() == "func").then(|| parameter.name.clone())
 }
 
 #[cfg(test)]
@@ -5131,12 +5108,6 @@ fn callable_insert_text_with_context(
     if required.is_empty() {
         return CallableInsertText {
             text: format!("{label}($0)"),
-            enum_placeholder_defaults: Vec::new(),
-        };
-    }
-    if sole_function_reference_parameter(call).is_some() {
-        return CallableInsertText {
-            text: format!("{label}(${{1:}})"),
             enum_placeholder_defaults: Vec::new(),
         };
     }
@@ -6962,52 +6933,6 @@ ArmaReforgerScripted GetGame();
         );
         assert_eq!(call.required_parameter_count(), 2);
         assert_eq!(call.optional_parameter_count(), 0);
-    }
-
-    #[test]
-    fn function_reference_parameter_opens_suggestions_at_its_snippet_placeholder() {
-        let call = callable_signature_parts(
-            "Rpc",
-            "GenericComponent.Rpc(func method, void p0 = NULL) -> void",
-        )
-        .unwrap();
-        let insert_text = callable_insert_text("Rpc", &call);
-        let render = CallableCompletionRender::from_insert(
-            call,
-            CallableInsertText {
-                text: insert_text,
-                enum_placeholder_defaults: Vec::new(),
-            },
-        );
-
-        assert_eq!(render.insert_text, "Rpc(${1:})");
-
-        assert_eq!(
-            render.follow_up_command.command,
-            COMMAND_TRIGGER_SUGGEST_AT_SNIPPET_PLACEHOLDER
-        );
-        assert_eq!(
-            render.follow_up_command.arguments,
-            Some(vec![Value::String(String::new())])
-        );
-    }
-
-    #[test]
-    fn ordinary_parameter_snippet_keeps_parameter_hints() {
-        let call = callable_signature_parts(
-            "TestNumFun2",
-            "Example.TestNumFun2(int input, float number, string text = \"\") -> int",
-        )
-        .unwrap();
-        let render = CallableCompletionRender::from_insert(
-            call,
-            CallableInsertText {
-                text: "TestNumFun2(${1:input}, ${2:number})".to_string(),
-                enum_placeholder_defaults: Vec::new(),
-            },
-        );
-
-        assert_eq!(render.follow_up_command.command, COMMAND_TRIGGER_PARAMETER_HINTS);
     }
 
     #[test]
