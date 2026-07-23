@@ -230,6 +230,10 @@ suite('extension activation', () => {
 			configuration.autoClosingPairs.find(pair => pair.open === '/*'),
 			{ open: '/*', close: '*/', notIn: ['string', 'comment'] },
 		);
+		assert.deepStrictEqual(
+			configuration.autoClosingPairs.find(pair => pair.open === '<'),
+			{ open: '<', close: '>' },
+		);
 		const onEnterHeader = configuration.onEnterRules?.[0];
 		assert.strictEqual(onEnterHeader?.action?.indent, 'indent');
 		assert.ok(onEnterHeader?.beforeText);
