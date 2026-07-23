@@ -266,23 +266,34 @@ fn incomplete_builtin_collection_types_remain_classes_for_hover_and_coloring() {
     let external = file_index_for_source(
         r#"class Class {}
 class array<Class T> {}
+class set<Class T> {}
+class map<Class TKey, Class TValue> {}
 "#,
     )
     .index;
     let cases = [
-        ("array<int> complete;", "array<int> complete;"),
-        ("array<int>\narray<int> complete;", "array<int>"),
-        ("array\narray<int> complete;", "array"),
-        ("array<>\narray<int> complete;", "array<>"),
+        ("array", "array<int> complete;", "array<int> complete;"),
+        ("array", "array<int>\narray<int> complete;", "array<int>"),
+        ("array", "array\narray<int> complete;", "array"),
+        ("array", "array<>\narray<int> complete;", "array<>"),
+        ("set", "set<int> complete;", "set<int> complete;"),
+        ("set", "set<int>\nset<int> complete;", "set<int>"),
+        ("set", "set\nset<int> complete;", "set"),
+        ("set", "set<>\nset<int> complete;", "set<>"),
+        ("map", "map<int, string> complete;", "map<int, string> complete;"),
+        ("map", "map<int, string>\nmap<int, string> complete;", "map<int, string>"),
+        ("map", "map\nmap<int, string> complete;", "map"),
+        ("map", "map<>\nmap<int, string> complete;", "map<>"),
+        ("map", "map<int,>\nmap<int, string> complete;", "map<int,>"),
     ];
 
-    for (body, declaration) in cases {
+    for (name, body, declaration) in cases {
         let source = format!("class Example {{ void Run() {{\n{body}\n}} }}\n");
         let semantic = semantic_tokens_report_for_source_with_external(&source, Some(&external));
-        let position = position_for_needle(&source, declaration, "array");
+        let position = position_for_needle(&source, declaration, name);
         assert!(
             semantic.decoded.iter().any(|token| {
-                token.text == "array"
+                token.text == name
                     && token.token_type == "class"
                     && token.range.start == position
                     && token.color == "#40b5ac"
@@ -298,7 +309,7 @@ class array<Class T> {}
         );
         assert!(hover.is_hit(), "{declaration}: {hover:?}");
         assert_eq!(hover.selected_kind, Some(SymbolKind::Class), "{declaration}");
-        assert_eq!(hover.selected_label.as_deref(), Some("array"), "{declaration}");
+        assert_eq!(hover.selected_label.as_deref(), Some(name), "{declaration}");
     }
 }
 
