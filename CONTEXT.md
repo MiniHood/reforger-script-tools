@@ -171,9 +171,10 @@ _Avoid_: callback, side effect
 **Constructor Completion**:
 An accepted completion in a `new` expression that inserts a resolved
 constructible type with its parenthesized constructor call and argument
-placeholders. Its list opens automatically after a proven `new` operand space;
-completion invoked on a bare typed `new` previews the whole expression and
-atomically replaces that keyword. Only required parameters receive
+placeholders. Its list can begin on the exact keyword prefixes `n` or `ne`,
+remains available on a bare typed `new`, and also opens after a proven `new`
+operand space. Before that space, the item previews the whole expression and
+atomically replaces the typed prefix. Only required parameters receive
 placeholders; array-literal initialization is a separate collection choice. A
 constructible type without an indexed constructor signature is rendered as a
 zero-argument call. It never inserts statement punctuation.

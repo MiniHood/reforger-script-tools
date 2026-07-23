@@ -3,7 +3,10 @@ use crate::callable::{
     callable_argument_context_at_offset, callable_signature_parts, callable_type_owner,
     CallableParameter, CallableSignatureParts, CallableTarget,
 };
-use crate::construction::ConstructionQuery;
+use crate::construction::{
+    compatible_construction_candidates, lexical_construction_context_at_operand,
+    ConstructionQuery,
+};
 use crate::expression_type::{expression_type_from_index_symbol, strip_all_type_prefixes};
 use crate::index::SymbolIndex;
 use crate::index_query::{
@@ -586,6 +589,57 @@ pub(crate) fn completion_report_for_current_preprocessor_at_offset_with_external
         Duration::ZERO,
         Instant::now(),
     ))
+}
+
+/// Recovers an exact declaration-backed `new` operand from the bounded current
+/// snapshot. Collection construction is complete from source alone; indexed
+/// class candidates remain refreshable because a pending local index can add
+/// same-file subclasses.
+pub(crate) fn completion_report_for_current_contextual_constructor_at_offset_with_external_indexes(
+    source: &str,
+    offset: usize,
+    workspace_index: Option<&SymbolIndex>,
+    game_data_index: Option<&SymbolIndex>,
+) -> Option<LspCompletionReport> {
+    let total_start = Instant::now();
+    let region = BoundedCompletionRegion::new(source, offset)?;
+    (!completion_cursor_is_in_comment_or_string(&region.tokens, offset)).then_some(())?;
+    let operand = new_operand_before_offset(source, &region.tokens, offset)?;
+    let context = lexical_construction_context_at_operand(source, &region.tokens, operand.span)?;
+    let empty_local_index = SymbolIndex::default();
+    let candidates = compatible_construction_candidates(
+        &context,
+        &empty_local_index,
+        ExternalIndexes::new(workspace_index, game_data_index).ordered(),
+    );
+    let owner = callable_type_owner(&context.type_text)?;
+    let is_collection = matches!(owner.as_str(), "array" | "set" | "map");
+    if !is_collection && candidates.is_empty() {
+        return None;
+    }
+    let replacement_span = if operand.replaces_typed_prefix {
+        operand.span
+    } else {
+        TextSpan::new(offset, offset)
+    };
+    let report = contextual_constructor_completion_report(
+        source,
+        0,
+        context.type_text,
+        candidates,
+        replacement_span,
+        operand.replaces_typed_prefix,
+        &empty_local_index,
+        workspace_index,
+        game_data_index,
+        Duration::ZERO,
+        total_start,
+    );
+    Some(if is_collection {
+        report
+    } else {
+        unavailable_completion_report(report, "current-local-index-pending")
+    })
 }
 
 /// Recovers a prospective method parameter type before the pending-analysis
@@ -2700,8 +2754,8 @@ fn completion_report_for_offset(
             total_start,
         );
     }
-    if let Some(new_keyword) =
-        new_operand_keyword_before_offset(source, &analysis.lexer_tokens, offset)
+    if let Some(new_operand) =
+        new_operand_before_offset(source, &analysis.lexer_tokens, offset)
     {
         let query = ConstructionQuery::new(
             source,
@@ -2711,11 +2765,11 @@ fn completion_report_for_offset(
             &analysis.scope,
             ExternalIndexes::new(workspace_index, game_data_index).ordered(),
         );
-        if let Some(context) = query.context_at_new(new_keyword.span) {
+        if let Some(context) = query.context_at_new(new_operand.span) {
             let candidates = query.compatible_candidates(&context);
-            let completes_bare_keyword = new_keyword.span.end == offset;
-            let replacement_span = if completes_bare_keyword {
-                new_keyword.span
+            let completes_typed_keyword = new_operand.replaces_typed_prefix;
+            let replacement_span = if completes_typed_keyword {
+                new_operand.span
             } else {
                 TextSpan::new(offset, offset)
             };
@@ -2725,7 +2779,7 @@ fn completion_report_for_offset(
                 context.type_text,
                 candidates,
                 replacement_span,
-                completes_bare_keyword,
+                completes_typed_keyword,
                 &analysis.index,
                 workspace_index,
                 game_data_index,
@@ -2998,24 +3052,41 @@ fn completion_report_for_offset(
     top_level_report
 }
 
-fn new_operand_keyword_before_offset(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NewOperand {
+    span: TextSpan,
+    replaces_typed_prefix: bool,
+}
+
+fn new_operand_before_offset(
     source: &str,
     tokens: &[Token],
     offset: usize,
-) -> Option<Token> {
-    let keyword = tokens
+) -> Option<NewOperand> {
+    let operand = tokens
         .iter()
         .rev()
         .find(|token| {
             token.span.end <= offset && !token.kind.is_trivia() && token.kind != TokenKind::Eof
         })
         .copied()?;
-    if keyword.kind != TokenKind::Keyword(Keyword::New) || keyword.span.end > offset {
+
+    if operand.kind == TokenKind::Identifier && operand.span.end == offset {
+        let prefix = source.get(operand.span.start..operand.span.end)?;
+        return matches!(prefix, "n" | "ne").then_some(NewOperand {
+            span: operand.span,
+            replaces_typed_prefix: true,
+        });
+    }
+    if operand.kind != TokenKind::Keyword(Keyword::New) || operand.span.end > offset {
         return None;
     }
-    let operand_space = source.get(keyword.span.end..offset)?;
+    let operand_space = source.get(operand.span.end..offset)?;
     (!operand_space.contains(['\n', '\r']) && operand_space.chars().all(char::is_whitespace))
-        .then_some(keyword)
+        .then_some(NewOperand {
+            span: operand.span,
+            replaces_typed_prefix: operand.span.end == offset,
+        })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3025,7 +3096,7 @@ fn contextual_constructor_completion_report(
     contextual_type: String,
     candidates: Vec<EditorCompletionCandidate>,
     replacement_span: TextSpan,
-    completes_bare_keyword: bool,
+    completes_typed_keyword: bool,
     local_index: &SymbolIndex,
     workspace_index: Option<&SymbolIndex>,
     game_data_index: Option<&SymbolIndex>,
@@ -3039,7 +3110,7 @@ fn contextual_constructor_completion_report(
         let spelling = strip_all_type_prefixes(&contextual_type).trim();
         let constructor_text = format!(
             "{}{spelling}()",
-            if completes_bare_keyword { "new " } else { "" }
+            if completes_typed_keyword { "new " } else { "" }
         );
         let item = LspCompletionItem {
             label: constructor_text.clone(),
@@ -3048,7 +3119,11 @@ fn contextual_constructor_completion_report(
             detail: Some("contextual collection constructor".to_string()),
             documentation: None,
             sort_text: Some(format!("000:contextual-constructor:{constructor_text}")),
-            filter_text: Some(spelling.to_string()),
+            filter_text: Some(if completes_typed_keyword {
+                constructor_text.clone()
+            } else {
+                spelling.to_string()
+            }),
             preselect: Some(true),
             insert_text_format: None,
             commit_characters: None,
@@ -3098,7 +3173,7 @@ fn contextual_constructor_completion_report(
     let has_exact = items.iter().any(|item| item.label == owner);
     for (index, item) in items.iter_mut().enumerate() {
         let exact = item.label == owner;
-        if completes_bare_keyword {
+        if completes_typed_keyword {
             item.label = format!("new {}", item.label);
             item.filter_text = Some(item.label.clone());
             item.text_edit.new_text = format!("new {}", item.text_edit.new_text);
@@ -6133,6 +6208,64 @@ mod tests {
                 character: 5,
             },
         }
+    }
+
+    #[test]
+    fn current_snapshot_partial_new_completion_uses_the_declared_collection_type() {
+        let source = "class Example\n{\n\tvoid Run()\n\t{\n\t\tarray<int> tesyArray = n\n\t}\n}\n";
+        let offset = source.find("tesyArray = n").unwrap() + "tesyArray = n".len();
+        let report =
+            completion_report_for_current_contextual_constructor_at_offset_with_external_indexes(
+                source, offset, None, None,
+            )
+            .expect("the bounded current snapshot proves the declaration type");
+
+        assert_eq!(report.completion_context, "constructor");
+        assert_eq!(report.owner_type.as_deref(), Some("array<int>"));
+        assert_eq!(report.list.items.len(), 1);
+        assert_eq!(report.list.items[0].label, "new array<int>()");
+        assert_eq!(
+            report.list.items[0].filter_text.as_deref(),
+            Some("new array<int>()")
+        );
+        assert_eq!(
+            report.list.items[0].text_edit.new_text,
+            "new array<int>()"
+        );
+        assert_eq!(
+            report.list.items[0].text_edit.range,
+            range_for_span(
+                source,
+                TextSpan::new(offset - "n".len(), offset),
+            )
+        );
+    }
+
+    #[test]
+    fn current_snapshot_partial_new_completion_uses_an_indexed_class_constructor() {
+        let source =
+            "class Example\n{\n\tvoid Run()\n\t{\n\t\tManaged value = n\n\t}\n}\n";
+        let offset = source.find("value = n").unwrap() + "value = n".len();
+        let external =
+            file_index_for_source("class Managed\n{\n\tvoid Managed(int id);\n}\n").index;
+        let report =
+            completion_report_for_current_contextual_constructor_at_offset_with_external_indexes(
+                source,
+                offset,
+                Some(&external),
+                None,
+            )
+            .expect("the indexed class proves a constructor candidate");
+
+        assert_eq!(report.completion_context, "constructor");
+        assert_eq!(report.owner_type.as_deref(), Some("Managed"));
+        assert!(report.list.is_incomplete);
+        assert_eq!(report.list.items.len(), 1);
+        assert_eq!(report.list.items[0].label, "new Managed");
+        assert_eq!(
+            report.list.items[0].text_edit.new_text,
+            "new Managed(${1:id})"
+        );
     }
 
     #[test]

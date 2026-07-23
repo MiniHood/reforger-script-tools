@@ -88,10 +88,14 @@ That includes base-game tuples and game-defined generic classes such as
 `SCR_BTParam<T>`; only collections receive collection construction or
 declaration-tail behavior.
 
-Constructor completion is a semantic projection at a proven `new` operand
-space. The server advertises Space as a completion trigger, but returns a list
-for that trigger only when the current snapshot establishes one contextual
-type from a declaration, resolved assignment target, callable return, call
+Constructor completion is a semantic projection at a proven `new` operand.
+It begins on the exact partial keyword prefixes `n` and `ne`, remains active
+on a bare `new`, and continues after the operand space. This lets the first
+word-completion request carry the full constructor preview while VS Code
+locally filters the same list through the remaining keyword characters. The
+server also advertises Space as a completion trigger, but returns a list for
+that trigger only when the current snapshot establishes one contextual type
+from a declaration, resolved assignment target, callable return, call
 argument, or collection-initializer element. The exact accessible class is
 preselected; compatible classes with accessible constructors follow.
 Inaccessible or unindexed contextual classes have no default, but compatible
@@ -102,12 +106,13 @@ Constructor edits contain only the parenthesized expression. Required
 parameters become ordered named snippet fields, optional parameters are
 omitted, and a class without an indexed constructor signature remains
 available as `Type()`. The label plus label details previews that accepted
-source text. When completion is invoked on a bare typed `new`, the item instead
-previews the whole `new Type(...)` expression and atomically replaces the
-keyword; after `new `, it edits only the operand. No constructor item owns a
-semicolon, assignment, initializer brace, or fluent suffix. Space-triggered
-requests outside this exact context return an empty complete list; manual
-prefix and explicit completion retain their existing behavior.
+source text. When completion is invoked on a partial or bare typed `new`, the
+item instead previews the whole `new Type(...)` expression and atomically
+replaces the typed prefix; after `new `, it edits only the operand. No
+constructor item owns a semicolon, assignment, initializer brace, or fluent
+suffix. Space-triggered requests outside this exact context return an empty
+complete list; manual prefix and explicit completion retain their existing
+behavior.
 
 When a user retypes an already-present completion label, Rust keeps the
 existing syntax authoritative. A type completion immediately before a generic

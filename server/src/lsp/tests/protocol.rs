@@ -1061,6 +1061,57 @@ fn framed_lsp_space_trigger_surfaces_a_contextual_constructor() {
 }
 
 #[test]
+fn framed_lsp_completion_on_partial_new_returns_the_full_constructor_preview() {
+    let source =
+        "class Example\n{\n\tvoid Run()\n\t{\n\t\tarray<int> tesyArray = n\n\t}\n}\n";
+    let position = position_after_needle(source, "tesyArray = n");
+    let mut input = Vec::new();
+    write_test_message(
+        &mut input,
+        json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {} }),
+    );
+    write_test_message(
+        &mut input,
+        json!({
+            "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+                "textDocument": {
+                    "uri": "file:///Scripts/PartialNew.c",
+                    "languageId": "enforce",
+                    "version": 1,
+                    "text": source
+                }
+            }
+        }),
+    );
+    write_test_message(
+        &mut input,
+        json!({
+            "jsonrpc": "2.0", "id": 2, "method": "textDocument/completion", "params": {
+                "textDocument": { "uri": "file:///Scripts/PartialNew.c" },
+                "position": { "line": position.line, "character": position.character },
+                "context": { "triggerKind": 1 }
+            }
+        }),
+    );
+    write_test_message(
+        &mut input,
+        json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown", "params": null }),
+    );
+    write_test_message(
+        &mut input,
+        json!({ "jsonrpc": "2.0", "method": "exit", "params": null }),
+    );
+
+    let mut output = Vec::new();
+    run(input.as_slice(), &mut output, LspServerOptions::default()).unwrap();
+    let output = String::from_utf8(output).unwrap();
+    assert!(output.contains("\"label\":\"new array<int>()\""));
+    assert!(output.contains("\"filterText\":\"new array<int>()\""));
+    assert!(output.contains("\"newText\":\"new array<int>()\""));
+    assert!(output.contains("\"preselect\":true"));
+}
+
+#[test]
 fn framed_lsp_manual_completion_on_bare_new_replaces_the_keyword() {
     let source =
         "class Example\n{\n\tvoid Run()\n\t{\n\t\tarray<int> tesyArray = new\n\t}\n}\n";

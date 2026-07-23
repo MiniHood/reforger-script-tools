@@ -27,6 +27,70 @@ pub struct ContextualConstruction {
     pub containing_class: Option<String>,
 }
 
+/// Recovers the expected construction type from an exact declaration or
+/// collection-initializer prefix in the current lexical snapshot. This is the
+/// source-only subset used while whole-file semantic analysis is converging.
+pub fn lexical_construction_context_at_operand(
+    source: &str,
+    tokens: &[Token],
+    operand_span: TextSpan,
+) -> Option<ContextualConstruction> {
+    let type_text = lexical_declaration_type_before_new(source, tokens, operand_span.start)
+        .or_else(|| {
+            lexical_initializer_element_type_before_new(source, tokens, operand_span.start)
+        })?;
+    Some(ContextualConstruction {
+        type_text,
+        containing_class: None,
+    })
+}
+
+pub fn compatible_construction_candidates<'index>(
+    context: &ContextualConstruction,
+    local_index: &'index SymbolIndex,
+    external_indexes: impl IntoIterator<Item = &'index SymbolIndex>,
+) -> Vec<EditorCompletionCandidate> {
+    let Some(owner) = callable_type_owner(&context.type_text) else {
+        return Vec::new();
+    };
+    let external_indexes = external_indexes.into_iter().collect::<Vec<_>>();
+    let mut candidates = IndexQuery::new(local_index)
+        .completion_top_level("", EditorTopLevelCompletionMode::Type);
+    for index in &external_indexes {
+        candidates.extend(
+            IndexQuery::new(index).completion_top_level("", EditorTopLevelCompletionMode::Type),
+        );
+    }
+    let mut candidates = combine_candidates(candidates)
+        .into_iter()
+        .filter(|candidate| candidate.kind == SymbolKind::Class)
+        .filter(|candidate| {
+            let name = candidate_name(candidate);
+            name == owner
+                || class_inherits_from_indexes(
+                    local_index,
+                    &external_indexes,
+                    name,
+                    &owner,
+                )
+        })
+        .filter(|candidate| {
+            constructor_is_accessible_from_indexes(
+                local_index,
+                &external_indexes,
+                candidate,
+                context,
+            )
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| {
+        let left_name = candidate_name(left);
+        let right_name = candidate_name(right);
+        (left_name != owner, left_name).cmp(&(right_name != owner, right_name))
+    });
+    candidates
+}
+
 pub struct ConstructionQuery<'source, 'index> {
     source: &'source str,
     parse: &'index Parse,
@@ -91,31 +155,11 @@ impl<'source, 'index> ConstructionQuery<'source, 'index> {
         &self,
         context: &ContextualConstruction,
     ) -> Vec<EditorCompletionCandidate> {
-        let Some(owner) = callable_type_owner(&context.type_text) else {
-            return Vec::new();
-        };
-        let mut candidates = IndexQuery::new(self.local_index)
-            .completion_top_level("", EditorTopLevelCompletionMode::Type);
-        for index in &self.external_indexes {
-            candidates.extend(
-                IndexQuery::new(index).completion_top_level("", EditorTopLevelCompletionMode::Type),
-            );
-        }
-        let mut candidates = combine_candidates(candidates)
-            .into_iter()
-            .filter(|candidate| candidate.kind == SymbolKind::Class)
-            .filter(|candidate| {
-                let name = candidate_name(candidate);
-                name == owner || self.class_inherits_from(name, &owner)
-            })
-            .filter(|candidate| self.constructor_is_accessible(candidate, context))
-            .collect::<Vec<_>>();
-        candidates.sort_by(|left, right| {
-            let left_name = candidate_name(left);
-            let right_name = candidate_name(right);
-            (left_name != owner, left_name).cmp(&(right_name != owner, right_name))
-        });
-        candidates
+        compatible_construction_candidates(
+            context,
+            self.local_index,
+            self.external_indexes.iter().copied(),
+        )
     }
 
     fn declaration_type(&self, new_keyword_span: TextSpan) -> Option<String> {
@@ -348,72 +392,83 @@ impl<'source, 'index> ConstructionQuery<'source, 'index> {
         None
     }
 
-    fn class_inherits_from(&self, class_name: &str, expected_base: &str) -> bool {
-        let mut current = class_name.to_string();
-        let mut seen = BTreeSet::new();
-        for _ in 0..32 {
-            if !seen.insert(current.clone()) {
-                return false;
-            }
-            let base = class_base_type(self.local_index, &current).or_else(|| {
-                self.external_indexes
-                    .iter()
-                    .find_map(|index| class_base_type(index, &current))
-            });
-            let Some(base) = base else {
-                return false;
-            };
-            if base == expected_base {
-                return true;
-            }
-            current = base;
-        }
-        false
-    }
+}
 
-    fn constructor_is_accessible(
-        &self,
-        candidate: &EditorCompletionCandidate,
-        context: &ContextualConstruction,
-    ) -> bool {
-        let candidate_name = candidate_name(candidate);
-        let Some(index) = std::iter::once(self.local_index)
-            .chain(self.external_indexes.iter().copied())
-            .find(|index| candidate_belongs_to_index(candidate, candidate_name, index))
-        else {
+fn class_inherits_from_indexes(
+    local_index: &SymbolIndex,
+    external_indexes: &[&SymbolIndex],
+    class_name: &str,
+    expected_base: &str,
+) -> bool {
+    let mut current = class_name.to_string();
+    let mut seen = BTreeSet::new();
+    for _ in 0..32 {
+        if !seen.insert(current.clone()) {
+            return false;
+        }
+        let base = class_base_type(local_index, &current).or_else(|| {
+            external_indexes
+                .iter()
+                .find_map(|index| class_base_type(index, &current))
+        });
+        let Some(base) = base else {
             return false;
         };
-        let constructors = index
-            .children(candidate.id)
-            .iter()
-            .filter_map(|id| index.symbol(*id))
-            .filter(|symbol| symbol.kind == SymbolKind::Constructor)
-            .collect::<Vec<_>>();
-        if constructors.is_empty() {
+        if base == expected_base {
             return true;
         }
-        constructors.into_iter().any(|constructor| {
-            let private = constructor
-                .modifiers
-                .iter()
-                .any(|modifier| modifier == "private");
-            let protected = constructor
-                .modifiers
-                .iter()
-                .any(|modifier| modifier == "protected");
-            if !private && !protected {
-                return true;
-            }
-            if context.containing_class.as_deref() == Some(candidate_name) {
-                return true;
-            }
-            protected
-                && context
-                    .containing_class
-                    .as_deref()
-                    .is_some_and(|owner| self.class_inherits_from(owner, candidate_name))
-        })
+        current = base;
     }
+    false
+}
+
+fn constructor_is_accessible_from_indexes(
+    local_index: &SymbolIndex,
+    external_indexes: &[&SymbolIndex],
+    candidate: &EditorCompletionCandidate,
+    context: &ContextualConstruction,
+) -> bool {
+    let candidate_name = candidate_name(candidate);
+    let Some(index) = std::iter::once(local_index)
+        .chain(external_indexes.iter().copied())
+        .find(|index| candidate_belongs_to_index(candidate, candidate_name, index))
+    else {
+        return false;
+    };
+    let constructors = index
+        .children(candidate.id)
+        .iter()
+        .filter_map(|id| index.symbol(*id))
+        .filter(|symbol| symbol.kind == SymbolKind::Constructor)
+        .collect::<Vec<_>>();
+    if constructors.is_empty() {
+        return true;
+    }
+    constructors.into_iter().any(|constructor| {
+        let private = constructor
+            .modifiers
+            .iter()
+            .any(|modifier| modifier == "private");
+        let protected = constructor
+            .modifiers
+            .iter()
+            .any(|modifier| modifier == "protected");
+        if !private && !protected {
+            return true;
+        }
+        if context.containing_class.as_deref() == Some(candidate_name) {
+            return true;
+        }
+        protected
+            && context.containing_class.as_deref().is_some_and(|owner| {
+                class_inherits_from_indexes(
+                    local_index,
+                    external_indexes,
+                    owner,
+                    candidate_name,
+                )
+            })
+    })
 }
 
 fn containing_callable<'source, 'tree>(

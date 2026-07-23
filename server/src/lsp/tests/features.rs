@@ -3886,6 +3886,42 @@ class Example
 }
 
 #[test]
+fn automatic_completion_on_partial_new_previews_the_contextual_expression() {
+    let source = r#"class Example
+{
+	void Run()
+	{
+		array<int> tesyArray = n
+	}
+}
+"#;
+
+    let report = completion_report_for_source_position_with_external(
+        source,
+        position_after_needle(source, "tesyArray = n"),
+        None,
+    );
+    assert_eq!(report.completion_context, "constructor");
+    assert_eq!(report.owner_type.as_deref(), Some("array<int>"));
+    assert_eq!(report.list.items.len(), 1);
+    let item = &report.list.items[0];
+    assert_eq!(item.label, "new array<int>()");
+    assert_eq!(item.filter_text.as_deref(), Some("new array<int>()"));
+    assert_eq!(item.text_edit.new_text, "new array<int>()");
+    assert_eq!(
+        item.text_edit.range.start,
+        position_after_needle(source, "tesyArray = "),
+        "acceptance should begin at the partial keyword"
+    );
+    assert_eq!(
+        item.text_edit.range.end,
+        position_after_needle(source, "tesyArray = n"),
+        "acceptance should replace the partial keyword"
+    );
+    assert_eq!(item.preselect, Some(true));
+}
+
+#[test]
 fn manual_completion_on_bare_new_previews_the_whole_contextual_expression() {
     let source = r#"class Example
 {

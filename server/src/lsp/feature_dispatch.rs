@@ -4,6 +4,7 @@ use super::{
     completion, completion_debug_markdown,
     completion_report_for_cached_analysis_with_external_indexes,
     completion_report_for_current_argument_labels_at_offset_with_external_indexes,
+    completion_report_for_current_contextual_constructor_at_offset_with_external_indexes,
     completion_report_for_current_incomplete_callable_parameter_type_at_offset_with_external_indexes,
     completion_report_for_current_local_scope_at_offset_with_external_indexes,
     completion_report_for_current_override_at_offset_with_external_indexes,
@@ -318,6 +319,14 @@ impl FeatureDispatcher<'_> {
                                             indexes.game_data.as_deref(),
                                         ).unwrap_or_else(|| {
                                             let completion_start = std::time::Instant::now();
+                                            if let Some(report) = completion_report_for_current_contextual_constructor_at_offset_with_external_indexes(
+                                                &document.text,
+                                                offset,
+                                                indexes.workspace.as_deref(),
+                                                indexes.game_data.as_deref(),
+                                            ) {
+                                                return report;
+                                            }
                                             if let Some(report) = completion_report_for_current_incomplete_callable_parameter_type_at_offset_with_external_indexes(
                                                 &document.text,
                                                 offset,
