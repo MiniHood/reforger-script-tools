@@ -152,8 +152,13 @@ configuration-wide, a result also remains stale while any eligible workspace
 script is dirty, even when the adapter successfully saved the active script
 that triggered the run. The adapter projects a location only when its canonical
 path exists inside the single addon workspace. An explicit external absolute
-path is never replaced by a plausible relative guess. Rust language diagnostics
-remain in their independent LSP-owned collection throughout.
+path is never replaced by a plausible relative guess. Workbench returns a
+one-based source line without a column. For the VS Code underline, the adapter
+reads that saved source line and selects a uniquely occurring subject quoted by
+the compiler message when available; otherwise it selects the complete
+non-whitespace content of the line. It never deliberately underlines leading
+or trailing whitespace. Rust language diagnostics remain in their independent
+LSP-owned collection throughout.
 
 Every completed validation also replaces the dedicated **Reforger Workbench
 Compiler** output. Its first line reports completion time, trigger-to-result

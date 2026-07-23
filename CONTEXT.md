@@ -71,8 +71,11 @@ _Avoid_: parser error, live-buffer compiler error, extension diagnostic
 
 **Workbench Compiler Diagnostic Collection**:
 The extension-owned VS Code diagnostic collection that renders Workbench
-Compiler Diagnostics. It is independent of the language server's provisional
-diagnostic publication.
+Compiler Diagnostics. Workbench supplies a source line but no column. The
+extension underlines a uniquely named subject from the compiler message when
+that exact subject occurs on the saved source line; otherwise it underlines
+the line's non-whitespace content. It is independent of the language server's
+provisional diagnostic publication.
 _Avoid_: LSP compiler diagnostics, shared diagnostic collection, Rust output
 
 **Workbench Compiler Output**:

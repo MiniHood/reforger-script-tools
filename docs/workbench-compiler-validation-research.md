@@ -388,6 +388,14 @@ inside the Addon Workspace; unresolvable locations remain structured Gateway
 result evidence and sanitized counts, never guessed workspace files or
 end-user output entries.
 
+`ValidateScripts` reports a one-based line but no source column. For a located
+VS Code diagnostic, the extension reads the saved source line and underlines a
+uniquely occurring subject quoted by the Workbench message, such as `testnum`
+in `Variable 'testnum' is not used`. When the message provides no unique
+subject on that line, it underlines the line's complete non-whitespace content.
+Leading and trailing whitespace are never selected; a whitespace-only line
+uses an empty range at its end.
+
 The dedicated latest-result output starts with one completion line containing
 trigger-to-result duration, completion time, project error/warning counts, and
 a count of hidden non-project findings. A timing line separates idle/queue,

@@ -79,6 +79,8 @@ suite('Workbench compiler validation', () => {
 			assert.strictEqual(diagnostics[0].source, workbenchDiagnostics.source);
 			assert.strictEqual(diagnostics[0].severity, vscode.DiagnosticSeverity.Error);
 			assert.strictEqual(diagnostics[0].range.start.line, 1);
+			assert.strictEqual(diagnostics[0].range.start.character, 0);
+			assert.strictEqual(diagnostics[0].range.end.character, 1);
 			const output = (await observeWorkbenchCompiler() as WorkbenchCompilerObservation & {
 				validationOutput?: string;
 			}).validationOutput;

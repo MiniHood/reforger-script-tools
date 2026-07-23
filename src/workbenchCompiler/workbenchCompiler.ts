@@ -17,6 +17,7 @@ import {
 	WorkbenchValidationProfile,
 	WorkbenchValidationResult,
 } from '../workbenchGateway/workbenchGateway';
+import { workbenchDiagnosticSpan } from './workbenchDiagnosticSpan';
 
 const unavailableRetryMs = 1_000;
 const readyHeartbeatMs = 5_000;
@@ -846,6 +847,7 @@ function projectDiagnostics(diagnostics: WorkbenchCompilerDiagnostic[]): Project
 	}
 	const located: ProjectedDiagnostics['located'] = [];
 	const unresolved: WorkbenchCompilerDiagnostic[] = [];
+	const sourceLinesByFile = new Map<string, string[]>();
 	for (const compilerDiagnostic of diagnostics) {
 		const uri = projectLocation(workspace, compilerDiagnostic);
 		if (!uri) {
@@ -853,8 +855,17 @@ function projectDiagnostics(diagnostics: WorkbenchCompilerDiagnostic[]): Project
 			continue;
 		}
 		const line = Math.max(0, compilerDiagnostic.location.line - 1);
+		const span = workbenchDiagnosticSpan(
+			readSourceLine(uri.fsPath, line, sourceLinesByFile),
+			compilerDiagnostic.message,
+		);
 		const rendered = new vscode.Diagnostic(
-			new vscode.Range(line, 0, line, 0),
+			new vscode.Range(
+				line,
+				span.startCharacter,
+				line,
+				span.endCharacter,
+			),
 			compilerDiagnostic.message,
 			compilerDiagnostic.severity === 'error'
 				? vscode.DiagnosticSeverity.Error
@@ -864,6 +875,23 @@ function projectDiagnostics(diagnostics: WorkbenchCompilerDiagnostic[]): Project
 		located.push({ uri, diagnostic: rendered, compilerDiagnostic });
 	}
 	return { located, unresolved };
+}
+
+function readSourceLine(
+	filePath: string,
+	zeroBasedLine: number,
+	sourceLinesByFile: Map<string, string[]>,
+): string {
+	let lines = sourceLinesByFile.get(filePath);
+	if (!lines) {
+		try {
+			lines = fs.readFileSync(filePath, 'utf8').split(/\r\n|\n|\r/u);
+		} catch {
+			lines = [];
+		}
+		sourceLinesByFile.set(filePath, lines);
+	}
+	return lines[zeroBasedLine] ?? '';
 }
 
 function projectLocation(
