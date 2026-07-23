@@ -39,5 +39,7 @@ implementation slice is progress, not a completed ticket.
 - [Workbench compiler-validation research](workbench-compiler-validation-research.md):
   `ValidateScripts` contract, continuous-validation design, diagnostics, and
   live-session acceptance experiments.
+- [Enfusion `new` editing research](enfusion-new-formatting-research.md):
+  primary-source evidence and safe completion/formatting boundary for `new`.
 - [s&box MCP server review](sbox-mcp-research.md): first-party MCP-host and
   tool-authoring patterns relevant to the Reforger MCP design.
