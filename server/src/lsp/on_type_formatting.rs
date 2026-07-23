@@ -1031,27 +1031,22 @@ fn has_only_complete_new_expressions(tokens: &[Token]) -> bool {
             index += 1;
             continue;
         }
-        index += 1;
-        if !matches!(
-            tokens.get(index).map(|token| token.kind),
-            Some(TokenKind::Identifier)
-        ) {
-            return false;
-        }
-        index += 1;
-        let Some(next) = consume_generic_arguments(tokens, index) else {
-            return false;
-        };
-        index = next;
-        if tokens.get(index).map(|token| token.kind) != Some(TokenKind::LeftParen) {
-            return false;
-        }
-        let Some(next) = consume_balanced(tokens, index, TokenKind::RightParen) else {
+        let Some(next) = consume_new_expression(tokens, index) else {
             return false;
         };
         index = next;
     }
     true
+}
+
+fn consume_new_expression(tokens: &[Token], mut index: usize) -> Option<usize> {
+    (tokens.get(index)?.kind == TokenKind::Keyword(Keyword::New)).then_some(())?;
+    index += 1;
+    (tokens.get(index)?.kind == TokenKind::Identifier).then_some(())?;
+    index += 1;
+    index = consume_generic_arguments(tokens, index)?;
+    (tokens.get(index)?.kind == TokenKind::LeftParen).then_some(())?;
+    consume_balanced(tokens, index, TokenKind::RightParen)
 }
 
 fn is_value_expression_token(kind: TokenKind) -> bool {
@@ -1204,6 +1199,10 @@ fn consume_initializer(tokens: &[Token], mut index: usize) -> Option<usize> {
     let mut closes = Vec::new();
     while let Some(token) = tokens.get(index) {
         match token.kind {
+            TokenKind::Keyword(Keyword::New) => {
+                index = consume_new_expression(tokens, index)?;
+                continue;
+            }
             TokenKind::LeftParen => closes.push(TokenKind::RightParen),
             TokenKind::LeftBracket => closes.push(TokenKind::RightBracket),
             TokenKind::LeftBrace => closes.push(TokenKind::RightBrace),
@@ -1302,6 +1301,27 @@ mod tests {
     }
 
     #[test]
+    fn inserts_a_semicolon_before_a_trailing_comment_after_a_new_map_declaration() {
+        let uncommented = "map<int, int> testmap = new map<int, int>()\n";
+        assert_eq!(
+            insertion(uncommented),
+            Some(uncommented.find('\n').unwrap()),
+            "the declaration must be recognized independently of the comment"
+        );
+
+        let source =
+            "map<int, int> testmap = new map<int, int>()// pressing enter here";
+        let plan = semicolon_before_enter_plan(source, source.len())
+            .expect("the complete constructor declaration needs a semicolon before Enter");
+
+        assert_eq!(
+            plan.replacement,
+            ";// pressing enter here\n",
+            "the semicolon belongs before the trailing comment"
+        );
+    }
+
+    #[test]
     fn inserts_after_complete_variable_declarations() {
         for source in [
             "GRAY_TEST2 test44\n",
@@ -1327,6 +1347,7 @@ mod tests {
             "return GetOwner()\n",
             "return new GRAY_TEST2()\n",
             "return new array<int>()\n",
+            "return new map<int, int>()\n",
             "return GetOwner().m_Name\n",
             "return owner == GetOwner() ? owner : null\n",
             "return owner // keep this\n",
