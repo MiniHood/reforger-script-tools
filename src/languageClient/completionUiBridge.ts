@@ -270,7 +270,12 @@ function triggerSuggestAtSnippetPlaceholder(...expectedSelectionTexts: unknown[]
 		traceVersion: snippetSuggestTraceVersion,
 		placeholderCount: expectedSelectionTextSequence.length,
 	});
-	tryTrigger(editor, 'command');
+	// An empty tabstop is published by VS Code after the completion command can
+	// run. Waiting for its selection event prevents the pre-snippet caret from
+	// opening a competing value-context request.
+	if (expectedSelectionTextSequence[0].length > 0) {
+		tryTrigger(editor, 'command');
+	}
 }
 
 function wrapBridgeCompletionCommands(
