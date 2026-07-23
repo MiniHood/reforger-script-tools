@@ -1292,6 +1292,39 @@ fn active_scope_delimiters_use_current_foreground_syntax_before_semantic_analysi
             0,
         )
         .unwrap();
+    server.writer.clear();
+    server
+        .handle_message(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 0,
+                "method": "reforger/activeScopeDelimiters",
+                "params": {
+                    "textDocument": { "uri": uri },
+                    "version": 1,
+                    "positions": [{ "line": 4, "character": 16 }]
+                }
+            }),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+    let pending_output = String::from_utf8(server.writer.clone()).unwrap();
+    let mut pending_reader = BufReader::new(pending_output.as_bytes());
+    let pending_response = loop {
+        let response = read_message(&mut pending_reader)
+            .unwrap()
+            .expect("pending active scope delimiter response");
+        if response["id"] == 0 {
+            break response;
+        }
+    };
+    assert_eq!(pending_response["result"]["version"], 1);
+    assert_eq!(pending_response["result"]["pending"], true);
+    assert_eq!(pending_response["result"]["pairs"], json!([]));
+
+    server.writer.clear();
     install_next_foreground(&mut server, &receiver);
     assert!(
         !server

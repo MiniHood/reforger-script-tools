@@ -10,6 +10,7 @@ import {
 
 interface ActiveScopeDelimiterResponse {
 	version: number;
+	pending?: boolean;
 	pairs: Array<{
 		opener: LspRange;
 		closer: LspRange;
@@ -30,12 +31,17 @@ export function activeScopeDelimiterDecorationOptions(): vscode.DecorationRender
 	};
 }
 
-export async function activeScopeDelimiterRangesForSnapshot(
+interface ActiveScopeDelimiterProjection {
+	pending: boolean;
+	ranges: vscode.Range[];
+}
+
+async function activeScopeDelimiterProjectionForSnapshot(
 	document: vscode.TextDocument,
 	selections: readonly vscode.Selection[],
 	client: ActiveScopeDelimiterRequestClient,
 	isCurrent: () => boolean,
-): Promise<vscode.Range[] | undefined> {
+): Promise<ActiveScopeDelimiterProjection | undefined> {
 	const version = document.version;
 	const response = await client.sendRequest<ActiveScopeDelimiterResponse>(
 		languageClientRequests.activeScopeDelimiters,
@@ -51,10 +57,27 @@ export async function activeScopeDelimiterRangesForSnapshot(
 	if (!isCurrent() || response.version !== version) {
 		return undefined;
 	}
-	return response.pairs.flatMap(pair => [
-		rangeFromLsp(pair.opener),
-		rangeFromLsp(pair.closer),
-	]);
+	return {
+		pending: response.pending === true,
+		ranges: response.pairs.flatMap(pair => [
+			rangeFromLsp(pair.opener),
+			rangeFromLsp(pair.closer),
+		]),
+	};
+}
+
+export async function activeScopeDelimiterRangesForSnapshot(
+	document: vscode.TextDocument,
+	selections: readonly vscode.Selection[],
+	client: ActiveScopeDelimiterRequestClient,
+	isCurrent: () => boolean,
+): Promise<vscode.Range[] | undefined> {
+	return (await activeScopeDelimiterProjectionForSnapshot(
+		document,
+		selections,
+		client,
+		isCurrent,
+	))?.ranges;
 }
 
 export async function refreshActiveScopeDelimiterDecorationForSnapshot(
@@ -63,17 +86,18 @@ export async function refreshActiveScopeDelimiterDecorationForSnapshot(
 	client: ActiveScopeDelimiterRequestClient,
 	isCurrent: () => boolean,
 	setRanges: (ranges: readonly vscode.Range[]) => void,
-): Promise<void> {
+): Promise<boolean> {
 	setRanges([]);
-	const ranges = await activeScopeDelimiterRangesForSnapshot(
+	const projection = await activeScopeDelimiterProjectionForSnapshot(
 		document,
 		selections,
 		client,
 		isCurrent,
 	);
-	if (ranges && isCurrent()) {
-		setRanges(ranges);
+	if (projection && isCurrent()) {
+		setRanges(projection.ranges);
 	}
+	return projection?.pending !== true;
 }
 
 export function registerActiveScopeDelimiterBridge(
@@ -85,12 +109,21 @@ export function registerActiveScopeDelimiterBridge(
 	let disposed = false;
 	let generation = 0;
 	let decoratedEditor: vscode.TextEditor | undefined;
+	let pendingRetry: ReturnType<typeof setTimeout> | undefined;
 
 	const clearDecoratedEditor = () => {
+		if (pendingRetry) {
+			clearTimeout(pendingRetry);
+			pendingRetry = undefined;
+		}
 		decoratedEditor?.setDecorations(decoration, []);
 		decoratedEditor = undefined;
 	};
 	const refresh = (editor: vscode.TextEditor | undefined = vscode.window.activeTextEditor) => {
+		if (pendingRetry) {
+			clearTimeout(pendingRetry);
+			pendingRetry = undefined;
+		}
 		const requestGeneration = ++generation;
 		if (!editor || editor.document.languageId !== languageClientLanguage.id) {
 			clearDecoratedEditor();
@@ -114,7 +147,11 @@ export function registerActiveScopeDelimiterBridge(
 			client,
 			isCurrent,
 			ranges => editor.setDecorations(decoration, ranges),
-		).catch(() => {
+		).then(foregroundReady => {
+			if (!foregroundReady && isCurrent()) {
+				pendingRetry = setTimeout(() => refresh(editor), 25);
+			}
+		}).catch(() => {
 			if (isCurrent()) {
 				editor.setDecorations(decoration, []);
 			}

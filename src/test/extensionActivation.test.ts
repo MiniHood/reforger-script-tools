@@ -417,6 +417,56 @@ suite('extension activation', () => {
 		assert.deepStrictEqual(staleApplied, [[]]);
 	});
 
+	test('reports pending scope delimiter projections for a lifecycle retry', async () => {
+		const document = await vscode.workspace.openTextDocument({
+			language: 'enforce',
+			content: 'class Example {}',
+		});
+		const selection = new vscode.Selection(0, 15, 0, 15);
+		const applied: vscode.Range[][] = [];
+		const foregroundReady = await refreshActiveScopeDelimiterDecorationForSnapshot(
+			document,
+			[selection],
+			{
+				sendRequest: async <Result>() => ({
+					version: document.version,
+					pending: true,
+					pairs: [],
+				}) as Result,
+			},
+			() => true,
+			ranges => applied.push([...ranges]),
+		);
+
+		assert.strictEqual(foregroundReady, false);
+		assert.deepStrictEqual(applied, [[], []]);
+	});
+
+	test('retries active scope delimiters when foreground syntax becomes ready', async () => {
+		const document = await vscode.workspace.openTextDocument({
+			language: 'enforce',
+			content: 'class Example {}',
+		});
+		await vscode.window.showTextDocument(document);
+		let requestCount = 0;
+		const registration = registerActiveScopeDelimiterBridge({
+			sendRequest: async <Result>() => {
+				requestCount += 1;
+				return {
+					version: document.version,
+					pending: requestCount === 1,
+					pairs: [],
+				} as Result;
+			},
+		});
+		try {
+			await new Promise(resolve => setTimeout(resolve, 80));
+			assert.ok(requestCount >= 2, 'pending foreground state triggers a current-snapshot retry');
+		} finally {
+			registration.dispose();
+		}
+	});
+
 	test('refreshes active scope delimiters with caret movement and stops on disposal', async () => {
 		const document = await vscode.workspace.openTextDocument({
 			language: 'enforce',

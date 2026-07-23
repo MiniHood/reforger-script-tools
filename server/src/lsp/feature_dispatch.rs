@@ -680,10 +680,16 @@ impl FeatureDispatcher<'_> {
                                     "pairs": [],
                                 }));
                             }
-                            let delimiters = document
+                            let Some(delimiters) = document
                                 .foreground()
                                 .map(|foreground| foreground.scope_delimiters())
-                                .unwrap_or_default();
+                            else {
+                                return Some(json!({
+                                    "version": document.version,
+                                    "pending": true,
+                                    "pairs": [],
+                                }));
+                            };
                             let offsets = params
                                 .positions
                                 .iter()

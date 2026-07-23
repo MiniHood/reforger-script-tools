@@ -99,7 +99,7 @@ fn collect_scope_delimiters(
         should_cancel,
         visited_nodes: 0,
     };
-    collector.collect_node(&parse.root, None)?;
+    collector.collect_node(&parse.root, None, None)?;
     collector.collect_indexed_type_angles()?;
     Some(collector.delimiters.into_values().collect())
 }
@@ -150,6 +150,7 @@ impl DelimiterCollector<'_> {
         &mut self,
         node: &SyntaxNode,
         inherited_anchor: Option<ScopeDelimiterAnchor>,
+        inherited_initializer_anchor: Option<ScopeDelimiterAnchor>,
     ) -> Option<()> {
         if self.visited_nodes % 64 == 0
             && self
@@ -163,7 +164,28 @@ impl DelimiterCollector<'_> {
             return Some(());
         }
 
-        let anchor = self.node_anchor(node).or(inherited_anchor);
+        let initializer_anchor = if matches!(
+            node.kind,
+            SyntaxKind::FieldDecl | SyntaxKind::LocalDeclStatement
+        ) {
+            first_child(node, SyntaxKind::TypeRef)
+                .and_then(first_name_token)
+                .map(|token| ScopeDelimiterAnchor {
+                    span: token.span,
+                    kind: ScopeDelimiterAnchorKind::SemanticToken,
+                })
+                .or(inherited_initializer_anchor)
+        } else {
+            inherited_initializer_anchor
+        };
+        let anchor = self
+            .node_anchor(node)
+            .or(if node.kind == SyntaxKind::InitializerExpression {
+                initializer_anchor
+            } else {
+                None
+            })
+            .or(inherited_anchor);
         if standard_delimiter_node(node.kind) {
             let tokens = direct_tokens(node);
             self.collect_standard_pairs(node, &tokens, anchor);
@@ -175,7 +197,7 @@ impl DelimiterCollector<'_> {
 
         for child in &node.children {
             if let SyntaxElement::Node(child) = child {
-                self.collect_node(child, anchor)?;
+                self.collect_node(child, anchor, initializer_anchor)?;
             }
         }
         Some(())
@@ -235,12 +257,6 @@ impl DelimiterCollector<'_> {
             ),
             SyntaxKind::InitializerExpression => (
                 self.initializer_type_anchor(node)?,
-                ScopeDelimiterAnchorKind::SemanticToken,
-            ),
-            SyntaxKind::FieldDecl | SyntaxKind::LocalDeclStatement => (
-                first_child(node, SyntaxKind::TypeRef)
-                    .and_then(first_name_token)?
-                    .span,
                 ScopeDelimiterAnchorKind::SemanticToken,
             ),
             SyntaxKind::NameExpression | SyntaxKind::TypeRef => (
@@ -508,6 +524,7 @@ fn standard_delimiter_node(kind: SyntaxKind) -> bool {
         kind,
         SyntaxKind::AttributeList
             | SyntaxKind::AttributeArgs
+            | SyntaxKind::EnumDecl
             | SyntaxKind::ParameterList
             | SyntaxKind::Declarator
             | SyntaxKind::Parameter

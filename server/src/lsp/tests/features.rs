@@ -6191,10 +6191,16 @@ fn debug_hover_report_includes_language_engine_context() {
 
 #[test]
 fn semantic_scope_delimiters_follow_their_immediate_owner() {
-    let source = r#"class Example<T>
+    let source = r#"enum Mode
 {
+	One
+}
+class Example<T>
+{
+	bool m_Enabled = (true);
 	void Run(array<int> values)
 	{
+		bool enabled = (true);
 		if ((values[0]))
 		{
 			this.Run(values[0]);
@@ -6205,14 +6211,20 @@ fn semantic_scope_delimiters_follow_their_immediate_owner() {
     let report = semantic_tokens_report_for_source(source);
 
     for (needle, delimiter, token_type) in [
+        ("\n{\n\tOne", '{', "enum"),
+        ("One\n}", '}', "enum"),
         ("Example<T>", '<', "class"),
         ("Example<T>", '>', "class"),
-        ("\n{\n\tvoid Run", '{', "class"),
+        ("class Example<T>\n{", '{', "class"),
+        ("m_Enabled = (true)", '(', "class"),
+        ("m_Enabled = (true)", ')', "class"),
         ("Run(array<int>", '(', "method"),
         ("Run(array<int>", '<', "class"),
         ("Run(array<int>", '>', "class"),
         ("values)\n\t{", ')', "method"),
         ("values)\n\t{", '{', "method"),
+        ("enabled = (true)", '(', "method"),
+        ("enabled = (true)", ')', "method"),
         ("if ((values", '(', "keyword"),
         ("(values[0])", '(', "keyword"),
         ("values[0]", '[', "parameter"),
@@ -6623,6 +6635,70 @@ fn active_scope_delimiter_request_keeps_structurally_matched_unproven_pairs() {
                 }
             }
         ])
+    );
+}
+
+#[test]
+fn active_scope_delimiter_request_includes_enum_body_braces() {
+    let source = "enum Mode\n{\n\tOne\n}\n";
+    let uri = "file:///Scripts/ActiveEnumScope.c";
+    let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
+    server
+        .handle_message(
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": { "textDocument": {
+                    "uri": uri,
+                    "languageId": "enforce",
+                    "version": 1,
+                    "text": source
+                }}
+            }),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+    server.writer.clear();
+    server
+        .handle_message(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "reforger/activeScopeDelimiters",
+                "params": {
+                    "textDocument": { "uri": uri },
+                    "version": 1,
+                    "positions": [{ "line": 2, "character": 1 }]
+                }
+            }),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+
+    let output = String::from_utf8_lossy(&server.writer);
+    let response: Value = serde_json::from_str(
+        output
+            .split("\r\n\r\n")
+            .last()
+            .expect("framed enum delimiter response"),
+    )
+    .unwrap();
+    assert_eq!(
+        response["result"]["pairs"],
+        json!([{
+            "opener": {
+                "start": { "line": 1, "character": 0 },
+                "end": { "line": 1, "character": 1 }
+            },
+            "closer": {
+                "start": { "line": 3, "character": 0 },
+                "end": { "line": 3, "character": 1 }
+            }
+        }])
     );
 }
 
