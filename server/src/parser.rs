@@ -2079,6 +2079,9 @@ fn node(kind: SyntaxKind, children: Vec<SyntaxElement>) -> SyntaxElement {
 /// unrecognizable tail untouched for recovery.
 fn structure_declaration(mut children: Vec<SyntaxElement>) -> Vec<SyntaxElement> {
     let Some(first_name) = first_declarator_element(&children) else {
+        if is_type_reference_without_declarator(&children) {
+            return vec![node(SyntaxKind::TypeRef, children)];
+        }
         return children;
     };
 
@@ -2157,6 +2160,7 @@ fn structure_foreach_variable(mut children: Vec<SyntaxElement>) -> Vec<SyntaxEle
 
 fn first_declarator_element(children: &[SyntaxElement]) -> Option<usize> {
     let mut candidate = None;
+    let mut saw_type_atom = false;
     let mut paren_depth = 0usize;
     let mut bracket_depth = 0usize;
     let mut angle_depth = 0usize;
@@ -2175,8 +2179,20 @@ fn first_declarator_element(children: &[SyntaxElement]) -> Option<usize> {
         {
             break;
         }
-        if at_top_level && matches!(token.kind, TokenKind::Identifier | TokenKind::Keyword(_)) {
-            candidate = Some(index);
+        if at_top_level {
+            match token.kind {
+                TokenKind::Identifier => {
+                    if saw_type_atom {
+                        candidate = Some(index);
+                    } else {
+                        saw_type_atom = true;
+                    }
+                }
+                TokenKind::Keyword(keyword) if is_type_head_keyword(keyword) => {
+                    saw_type_atom = true;
+                }
+                _ => {}
+            }
         }
         update_declarator_depths(
             token.kind,
@@ -2187,6 +2203,35 @@ fn first_declarator_element(children: &[SyntaxElement]) -> Option<usize> {
         );
     }
     candidate
+}
+
+fn is_type_head_keyword(keyword: Keyword) -> bool {
+    matches!(
+        keyword,
+        Keyword::Void
+            | Keyword::Int
+            | Keyword::Float
+            | Keyword::Bool
+            | Keyword::String
+            | Keyword::Vector
+            | Keyword::Typename
+            | Keyword::Auto
+            | Keyword::Func
+    )
+}
+
+fn is_type_reference_without_declarator(children: &[SyntaxElement]) -> bool {
+    // A declaration parser reaches this recovery path only after recognizing
+    // declaration-shaped input. Preserve its leading type instead of inventing
+    // a variable when the user has not supplied a declarator yet.
+    let mut tokens = children.iter().filter_map(|element| match element {
+        SyntaxElement::Token(token) if !token.kind.is_trivia() => Some(*token),
+        _ => None,
+    });
+    let Some(head) = tokens.next() else {
+        return false;
+    };
+    matches!(head.kind, TokenKind::Identifier)
 }
 
 fn update_declarator_depths(

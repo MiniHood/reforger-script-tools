@@ -525,6 +525,13 @@ fn semantic_raw_tokens(
     let token_loop_elapsed = token_loop_start.elapsed();
 
     let type_detail_overlay_start = Instant::now();
+    overlay_syntax_type_references(
+        source,
+        &analysis.parse.root,
+        &mut tokens,
+        should_cancel,
+        &mut 0,
+    )?;
     overlay_source_backed_type_details(source, &analysis.index, &mut tokens, should_cancel)?;
     overlay_source_backed_new_expression_types(
         source,
@@ -780,6 +787,35 @@ fn overlay_source_backed_type_details(
                 TYPE_SPAN_PRIORITY,
                 tokens,
             );
+        }
+    }
+    Some(())
+}
+
+fn overlay_syntax_type_references(
+    source: &str,
+    node: &SyntaxNode,
+    tokens: &mut Vec<RawSemanticToken>,
+    should_cancel: Option<&dyn Fn() -> bool>,
+    visited_nodes: &mut usize,
+) -> Option<()> {
+    if *visited_nodes % 64 == 0 && should_cancel.is_some_and(|should_cancel| should_cancel()) {
+        return None;
+    }
+    *visited_nodes += 1;
+    if node.kind == SyntaxKind::TypeRef {
+        push_type_tokens_in_span(
+            source,
+            node.span,
+            semantic_type_index("class"),
+            TYPE_SPAN_PRIORITY,
+            tokens,
+        );
+    }
+
+    for child in &node.children {
+        if let SyntaxElement::Node(child) = child {
+            overlay_syntax_type_references(source, child, tokens, should_cancel, visited_nodes)?;
         }
     }
     Some(())

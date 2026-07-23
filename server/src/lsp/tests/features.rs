@@ -262,6 +262,47 @@ class Example
 }
 
 #[test]
+fn incomplete_builtin_collection_types_remain_classes_for_hover_and_coloring() {
+    let external = file_index_for_source(
+        r#"class Class {}
+class array<Class T> {}
+"#,
+    )
+    .index;
+    let cases = [
+        ("array<int> complete;", "array<int> complete;"),
+        ("array<int>\narray<int> complete;", "array<int>"),
+        ("array\narray<int> complete;", "array"),
+        ("array<>\narray<int> complete;", "array<>"),
+    ];
+
+    for (body, declaration) in cases {
+        let source = format!("class Example {{ void Run() {{\n{body}\n}} }}\n");
+        let semantic = semantic_tokens_report_for_source_with_external(&source, Some(&external));
+        let position = position_for_needle(&source, declaration, "array");
+        assert!(
+            semantic.decoded.iter().any(|token| {
+                token.text == "array"
+                    && token.token_type == "class"
+                    && token.range.start == position
+                    && token.color == "#40b5ac"
+            }),
+            "{declaration}: {:?}",
+            semantic.decoded
+        );
+
+        let hover = hover_report_for_source_position_with_external(
+            &source,
+            position,
+            Some(&external),
+        );
+        assert!(hover.is_hit(), "{declaration}: {hover:?}");
+        assert_eq!(hover.selected_kind, Some(SymbolKind::Class), "{declaration}");
+        assert_eq!(hover.selected_label.as_deref(), Some("array"), "{declaration}");
+    }
+}
+
+#[test]
 fn semantic_tokens_color_external_enum_member_references() {
     let root = temp_test_dir("semantic_tokens_external_enum");
     fs::create_dir_all(&root).unwrap();
