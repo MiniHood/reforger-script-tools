@@ -26,20 +26,35 @@ owned by the running Workbench. This preserves the repository's TypeScript-shell
 
 ```
 MCP client
-  | stdio / JSON-RPC
-local MCP host
+  | MCP over local stdio / JSON-RPC
+  v
+local MCP host (the public AI-facing server)
   |-- project gateway: bounded filesystem reads and staged writes
   |-- language-engine adapter: parser, symbols, references, diagnostics
   |-- evidence-catalogue adapter: bundled game data and wiki documents
-  |-- Workbench adapter: optional, capability-negotiated NET API client
-  `-- tool catalogue and operation policy: discovery, workspace root, dry-run,
-      confirmation, audit result
+  |-- tool catalogue and operation policy: discovery, workspace root, dry-run,
+  |   confirmation, audit result
+  `-- Workbench NET API adapter (private typed client)
+        | local NET API protocol; not MCP and never exposed as a pass-through
+        v
+     running Reforger Workbench (external editor process)
+        `-- this project's optional Workbench plugin
+              `-- versioned typed handlers: engine/resource/world/editor calls
 ```
 
 The host is an adapter, not a new semantic engine or a general shell. Each tool
 should declare a small schema, return structured results with stable paths and
 diagnostics, and say which authority supplied the answer: `filesystem`,
 `language-engine`, or `workbench`.
+
+The NET API is therefore outside the MCP server's public protocol boundary but
+is reached through an adapter inside the MCP host. The Workbench plugin is
+separate Enfusion Script loaded by the external Workbench process, not a module
+running in the MCP host. The host owns MCP schemas, policy, discovery, retries,
+and result mapping; the plugin owns live engine/editor calls. If Workbench is
+unavailable, the host remains available for its file, language-engine, and
+evidence-catalogue capabilities, while only Workbench-backed capability groups
+are unavailable.
 
 Start with a local, single-user `stdio` server. Do not expose the Workbench
 socket through HTTP or bind it beyond loopback as part of this exploration.

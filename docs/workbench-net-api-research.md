@@ -45,6 +45,27 @@ TLS, concurrency, request-size limits, or cancellation semantics. Discover
 those from the installed Workbench configuration/source and a loopback probe;
 do not guess or publish the socket.
 
+## Placement and ownership
+
+NET API is a local protocol between the MCP host's private adapter and an
+external running Workbench process. It is neither MCP itself nor a public
+listener owned by our MCP server. The custom plugin is code loaded inside
+Workbench and is reached through NET API handler dispatch.
+
+| Component | Runs where | Owns |
+| --- | --- | --- |
+| MCP client | Agent/editor client process | Tool selection and final consent UI. |
+| Local MCP host | Extension-owned local process | Public MCP schemas/resources, file and language-engine adapters, tool policy, Workbench discovery, NET API transport/retries, capability cache, and MCP result mapping. |
+| NET API adapter | Inside the local MCP host | Dedicated NET API codec and calls to the typed allowlist; never arbitrary endpoint proxying. |
+| Reforger Workbench | Separate external editor process | Running editor, compiler, resource database, current world/editor state, and Undo history. |
+| Project Workbench plugin | Loaded inside Workbench | Versioned handler DTOs and the engine-native resource/world/editor operations behind them. |
+
+An operation therefore travels from a named MCP tool to the host policy, then
+through the NET API adapter to a named plugin handler, and returns as a typed
+DTO that the host maps into a structured MCP result. Workbench closure or a
+missing/incompatible plugin disables only this route; it must not disable or
+be emulated by the direct-file, language-engine, or evidence-catalogue routes.
+
 ## Built-in endpoints with direct MCP value
 
 `NetApiDocs.c` documents these built-ins:
