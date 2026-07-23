@@ -574,3 +574,28 @@ records the repeated runner policy; AR-021 records the parser report's hidden
 path/text-specific exception. Legacy `SymbolCatalog` use in this family is
 included in AR-007. Per-report analysis projection and remaining report files
 continue into the final audit.
+
+## Coverage audit ledger
+
+The inventory command excludes generated/dependency output and yields 192
+repository-owned coding/configuration files. The buckets below are exhaustive
+and disjoint; their counts sum to 192. A bucket is only marked complete when
+the corresponding source review and its test/report evidence have both been
+recorded above.
+
+| Bucket | Files | Status | Review basis |
+| --- | ---: | --- | --- |
+| Root configuration and test runner | 5 | completed | Build/configuration slice |
+| Extension, configuration, diagnostics, game-data | 7 | completed | Extension composition slice |
+| Language-client bridges and extension test | 15 | completed | Editor/LSP bridge slice |
+| Rust language foundations and composition root | 21 | in progress | Foundation slice and AR-007/016/017 |
+| Rust LSP runtime, transport, and features | 31 | in progress | Feature and LSP-test slices |
+| Rust executable | 1 | completed | AR-018 executable argument review |
+| Rust report programs | 37 | in progress | Report-program family and AR-007/020/021 |
+| JavaScript developer tools and tests | 40 | in progress | Tooling slice and AR-014/015 |
+| Enfusion-script fixtures | 34 | in progress | Foundation fixture-evidence slice |
+| Server crate manifest | 1 | completed | Build/configuration review |
+
+Before closure, each in-progress bucket receives a final per-path comparison
+against this accounting and its status is updated only if no path remains
+unreviewed.
