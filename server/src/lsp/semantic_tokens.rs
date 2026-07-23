@@ -566,9 +566,35 @@ fn semantic_raw_tokens(
     let declaration_overlay_elapsed = declaration_overlay_start.elapsed();
 
     let delimiter_overlay_start = Instant::now();
-    let owner_tokens = tokens.clone();
-    for delimiter in super::scope_delimiters::scope_delimiters_for_analysis(analysis) {
-        let Some(token_type) = semantic_type_for_anchor(&owner_tokens, delimiter.anchor) else {
+    let mut owner_types = BTreeMap::new();
+    for token in &tokens {
+        let entry = owner_types
+            .entry((token.span.start, token.span.end))
+            .or_insert((token.priority, token.token_type));
+        if token.priority > entry.0 {
+            *entry = (token.priority, token.token_type);
+        }
+    }
+    let delimiters = super::scope_delimiters::scope_delimiters_for_analysis(
+        source,
+        analysis,
+        ExternalIndexes::new(workspace_index, game_data_index),
+        mode == SemanticTokenMode::Rich,
+        should_cancel,
+    )?;
+    for (index, delimiter) in delimiters.into_iter().enumerate() {
+        if index % 64 == 0 && should_cancel.is_some_and(|should_cancel| should_cancel()) {
+            return None;
+        }
+        let token_type = if delimiter.anchor_kind
+            == super::scope_delimiters::ScopeDelimiterAnchorKind::Decorator
+        {
+            semantic_type_index("decorator")
+        } else if let Some((_, token_type)) =
+            owner_types.get(&(delimiter.anchor.start, delimiter.anchor.end))
+        {
+            *token_type
+        } else {
             continue;
         };
         for span in [Some(delimiter.opener), delimiter.closer]
@@ -631,14 +657,6 @@ fn semantic_raw_tokens(
             identifier_resolver_calls,
         },
     })
-}
-
-fn semantic_type_for_anchor(tokens: &[RawSemanticToken], anchor: TextSpan) -> Option<u32> {
-    tokens
-        .iter()
-        .filter(|token| token.span == anchor)
-        .max_by_key(|token| token.priority)
-        .map(|token| token.token_type)
 }
 
 fn lexical_raw_tokens(

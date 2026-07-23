@@ -22,6 +22,7 @@ import { formatUiAutomationPayload } from '../languageClient/suggestWidgetUiRepo
 import {
 	activeScopeDelimiterDecorationOptions,
 	activeScopeDelimiterRangesForSnapshot,
+	refreshActiveScopeDelimiterDecorationForSnapshot,
 	registerActiveScopeDelimiterBridge,
 } from '../languageClient/activeScopeDelimiterBridge';
 
@@ -364,6 +365,58 @@ suite('extension activation', () => {
 		);
 	});
 
+	test('clears active scope decorations before awaiting current or stale refreshes', async () => {
+		const document = await vscode.workspace.openTextDocument({
+			language: 'enforce',
+			content: 'class Example {}',
+		});
+		const selection = new vscode.Selection(0, 15, 0, 15);
+		let releaseResponse: ((response: unknown) => void) | undefined;
+		const response = new Promise(resolve => {
+			releaseResponse = resolve;
+		});
+		const applied: vscode.Range[][] = [];
+		const refresh = refreshActiveScopeDelimiterDecorationForSnapshot(
+			document,
+			[selection],
+			{
+				sendRequest: async <Result>() => await response as Result,
+			},
+			() => true,
+			ranges => applied.push([...ranges]),
+		);
+		assert.deepStrictEqual(applied, [[]], 'the prior pair clears synchronously');
+		releaseResponse?.({
+			version: document.version,
+			pairs: [{
+				opener: { start: { line: 0, character: 14 }, end: { line: 0, character: 15 } },
+				closer: { start: { line: 0, character: 15 }, end: { line: 0, character: 16 } },
+			}],
+		});
+		await refresh;
+		assert.strictEqual(applied.length, 2);
+		assert.deepStrictEqual(applied[0], []);
+		assert.deepStrictEqual(applied[1], [
+			new vscode.Range(0, 14, 0, 15),
+			new vscode.Range(0, 15, 0, 16),
+		]);
+
+		const staleApplied: vscode.Range[][] = [];
+		await refreshActiveScopeDelimiterDecorationForSnapshot(
+			document,
+			[selection],
+			{
+				sendRequest: async <Result>() => ({
+					version: document.version + 1,
+					pairs: [],
+				}) as Result,
+			},
+			() => true,
+			ranges => staleApplied.push([...ranges]),
+		);
+		assert.deepStrictEqual(staleApplied, [[]]);
+	});
+
 	test('refreshes active scope delimiters with caret movement and stops on disposal', async () => {
 		const document = await vscode.workspace.openTextDocument({
 			language: 'enforce',
@@ -387,6 +440,10 @@ suite('extension activation', () => {
 			editor.selection = new vscode.Selection(0, 7, 0, 7);
 			await new Promise(resolve => setTimeout(resolve, 20));
 			assert.ok(requestCount > beforeMove, 'caret movement refreshes the active pair');
+			const beforeEdit = requestCount;
+			await editor.edit(edit => edit.insert(new vscode.Position(0, 0), ' '));
+			await new Promise(resolve => setTimeout(resolve, 20));
+			assert.ok(requestCount > beforeEdit, 'document changes refresh the active pair');
 
 			registration.dispose();
 			const afterDispose = requestCount;

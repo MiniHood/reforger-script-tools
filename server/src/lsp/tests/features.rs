@@ -6245,9 +6245,9 @@ class Widget
 
     for (needle, delimiter, token_type) in [
         ("GROUP(x)", '(', "punctuation"),
-        ("[Attribute", '[', "class"),
-        ("Attribute(\"", '(', "class"),
-        (")]\nclass", ']', "class"),
+        ("[Attribute", '[', "decorator"),
+        ("Attribute(\"", '(', "decorator"),
+        (")]\nclass", ']', "decorator"),
         ("array<ref", '<', "class"),
         ("array<string>", '<', "class"),
         ("string>> values", '>', "class"),
@@ -6262,6 +6262,36 @@ class Widget
     }
     assert_semantic_token(&report, "\"([{}])\"", "string", None);
     assert_semantic_token(&report, "// ([{}])", "comment", None);
+}
+
+#[test]
+fn semantic_scope_delimiters_require_proven_dynamic_owners() {
+    let source = r#"class Example
+{
+	void Run()
+	{
+		int value;
+		Missing();
+		value();
+		missing[0];
+		MissingType instance = new MissingType();
+	}
+}
+"#;
+    let report = semantic_tokens_report_for_source(source);
+
+    for (needle, delimiter) in [
+        ("Missing()", '('),
+        ("Missing()", ')'),
+        ("value()", '('),
+        ("value()", ')'),
+        ("missing[0]", '['),
+        ("missing[0]", ']'),
+        ("new MissingType()", '('),
+        ("new MissingType()", ')'),
+    ] {
+        assert_semantic_delimiter_at(source, &report, needle, delimiter, "punctuation");
+    }
 }
 
 #[test]
@@ -6510,6 +6540,135 @@ fn active_scope_delimiter_request_ignores_lexical_and_operator_lookalikes() {
             0,
         )
         .unwrap();
+    assert!(
+        String::from_utf8_lossy(&server.writer).contains("\"pairs\":[]"),
+        "{}",
+        String::from_utf8_lossy(&server.writer)
+    );
+}
+
+#[test]
+fn active_scope_delimiter_request_skips_unproven_dynamic_pairs() {
+    let source = "class Example\n{\n\tvoid Run()\n\t{\n\t\tMissing();\n\t\tthis.Run();\n\t}\n}\n";
+    let uri = "file:///Scripts/ResolvedActiveScope.c";
+    let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
+    server
+        .handle_message(
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": { "textDocument": {
+                    "uri": uri,
+                    "languageId": "enforce",
+                    "version": 1,
+                    "text": source
+                }}
+            }),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+    server.writer.clear();
+    server
+        .handle_message(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "reforger/activeScopeDelimiters",
+                "params": {
+                    "textDocument": { "uri": uri },
+                    "version": 1,
+                    "positions": [
+                        { "line": 4, "character": 10 },
+                        { "line": 5, "character": 11 }
+                    ]
+                }
+            }),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+
+    let output = String::from_utf8_lossy(&server.writer);
+    let response: Value = serde_json::from_str(
+        output
+            .split("\r\n\r\n")
+            .last()
+            .expect("framed resolved delimiter response"),
+    )
+    .unwrap();
+    assert_eq!(
+        response["result"]["pairs"],
+        json!([
+            {
+                "opener": {
+                    "start": { "line": 3, "character": 1 },
+                    "end": { "line": 3, "character": 2 }
+                },
+                "closer": {
+                    "start": { "line": 6, "character": 1 },
+                    "end": { "line": 6, "character": 2 }
+                }
+            },
+            {
+                "opener": {
+                    "start": { "line": 5, "character": 10 },
+                    "end": { "line": 5, "character": 11 }
+                },
+                "closer": {
+                    "start": { "line": 5, "character": 11 },
+                    "end": { "line": 5, "character": 12 }
+                }
+            }
+        ])
+    );
+}
+
+#[test]
+fn active_scope_delimiter_request_declines_oversized_documents() {
+    let mut source = String::from("class Example\n{\n");
+    source.push_str(&" ".repeat(128 * 1024));
+    source.push_str("\n}\n");
+    let uri = "file:///Scripts/OversizedActiveScope.c";
+    let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
+    server
+        .handle_message(
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": { "textDocument": {
+                    "uri": uri,
+                    "languageId": "enforce",
+                    "version": 1,
+                    "text": source
+                }}
+            }),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+    server.writer.clear();
+    server
+        .handle_message(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "reforger/activeScopeDelimiters",
+                "params": {
+                    "textDocument": { "uri": uri },
+                    "version": 1,
+                    "positions": [{ "line": 1, "character": 1 }]
+                }
+            }),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+
     assert!(
         String::from_utf8_lossy(&server.writer).contains("\"pairs\":[]"),
         "{}",

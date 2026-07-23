@@ -3,16 +3,10 @@ import {
 	languageClientLanguage,
 	languageClientRequests,
 } from '../extensionConfig/languageClient';
-
-interface LspPosition {
-	line: number;
-	character: number;
-}
-
-interface LspRange {
-	start: LspPosition;
-	end: LspPosition;
-}
+import {
+	type LspRange,
+	rangeFromLsp,
+} from './versionedEditorEdit';
 
 interface ActiveScopeDelimiterResponse {
 	version: number;
@@ -58,9 +52,28 @@ export async function activeScopeDelimiterRangesForSnapshot(
 		return undefined;
 	}
 	return response.pairs.flatMap(pair => [
-		toRange(pair.opener),
-		toRange(pair.closer),
+		rangeFromLsp(pair.opener),
+		rangeFromLsp(pair.closer),
 	]);
+}
+
+export async function refreshActiveScopeDelimiterDecorationForSnapshot(
+	document: vscode.TextDocument,
+	selections: readonly vscode.Selection[],
+	client: ActiveScopeDelimiterRequestClient,
+	isCurrent: () => boolean,
+	setRanges: (ranges: readonly vscode.Range[]) => void,
+): Promise<void> {
+	setRanges([]);
+	const ranges = await activeScopeDelimiterRangesForSnapshot(
+		document,
+		selections,
+		client,
+		isCurrent,
+	);
+	if (ranges && isCurrent()) {
+		setRanges(ranges);
+	}
 }
 
 export function registerActiveScopeDelimiterBridge(
@@ -95,16 +108,13 @@ export function registerActiveScopeDelimiterBridge(
 			&& vscode.window.activeTextEditor === editor
 			&& editor.document.version === version
 			&& selectionKey(editor.selections) === selectionSnapshot;
-		void activeScopeDelimiterRangesForSnapshot(
+		void refreshActiveScopeDelimiterDecorationForSnapshot(
 			editor.document,
 			editor.selections,
 			client,
 			isCurrent,
-		).then(ranges => {
-			if (ranges && isCurrent()) {
-				editor.setDecorations(decoration, ranges);
-			}
-		}).catch(() => {
+			ranges => editor.setDecorations(decoration, ranges),
+		).catch(() => {
 			if (isCurrent()) {
 				editor.setDecorations(decoration, []);
 			}
@@ -139,15 +149,6 @@ export function registerActiveScopeDelimiterBridge(
 				decoration.dispose();
 			},
 		},
-	);
-}
-
-function toRange(range: LspRange): vscode.Range {
-	return new vscode.Range(
-		range.start.line,
-		range.start.character,
-		range.end.line,
-		range.end.character,
 	);
 }
 

@@ -672,12 +672,27 @@ impl FeatureDispatcher<'_> {
                                     "pairs": [],
                                 }));
                             }
+                            if document.text.len()
+                                > crate::lsp::scope_delimiters::MAX_ACTIVE_SCOPE_DELIMITER_SOURCE_BYTES
+                            {
+                                return Some(json!({
+                                    "version": document.version,
+                                    "pairs": [],
+                                }));
+                            }
                             let delimiters = match DocumentQuery::state_for(document) {
-                                DocumentQueryState::Cached(analysis) => {
+                                DocumentQueryState::Cached(analysis) =>
                                     crate::lsp::scope_delimiters::scope_delimiters_for_analysis(
+                                        &document.text,
                                         analysis,
+                                        crate::lsp::external_indexes::ExternalIndexes::new(
+                                            query.external_indexes.workspace.as_deref(),
+                                            query.external_indexes.game_data.as_deref(),
+                                        ),
+                                        true,
+                                        None,
                                     )
-                                }
+                                    .unwrap_or_default(),
                                 DocumentQueryState::Foreground(foreground) => document
                                     .syntax()
                                     .map(|parse| {

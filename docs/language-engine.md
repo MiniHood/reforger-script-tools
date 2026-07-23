@@ -41,13 +41,20 @@ semantic colors without hard-coded foregrounds. Comments and strings remain
 lexical, preprocessor directives are excluded, and comparison operators are
 not reclassified as generic delimiters. A parser-proven unmatched opener may
 be colored for recovery, but only matched pairs can become active.
+Call, construction, and index anchors are admitted only after the resolver
+selects a compatible symbol; unresolved or category-invalid candidates remain
+punctuation. Attribute delimiters use the semantic `decorator` token kind
+without changing the attribute class name's existing classification.
 
 `reforger/activeScopeDelimiters` is a bounded, version-aware projection for all
 current carets. It selects the innermost matched semantic pair at each caret,
 coalesces duplicate pairs, and may use the current foreground parse while
 whole-document semantic analysis is pending. The response contains only the
 document version and delimiter ranges; ownership and color decisions remain in
-Rust and semantic tokens.
+Rust and semantic tokens. Active-pair requests decline documents larger than
+128 KiB, cap caret input, and omit resolver-dependent pairs until matching
+analysis exists; background semantic projection retains its existing
+cancellation contract and bounded token output.
 
 ## Snapshot Rules
 

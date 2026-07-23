@@ -1,44 +1,110 @@
+use super::external_indexes::ExternalIndexes;
 use super::FileIndexAnalysis;
 use crate::index::SymbolIndex;
 use crate::lexer::{Keyword, Operator, TextSpan, Token, TokenKind};
+use crate::model::SymbolKind;
+use crate::resolver::ReferenceResolver;
 use crate::syntax::{Parse, SyntaxElement, SyntaxKind, SyntaxNode};
 use std::collections::BTreeMap;
+
+pub(crate) const MAX_ACTIVE_SCOPE_DELIMITER_SOURCE_BYTES: usize = 128 * 1024;
+const MAX_SCOPE_DELIMITERS: usize = 200_000;
+const MAX_RESOLVED_SCOPE_DELIMITER_OWNERS: usize = 4_096;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ScopeDelimiterAnchorKind {
+    SemanticToken,
+    Decorator,
+    ResolvedCall,
+    ResolvedConstructor,
+    ResolvedIndex,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ScopeDelimiterAnchor {
+    span: TextSpan,
+    kind: ScopeDelimiterAnchorKind,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ScopeDelimiter {
     pub(crate) opener: TextSpan,
     pub(crate) closer: Option<TextSpan>,
     pub(crate) anchor: TextSpan,
+    pub(crate) anchor_kind: ScopeDelimiterAnchorKind,
 }
 
-pub(crate) fn scope_delimiters_for_analysis(analysis: &FileIndexAnalysis) -> Vec<ScopeDelimiter> {
-    collect_scope_delimiters(
+pub(crate) fn scope_delimiters_for_analysis(
+    source: &str,
+    analysis: &FileIndexAnalysis,
+    external_indexes: ExternalIndexes<'_>,
+    resolve_dynamic_owners: bool,
+    should_cancel: Option<&dyn Fn() -> bool>,
+) -> Option<Vec<ScopeDelimiter>> {
+    let mut delimiters = collect_scope_delimiters(
         &analysis.parse,
         &analysis.lexer_tokens,
         Some(&analysis.index),
-    )
+        should_cancel,
+    )?;
+    if !resolve_dynamic_owners {
+        delimiters.retain(delimiter_anchor_is_structurally_proven);
+        return Some(delimiters);
+    }
+    let resolver = ReferenceResolver::new_with_parse_scope_and_external_indexes(
+        source,
+        &analysis.index,
+        &analysis.parse,
+        &analysis.scope,
+        external_indexes.ordered(),
+    );
+    let mut proven = Vec::with_capacity(delimiters.len());
+    let mut dynamic_owners = 0usize;
+    for (index, delimiter) in delimiters.into_iter().enumerate() {
+        if index % 64 == 0 && should_cancel.is_some_and(|should_cancel| should_cancel()) {
+            return None;
+        }
+        if delimiter_anchor_is_structurally_proven(&delimiter) {
+            proven.push(delimiter);
+            continue;
+        }
+        if dynamic_owners >= MAX_RESOLVED_SCOPE_DELIMITER_OWNERS {
+            continue;
+        }
+        dynamic_owners += 1;
+        if delimiter_anchor_is_proven(&delimiter, &analysis.lexer_tokens, &resolver) {
+            proven.push(delimiter);
+        }
+    }
+    Some(proven)
 }
 
 pub(crate) fn scope_delimiters_for_syntax(
     parse: &Parse,
     lexer_tokens: &[Token],
 ) -> Vec<ScopeDelimiter> {
-    collect_scope_delimiters(parse, lexer_tokens, None)
+    let mut delimiters =
+        collect_scope_delimiters(parse, lexer_tokens, None, None).unwrap_or_default();
+    delimiters.retain(delimiter_anchor_is_structurally_proven);
+    delimiters
 }
 
 fn collect_scope_delimiters(
     parse: &Parse,
     lexer_tokens: &[Token],
     index: Option<&SymbolIndex>,
-) -> Vec<ScopeDelimiter> {
+    should_cancel: Option<&dyn Fn() -> bool>,
+) -> Option<Vec<ScopeDelimiter>> {
     let mut collector = DelimiterCollector {
         lexer_tokens,
         index,
         delimiters: BTreeMap::new(),
+        should_cancel,
+        visited_nodes: 0,
     };
-    collector.collect_node(&parse.root, None);
-    collector.collect_indexed_type_angles();
-    collector.delimiters.into_values().collect()
+    collector.collect_node(&parse.root, None)?;
+    collector.collect_indexed_type_angles()?;
+    Some(collector.delimiters.into_values().collect())
 }
 
 pub(crate) fn active_scope_delimiters(
@@ -78,12 +144,26 @@ struct DelimiterCollector<'analysis> {
     lexer_tokens: &'analysis [Token],
     index: Option<&'analysis SymbolIndex>,
     delimiters: BTreeMap<usize, ScopeDelimiter>,
+    should_cancel: Option<&'analysis dyn Fn() -> bool>,
+    visited_nodes: usize,
 }
 
 impl DelimiterCollector<'_> {
-    fn collect_node(&mut self, node: &SyntaxNode, inherited_anchor: Option<TextSpan>) {
+    fn collect_node(
+        &mut self,
+        node: &SyntaxNode,
+        inherited_anchor: Option<ScopeDelimiterAnchor>,
+    ) -> Option<()> {
+        if self.visited_nodes % 64 == 0
+            && self
+                .should_cancel
+                .is_some_and(|should_cancel| should_cancel())
+        {
+            return None;
+        }
+        self.visited_nodes += 1;
         if node.kind == SyntaxKind::PreprocessorDirective {
-            return;
+            return Some(());
         }
 
         let anchor = self.node_anchor(node).or(inherited_anchor);
@@ -98,21 +178,29 @@ impl DelimiterCollector<'_> {
 
         for child in &node.children {
             if let SyntaxElement::Node(child) = child {
-                self.collect_node(child, anchor);
+                self.collect_node(child, anchor)?;
             }
         }
+        Some(())
     }
 
-    fn node_anchor(&self, node: &SyntaxNode) -> Option<TextSpan> {
-        match node.kind {
-            SyntaxKind::ClassDecl => {
-                name_after_keyword(node, Keyword::Class).map(|token| token.span)
-            }
-            SyntaxKind::EnumDecl => name_after_keyword(node, Keyword::Enum).map(|token| token.span),
+    fn node_anchor(&self, node: &SyntaxNode) -> Option<ScopeDelimiterAnchor> {
+        let (span, kind) = match node.kind {
+            SyntaxKind::ClassDecl => (
+                name_after_keyword(node, Keyword::Class)?.span,
+                ScopeDelimiterAnchorKind::SemanticToken,
+            ),
+            SyntaxKind::EnumDecl => (
+                name_after_keyword(node, Keyword::Enum)?.span,
+                ScopeDelimiterAnchorKind::SemanticToken,
+            ),
             SyntaxKind::FunctionDecl | SyntaxKind::MethodDecl => {
                 let parameter_start = first_child(node, SyntaxKind::ParameterList)
                     .map_or(node.span.end, |parameters| parameters.span.start);
-                last_name_token_before(node, parameter_start).map(|token| token.span)
+                (
+                    last_name_token_before(node, parameter_start)?.span,
+                    ScopeDelimiterAnchorKind::SemanticToken,
+                )
             }
             SyntaxKind::IfStatement
             | SyntaxKind::ForStatement
@@ -120,32 +208,51 @@ impl DelimiterCollector<'_> {
             | SyntaxKind::WhileStatement
             | SyntaxKind::DoWhileStatement
             | SyntaxKind::SwitchStatement
-            | SyntaxKind::ElseClause => first_direct_keyword(node).map(|token| token.span),
-            SyntaxKind::CallExpression => first_child(node, SyntaxKind::ArgumentList)
-                .and_then(|arguments| last_name_token_before(node, arguments.span.start))
-                .map(|token| token.span),
-            SyntaxKind::NewExpression => {
-                name_after_keyword(node, Keyword::New).map(|token| token.span)
+            | SyntaxKind::ElseClause => (
+                first_direct_keyword(node)?.span,
+                ScopeDelimiterAnchorKind::SemanticToken,
+            ),
+            SyntaxKind::CallExpression => {
+                let arguments = first_child(node, SyntaxKind::ArgumentList)?;
+                (
+                    last_name_token_before(node, arguments.span.start)?.span,
+                    ScopeDelimiterAnchorKind::ResolvedCall,
+                )
             }
-            SyntaxKind::IndexExpression => direct_tokens(node)
-                .iter()
-                .find(|token| token.kind == TokenKind::LeftBracket)
-                .and_then(|opener| last_name_token_before(node, opener.span.start))
-                .map(|token| token.span),
-            SyntaxKind::AttributeList | SyntaxKind::Attribute => {
-                first_name_token(node).map(|token| token.span)
+            SyntaxKind::NewExpression => (
+                name_after_keyword(node, Keyword::New)?.span,
+                ScopeDelimiterAnchorKind::ResolvedConstructor,
+            ),
+            SyntaxKind::IndexExpression => {
+                let opener = direct_tokens(node)
+                    .into_iter()
+                    .find(|token| token.kind == TokenKind::LeftBracket)?;
+                (
+                    last_name_token_before(node, opener.span.start)?.span,
+                    ScopeDelimiterAnchorKind::ResolvedIndex,
+                )
             }
-            SyntaxKind::InitializerExpression => self.initializer_type_anchor(node),
-            SyntaxKind::FieldDecl | SyntaxKind::LocalDeclStatement => {
+            SyntaxKind::AttributeList | SyntaxKind::Attribute => (
+                first_name_token(node)?.span,
+                ScopeDelimiterAnchorKind::Decorator,
+            ),
+            SyntaxKind::InitializerExpression => (
+                self.initializer_type_anchor(node)?,
+                ScopeDelimiterAnchorKind::SemanticToken,
+            ),
+            SyntaxKind::FieldDecl | SyntaxKind::LocalDeclStatement => (
                 first_child(node, SyntaxKind::TypeRef)
-                    .and_then(first_name_token)
-                    .map(|token| token.span)
-            }
-            SyntaxKind::NameExpression | SyntaxKind::TypeRef => {
-                first_name_token(node).map(|token| token.span)
-            }
-            _ => None,
-        }
+                    .and_then(first_name_token)?
+                    .span,
+                ScopeDelimiterAnchorKind::SemanticToken,
+            ),
+            SyntaxKind::NameExpression | SyntaxKind::TypeRef => (
+                first_name_token(node)?.span,
+                ScopeDelimiterAnchorKind::SemanticToken,
+            ),
+            _ => return None,
+        };
+        Some(ScopeDelimiterAnchor { span, kind })
     }
 
     fn initializer_type_anchor(&self, node: &SyntaxNode) -> Option<TextSpan> {
@@ -176,15 +283,18 @@ impl DelimiterCollector<'_> {
         &mut self,
         node: &SyntaxNode,
         tokens: &[Token],
-        inherited_anchor: Option<TextSpan>,
+        inherited_anchor: Option<ScopeDelimiterAnchor>,
     ) {
-        let mut stack: Vec<(Token, Option<TextSpan>)> = Vec::new();
+        let mut stack: Vec<(Token, Option<ScopeDelimiterAnchor>)> = Vec::new();
         for token in tokens {
             if is_standard_opener(token.kind) {
                 let anchor = if matches!(node.kind, SyntaxKind::Declarator | SyntaxKind::Parameter)
                 {
                     previous_name_token(tokens, token.span.start)
-                        .map(|previous| previous.span)
+                        .map(|previous| ScopeDelimiterAnchor {
+                            span: previous.span,
+                            kind: ScopeDelimiterAnchorKind::SemanticToken,
+                        })
                         .or(inherited_anchor)
                 } else {
                     inherited_anchor
@@ -206,7 +316,8 @@ impl DelimiterCollector<'_> {
                 self.insert(ScopeDelimiter {
                     opener: opener.span,
                     closer: Some(token.span),
-                    anchor,
+                    anchor: anchor.span,
+                    anchor_kind: anchor.kind,
                 });
             }
         }
@@ -215,19 +326,27 @@ impl DelimiterCollector<'_> {
                 self.insert(ScopeDelimiter {
                     opener: opener.span,
                     closer: None,
-                    anchor,
+                    anchor: anchor.span,
+                    anchor_kind: anchor.kind,
                 });
             }
         }
     }
 
-    fn collect_angle_pairs(&mut self, tokens: &[Token], inherited_anchor: Option<TextSpan>) {
-        let mut stack: Vec<(TextSpan, Option<TextSpan>)> = Vec::new();
+    fn collect_angle_pairs(
+        &mut self,
+        tokens: &[Token],
+        inherited_anchor: Option<ScopeDelimiterAnchor>,
+    ) {
+        let mut stack: Vec<(TextSpan, Option<ScopeDelimiterAnchor>)> = Vec::new();
         for token in tokens {
             match token.kind {
                 TokenKind::Operator(Operator::Less) => {
                     let anchor = previous_name_token(tokens, token.span.start)
-                        .map(|previous| previous.span)
+                        .map(|previous| ScopeDelimiterAnchor {
+                            span: previous.span,
+                            kind: ScopeDelimiterAnchorKind::SemanticToken,
+                        })
                         .or(inherited_anchor);
                     stack.push((token.span, anchor));
                 }
@@ -252,13 +371,18 @@ impl DelimiterCollector<'_> {
                 self.insert(ScopeDelimiter {
                     opener,
                     closer: None,
-                    anchor,
+                    anchor: anchor.span,
+                    anchor_kind: anchor.kind,
                 });
             }
         }
     }
 
-    fn close_angle(&mut self, stack: &mut Vec<(TextSpan, Option<TextSpan>)>, closer: TextSpan) {
+    fn close_angle(
+        &mut self,
+        stack: &mut Vec<(TextSpan, Option<ScopeDelimiterAnchor>)>,
+        closer: TextSpan,
+    ) {
         let Some((opener, anchor)) = stack.pop() else {
             return;
         };
@@ -266,16 +390,24 @@ impl DelimiterCollector<'_> {
             self.insert(ScopeDelimiter {
                 opener,
                 closer: Some(closer),
-                anchor,
+                anchor: anchor.span,
+                anchor_kind: anchor.kind,
             });
         }
     }
 
-    fn collect_indexed_type_angles(&mut self) {
+    fn collect_indexed_type_angles(&mut self) -> Option<()> {
         let Some(index) = self.index else {
-            return;
+            return Some(());
         };
-        for symbol in index.symbols() {
+        for (symbol_index, symbol) in index.symbols().iter().enumerate() {
+            if symbol_index % 64 == 0
+                && self
+                    .should_cancel
+                    .is_some_and(|should_cancel| should_cancel())
+            {
+                return None;
+            }
             for span in [
                 symbol.detail.type_text_span,
                 symbol.detail.return_type_text_span,
@@ -284,8 +416,13 @@ impl DelimiterCollector<'_> {
             .into_iter()
             .flatten()
             {
-                let tokens = self
+                let start = self
                     .lexer_tokens
+                    .partition_point(|token| token.span.end <= span.start);
+                let end = self
+                    .lexer_tokens
+                    .partition_point(|token| token.span.start < span.end);
+                let tokens = self.lexer_tokens[start..end]
                     .iter()
                     .copied()
                     .filter(|token| span.start <= token.span.start && token.span.end <= span.end)
@@ -294,14 +431,78 @@ impl DelimiterCollector<'_> {
                     .iter()
                     .copied()
                     .find(|token| is_name_token(token.kind))
-                    .map(|token| token.span);
+                    .map(|token| ScopeDelimiterAnchor {
+                        span: token.span,
+                        kind: ScopeDelimiterAnchorKind::SemanticToken,
+                    });
                 self.collect_angle_pairs(&tokens, anchor);
             }
         }
+        Some(())
     }
 
     fn insert(&mut self, delimiter: ScopeDelimiter) {
-        self.delimiters.insert(delimiter.opener.start, delimiter);
+        if self.delimiters.len() < MAX_SCOPE_DELIMITERS {
+            self.delimiters.insert(delimiter.opener.start, delimiter);
+        }
+    }
+}
+
+fn delimiter_anchor_is_structurally_proven(delimiter: &ScopeDelimiter) -> bool {
+    matches!(
+        delimiter.anchor_kind,
+        ScopeDelimiterAnchorKind::SemanticToken | ScopeDelimiterAnchorKind::Decorator
+    )
+}
+
+fn delimiter_anchor_is_proven(
+    delimiter: &ScopeDelimiter,
+    lexer_tokens: &[Token],
+    resolver: &ReferenceResolver<'_, '_>,
+) -> bool {
+    if delimiter_anchor_is_structurally_proven(delimiter) {
+        return true;
+    }
+    let token_index =
+        lexer_tokens.partition_point(|token| token.span.start < delimiter.anchor.start);
+    let Some(token) = lexer_tokens
+        .get(token_index)
+        .copied()
+        .filter(|token| token.span == delimiter.anchor)
+    else {
+        return false;
+    };
+    if delimiter.anchor_kind == ScopeDelimiterAnchorKind::ResolvedConstructor {
+        if let TokenKind::Keyword(keyword) = token.kind {
+            return keyword.is_class_like_type();
+        }
+    }
+    if token.kind != TokenKind::Identifier {
+        return false;
+    }
+    let Some(candidate) = resolver
+        .resolve_identifier_token(token.span)
+        .and_then(|resolution| resolution.selected)
+    else {
+        return false;
+    };
+    match delimiter.anchor_kind {
+        ScopeDelimiterAnchorKind::SemanticToken | ScopeDelimiterAnchorKind::Decorator => true,
+        ScopeDelimiterAnchorKind::ResolvedCall => matches!(
+            candidate.kind,
+            SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor
+        ),
+        ScopeDelimiterAnchorKind::ResolvedConstructor => {
+            matches!(candidate.kind, SymbolKind::Class | SymbolKind::Typedef)
+        }
+        ScopeDelimiterAnchorKind::ResolvedIndex => !matches!(
+            candidate.kind,
+            SymbolKind::Class
+                | SymbolKind::TypeParameter
+                | SymbolKind::Enum
+                | SymbolKind::Typedef
+                | SymbolKind::PreprocessorMacro
+        ),
     }
 }
 
