@@ -3124,6 +3124,36 @@ class Example
 }
 
 #[test]
+fn rpc_function_slot_does_not_offer_its_parameter_name_as_a_value() {
+    let source = r#"class GenericComponent
+{
+	void Rpc(func method, void p0 = NULL);
+}
+
+class Example
+{
+	void Run()
+	{
+		GenericComponent component;
+		component.Rpc(
+	}
+}
+"#;
+
+    let report = completion_report_for_source_position_with_external(
+        source,
+        position_after_needle(source, "component.Rpc("),
+        None,
+    );
+
+    assert_eq!(report.completion_context, "argument-label");
+    assert!(
+        !report.list.items.iter().any(|item| item.label == "method"),
+        "a func parameter name describes the slot; it is not a function value"
+    );
+}
+
+#[test]
 fn callable_enum_placeholders_cover_methods_constructors_and_attributes() {
     let enum_declarations = r#"enum FirstChoice { First }
 enum SecondChoice { Second }

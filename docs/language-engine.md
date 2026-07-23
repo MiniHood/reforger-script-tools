@@ -103,6 +103,10 @@ declaration-tail behavior.
   do not open the function-choice completion list; keep ordinary callable
   parameters on parameter hints and use the bridge only for this
   signature-proven callable-reference case.
+- An active positional `func` parameter is slot metadata, not a function
+  candidate. Exclude its parameter-label item before argument labels merge
+  with ordinary value completion; do not solve that category error by adding
+  an RPC-specific rank or changing the general completion ranking.
 - An empty generic slot is a type position, not a value position. Returning
   value completion there exposes statement keywords and hides the standard
   types, `ref`, and indexed classes.

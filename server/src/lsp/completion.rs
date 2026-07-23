@@ -3149,6 +3149,14 @@ fn parameter_label_candidates_for_callables(
             continue;
         };
         for (parameter_index, parameter) in parts.parameters_info.into_iter().enumerate() {
+            // The active positional `func` parameter describes the callable
+            // reference slot. It is not itself a callable value, so it must
+            // not enter the value list ahead of ordinary scoped completion.
+            if parameter_index == context.argument_index
+                && parameter.type_and_modifiers.trim() == "func"
+            {
+                continue;
+            }
             if !starts_with_ignore_ascii_case(&parameter.name, &context.prefix) {
                 continue;
             }
