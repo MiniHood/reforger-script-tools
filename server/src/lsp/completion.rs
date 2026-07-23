@@ -2582,6 +2582,35 @@ fn completion_report_for_offset(
     ) {
         return report;
     }
+    // Once a generic argument has been completed, the parser sees the whole
+    // `array<int>` type and no longer exposes a completion context before its
+    // closing delimiter. Recover that exact caret shape so retyping a type
+    // argument can use the normal type-ranking pipeline again.
+    if let Some(prefix_span) = retyped_generic_type_argument_prefix_before_offset(source, offset) {
+        let context_elapsed = context_start.elapsed();
+        let prefix = source
+            .get(prefix_span.start..prefix_span.end)
+            .unwrap_or_default()
+            .to_string();
+        return top_level_completion_report_for_indexes(
+            source,
+            analysis.parse_diagnostics,
+            "type",
+            prefix,
+            prefix_span,
+            offset,
+            EditorTopLevelCompletionMode::Type,
+            analysis,
+            &analysis.index,
+            workspace_index,
+            game_data_index,
+            LspCompletionTimings {
+                context_detection: context_elapsed,
+                ..LspCompletionTimings::default()
+            },
+            total_start,
+        );
+    }
     // A freshly accepted supported generic snippet has an intentionally empty
     // type slot (`array<>`, `map<, >`, or `Tuple2<, >`). The incomplete parser
     // has no type node there yet, so recover that lexical shape directly and
@@ -3781,6 +3810,9 @@ fn top_level_completion_report_for_indexes(
     if mode == EditorTopLevelCompletionMode::Value {
         add_return_separator_to_completion_items(source, prefix_span, &mut items);
     }
+    if mode == EditorTopLevelCompletionMode::Type {
+        apply_generic_type_argument_final_caret_edit(source, prefix_span, &mut items);
+    }
     let (items, is_incomplete) = cap_completion_items(items);
     timings.item_rendering = render_start.elapsed();
     timings.total = total_start.elapsed();
@@ -3803,6 +3835,67 @@ fn top_level_completion_report_for_indexes(
         failure_reason: None,
         timings,
     }
+}
+
+fn retyped_generic_type_argument_prefix_before_offset(
+    source: &str,
+    offset: usize,
+) -> Option<TextSpan> {
+    let prefix_span = raw_completion_prefix_span(source, offset);
+    (!prefix_span.is_empty()
+        && prefix_span.end == offset
+        && generic_type_argument_before_offset(source, prefix_span.start)
+        && generic_type_argument_closing_span_after_prefix(source, prefix_span).is_some())
+    .then_some(prefix_span)
+}
+
+fn apply_generic_type_argument_final_caret_edit(
+    source: &str,
+    prefix_span: TextSpan,
+    items: &mut [LspCompletionItem],
+) {
+    let Some(replace_span) = generic_type_argument_closing_span_after_prefix(source, prefix_span)
+    else {
+        return;
+    };
+    let Some(closing_text) = source.get(prefix_span.end..replace_span.end) else {
+        return;
+    };
+    let replace_range = range_for_span(source, replace_span);
+    for item in items {
+        if item.insert_text_format.is_none()
+            && item.command.is_none()
+            && item.text_edit.replace_range.is_none()
+        {
+            item.text_edit.new_text.push_str(closing_text);
+            item.text_edit.new_text.push_str("$0");
+            item.text_edit.replace_range = Some(replace_range.clone());
+            item.insert_text_format = Some(2);
+        }
+    }
+}
+
+fn generic_type_argument_closing_span_after_prefix(
+    source: &str,
+    prefix_span: TextSpan,
+) -> Option<TextSpan> {
+    if prefix_span.is_empty() || !generic_type_argument_before_offset(source, prefix_span.start) {
+        return None;
+    }
+    let closing = lex(source).into_iter().find(|token| {
+        !token.kind.is_trivia()
+            && token.kind != TokenKind::Eof
+            && token.span.start >= prefix_span.end
+    })?;
+    if closing.kind != TokenKind::Operator(Operator::Greater)
+        || !source
+            .get(prefix_span.end..closing.span.start)?
+            .chars()
+            .all(char::is_whitespace)
+    {
+        return None;
+    }
+    Some(TextSpan::new(prefix_span.start, closing.span.end))
 }
 
 fn generic_type_argument_before_offset(source: &str, offset: usize) -> bool {

@@ -2267,6 +2267,38 @@ fn generic_collection_type_completion_excludes_void_and_ranks_builtin_types_firs
 }
 
 #[test]
+fn retyped_generic_type_completion_replaces_the_closing_delimiter() {
+    let source = "class Example { array<int> values; }";
+    let report = completion_report_for_source_position_with_external(
+        source,
+        position_after_needle(source, "array<int"),
+        None,
+    );
+    let int = report
+        .list
+        .items
+        .iter()
+        .find(|item| item.label == "int")
+        .expect("int completion");
+
+    assert_eq!(int.text_edit.new_text, "int>$0");
+    assert_eq!(int.insert_text_format, Some(2));
+    assert_eq!(
+        int.text_edit.replace_range,
+        Some(LspRange {
+            start: LspPosition {
+                line: 0,
+                character: 22,
+            },
+            end: LspPosition {
+                line: 0,
+                character: 26,
+            },
+        })
+    );
+}
+
+#[test]
 fn empty_collection_type_slots_open_ranked_type_completion() {
     for (source, needle) in [
         ("class Example { void Run(array<> value) {} }", "array<"),
