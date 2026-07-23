@@ -272,6 +272,36 @@ suite('Workbench Gateway', () => {
 		}
 	});
 
+	test('enforces a wall-clock deadline while a peer trickles response bytes', async () => {
+		const peer = await startNetApiPeer(() => ({
+			rawChunks: [
+				Buffer.from([20]),
+				Buffer.from([0]),
+				Buffer.from([0]),
+				Buffer.from([0]),
+			],
+			intervalMs: 20,
+		}));
+		try {
+			const gateway = new WorkbenchGateway({
+				enabled: true,
+				endpoint: { host: '127.0.0.1', port: peer.port },
+				deadlines: { getStatusMs: 35 },
+			});
+			const startedAt = Date.now();
+
+			const result = await gateway.getStatus();
+
+			assert.strictEqual(result.ok, false);
+			assert.ok(Date.now() - startedAt < 70);
+			if (!result.ok) {
+				assert.strictEqual(result.failure.category, 'timeout');
+			}
+		} finally {
+			await peer.close();
+		}
+	});
+
 	test('categorizes a refused configured endpoint as unavailable', async () => {
 		const peer = await startNetApiPeer(() => ({ silent: true }));
 		const port = peer.port;

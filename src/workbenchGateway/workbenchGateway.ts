@@ -299,10 +299,13 @@ function transact(
 				return;
 			}
 			settled = true;
+			clearTimeout(deadlineTimer);
 			socket.destroy();
 			resolve(result);
 		};
-		socket.setTimeout(deadlineMs);
+		const deadlineTimer = setTimeout(() => {
+			finish(failure('timeout', 'Ensure Workbench is responsive and retry the operation.'));
+		}, deadlineMs);
 		socket.once('connect', () => {
 			socket.end(encodeRequest(payload));
 		});
@@ -330,9 +333,6 @@ function transact(
 			} catch {
 				finish(failure('protocol', 'Restart Workbench and verify that its NET API is compatible.'));
 			}
-		});
-		socket.once('timeout', () => {
-			finish(failure('timeout', 'Ensure Workbench is responsive and retry the operation.'));
 		});
 		socket.once('error', () => {
 			finish(failure('unavailable', 'Start Workbench with NET API enabled, then retry.'));

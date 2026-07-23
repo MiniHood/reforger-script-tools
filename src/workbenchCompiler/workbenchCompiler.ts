@@ -201,6 +201,9 @@ class WorkbenchCompilerController implements vscode.Disposable {
 			return;
 		}
 		this.clearValidationTimer();
+		if (this.validating) {
+			this.pendingValidation = undefined;
+		}
 		const delayMs = this.configuration.validationDelaySeconds * 1_000;
 		this.validationTimer = setTimeout(() => {
 			this.validationTimer = undefined;
@@ -292,15 +295,12 @@ class WorkbenchCompilerController implements vscode.Disposable {
 			this.scheduleProbe(unavailableRetryMs, generation);
 			return;
 		}
-		this.publishValidationResult(result.value);
 		const staleReason = editGeneration !== this.scriptEditGeneration
 			? 'scripts changed while validation was running'
 			: hadDirtyScriptsAtRequest || hasDirtyEligibleDocuments()
 				? 'other scripts still have unsaved edits'
 				: undefined;
-		if (staleReason) {
-			this.markDiagnosticsStale(staleReason);
-		}
+		this.publishValidationResult(result.value, staleReason);
 		this.lastFailure = undefined;
 		this.lastOutcome = staleReason
 			? `Validation completed for an older saved snapshot at ${new Date().toLocaleTimeString()}.`
@@ -317,7 +317,10 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		this.scheduleProbe(readyHeartbeatMs, generation);
 	}
 
-	private publishValidationResult(result: WorkbenchValidationResult): void {
+	private publishValidationResult(
+		result: WorkbenchValidationResult,
+		staleReason?: string,
+	): void {
 		const projected = projectDiagnostics(result.diagnostics);
 		const next = new Map<string, RenderedDiagnosticSet>();
 		for (const item of projected.located) {
@@ -334,7 +337,13 @@ class WorkbenchCompilerController implements vscode.Disposable {
 			entries.push([previous.uri, undefined]);
 		}
 		for (const current of next.values()) {
-			entries.push([current.uri, current.diagnostics]);
+			entries.push([
+				current.uri,
+				staleReason
+					? current.diagnostics.map(diagnostic =>
+						renderStaleDiagnostic(diagnostic, staleReason))
+					: current.diagnostics,
+			]);
 		}
 		this.compilerDiagnostics.set(entries);
 		this.retainedDiagnostics.clear();
@@ -342,7 +351,7 @@ class WorkbenchCompilerController implements vscode.Disposable {
 			this.retainedDiagnostics.set(key, value);
 		}
 		this.lastValidationResult = cloneValidationResult(result);
-		this.staleReason = undefined;
+		this.staleReason = staleReason;
 		if (projected.unresolved > 0) {
 			diagnostic('workbenchUnresolvedDiagnosticLocations', {
 				count: projected.unresolved,
@@ -357,16 +366,10 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		this.staleReason = reason;
 		const entries: Array<[vscode.Uri, readonly vscode.Diagnostic[]]> = [];
 		for (const set of this.retainedDiagnostics.values()) {
-			entries.push([set.uri, set.diagnostics.map(original => {
-				const stale = new vscode.Diagnostic(
-					original.range,
-					`[Stale Workbench result — ${reason}] ${original.message}`,
-					original.severity,
-				);
-				stale.source = `${workbenchDiagnostics.source} (stale)`;
-				stale.code = original.code;
-				return stale;
-			})]);
+			entries.push([
+				set.uri,
+				set.diagnostics.map(original => renderStaleDiagnostic(original, reason)),
+			]);
 		}
 		this.compilerDiagnostics.set(entries);
 		this.setPhase(this.phase);
@@ -394,6 +397,7 @@ class WorkbenchCompilerController implements vscode.Disposable {
 			this.setPhase('ready');
 			this.scheduleProbe(readyHeartbeatMs, generation);
 		} else {
+			this.markDiagnosticsStale('Workbench scripts are not compiled');
 			this.setPhase('starting');
 			this.scheduleProbe(unavailableRetryMs, generation);
 		}
@@ -653,4 +657,18 @@ function eligibleDocument(document: vscode.TextDocument): boolean {
 function hasDirtyEligibleDocuments(): boolean {
 	return vscode.workspace.textDocuments.some(document =>
 		document.isDirty && eligibleDocument(document));
+}
+
+function renderStaleDiagnostic(
+	original: vscode.Diagnostic,
+	reason: string,
+): vscode.Diagnostic {
+	const stale = new vscode.Diagnostic(
+		original.range,
+		`[Stale Workbench result — ${reason}] ${original.message}`,
+		original.severity,
+	);
+	stale.source = `${workbenchDiagnostics.source} (stale)`;
+	stale.code = original.code;
+	return stale;
 }

@@ -10,6 +10,7 @@ export interface NetApiPeerRequest {
 
 export type NetApiPeerResponse =
 	| { errorCode: string; payload: unknown; raw?: Buffer }
+	| { rawChunks: readonly Buffer[]; intervalMs: number }
 	| { silent: true };
 
 export interface NetApiPeer {
@@ -31,8 +32,19 @@ export async function startNetApiPeer(
 		socket.on('end', () => {
 			const request = decodeRequest(Buffer.concat(chunks));
 			requests.push(request);
-			void Promise.resolve(handle(request)).then(response => {
+			void Promise.resolve(handle(request)).then(async response => {
 				if ('silent' in response) {
+					return;
+				}
+				if ('rawChunks' in response) {
+					for (const chunk of response.rawChunks) {
+						if (socket.destroyed) {
+							return;
+						}
+						socket.write(chunk);
+						await new Promise(resolve => setTimeout(resolve, response.intervalMs));
+					}
+					socket.end();
 					return;
 				}
 				socket.end(response.raw ?? Buffer.concat([

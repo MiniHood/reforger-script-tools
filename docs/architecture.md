@@ -111,9 +111,10 @@ The extension constructs a new short-lived TCP connection for each Gateway
 operation. `getStatus()` and `validateScripts(profile)` are the complete public
 Gateway capability surface for the initial feature. The Gateway validates the
 configured loopback endpoint, owns the proprietary framing and response
-decoding, applies capability-specific deadlines, and returns typed failures.
-It reports only sanitized capability names, outcomes, and timings to the
-extension diagnostic log.
+decoding, applies capability-specific absolute wall-clock deadlines, and
+returns typed failures. Response activity cannot extend a transaction beyond
+its deadline. It reports only sanitized capability names, outcomes, and
+timings to the extension diagnostic log.
 
 The compiler adapter probes the exact configured endpoint immediately, retries
 an unavailable or starting Workbench once per second, and uses a five-second
@@ -126,18 +127,21 @@ eligible save or saves only the active dirty Enfusion Script after the idle
 period, then validates the configured profile. A zero delay is manual-only.
 Triggers during a validation collapse into one follow-up operation. A failed
 save does not call Workbench and does not retry compilation until another user
-or editor trigger occurs.
+or editor trigger occurs. When another edit arrives during an in-flight
+validation, it supersedes earlier queued triggers so the single follow-up
+cannot begin before the newest idle interval has elapsed.
 
 Each completed validation is one atomic compiler diagnostic set. A successful
 clean result removes the old Workbench set; a failed transaction retains it.
-Newer edits, configuration changes, and Workbench outages re-render retained
-findings as explicitly stale. Because validation is configuration-wide, a
-result also remains stale while any eligible workspace script is dirty, even
-when the adapter successfully saved the active script that triggered the run.
-The adapter projects a location only when its canonical path exists inside the
-single addon workspace. An explicit external absolute path is never replaced
-by a plausible relative guess. Rust language diagnostics remain in their
-independent LSP-owned collection throughout.
+Newer edits, configuration changes, Workbench outages, and a running Workbench
+whose scripts are not compiled re-render retained findings as explicitly
+stale. Because validation is configuration-wide, a result also remains stale
+while any eligible workspace script is dirty, even when the adapter
+successfully saved the active script that triggered the run. The adapter
+projects a location only when its canonical path exists inside the single
+addon workspace. An explicit external absolute path is never replaced by a
+plausible relative guess. Rust language diagnostics remain in their independent
+LSP-owned collection throughout.
 
 Within the language-client bridge, the composition root retains server lifecycle
 and restart policy. Focused bridges own workspace-script notifications, hover
