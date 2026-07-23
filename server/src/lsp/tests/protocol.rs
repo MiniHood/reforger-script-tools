@@ -696,6 +696,30 @@ fn input_route_finishes_a_new_map_declaration_before_its_trailing_comment() {
 }
 
 #[test]
+fn input_route_finishes_a_parenthesis_free_nested_constructor() {
+    let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
+    let uri = "file:///Scripts/NewNestedArraySemicolonEnter.c";
+    let source =
+        "array<ref Tuple2<vector, vector>> areas = new array<ref Tuple2<vector, vector>> //--- Min, max";
+    server.handle_message(json!({ "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+        "textDocument": { "uri": uri, "languageId": "enforce", "version": 1, "text": source }
+    }}), None, 0, 0).unwrap();
+    server.writer.clear();
+    server.handle_message(json!({ "jsonrpc": "2.0", "id": 1, "method": CONTROL_HEADER_ENTER_METHOD, "params": {
+        "textDocument": { "uri": uri }, "operation": "insertNewline", "version": 1,
+        "selections": [{
+            "start": { "line": 0, "character": source.len() },
+            "end": { "line": 0, "character": source.len() }
+        }],
+        "options": { "tabSize": 4, "insertSpaces": true }
+    }}), None, 0, 0).unwrap();
+
+    let output = String::from_utf8_lossy(&server.writer);
+    assert!(output.contains("\"newText\":\"; //--- Min, max\\n\""), "{output}");
+    assert!(output.contains("\"owner\":\"semicolon\""), "{output}");
+}
+
+#[test]
 fn runtime_debug_hover_runs_off_the_lsp_message_loop() {
     let (sender, receiver) = mpsc::channel();
     let scheduler = RuntimeWorkExecutor::start(sender);

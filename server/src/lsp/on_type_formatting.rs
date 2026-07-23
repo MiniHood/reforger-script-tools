@@ -987,14 +987,19 @@ fn is_complete_value_expression(tokens: &[Token]) -> bool {
     true
 }
 
-/// Primitive keywords can only participate in a returned expression as type
-/// arguments of a `new Type<...>(...)` construction. Scanning back to the
-/// construction keyword is bounded by the already-small physical line.
+/// Type-name keywords and generic ownership modifiers can only participate in
+/// a returned expression as part of a `new Type<...>` construction. Scanning
+/// back to the construction keyword is bounded by the already-small physical
+/// line.
 fn is_new_type_keyword(tokens: &[Token], index: usize) -> bool {
     if !matches!(
         tokens[index].kind,
         TokenKind::Keyword(
-            Keyword::Int
+            Keyword::Ref
+                | Keyword::Autoptr
+                | Keyword::Owned
+                | Keyword::Const
+                | Keyword::Int
                 | Keyword::Float
                 | Keyword::Bool
                 | Keyword::String
@@ -1021,9 +1026,9 @@ fn is_new_type_keyword(tokens: &[Token], index: usize) -> bool {
     false
 }
 
-/// `new Type` is syntactically unfinished until its constructor argument list
-/// closes.  Keep this explicit instead of relying on generic delimiter balance
-/// so the typing assist remains fail-closed around construction expressions.
+/// Enfusion permits both `new Type` and `new Type(...)`. Keep construction
+/// recognition explicit so an opened argument list must still close before the
+/// typing assist edits the statement.
 fn has_only_complete_new_expressions(tokens: &[Token]) -> bool {
     let mut index = 0;
     while index < tokens.len() {
@@ -1045,8 +1050,11 @@ fn consume_new_expression(tokens: &[Token], mut index: usize) -> Option<usize> {
     (tokens.get(index)?.kind == TokenKind::Identifier).then_some(())?;
     index += 1;
     index = consume_generic_arguments(tokens, index)?;
-    (tokens.get(index)?.kind == TokenKind::LeftParen).then_some(())?;
-    consume_balanced(tokens, index, TokenKind::RightParen)
+    if tokens.get(index).map(|token| token.kind) == Some(TokenKind::LeftParen) {
+        consume_balanced(tokens, index, TokenKind::RightParen)
+    } else {
+        Some(index)
+    }
 }
 
 fn is_value_expression_token(kind: TokenKind) -> bool {
@@ -1177,30 +1185,81 @@ fn consume_generic_arguments(tokens: &[Token], mut index: usize) -> Option<usize
     if tokens.get(index).map(|token| token.kind) != Some(TokenKind::Operator(Operator::Less)) {
         return Some(index);
     }
-    let mut depth = 0usize;
+    index += 1;
+    let mut expects_type = vec![true];
     while let Some(token) = tokens.get(index) {
         match token.kind {
-            TokenKind::Operator(Operator::Less) => depth += 1,
-            TokenKind::Operator(Operator::Greater) => depth = depth.checked_sub(1)?,
-            TokenKind::Operator(Operator::GreaterGreater) => depth = depth.checked_sub(2)?,
-            TokenKind::LeftParen | TokenKind::LeftBracket | TokenKind::LeftBrace => return None,
-            _ => {}
+            kind if *expects_type.last()? && is_generic_type_modifier(kind) => {}
+            kind if *expects_type.last()? && is_generic_type_name(kind) => {
+                *expects_type.last_mut()? = false;
+            }
+            TokenKind::Operator(Operator::Less) if !*expects_type.last()? => {
+                expects_type.push(true);
+            }
+            TokenKind::Comma if !*expects_type.last()? => {
+                *expects_type.last_mut()? = true;
+            }
+            TokenKind::Operator(Operator::Greater) if !*expects_type.last()? => {
+                expects_type.pop();
+                index += 1;
+                if expects_type.is_empty() {
+                    return Some(index);
+                }
+                continue;
+            }
+            TokenKind::Operator(Operator::GreaterGreater) => {
+                for _ in 0..2 {
+                    if *expects_type.last()? {
+                        return None;
+                    }
+                    expects_type.pop();
+                }
+                index += 1;
+                if expects_type.is_empty() {
+                    return Some(index);
+                }
+                continue;
+            }
+            _ => return None,
         }
         index += 1;
-        if depth == 0 {
-            return Some(index);
-        }
     }
     None
+}
+
+fn is_generic_type_modifier(kind: TokenKind) -> bool {
+    matches!(
+        kind,
+        TokenKind::Keyword(Keyword::Ref | Keyword::Autoptr | Keyword::Owned | Keyword::Const)
+    )
+}
+
+fn is_generic_type_name(kind: TokenKind) -> bool {
+    matches!(
+        kind,
+        TokenKind::Identifier
+            | TokenKind::Keyword(
+                Keyword::Void
+                    | Keyword::Bool
+                    | Keyword::Int
+                    | Keyword::Float
+                    | Keyword::String
+                    | Keyword::Vector
+                    | Keyword::Typename
+                    | Keyword::Auto
+            )
+    )
 }
 
 fn consume_initializer(tokens: &[Token], mut index: usize) -> Option<usize> {
     let start = index;
     let mut closes = Vec::new();
+    let mut complete_new_expression_end = None;
     while let Some(token) = tokens.get(index) {
         match token.kind {
             TokenKind::Keyword(Keyword::New) => {
                 index = consume_new_expression(tokens, index)?;
+                complete_new_expression_end = Some(index);
                 continue;
             }
             TokenKind::LeftParen => closes.push(TokenKind::RightParen),
@@ -1218,7 +1277,8 @@ fn consume_initializer(tokens: &[Token], mut index: usize) -> Option<usize> {
     }
     if index == start
         || !closes.is_empty()
-        || ends_in_incomplete_expression(tokens[start..index].last()?.kind)
+        || (complete_new_expression_end != Some(index)
+            && ends_in_incomplete_expression(tokens[start..index].last()?.kind))
     {
         return None;
     }
@@ -1322,6 +1382,28 @@ mod tests {
     }
 
     #[test]
+    fn recognizes_game_constructor_shapes_across_declarations_and_returns() {
+        for source in [
+            "array<int> values = new array<int>()\n",
+            "ref set<typename> values = new set<typename>()\n",
+            "map<string, ref array<ref Managed>> values = new map<string, ref array<ref Managed>>()\n",
+            "Managed value = new Managed(first, Other())\n",
+            "Managed first = new Managed(), second = new Managed()\n",
+            "Managed wrapped = Wrap(new Managed(first, Other()))\n",
+            "array<ref Managed> values = {new Managed(), new Managed()}\n",
+            "array<ref Tuple2<vector, vector>> areas = new array<ref Tuple2<vector, vector>>\n",
+            "GetGameMaterialsResponse response = new GetGameMaterialsResponse\n",
+            "return new array<ref SCR_WorkshopItem>\n",
+            "ref ScriptInvoker callback = new ScriptInvoker // callback args\n",
+        ] {
+            let expected = source
+                .find(" //")
+                .unwrap_or_else(|| source.find('\n').unwrap());
+            assert_eq!(insertion(source), Some(expected), "{source:?}");
+        }
+    }
+
+    #[test]
     fn inserts_after_complete_variable_declarations() {
         for source in [
             "GRAY_TEST2 test44\n",
@@ -1385,7 +1467,7 @@ mod tests {
             "return owner new GRAY_TEST2()\n",
             "return owner < int\n",
             "return new\n",
-            "return new GRAY_TEST2\n",
+            "return new GRAY_TEST2(\n",
             "Run().member\n",
             "Run()[0]\n",
             "Run().member[0]\n",
@@ -1394,6 +1476,12 @@ mod tests {
             "GRAY_TEST2\n",
             "int testnum =\n",
             "int testnum = Other(\n",
+            "map<int, int> values = new map<>\n",
+            "map<int, int> values = new map<, int>\n",
+            "map<int, int> values = new map<int,>\n",
+            "map<int, int> values = new map<int,>()\n",
+            "map<int, int> values = new map<int, int\n",
+            "Managed first = new Managed(), second = new\n",
             "void Run\n",
             "int Run()\n",
             "int first = 1,\n",
