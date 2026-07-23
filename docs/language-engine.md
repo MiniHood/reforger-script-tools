@@ -88,6 +88,16 @@ That includes base-game tuples and game-defined generic classes such as
 `SCR_BTParam<T>`; only collections receive collection construction or
 declaration-tail behavior.
 
+When a user retypes an already-present completion label, Rust keeps the
+existing syntax authoritative. A type completion immediately before a generic
+closer replaces that closer and uses its final tabstop; this also handles the
+inner half of a lexed `>>` closer. A callable or control-header completion
+replaces an immediately following empty `()` with its authored snippet, while
+a non-empty existing argument list is preserved and only the label changes.
+Active named-argument labels already insert only their name, preserving a
+following `:`. Plain values and members do not receive structural replacement
+edits because they do not author a structural suffix.
+
 ### Completion gotchas
 
 - Inside an overriding method, the `super` prefix is an override-aware callable

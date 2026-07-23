@@ -2299,6 +2299,114 @@ fn retyped_generic_type_completion_replaces_the_closing_delimiter() {
 }
 
 #[test]
+fn retyped_nested_generic_type_completion_replaces_only_its_closing_delimiter() {
+    let source = "class Example { array<array<int>> values; }";
+    let report = completion_report_for_source_position_with_external(
+        source,
+        position_after_needle(source, "array<array<int"),
+        None,
+    );
+    let int = report
+        .list
+        .items
+        .iter()
+        .find(|item| item.label == "int")
+        .expect("int completion");
+
+    assert_eq!(int.text_edit.new_text, "int>$0");
+    assert_eq!(int.insert_text_format, Some(2));
+    assert!(int.text_edit.replace_range.is_some());
+}
+
+#[test]
+fn retyped_callable_completion_replaces_an_existing_empty_call_suffix() {
+    let source = "class Example { void Target(int value) {} void Run() { Tar() } }";
+    let report = completion_report_for_source_position_with_external(
+        source,
+        position_for_offset(source, source.rfind("Tar").unwrap() + "Tar".len()),
+        None,
+    );
+    let target = report
+        .list
+        .items
+        .iter()
+        .find(|item| item.label == "Target")
+        .expect("Target completion");
+
+    assert!(target.text_edit.replace_range.is_some());
+}
+
+#[test]
+fn retyped_control_header_completion_replaces_an_existing_empty_parenthesis_suffix() {
+    let source = "class Example { void Run() { i() } }";
+    let report = completion_report_for_source_position_with_external(
+        source,
+        position_after_needle(source, " i"),
+        None,
+    );
+    let header = report
+        .list
+        .items
+        .iter()
+        .find(|item| item.label == "if")
+        .expect("if completion");
+
+    assert!(header.text_edit.replace_range.is_some());
+}
+
+#[test]
+fn retyped_active_named_parameter_completion_preserves_an_existing_separator() {
+    let source = "class Example { void Target(int input) {} void Run() { Target(inp: value); } }";
+    let report = completion_report_for_source_position_with_external(
+        source,
+        position_for_offset(source, source.rfind("inp").unwrap() + "inp".len()),
+        None,
+    );
+    let input = report
+        .list
+        .items
+        .iter()
+        .find(|item| item.label == "input")
+        .expect("input parameter completion");
+
+    assert_eq!(input.text_edit.new_text, "input");
+    assert!(input.text_edit.replace_range.is_none());
+}
+
+#[test]
+fn retyped_callable_completion_preserves_an_existing_parameter_list() {
+    let source = r#"class Child : Parent
+{
+	override protected void OnPostIn(IEntity owner)
+	{
+	}
+}
+"#;
+    let external = file_index_for_source(
+        r#"class Parent
+{
+	protected void OnPostInit(IEntity owner);
+}
+"#,
+    )
+    .index;
+    let report = completion_report_for_source_position_with_external(
+        source,
+        position_after_needle(source, "OnPostIn"),
+        Some(&external),
+    );
+    let method = report
+        .list
+        .items
+        .iter()
+        .find(|item| item.label == "OnPostInit")
+        .expect("OnPostInit completion");
+
+    assert_eq!(method.text_edit.new_text, "OnPostInit");
+    assert!(method.text_edit.replace_range.is_none());
+}
+
+#[test]
 fn empty_collection_type_slots_open_ranked_type_completion() {
     for (source, needle) in [
         ("class Example { void Run(array<> value) {} }", "array<"),
@@ -3279,7 +3387,10 @@ class Example
     );
     let report = completion_report_for_source_position_with_external(
         &method_source,
-        position_after_needle(&method_source, "UseCho"),
+        position_for_offset(
+            &method_source,
+            method_source.rfind("UseCho").unwrap() + "UseCho".len(),
+        ),
         None,
     );
     let method = report

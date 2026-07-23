@@ -248,7 +248,125 @@ pub(crate) fn completion_report_for_cached_analysis_with_external_indexes(
     if completion_cursor_is_in_comment_or_string(&analysis.lexer_tokens, offset) {
         return empty_completion_report(analysis.parse_diagnostics);
     }
-    completion_report_for_offset(source, analysis, offset, workspace_index, game_data_index)
+    let mut report = completion_report_for_offset(source, analysis, offset, workspace_index, game_data_index);
+    apply_retyped_completion_suffix_replacements(source, offset, &mut report);
+    report
+}
+
+/// A completion that authors a structural suffix must replace an identical,
+/// already-present suffix when the user retypes its label. Otherwise accepting
+/// it turns `Call()` into `Call()()` or `name: value` into `name: : value`.
+/// Keep this bounded to the active prefix and an immediately following empty
+/// call or named-argument separator; ordinary expressions and non-empty calls
+/// retain their native replacement behavior.
+fn apply_retyped_completion_suffix_replacements(
+    source: &str,
+    offset: usize,
+    report: &mut LspCompletionReport,
+) {
+    let prefix_span = raw_completion_prefix_span(source, offset);
+    if prefix_span.is_empty() || prefix_span.end != offset {
+        return;
+    }
+    let prefix_range = range_for_span(source, prefix_span);
+    let call_suffix = parenthesized_suffix_after_prefix(source, prefix_span);
+    let named_argument_replace_range = named_argument_separator_after_prefix(source, prefix_span)
+        .map(|span| range_for_span(source, span));
+
+    for item in &mut report.list.items {
+        if item.text_edit.replace_range.is_some() || item.text_edit.range != prefix_range {
+            continue;
+        }
+        if let Some(call_suffix) = call_suffix {
+            if !completion_insert_text_authors_call_suffix(item) {
+                continue;
+            }
+            if call_suffix.is_empty {
+                item.text_edit.replace_range = Some(range_for_span(source, call_suffix.span));
+            } else {
+                item.text_edit.new_text = item.label.clone();
+                item.insert_text_format = None;
+            }
+        } else if named_argument_replace_range.is_some()
+            && completion_insert_text_authors_named_argument_separator(item)
+        {
+            item.text_edit.replace_range = named_argument_replace_range.clone();
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ParenthesizedSuffix {
+    span: TextSpan,
+    is_empty: bool,
+}
+
+fn parenthesized_suffix_after_prefix(
+    source: &str,
+    prefix_span: TextSpan,
+) -> Option<ParenthesizedSuffix> {
+    let tokens = lex(source)
+        .into_iter()
+        .filter(|token| !token.kind.is_trivia() && token.kind != TokenKind::Eof)
+        .collect::<Vec<_>>();
+    let open_index = tokens
+        .iter()
+        .position(|token| token.span.start >= prefix_span.end)?;
+    let open = tokens.get(open_index)?;
+    if open.kind != TokenKind::LeftParen {
+        return None;
+    }
+    let mut depth = 0usize;
+    for (index, token) in tokens.iter().enumerate().skip(open_index) {
+        match token.kind {
+            TokenKind::LeftParen => depth += 1,
+            TokenKind::RightParen => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(ParenthesizedSuffix {
+                        span: TextSpan::new(prefix_span.start, token.span.end),
+                        is_empty: index == open_index + 1,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn named_argument_separator_after_prefix(source: &str, prefix_span: TextSpan) -> Option<TextSpan> {
+    let tokens = lex(source);
+    let separator_index = tokens.iter().position(|token| {
+        !token.kind.is_trivia()
+            && token.kind != TokenKind::Eof
+            && token.span.start >= prefix_span.end
+    })?;
+    let separator = tokens.get(separator_index)?;
+    if separator.kind != TokenKind::Colon {
+        return None;
+    }
+    let end = tokens
+        .iter()
+        .skip(separator_index + 1)
+        .find(|token| !token.kind.is_trivia() && token.kind != TokenKind::Eof)
+        .map(|token| token.span.start)
+        .unwrap_or(source.len());
+    Some(TextSpan::new(prefix_span.start, end))
+}
+
+fn completion_insert_text_authors_call_suffix(item: &LspCompletionItem) -> bool {
+    item.text_edit
+        .new_text
+        .strip_prefix(&item.label)
+        .is_some_and(|suffix| suffix.trim_start().starts_with('('))
+}
+
+fn completion_insert_text_authors_named_argument_separator(item: &LspCompletionItem) -> bool {
+    item.text_edit
+        .new_text
+        .strip_prefix(&item.label)
+        .is_some_and(|suffix| suffix.starts_with(':'))
 }
 
 /// Returns the current-revision lexical/top-level completion contract while a
@@ -3887,15 +4005,22 @@ fn generic_type_argument_closing_span_after_prefix(
             && token.kind != TokenKind::Eof
             && token.span.start >= prefix_span.end
     })?;
-    if closing.kind != TokenKind::Operator(Operator::Greater)
-        || !source
+    let closing_end = match closing.kind {
+        TokenKind::Operator(Operator::Greater) => closing.span.end,
+        // Nested generic closers are lexed as one `>>` token. Replace only
+        // the inner closer so its final tabstop remains inside the outer
+        // generic argument rather than consuming both delimiters.
+        TokenKind::Operator(Operator::GreaterGreater) => closing.span.start + 1,
+        _ => return None,
+    };
+    if !source
             .get(prefix_span.end..closing.span.start)?
             .chars()
             .all(char::is_whitespace)
     {
         return None;
     }
-    Some(TextSpan::new(prefix_span.start, closing.span.end))
+    Some(TextSpan::new(prefix_span.start, closing_end))
 }
 
 fn generic_type_argument_before_offset(source: &str, offset: usize) -> bool {
