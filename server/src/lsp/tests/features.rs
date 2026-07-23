@@ -6257,9 +6257,9 @@ class Widget
 
     for (needle, delimiter, token_type) in [
         ("GROUP(x)", '(', "punctuation"),
-        ("[Attribute", '[', "decorator"),
-        ("Attribute(\"", '(', "decorator"),
-        (")]\nclass", ']', "decorator"),
+        ("[Attribute", '[', "class"),
+        ("Attribute(\"", '(', "class"),
+        (")]\nclass", ']', "class"),
         ("array<ref", '<', "class"),
         ("array<string>", '<', "class"),
         ("string>> values", '>', "class"),
@@ -6274,6 +6274,33 @@ class Widget
     }
     assert_semantic_token(&report, "\"([{}])\"", "string", None);
     assert_semantic_token(&report, "// ([{}])", "comment", None);
+}
+
+#[test]
+fn semantic_scope_delimiters_keep_switch_body_owner_after_completed_if() {
+    let source = r#"class Example
+{
+	void Run()
+	{
+		if (test)
+			return;
+		switch (true)
+		{
+			default:
+		}
+	}
+}
+"#;
+    let report = semantic_tokens_report_for_source(source);
+
+    for (needle, delimiter) in [
+        ("switch (true)", '('),
+        ("switch (true)", ')'),
+        ("switch (true)\n\t\t{", '{'),
+        ("default:\n\t\t}", '}'),
+    ] {
+        assert_semantic_delimiter_at(source, &report, needle, delimiter, "keyword");
+    }
 }
 
 #[test]

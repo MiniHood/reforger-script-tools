@@ -14,7 +14,6 @@ const MAX_RESOLVED_SCOPE_DELIMITER_OWNERS: usize = 4_096;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ScopeDelimiterAnchorKind {
     SemanticToken,
-    Decorator,
     ResolvedCall,
     ResolvedConstructor,
     ResolvedIndex,
@@ -253,7 +252,7 @@ impl DelimiterCollector<'_> {
             }
             SyntaxKind::AttributeList | SyntaxKind::Attribute => (
                 first_name_token(node)?.span,
-                ScopeDelimiterAnchorKind::Decorator,
+                ScopeDelimiterAnchorKind::SemanticToken,
             ),
             SyntaxKind::InitializerExpression => (
                 self.initializer_type_anchor(node)?,
@@ -464,7 +463,7 @@ impl DelimiterCollector<'_> {
 fn delimiter_anchor_is_structurally_proven(delimiter: &ScopeDelimiter) -> bool {
     matches!(
         delimiter.anchor_kind,
-        ScopeDelimiterAnchorKind::SemanticToken | ScopeDelimiterAnchorKind::Decorator
+        ScopeDelimiterAnchorKind::SemanticToken
     )
 }
 
@@ -500,7 +499,7 @@ fn delimiter_anchor_is_proven(
         return false;
     };
     match delimiter.anchor_kind {
-        ScopeDelimiterAnchorKind::SemanticToken | ScopeDelimiterAnchorKind::Decorator => true,
+        ScopeDelimiterAnchorKind::SemanticToken => true,
         ScopeDelimiterAnchorKind::ResolvedCall => matches!(
             candidate.kind,
             SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor
@@ -532,6 +531,7 @@ fn standard_delimiter_node(kind: SyntaxKind) -> bool {
             | SyntaxKind::Condition
             | SyntaxKind::ForHeader
             | SyntaxKind::ForeachHeader
+            | SyntaxKind::SwitchStatement
             | SyntaxKind::SwitchHeader
             | SyntaxKind::ParenthesizedExpression
             | SyntaxKind::CastExpression

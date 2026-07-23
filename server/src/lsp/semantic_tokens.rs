@@ -586,11 +586,7 @@ fn semantic_raw_tokens(
         if index % 64 == 0 && should_cancel.is_some_and(|should_cancel| should_cancel()) {
             return None;
         }
-        let token_type = if delimiter.anchor_kind
-            == super::scope_delimiters::ScopeDelimiterAnchorKind::Decorator
-        {
-            semantic_type_index("decorator")
-        } else if let Some((_, token_type)) =
+        let token_type = if let Some((_, token_type)) =
             owner_types.get(&(delimiter.anchor.start, delimiter.anchor.end))
         {
             *token_type
