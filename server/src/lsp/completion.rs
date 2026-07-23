@@ -580,7 +580,7 @@ pub(crate) fn completion_report_for_current_override_at_offset_with_external_ind
         &empty_local_index,
         workspace_index,
         game_data_index,
-        32,
+        MAX_COMPLETION_ITEMS + 1,
     );
     let insert_context = completion_insert_context(
         source,
@@ -1373,6 +1373,7 @@ impl BoundedCompletionFacts {
             UnavailableCompletionContext::TopLevel,
         );
         let mut fallback = fallback;
+        let fallback_is_incomplete = fallback.list.is_incomplete;
         // An argument expression is still an unqualified value position. The
         // current snapshot proves the containing class/base and its directly
         // declared members; immutable indexes prove inherited members. Keep
@@ -1397,7 +1398,8 @@ impl BoundedCompletionFacts {
             ))
         });
         add_return_separator_to_completion_items(source, prefix_span, &mut items);
-        let (items, is_incomplete) = cap_completion_items(items);
+        let (items, is_incomplete) =
+            cap_completion_items_with_upstream_incomplete(items, fallback_is_incomplete);
         LspCompletionReport {
             candidate_count: items.len(),
             list: LspCompletionList {
@@ -1440,8 +1442,10 @@ impl BoundedCompletionFacts {
         if items.is_empty() {
             return;
         }
+        let report_is_incomplete = report.list.is_incomplete;
         items.extend(std::mem::take(&mut report.list.items));
-        let (items, is_incomplete) = cap_completion_items(items);
+        let (items, is_incomplete) =
+            cap_completion_items_with_upstream_incomplete(items, report_is_incomplete);
         report.candidate_count = items.len();
         report.list = LspCompletionList {
             is_incomplete,
@@ -1512,6 +1516,7 @@ impl BoundedCompletionFacts {
         if items.is_empty() {
             return;
         }
+        let report_is_incomplete = report.list.is_incomplete;
         items.extend(std::mem::take(&mut report.list.items));
         let mut seen = BTreeSet::new();
         items.retain(|item| {
@@ -1520,7 +1525,8 @@ impl BoundedCompletionFacts {
                 item.text_edit.new_text.clone(),
             ))
         });
-        let (items, is_incomplete) = cap_completion_items(items);
+        let (items, is_incomplete) =
+            cap_completion_items_with_upstream_incomplete(items, report_is_incomplete);
         report.candidate_count = items.len();
         report.list = LspCompletionList {
             is_incomplete,
@@ -1621,6 +1627,7 @@ impl BoundedCompletionFacts {
             item.filter_text = Some(full_expression_filter.clone());
             item.sort_text = Some(format!("100:enum-fallback:{index:03}:{}", item.label));
         }
+        let report_is_incomplete = report.list.is_incomplete;
         items.extend(std::mem::take(&mut report.list.items));
         for (index, item) in items.iter_mut().enumerate() {
             if item.kind == 14 {
@@ -1638,7 +1645,8 @@ impl BoundedCompletionFacts {
             ))
         });
         add_return_separator_to_completion_items(source, prefix_span, &mut items);
-        let (items, is_incomplete) = cap_completion_items(items);
+        let (items, is_incomplete) =
+            cap_completion_items_with_upstream_incomplete(items, report_is_incomplete);
         report.candidate_count = items.len();
         report.list = LspCompletionList {
             is_incomplete,
@@ -2817,7 +2825,7 @@ fn member_completion_report_for_indexes(
                         local_index,
                         workspace_index,
                         game_data_index,
-                        MAX_COMPLETION_ITEMS,
+                        MAX_COMPLETION_ITEMS + 1,
                     )
                 },
                 |(analysis, offset)| {
@@ -4806,6 +4814,18 @@ fn cap_completion_items(mut items: Vec<LspCompletionItem>) -> (Vec<LspCompletion
     (items, is_incomplete)
 }
 
+/// A response remains incomplete when a merged upstream response had already
+/// omitted candidates. De-duplication or context filtering can reduce the
+/// visible item count below the cap without making those omitted candidates
+/// available again.
+fn cap_completion_items_with_upstream_incomplete(
+    items: Vec<LspCompletionItem>,
+    upstream_is_incomplete: bool,
+) -> (Vec<LspCompletionItem>, bool) {
+    let (items, is_incomplete) = cap_completion_items(items);
+    (items, is_incomplete || upstream_is_incomplete)
+}
+
 fn completion_candidate_key(candidate: &EditorCompletionCandidate) -> String {
     let name = candidate
         .name
@@ -5450,6 +5470,31 @@ mod tests {
             Some(&external),
             None,
         );
+
+        assert!(report
+            .list
+            .items
+            .iter()
+            .any(|item| item.label == "ResourceName"));
+    }
+
+    #[test]
+    fn pending_override_completion_keeps_later_top_level_matches_for_incremental_typing() {
+        let source = "class Child : ScriptComponent { r }";
+        let mut external_source = String::from("class ScriptComponent {}\n");
+        for index in 0..32 {
+            external_source.push_str(&format!("class R{index:02} {{}}\n"));
+        }
+        external_source.push_str("class Resource {}\nclass ResourceName {}\n");
+        let external = file_index_for_source(&external_source).index;
+        let offset = source.find(" r }").unwrap() + 2;
+        let report = completion_report_for_current_override_at_offset_with_external_indexes(
+            source,
+            offset,
+            Some(&external),
+            None,
+        )
+        .expect("the pending override response should retain top-level candidates");
 
         assert!(report
             .list
@@ -6200,6 +6245,23 @@ class Constructed
         assert!(items.is_empty());
         assert!(is_incomplete);
         assert!(!empty_completion_list().is_incomplete);
+    }
+
+    #[test]
+    fn merged_completion_list_keeps_the_upstream_incomplete_signal() {
+        let (items, is_incomplete) = cap_completion_items_with_upstream_incomplete(
+            vec![bounded_completion_item(
+                "x",
+                TextSpan::new(0, 1),
+                "x".to_string(),
+                None,
+                0,
+            )],
+            true,
+        );
+
+        assert_eq!(items.len(), 1);
+        assert!(is_incomplete);
     }
 
     #[test]
