@@ -63,14 +63,6 @@ interface CompletionPresentationObservation {
 	character: number;
 	triggerKind: number;
 	labels: string[];
-	arrayItem?: CompletionPresentationItem;
-}
-
-interface CompletionPresentationItem {
-	kind: number | undefined;
-	insertTextKind: 'plain' | 'snippet' | 'none';
-	insertText: string | undefined;
-	command: string | undefined;
 }
 
 function registerEmptyCompletionRefresh(): vscode.Disposable {
@@ -596,17 +588,6 @@ export function completionPresentationObservationForDocument(documentUri: string
 		'| # | Label |',
 		'| ---: | --- |',
 	);
-	if (observation.arrayItem) {
-		lines.push(
-			'',
-			'### `array` item after language-client conversion',
-			'',
-			`- Kind: ${observation.arrayItem.kind ?? '<none>'}`,
-			`- Insert text kind: ${observation.arrayItem.insertTextKind}`,
-			`- Insert text: \`${observation.arrayItem.insertText ?? '<none>'}\``,
-			`- Command: \`${observation.arrayItem.command ?? '<none>'}\``,
-		);
-	}
 	for (const [index, label] of observation.labels.entries()) {
 		lines.push(`| ${index + 1} | ${label.replaceAll('|', '\\|')} |`);
 	}
@@ -630,8 +611,6 @@ export const completionUiMiddlewareCallbacks: CompletionMiddlewareCallbacks = {
 		const line = typeof latestRequest?.fields.line === 'number' ? latestRequest.fields.line : -1;
 		const character = typeof latestRequest?.fields.character === 'number' ? latestRequest.fields.character : -1;
 		const labels = completionItemLabels(result);
-		const items = !result ? [] : ('items' in result ? result.items : result);
-		const arrayItem = items.find(item => (typeof item.label === 'string' ? item.label : item.label.label) === 'array');
 		completionPresentationObservations.set(document.uri.toString(), {
 			requestVersion,
 			responseVersion: document.version,
@@ -639,16 +618,6 @@ export const completionUiMiddlewareCallbacks: CompletionMiddlewareCallbacks = {
 			character,
 			triggerKind,
 			labels,
-			arrayItem: arrayItem ? {
-				kind: arrayItem.kind,
-				insertTextKind: arrayItem.insertText instanceof vscode.SnippetString
-					? 'snippet'
-					: typeof arrayItem.insertText === 'string' ? 'plain' : 'none',
-				insertText: arrayItem.insertText instanceof vscode.SnippetString
-					? arrayItem.insertText.value
-					: arrayItem.insertText,
-				command: arrayItem.command?.command,
-			} : undefined,
 		});
 		recordCompletionLifecycle(document.uri.toString(), 'response', { requestVersion, currentVersion: document.version, triggerKind, itemCount: completionItemCount(result), isIncomplete: isCompletionListIncomplete(result), elapsedMs, ...completionPresentationMetadata(result) });
 		armEmptyCompletionRefresh(document, requestVersion, result);

@@ -2047,12 +2047,16 @@ fn top_level_fallback_report_for_prefix_span(
         Some(&prefix),
         render_context,
     );
-    items.extend(keyword_completion_items(
+    let keyword_items = keyword_completion_items(
         &prefix,
         range_for_span(source, prefix_span),
         EditorTopLevelCompletionMode::Value,
-        false,
-    ));
+        declaration_keyword_context(source, prefix_span.start),
+    );
+    if !keyword_items.is_empty() {
+        remove_items_shadowed_by_keywords(&mut items, &keyword_items);
+        items.extend(keyword_items);
+    }
     add_return_separator_to_completion_items(source, prefix_span, &mut items);
     let (items, is_incomplete) = cap_completion_items(items);
     let mut report = LspCompletionReport {
@@ -4997,6 +5001,40 @@ mod tests {
         assert_eq!(
             report.recovery_reason.as_deref(),
             Some("current-revision-local-facts-pending")
+        );
+    }
+
+    #[test]
+    fn lexical_pending_completion_keeps_collection_snippets_at_declaration_boundaries() {
+        let source = "class Example { arr";
+        let external = file_index_for_source("int array;").index;
+        let report = completion_report_for_lexical_source_with_external_indexes(
+            source,
+            LspPosition {
+                line: 0,
+                character: source.len() as u32,
+            },
+            Some(&external),
+            None,
+        );
+        let array = report
+            .list
+            .items
+            .iter()
+            .find(|item| item.label == "array")
+            .expect("array completion");
+
+        assert_eq!(array.kind, 14);
+        assert_eq!(array.text_edit.new_text, "array<${1:Type}>");
+        assert_eq!(array.insert_text_format, Some(2));
+        assert_eq!(
+            report
+                .list
+                .items
+                .iter()
+                .filter(|item| item.label == "array")
+                .count(),
+            1
         );
     }
 
