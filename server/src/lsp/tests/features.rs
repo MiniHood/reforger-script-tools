@@ -6548,7 +6548,7 @@ fn active_scope_delimiter_request_ignores_lexical_and_operator_lookalikes() {
 }
 
 #[test]
-fn active_scope_delimiter_request_skips_unproven_dynamic_pairs() {
+fn active_scope_delimiter_request_keeps_structurally_matched_unproven_pairs() {
     let source = "class Example\n{\n\tvoid Run()\n\t{\n\t\tMissing();\n\t\tthis.Run();\n\t}\n}\n";
     let uri = "file:///Scripts/ResolvedActiveScope.c";
     let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
@@ -6604,12 +6604,12 @@ fn active_scope_delimiter_request_skips_unproven_dynamic_pairs() {
         json!([
             {
                 "opener": {
-                    "start": { "line": 3, "character": 1 },
-                    "end": { "line": 3, "character": 2 }
+                    "start": { "line": 4, "character": 9 },
+                    "end": { "line": 4, "character": 10 }
                 },
                 "closer": {
-                    "start": { "line": 6, "character": 1 },
-                    "end": { "line": 6, "character": 2 }
+                    "start": { "line": 4, "character": 10 },
+                    "end": { "line": 4, "character": 11 }
                 }
             },
             {

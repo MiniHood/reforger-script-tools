@@ -52,8 +52,10 @@ coalesces duplicate pairs, and may use the current foreground parse while
 whole-document semantic analysis is pending. The response contains only the
 document version and delimiter ranges; ownership and color decisions remain in
 Rust and semantic tokens. Active-pair requests decline documents larger than
-128 KiB, cap caret input, and omit resolver-dependent pairs until matching
-analysis exists; background semantic projection retains its existing
+128 KiB and cap caret input. Pair selection depends only on parser-proven
+structure, so foreground and analyzed snapshots return the same active ranges;
+resolver-dependent foreground coloring remains punctuation until matching
+analysis exists. Background semantic projection retains its existing
 cancellation contract and bounded token output.
 
 ## Snapshot Rules

@@ -680,30 +680,10 @@ impl FeatureDispatcher<'_> {
                                     "pairs": [],
                                 }));
                             }
-                            let delimiters = match DocumentQuery::state_for(document) {
-                                DocumentQueryState::Cached(analysis) =>
-                                    crate::lsp::scope_delimiters::scope_delimiters_for_analysis(
-                                        &document.text,
-                                        analysis,
-                                        crate::lsp::external_indexes::ExternalIndexes::new(
-                                            query.external_indexes.workspace.as_deref(),
-                                            query.external_indexes.game_data.as_deref(),
-                                        ),
-                                        true,
-                                        None,
-                                    )
-                                    .unwrap_or_default(),
-                                DocumentQueryState::Foreground(foreground) => document
-                                    .syntax()
-                                    .map(|parse| {
-                                        crate::lsp::scope_delimiters::scope_delimiters_for_syntax(
-                                            parse,
-                                            foreground.tokens(),
-                                        )
-                                    })
-                                    .unwrap_or_default(),
-                                DocumentQueryState::Pending => Vec::new(),
-                            };
+                            let delimiters = document
+                                .foreground()
+                                .map(|foreground| foreground.scope_delimiters())
+                                .unwrap_or_default();
                             let offsets = params
                                 .positions
                                 .iter()
@@ -713,7 +693,7 @@ impl FeatureDispatcher<'_> {
                                 })
                                 .collect::<Vec<_>>();
                             let pairs = crate::lsp::scope_delimiters::active_scope_delimiters(
-                                &delimiters,
+                                delimiters,
                                 &offsets,
                             )
                             .into_iter()

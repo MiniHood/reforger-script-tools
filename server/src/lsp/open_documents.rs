@@ -13,6 +13,9 @@ use std::sync::{
 };
 use std::time::Instant;
 
+use super::scope_delimiters::{
+    scope_delimiters_for_syntax, ScopeDelimiter, MAX_ACTIVE_SCOPE_DELIMITER_SOURCE_BYTES,
+};
 use super::semantic_tokens::LspSemanticTokenProjection;
 use super::LspDocumentSymbol;
 
@@ -429,6 +432,7 @@ impl SemanticTokenCache {
 #[derive(Clone)]
 pub(crate) struct ForegroundQuerySnapshot {
     tokens: Vec<Token>,
+    scope_delimiters: Vec<ScopeDelimiter>,
     top_level_declarations: Vec<ForegroundTopLevelDeclaration>,
     callable_declarations: Vec<ForegroundCallableDeclaration>,
 }
@@ -448,10 +452,16 @@ pub(crate) struct ForegroundCallableDeclaration {
 
 impl ForegroundQuerySnapshot {
     pub(crate) fn build(source: &str, tokens: Vec<Token>, parse: &Parse) -> Self {
+        let scope_delimiters = if source.len() <= MAX_ACTIVE_SCOPE_DELIMITER_SOURCE_BYTES {
+            scope_delimiters_for_syntax(parse, &tokens)
+        } else {
+            Vec::new()
+        };
         Self {
             top_level_declarations: foreground_top_level_declarations(source, &tokens),
             callable_declarations: foreground_callable_declarations(source, parse),
             tokens,
+            scope_delimiters,
         }
     }
 
@@ -490,6 +500,10 @@ impl ForegroundQuerySnapshot {
 
     pub(crate) fn tokens(&self) -> &[Token] {
         &self.tokens
+    }
+
+    pub(crate) fn scope_delimiters(&self) -> &[ScopeDelimiter] {
+        &self.scope_delimiters
     }
 }
 

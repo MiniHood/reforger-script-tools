@@ -34,7 +34,7 @@ pub(crate) struct ScopeDelimiter {
     pub(crate) anchor_kind: ScopeDelimiterAnchorKind,
 }
 
-pub(crate) fn scope_delimiters_for_analysis(
+pub(crate) fn semantic_scope_delimiters_for_analysis(
     source: &str,
     analysis: &FileIndexAnalysis,
     external_indexes: ExternalIndexes<'_>,
@@ -83,10 +83,7 @@ pub(crate) fn scope_delimiters_for_syntax(
     parse: &Parse,
     lexer_tokens: &[Token],
 ) -> Vec<ScopeDelimiter> {
-    let mut delimiters =
-        collect_scope_delimiters(parse, lexer_tokens, None, None).unwrap_or_default();
-    delimiters.retain(delimiter_anchor_is_structurally_proven);
-    delimiters
+    collect_scope_delimiters(parse, lexer_tokens, None, None).unwrap_or_default()
 }
 
 fn collect_scope_delimiters(

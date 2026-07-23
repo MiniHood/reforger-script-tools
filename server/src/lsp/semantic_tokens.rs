@@ -575,7 +575,7 @@ fn semantic_raw_tokens(
             *entry = (token.priority, token.token_type);
         }
     }
-    let delimiters = super::scope_delimiters::scope_delimiters_for_analysis(
+    let delimiters = super::scope_delimiters::semantic_scope_delimiters_for_analysis(
         source,
         analysis,
         ExternalIndexes::new(workspace_index, game_data_index),

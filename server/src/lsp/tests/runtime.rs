@@ -1273,7 +1273,7 @@ fn active_scope_delimiters_use_current_foreground_syntax_before_semantic_analysi
         None,
     );
     let uri = "file:///Scripts/PendingScopeDelimiters.c";
-    let source = "class Example\n{\n    void Run()\n    {\n    }\n}";
+    let source = "class Example\n{\n    void Run()\n    {\n        Missing();\n    }\n}";
 
     server
         .handle_message(
@@ -1310,7 +1310,7 @@ fn active_scope_delimiters_use_current_foreground_syntax_before_semantic_analysi
                 "params": {
                     "textDocument": { "uri": uri },
                     "version": 1,
-                    "positions": [{ "line": 2, "character": 13 }]
+                    "positions": [{ "line": 4, "character": 16 }]
                 }
             }),
             None,
@@ -1333,7 +1333,7 @@ fn active_scope_delimiters_use_current_foreground_syntax_before_semantic_analysi
     assert_eq!(response["result"]["pairs"].as_array().unwrap().len(), 1);
     assert_eq!(
         response["result"]["pairs"][0]["opener"]["start"],
-        json!({ "line": 2, "character": 12 })
+        json!({ "line": 4, "character": 15 })
     );
 }
 
