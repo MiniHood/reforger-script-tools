@@ -10,8 +10,8 @@ use crate::lsp::callable::{
     callable_argument_context_at_offset, callable_signature_parts, callable_type_owner,
     CallableParameter, CallableSignatureParts, CallableTarget,
 };
+use crate::lsp::collection_declaration::collection_declaration_before_cursor;
 use crate::lsp::external_indexes::ExternalIndexes;
-use crate::lsp::on_type_formatting::collection_declaration_before_cursor;
 use crate::lsp::{
     file_index_for_source, offset_for_position, range_for_span, FileIndexAnalysis,
     LspMarkupContent, LspPosition, LspRange,
@@ -48,8 +48,6 @@ const COMMAND_TRIGGER_PARAMETER_HINTS: &str = "editor.action.triggerParameterHin
 /// to select each Rust-authored placeholder before dispatching Suggest.
 const COMMAND_TRIGGER_SUGGEST_AT_SNIPPET_PLACEHOLDER: &str =
     "reforger-sript-tools.completion.triggerSuggestAtSnippetPlaceholder";
-const COMMAND_TRIGGER_SUGGEST_AFTER_CUSTOM_COLLECTION_INITIALIZER: &str =
-    "reforger-sript-tools.completion.triggerSuggestAfterCustomCollectionInitializer";
 /// A completion-specific UI adapter which removes the one Space commit
 /// character that VS Code appends after this item's snippet edit. It has an
 /// exact caret-local contract and never classifies ordinary source text.
@@ -349,6 +347,11 @@ fn collection_declaration_tail_completion_report(
     let range = range_for_span(source, TextSpan::new(declaration.name_span.end, offset));
     let item =
         |label: &str, detail: &str, new_text: String, order: usize, command: Option<LspCommand>| {
+            let label = if label.starts_with("Custom initializer") {
+                "Custom initializer\u{2026}"
+            } else {
+                label
+            };
             LspCompletionItem {
                 label: label.to_string(),
                 label_details: None,
@@ -357,7 +360,7 @@ fn collection_declaration_tail_completion_report(
                 documentation: None,
                 sort_text: Some(format!("000:collection-tail:{order:03}:{label}")),
                 filter_text: Some(label.to_string()),
-                insert_text_format: None,
+                insert_text_format: new_text.contains("${").then_some(2),
                 commit_characters: None,
                 command,
                 text_edit: LspTextEdit {
@@ -405,13 +408,11 @@ fn collection_declaration_tail_completion_report(
     items.push(item(
         "Custom initializer…",
         "= ",
-        " = ".to_string(),
+        " = ${1:Expression}".to_string(),
         order + 1,
-        Some(LspCommand {
-            title: "Suggest custom collection initializer".to_string(),
-            command: COMMAND_TRIGGER_SUGGEST_AFTER_CUSTOM_COLLECTION_INITIALIZER.to_string(),
-            arguments: None,
-        }),
+        Some(trigger_suggest_at_snippet_placeholder_command(vec![
+            "Expression".to_string(),
+        ])),
     ));
     Some(LspCompletionReport {
         candidate_count: items.len(),
@@ -2393,8 +2394,9 @@ fn completion_report_for_offset(
     // The type snippets deliberately select these labels before asking VS Code
     // to trigger completion. They are UI placeholders, not an intended filter:
     // retain their edit span but query types as though the slot were empty.
-    let prefix = if mode == EditorTopLevelCompletionMode::Type
-        && matches!(context.prefix.as_str(), "Type" | "KeyType" | "ValueType")
+    let prefix = if (mode == EditorTopLevelCompletionMode::Type
+        && matches!(context.prefix.as_str(), "Type" | "KeyType" | "ValueType"))
+        || (mode == EditorTopLevelCompletionMode::Value && context.prefix == "Expression")
     {
         String::new()
     } else {
@@ -3370,6 +3372,9 @@ fn top_level_completion_report_for_indexes(
         Some(&prefix),
         render_context,
     );
+    if mode == EditorTopLevelCompletionMode::Type {
+        rank_indexed_type_completion_items(&mut items, &prefix);
+    }
     let mut keyword_items =
         keyword_completion_items(&prefix, edit_range, mode, declaration_context);
     if mode == EditorTopLevelCompletionMode::Type
@@ -3432,6 +3437,16 @@ fn generic_type_argument_before_offset(source: &str, offset: usize) -> bool {
         }
     }
     false
+}
+
+fn rank_indexed_type_completion_items(items: &mut [LspCompletionItem], prefix: &str) {
+    for item in items {
+        let match_rank = completion_name_match_rank(&item.label, prefix).unwrap_or(u16::MAX);
+        let inherited_sort = item.sort_text.take().unwrap_or_else(|| item.label.clone());
+        // Indexed enums/classes follow builtins only once their match quality
+        // ties; an exact user class must beat a weaker builtin prefix.
+        item.sort_text = Some(format!("{match_rank:03}:03:{inherited_sort}"));
+    }
 }
 
 fn top_level_source_completion_candidates(
@@ -3877,9 +3892,9 @@ fn keyword_completion_items(
                 detail: Some("keyword".to_string()),
                 documentation: None,
                 sort_text: Some(format!(
-                    "00:{:02}:{:03}:{:03}:{}",
-                    type_keyword_category_rank(keyword, mode),
+                    "{:03}:{:02}:{:03}:{}",
                     keyword_completion_match_rank(keyword, prefix),
+                    type_keyword_category_rank(keyword, mode),
                     keyword.chars().count(),
                     keyword
                 )),

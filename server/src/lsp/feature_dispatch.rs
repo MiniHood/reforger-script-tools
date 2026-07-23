@@ -461,7 +461,7 @@ impl FeatureDispatcher<'_> {
                             }
                             let cursor = offset_for_position(&document.text, params.selections[0].end)?;
                             if params.operation == "insertSpace" {
-                                on_type_formatting::collection_declaration_before_cursor(
+                                crate::lsp::collection_declaration::collection_declaration_before_cursor(
                                     &document.text,
                                     cursor,
                                     false,

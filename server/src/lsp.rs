@@ -26,6 +26,7 @@ use std::time::Instant;
 
 mod background_events;
 mod callable;
+mod collection_declaration;
 mod completion;
 mod debug_hover;
 mod definition;

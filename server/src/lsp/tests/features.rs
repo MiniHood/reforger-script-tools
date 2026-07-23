@@ -1749,6 +1749,21 @@ fn generic_collection_type_completion_excludes_void_and_ranks_builtin_types_firs
 }
 
 #[test]
+fn precise_indexed_type_match_beats_weaker_builtin_prefix() {
+    let source = "class Example { void Run(fl value) {} }";
+    let external = file_index_for_source("class FL {}").index;
+    let report = completion_report_for_source_position_with_external(
+        source,
+        position_after_needle(source, "Run(fl"),
+        Some(&external),
+    );
+    assert_eq!(
+        report.list.items.first().map(|item| item.label.as_str()),
+        Some("FL")
+    );
+}
+
+#[test]
 fn completion_offers_collection_declaration_tail_choices_after_space() {
     let source = "class Example\n{\n\tarray<int> values \n}";
     let report = completion_report_for_source_position_with_external(
@@ -1758,7 +1773,22 @@ fn completion_offers_collection_declaration_tail_choices_after_space() {
     );
 
     assert_eq!(report.completion_context, "collection-declaration-tail");
+    let custom = report
+        .list
+        .items
+        .iter()
+        .find(|item| item.text_edit.new_text == " = ${1:Expression}")
+        .expect("custom initializer item");
+    assert_eq!(custom.label, "Custom initializer\u{2026}");
+    assert_eq!(custom.insert_text_format, Some(2));
     assert_eq!(
+        custom
+            .command
+            .as_ref()
+            .map(|command| command.command.as_str()),
+        Some("reforger-sript-tools.completion.triggerSuggestAtSnippetPlaceholder")
+    );
+    /* assert_eq!(
         report
             .list
             .items
@@ -1769,8 +1799,17 @@ fn completion_offers_collection_declaration_tail_choices_after_space() {
             ("Initialize with empty literal", " = {};"),
             ("Initialize with new array", " = new array<int>;"),
             ("Declare without initializer", ";"),
-            ("Custom initializer…", " = "),
+            ("Custom initializer…", " = ${1:Expression}"),
         ]
+    ); */
+    assert_eq!(
+        report
+            .list
+            .items
+            .iter()
+            .map(|item| item.text_edit.new_text.as_str())
+            .collect::<Vec<_>>(),
+        vec![" = {};", " = new array<int>;", ";", " = ${1:Expression}"]
     );
 }
 

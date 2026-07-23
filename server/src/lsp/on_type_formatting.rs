@@ -28,140 +28,6 @@ pub(super) struct AutoBlockControlHeaderPlan {
     pub switch_arm_selection_end: Option<u32>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct CollectionDeclaration {
-    pub type_span: TextSpan,
-    pub name_span: TextSpan,
-    pub collection: &'static str,
-}
-
-/// Returns the completed, single collection declaration immediately before a
-/// caret. This is deliberately token-based: the caller may use it before the
-/// native Space exists, and completion may use the same proof after that Space
-/// has been inserted.
-pub(super) fn collection_declaration_before_cursor(
-    source: &str,
-    cursor: usize,
-    allow_trailing_whitespace: bool,
-) -> Option<CollectionDeclaration> {
-    if source.len() > MAX_ON_TYPE_SOURCE_BYTES || cursor > source.len() {
-        return None;
-    }
-    let tokens = lex(source)
-        .into_iter()
-        .filter(|token| !token.kind.is_trivia() && token.kind != TokenKind::Eof)
-        .collect::<Vec<_>>();
-    let name_index = tokens
-        .iter()
-        .rposition(|token| token.span.end <= cursor && token.kind == TokenKind::Identifier)?;
-    let name = tokens[name_index];
-    let trailing = source.get(name.span.end..cursor)?;
-    if (allow_trailing_whitespace
-        && !trailing.is_empty()
-        && trailing.chars().all(char::is_whitespace))
-        || (!allow_trailing_whitespace && trailing.is_empty())
-    {
-        // Continue below.
-    } else {
-        return None;
-    }
-    let close_index = name_index.checked_sub(1)?;
-    if tokens[close_index].kind != TokenKind::Operator(Operator::Greater) {
-        return None;
-    }
-    let mut depth = 1usize;
-    let mut open_index = None;
-    for index in (0..close_index).rev() {
-        match tokens[index].kind {
-            TokenKind::Operator(Operator::Greater) => depth += 1,
-            TokenKind::Operator(Operator::Less) => {
-                depth = depth.checked_sub(1)?;
-                if depth == 0 {
-                    open_index = Some(index);
-                    break;
-                }
-            }
-            _ => {}
-        }
-    }
-    let open_index = open_index?;
-    let collection_index = open_index.checked_sub(1)?;
-    if tokens[collection_index].kind != TokenKind::Identifier {
-        return None;
-    }
-    let collection =
-        source.get(tokens[collection_index].span.start..tokens[collection_index].span.end)?;
-    if !matches!(collection, "array" | "set" | "map") {
-        return None;
-    }
-    if open_index + 1 == close_index || tokens[close_index - 1].kind == TokenKind::Comma {
-        return None;
-    }
-    let mut nested_depth = 0usize;
-    let mut generic_argument_count = 1usize;
-    for token in &tokens[open_index + 1..close_index] {
-        match token.kind {
-            TokenKind::Operator(Operator::Less) => nested_depth += 1,
-            TokenKind::Operator(Operator::Greater) => nested_depth = nested_depth.checked_sub(1)?,
-            TokenKind::Comma if nested_depth == 0 => generic_argument_count += 1,
-            _ => {}
-        }
-    }
-    let expected_generic_argument_count = if collection == "map" { 2 } else { 1 };
-    if generic_argument_count != expected_generic_argument_count {
-        return None;
-    }
-    // A declaration can begin at a block boundary or after modifiers. This
-    // excludes parameters, loop headers, `new`, and arbitrary expressions.
-    let mut boundary_index = collection_index;
-    while let Some(previous) = boundary_index.checked_sub(1).map(|index| tokens[index]) {
-        if matches!(
-            previous.kind,
-            TokenKind::Keyword(
-                Keyword::Private
-                    | Keyword::Protected
-                    | Keyword::Static
-                    | Keyword::Const
-                    | Keyword::Ref
-                    | Keyword::Autoptr
-            )
-        ) {
-            boundary_index -= 1;
-            continue;
-        }
-        if !matches!(previous.kind, TokenKind::LeftBrace | TokenKind::Semicolon) {
-            return None;
-        }
-        break;
-    }
-    if boundary_index == 0 {
-        return None;
-    }
-    // An existing continuation makes this a non-tail declaration. In
-    // particular this rejects a completed semicolon, initializer, and
-    // multi-declarator after the current caret.
-    if tokens.iter().any(|token| {
-        token.span.start >= cursor
-            && token.kind != TokenKind::RightBrace
-            && !source[cursor..token.span.start].contains(['\r', '\n'])
-    }) {
-        return None;
-    }
-    Some(CollectionDeclaration {
-        type_span: TextSpan::new(
-            tokens[collection_index].span.start,
-            tokens[close_index].span.end,
-        ),
-        name_span: name.span,
-        collection: match collection {
-            "array" => "array",
-            "set" => "set",
-            "map" => "map",
-            _ => unreachable!(),
-        },
-    })
-}
-
 pub(super) fn auto_block_control_header_enter_plan(
     source: &str,
     cursor: usize,
@@ -1232,9 +1098,8 @@ mod tests {
 
     use super::{
         auto_block_control_header_enter_plan, block_comment_pair_plan,
-        collection_declaration_before_cursor, control_header_block_before_enter_plan,
-        if_header_body_before_enter_plan, incomplete_if_header_enter_plan,
-        semicolon_before_enter_plan, semicolon_insertion_offset,
+        control_header_block_before_enter_plan, if_header_body_before_enter_plan,
+        incomplete_if_header_enter_plan, semicolon_before_enter_plan, semicolon_insertion_offset,
     };
 
     fn insertion(source: &str) -> Option<usize> {
@@ -1249,56 +1114,6 @@ mod tests {
             insertion("Run(value, Other())\n"),
             Some("Run(value, Other())".len())
         );
-    }
-
-    #[test]
-    fn recognizes_only_complete_field_and_local_collection_declaration_tails() {
-        let field = "class Example\n{\n\tprotected ref map<string, ref Widget> m_Widgets\n}";
-        let declaration = collection_declaration_before_cursor(
-            field,
-            field.find("m_Widgets").unwrap() + "m_Widgets".len(),
-            false,
-        )
-        .expect("expected field declaration");
-        assert_eq!(declaration.collection, "map");
-
-        let local = "class Example\n{\n\tvoid Run()\n\t{\n\t\tarray<int> values\n\t}\n}";
-        assert!(collection_declaration_before_cursor(
-            local,
-            local.find("values").unwrap() + "values".len(),
-            false,
-        )
-        .is_some());
-
-        let parameter = "class Example { void Run(array<int> values ) {} }";
-        assert!(collection_declaration_before_cursor(
-            parameter,
-            parameter.find("values").unwrap() + "values".len(),
-            false,
-        )
-        .is_none());
-        let existing = "class Example { array<int> values; }";
-        assert!(collection_declaration_before_cursor(
-            existing,
-            existing.find("values").unwrap() + "values".len(),
-            false,
-        )
-        .is_none());
-
-        let one_line = "class Example { array<int> values }";
-        assert!(collection_declaration_before_cursor(
-            one_line,
-            one_line.find("values").unwrap() + "values".len(),
-            false,
-        )
-        .is_some());
-        let malformed_map = "class Example { map<int> values }";
-        assert!(collection_declaration_before_cursor(
-            malformed_map,
-            malformed_map.find("values").unwrap() + "values".len(),
-            false,
-        )
-        .is_none());
     }
 
     #[test]

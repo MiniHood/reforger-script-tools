@@ -65,10 +65,6 @@
         "title": "Reforger Script Tools: Trigger Snippet Suggestions"
       },
       {
-        "command": "reforger-sript-tools.completion.triggerSuggestAfterCustomCollectionInitializer",
-        "title": "Reforger Script Tools: Trigger Custom Collection Initializer Suggestions"
-      },
-      {
         "command": "reforger-sript-tools.input.insertNewline",
         "title": "Reforger Script Tools: Insert Newline"
       },
@@ -154,10 +150,6 @@
       "commandPalette": [
         {
           "command": "reforger-sript-tools.completion.triggerSuggestAtSnippetPlaceholder",
-          "when": "false"
-        },
-        {
-          "command": "reforger-sript-tools.completion.triggerSuggestAfterCustomCollectionInitializer",
           "when": "false"
         },
         {

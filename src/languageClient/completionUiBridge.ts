@@ -643,7 +643,6 @@ export function registerCompletionUiBridge(): vscode.Disposable[] {
 		registerEmptyCompletionRefresh(),
 		registerIfSpaceCommitCleanup(),
 		vscode.commands.registerCommand(languageClientCommands.triggerSuggestAtSnippetPlaceholder, (...expectedSelectionTexts: unknown[]) => triggerSuggestAtSnippetPlaceholder(...expectedSelectionTexts)),
-		vscode.commands.registerCommand(languageClientCommands.triggerSuggestAfterCustomCollectionInitializer, () => vscode.commands.executeCommand('editor.action.triggerSuggest')),
 		vscode.commands.registerCommand(languageClientCommands.advanceSnippetPlaceholderAfterAccept, (transactionId: unknown, originalCommand: unknown) => advanceSnippetPlaceholderAfterAccept(transactionId, originalCommand)),
 		vscode.commands.registerCommand(languageClientCommands.normalizeIfSpaceCommit, (...args: unknown[]) => normalizeIfSpaceCommit(args)),
 		vscode.commands.registerCommand(languageClientCommands.applyDirectiveSeparator, (directive: unknown) => applyDirectiveSeparator(directive)),
