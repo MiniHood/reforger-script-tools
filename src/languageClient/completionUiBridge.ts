@@ -29,6 +29,7 @@ interface SnippetSuggestTransaction {
 	cleanupTimer: ReturnType<typeof setTimeout>;
 	suggestDispatchScheduled: boolean;
 	awaitingCompletionResponse: boolean;
+	awaitingSnippetAdvance: boolean;
 }
 
 interface EmptyCompletionRefresh {
@@ -207,6 +208,19 @@ function triggerSuggestAtSnippetPlaceholder(...expectedSelectionTexts: unknown[]
 			return;
 		}
 		const expectedText = transaction.expectedSelectionTexts[transaction.nextPlaceholderIndex];
+		if (source === 'selection'
+			&& expectedText.length === 0
+			&& transaction.nextPlaceholderIndex > 0
+			&& !transaction.awaitingSnippetAdvance) {
+			// Completing an empty tabstop leaves an ordinary empty caret at the
+			// end of its inserted text. It is not the following tabstop.
+			diagnostic('completion.transaction.selectionIgnored', {
+				transactionId: id,
+				reason: 'nextEmptyPlaceholderNotAdvanced',
+				placeholderIndex: transaction.nextPlaceholderIndex,
+			});
+			return;
+		}
 		const selectionCount = candidate.selections.length;
 		const selectionLength = candidate.selection.end.character - candidate.selection.start.character;
 		const matchesExpected = selectionCount === 1
@@ -238,6 +252,7 @@ function triggerSuggestAtSnippetPlaceholder(...expectedSelectionTexts: unknown[]
 		});
 		transaction.suggestDispatchScheduled = true;
 		transaction.awaitingCompletionResponse = true;
+		transaction.awaitingSnippetAdvance = false;
 		resetSnippetSuggestTransactionTimeout(transaction, 'completionResponseNotObserved');
 		queueMicrotask(() => {
 			if (pendingSnippetSuggestTransaction?.id !== id) {
@@ -263,6 +278,7 @@ function triggerSuggestAtSnippetPlaceholder(...expectedSelectionTexts: unknown[]
 		cleanupTimer: setTimeout(() => undefined, 0),
 		suggestDispatchScheduled: false,
 		awaitingCompletionResponse: false,
+		awaitingSnippetAdvance: false,
 	};
 	resetSnippetSuggestTransactionTimeout(pendingSnippetSuggestTransaction, 'placeholderNotObserved');
 	diagnostic('completion.transaction.armed', {
@@ -332,26 +348,20 @@ async function advanceSnippetPlaceholderAfterAccept(
 		transactionId,
 		placeholderIndex: transaction.nextPlaceholderIndex - 1,
 	});
-	// VS Code normally advances a snippet completion to its next tabstop before
-	// this completion command runs. A second jump would skip that tabstop (the
-	// value slot of map<K, V>, for example) after it has already requested type
-	// completion. Preserve a deferred fallback for hosts that do not advance.
-	setTimeout(() => {
-		const current = pendingSnippetSuggestTransaction;
-		if (!current || current.id !== transactionId || current.awaitingCompletionResponse) {
-			return;
-		}
-		void vscode.commands.executeCommand('jumpToNextSnippetPlaceholder').then(
-			() => diagnostic('completion.transaction.nextPlaceholderDispatched', {
-				transactionId,
-				placeholderIndex: current.nextPlaceholderIndex,
-			}),
-			() => diagnostic('completion.transaction.nextPlaceholderDispatchError', {
-				transactionId,
-				placeholderIndex: current.nextPlaceholderIndex,
-			}),
-		);
-	}, 0);
+	transaction.awaitingSnippetAdvance = true;
+	try {
+		await vscode.commands.executeCommand('jumpToNextSnippetPlaceholder');
+		diagnostic('completion.transaction.nextPlaceholderDispatched', {
+			transactionId,
+			placeholderIndex: transaction.nextPlaceholderIndex,
+		});
+	} catch {
+		transaction.awaitingSnippetAdvance = false;
+		diagnostic('completion.transaction.nextPlaceholderDispatchError', {
+			transactionId,
+			placeholderIndex: transaction.nextPlaceholderIndex,
+		});
+	}
 }
 
 function isVscodeCommand(value: unknown): value is vscode.Command {
