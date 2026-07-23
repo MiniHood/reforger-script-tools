@@ -964,6 +964,9 @@ fn lexical_semantic_type(kind: TokenKind) -> Option<u32> {
         | TokenKind::UnterminatedBlockComment => Some(semantic_type_index("comment")),
         TokenKind::String | TokenKind::UnterminatedString => Some(semantic_type_index("string")),
         TokenKind::Number | TokenKind::InvalidNumber => Some(semantic_type_index("number")),
+        TokenKind::Keyword(keyword) if keyword.is_class_like_type() => {
+            Some(semantic_type_index("class"))
+        }
         TokenKind::Keyword(_) => Some(semantic_type_index("keyword")),
         TokenKind::Operator(_) => Some(semantic_type_index("operator")),
         TokenKind::LeftBrace

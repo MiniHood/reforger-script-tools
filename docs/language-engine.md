@@ -12,6 +12,11 @@ diagnostics, formatting, symbols, completion, hover, definition, signature
 help, and semantic tokens. Features project shared analysis facts instead of
 building independent text-based models.
 
+Class-like language keywords, currently `string` and `vector`, retain keyword
+spelling but are indexed runtime classes. Semantic tokens, hover, and
+definition use that shared classification even while an editor line is an
+incomplete declaration; scalar primitive keywords remain keyword-classified.
+
 Its common analysis path is:
 
 ```text

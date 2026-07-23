@@ -431,7 +431,12 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
     }
 
     fn resolve_type_keyword_token(&self, token_span: TextSpan) -> Option<ReferenceResolution> {
-        if self.identifier_context(token_span) != IdentifierContext::TypePosition {
+        let token = token_at_offset(self.source, token_span.start)?;
+        let TokenKind::Keyword(keyword) = token.kind else {
+            return None;
+        };
+        let identifier_context = self.identifier_context(token_span);
+        if identifier_context != IdentifierContext::TypePosition && !keyword.is_class_like_type() {
             return None;
         }
 
@@ -449,7 +454,7 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
         Some(ReferenceResolution {
             token_text,
             token_span,
-            identifier_context: IdentifierContext::TypePosition,
+            identifier_context,
             candidates,
             selected,
             reason,

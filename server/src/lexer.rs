@@ -151,6 +151,15 @@ pub enum Keyword {
     Event,
 }
 
+impl Keyword {
+    /// These language keywords name indexed runtime classes rather than
+    /// scalar primitive values. They retain keyword spelling in source while
+    /// editor features treat them as class-like types.
+    pub const fn is_class_like_type(self) -> bool {
+        matches!(self, Self::String | Self::Vector)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Operator {
     Plus,

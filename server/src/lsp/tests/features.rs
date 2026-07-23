@@ -351,15 +351,17 @@ class map<Class TKey, Class TValue> {}
 #[test]
 fn incomplete_type_recovery_preserves_builtin_and_indexed_type_roles() {
     let external = file_index_for_source(
-        r#"class Widget {}
+        r#"sealed class string {}
+sealed class vector {}
+class Widget {}
 class GenericBox<Class T> {}
 "#,
     )
     .index;
     let cases = [
         ("int", "int\nint complete;", "int", "keyword", None),
-        ("string", "string\nstring complete;", "string", "class", None),
-        ("vector", "vector\nvector complete;", "vector", "class", None),
+        ("string", "string\nstring complete;", "string", "class", Some("string")),
+        ("vector", "vector\nvector complete;", "vector", "class", Some("vector")),
         ("Widget", "Widget\nWidget complete;", "Widget", "class", Some("Widget")),
         (
             "GenericBox",
@@ -436,6 +438,20 @@ fn semantic_tokens_color_external_enum_member_references() {
         report.decoded
     );
     let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn incomplete_class_like_keyword_type_remains_a_navigable_class() {
+    let source = "class Example { void Run() {\nvector // incomplete declaration\n} }";
+    let semantic = semantic_tokens_report_for_source(source);
+    assert!(
+        semantic
+            .decoded
+            .iter()
+            .any(|token| token.text == "vector" && token.token_type == "class"),
+        "{:#?}",
+        semantic.decoded
+    );
 }
 
 #[test]
@@ -4819,6 +4835,7 @@ fn definition_resolves_keyword_type_positions_to_external_generated_types() {
 	bool m_bValue;
 	void Run()
 	{
+		vector // incomplete declaration
 		bool value = true;
 	}
 }
@@ -4827,6 +4844,7 @@ fn definition_resolves_keyword_type_positions_to_external_generated_types() {
     for (needle, cursor, expected) in [
         ("string m_sValue", "string", "string.c"),
         ("vector m_vValue", "vector", "vector.c"),
+        ("vector // incomplete declaration", "vector", "vector.c"),
         ("bool m_bValue", "bool", "bool.c"),
     ] {
         let report = definition_report_for_source_position_with_external(
