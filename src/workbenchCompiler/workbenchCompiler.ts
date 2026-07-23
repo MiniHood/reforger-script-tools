@@ -427,7 +427,9 @@ class WorkbenchCompilerController implements vscode.Disposable {
 				: result.success
 					? `Result: Validation completed with ${findingCount} compiler finding${findingCount === 1 ? '' : 's'}.`
 					: `Result: Validation failed: ${findingCount} compiler finding${findingCount === 1 ? '' : 's'}.`,
-			...(staleReason ? [`Freshness: stale — ${staleReason}.`] : ['Freshness: current saved snapshot.']),
+			...(staleReason
+				? [`Result status: may be out of date — ${staleReason}.`]
+				: ['Result status: current saved snapshot.']),
 			'',
 		];
 		for (const item of projected.located) {
@@ -569,9 +571,7 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		const baseText = phase === 'unavailable' && this.lastFailure?.category === 'save-failed'
 			? '$(warning) Workbench save failed'
 			: presentation.text;
-		this.statusItem.text = this.staleReason
-			? `${baseText} — result stale`
-			: baseText;
+		this.statusItem.text = baseText;
 		const detail = phase === 'unavailable' && this.lastFailure?.category === 'save-failed'
 			? 'Compiler validation stopped because the active script could not be saved.'
 			: presentation.detail;
@@ -589,9 +589,11 @@ class WorkbenchCompilerController implements vscode.Disposable {
 				]
 				: []),
 			this.staleReason
-				? `Compiler result: stale — ${this.staleReason}.`
+				? `Compiler result may be out of date because ${this.staleReason}. `
+					+ 'It describes an earlier saved snapshot and will be replaced '
+					+ 'after the next successful validation.'
 				: this.lastValidationResult
-					? 'Compiler result: fresh.'
+					? 'Compiler result: current for the last saved snapshot.'
 					: 'Compiler result: not yet available.',
 			this.lastOutcome,
 			...(this.lastFailure
@@ -795,10 +797,10 @@ function renderStaleDiagnostic(
 ): vscode.Diagnostic {
 	const stale = new vscode.Diagnostic(
 		original.range,
-		`[Stale Workbench result — ${reason}] ${original.message}`,
+		`[Possibly outdated Workbench result — ${reason}] ${original.message}`,
 		original.severity,
 	);
-	stale.source = `${workbenchDiagnostics.source} (stale)`;
+	stale.source = `${workbenchDiagnostics.source} (possibly outdated)`;
 	stale.code = original.code;
 	return stale;
 }

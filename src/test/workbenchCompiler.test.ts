@@ -121,7 +121,10 @@ suite('Workbench compiler validation', () => {
 			assert.match(await fs.readFile(active.filePath, 'utf8'), /\/\/ active edit/);
 			assert.strictEqual(await fs.readFile(other.filePath, 'utf8'), workbenchFixtureSource);
 			assert.strictEqual(otherDocument.isDirty, true);
-			assert.match((await observeWorkbenchCompiler()).tooltip, /Compiler result: stale/);
+			assert.match(
+				(await observeWorkbenchCompiler()).tooltip,
+				/may be out of date because other scripts still have unsaved edits/,
+			);
 		} finally {
 			await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
 			await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(other.filePath));
@@ -316,14 +319,24 @@ suite('Workbench compiler validation', () => {
 
 			const stale = await waitFor(() => {
 				const current = workbenchDiagnosticsFor(sourceUri);
-				return current[0]?.source?.endsWith('(stale)') ? current[0] : undefined;
+				return current[0]?.source?.endsWith('(possibly outdated)')
+					? current[0]
+					: undefined;
 			});
-			assert.match(stale.message, /^\[Stale Workbench result/);
-			assert.match((await observeWorkbenchCompiler()).text, /stale/i);
-			assert.match((await observeWorkbenchCompiler()).tooltip, /Compiler result: stale/);
+			assert.match(stale.message, /^\[Possibly outdated Workbench result/);
+			const outdated = await observeWorkbenchCompiler();
+			assert.strictEqual(outdated.text, '$(plug) Workbench Connected');
 			assert.match(
-				(await observeWorkbenchCompiler()).validationOutput,
-				/Freshness: stale — the script has newer edits/,
+				outdated.tooltip,
+				/Compiler result may be out of date because the script has newer edits\./,
+			);
+			assert.match(
+				outdated.tooltip,
+				/It describes an earlier saved snapshot and will be replaced after the next successful validation\./,
+			);
+			assert.match(
+				outdated.validationOutput,
+				/Result status: may be out of date — the script has newer edits\./,
 			);
 
 			await vscode.commands.executeCommand(workbenchCommands.validateScripts);
@@ -487,7 +500,10 @@ suite('Workbench compiler validation', () => {
 				diagnostic.message.includes('Finding retained while Workbench starts'));
 			assert.strictEqual(retained.length, 1);
 			assert.strictEqual(retained[0].source, workbenchDiagnostics.source);
-			assert.match((await observeWorkbenchCompiler()).tooltip, /Compiler result: fresh/);
+			assert.match(
+				(await observeWorkbenchCompiler()).tooltip,
+				/Compiler result: current for the last saved snapshot/,
+			);
 		} finally {
 			await peer.close();
 		}
@@ -607,7 +623,7 @@ suite('Workbench compiler validation', () => {
 			assert.strictEqual(validationCount, 1);
 			const retained = workbenchDiagnosticsFor(sourceUri);
 			assert.strictEqual(retained.length, 1);
-			assert.match(retained[0].source ?? '', /\(stale\)$/);
+			assert.match(retained[0].source ?? '', /\(possibly outdated\)$/);
 			assert.match((await observeWorkbenchCompiler()).tooltip, /save-failed/);
 		} finally {
 			await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
@@ -661,8 +677,11 @@ suite('Workbench compiler validation', () => {
 			});
 			const retained = workbenchDiagnosticsFor(sourceUri);
 			assert.strictEqual(retained.length, 1);
-			assert.match(retained[0].source ?? '', /\(stale\)$/);
-			assert.match(unavailable.tooltip, /Compiler result: stale/);
+			assert.match(retained[0].source ?? '', /\(possibly outdated\)$/);
+			assert.match(
+				unavailable.tooltip,
+				/Compiler result may be out of date because Workbench is unavailable/,
+			);
 			assert.strictEqual(
 				unavailable.backgroundColor,
 				'statusBarItem.errorBackground',
@@ -802,13 +821,18 @@ suite('Workbench compiler validation', () => {
 
 			const stale = await waitFor(() => {
 				const current = workbenchDiagnosticsFor(sourceUri);
-				return current[0]?.source?.endsWith('(stale)') ? current[0] : undefined;
+				return current[0]?.source?.endsWith('(possibly outdated)')
+					? current[0]
+					: undefined;
 			});
 			assert.match(stale.message, /Finding for the older saved snapshot/);
-			assert.match((await observeWorkbenchCompiler()).tooltip, /Compiler result: stale/);
+			assert.match(
+				(await observeWorkbenchCompiler()).tooltip,
+				/may be out of date because scripts changed while validation was running/,
+			);
 			await waitFor(() => publishedSources.length > 0 ? true : undefined);
 			assert.ok(publishedSources.every(sources =>
-				sources.every(source => source.endsWith('(stale)'))));
+				sources.every(source => source.endsWith('(possibly outdated)'))));
 		} finally {
 			diagnosticsListener.dispose();
 			releaseValidation?.();
