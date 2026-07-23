@@ -83,7 +83,10 @@ suite('Workbench compiler validation', () => {
 				validationOutput?: string;
 			}).validationOutput;
 			assert.ok(output);
-			assert.match(output, /Validation failed: 1 compiler finding/);
+			assert.match(
+				output,
+				/^Compilation completed in (?:\d+ ms|\d+\.\d s) at .+ — 1 project error, 0 project warnings\./,
+			);
 			assert.ok(output.includes(`${sourcePath}:2:1 [ERROR] Undefined function 'Run'`));
 		} finally {
 			await peer.close();
@@ -737,7 +740,16 @@ suite('Workbench compiler validation', () => {
 							file: 'Scripts/Game/Missing.c',
 							line: 1,
 						}],
-						Warnings: [],
+						Warnings: [{
+							error: 'Project warning',
+							file: 'Scripts/Game/Example.c',
+							line: 2,
+						}, {
+							error: 'Base-game warning noise',
+							file: 'Scripts/Game/BaseGame.c',
+							fileAbs: externalPath,
+							line: 2,
+						}],
 						Success: false,
 					},
 				};
@@ -752,17 +764,24 @@ suite('Workbench compiler validation', () => {
 
 			assert.deepStrictEqual(
 				diagnostics.map(diagnostic => diagnostic.message),
-				['Relative contained location'],
+				['Relative contained location', 'Project warning'],
 			);
 			assert.deepStrictEqual(workbenchDiagnosticsFor(vscode.Uri.file(externalPath)), []);
 			assert.strictEqual(
 				(await observeWorkbenchCompiler()).lastValidationResult?.diagnostics.length,
-				4,
+				6,
 			);
+			const output = (await observeWorkbenchCompiler()).validationOutput;
 			assert.match(
-				(await observeWorkbenchCompiler()).validationOutput,
-				/Unresolvable location \[location is not mapped to this workspace\]/,
+				output,
+				/^Compilation completed in (?:\d+ ms|\d+\.\d s) at .+ — 1 project error, 1 project warning \(4 non-project findings hidden\)\./,
 			);
+			assert.ok(output.includes(`${sourcePath}:1:1 [ERROR] Relative contained location`));
+			assert.ok(output.includes(`${sourcePath}:2:1 [WARNING] Project warning`));
+			assert.doesNotMatch(output, /External absolute location/);
+			assert.doesNotMatch(output, /Escaping relative location/);
+			assert.doesNotMatch(output, /Unresolvable location/);
+			assert.doesNotMatch(output, /Base-game warning noise/);
 		} finally {
 			await fs.rm(externalDirectory, { recursive: true, force: true });
 			await peer.close();

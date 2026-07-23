@@ -129,8 +129,8 @@ require live fixtures.
 Once a status transaction succeeds, the UI presents the Workbench API as
 connected and keeps validation available. It presents `ScriptsCompiled`
 separately as the last Workbench-reported compiler state. Compiler findings are
-rendered in Problems and in a dedicated latest-result output with clickable
-project-contained source locations and explanatory messages.
+rendered in Problems and in a dedicated latest-result output with a timed
+completion summary and clickable project-contained source locations.
 
 ## What this cannot validate
 
@@ -381,13 +381,14 @@ evidence. Their source/message and the Workbench Status Item identify the
 prior-snapshot or unavailable state; the next fresh result replaces them.
 The Gateway remains host-neutral by returning Workbench resource identities and
 paths. Only the extension maps a location to a VS Code URI after proving it is
-inside the Addon Workspace; unresolvable locations are structured result/log
-evidence, never guessed workspace files.
+inside the Addon Workspace; unresolvable locations remain structured Gateway
+result evidence and sanitized counts, never guessed workspace files or
+end-user output entries.
 
-The dedicated latest-result output summarizes the validation and renders
-project-contained locations as clickable `path:line:column` entries with
-severity and compiler messages. Unmapped findings remain visible with an
-explicit mapping explanation.
+The dedicated latest-result output starts with one completion line containing
+request duration, completion time, project error/warning counts, and a count of
+hidden non-project findings. It then renders only project-contained locations
+as clickable `path:line:column` entries with severity and compiler messages.
 
 One lower-right Workbench Status Item reports disabled, connecting, API
 connected, validating, or unavailable/retrying. It exposes the endpoint,

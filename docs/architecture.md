@@ -152,11 +152,14 @@ path is never replaced by a plausible relative guess. Rust language diagnostics
 remain in their independent LSP-owned collection throughout.
 
 Every completed validation also replaces the dedicated **Reforger Workbench
-Compiler** output. Project-contained findings use `path:line:column` entries
-that VS Code can open directly and include severity plus the compiler message;
-unmapped findings retain their Workbench resource location and explain that
-they are not mapped to the current workspace. Manual validation reveals the
-output, and automatic validation reveals it when findings exist.
+Compiler** output. Its first line reports completion time, request duration,
+project error/warning counts, and a count of hidden non-project findings.
+Project-contained findings use `path:line:column` entries that VS Code can open
+directly and include severity plus the compiler message. Unmapped finding
+details remain in the typed Gateway result and are represented only by
+sanitized counts in logging and user output. Manual validation reveals the
+output, and automatic validation reveals it when project-contained findings
+exist.
 
 Within the language-client bridge, the composition root retains server lifecycle
 and restart policy. Focused bridges own workspace-script notifications, hover

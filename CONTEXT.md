@@ -76,10 +76,12 @@ diagnostic publication.
 _Avoid_: LSP compiler diagnostics, shared diagnostic collection, Rust output
 
 **Workbench Compiler Output**:
-The user-facing output containing the latest complete Workbench validation
-summary, clickable project-contained source locations, severity, compiler
-messages, and explicit labels for locations that cannot be mapped to the Addon
-Workspace. It is distinct from the sanitized extension diagnostic log.
+The user-facing latest-result output. Its first line reports completion time,
+duration, project error/warning counts, and the count of hidden non-project
+findings. It then lists only project-contained findings as clickable source
+locations with severity and compiler messages. Unmapped finding details stay
+out of this user-focused output. It is distinct from the sanitized extension
+diagnostic log.
 _Avoid_: payload log, compiler history, raw NET API response
 
 **Provisional Parser Diagnostic**:
