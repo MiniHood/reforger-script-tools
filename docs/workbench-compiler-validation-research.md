@@ -387,8 +387,10 @@ end-user output entries.
 
 The dedicated latest-result output starts with one completion line containing
 request duration, completion time, project error/warning counts, and a count of
-hidden non-project findings. It then renders only project-contained locations
-as clickable `path:line:column` entries with severity and compiler messages.
+hidden non-project findings. It then renders only project-contained findings
+with a severity followed by one clickable workspace-relative
+`path:line — message` range. The severity is not part of the link, and absolute
+paths are not displayed.
 
 One lower-right Workbench Status Item reports disabled, connecting, API
 connected, validating, or unavailable/retrying. It exposes the endpoint,

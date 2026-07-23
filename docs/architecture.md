@@ -154,12 +154,13 @@ remain in their independent LSP-owned collection throughout.
 Every completed validation also replaces the dedicated **Reforger Workbench
 Compiler** output. Its first line reports completion time, request duration,
 project error/warning counts, and a count of hidden non-project findings.
-Project-contained findings use `path:line:column` entries that VS Code can open
-directly and include severity plus the compiler message. Unmapped finding
-details remain in the typed Gateway result and are represented only by
-sanitized counts in logging and user output. Manual validation reveals the
-output, and automatic validation reveals it when project-contained findings
-exist.
+Project-contained findings show a workspace-relative `path:line`, severity,
+and compiler message. Everything after the severity is one document link to
+the exact source line; absolute paths are kept out of the displayed result.
+Unmapped finding details remain in the typed Gateway result and are represented
+only by sanitized counts in logging and user output. Manual validation reveals
+the output, and automatic validation reveals it when project-contained
+findings exist.
 
 Within the language-client bridge, the composition root retains server lifecycle
 and restart policy. Focused bridges own workspace-script notifications, hover

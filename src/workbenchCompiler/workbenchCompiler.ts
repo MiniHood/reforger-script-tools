@@ -34,6 +34,12 @@ export interface WorkbenchCompilerObservation {
 	tooltip: string;
 	backgroundColor?: string;
 	validationOutput: string;
+	validationOutputLinks: Array<{
+		line: number;
+		startCharacter: number;
+		endCharacter: number;
+		target: string;
+	}>;
 	lastValidationResult?: WorkbenchValidationResult;
 }
 
@@ -63,6 +69,14 @@ interface ValidationRequest {
 interface ValidationTiming {
 	completedAtMs: number;
 	durationMs: number;
+}
+
+interface ValidationOutputLink {
+	line: number;
+	lineText: string;
+	startCharacter: number;
+	target: vscode.Uri;
+	tooltip: string;
 }
 
 interface WorkbenchCompilerFailure {
@@ -97,6 +111,7 @@ class WorkbenchCompilerController implements vscode.Disposable {
 	);
 	private readonly validationOutput = vscode.window.createOutputChannel(
 		workbenchDiagnostics.outputChannelName,
+		workbenchDiagnostics.outputLanguageId,
 	);
 	private readonly statusItem = vscode.window.createStatusBarItem(
 		vscode.StatusBarAlignment.Right,
@@ -118,6 +133,7 @@ class WorkbenchCompilerController implements vscode.Disposable {
 	private lastValidationResult: WorkbenchValidationResult | undefined;
 	private lastValidationTiming: ValidationTiming | undefined;
 	private latestValidationOutput = '';
+	private latestValidationOutputLinks: ValidationOutputLink[] = [];
 	private staleReason: string | undefined;
 	private disposed = false;
 
@@ -129,6 +145,12 @@ class WorkbenchCompilerController implements vscode.Disposable {
 			this.statusItem,
 			this.compilerDiagnostics,
 			this.validationOutput,
+			vscode.languages.registerDocumentLinkProvider(
+				{ language: workbenchDiagnostics.outputLanguageId },
+				{
+					provideDocumentLinks: document => this.provideValidationOutputLinks(document),
+				},
+			),
 			vscode.commands.registerCommand(
 				workbenchCommands.validateScripts,
 				() => this.requestManualValidation(),
@@ -455,18 +477,53 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		if (projected.located.length > 0) {
 			lines.push('');
 		}
+		const links: ValidationOutputLink[] = [];
 		for (const item of projected.located) {
-			lines.push(
-				`${item.uri.fsPath}:${item.compilerDiagnostic.location.line}:1 `
-					+ `[${item.compilerDiagnostic.severity.toUpperCase()}] `
-					+ item.compilerDiagnostic.message,
-			);
+			const severity = `[${item.compilerDiagnostic.severity.toUpperCase()}]`;
+			const relativePath = vscode.workspace.asRelativePath(item.uri, false)
+				.split(path.sep)
+				.join('/');
+			const location = `${relativePath}:${item.compilerDiagnostic.location.line}`;
+			const lineText = `${severity} ${location} — ${item.compilerDiagnostic.message}`;
+			links.push({
+				line: lines.length,
+				lineText,
+				startCharacter: severity.length + 1,
+				target: item.uri.with({
+					fragment: `L${item.compilerDiagnostic.location.line},1`,
+				}),
+				tooltip: `Open ${location}`,
+			});
+			lines.push(lineText);
 		}
 		this.latestValidationOutput = `${lines.join('\n')}\n`;
+		this.latestValidationOutputLinks = links;
 		this.validationOutput.replace(this.latestValidationOutput);
 		if (revealOutput) {
 			this.validationOutput.show(true);
 		}
+	}
+
+	private provideValidationOutputLinks(document: vscode.TextDocument): vscode.DocumentLink[] {
+		const links: vscode.DocumentLink[] = [];
+		for (const candidate of this.latestValidationOutputLinks) {
+			if (candidate.line >= document.lineCount
+				|| document.lineAt(candidate.line).text !== candidate.lineText) {
+				continue;
+			}
+			const link = new vscode.DocumentLink(
+				new vscode.Range(
+					candidate.line,
+					candidate.startCharacter,
+					candidate.line,
+					candidate.lineText.length,
+				),
+				candidate.target,
+			);
+			link.tooltip = candidate.tooltip;
+			links.push(link);
+		}
+		return links;
 	}
 
 	private markDiagnosticsStale(reason: string): void {
@@ -622,6 +679,12 @@ class WorkbenchCompilerController implements vscode.Disposable {
 				? { backgroundColor: this.statusItem.backgroundColor.id }
 				: {}),
 			validationOutput: this.latestValidationOutput,
+			validationOutputLinks: this.latestValidationOutputLinks.map(link => ({
+				line: link.line,
+				startCharacter: link.startCharacter,
+				endCharacter: link.lineText.length,
+				target: link.target.toString(),
+			})),
 			...(this.lastValidationResult
 				? { lastValidationResult: cloneValidationResult(this.lastValidationResult) }
 				: {}),

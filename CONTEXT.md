@@ -79,9 +79,11 @@ _Avoid_: LSP compiler diagnostics, shared diagnostic collection, Rust output
 The user-facing latest-result output. Its first line reports completion time,
 duration, project error/warning counts, and the count of hidden non-project
 findings. It then lists only project-contained findings as clickable source
-locations with severity and compiler messages. Unmapped finding details stay
-out of this user-focused output. It is distinct from the sanitized extension
-diagnostic log.
+locations with severity and compiler messages. The displayed location is
+workspace-relative, never absolute, and the complete location-plus-message
+after the severity is one link to the exact source line. Unmapped finding
+details stay out of this user-focused output. It is distinct from the
+sanitized extension diagnostic log.
 _Avoid_: payload log, compiler history, raw NET API response
 
 **Provisional Parser Diagnostic**:

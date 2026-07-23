@@ -87,7 +87,18 @@ suite('Workbench compiler validation', () => {
 				output,
 				/^Compilation completed in (?:\d+ ms|\d+\.\d s) at .+ — 1 project error, 0 project warnings\./,
 			);
-			assert.ok(output.includes(`${sourcePath}:2:1 [ERROR] Undefined function 'Run'`));
+			const findingLine = "[ERROR] Scripts/Game/Example.c:2 — Undefined function 'Run'";
+			assert.ok(output.includes(findingLine));
+			assert.doesNotMatch(output, new RegExp(escapeRegExp(workspace.uri.fsPath)));
+			assert.deepStrictEqual(
+				(await observeWorkbenchCompiler()).validationOutputLinks,
+				[{
+					line: 2,
+					startCharacter: '[ERROR] '.length,
+					endCharacter: findingLine.length,
+					target: sourceUri.with({ fragment: 'L2,1' }).toString(),
+				}],
+			);
 		} finally {
 			await peer.close();
 		}
@@ -776,8 +787,13 @@ suite('Workbench compiler validation', () => {
 				output,
 				/^Compilation completed in (?:\d+ ms|\d+\.\d s) at .+ — 1 project error, 1 project warning \(4 non-project findings hidden\)\./,
 			);
-			assert.ok(output.includes(`${sourcePath}:1:1 [ERROR] Relative contained location`));
-			assert.ok(output.includes(`${sourcePath}:2:1 [WARNING] Project warning`));
+			assert.ok(output.includes(
+				'[ERROR] Scripts/Game/Example.c:1 — Relative contained location',
+			));
+			assert.ok(output.includes(
+				'[WARNING] Scripts/Game/Example.c:2 — Project warning',
+			));
+			assert.doesNotMatch(output, new RegExp(escapeRegExp(workspace.uri.fsPath)));
 			assert.doesNotMatch(output, /External absolute location/);
 			assert.doesNotMatch(output, /Escaping relative location/);
 			assert.doesNotMatch(output, /Unresolvable location/);
@@ -944,6 +960,10 @@ function onlyWorkspaceFolder(): vscode.WorkspaceFolder {
 	const folders = vscode.workspace.workspaceFolders;
 	assert.ok(folders && folders.length === 1);
 	return folders[0];
+}
+
+function escapeRegExp(value: string): string {
+	return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 async function waitFor<T>(

@@ -31,4 +31,5 @@ export const workbenchDiagnostics = {
 	collectionName: 'Workbench',
 	source: 'Workbench Compiler',
 	outputChannelName: 'Reforger Workbench Compiler',
+	outputLanguageId: 'reforger-workbench-compiler-output',
 } as const;
