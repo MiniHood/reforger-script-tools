@@ -1548,6 +1548,39 @@ fn completion_returns_members_for_receiver_and_replaces_prefix() {
 }
 
 #[test]
+fn completion_returns_base_method_call_snippets_for_super() {
+    let source = r#"class Base
+{
+	void OnPostInit(IEntity owner);
+}
+
+class Example : Base
+{
+	override void OnPostInit(IEntity owner)
+	{
+		super.
+	}
+}
+"#;
+    let report = completion_report_for_source_position_with_external(
+        source,
+        position_after_needle(source, "super."),
+        None,
+    );
+
+    assert_eq!(report.receiver_text.as_deref(), Some("super"));
+    assert_eq!(report.owner_type.as_deref(), Some("Base"));
+    let item = report
+        .list
+        .items
+        .iter()
+        .find(|item| item.label == "OnPostInit")
+        .expect("expected the base OnPostInit method completion");
+    assert_eq!(item.text_edit.new_text, "OnPostInit(${1:owner})");
+    assert_eq!(item.insert_text_format, Some(2));
+}
+
+#[test]
 fn completion_follows_external_game_api_return_type_chain() {
     let game_source = r#"class Example
 {
