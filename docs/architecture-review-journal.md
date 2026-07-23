@@ -289,24 +289,26 @@ lets parser, completion, signature help, and hover verify the same fact.
 ### AR-013 — Cached LSP requests bypass the runtime-owned position index
 
 **Strength:** Strong
-**Files:** `server/src/lsp/open_documents.rs:104-127`; `server/src/lsp.rs:1049-1103`; `server/src/lsp/completion.rs:241-251`; `server/src/lsp/hover.rs:221-245`; `server/src/lsp/definition.rs:139-157`
+**Files:** `server/src/analysis_runtime.rs:22-97`; `server/src/lsp/open_documents.rs:104-127`; `server/src/lsp.rs:1049-1103`; `server/src/lsp/completion.rs:241-251`; `server/src/lsp/hover.rs:221-245`; `server/src/lsp/definition.rs:139-157`
 
 The foreground runtime builds and retains a `PositionIndex` for every current
 document revision before semantic analysis becomes available. Yet cached
 completion, hover, and definition reports accept only source text and an LSP
 position, then call the standalone `offset_for_position`, which scans from the
 start of the document. Their result projection also uses `range_for_span`,
-which constructs another position index from the same text. On ordinary cursor
-requests this repeats source-wide UTF-16/line conversion despite the exact
-index already being attached to the immutable Document Snapshot.
+which constructs another position index from the same text. The retained
+`PositionIndex` itself provides byte-to-position lookup but implements its
+inverse as another whole-table linear search. On ordinary cursor requests this
+repeats source-wide UTF-16/line conversion despite the exact snapshot already
+owning coordinate state.
 
-Make source-coordinate conversion a runtime-query fact: `DocumentQuery`
-should expose the revision's position index (or a small coordinate projection)
-to feature modules, and report functions should accept it rather than raw text
-alone. The deletion test passes because callers would otherwise need to build
-or scan coordinate state independently. This deepens the snapshot interface,
-removes repeated editor-path work, and guarantees every feature applies the
-same CRLF/UTF-16 conversion policy.
+Make bidirectional source-coordinate conversion a runtime-query fact:
+`DocumentQuery` should expose a revision-owned coordinate projection with a
+direct or line-bounded position-to-offset lookup, and report functions should
+accept it rather than raw text alone. The deletion test passes because callers
+would otherwise need to build or scan coordinate state independently. This
+deepens the snapshot interface, removes repeated editor-path work, and
+guarantees every feature applies the same CRLF/UTF-16 conversion policy.
 
 ## Reviewed slices
 
