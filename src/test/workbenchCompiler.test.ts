@@ -655,12 +655,29 @@ suite('Workbench compiler validation', () => {
 				vscode.ConfigurationTarget.Global,
 			);
 
-			await waitFor(async () =>
-				(await observeWorkbenchCompiler()).phase === 'unavailable' ? true : undefined);
+			const unavailable = await waitFor(async () => {
+				const observation = await observeWorkbenchCompiler();
+				return observation.phase === 'unavailable' ? observation : undefined;
+			});
 			const retained = workbenchDiagnosticsFor(sourceUri);
 			assert.strictEqual(retained.length, 1);
 			assert.match(retained[0].source ?? '', /\(stale\)$/);
-			assert.match((await observeWorkbenchCompiler()).tooltip, /Compiler result: stale/);
+			assert.match(unavailable.tooltip, /Compiler result: stale/);
+			assert.strictEqual(
+				unavailable.backgroundColor,
+				'statusBarItem.errorBackground',
+			);
+
+			await configuration.update(
+				workbenchConfig.settings.port,
+				peer.port,
+				vscode.ConfigurationTarget.Global,
+			);
+			const recovered = await waitFor(async () => {
+				const observation = await observeWorkbenchCompiler();
+				return observation.phase === 'ready' ? observation : undefined;
+			});
+			assert.strictEqual(recovered.backgroundColor, undefined);
 		} finally {
 			await peer.close();
 		}

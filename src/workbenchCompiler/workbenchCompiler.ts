@@ -32,6 +32,7 @@ export interface WorkbenchCompilerObservation {
 	phase: WorkbenchUiPhase;
 	text: string;
 	tooltip: string;
+	backgroundColor?: string;
 	validationOutput: string;
 	lastValidationResult?: WorkbenchValidationResult;
 }
@@ -561,6 +562,9 @@ class WorkbenchCompilerController implements vscode.Disposable {
 			});
 		}
 		this.phase = phase;
+		this.statusItem.backgroundColor = phase === 'unavailable'
+			? new vscode.ThemeColor('statusBarItem.errorBackground')
+			: undefined;
 		const presentation = statusPresentation(phase);
 		const baseText = phase === 'unavailable' && this.lastFailure?.category === 'save-failed'
 			? '$(warning) Workbench save failed'
@@ -605,6 +609,9 @@ class WorkbenchCompilerController implements vscode.Disposable {
 			tooltip: typeof this.statusItem.tooltip === 'string'
 				? this.statusItem.tooltip
 				: '',
+			...(this.statusItem.backgroundColor
+				? { backgroundColor: this.statusItem.backgroundColor.id }
+				: {}),
 			validationOutput: this.latestValidationOutput,
 			...(this.lastValidationResult
 				? { lastValidationResult: cloneValidationResult(this.lastValidationResult) }
