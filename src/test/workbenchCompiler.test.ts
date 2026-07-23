@@ -386,7 +386,7 @@ suite('Workbench compiler validation', () => {
 				return observation.phase === 'ready' ? observation : undefined;
 			});
 
-			assert.match(connected.text, /API connected/i);
+			assert.match(connected.text, /Workbench Connected/);
 			assert.match(connected.tooltip, /Scripts: not compiled successfully/i);
 			assert.match(connected.tooltip, /validation remains available/i);
 		} finally {

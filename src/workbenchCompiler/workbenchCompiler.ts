@@ -676,7 +676,7 @@ function statusPresentation(phase: WorkbenchUiPhase): { text: string; detail: st
 		case 'connecting':
 			return { text: '$(sync~spin) Workbench connecting', detail: 'Connecting to the configured Workbench endpoint.' };
 		case 'ready':
-			return { text: '$(plug) Workbench API connected', detail: 'Workbench NET API is connected and compiler validation is available.' };
+			return { text: '$(plug) Workbench Connected', detail: 'Workbench NET API is connected and compiler validation is available.' };
 		case 'validating':
 			return { text: '$(sync~spin) Workbench validating', detail: 'Workbench is validating scripts.' };
 		case 'unavailable':

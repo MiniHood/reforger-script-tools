@@ -172,7 +172,7 @@ is reserved for bounded work.
 | --- | --- | --- |
 | Index not ready | No Workbench state shown yet. | Not started. |
 | Discovering | `$(sync~spin) Looking for Reforger Workbench...` | Unavailable. |
-| Connected | `$(plug) Workbench API connected` | `ValidateScripts` available; compilation state is shown separately. |
+| Connected | `$(plug) Workbench Connected` | `ValidateScripts` available; compilation state is shown separately. |
 | Validating | `$(sync~spin) Validating scripts in Workbench...` | One validation in flight. |
 | Lost | `$(circle-slash) Reforger Workbench unavailable - retrying` | Unavailable; file and Rust features remain available. |
 

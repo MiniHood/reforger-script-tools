@@ -229,7 +229,7 @@ Workbench is ongoing availability state. Suggested wording and state are:
 | --- | --- | --- |
 | Initial index pending | No Workbench status yet. | None. |
 | Discovering | `$(sync~spin) Checking for Reforger Workbench…` | None. |
-| Built-in status succeeds | `$(plug) Workbench API connected` | Built-in `validate_scripts`; show `ScriptsCompiled` separately as compiler state. |
+| Built-in status succeeds | `$(plug) Workbench Connected` | Built-in `validate_scripts`; show `ScriptsCompiled` separately as compiler state. |
 | Custom capabilities succeed | `$(plug) Reforger Workbench ready` | Built-in `validate_scripts` plus only handlers named in the capability response. |
 | Connection lost | `$(circle-slash) Reforger Workbench unavailable — retrying` | None until re-established. |
 
