@@ -2052,6 +2052,10 @@ fn top_level_fallback_report_for_prefix_span(
         Some(&prefix),
         render_context,
     );
+    let declaration_context = declaration_keyword_context(source, prefix_span.start);
+    if mode == EditorTopLevelCompletionMode::Type || declaration_context {
+        apply_tuple_type_snippets(&mut items);
+    }
     if mode == EditorTopLevelCompletionMode::Type {
         rank_indexed_type_completion_items(&mut items, &prefix);
     }
@@ -2059,7 +2063,7 @@ fn top_level_fallback_report_for_prefix_span(
         &prefix,
         range_for_span(source, prefix_span),
         mode,
-        declaration_keyword_context(source, prefix_span.start),
+        declaration_context,
     );
     if mode == EditorTopLevelCompletionMode::Type {
         keyword_items.retain(|item| item.label != "void");
@@ -3422,6 +3426,9 @@ fn top_level_completion_report_for_indexes(
         Some(&prefix),
         render_context,
     );
+    if mode == EditorTopLevelCompletionMode::Type || declaration_context {
+        apply_tuple_type_snippets(&mut items);
+    }
     if mode == EditorTopLevelCompletionMode::Type {
         rank_indexed_type_completion_items(&mut items, &prefix);
     }
@@ -4043,8 +4050,30 @@ fn type_keyword_category_rank(keyword: &str, mode: EditorTopLevelCompletionMode)
 }
 
 #[derive(Clone, Copy)]
-struct CollectionTypeSnippet {
+struct GenericTypeSnippet {
     type_argument_count: usize,
+}
+
+impl GenericTypeSnippet {
+    fn snippet(self, label: &str) -> String {
+        let slots = (1..=self.type_argument_count)
+            .map(|index| format!("${{{index}}}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        // The final tabstop is deliberately outside the closing delimiter.
+        format!("{label}<{slots}>$0")
+    }
+
+    fn follow_up_command(self) -> LspCommand {
+        trigger_suggest_at_generic_type_placeholder_command(
+            std::iter::repeat_n(String::new(), self.type_argument_count).collect(),
+        )
+    }
+}
+
+#[derive(Clone, Copy)]
+struct CollectionTypeSnippet {
+    generic: GenericTypeSnippet,
 }
 
 impl CollectionTypeSnippet {
@@ -4061,22 +4090,19 @@ impl CollectionTypeSnippet {
             "map" => 2,
             _ => return None,
         };
-        Some(Self { type_argument_count })
+        Some(Self {
+            generic: GenericTypeSnippet {
+                type_argument_count,
+            },
+        })
     }
 
     fn snippet(self, keyword: &str) -> String {
-        let slots = (1..=self.type_argument_count)
-            .map(|index| format!("${{{index}}}"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        // The final tabstop is deliberately outside the closing delimiter.
-        format!("{keyword}<{slots}>$0")
+        self.generic.snippet(keyword)
     }
 
     fn follow_up_command(self) -> LspCommand {
-        trigger_suggest_at_collection_type_placeholder_command(
-            std::iter::repeat_n(String::new(), self.type_argument_count).collect(),
-        )
+        self.generic.follow_up_command()
     }
 }
 
@@ -4112,6 +4138,29 @@ fn type_keyword_snippet(
             ((mode == EditorTopLevelCompletionMode::Type || declaration_context) && keyword == "ref")
                 .then_some(TypeKeywordSnippet::Ref)
         })
+}
+
+fn tuple_type_snippet(label: &str) -> Option<GenericTypeSnippet> {
+    let type_argument_count = label.strip_prefix("Tuple")?.parse::<usize>().ok()?;
+    (1..=6).contains(&type_argument_count).then_some(GenericTypeSnippet {
+        type_argument_count,
+    })
+}
+
+fn apply_tuple_type_snippets(items: &mut [LspCompletionItem]) {
+    for item in items {
+        // Tuple completion belongs only to class candidates, never to an
+        // unrelated callable or value that happens to share the name.
+        if item.kind != 7 {
+            continue;
+        }
+        let Some(tuple) = tuple_type_snippet(&item.label) else {
+            continue;
+        };
+        item.text_edit.new_text = tuple.snippet(&item.label);
+        item.insert_text_format = Some(2);
+        item.command = Some(tuple.follow_up_command());
+    }
 }
 
 /// The generated first switch arm is deliberately a tiny completion surface.
@@ -4858,7 +4907,7 @@ fn trigger_suggest_at_snippet_placeholder_command(placeholder_defaults: Vec<Stri
     trigger_suggest_at_snippet_placeholder_command_with_options(placeholder_defaults, false)
 }
 
-fn trigger_suggest_at_collection_type_placeholder_command(
+fn trigger_suggest_at_generic_type_placeholder_command(
     placeholder_defaults: Vec<String>,
 ) -> LspCommand {
     trigger_suggest_at_snippet_placeholder_command_with_options(placeholder_defaults, true)

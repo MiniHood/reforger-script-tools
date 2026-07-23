@@ -73,6 +73,11 @@ collection type argument. Recovery recognizes only an incomplete operand of
 `new` and a builtin collection type argument, so completion remains available
 while the user is constructing these otherwise valid type positions.
 
+Base-game `Tuple1` through `Tuple6` are a separate generic-class completion
+family. Their source-defined arity supplies one through six type slots using
+the same type-completion and final-caret bridge as collections; they do not
+receive collection construction or declaration-tail behavior.
+
 The collection declaration-tail owner is similarly bounded: it lexically
 proves a complete single `array`, `set`, or `map` field/local and rejects all
 other contexts before returning the one native Space edit plus a suggestion

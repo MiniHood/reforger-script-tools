@@ -50,8 +50,10 @@ _Avoid_: preprocessor formatting, individual auto-edit switches
 **Dynamic Collection Type**:
 One of Enfusion's built-in generic collection types: `array<T>`, `set<T>`, or
 `map<TKey, TValue>`. Collection completion and declaration initialization apply
-to this closed set, not static-array syntax, tuples, or arbitrary user-defined
-generics.
+to this closed set, not static-array syntax or arbitrary user-defined generics.
+The base-game `Tuple1` through `Tuple6` classes receive their own arity-based
+generic completion, but never collection initialization or declaration-tail
+behavior.
 _Avoid_: generic type, container type
 
 **Collection Type Completion**:

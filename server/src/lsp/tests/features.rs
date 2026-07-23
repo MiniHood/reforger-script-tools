@@ -1897,6 +1897,51 @@ fn completion_expands_map_and_ref_type_slots() {
 }
 
 #[test]
+fn completion_expands_base_game_tuple_classes_with_their_arity() {
+    let external = file_index_for_source(
+        r#"class Tuple1<Class T1> {}
+class Tuple2<Class T1, Class T2> {}
+class Tuple3<Class T1, Class T2, Class T3> {}
+class Tuple4<Class T1, Class T2, Class T3, Class T4> {}
+class Tuple5<Class T1, Class T2, Class T3, Class T4, Class T5> {}
+class Tuple6<Class T1, Class T2, Class T3, Class T4, Class T5, Class T6> {}"#,
+    )
+    .index;
+    let source = "class Example { void Run(Tup value) {} }";
+    let report = completion_report_for_source_position_with_external(
+        source,
+        position_after_needle(source, "Tup"),
+        Some(&external),
+    );
+
+    for (label, snippet) in [
+        ("Tuple1", "Tuple1<${1}>$0"),
+        ("Tuple2", "Tuple2<${1}, ${2}>$0"),
+        ("Tuple3", "Tuple3<${1}, ${2}, ${3}>$0"),
+        ("Tuple4", "Tuple4<${1}, ${2}, ${3}, ${4}>$0"),
+        ("Tuple5", "Tuple5<${1}, ${2}, ${3}, ${4}, ${5}>$0"),
+        ("Tuple6", "Tuple6<${1}, ${2}, ${3}, ${4}, ${5}, ${6}>$0"),
+    ] {
+        let tuple = report
+            .list
+            .items
+            .iter()
+            .find(|item| item.label == label)
+            .unwrap_or_else(|| panic!("missing {label} completion: {report:?}"));
+        assert_eq!(tuple.text_edit.new_text, snippet);
+        assert_eq!(tuple.insert_text_format, Some(2));
+        assert_eq!(
+            tuple
+                .command
+                .as_ref()
+                .and_then(|command| command.arguments.as_ref())
+                .and_then(|arguments| arguments.last()),
+            Some(&json!({ "finalTabstop": true }))
+        );
+    }
+}
+
+#[test]
 fn completion_offers_collection_snippets_in_every_supported_type_position() {
     let samples = [
         "class Example { arr value; }",
