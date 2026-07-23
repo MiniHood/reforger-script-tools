@@ -4218,6 +4218,18 @@ const TYPE_COMPLETION_KEYWORDS: &[&str] = &[
 ];
 
 fn declaration_keyword_context(source: &str, offset: usize) -> bool {
+    // Completion must remain useful while the preceding line is unfinished.
+    // At an indentation-only physical line, do not let an earlier assignment,
+    // type, or other incomplete token suppress the next declaration/type
+    // skeleton. The same recovery boundary serves every declaration keyword;
+    // collection types do not get a separate exception.
+    if source
+        .get(..offset)
+        .and_then(|before_cursor| before_cursor.rsplit(['\n', '\r']).next())
+        .is_some_and(|line| line.trim().is_empty())
+    {
+        return true;
+    }
     previous_significant_token_kind(source, offset).is_none_or(|kind| match kind {
         TokenKind::LeftBrace | TokenKind::RightBrace | TokenKind::Semicolon => true,
         TokenKind::Keyword(keyword) => matches!(

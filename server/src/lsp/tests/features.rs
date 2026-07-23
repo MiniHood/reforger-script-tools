@@ -1808,6 +1808,29 @@ fn completion_expands_collection_at_an_incomplete_member_declaration_start() {
 }
 
 #[test]
+fn completion_keeps_collection_snippet_after_an_incomplete_preceding_line() {
+    for preceding_line in ["array<int>", "array<int> values", "int value ="] {
+        let source = format!(
+            "class Example\n{{\n\tvoid Run()\n\t{{\n\t\t{preceding_line}\n\t\tarr\n\t}}\n}}"
+        );
+        let report = completion_report_for_source_position_with_external(
+            &source,
+            position_after_needle(&source, "arr"),
+            None,
+        );
+        let array = report
+            .list
+            .items
+            .iter()
+            .find(|item| item.label == "array")
+            .unwrap_or_else(|| panic!("array completion after {preceding_line:?}: {report:?}"));
+
+        assert_eq!(array.text_edit.new_text, "array<${1}>$0", "after {preceding_line:?}");
+        assert_eq!(array.insert_text_format, Some(2), "after {preceding_line:?}");
+    }
+}
+
+#[test]
 fn completion_expands_map_and_ref_type_slots() {
     let map_source = "class Example { void Run(m value) {} }";
     let map_report = completion_report_for_source_position_with_external(
