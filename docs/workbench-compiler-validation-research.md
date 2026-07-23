@@ -394,7 +394,11 @@ uniquely occurring subject quoted by the Workbench message, such as `testnum`
 in `Variable 'testnum' is not used`. When the message provides no unique
 subject on that line, it underlines the line's complete non-whitespace content.
 Leading and trailing whitespace are never selected; a whitespace-only line
-uses an empty range at its end.
+uses an empty range at its end. Workbench's specific
+`Broken expression (missing ';'?)` recovery message is projected from the
+nearest preceding non-blank source line through the reported line. This shows
+the likely missing-semicolon source expression together with the line where
+Workbench recovered, while skipping blank lines when choosing the start.
 
 The dedicated latest-result output starts with a compact completion line
 containing Workbench request duration, completion time, project error/warning
@@ -406,9 +410,10 @@ project-contained findings with a severity followed by one clickable
 workspace-relative `path:line — message` range. The severity is not part of
 the link, and absolute paths are not displayed.
 
-The Gateway discards exact duplicate diagnostic records from a single
-Workbench response. Severity, message, resource path, absolute path, addon, and
-line all participate in the identity, so genuinely distinct findings remain.
+The Gateway discards duplicate diagnostic records with the same message,
+resource path, absolute path, addon, and line from a single Workbench response.
+If Workbench reports both error and warning copies, the error is retained.
+Different messages at the same location remain distinct findings.
 
 One lower-right Workbench Status Item reports disabled, connecting, API
 connected, validating, or unavailable/retrying. It exposes the endpoint,

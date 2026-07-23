@@ -17,7 +17,7 @@ import {
 	WorkbenchValidationProfile,
 	WorkbenchValidationResult,
 } from '../workbenchGateway/workbenchGateway';
-import { workbenchDiagnosticSpan } from './workbenchDiagnosticSpan';
+import { workbenchDiagnosticRange } from './workbenchDiagnosticSpan';
 
 const unavailableRetryMs = 1_000;
 const readyHeartbeatMs = 5_000;
@@ -843,16 +843,17 @@ function projectDiagnostics(diagnostics: WorkbenchCompilerDiagnostic[]): Project
 			continue;
 		}
 		const line = Math.max(0, compilerDiagnostic.location.line - 1);
-		const span = workbenchDiagnosticSpan(
-			readSourceLine(uri.fsPath, line, sourceLinesByFile),
+		const range = workbenchDiagnosticRange(
+			readSourceLines(uri.fsPath, sourceLinesByFile),
+			line,
 			compilerDiagnostic.message,
 		);
 		const rendered = new vscode.Diagnostic(
 			new vscode.Range(
-				line,
-				span.startCharacter,
-				line,
-				span.endCharacter,
+				range.startLine,
+				range.startCharacter,
+				range.endLine,
+				range.endCharacter,
 			),
 			compilerDiagnostic.message,
 			compilerDiagnostic.severity === 'error'
@@ -865,11 +866,10 @@ function projectDiagnostics(diagnostics: WorkbenchCompilerDiagnostic[]): Project
 	return { located, unresolved };
 }
 
-function readSourceLine(
+function readSourceLines(
 	filePath: string,
-	zeroBasedLine: number,
 	sourceLinesByFile: Map<string, string[]>,
-): string {
+): string[] {
 	let lines = sourceLinesByFile.get(filePath);
 	if (!lines) {
 		try {
@@ -879,7 +879,7 @@ function readSourceLine(
 		}
 		sourceLinesByFile.set(filePath, lines);
 	}
-	return lines[zeroBasedLine] ?? '';
+	return lines;
 }
 
 function projectLocation(

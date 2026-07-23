@@ -40,19 +40,31 @@ suite('Workbench Gateway', () => {
 				errorCode: 'Ok',
 				payload: {
 					Errors: [{
-						error: "Undefined function 'Run'",
+						error: "Broken expression (missing ';'?)",
 						file: 'scripts/Game/Example.c',
 						fileAbs: 'C:\\Addon\\scripts\\Game\\Example.c',
 						addon: 'ExampleAddon',
 						line: 12,
 					}, {
-						error: "Undefined function 'Run'",
+						error: "Broken expression (missing ';'?)",
+						file: 'scripts/Game/Example.c',
+						fileAbs: 'C:\\Addon\\scripts\\Game\\Example.c',
+						addon: 'ExampleAddon',
+						line: 12,
+					}, {
+						error: "Assign operator '=' not allowed here",
 						file: 'scripts/Game/Example.c',
 						fileAbs: 'C:\\Addon\\scripts\\Game\\Example.c',
 						addon: 'ExampleAddon',
 						line: 12,
 					}],
 					Warnings: [{
+						error: "Broken expression (missing ';'?)",
+						file: 'scripts/Game/Example.c',
+						fileAbs: 'C:\\Addon\\scripts\\Game\\Example.c',
+						addon: 'ExampleAddon',
+						line: 12,
+					}, {
 						error: "Variable 'unused' is not used",
 						file: 'scripts/Game/Other.c',
 						line: 4,
@@ -74,7 +86,16 @@ suite('Workbench Gateway', () => {
 					success: false,
 					diagnostics: [{
 						severity: 'error',
-						message: "Undefined function 'Run'",
+						message: "Broken expression (missing ';'?)",
+						location: {
+							file: 'scripts/Game/Example.c',
+							fileAbs: 'C:\\Addon\\scripts\\Game\\Example.c',
+							addon: 'ExampleAddon',
+							line: 12,
+						},
+					}, {
+						severity: 'error',
+						message: "Assign operator '=' not allowed here",
 						location: {
 							file: 'scripts/Game/Example.c',
 							fileAbs: 'C:\\Addon\\scripts\\Game\\Example.c',

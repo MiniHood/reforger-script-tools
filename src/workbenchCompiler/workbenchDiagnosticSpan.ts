@@ -3,6 +3,40 @@ export interface WorkbenchDiagnosticSpan {
 	endCharacter: number;
 }
 
+export interface WorkbenchDiagnosticRange {
+	startLine: number;
+	startCharacter: number;
+	endLine: number;
+	endCharacter: number;
+}
+
+export function workbenchDiagnosticRange(
+	sourceLines: readonly string[],
+	reportedLine: number,
+	message: string,
+): WorkbenchDiagnosticRange {
+	if (message === "Broken expression (missing ';'?)") {
+		const reportedSpan = lineContentSpan(sourceLines[reportedLine] ?? '');
+		const precedingLine = precedingContentLine(sourceLines, reportedLine);
+		return {
+			startLine: precedingLine ?? reportedLine,
+			startCharacter: precedingLine === undefined
+				? reportedSpan.startCharacter
+				: lineContentSpan(sourceLines[precedingLine] ?? '').startCharacter,
+			endLine: reportedLine,
+			endCharacter: reportedSpan.endCharacter,
+		};
+	}
+
+	const span = workbenchDiagnosticSpan(sourceLines[reportedLine] ?? '', message);
+	return {
+		startLine: reportedLine,
+		startCharacter: span.startCharacter,
+		endLine: reportedLine,
+		endCharacter: span.endCharacter,
+	};
+}
+
 export function workbenchDiagnosticSpan(
 	lineText: string,
 	message: string,
@@ -14,6 +48,10 @@ export function workbenchDiagnosticSpan(
 		}
 	}
 
+	return lineContentSpan(lineText);
+}
+
+function lineContentSpan(lineText: string): WorkbenchDiagnosticSpan {
 	const firstContentCharacter = lineText.search(/\S/u);
 	if (firstContentCharacter < 0) {
 		return {
@@ -31,6 +69,18 @@ export function workbenchDiagnosticSpan(
 		startCharacter: firstContentCharacter,
 		endCharacter,
 	};
+}
+
+function precedingContentLine(
+	sourceLines: readonly string[],
+	reportedLine: number,
+): number | undefined {
+	for (let line = reportedLine - 1; line >= 0; line -= 1) {
+		if (/\S/u.test(sourceLines[line] ?? '')) {
+			return line;
+		}
+	}
+	return undefined;
 }
 
 function quotedFragments(message: string): string[] {

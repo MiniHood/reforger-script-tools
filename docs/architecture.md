@@ -157,8 +157,11 @@ one-based source line without a column. For the VS Code underline, the adapter
 reads that saved source line and selects a uniquely occurring subject quoted by
 the compiler message when available; otherwise it selects the complete
 non-whitespace content of the line. It never deliberately underlines leading
-or trailing whitespace. Rust language diagnostics remain in their independent
-LSP-owned collection throughout.
+or trailing whitespace. For Workbench's specific missing-semicolon
+broken-expression recovery message, the range starts at the nearest preceding
+non-blank source line and ends at the reported line so both the likely cause
+and compiler recovery point are visible. Rust language diagnostics remain in
+their independent LSP-owned collection throughout.
 
 Every completed validation also replaces the dedicated **Reforger Workbench
 Compiler** output. Its compact first line reports Workbench request duration,
@@ -176,9 +179,10 @@ only by sanitized counts in logging and user output. Manual validation reveals
 the output, and automatic validation reveals it when project-contained
 findings exist.
 
-The Gateway normalizes exact duplicate diagnostics in one Workbench response
-before the extension projects or renders them. Different severities, messages,
-locations, or source identities remain distinct findings.
+The Gateway normalizes diagnostics with the same message and source
+identity/location in one Workbench response before the extension projects or
+renders them. If Workbench returns both error and warning copies, error wins.
+Different messages, locations, or source identities remain distinct findings.
 
 Within the language-client bridge, the composition root retains server lifecycle
 and restart policy. Focused bridges own workspace-script notifications, hover

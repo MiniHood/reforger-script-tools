@@ -286,22 +286,26 @@ function decodeDiagnostics(
 function uniqueDiagnostics(
 	diagnostics: WorkbenchCompilerDiagnostic[],
 ): WorkbenchCompilerDiagnostic[] {
-	const seen = new Set<string>();
-	return diagnostics.filter(diagnostic => {
+	const unique: WorkbenchCompilerDiagnostic[] = [];
+	const indexByIdentity = new Map<string, number>();
+	for (const diagnostic of diagnostics) {
 		const identity = JSON.stringify([
-			diagnostic.severity,
 			diagnostic.message,
 			diagnostic.location.file,
 			diagnostic.location.fileAbs ?? '',
 			diagnostic.location.addon ?? '',
 			diagnostic.location.line,
 		]);
-		if (seen.has(identity)) {
-			return false;
+		const existingIndex = indexByIdentity.get(identity);
+		if (existingIndex === undefined) {
+			indexByIdentity.set(identity, unique.length);
+			unique.push(diagnostic);
+		} else if (unique[existingIndex].severity === 'warning'
+			&& diagnostic.severity === 'error') {
+			unique[existingIndex] = diagnostic;
 		}
-		seen.add(identity);
-		return true;
-	});
+	}
+	return unique;
 }
 
 function transact(

@@ -74,8 +74,11 @@ The extension-owned VS Code diagnostic collection that renders Workbench
 Compiler Diagnostics. Workbench supplies a source line but no column. The
 extension underlines a uniquely named subject from the compiler message when
 that exact subject occurs on the saved source line; otherwise it underlines
-the line's non-whitespace content. It is independent of the language server's
-provisional diagnostic publication.
+the line's non-whitespace content. A missing-semicolon broken-expression
+recovery range starts at the nearest preceding non-blank source line and ends
+at the reported line, showing both the likely cause and Workbench's recovery
+point. It is independent of the language server's provisional diagnostic
+publication.
 _Avoid_: LSP compiler diagnostics, shared diagnostic collection, Rust output
 
 **Workbench Compiler Output**:
@@ -126,10 +129,11 @@ _Avoid_: current compiler error, discarded validation, parser diagnostic
 
 **Workbench Compiler Diagnostic Set**:
 The complete compiler-diagnostic result of one successful Validation Profile
-run. Exact duplicate records in one Workbench response normalize to one
-diagnostic before publication. The extension replaces the profile's displayed
-set atomically; an unsuccessful run retains the preceding set only as stale
-evidence.
+run. Records with the same message and source identity/location normalize to
+one diagnostic before publication even when Workbench returns both error and
+warning copies; error severity wins. Different messages at that location
+remain distinct. The extension replaces the profile's displayed set atomically;
+an unsuccessful run retains the preceding set only as stale evidence.
 _Avoid_: incremental compiler output, merged run history, partial refresh
 
 ## LSP Runtime
