@@ -54,6 +54,11 @@ version, foreground-readiness state, and delimiter ranges; ownership and color
 decisions remain in Rust and semantic tokens. The editor bridge retries a
 current pending snapshot until its foreground projection is ready; a rejected
 foreground task returns a terminal empty result rather than a retry signal.
+After every source edit, the semantic-token request returns the current
+snapshot's lexical baseline immediately, replacing any editor-tracked rich
+delimiter ranges before background analysis publishes the updated overlay.
+New text typed beside or inside a delimiter therefore cannot inherit that
+delimiter's foreground while the richer projection is pending.
 Active-pair requests decline documents larger than 128 KiB and cap caret input.
 Pair selection depends only on parser-proven structure, so foreground and
 analyzed snapshots return the same active ranges; resolver-dependent foreground

@@ -136,16 +136,7 @@ impl FeatureDispatcher<'_> {
         }
 
         match method {
-            "$/cancelRequest" => {
-                if let Some(id) = message.params.as_ref().and_then(|params| params.get("id")) {
-                    for effect in self
-                        .document_runtime
-                        .cancel_deferred_semantic_token_request(id)
-                    {
-                        self.deliver_effect(effect)?;
-                    }
-                }
-            }
+            "$/cancelRequest" => {}
             WORKSPACE_FILE_CHANGED_METHOD => {
                 let RequestCommand::WorkspaceIndex(WorkspaceIndexCommand::Changed(params)) =
                     &command
@@ -944,7 +935,7 @@ impl FeatureDispatcher<'_> {
                         selection.bytes,
                         selection.revision,
                         selection.projection_mode,
-                        if selection.defer_current_request { "deferred-rich" } else { "responded" },
+                        "responded",
                         selection.token_count,
                         external_index_status,
                         external_generation,
@@ -957,19 +948,7 @@ impl FeatureDispatcher<'_> {
                         queue_ms,
                         start.elapsed().as_millis()
                     ));
-                    if selection.defer_current_request {
-                        let effects = self.document_runtime.defer_semantic_token_request(
-                            &selection.uri,
-                            selection.revision,
-                            external_generation,
-                            id,
-                        );
-                        for effect in effects {
-                            self.deliver_effect(effect)?;
-                        }
-                    } else {
-                        self.respond(id, result)?;
-                    }
+                    self.respond(id, result)?;
                     if let Some((uri, rich_revision, rich_external_generation)) =
                         selection.rich_work
                     {

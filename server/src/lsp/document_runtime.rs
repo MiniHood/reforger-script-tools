@@ -31,7 +31,6 @@ pub(super) struct DocumentRuntime {
     runtime: AnalysisRuntime,
     analysis_scheduler: Option<RuntimeWorkExecutor>,
     deferred_document_requests: BTreeMap<String, Vec<DeferredDocumentRequest>>,
-    deferred_semantic_token_requests: BTreeMap<String, Vec<DeferredSemanticTokenRequest>>,
     next_server_request_id: u64,
     semantic_tokens_refresh_in_flight: Option<String>,
     semantic_tokens_refresh_dirty: bool,
@@ -54,7 +53,6 @@ pub(super) struct SemanticTokensSelection {
     pub(super) resolver_calls: usize,
     pub(super) token_loop_ms: u128,
     pub(super) encode_ms: u128,
-    pub(super) defer_current_request: bool,
     pub(super) rich_work: Option<(String, u64, u64)>,
 }
 
@@ -75,7 +73,6 @@ impl DocumentRuntime {
             runtime: AnalysisRuntime::new(AdmissionLimits::new(64, 64 * 1024 * 1024)),
             analysis_scheduler,
             deferred_document_requests: BTreeMap::new(),
-            deferred_semantic_token_requests: BTreeMap::new(),
             next_server_request_id: 1,
             semantic_tokens_refresh_in_flight: None,
             semantic_tokens_refresh_dirty: false,
@@ -93,13 +90,10 @@ impl DocumentRuntime {
                 text: document.text.to_string(),
                 foreground_ready: document.foreground_ready(),
                 analysis_ready: document.analysis_ready(),
-                rich_semantic_tokens: document.semantic_tokens.has_rich_display(),
+                rich_semantic_tokens: document
+                    .semantic_tokens
+                    .has_rich_for_revision(document.revision),
             })
-    }
-
-    #[cfg(test)]
-    pub(super) fn test_has_deferred_semantic_token_request(&self, uri: &str) -> bool {
-        self.deferred_semantic_token_requests.contains_key(uri)
     }
 
     #[cfg(test)]
@@ -189,7 +183,6 @@ impl DocumentRuntime {
             resolver_calls: 0,
             token_loop_ms: 0,
             encode_ms: 0,
-            defer_current_request: false,
             rich_work: None,
         };
         let Some(document) = self.documents.get_mut(uri) else {
@@ -197,7 +190,6 @@ impl DocumentRuntime {
         };
         selection.bytes = document.text.len();
         selection.revision = document.revision;
-        let had_rich_display = document.semantic_tokens.has_rich_display();
         let source = document.text.clone();
         let (kind, result_id, disposition, projection) = {
             let selected = document.semantic_tokens.select_or_insert_lexical(
@@ -230,8 +222,6 @@ impl DocumentRuntime {
         {
             selection.rich_work = Some((uri.to_string(), document.revision, external_generation));
         }
-        selection.defer_current_request =
-            kind == TokenProjectionKind::LexicalBaseline && had_rich_display;
         selection.token_count = projection.token_count;
         selection.parse_diagnostics = projection.parse_diagnostics;
         selection.lex_ms = projection.timings.lex_ms;
@@ -260,15 +250,6 @@ impl DocumentRuntime {
                         message: "Content modified".to_string(),
                     });
                 }
-            }
-        }
-        if let Some(pending) = self.deferred_semantic_token_requests.remove(uri) {
-            for request in pending {
-                effects.push(RuntimeEffect::Error {
-                    id: request.id,
-                    code: -32802,
-                    message: "Semantic tokens superseded".to_string(),
-                });
             }
         }
         effects.push(RuntimeEffect::Notification(clear_diagnostics_message(uri)));
@@ -301,13 +282,6 @@ impl DocumentRuntime {
         let snapshot = self.runtime.latest(&uri).expect("accepted snapshot");
         let revision = snapshot.revision();
         self.discard_deferred_document_requests_for_revision(&uri, revision, &mut effects)?;
-        self.discard_deferred_semantic_requests_for_revision(
-            &uri,
-            revision,
-            "opened",
-            &mut effects,
-        );
-
         if let Some(scheduler) = self.analysis_scheduler.clone() {
             let mut document = OpenDocument::pending(snapshot);
             document.mark_analysis_pending();
@@ -399,12 +373,6 @@ impl DocumentRuntime {
             document.mark_analysis_pending();
             document.snapshot.revision()
         };
-        self.discard_deferred_semantic_requests_for_revision(
-            &uri,
-            revision,
-            "superseded",
-            &mut effects,
-        );
         if let Some(scheduler) = self.analysis_scheduler.clone() {
             self.discard_deferred_document_requests_for_revision(&uri, revision, &mut effects)?;
             self.admit_foreground(&uri, revision, scheduler);
@@ -509,26 +477,6 @@ impl DocumentRuntime {
             uri, current_revision
         )));
         Ok(())
-    }
-
-    fn discard_deferred_semantic_requests_for_revision(
-        &mut self,
-        uri: &str,
-        current_revision: u64,
-        reason: &str,
-        effects: &mut Vec<RuntimeEffect>,
-    ) {
-        let Some(pending) = self.deferred_semantic_token_requests.remove(uri) else {
-            return;
-        };
-        for request in pending {
-            effects.push(RuntimeEffect::Error {
-                id: request.id,
-                code: -32802,
-                message: "Semantic tokens superseded".to_string(),
-            });
-        }
-        effects.push(RuntimeEffect::Log(format!("semanticTokens deferred discarded uri={} current_revision={} reason={} outcome=server-cancelled", uri, current_revision, reason)));
     }
 
     /// Interprets completion events whose only observable outcome is a
@@ -736,12 +684,6 @@ impl DocumentRuntime {
                             {
                                 return Some(Err(error));
                             }
-                            self.discard_deferred_semantic_requests_for_revision(
-                                task.uri(),
-                                task.revision(),
-                                "analysis-skipped",
-                                &mut effects,
-                            );
                         }
                     }
                 }
@@ -779,24 +721,16 @@ impl DocumentRuntime {
                 .semantic_tokens
                 .cancel_pending_if_matches(revision, external_generation);
         }
-        let mut effects = Vec::new();
-        self.discard_deferred_semantic_requests_for_revision(
-            &uri,
-            revision,
-            "rich-skipped",
-            &mut effects,
-        );
-        effects.push(RuntimeEffect::Log(format!(
+        let effects = vec![RuntimeEffect::Log(format!(
             "semanticTokensRich skipped uri={} revision={} external_generation={} reason={} elapsed_ms={}",
             uri, revision, external_generation, reason, elapsed_ms
-        )));
+        ))];
         Some(effects)
     }
 
     /// Applies a completed rich-token projection. The caller supplies only
     /// the external generation it captured at the composition boundary; all
-    /// document freshness, deferred response policy, and refresh coalescing
-    /// remain owned here.
+    /// document freshness and refresh coalescing remain owned here.
     pub(super) fn interpret_rich_ready_event(
         &mut self,
         event: ServerEvent,
@@ -850,72 +784,8 @@ impl DocumentRuntime {
             timings.lex_ms, timings.token_loop_ms, timings.resolver_ms,
             timings.identifier_resolver_calls, timings.encode_ms, elapsed_ms
         ))];
-        let published = self.publish_deferred_semantic_token_effects(
-            &uri,
-            revision,
-            external_generation,
-            &mut effects,
-        );
-        if published == 0 {
-            self.request_semantic_tokens_refresh_effect(&mut effects);
-        } else {
-            effects.push(RuntimeEffect::Log(format!(
-                "semanticTokensRich delivered uri={} revision={} external_generation={} deferred_requests={} refresh=false",
-                uri, revision, external_generation, published
-            )));
-        }
+        self.request_semantic_tokens_refresh_effect(&mut effects);
         Some(effects)
-    }
-
-    pub(super) fn publish_deferred_semantic_token_effects(
-        &mut self,
-        uri: &str,
-        revision: u64,
-        external_generation: u64,
-        effects: &mut Vec<RuntimeEffect>,
-    ) -> usize {
-        let Some(projection) = self
-            .documents
-            .get(uri)
-            .and_then(|document| {
-                document
-                    .semantic_tokens
-                    .rich_for_revision_and_external_generation(revision, external_generation)
-            })
-            .cloned()
-        else {
-            return 0;
-        };
-        let pending = self
-            .deferred_semantic_token_requests
-            .remove(uri)
-            .unwrap_or_default();
-        let mut published = 0;
-        for request in pending {
-            if request.revision == revision && request.external_generation == external_generation {
-                let result = serde_json::to_value(LspSemanticTokensFull::from_tokens(
-                    format!("reforger:{}:rich:{}", revision, external_generation),
-                    &projection.tokens,
-                ))
-                .unwrap_or(Value::Null);
-                effects.push(RuntimeEffect::Response {
-                    id: request.id,
-                    result,
-                });
-                effects.push(RuntimeEffect::Log(format!(
-                    "semanticTokens deferred published uri={} revision={} external_generation={} wait_ms={}",
-                    uri, revision, external_generation, request.received_at.elapsed().as_millis()
-                )));
-                published += 1;
-            } else {
-                effects.push(RuntimeEffect::Error {
-                    id: request.id,
-                    code: -32802,
-                    message: "Semantic tokens superseded".to_string(),
-                });
-            }
-        }
-        published
     }
 
     pub(super) fn request_semantic_tokens_refresh_effect(
@@ -1137,89 +1007,6 @@ impl DocumentRuntime {
         Ok((true, effects))
     }
 
-    pub(super) fn defer_semantic_token_request(
-        &mut self,
-        uri: &str,
-        revision: u64,
-        external_generation: u64,
-        id: Value,
-    ) -> Vec<RuntimeEffect> {
-        let pending = self
-            .deferred_semantic_token_requests
-            .entry(uri.to_string())
-            .or_default();
-        if pending.len() >= MAX_PENDING_DOCUMENT_REQUESTS_PER_URI {
-            return vec![
-                RuntimeEffect::Error { id, code: -32802, message: "Semantic tokens superseded".to_string() },
-                RuntimeEffect::Log(format!(
-                    "semanticTokens deferred uri={} revision={} external_generation={} outcome=server-cancelled reason=capacity pending_requests={}",
-                    uri, revision, external_generation, pending.len()
-                )),
-            ];
-        }
-        pending.push(DeferredSemanticTokenRequest {
-            id,
-            revision,
-            external_generation,
-            received_at: Instant::now(),
-        });
-        vec![RuntimeEffect::Log(format!(
-            "semanticTokens deferred uri={} revision={} external_generation={} pending_requests={}",
-            uri,
-            revision,
-            external_generation,
-            pending.len()
-        ))]
-    }
-
-    #[cfg(test)]
-    pub(super) fn discard_deferred_semantic_token_requests(
-        &mut self,
-        uri: &str,
-        current_revision: u64,
-        reason: &str,
-    ) -> Vec<RuntimeEffect> {
-        let mut effects = Vec::new();
-        self.discard_deferred_semantic_requests_for_revision(
-            uri,
-            current_revision,
-            reason,
-            &mut effects,
-        );
-        effects
-    }
-
-    pub(super) fn cancel_deferred_semantic_token_request(
-        &mut self,
-        id: &Value,
-    ) -> Vec<RuntimeEffect> {
-        let mut cancellations = Vec::new();
-        self.deferred_semantic_token_requests
-            .retain(|uri, pending| {
-                let before = pending.len();
-                pending.retain(|request| &request.id != id);
-                let removed = before - pending.len();
-                if removed > 0 {
-                    cancellations.push((uri.clone(), removed));
-                }
-                !pending.is_empty()
-            });
-        if cancellations.is_empty() {
-            return vec![RuntimeEffect::Log(
-                "semanticTokens deferred cancellation ignored reason=not-pending".to_string(),
-            )];
-        }
-        cancellations
-            .into_iter()
-            .map(|(uri, removed)| {
-                RuntimeEffect::Log(format!(
-                    "semanticTokens deferred cancelled uri={} requests={}",
-                    uri, removed
-                ))
-            })
-            .collect()
-    }
-
     /// Admits a debug capture on the runtime's rich lane. The returned task
     /// identity remains the sole authority for its worker result.
     pub(super) fn admit_debug_capture(
@@ -1314,17 +1101,6 @@ pub(super) struct DeferredDocumentRequest {
     pub(super) revision: u64,
     pub(super) received_at: Instant,
     pub(super) routed: RoutedRequest,
-}
-
-/// Full semantic-token responses replace the editor's entire token display.
-/// Keep these requests apart from source-backed feature deferral so a newer
-/// revision can wait for a matching rich projection without publishing a
-/// lexical downgrade.
-pub(super) struct DeferredSemanticTokenRequest {
-    pub(super) id: Value,
-    pub(super) revision: u64,
-    pub(super) external_generation: u64,
-    pub(super) received_at: Instant,
 }
 
 #[cfg(test)]
@@ -1503,5 +1279,64 @@ mod tests {
         assert!(changed
             .iter()
             .any(|effect| matches!(effect, RuntimeEffect::Notification(_))));
+    }
+
+    #[test]
+    fn changed_document_returns_current_lexical_tokens_while_rich_tokens_refresh() {
+        let mut runtime = DocumentRuntime::new(None);
+        let uri = "file:///delimiter-typing.c".to_string();
+        runtime
+            .open_document(
+                DidOpenTextDocumentParams {
+                    text_document: super::super::TextDocumentItem {
+                        uri: uri.clone(),
+                        version: 1,
+                        text: "class Example { void Run() { Invoke(); } }".to_string(),
+                    },
+                },
+                0,
+            )
+            .expect("open succeeds");
+
+        let initial = runtime.select_semantic_tokens(&uri, 0);
+        let (_, revision, generation) = initial.rich_work.expect("rich work");
+        runtime.admit_rich_semantic_tokens(
+            &uri,
+            revision,
+            ExternalIndexSnapshot {
+                status: "missing",
+                workspace: None,
+                game_data: None,
+            },
+            generation,
+        );
+        assert!(runtime
+            .select_semantic_tokens(&uri, 0)
+            .tokens
+            .result_id
+            .contains(":rich:"));
+
+        runtime
+            .change_document(
+                DidChangeTextDocumentParams {
+                    text_document: super::super::VersionedTextDocumentIdentifier {
+                        uri: uri.clone(),
+                        version: 2,
+                    },
+                    content_changes: vec![super::super::TextDocumentContentChangeEvent {
+                        range: None,
+                        range_length: None,
+                        text: "class Example { void Run() { Invoke(worl); } }".to_string(),
+                    }],
+                },
+                0,
+                0,
+                0,
+            )
+            .expect("change succeeds");
+
+        let changed = runtime.select_semantic_tokens(&uri, 0);
+        assert_eq!(changed.tokens.result_id, "reforger:2:lexical");
+        assert!(changed.rich_work.is_some());
     }
 }

@@ -5945,7 +5945,7 @@ fn only_single_full_text_changes_are_coalescible() {
 }
 
 #[test]
-fn semantic_tokens_keep_existing_rich_display_until_current_rich_result() {
+fn semantic_tokens_replace_old_rich_ranges_with_current_lexical_response() {
     let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
     let uri = "file:///Scripts/StableTokens.c";
     for (method, params) in [(
@@ -5970,14 +5970,6 @@ fn semantic_tokens_keep_existing_rich_display_until_current_rich_result() {
             None, 0, 0,
         )
         .unwrap();
-    assert!(
-        server
-            .document_runtime
-            .test_document_state(uri)
-            .unwrap()
-            .rich_semantic_tokens
-    );
-
     server
         .handle_message(
             json!({ "jsonrpc": "2.0", "method": "textDocument/didChange", "params": {
@@ -6000,10 +5992,10 @@ fn semantic_tokens_keep_existing_rich_display_until_current_rich_result() {
     let output = String::from_utf8_lossy(&server.writer);
     assert!(output.contains("\"id\":2"));
     assert!(
-        output.contains("\"resultId\":\"reforger:2:rich:"),
+        output.contains("\"resultId\":\"reforger:2:lexical\""),
         "{output}"
     );
-    assert!(!output.contains("\"resultId\":\"reforger:2:lexical\""));
+    assert!(!output.contains("\"resultId\":\"reforger:2:rich:"));
     assert!(!output.contains("workspace/semanticTokens/refresh"));
 }
 

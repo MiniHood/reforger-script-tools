@@ -533,41 +533,6 @@ fn semantic_tokens_pending_baseline_schedules_rich_after_analysis_completion() {
 }
 
 #[test]
-fn deferred_semantic_tokens_are_server_cancelled_when_superseded_or_cancelled() {
-    let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
-    let uri = "file:///Scripts/DeferredTokens.c";
-    for effect in server
-        .document_runtime
-        .defer_semantic_token_request(uri, 2, 4, json!(10))
-    {
-        server.deliver_effect(effect).unwrap();
-    }
-    for effect in server
-        .document_runtime
-        .discard_deferred_semantic_token_requests(uri, 3, "superseded")
-    {
-        server.deliver_effect(effect).unwrap();
-    }
-    assert!(String::from_utf8_lossy(&server.writer).contains("\"code\":-32802"));
-
-    server.writer.clear();
-    for effect in server
-        .document_runtime
-        .defer_semantic_token_request(uri, 3, 4, json!(11))
-    {
-        server.deliver_effect(effect).unwrap();
-    }
-    for effect in server
-        .document_runtime
-        .cancel_deferred_semantic_token_request(&json!(11))
-    {
-        server.deliver_effect(effect).unwrap();
-    }
-    assert!(!server.document_runtime.test_has_deferred_semantic_token_request(uri));
-    assert!(server.writer.is_empty());
-}
-
-#[test]
 fn completion_waits_for_current_analysis_before_rendering_callable_parameters() {
     let (sender, receiver) = mpsc::channel();
     let scheduler = OpenDocumentAnalysisScheduler::start(sender);

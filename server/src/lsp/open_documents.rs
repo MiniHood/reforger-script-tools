@@ -97,9 +97,9 @@ impl OpenDocument {
         self.document_symbols.clear();
         self.document_symbols_ready = false;
         self.semantic_tokens.cancel_pending();
-        // Preserve the previous rich-display marker until VS Code asks for a
-        // replacement. The old projection is never returned for the new
-        // revision; it only tells the LSP to defer a lexical downgrade.
+        // The next semantic-token request replaces the cached snapshot with a
+        // lexical projection for this revision before rich analysis refreshes
+        // it. An older projection is never returned for the new revision.
     }
 
     pub(crate) fn analysis_ready(&self) -> bool {
@@ -279,19 +279,17 @@ impl TokenSnapshot {
 #[derive(Default)]
 pub(crate) struct SemanticTokenCache {
     snapshot: Option<TokenSnapshot>,
-    established_rich_display: bool,
     pending_revision: Option<u64>,
     pending_external_generation: Option<u64>,
     pending_cancel: Option<Arc<AtomicBool>>,
 }
 
 impl SemanticTokenCache {
-    /// Whether the editor may already be displaying a resolver-backed result.
-    /// This intentionally survives the decision to replace the cached snapshot
-    /// for a newer revision: the client owns those old ranges until it asks us
-    /// for a safe replacement.
-    pub(crate) fn has_rich_display(&self) -> bool {
-        self.established_rich_display
+    #[cfg(test)]
+    pub(crate) fn has_rich_for_revision(&self, revision: u64) -> bool {
+        self.snapshot.as_ref().is_some_and(|snapshot| {
+            snapshot.revision == revision && snapshot.rich_overlay.is_some()
+        })
     }
 
     pub(crate) fn select_or_insert_lexical(
@@ -314,6 +312,7 @@ impl SemanticTokenCache {
             .select(external_generation)
     }
 
+    #[cfg(test)]
     pub(crate) fn rich_for_revision_and_external_generation(
         &self,
         revision: u64,
@@ -339,7 +338,6 @@ impl SemanticTokenCache {
             .filter(|snapshot| snapshot.revision == revision)
         {
             snapshot.set_rich(external_generation, projection);
-            self.established_rich_display = true;
         }
         self.pending_revision = None;
         self.pending_external_generation = None;
