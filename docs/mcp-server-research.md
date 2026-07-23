@@ -32,7 +32,8 @@ local MCP host
   |-- language-engine adapter: parser, symbols, references, diagnostics
   |-- evidence-catalogue adapter: bundled game data and wiki documents
   |-- Workbench adapter: optional, capability-negotiated NET API client
-  `-- operation policy: workspace root, dry-run, confirmation, audit result
+  `-- tool catalogue and operation policy: discovery, workspace root, dry-run,
+      confirmation, audit result
 ```
 
 The host is an adapter, not a new semantic engine or a general shell. Each tool
@@ -127,6 +128,35 @@ Avoid a universal `run_command`, arbitrary path read/write, or raw
 review difficult, and would turn an MCP schema into an undocumented second API.
 Add one named, typed tool per enduring capability instead.
 
+## Progressive discovery and result design
+
+Organize the public surface into small capability groups: `project`,
+`reference`, `resource`, `compiler`, and `world`. Names and input/output
+schemas within a group are a compatibility contract; a connected Workbench
+plugin may make a group available, but must not silently redefine an existing
+tool. File, language-engine, and evidence tools remain usable without
+Workbench. Workbench-dependent groups must report their unavailable reason
+instead of falling back to approximate filesystem behavior.
+
+The initial tool set should stay compact. If the MCP client needs help finding
+less-frequent operations, provide read-only `search_tools` and
+`describe_toolset` discovery tools. They return a short description, stable
+name, read-only/effect classification, input/output summary, availability, and
+the capability revision that supplied it. This follows the useful progressive
+discovery pattern seen in s&box without copying its generic invocation
+indirection. Standard MCP already has a typed tool invocation primitive, so do
+not add a `call_tool` or `call_workbench_handler` multiplexer: it hides schemas,
+weakens permission signalling, and recreates the raw-dispatch problem above.
+
+Every query result should be a named, structured DTO rather than formatted
+prose. Collections need `returned`, `total` where known, a cursor, and a
+server-enforced limit; evidence and resource answers need identity and
+provenance; errors need a stable code, concise message, and an actionable
+recovery hint. Return the smallest useful summary first and let the caller
+follow stable IDs/cursors for detail. Future visual inspection may return MCP
+image content, but only after a bounded, authenticated Workbench-to-host data
+path is demonstrated; it is not a reason to add a generic binary or file API.
+
 ## Cross-cutting operation contract
 
 Every mutating operation should accept a target rooted in the selected project,
@@ -139,6 +169,11 @@ The MCP client remains responsible for the final consent UI; the server must
 still make effects legible enough for that UI and refuse targets outside the
 configured project roots. Treat contents received from files, assets, logs, or
 NET API responses as data, never as MCP-server instructions.
+
+Classify a tool as read-only only when every supported invocation has no
+external/editor effect. Navigation such as opening a resource is therefore a
+separate user-visible action, even though it does not edit project data. A
+missing classification is potentially effectful, not read-only.
 
 ## Decisions to validate before implementation
 

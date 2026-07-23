@@ -91,7 +91,9 @@ Create one optional Workbench-side plugin/handler package whose only public
 surface is a versioned, typed command set owned by this project. It should:
 
 - expose a `capabilities` handler with plugin/API version, loaded project
-  identity, available operations, and maximum supported payload size;
+  identity, a monotonic capability revision, named capability groups and
+  operations, effect/read-only classifications, unavailable reasons, paging
+  limits, and maximum supported payload size;
 - expose narrow read handlers first: resolved project/content roots, resource
   metadata, prefab/container inspection, and current World Editor selection;
 - expose named action handlers only after their preview/result/undo contracts
@@ -175,6 +177,16 @@ as an explicit MCP tool/command with a declared configuration (`WORKBENCH`,
 operation consent. Do not run it automatically at activation, after every
 reconnect, or on every save: it can be expensive and changes the meaning of an
 availability indicator into an unsolicited build.
+
+When the ready connection first succeeds, the host should cache the capability
+manifest and its revision. Re-read it after a reconnect and whenever a
+Workbench/plugin reload changes the revision; remove unavailable operations
+from the host's effective allowlist immediately. This is the NET API equivalent
+of a live editor tool catalogue: it prevents a stale MCP session from calling a
+handler whose scripts were unloaded or whose contract changed. The host may
+surface this catalogue through its read-only `search_tools` and
+`describe_toolset` tools, but it must never turn it into arbitrary handler
+dispatch.
 
 ## Complete installed-source review — 2026-07-23
 
@@ -260,8 +272,10 @@ or HTTP MCP tool.
 The source also shows two reusable positive patterns:
 
 1. Small request/response DTOs are the right Workbench-plugin boundary.
-   Our DTOs should add one shared envelope: `ok`, typed error code/message,
-   API/plugin version, operation ID, and affected resource identities.
+   Our DTOs should add one shared envelope: `ok`, typed error code/message and
+   recovery hint, API/plugin/capability revision, operation ID, and affected
+   resource identities. The MCP host maps those DTOs into named MCP structured
+   results; it must not flatten them into agent-directed prose.
 2. Result limits are real. `PrefabImporter.c` limits/paginates hierarchy output
    and `ResourceInfo.c` comments on large prefab JSON exceeding transport
    limits. Every collection endpoint needs a limit, cursor, and declared
@@ -272,8 +286,18 @@ The source also shows two reusable positive patterns:
 Expose only these typed handlers in the first custom plugin: `capabilities`,
 `project_context`, `resolve_resource`, `inspect_resource`,
 `inspect_prefab_child`, `list_resources` with constrained type/filter/cursor,
-`world_selection_summary`, and `validate_scripts`. The MCP host maps them to
-small named MCP tools and retains transport/retry/status-bar ownership.
+`world_selection_summary`, and `validate_scripts`. The `capabilities` response
+groups them under stable names such as `resource`, `world`, and `compiler`,
+and declares each handler's input/output DTO version and effect
+classification. The MCP host maps them to small named MCP tools, retains
+transport/retry/status-bar ownership, and uses the manifest for progressive
+tool discovery rather than exposing every possible operation up front.
+
+Keep v1 JSON-only and bounded. A future viewport/screenshot tool may be useful
+for visual world or resource inspection, but neither the reviewed NET API nor
+the Blender sample proves a safe image-transfer contract. Research an explicit
+size-limited image DTO or host-managed temporary artifact with project-safe
+cleanup before advertising MCP image content.
 
 Do not expose arbitrary handler dispatch. Put any future mutator behind a
 separate domain endpoint with canonical project containment, resource/type
