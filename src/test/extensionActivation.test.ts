@@ -348,6 +348,22 @@ suite('extension activation', () => {
 		}]);
 	});
 
+	test('places the caret inside a generated class declaration body', async () => {
+		const document = await vscode.workspace.openTextDocument({ language: 'enforce', content: 'modded class GRAY_TEST2' });
+		const editor = await vscode.window.showTextDocument(document);
+		const position = new vscode.Position(0, document.lineAt(0).text.length);
+		editor.selection = new vscode.Selection(position, position);
+		await executeInsertNewline(editor, {
+			sendRequest: async () => ({
+				edits: [{ range: { start: { line: 0, character: position.character }, end: { line: 0, character: position.character } }, newText: '\n{\n    \n}' }],
+				selection: { line: 2, character: 4 },
+				owner: 'classDeclaration',
+			}),
+		} as never);
+		assert.strictEqual(document.getText(), 'modded class GRAY_TEST2\r\n{\r\n    \r\n}');
+		assert.deepStrictEqual(editor.selection.active, new vscode.Position(2, 4));
+	});
+
 	test('uses native fallback when an input route declines or fails', async () => {
 		for (const response of [
 			{ edits: [], reason: 'declined' },

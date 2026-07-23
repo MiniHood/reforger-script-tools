@@ -91,7 +91,9 @@ pub(super) fn auto_block_class_declaration_enter_plan(
         .bytes()
         .filter(|byte| *byte == b'\n')
         .count() as u32
-        + 1;
+        // The inserted body has an opening-brace line followed by the blank
+        // interior line where typing begins.
+        + 2;
     let selection_character = format!("{indent}{unit}")
         .chars()
         .map(|character| character.len_utf16() as u32)
@@ -1373,7 +1375,7 @@ mod tests {
                 .expect("class declaration should receive a braced body");
             assert_eq!(plan.span, TextSpan::new(source.len(), source.len()));
             assert_eq!(plan.replacement, "\n{\n    \n}");
-            assert_eq!(plan.selection_line, 1);
+            assert_eq!(plan.selection_line, 2);
             assert_eq!(plan.selection_character, 4);
         }
     }

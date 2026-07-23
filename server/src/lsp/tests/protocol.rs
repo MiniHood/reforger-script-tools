@@ -503,6 +503,7 @@ fn input_route_creates_a_body_for_a_modded_class_with_inheritance() {
     let output = String::from_utf8_lossy(&server.writer);
     assert!(output.contains("\"newText\":\"\\n{\\n    \\n}\""), "{output}");
     assert!(output.contains("\"owner\":\"classDeclaration\""), "{output}");
+    assert!(output.contains("\"selection\":{\"character\":4,\"line\":2}"), "{output}");
 }
 
 #[test]
