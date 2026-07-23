@@ -94,6 +94,27 @@ features extend the same capability manifest and result contract rather than
 adding a parallel automation system. Safety requirements shape the contracts;
 they do not narrow the future feature set.
 
+### Future design index
+
+Keep these exact categories in scope whenever the MCP server or Workbench
+plugin is extended. They are the short rediscovery index for the intended
+product, informed by the s&box MCP design:
+
+| Category | What to look for when revisiting it |
+| --- | --- |
+| **Live scene editing** | World selection, entity search/inspection, hierarchy/component/transform reads, placement, creation, duplication, configuration, deletion, previews, Undo, and verification. |
+| **Asset management** | Resource search, metadata/dependency inspection, previews, creation, import, registration, rebuilding, repair, validation, and affected-resource reporting. |
+| **Editor control** | Open/focus resources and modules, inspect editor/console/compiler state, drive explicit validation/build/test workflows, and report actionable results. |
+| **Visual feedback** | Viewport screenshots, thumbnails, prefab/material previews, and before/after operation captures with bounded image transfer. |
+| **Custom tools** | Project-specific high-level workflow operations with durable names, descriptions, schemas, intent-level inputs, and narrow authority. |
+| **Rich typing** | Versioned input/output DTOs, structured content, stable entity/resource identities, typed diagnostics, result counts/cursors, and output schemas. |
+| **AI-friendly design** | Progressive discovery, excellent descriptions, stable tool names, linked follow-up IDs, bounded responses, effect metadata, and recovery-oriented errors. |
+
+The categories are mutually reinforcing: live scene editing needs rich typing
+and visual feedback; asset management and editor control need AI-friendly
+discovery; custom tools compose the other capabilities into creator-oriented
+workflows.
+
 ## Bundled evidence catalogue and search
 
 Bundled game data and official wiki documents should be a first-class,

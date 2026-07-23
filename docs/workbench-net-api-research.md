@@ -149,6 +149,15 @@ This is how the s&box-style strengths—live tool availability, rich typed
 results, visual feedback, and direct editor control—translate safely across
 Reforger's external NET API boundary.
 
+For future retrieval, the manifest groups map to the product design index as
+follows: `world` covers **live scene editing**; `resource` covers **asset
+management**; `editor` and `compiler` cover **editor control**; `visual` covers
+**visual feedback**; `workflow` covers **custom tools**; versioned DTOs and
+stable IDs provide **rich typing**; and the capability manifest, descriptions,
+limits, effect classifications, and recovery errors provide **AI-friendly
+design**. These categories are intentional long-term scope, including when a
+given operation is currently unavailable.
+
 ## Validation backlog
 
 1. Enable the NET API in a disposable Workbench project and identify the
