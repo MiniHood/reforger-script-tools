@@ -175,3 +175,109 @@ as an explicit MCP tool/command with a declared configuration (`WORKBENCH`,
 operation consent. Do not run it automatically at activation, after every
 reconnect, or on every save: it can be expensive and changes the meaning of an
 availability indicator into an unsolicited build.
+
+## Complete installed-source review — 2026-07-23
+
+This review fully read every file, without content-search shortcuts, under the
+installed extension data roots supplied for this investigation:
+
+- `WorkbenchGameCommon` (16 files outside the Blender folder); and
+- `WorkbenchGameCommon/EnfusionBlenderTools` (22 files, including
+  `BlenderAPI`).
+
+It is evidence from the installed extracted data, not proof that every handler
+is registered or enabled in a particular live Workbench version. File paths
+below are relative to `scripts/WorkbenchGameCommon` in that installed data.
+
+### Files reviewed
+
+| Area | Files fully read |
+| --- | --- |
+| Protocol/base | `NetApiDocs.c`; `generated/NetApi/NetApiHandler.c`; `generated/TxaExporter.c` |
+| Resource/import | `ResourceInfo.c`; `TextureImportTool.c`; `ValidateFBXPlugin.c`; `ValidateMaterialPlugin.c` |
+| Workbench/editor plugins | `PeerConfig.c`; `PeerTool.c`; `WorkbenchDialogs.c`; `WorldExporterPlugin.c` |
+| Localization | `LocalizationEditor/CheckLocalizationPlugin.c`; `LocalizationEditor/TranslationPlugin.c`; `LocalizationEditor/TranslationPlugin/TranslationPluginMatchConfig.c`; `TranslationPluginRequest.c`; `TranslationPluginResponse.c` |
+| Blender integration | `EnfusionBlenderTools/AnimExport.c`; `AnimExportProfiles.c`; `AssetLibraryUtils.c`; `BakeMLOD.c`; `CallBlenderFunction.c`; `CheckGUID.c`; `EBT_HTTPRequest.c`; `EBTConfig.c`; `EBTEmatUtils.c`; `EBTResponse.c`; `ExportTerrain.c`; `GetPortalMat.c`; `LayerPresets.c`; `LoadedProjects.c`; `OpenXOB.c`; `PrefabImporter.c`; `PrefabImporterBake.c`; `SendToBlender.c`; `TerrainToBlender.c`; `TextureValidation.c`; `BlenderAPI/BlenderEndpoints.c`; `BlenderAPI/BlenderRestAPI.c` |
+
+### Confirmed API model
+
+`NetApiDocs.c` defines a client-initiated, one-transaction-per-TCP-connection
+protocol. A request contains protocol version, client ID, `JsonRPC` content
+type, and an `APIFunc` JSON object; the response is an error-code string plus a
+JSON payload. `NetApiHandler.c` documents dispatch by derived class name and
+the `GetRequest` → deserialize → `GetResponse` lifecycle. The handler examples
+consistently use a `JsonApiStruct` request/response with explicitly registered
+fields; `AnimExport.c`, `PrefabImporterBake.c`, and the translation request
+classes also show custom array/object serialization where needed.
+
+The built-in endpoints remain the narrow, dependable base: status, World Editor
+status, opening a resource, focusing a module, and `ValidateScripts`. The
+review establishes a much broader *custom-handler* potential, but no generic
+handler catalogue or handler-discovery endpoint is supplied by the platform.
+Our plugin must therefore publish its own versioned `capabilities` response.
+
+### Capability inventory
+
+| Capability | Evidence in installed source | MCP recommendation |
+| --- | --- | --- |
+| Workbench/compiler health and script validation | `NetApiDocs.c` | Initial capability. Use status for readiness and `ValidateScripts` only on explicit request. |
+| Resolve a resource, inspect its class/container/metadata, inspect prefab children, list game materials | `ResourceInfo.c` | Initial read-only capability, but bound recursive expansion and result size. |
+| Loaded projects, addon/path ownership, prefab discovery, GUID/resource-ID/path mapping | `EnfusionBlenderTools/AssetLibraryUtils.c`, `LoadedProjects.c`, `CheckGUID.c`, `EBTEmatUtils.c` | Initial read-only capability after canonical project-root validation. |
+| Query physics-layer presets and membership | `EnfusionBlenderTools/LayerPresets.c` | Suitable read-only capability. |
+| Inspect portal materials, material assignments, and texture/material GUID issues | `GetPortalMat.c`, `TextureValidation.c`, `ValidateMaterialPlugin.c` | Good diagnostic/inspection capability; return structured findings rather than the sample's parallel prose/severity arrays. |
+| Enumerate/export prefab hierarchy, transforms, FBX paths, sockets, and material overrides | `PrefabImporter.c`, `PrefabImporterBake.c` | Candidate read capability after pagination. The sample itself caps responses, demonstrating that output-size limits are required. |
+| Read animation export profiles/channel metadata | `AnimExportProfiles.c`, `generated/TxaExporter.c` | Candidate read capability. |
+| Texture-import policy and batch diagnostics/fixes | `TextureImportTool.c`, `ResourceInfo.c` | Read-only audit is useful; any repair/rebuild must be a separate previewable operation. |
+| Open/focus Workbench resources/modules | `NetApiDocs.c`, `OpenXOB.c` | Explicit user-visible navigation tool. |
+| World selection/entity/prefab/terrain operation | `WorldExporterPlugin.c`, `ExportTerrain.c`, `BakeMLOD.c` | Later only: narrowly named action, preview, confirmation, and a verified World Editor undo transaction. |
+| Import/register/rebuild textures, FBX, materials and prefabs | `ResourceInfo.c`, `TextureImportTool.c`, `PrefabImporterBake.c`, `BakeMLOD.c` | Later deterministic-write capability. Return affected paths/resource IDs and a rebuild outcome. |
+| Animation export to files | `AnimExport.c`, `generated/TxaExporter.c` | Later file-writing capability; do not expose raw target-path/file-data controls initially. |
+| Launch Blender, start its HTTP bridge, or invoke arbitrary operators/processes | `CallBlenderFunction.c`, `SendToBlender.c`, `BlenderAPI/*`, `ValidateFBXPlugin.c` | Exclude from the initial MCP surface. These are external-process/network bridges, not Workbench facts. |
+| Translation HTTP service and localization edits | `LocalizationEditor/TranslationPlugin*.c` | Exclude from this Workbench MCP; it is an unrelated external web-service workflow. Its request validation and explicit confirmation are useful design examples. |
+| Peer-client process launch/control | `PeerConfig.c`, `PeerTool.c` | Exclude. It constructs and starts external processes. |
+| Map export/copy/temporary-file cleanup | `WorldExporterPlugin.c` | Exclude initially. It performs broad entity mutations, writes/copies resources, saves the world, and deletes files. |
+
+### Design lessons and safety findings
+
+The Blender integration is valuable proof that Workbench can resolve projects,
+resources, prefabs, materials, terrain and animation data through typed custom
+handlers. It is not a safe MCP design to reuse unchanged. Its handlers use
+inconsistent response shapes (`status`, `Output`, `Result`, null, or bespoke
+objects), accept broad absolute paths, and mix inspection with registration,
+resource rebuilding, world modification, file copying, dialogs, process launch,
+or HTTP calls.
+
+In particular, `ResourceInfo.c` has an explicit TODO that texture copying does
+not ensure the destination is inside the project. `AssetLibraryUtils.c` uses a
+substring-style project-path test rather than canonical containment.
+`ExportTerrain.c`, `BakeMLOD.c`, and `WorldExporterPlugin.c` can make material,
+terrain, prefab, entity, resource, world-save, copy, or delete changes without
+the MCP-facing preview/confirmation contract. `CallBlenderFunction.c` composes
+process command lines; `BlenderRestAPI.c` starts a localhost service. None
+should become a raw `call_workbench_handler`, arbitrary path, shell, process,
+or HTTP MCP tool.
+
+The source also shows two reusable positive patterns:
+
+1. Small request/response DTOs are the right Workbench-plugin boundary.
+   Our DTOs should add one shared envelope: `ok`, typed error code/message,
+   API/plugin version, operation ID, and affected resource identities.
+2. Result limits are real. `PrefabImporter.c` limits/paginates hierarchy output
+   and `ResourceInfo.c` comments on large prefab JSON exceeding transport
+   limits. Every collection endpoint needs a limit, cursor, and declared
+   maximum response size from its first version.
+
+### Recommended custom plugin v1
+
+Expose only these typed handlers in the first custom plugin: `capabilities`,
+`project_context`, `resolve_resource`, `inspect_resource`,
+`inspect_prefab_child`, `list_resources` with constrained type/filter/cursor,
+`world_selection_summary`, and `validate_scripts`. The MCP host maps them to
+small named MCP tools and retains transport/retry/status-bar ownership.
+
+Do not expose arbitrary handler dispatch. Put any future mutator behind a
+separate domain endpoint with canonical project containment, resource/type
+validation, a dry-run response, explicit confirmation at the MCP client,
+atomic Workbench/World Editor transaction or undo group where supported, and a
+post-operation verification result. This keeps the useful engine authority
+while avoiding the breadth and implicit authority of the Blender example.
