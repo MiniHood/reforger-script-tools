@@ -464,3 +464,14 @@ overlay precedence. No fixture was treated as Workbench truth merely because it
 was present. AR-016 and AR-017 were established in this continuing slice; the
 remaining language-foundation modules and the full report/example programs are
 still under review.
+
+### 2026-07-23 — Developer tooling execution and discovery (in progress)
+
+Reviewed every tool wrapper's invocation shape, the verified-commit tool and
+its test, the build-and-replace server tool, startup tracing, runtime-performance
+reporting, and the two corpus-discovery scripts. Cargo-launch duplication is
+AR-014; receipt scope is AR-015. The corpus scripts label their regular
+expression/text scans as discovery-only and do not claim compiler truth. The
+build tool intentionally stops only binaries resolved within this repository
+before replacement. Remaining work in this slice is the report-program source
+that those wrappers run and a final per-path reconciliation.
