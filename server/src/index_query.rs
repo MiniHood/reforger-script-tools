@@ -36,6 +36,9 @@ pub struct EditorCompletionCandidate {
     pub origin: EditorCompletionOrigin,
     pub conditional_context: Vec<IndexedConditionalBranch>,
     pub callable_form: Option<CallableForm>,
+    /// The declared arity of a class type. This is source-derived completion
+    /// metadata, not a completion-side name allowlist.
+    pub generic_type_parameter_count: usize,
     pub display: SymbolDisplayInfo,
 }
 
@@ -450,6 +453,7 @@ impl<'index> IndexQuery<'index> {
             origin,
             conditional_context: symbol.conditional_context.clone(),
             callable_form: symbol.callable_form,
+            generic_type_parameter_count: self.generic_type_parameter_count(symbol.id, symbol.kind),
             display,
         })
     }
@@ -598,8 +602,22 @@ impl<'index> IndexQuery<'index> {
             origin,
             conditional_context: symbol.conditional_context.clone(),
             callable_form: symbol.callable_form,
+            generic_type_parameter_count: self.generic_type_parameter_count(symbol.id, symbol.kind),
             display,
         })
+    }
+
+    fn generic_type_parameter_count(&self, id: GlobalSymbolId, kind: SymbolKind) -> usize {
+        (kind == SymbolKind::Class)
+            .then(|| self.index.children(id))
+            .into_iter()
+            .flatten()
+            .filter(|child| {
+                self.index
+                    .symbol(**child)
+                    .is_some_and(|symbol| symbol.kind == SymbolKind::TypeParameter)
+            })
+            .count()
     }
 
     fn completion_origin(

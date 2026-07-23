@@ -314,6 +314,41 @@ class map<Class TKey, Class TValue> {}
 }
 
 #[test]
+fn incomplete_callable_type_fragments_are_never_parameter_symbols() {
+    let external = file_index_for_source(
+        r#"class Class {}
+class array<Class T> {}
+class set<Class T> {}
+class map<Class TKey, Class TValue> {}
+"#,
+    )
+    .index;
+    let source = "class Example { void Run(int, float, string, array, set, map) {} }";
+    let semantic = semantic_tokens_report_for_source_with_external(source, Some(&external));
+
+    for name in ["int", "float", "string", "array", "set", "map"] {
+        assert!(
+            !semantic
+                .decoded
+                .iter()
+                .any(|token| token.text == name && token.token_type == "parameter"),
+            "{name}: {:?}",
+            semantic.decoded
+        );
+    }
+    for name in ["array", "set", "map"] {
+        assert!(
+            semantic
+                .decoded
+                .iter()
+                .any(|token| token.text == name && token.token_type == "class"),
+            "{name}: {:?}",
+            semantic.decoded
+        );
+    }
+}
+
+#[test]
 fn incomplete_type_recovery_preserves_builtin_and_indexed_type_roles() {
     let external = file_index_for_source(
         r#"class Widget {}
@@ -1842,6 +1877,32 @@ fn completion_treats_a_first_parameter_character_as_a_type_in_an_unfinished_meth
 }
 
 #[test]
+fn pending_parameter_type_recovery_keeps_collection_snippets_after_modifiers() {
+    for (modifier, prefix, label, snippet) in [
+        ("out", "a", "array", "array<${1}>$0"),
+        ("inout", "s", "set", "set<${1}>$0"),
+        ("notnull", "m", "map", "map<${1}, ${2}>$0"),
+    ] {
+        let source = format!("class Example {{ void Run({modifier} {prefix})");
+        let report = completion_report_for_current_incomplete_callable_parameter_type_at_offset_with_external_indexes(
+            &source,
+            source.len() - 1,
+            None,
+            None,
+        )
+        .unwrap_or_else(|| panic!("missing pending type recovery for {modifier} {prefix}"));
+        let item = report
+            .list
+            .items
+            .iter()
+            .find(|item| item.label == label)
+            .unwrap_or_else(|| panic!("missing {label} after {modifier}: {report:?}"));
+        assert_eq!(item.text_edit.new_text, snippet);
+        assert_eq!(item.insert_text_format, Some(2));
+    }
+}
+
+#[test]
 fn completion_expands_collection_at_an_incomplete_member_declaration_start() {
     let source = "class Example { arr }";
     let report = completion_report_for_source_position_with_external(
@@ -1994,29 +2055,111 @@ class Tuple6<Class T1, Class T2, Class T3, Class T4, Class T5, Class T6> {}"#,
 }
 
 #[test]
-fn completion_offers_collection_snippets_in_every_supported_type_position() {
-    let samples = [
-        "class Example { arr value; }",
-        "class Example { void Run() { arr value; } }",
-        "class Example { void Run(arr value) {} }",
-        "class Example { arr Run() {} }",
-        "class Base {} class Example : arr {}",
-        "class Example { void Run() { new arr; } }",
-    ];
+fn completion_expands_indexed_generic_classes_with_their_declared_arity() {
+    let external = file_index_for_source(
+        r#"class SCR_BTParam<Class T> {}
+class SCR_TypeMap<Class TKey, Class TValue> {}
+"#,
+    )
+    .index;
+    let source = "class Example { void Run(SCR_ value) {} }";
+    let report = completion_report_for_source_position_with_external(
+        source,
+        position_after_needle(source, "SCR_"),
+        Some(&external),
+    );
 
-    for source in samples {
-        let report = completion_report_for_source_position_with_external(
-            source,
-            position_after_needle(source, "arr"),
-            None,
-        );
-        let collection = report
+    for (label, snippet) in [
+        ("SCR_BTParam", "SCR_BTParam<${1}>$0"),
+        ("SCR_TypeMap", "SCR_TypeMap<${1}, ${2}>$0"),
+    ] {
+        let item = report
             .list
             .items
             .iter()
-            .find(|item| item.label == "array")
-            .unwrap_or_else(|| panic!("missing array completion for {source:?}: {report:?}"));
-        assert_eq!(collection.text_edit.new_text, "array<${1}>$0");
+            .find(|item| item.label == label)
+            .unwrap_or_else(|| panic!("missing {label}: {report:?}"));
+        assert_eq!(item.text_edit.new_text, snippet);
+        assert_eq!(item.insert_text_format, Some(2));
+        assert_eq!(
+            item.command
+                .as_ref()
+                .and_then(|command| command.arguments.as_ref())
+                .and_then(|arguments| arguments.last()),
+            Some(&json!({ "finalTabstop": true }))
+        );
+    }
+}
+
+#[test]
+fn empty_slots_of_indexed_generic_classes_open_type_completion() {
+    let external = file_index_for_source("class SCR_BTParam<Class T> {}").index;
+    let source = "class Example { void Run(SCR_BTParam<> value) {} }";
+    let report = completion_report_for_source_position_with_external(
+        source,
+        position_after_needle(source, "SCR_BTParam<"),
+        Some(&external),
+    );
+
+    assert_eq!(report.completion_context, "type");
+    assert!(
+        report.list.items.iter().any(|item| item.label == "int"),
+        "{report:?}"
+    );
+}
+
+#[test]
+fn pending_completion_expands_indexed_generic_classes() {
+    let external = file_index_for_source("class SCR_BTParam<Class T> {}").index;
+    let source = "class Example { SCR_BT value; }";
+    let offset = source.find("SCR_BT").unwrap() + "SCR_BT".len();
+    let report = crate::lsp::completion::completion_report_for_lexical_source_at_offset_with_external_indexes(
+        source,
+        offset,
+        Some(&external),
+        None,
+    );
+    let item = report
+        .list
+        .items
+        .iter()
+        .find(|item| item.label == "SCR_BTParam")
+        .expect("expected generic class completion");
+    assert_eq!(item.text_edit.new_text, "SCR_BTParam<${1}>$0");
+    assert_eq!(item.insert_text_format, Some(2));
+}
+
+#[test]
+fn completion_offers_collection_snippets_in_every_supported_type_position() {
+    for (prefix, label, snippet) in [
+        ("arr", "array", "array<${1}>$0"),
+        ("se", "set", "set<${1}>$0"),
+        ("ma", "map", "map<${1}, ${2}>$0"),
+    ] {
+        let samples = [
+            format!("class Example {{ {prefix} value; }}"),
+            format!("class Example {{ void Run() {{ {prefix} value; }} }}"),
+            format!("class Example {{ void Run({prefix} value) {{}} }}"),
+            format!("class Example {{ {prefix} Run() {{}} }}"),
+            format!("class Base {{}} class Example : {prefix} {{}}"),
+            format!("class Example {{ void Run() {{ new {prefix}; }} }}"),
+        ];
+
+        for source in samples {
+            let report = completion_report_for_source_position_with_external(
+                &source,
+                position_for_offset(&source, source.rfind(prefix).unwrap() + prefix.len()),
+                None,
+            );
+            let collection = report
+                .list
+                .items
+                .iter()
+                .find(|item| item.label == label)
+                .unwrap_or_else(|| panic!("missing {label} completion for {source:?}: {report:?}"));
+            assert_eq!(collection.text_edit.new_text, snippet, "{label} in {source:?}");
+            assert_eq!(collection.insert_text_format, Some(2), "{label} in {source:?}");
+        }
     }
 }
 

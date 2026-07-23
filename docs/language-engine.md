@@ -71,17 +71,17 @@ matches retain priority, then the engine ranks standard value types, `ref`,
 nested collections, and indexed enums/classes. `void` is excluded from a
 collection type argument. Recovery recognizes only an incomplete operand of
 `new`, a lone prospective callable-parameter type before its required
-parameter name, and an empty type slot of a supported built-in collection or
-base-game tuple, so completion remains available while the user is
+parameter name, and an empty slot of an indexed generic class, so completion remains available while the user is
 constructing these otherwise valid type positions. The same prospective
 parameter-type recovery runs on the current-snapshot completion lane before
 argument-label lookup, so its initial character receives the generic snippet
 rather than a plain indexed class completion.
 
-Base-game `Tuple1` through `Tuple6` are a separate generic-class completion
-family. Their source-defined arity supplies one through six type slots using
-the same type-completion and final-caret bridge as collections; they do not
-receive collection construction or declaration-tail behavior.
+Indexed generic classes use their declared type-parameter count to supply type
+slots through the same type-completion and final-caret bridge as collections.
+That includes base-game tuples and game-defined generic classes such as
+`SCR_BTParam<T>`; only collections receive collection construction or
+declaration-tail behavior.
 
 ### Completion gotchas
 
@@ -89,12 +89,10 @@ receive collection construction or declaration-tail behavior.
   value completion there exposes statement keywords and hides the standard
   types, `ref`, and indexed classes.
 - Do not grow a hard-coded owner-name list when another generic class is
-  discovered. The base-game corpus includes generic classes beyond collections
-  and tuples, so generic snippet arity and empty-slot recovery must ultimately
-  come from the indexed generic-owner declaration. The current built-in
-  collection and `Tuple1`–`Tuple6` recognition is a bounded compatibility
-  bridge, with removal condition: replace it when generic-class metadata drives
-  this path.
+  discovered. Generic snippet arity and empty-slot recovery come from the
+  indexed generic-owner declaration. Built-in collection keyword completion
+  remains a lexical bridge because those names are language keywords as well
+  as source-defined classes.
 - Collection-only construction and declaration-tail behavior remains limited to
   `array`, `set`, and `map`; generic classes and tuples receive type slots only.
 

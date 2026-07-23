@@ -2050,7 +2050,16 @@ fn top_level_fallback_report_for_prefix_span(
     game_data_index: Option<&SymbolIndex>,
     context: UnavailableCompletionContext,
 ) -> LspCompletionReport {
-    let mode = if empty_generic_type_slot_before_offset(source, prefix_span.end) {
+    let declaration_context = declaration_keyword_context(source, prefix_span.start);
+    let mode = if declaration_context
+        || empty_generic_type_slot_before_offset_with_indexes(
+            source,
+            prefix_span.end,
+            None,
+            workspace_index,
+            game_data_index,
+        )
+    {
         EditorTopLevelCompletionMode::Type
     } else {
         EditorTopLevelCompletionMode::Value
@@ -2074,6 +2083,7 @@ fn top_level_fallback_report_for_prefix_span_with_mode(
     mode: EditorTopLevelCompletionMode,
 ) -> LspCompletionReport {
     let total_start = Instant::now();
+    let declaration_context = declaration_keyword_context(source, prefix_span.start);
     let prefix = source
         .get(prefix_span.start..prefix_span.end)
         .unwrap_or_default()
@@ -2089,15 +2099,15 @@ fn top_level_fallback_report_for_prefix_span_with_mode(
     );
     let render_context =
         CompletionRenderContext::new(&empty_local_index, workspace_index, game_data_index);
+    let insert_context = completion_insert_context(source, prefix_span.start, mode);
     let (mut items, source_kind_counts, origin_counts) = completion_items_for_candidates(
         &candidates,
         range_for_span(source, prefix_span),
         None,
-        CompletionInsertContext::Normal,
+        insert_context,
         Some(&prefix),
         render_context,
     );
-    let declaration_context = declaration_keyword_context(source, prefix_span.start);
     if mode == EditorTopLevelCompletionMode::Type || declaration_context {
         apply_tuple_type_snippets(&mut items);
     }
@@ -2350,7 +2360,13 @@ fn completion_report_for_offset(
     // type slot (`array<>`, `map<, >`, or `Tuple2<, >`). The incomplete parser
     // has no type node there yet, so recover that lexical shape directly and
     // use the normal type-ranking pipeline while the user chooses the argument.
-    if empty_generic_type_slot_before_offset(source, offset) {
+    if empty_generic_type_slot_before_offset_with_indexes(
+        source,
+        offset,
+        Some(&analysis.index),
+        workspace_index,
+        game_data_index,
+    ) {
         let context_elapsed = context_start.elapsed();
         return top_level_completion_report_for_indexes(
             source,
@@ -3278,8 +3294,8 @@ enum MemberVisibilityContext {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CompletionInsertContext {
     Normal,
+    Type,
     ConstructorCall,
-    AttributeShorthand,
 }
 
 #[derive(Debug, Clone)]
@@ -3569,6 +3585,41 @@ fn generic_type_argument_before_offset(source: &str, offset: usize) -> bool {
 }
 
 fn empty_generic_type_slot_before_offset(source: &str, offset: usize) -> bool {
+    generic_type_slot_owner_before_offset(source, offset).is_some_and(|owner| {
+        matches!(owner, "array" | "map" | "set") || tuple_type_argument_count(owner).is_some()
+    })
+}
+
+fn empty_generic_type_slot_before_offset_with_indexes(
+    source: &str,
+    offset: usize,
+    local_index: Option<&SymbolIndex>,
+    workspace_index: Option<&SymbolIndex>,
+    game_data_index: Option<&SymbolIndex>,
+) -> bool {
+    empty_generic_type_slot_before_offset(source, offset)
+        || generic_type_slot_owner_before_offset(source, offset).is_some_and(|owner| {
+            [local_index, workspace_index, game_data_index]
+                .into_iter()
+                .flatten()
+                .any(|index| index_has_generic_class(index, owner))
+        })
+}
+
+fn index_has_generic_class(index: &SymbolIndex, owner: &str) -> bool {
+    index
+        .preferred_classes_by_name(owner)
+        .into_iter()
+        .any(|id| {
+            index.children(id).iter().any(|child| {
+                index
+                    .symbol(*child)
+                    .is_some_and(|symbol| symbol.kind == SymbolKind::TypeParameter)
+            })
+        })
+}
+
+fn generic_type_slot_owner_before_offset(source: &str, offset: usize) -> Option<&str> {
     let tokens = lex(source)
         .into_iter()
         .filter(|token| {
@@ -3576,7 +3627,7 @@ fn empty_generic_type_slot_before_offset(source: &str, offset: usize) -> bool {
         })
         .collect::<Vec<_>>();
     let Some(last) = tokens.last() else {
-        return false;
+        return None;
     };
     let opener_index = match last.kind {
         TokenKind::Operator(Operator::Less) => tokens.len().checked_sub(1),
@@ -3606,19 +3657,13 @@ fn empty_generic_type_slot_before_offset(source: &str, offset: usize) -> bool {
         _ => None,
     };
     let Some(opener_index) = opener_index else {
-        return false;
+        return None;
     };
-    let Some(generic_type) = opener_index
+    let generic_type = opener_index
         .checked_sub(1)
-        .and_then(|index| tokens.get(index))
-    else {
-        return false;
-    };
-    matches!(
-        &source[generic_type.span.start..generic_type.span.end],
-        "array" | "map" | "set"
-    ) || tuple_type_argument_count(&source[generic_type.span.start..generic_type.span.end])
-        .is_some()
+        .and_then(|index| tokens.get(index))?;
+    (generic_type.kind == TokenKind::Identifier || matches!(generic_type.kind, TokenKind::Keyword(_)))
+        .then(|| &source[generic_type.span.start..generic_type.span.end])
 }
 
 /// Recovers a lone prospective parameter type while a callable declaration is
@@ -3671,7 +3716,23 @@ fn incomplete_callable_parameter_type_before_offset(source: &str, offset: usize)
             (token.kind == TokenKind::Comma).then_some(open_index + index + 2)
         })
         .unwrap_or(open_index + 1);
-    parameter_start + 1 == tokens.len()
+    let parameter = &tokens[parameter_start..];
+    let Some((type_token, modifiers)) = parameter.split_last() else {
+        return false;
+    };
+    matches!(type_token.kind, TokenKind::Identifier | TokenKind::Keyword(_))
+        && modifiers
+            .iter()
+            .all(|token| is_incomplete_parameter_type_modifier(token.kind))
+}
+
+fn is_incomplete_parameter_type_modifier(kind: TokenKind) -> bool {
+    matches!(
+        kind,
+        TokenKind::Keyword(
+            Keyword::Const | Keyword::Ref | Keyword::Out | Keyword::Inout | Keyword::Notnull
+        )
+    )
 }
 
 fn is_callable_return_type_token(kind: TokenKind) -> bool {
@@ -4504,11 +4565,7 @@ fn completion_insert_context(
         Some(TokenKind::LeftBracket) | Some(TokenKind::Keyword(crate::lexer::Keyword::New)) => {
             CompletionInsertContext::ConstructorCall
         }
-        None | Some(TokenKind::LeftBrace | TokenKind::RightBrace | TokenKind::Semicolon)
-            if mode == EditorTopLevelCompletionMode::Type =>
-        {
-            CompletionInsertContext::AttributeShorthand
-        }
+        _ if mode == EditorTopLevelCompletionMode::Type => CompletionInsertContext::Type,
         _ => CompletionInsertContext::Normal,
     }
 }
@@ -4799,13 +4856,23 @@ fn completion_item_for_candidate(
             description: render.call.result.clone(),
         })
         .or_else(|| completion_label_details(&label, candidate));
+    let generic_type_snippet = (candidate.kind == SymbolKind::Class
+        && insert_context == CompletionInsertContext::Type
+        && candidate.generic_type_parameter_count > 0)
+        .then_some(GenericTypeSnippet {
+            type_argument_count: candidate.generic_type_parameter_count,
+        });
     let (new_text, insert_text_format) = callable
         .as_ref()
         .map(|render| (render.insert_text.clone(), Some(2)))
+        .or_else(|| {
+            generic_type_snippet.map(|snippet| (snippet.snippet(&label), Some(2)))
+        })
         .unwrap_or_else(|| (label.clone(), None));
     let command = callable
         .as_ref()
-        .map(|render| render.follow_up_command.clone());
+        .map(|render| render.follow_up_command.clone())
+        .or_else(|| generic_type_snippet.map(GenericTypeSnippet::follow_up_command));
     let documentation = completion_documentation(candidate, callable.as_ref());
     let required_parameter_count = callable
         .as_ref()
@@ -4878,7 +4945,7 @@ fn callable_completion_render(
             return Some(CallableCompletionRender::from_insert(call, insert));
         }
         SymbolKind::Class
-            if insert_context == CompletionInsertContext::AttributeShorthand
+            if insert_context == CompletionInsertContext::Type
                 && is_attribute_like_completion_candidate(candidate) =>
         {
             let signature = candidate.constructor_signature.as_deref()?;
