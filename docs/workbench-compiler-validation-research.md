@@ -274,3 +274,98 @@ against every supported Workbench/Reforger version:
 - Keep all unproven behavior - endpoint discovery, diagnostics conventions,
   performance, concurrency, cancellation, and exact source snapshot - behind
   the live-validation backlog.
+
+## Accepted initial implementation contract (2026-07-23)
+
+This section supersedes the exploratory automatic-mode, endpoint-discovery,
+and stale-result proposals above. It records the agreed design; the
+live-validation gaps remain acceptance requirements rather than established
+Workbench facts.
+
+### Boundary and initial capabilities
+
+`src/workbenchGateway/` is a host-neutral TypeScript module with no `vscode`
+imports. It owns the NET API codec, one-transaction transport, typed outcomes,
+per-capability internal deadlines, Workbench Availability State, and exactly
+two initial named capabilities: `getStatus()` and
+`validateScripts(profile)`. It exposes no generic endpoint or handler
+invocation.
+
+`src/workbenchCompiler/` is the VS Code adapter. It owns settings, the status
+item, document saves, Continuous Compiler Validation, diagnostic location
+projection, and the Workbench Compiler Diagnostic Collection. A future MCP
+host consumes the Gateway rather than reimplementing NET API.
+
+### Endpoint and workspace contract
+
+The Gateway contacts only the extension-owned configured loopback endpoint.
+`reforgerScriptTools.workbenchNetApi.enabled` defaults to `true` and disables
+all NET API traffic when false. The configurable host is loopback-only and
+defaults to `127.0.0.1`; the configurable port defaults to `5775`. The
+extension does not discover, scan, change, or repair this endpoint. Status and
+validation requests contact only that configured endpoint.
+
+The initial supported workspace is one Addon Workspace: the Reforger addon
+project folder opened in VS Code. Multi-root selection and files outside that
+folder are unsupported. The stock built-ins do not establish the identity of
+the active Workbench project, so the UI must state that Workbench validates its
+currently open project rather than claiming that linkage was independently
+verified.
+
+### Validation controls and scheduling
+
+The extension exposes these user-facing validation controls:
+
+| Setting | Default | Contract |
+| --- | --- | --- |
+| `reforgerScriptTools.workbenchCompilerValidationDelay` | `3` | A positive whole-second idle delay enables Continuous Compiler Validation; `0` is manual-only. |
+| `reforgerScriptTools.workbenchCompilerValidationProfile` | `WORKBENCH` | A constrained profile setting. `WORKBENCH` is the only initially verified allowed value. |
+
+An explicit **Reforger: Validate Scripts in Workbench** command remains
+available when the Gateway is ready. With a positive delay, a save or an idle
+pause on the active Enforce Script document schedules one validation. Idle
+validation saves only that active document; it never saves every dirty tab.
+If saving fails, it does not validate, preserves prior Workbench evidence as
+stale, and reports a `save-failed` outcome. One validation may run at a time;
+later triggers coalesce into one follow-up validation after the latest delay.
+Changing any Gateway or validation setting applies immediately and supersedes
+queued work without a reload.
+
+### Diagnostics, status, and observability
+
+Workbench Compiler Diagnostics are separate from Provisional Parser
+Diagnostics. The extension atomically replaces the complete selected-profile
+Workbench Compiler Diagnostic Collection after a successful validation,
+including clearing it after a clean result. A failed or unavailable validation
+does not clear the preceding set.
+
+If source changes after a validation is scheduled, or Workbench becomes
+unavailable, the preceding Workbench diagnostics remain visible as **stale**
+evidence. Their source/message and the Workbench Status Item identify the
+prior-snapshot or unavailable state; the next fresh result replaces them.
+The Gateway remains host-neutral by returning Workbench resource identities and
+paths. Only the extension maps a location to a VS Code URI after proving it is
+inside the Addon Workspace; unresolvable locations are structured result/log
+evidence, never guessed workspace files.
+
+One lower-right Workbench Status Item reports disabled, connecting, starting,
+ready, validating, or unavailable/retrying. It exposes the endpoint, profile,
+last validation outcome/time, and sanitized failure category in its tooltip;
+clicking it runs the explicit validation command. There are no recurring
+connection-loss notifications.
+
+Gateway outcomes use stable typed categories such as `unavailable`, `timeout`,
+`protocol`, `unsupported`, and `workbench-error`, each with a recovery hint.
+The existing centralized extension diagnostics log records Gateway state
+transitions and outcomes with category and elapsed time, but never payloads,
+source text, endpoint addresses, or raw transport errors.
+
+### Required live acceptance
+
+Before this integration is complete, verify the configured `127.0.0.1:5775`
+endpoint with NET API enabled in a live Workbench session: `getStatus` framing
+and readiness; clean validation clearing the collection; a deliberate saved
+compiler error at the correct VS Code file/line; a stale result followed by a
+fresh replacement; and disabled NET API, wrong-endpoint, and save-failure
+outcomes that preserve useful evidence. Unit tests prove the Gateway and VS
+Code adapter contracts but do not replace this acceptance evidence.

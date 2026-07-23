@@ -3,6 +3,116 @@
 This glossary records the durable language used for the language engine's LSP
 runtime boundaries.
 
+## Workbench Integration
+
+**Addon Workspace**:
+The single Reforger addon-project folder opened as the supported VS Code
+workspace for Workbench compiler validation. General file workspaces and
+multi-root project selection are outside the initial validation contract.
+_Avoid_: arbitrary workspace, project picker, multi-root target
+
+**Configured Workbench Endpoint**:
+The explicit NET API loopback endpoint selected in extension configuration,
+with host defaulting to `127.0.0.1` and port to `5775`. The host is restricted
+to loopback values; the Gateway contacts only this endpoint and never
+discovers, scans, or changes it.
+_Avoid_: endpoint discovery, port scan, self-healing connection
+
+**Workbench NET API Enablement**:
+The extension-owned master control for all Gateway status and capability calls.
+When disabled, it performs no NET API traffic and any retained Workbench
+Compiler Diagnostics are stale evidence.
+_Avoid_: compiler-delay opt-out, Workbench option, connection preference
+
+**Workbench Status Item**:
+The single extension status-bar item that reports Workbench Availability State,
+current validation activity, and Workbench Compiler Diagnostic freshness. Its
+tooltip exposes configuration and the last sanitized outcome; it does not use
+recurring connection-loss notifications.
+_Avoid_: connection popup, compiler progress notification, NET API console
+
+**Live Gateway Configuration**:
+The immediate application of Workbench NET API enablement, endpoint, profile,
+and validation-delay setting changes. A changed setting supersedes queued work;
+existing compiler evidence remains stale until a result under the new
+configuration succeeds.
+_Avoid_: reload-only setting, deferred reconfiguration, mixed configuration
+
+**Workbench Gateway**:
+The host-neutral, authoritative boundary for the private Workbench NET API. It
+offers only named, typed Workbench operations and is initially hosted by the
+extension while remaining reusable by a future MCP host.
+_Avoid_: NET API client, Workbench bridge, MCP transport
+
+**Workbench Capability**:
+A named, versioned Workbench operation with a typed request and result,
+availability state, and declared effect classification. It is not a raw NET
+API endpoint exposed for arbitrary dispatch.
+_Avoid_: API function, handler name, generic command
+
+**Workbench Availability State**:
+The durable, observable Gateway assessment of whether Workbench is unavailable,
+starting, ready, or has a categorized failure. It is derived from short NET
+API transactions and is not a claim that a TCP connection remains open.
+_Avoid_: socket state, permanent connection, client session
+
+**Workbench Gateway Diagnostic Record**:
+A centralized, sanitized extension diagnostic-log record for a Gateway state
+transition or named capability outcome. It carries stable categories and timing
+metadata but never NET API payloads, source text, or raw transport errors.
+_Avoid_: payload log, socket dump, per-retry console output
+
+**Workbench Compiler Diagnostic**:
+A diagnostic reported by a completed Workbench script validation for its saved
+configuration snapshot. It is compiler truth for that snapshot and remains
+distinct from the extension's provisional parser analysis.
+_Avoid_: parser error, live-buffer compiler error, extension diagnostic
+
+**Workbench Compiler Diagnostic Collection**:
+The extension-owned VS Code diagnostic collection that renders Workbench
+Compiler Diagnostics. It is independent of the language server's provisional
+diagnostic publication.
+_Avoid_: LSP compiler diagnostics, shared diagnostic collection, Rust output
+
+**Provisional Parser Diagnostic**:
+A Rust language-engine diagnostic derived from the editor's current document
+snapshot. It remains useful for unsaved editing but is not a claim of
+Workbench compiler truth.
+_Avoid_: compiler diagnostic, validation error
+
+**Continuous Compiler Validation**:
+The default-on scheduling of Workbench script validation after a saved edit or
+an idle pause that first saves the changed script. Its single delay setting
+allows manual-only validation as an explicit opt-out; it is separate from the
+language engine's continuous parsing. It is single-flight: later edits
+coalesce into one follow-up run rather than overlapping compiler requests.
+_Avoid_: auto-parsing, live compiler, background build
+
+**Validation Save Target**:
+The active Enforce Script document whose idle edit triggers Continuous Compiler
+Validation. Other dirty script documents are not implicitly saved and retain
+only their Provisional Parser Diagnostics until separately saved or visited.
+_Avoid_: workspace auto-save, save-all validation, dirty-project snapshot
+
+**Validation Profile**:
+The named Workbench compilation configuration selected by an extension setting
+for a Workbench Compiler Validation request. Continuous Compiler Validation
+initially selects the only supported, verified value: `WORKBENCH`.
+_Avoid_: hidden compiler mode, target guess, endpoint parameter
+
+**Stale Workbench Compiler Diagnostic**:
+A Workbench Compiler Diagnostic from a prior saved snapshot when a newer
+relevant script change has been made, or when Workbench becomes unavailable.
+It remains visible as useful compiler evidence but must identify its stale
+status until replaced by a fresh result.
+_Avoid_: current compiler error, discarded validation, parser diagnostic
+
+**Workbench Compiler Diagnostic Set**:
+The complete compiler-diagnostic result of one successful Validation Profile
+run. The extension replaces the profile's displayed set atomically; an
+unsuccessful run retains the preceding set only as stale evidence.
+_Avoid_: incremental compiler output, merged run history, partial refresh
+
 ## LSP Runtime
 
 **Document Runtime**:

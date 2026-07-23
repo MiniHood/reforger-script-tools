@@ -67,6 +67,12 @@ Workbench failure therefore removes only manifest-backed editor capabilities;
 it must not prevent filesystem, language-engine, or evidence-catalogue tools
 from operating.
 
+The extension's first Workbench feature uses the same private route through a
+host-neutral Workbench Gateway. The extension hosts that Gateway initially for
+compiler validation; a future MCP host adapts the Gateway rather than creating
+another NET API implementation. The Gateway exposes named typed capabilities,
+never arbitrary handler dispatch.
+
 | Boundary | Request/data flow | Failure handling |
 | --- | --- | --- |
 | MCP client ↔ local MCP host | Named MCP tools/resources and structured results. | The host returns a typed unavailable/error result with a recovery hint. |
@@ -87,10 +93,17 @@ Workbench state.
 | `src/extensionConfig/` | Extension-facing names, defaults, and limits | Runtime logic |
 | `src/gameData/` | Game-data acquisition and source resolution | Parsing or semantic analysis |
 | `src/languageClient/` | Server lifecycle, transport, file notifications, and thin editor bridges | Syntax, lookup, completion ranking, or type reasoning |
+| `src/workbenchGateway/` | Host-neutral NET API codec, configured-endpoint transactions, typed Workbench capabilities, availability state, deadlines, and sanitized outcomes | VS Code imports, editor scheduling/UI, raw endpoint dispatch, or Enfusion language decisions |
+| `src/workbenchCompiler/` | VS Code settings, save/validation scheduling, compiler diagnostic rendering, and Workbench status UI | NET API framing, endpoint discovery, or language-engine diagnostics |
 | `server/` | Language analysis, external indexes, formatting, diagnostics, and LSP results | VS Code UI, settings, or game-data acquisition |
 | `tools/` | Development and investigation support | Extension runtime behavior |
 
 `src/extension.ts` composes these modules; it is not a feature owner.
+
+Workbench compiler diagnostics are an extension-owned source, separate from
+the Rust language server's provisional parser diagnostics. A future MCP host
+may consume the normalized Workbench results, but it must not use the Gateway
+to emulate compiler facts from files or expose the NET API as a public server.
 
 Within the language-client bridge, the composition root retains server lifecycle
 and restart policy. Focused bridges own workspace-script notifications, hover

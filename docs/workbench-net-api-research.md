@@ -385,3 +385,23 @@ validation, a dry-run response, explicit confirmation at the MCP client,
 atomic Workbench/World Editor transaction or undo group where supported, and a
 post-operation verification result. This keeps the useful engine authority
 while avoiding the breadth and implicit authority of the Blender example.
+
+## Accepted first extension framework (2026-07-23)
+
+The first delivered consumer is the VS Code extension, not an MCP host. It
+hosts a reusable, host-neutral Workbench Gateway for exactly the built-in
+`IsWorkbenchRunning` and `ValidateScripts` capabilities; it does not add a
+custom handler, capability manifest, MCP server, or generic handler dispatch.
+A future MCP host must consume this same Gateway boundary.
+
+For this initial extension contract, endpoint selection is explicitly owned by
+VS Code settings rather than automatic discovery: NET API enablement defaults
+on, the loopback-only host defaults to `127.0.0.1`, and the port defaults to
+`5775`. The Gateway contacts only the configured endpoint and never discovers,
+scans, changes, or repairs it. Its normal status requests remain necessary to
+assess the readiness of that exact configured endpoint; they are not endpoint
+discovery.
+
+The compiler-validation-specific scheduling, diagnostic provenance, and live
+acceptance contract are owned by
+[Workbench compiler-validation research](workbench-compiler-validation-research.md).
