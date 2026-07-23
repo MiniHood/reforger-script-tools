@@ -30,6 +30,7 @@ MCP client
 local MCP host
   |-- project gateway: bounded filesystem reads and staged writes
   |-- language-engine adapter: parser, symbols, references, diagnostics
+  |-- evidence-catalogue adapter: bundled game data and wiki documents
   |-- Workbench adapter: optional, capability-negotiated NET API client
   `-- operation policy: workspace root, dry-run, confirmation, audit result
 ```
@@ -50,6 +51,7 @@ requirements before it creates new editor value.
 | --- | --- | --- | --- |
 | Project orientation | List mounted projects, addon metadata, content roots, file tree, and discovered resources. | Filesystem | Read-only |
 | Source understanding | Search symbols/text, inspect declarations, references, call sites, syntax tree, diagnostics, and formatting preview. | Rust language engine + files | Read-only |
+| Reference research | Search and read bundled game-data source and wiki-document passages, with source/version/provenance metadata. | Bundled evidence catalogue | Read-only |
 | Change planning | Produce an edit plan/diff for a named file set; create a new script/prefab/config from an explicit template. | Filesystem + language engine | Preview first |
 | Safe source edits | Apply an exact, version-checked set of text edits and return the resulting diagnostics. | Filesystem + language engine | Explicit confirmation |
 | Asset inspection | Read a registered resource's engine-resolved metadata, container shape, child data, or material list. | Workbench NET API | Read-only |
@@ -66,14 +68,53 @@ validation, because it has a clear, inspectable result. Asset import and world
 mutation are valuable, but they should follow only after their side-effect and
 rollback contracts are demonstrated.
 
+## Bundled evidence catalogue and search
+
+Bundled game data and official wiki documents should be a first-class,
+read-only evidence catalogue. This makes answers such as "what is this API?",
+"show examples of this attribute," and "where is this Workbench workflow
+documented?" available even when Workbench is closed or its NET API is
+disabled. It is not a replacement for compiler validation, live World Editor
+state, or the resource database.
+
+Build one catalogue at extension packaging/acquisition time from immutable
+documents. Every indexed document/chunk must retain a manifest record containing
+at least its evidence kind (`game-data` or `official-wiki`), Reforger/extension
+version, original logical path or source URL, retrieval/build timestamp, and
+content hash. Search results must return that provenance, a bounded excerpt,
+and a cursor/range sufficient to retrieve more context. This prevents a wiki
+claim from being presented as compiler truth, or a result from one game-data
+version being silently applied to another.
+
+The useful initial MCP contract is deliberately small:
+
+| Capability | Contract |
+| --- | --- |
+| `search_reference` | Full-text/structured search across selected evidence kinds; filters include source kind, version, path/API name, and result limit. Return ranked excerpts plus provenance, never an unbounded corpus dump. |
+| `read_reference` | Read a bounded, cursor-addressed passage returned by search, preserving source identity and version. |
+| `reference_catalogue` resource | Exposes installed corpus versions, coverage counts, update time, and unavailable/mismatched sources. |
+| `find_api_examples` | A later structured projection over parsed game source: symbol/attribute/handler name to declarations and call sites. It must reuse Rust facts where it needs Enfusion syntax. |
+
+Use deterministic lexical/path/symbol search first. Add semantic or embedding
+ranking only if it can preserve exact source citations and deterministic
+filters; it must not become the only way to find an API. Keep the original
+documents out of model instructions: they are untrusted data returned through
+bounded tools/resources, not authority to invoke tools or override policy.
+
+Before distributing wiki content in the extension, record its source URL,
+version/update strategy, attribution, and redistribution licence/terms in the
+catalogue build contract. A stored web page is not automatically equivalent to
+the game data distributed with the tools.
+
 ## MCP presentation choices
 
 Use resources for stable, read-only context: a project manifest, resolved
-content-root map, language-engine diagnostics snapshot, and (when connected) a
-Workbench capability snapshot. Use tools for queries requiring arguments or
-actions: `search_symbols`, `inspect_resource`, `validate_scripts`, and
-`apply_workspace_edit`. MCP tools are model-controlled and the specification
-recommends a human be able to deny invocations, especially for operations
+content-root map, reference-catalogue manifest, language-engine diagnostics
+snapshot, and (when connected) a Workbench capability snapshot. Use tools for
+queries requiring arguments or actions: `search_reference`, `search_symbols`,
+`inspect_resource`, `validate_scripts`, and `apply_workspace_edit`. MCP tools
+are model-controlled and the specification recommends a human be able to deny
+invocations, especially for operations
 ([MCP tools](https://modelcontextprotocol.io/specification/2025-06-18/server/tools)).
 
 Prompts are a good fit for user-selected workflows rather than hidden policy:
@@ -101,17 +142,23 @@ NET API responses as data, never as MCP-server instructions.
 
 ## Decisions to validate before implementation
 
-1. Determine whether this server belongs beside the existing extension as a
+1. Specify the packaged evidence-catalogue manifest, source/update and
+   attribution/licensing rules, and a bounded index format that remains
+   self-contained in a Marketplace install.
+2. Prototype `search_reference` over a representative game-data plus wiki
+   corpus; verify version filtering, citation fidelity, pagination, and
+   predictable results for symbol/path/text queries.
+3. Determine whether this server belongs beside the existing extension as a
    developer tool/package or as a separately launched local executable. Its
    lifecycle must not add a marketplace dependency on user-installed runtimes.
-2. Define a shared project identity/content-root resolver so direct files and
+4. Define a shared project identity/content-root resolver so direct files and
    Workbench resource names cannot silently refer to different projects.
-3. Prototype one read path (`inspect_resource`) and one verification path
+5. Prototype one read path (`inspect_resource`) and one verification path
    (`validate_scripts`) through the Workbench adapter.
-4. Prototype one custom world action with preview plus `BeginEntityAction` /
+6. Prototype one custom world action with preview plus `BeginEntityAction` /
    `EndEntityAction`, then prove Undo in Workbench before surfacing a mutating
    world tool.
-5. Establish exact limits: response-size paging, operation timeouts,
+7. Establish exact limits: response-size paging, operation timeouts,
    cancellation, and connection/retry behaviour when Workbench is unavailable.
 
 The initial design is successful if it makes the existing language engine and
