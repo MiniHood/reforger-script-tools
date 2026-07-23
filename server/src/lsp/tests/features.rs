@@ -314,6 +314,56 @@ class map<Class TKey, Class TValue> {}
 }
 
 #[test]
+fn incomplete_type_recovery_preserves_builtin_and_indexed_type_roles() {
+    let external = file_index_for_source(
+        r#"class Widget {}
+class GenericBox<Class T> {}
+"#,
+    )
+    .index;
+    let cases = [
+        ("int", "int\nint complete;", "int", "keyword", None),
+        ("string", "string\nstring complete;", "string", "class", None),
+        ("vector", "vector\nvector complete;", "vector", "class", None),
+        ("Widget", "Widget\nWidget complete;", "Widget", "class", Some("Widget")),
+        (
+            "GenericBox",
+            "GenericBox<int>\nGenericBox<int> complete;",
+            "GenericBox<int>",
+            "class",
+            Some("GenericBox"),
+        ),
+        ("Widget", "ref Widget\nWidget complete;", "ref Widget", "class", Some("Widget")),
+    ];
+
+    for (name, body, declaration, token_type, hover_label) in cases {
+        let source = format!("class Example {{ void Run() {{\n{body}\n}} }}\n");
+        let semantic = semantic_tokens_report_for_source_with_external(&source, Some(&external));
+        let position = position_for_needle(&source, declaration, name);
+        assert!(
+            semantic.decoded.iter().any(|token| {
+                token.text == name
+                    && token.token_type == token_type
+                    && token.range.start == position
+            }),
+            "{declaration}: {:?}",
+            semantic.decoded
+        );
+
+        if let Some(hover_label) = hover_label {
+            let hover = hover_report_for_source_position_with_external(
+                &source,
+                position,
+                Some(&external),
+            );
+            assert!(hover.is_hit(), "{declaration}: {hover:?}");
+            assert_eq!(hover.selected_kind, Some(SymbolKind::Class), "{declaration}");
+            assert_eq!(hover.selected_label.as_deref(), Some(hover_label), "{declaration}");
+        }
+    }
+}
+
+#[test]
 fn semantic_tokens_color_external_enum_member_references() {
     let root = temp_test_dir("semantic_tokens_external_enum");
     fs::create_dir_all(&root).unwrap();
