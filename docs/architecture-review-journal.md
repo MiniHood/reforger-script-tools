@@ -244,6 +244,26 @@ Index Snapshot until the new one is ready. This matches the documented
 snapshot contract, removes editor-path whole-workspace work, and keeps
 generation correctness local.
 
+### AR-011 — External definitions synchronously reread their source file for each navigation
+
+**Strength:** Strong
+**Files:** `server/src/lsp/definition.rs:205-223`; `server/src/lsp/feature_dispatch.rs:148-166`
+
+For every selected external declaration, `definition_link_for_candidate` calls
+`fs::read_to_string` on the target before it can convert the indexed byte spans
+to LSP ranges. Definition handling is synchronous on the LSP request path, so
+navigation into game data or a workspace overlay can block the message loop on
+disk I/O. Repeated navigation to the same target repeats that read even though
+the index already owns the declaration's source identity and spans.
+
+Give the external-index module a source-coordinate projection interface that
+retains (or lazily, boundedly caches) the position data required for indexed
+files. The definition module should ask it for a target URI and ranges, rather
+than independently reopening a file. The deletion test passes: without this
+module, every consumer of external spans must rediscover file loading and UTF-16
+coordinate conversion. This keeps source-coordinate policy local and removes
+avoidable foreground I/O.
+
 ## Reviewed slices
 
 ### 2026-07-23 — Repository inventory, build/configuration
