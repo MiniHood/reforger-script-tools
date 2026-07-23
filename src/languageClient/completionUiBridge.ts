@@ -270,11 +270,18 @@ function triggerSuggestAtSnippetPlaceholder(...expectedSelectionTexts: unknown[]
 		traceVersion: snippetSuggestTraceVersion,
 		placeholderCount: expectedSelectionTextSequence.length,
 	});
-	// An empty tabstop is published by VS Code after the completion command can
-	// run. Waiting for its selection event prevents the pre-snippet caret from
-	// opening a competing value-context request.
+	// An empty tabstop can be published after the completion command can run.
+	// Defer one probe so it observes the tabstop rather than the pre-snippet
+	// caret, which would open a competing value-context request.
 	if (expectedSelectionTextSequence[0].length > 0) {
 		tryTrigger(editor, 'command');
+	} else {
+		setTimeout(() => {
+			const activeEditor = vscode.window.activeTextEditor;
+			if (activeEditor) {
+				tryTrigger(activeEditor, 'command');
+			}
+		}, 0);
 	}
 }
 
