@@ -673,11 +673,10 @@ impl<'source, 'tree> Parameter<'source, 'tree> {
     }
 
     pub fn kind(&self) -> ParameterKind {
-        if self.type_text().is_none()
-            && self
-                .text()
-                .is_some_and(|text| is_literal_parameter_fragment(text.text().trim()))
-        {
+        // Enfusion parameters require both a type and a name. While the user
+        // has only entered a prospective type, retain it as a recovery
+        // fragment instead of indexing it as a parameter declaration.
+        if self.type_text().is_none() {
             ParameterKind::NonDeclarationFragment
         } else {
             ParameterKind::Declaration
@@ -1899,10 +1898,6 @@ fn is_doc_comment_token(kind: TokenKind) -> bool {
     matches!(kind, TokenKind::DocLineComment | TokenKind::DocBlockComment)
 }
 
-fn is_literal_parameter_fragment(text: &str) -> bool {
-    matches!(text, "true" | "false" | "null" | "NULL")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2356,6 +2351,25 @@ ArmaReforgerScripted g_ARGame;
                 .unwrap()
                 .text(),
             "true"
+        );
+    }
+
+    #[test]
+    fn keeps_an_incomplete_parameter_type_out_of_the_parameter_index() {
+        let source = r#"class Example
+{
+	int TestNumFun(array) {}
+}
+"#;
+        let parse = parse_source(source);
+        let ast = AstSourceFile::new(source, &parse);
+        let method = first_method(&ast);
+
+        assert!(method.parameters().is_empty());
+        assert_eq!(method.parameter_fragments().len(), 1);
+        assert_eq!(
+            method.parameter_fragments()[0].text().unwrap().text(),
+            "array"
         );
     }
 

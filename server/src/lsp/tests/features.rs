@@ -1790,6 +1790,34 @@ fn completion_expands_builtin_collections_with_type_slots() {
 }
 
 #[test]
+fn completion_treats_an_incomplete_callable_parameter_as_a_type_position() {
+    let source = "class Example { int TestNumFun(arr) {} }";
+    let report = completion_report_for_source_position_with_external(
+        source,
+        position_after_needle(source, "arr"),
+        None,
+    );
+
+    assert_eq!(report.completion_context, "type");
+    let array = report
+        .list
+        .items
+        .iter()
+        .find(|item| item.label == "array")
+        .expect("expected array type completion");
+    assert_eq!(array.text_edit.new_text, "array<${1}>$0");
+    let semantic = fast_semantic_tokens_report_for_source(source);
+    assert!(
+        !semantic
+            .decoded
+            .iter()
+            .any(|token| token.text == "arr" && token.token_type == "parameter"),
+        "{:#?}",
+        semantic.decoded
+    );
+}
+
+#[test]
 fn completion_expands_collection_at_an_incomplete_member_declaration_start() {
     let source = "class Example { arr }";
     let report = completion_report_for_source_position_with_external(

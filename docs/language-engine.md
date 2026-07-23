@@ -70,9 +70,10 @@ type is accepted, places the caret after the closing `>`. Exact and prefix
 matches retain priority, then the engine ranks standard value types, `ref`,
 nested collections, and indexed enums/classes. `void` is excluded from a
 collection type argument. Recovery recognizes only an incomplete operand of
-`new` and an empty type slot of a supported built-in collection or base-game
-tuple, so completion remains available while the user is constructing these
-otherwise valid type positions.
+`new`, a lone prospective callable-parameter type before its required
+parameter name, and an empty type slot of a supported built-in collection or
+base-game tuple, so completion remains available while the user is
+constructing these otherwise valid type positions.
 
 Base-game `Tuple1` through `Tuple6` are a separate generic-class completion
 family. Their source-defined arity supplies one through six type slots using

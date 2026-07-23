@@ -2326,6 +2326,32 @@ fn completion_report_for_offset(
             total_start,
         );
     }
+    if incomplete_callable_parameter_type_before_offset(source, offset) {
+        let context_elapsed = context_start.elapsed();
+        let prefix_span = raw_completion_prefix_span(source, offset);
+        let prefix = source
+            .get(prefix_span.start..prefix_span.end)
+            .unwrap_or_default()
+            .to_string();
+        return top_level_completion_report_for_indexes(
+            source,
+            analysis.parse_diagnostics,
+            "type",
+            prefix,
+            prefix_span,
+            offset,
+            EditorTopLevelCompletionMode::Type,
+            analysis,
+            &analysis.index,
+            workspace_index,
+            game_data_index,
+            LspCompletionTimings {
+                context_detection: context_elapsed,
+                ..LspCompletionTimings::default()
+            },
+            total_start,
+        );
+    }
     let resolver = ReferenceResolver::new_with_parse_scope_and_external_indexes(
         source,
         &analysis.index,
@@ -3548,6 +3574,76 @@ fn empty_generic_type_slot_before_offset(source: &str, offset: usize) -> bool {
         "array" | "map" | "set"
     ) || tuple_type_argument_count(&source[generic_type.span.start..generic_type.span.end])
         .is_some()
+}
+
+/// Recovers a lone prospective parameter type while a callable declaration is
+/// incomplete. Without a variable name, Enfusion cannot have a parameter
+/// declaration yet; treating the token as one would suppress type snippets.
+fn incomplete_callable_parameter_type_before_offset(source: &str, offset: usize) -> bool {
+    let tokens = lex(source)
+        .into_iter()
+        .filter(|token| {
+            !token.kind.is_trivia() && token.kind != TokenKind::Eof && token.span.end <= offset
+        })
+        .collect::<Vec<_>>();
+    let Some(last) = tokens.last() else {
+        return false;
+    };
+    if !matches!(last.kind, TokenKind::Identifier | TokenKind::Keyword(_))
+        || last.span.end != offset
+    {
+        return false;
+    }
+    let mut parenthesis_depth = 0usize;
+    let Some(open_index) = tokens.iter().enumerate().rev().find_map(|(index, token)| match token.kind {
+        TokenKind::RightParen => {
+            parenthesis_depth += 1;
+            None
+        }
+        TokenKind::LeftParen if parenthesis_depth == 0 => Some(index),
+        TokenKind::LeftParen => {
+            parenthesis_depth -= 1;
+            None
+        }
+        _ => None,
+    }) else {
+        return false;
+    };
+    let Some(method_name_index) = open_index.checked_sub(1) else {
+        return false;
+    };
+    if tokens[method_name_index].kind != TokenKind::Identifier
+        || method_name_index == 0
+        || !is_callable_return_type_token(tokens[method_name_index - 1].kind)
+    {
+        return false;
+    }
+    let parameter_start = tokens[open_index + 1..]
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(index, token)| {
+            (token.kind == TokenKind::Comma).then_some(open_index + index + 2)
+        })
+        .unwrap_or(open_index + 1);
+    parameter_start + 1 == tokens.len()
+}
+
+fn is_callable_return_type_token(kind: TokenKind) -> bool {
+    matches!(
+        kind,
+        TokenKind::Identifier
+            | TokenKind::Keyword(
+                Keyword::Void
+                    | Keyword::Bool
+                    | Keyword::Int
+                    | Keyword::Float
+                    | Keyword::String
+                    | Keyword::Vector
+                    | Keyword::Typename
+                    | Keyword::Auto
+            )
+    )
 }
 
 fn rank_indexed_type_completion_items(items: &mut [LspCompletionItem], prefix: &str) {
