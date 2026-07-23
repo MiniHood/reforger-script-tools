@@ -498,13 +498,20 @@ impl FeatureDispatcher<'_> {
                                 on_type_formatting::unbraced_if_body_indent_plan(&document.text, cursor)
                                     .map(|plan| (plan, "unbracedIfBody"))
                             } else {
-                                on_type_formatting::control_header_block_before_enter_plan(
+                                on_type_formatting::auto_block_class_declaration_enter_plan(
                                     &document.text,
                                     cursor,
                                     params.options.tab_size,
                                     params.options.insert_spaces,
                                 )
-                            .map(|plan| (plan, "controlHeader"))
+                                .map(|plan| (plan, "classDeclaration"))
+                                .or_else(|| on_type_formatting::control_header_block_before_enter_plan(
+                                    &document.text,
+                                    cursor,
+                                    params.options.tab_size,
+                                    params.options.insert_spaces,
+                                )
+                                .map(|plan| (plan, "controlHeader")))
                             .or_else(|| on_type_formatting::if_header_body_before_enter_plan(
                                 &document.text,
                                 cursor,

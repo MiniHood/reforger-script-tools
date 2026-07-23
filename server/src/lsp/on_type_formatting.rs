@@ -28,6 +28,96 @@ pub(super) struct AutoBlockControlHeaderPlan {
     pub switch_arm_selection_end: Option<u32>,
 }
 
+/// Plans a braced body for a complete, single-line class declaration before
+/// VS Code performs Enter. This is deliberately a narrow declaration shape:
+/// modifiers, the class name, and an optional inheritance clause are allowed;
+/// existing bodies and any other trailing syntax remain native.
+pub(super) fn auto_block_class_declaration_enter_plan(
+    source: &str,
+    cursor: usize,
+    tab_size: usize,
+    insert_spaces: bool,
+) -> Option<AutoBlockControlHeaderPlan> {
+    if source.len() > MAX_ON_TYPE_SOURCE_BYTES || cursor > source.len() {
+        return None;
+    }
+    let line_start = source[..cursor].rfind('\n').map_or(0, |index| index + 1);
+    let line_end = source[cursor..]
+        .find(['\r', '\n'])
+        .map_or(source.len(), |offset| cursor + offset);
+    if !source[cursor..line_end].chars().all(char::is_whitespace) {
+        return None;
+    }
+    let tokens = lex(&source[line_start..cursor])
+        .into_iter()
+        .filter(|token| !token.kind.is_trivia() && token.kind != TokenKind::Eof)
+        .collect::<Vec<_>>();
+    let class_index = tokens
+        .iter()
+        .position(|token| token.kind == TokenKind::Keyword(Keyword::Class))?;
+    if !tokens[..class_index]
+        .iter()
+        .all(|token| is_class_declaration_modifier(token.kind))
+        || tokens.get(class_index + 1).map(|token| token.kind) != Some(TokenKind::Identifier)
+    {
+        return None;
+    }
+    let inheritance = &tokens[class_index + 2..];
+    if !inheritance.is_empty()
+        && (inheritance.len() < 2
+            || !matches!(
+                inheritance[0].kind,
+                TokenKind::Colon | TokenKind::Keyword(Keyword::Extends)
+            )
+            || inheritance[1..].iter().any(|token| {
+                matches!(
+                    token.kind,
+                    TokenKind::LeftBrace | TokenKind::RightBrace | TokenKind::Semicolon
+                )
+            }))
+    {
+        return None;
+    }
+    let line = &source[line_start..cursor];
+    let indent_end = line.len() - line.trim_start_matches(char::is_whitespace).len();
+    let indent = &line[..indent_end];
+    let newline = if source.contains("\r\n") { "\r\n" } else { "\n" };
+    let unit = if insert_spaces {
+        " ".repeat(tab_size.clamp(1, 16))
+    } else {
+        "\t".to_string()
+    };
+    let selection_line = source[..cursor]
+        .bytes()
+        .filter(|byte| *byte == b'\n')
+        .count() as u32
+        + 1;
+    let selection_character = format!("{indent}{unit}")
+        .chars()
+        .map(|character| character.len_utf16() as u32)
+        .sum();
+    Some(AutoBlockControlHeaderPlan {
+        span: TextSpan::new(cursor, cursor),
+        replacement: format!("{newline}{indent}{{{newline}{indent}{unit}{newline}{indent}}}"),
+        selection_line,
+        selection_character,
+        switch_arm_selection_end: None,
+    })
+}
+
+fn is_class_declaration_modifier(kind: TokenKind) -> bool {
+    matches!(
+        kind,
+        TokenKind::Keyword(
+            Keyword::Modded
+                | Keyword::Sealed
+                | Keyword::Proto
+                | Keyword::External
+                | Keyword::Native
+        )
+    )
+}
+
 pub(super) fn auto_block_control_header_enter_plan(
     source: &str,
     cursor: usize,
@@ -1097,7 +1187,8 @@ mod tests {
     use crate::lexer::TextSpan;
 
     use super::{
-        auto_block_control_header_enter_plan, block_comment_pair_plan,
+        auto_block_class_declaration_enter_plan, auto_block_control_header_enter_plan,
+        block_comment_pair_plan,
         control_header_block_before_enter_plan, if_header_body_before_enter_plan,
         incomplete_if_header_enter_plan, semicolon_before_enter_plan, semicolon_insertion_offset,
     };
@@ -1269,6 +1360,37 @@ mod tests {
                 .unwrap();
         assert_eq!(plan.replacement, "\n{\n  default:\n    \n}");
         assert_eq!(plan.switch_arm_selection_end, Some(9));
+    }
+
+    #[test]
+    fn creates_braced_bodies_for_incomplete_modded_class_declarations() {
+        for source in [
+            "modded class GRAY_TEST2",
+            "modded class GRAY_TEST2 : GRAY_TEST",
+            "modded class GRAY_TEST2 extends GRAY_TEST",
+        ] {
+            let plan = auto_block_class_declaration_enter_plan(source, source.len(), 4, true)
+                .expect("class declaration should receive a braced body");
+            assert_eq!(plan.span, TextSpan::new(source.len(), source.len()));
+            assert_eq!(plan.replacement, "\n{\n    \n}");
+            assert_eq!(plan.selection_line, 1);
+            assert_eq!(plan.selection_character, 4);
+        }
+    }
+
+    #[test]
+    fn declines_incomplete_or_already_braced_class_declarations() {
+        for source in [
+            "modded class",
+            "modded class GRAY_TEST2 :",
+            "modded class GRAY_TEST2 {",
+            "modded class GRAY_TEST2\n",
+        ] {
+            assert!(
+                auto_block_class_declaration_enter_plan(source, source.len(), 4, true).is_none(),
+                "{source:?}"
+            );
+        }
     }
 
     #[test]

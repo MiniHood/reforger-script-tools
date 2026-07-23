@@ -473,6 +473,39 @@ fn input_route_creates_loop_and_switch_bodies_without_rewriting_headers() {
 }
 
 #[test]
+fn input_route_creates_a_body_for_a_modded_class_with_inheritance() {
+    let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
+    let uri = "file:///Scripts/ModdedClassEnter.c";
+    let source = "modded class GRAY_TEST2 : GRAY_TEST";
+    server
+        .handle_message(
+            json!({ "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+                "textDocument": { "uri": uri, "languageId": "enforce", "version": 1, "text": source }
+            }}),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+    server.writer.clear();
+    server
+        .handle_message(
+            json!({ "jsonrpc": "2.0", "id": 1, "method": CONTROL_HEADER_ENTER_METHOD, "params": {
+                "textDocument": { "uri": uri }, "operation": "insertNewline", "version": 1,
+                "selections": [{ "start": { "line": 0, "character": source.len() }, "end": { "line": 0, "character": source.len() } }],
+                "options": { "tabSize": 4, "insertSpaces": true }
+            }}),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+    let output = String::from_utf8_lossy(&server.writer);
+    assert!(output.contains("\"newText\":\"\\n{\\n    \\n}\""), "{output}");
+    assert!(output.contains("\"owner\":\"classDeclaration\""), "{output}");
+}
+
+#[test]
 fn input_route_declines_multiple_or_nonempty_selections() {
     let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
     let uri = "file:///Scripts/InputRouteSelection.c";

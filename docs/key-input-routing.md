@@ -107,10 +107,12 @@ are available in extension development diagnostics.
 
 ## Implication for Reforger Script Tools
 
-The first Input Feature Owners are control-header `insertNewline`: `for`,
-`foreach`, `while`, and `switch` create their braced bodies before native
-Enter only when the caret is on the completed header's physical line. A caret
-on a later line always falls through to native Enter.
+The first Input Feature Owners are class-declaration and control-header
+`insertNewline`. A completed single-line class declaration, including `modded
+class` and an optional `:` or `extends` inheritance clause, receives an empty
+braced body before native Enter. `for`, `foreach`, `while`, and `switch` do
+the same only when the caret is on the completed header's physical line. A
+caret on a later line always falls through to native Enter.
 
 A completed `if` or `else if` condition entered from inside its paired
 parentheses instead preserves that header and creates one indented, unbraced
