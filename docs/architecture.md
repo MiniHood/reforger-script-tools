@@ -163,14 +163,19 @@ non-blank source line and ends at the reported line so both the likely cause
 and compiler recovery point are visible. Rust language diagnostics remain in
 their independent LSP-owned collection throughout.
 
-Every completed validation also replaces the dedicated **Reforger Workbench
-Compiler** output. Its compact first line begins with a bracketed local 24-hour
-completion timestamp, then reports Workbench request duration, project
-error/warning counts, and a count of hidden non-project findings. The next line
-explicitly reports whether Workbench returned a successful or failed
-validation. Detailed trigger, queue, save, and Workbench timing stages remain
-in the sanitized extension diagnostic log without source paths, messages, or
-payload data; they are not shown in the end-user compiler output.
+Once the `ValidateScripts` call is dispatched, the dedicated **Reforger
+Workbench Compiler** output atomically shows a timestamped one-line state that
+the compilation was requested and the extension is waiting for Workbench. A
+completed response replaces that transient state with the result; a failed
+transaction replaces it with a terminal no-result message so the output never
+continues to claim that Workbench is running. The completed result's compact
+first line begins with a bracketed local 24-hour completion timestamp, then
+reports Workbench request duration, project error/warning counts, and a count
+of hidden non-project findings. The next line explicitly reports whether
+Workbench returned a successful or failed validation. Detailed trigger, queue,
+save, and Workbench timing stages remain in the sanitized extension diagnostic
+log without source paths, messages, or payload data; they are not shown in the
+end-user compiler output.
 Project-contained findings show a workspace-relative `path:line`, severity,
 and compiler message. Everything after the severity is one document link to
 the projected diagnostic range; absolute paths are kept out of the displayed

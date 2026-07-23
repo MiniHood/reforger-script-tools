@@ -82,11 +82,15 @@ publication.
 _Avoid_: LSP compiler diagnostics, shared diagnostic collection, Rust output
 
 **Workbench Compiler Output**:
-The user-facing latest-result output. Its compact first line begins with a
-bracketed local 24-hour completion timestamp, then reports Workbench request
-duration, project error/warning counts, and the count of hidden non-project
-findings. The next line explicitly reports Workbench's successful or failed
-validation outcome. It then lists only project-contained findings as clickable
+The user-facing current-operation or latest-result output. Once a validation
+request has been dispatched, a timestamped one-line waiting state replaces the
+previous result until Workbench returns; a failed request replaces that state
+with a terminal no-result message. A completed result's compact first line
+begins with a bracketed local 24-hour completion timestamp, then reports
+Workbench request duration, project error/warning counts, and the count of
+hidden non-project findings. The next line explicitly reports Workbench's
+successful or failed validation outcome. It then lists only project-contained
+findings as clickable
 source locations with severity and compiler messages. The displayed location
 is workspace-relative, never absolute, and the complete location-plus-message
 after the severity is one link to the projected diagnostic range. Activating

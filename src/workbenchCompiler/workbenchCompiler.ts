@@ -143,6 +143,7 @@ class WorkbenchCompilerController implements vscode.Disposable {
 	private latestValidationOutput = '';
 	private latestValidationOutputLinks: ValidationOutputLink[] = [];
 	private validationOutputGeneration = 0;
+	private activeValidationStartedAtMs: number | undefined;
 	private staleReason: string | undefined;
 	private disposed = false;
 
@@ -196,6 +197,7 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		this.disposed = true;
 		this.configurationGeneration += 1;
 		this.pendingValidation = undefined;
+		this.activeValidationStartedAtMs = undefined;
 		this.clearProbeTimer();
 		this.clearValidationTimer();
 		for (const disposable of this.disposables.splice(0)) {
@@ -213,6 +215,7 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		this.clearProbeTimer();
 		this.clearValidationTimer();
 		this.pendingValidation = undefined;
+		this.activeValidationStartedAtMs = undefined;
 		this.markDiagnosticsStale('Workbench configuration changed');
 		this.lastFailure = undefined;
 		this.lastStatus = undefined;
@@ -397,16 +400,30 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		}
 		const hadDirtyScriptsAtRequest = hasDirtyEligibleDocuments();
 		const validationStartedAtMs = Date.now();
-		const result = await this.gateway.validateScripts(
+		this.activeValidationStartedAtMs = validationStartedAtMs;
+		const validation = this.gateway.validateScripts(
 			this.configuration.validationProfile.value,
 		);
+		this.publishValidationPending(
+			validationStartedAtMs,
+			request.revealOutput === true,
+		);
+		const result = await validation;
 		const completedAtMs = Date.now();
+		if (this.activeValidationStartedAtMs === validationStartedAtMs) {
+			this.activeValidationStartedAtMs = undefined;
+		}
 		if (this.disposed || request.generation !== this.configurationGeneration) {
 			return;
 		}
 		if (!result.ok) {
 			this.lastOutcome = `Validation failed: ${result.failure.category}.`;
 			this.noteFailure(result.failure);
+			this.publishValidationState(
+				`[${formatValidationClockTime(completedAtMs)}] `
+					+ `Compilation did not complete — ${result.failure.recoveryHint}`,
+				request.revealOutput === true,
+			);
 			this.scheduleProbe(unavailableRetryMs, request.generation);
 			return;
 		}
@@ -560,6 +577,24 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		}
 	}
 
+	private publishValidationPending(startedAtMs: number, revealOutput: boolean): void {
+		this.publishValidationState(
+			`[${formatValidationClockTime(startedAtMs)}] `
+				+ 'Compilation requested — waiting for Workbench to finish...',
+			revealOutput,
+		);
+	}
+
+	private publishValidationState(message: string, revealOutput: boolean): void {
+		this.validationOutputGeneration += 1;
+		this.latestValidationOutput = `${message}\n`;
+		this.latestValidationOutputLinks = [];
+		this.validationOutput.replace(this.latestValidationOutput);
+		if (revealOutput) {
+			this.validationOutput.show(true);
+		}
+	}
+
 	private provideValidationOutputLinks(document: vscode.TextDocument): vscode.DocumentLink[] {
 		const links: vscode.DocumentLink[] = [];
 		for (const candidate of this.latestValidationOutputLinks) {
@@ -629,13 +664,20 @@ class WorkbenchCompilerController implements vscode.Disposable {
 			]);
 		}
 		this.compilerDiagnostics.set(entries);
-		this.publishValidationOutput(
-			projectDiagnostics(this.lastValidationResult.diagnostics),
-			this.lastValidationTiming,
-			this.lastValidationResult.success,
-			reason,
-			false,
-		);
+		if (this.activeValidationStartedAtMs !== undefined) {
+			this.publishValidationPending(
+				this.activeValidationStartedAtMs,
+				false,
+			);
+		} else {
+			this.publishValidationOutput(
+				projectDiagnostics(this.lastValidationResult.diagnostics),
+				this.lastValidationTiming,
+				this.lastValidationResult.success,
+				reason,
+				false,
+			);
+		}
 		this.setPhase(this.phase);
 	}
 

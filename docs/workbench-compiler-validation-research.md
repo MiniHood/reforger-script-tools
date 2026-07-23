@@ -400,14 +400,24 @@ nearest preceding non-blank source line through the reported line. This shows
 the likely missing-semicolon source expression together with the line where
 Workbench recovered, while skipping blank lines when choosing the start.
 
-The dedicated latest-result output starts with a compact completion line whose
-bracketed local 24-hour timestamp is visually separated at the front. Workbench
-request duration follows, then project error/warning counts and a count of
-hidden non-project findings. A separate outcome line explicitly says whether
-Workbench reported success or failure. Detailed idle/queue, save/preparation,
-and Workbench timing remains available only in the sanitized extension
-diagnostic log. The user output then renders only project-contained findings
-with a severity followed by one clickable workspace-relative
+The dedicated output represents the current operation before it represents the
+latest result. As soon as `ValidateScripts` is dispatched, it atomically shows
+a timestamped one-line message that compilation was requested and the extension
+is waiting for Workbench to finish. The completed response replaces that
+transient state; a failed transaction replaces it with a terminal no-result
+message so waiting is never left displayed indefinitely. Automatic validation
+updates the transient state without revealing the Output panel, while explicit
+manual validation reveals it immediately. Completed automatic results retain
+the existing policy of revealing the panel only when project findings exist.
+
+A completed result starts with a compact completion line whose bracketed local
+24-hour timestamp is visually separated at the front. Workbench request
+duration follows, then project error/warning counts and a count of hidden
+non-project findings. A separate outcome line explicitly says whether Workbench
+reported success or failure. Detailed idle/queue, save/preparation, and
+Workbench timing remains available only in the sanitized extension diagnostic
+log. The user output then renders only project-contained findings with a
+severity followed by one clickable workspace-relative
 `path:line — message` range. The severity is not part of the link, and absolute
 paths are not displayed. Activating a finding link opens its source in preview,
 selects the same exact token, line, or recovery range used by the diagnostic,

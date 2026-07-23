@@ -35,7 +35,11 @@ suite('Workbench compiler validation', () => {
 		const workspace = onlyWorkspaceFolder();
 		const sourcePath = path.join(workspace.uri.fsPath, 'Scripts', 'Game', 'Example.c');
 		const sourceUri = vscode.Uri.file(sourcePath);
-		const peer = await startNetApiPeer(request => {
+		let releaseValidation = (): void => undefined;
+		const validationGate = new Promise<void>(resolve => {
+			releaseValidation = resolve;
+		});
+		const peer = await startNetApiPeer(async request => {
 			const payload = request.payload as { APIFunc?: string };
 			if (payload.APIFunc === 'IsWorkbenchRunning') {
 				return {
@@ -47,6 +51,7 @@ suite('Workbench compiler validation', () => {
 				APIFunc: 'ValidateScripts',
 				Configuration: 'WORKBENCH',
 			});
+			await validationGate;
 			return {
 				errorCode: 'Ok',
 				payload: {
@@ -67,7 +72,24 @@ suite('Workbench compiler validation', () => {
 			await waitFor(() => peer.requests.some(request =>
 				(request.payload as { APIFunc?: string }).APIFunc === 'IsWorkbenchRunning'));
 
-			await vscode.commands.executeCommand(workbenchCommands.validateScripts);
+			const validationCommand = vscode.commands.executeCommand(
+				workbenchCommands.validateScripts,
+			);
+			await waitFor(() => validationRequests(peer).length === 1 ? true : undefined);
+			const waiting = await waitFor(async () => {
+				const observation = await observeWorkbenchCompiler();
+				return observation.validationOutput.includes('waiting for Workbench')
+					? observation
+					: undefined;
+			});
+			assert.strictEqual(waiting.phase, 'validating');
+			assert.match(
+				waiting.validationOutput,
+				/^\[\d{2}:\d{2}:\d{2}\] Compilation requested — waiting for Workbench to finish\.\.\.\r?\n$/,
+			);
+			assert.deepStrictEqual(waiting.validationOutputLinks, []);
+			releaseValidation();
+			await validationCommand;
 
 			const diagnostics = await waitFor(() => {
 				const current = vscode.languages.getDiagnostics(sourceUri)
@@ -122,6 +144,37 @@ suite('Workbench compiler validation', () => {
 			assert.deepStrictEqual(navigatedEditor.selection.start, new vscode.Position(1, 0));
 			assert.deepStrictEqual(navigatedEditor.selection.end, new vscode.Position(1, 1));
 			assert.deepStrictEqual(navigatedEditor.selection.active, new vscode.Position(1, 0));
+		} finally {
+			releaseValidation();
+			await peer.close();
+		}
+	});
+
+	test('replaces the waiting output when Workbench does not return a validation result', async () => {
+		const peer = await startNetApiPeer(request => {
+			const payload = request.payload as { APIFunc?: string };
+			return payload.APIFunc === 'IsWorkbenchRunning'
+				? {
+					errorCode: 'Ok',
+					payload: { IsRunning: true, ScriptsCompiled: true },
+				}
+				: { errorCode: 'RequestFailed', payload: {} };
+		});
+		try {
+			await configurePeer(peer.port, 0);
+			await waitFor(() => peer.requests.some(request =>
+				(request.payload as { APIFunc?: string }).APIFunc === 'IsWorkbenchRunning'));
+
+			await vscode.commands.executeCommand(workbenchCommands.validateScripts);
+
+			const observation = await observeWorkbenchCompiler();
+			assert.strictEqual(observation.phase, 'unavailable');
+			assert.match(
+				observation.validationOutput,
+				/^\[\d{2}:\d{2}:\d{2}\] Compilation did not complete — Review Workbench state and retry the operation\.\r?\n$/,
+			);
+			assert.doesNotMatch(observation.validationOutput, /waiting for Workbench/);
+			assert.deepStrictEqual(observation.validationOutputLinks, []);
 		} finally {
 			await peer.close();
 		}
