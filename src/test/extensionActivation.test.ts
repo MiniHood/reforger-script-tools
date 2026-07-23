@@ -12,7 +12,7 @@ import { positionFromByteOffset } from '../languageClient/symbolLocationBridge';
 import { registerBlockCommentPair } from '../languageClient/typingAssistTransactionBridge';
 import { executeIndent, executeInsertNewline, executeInsertSpace } from '../languageClient/controlHeaderEnterBridge';
 import { VersionedEditorTransaction } from '../languageClient/versionedEditorTransaction';
-import { completionPresentationObservationForDocument, completionUiMiddlewareCallbacks, shouldMoveToFinalSnippetTabstop } from '../languageClient/completionUiBridge';
+import { completionPresentationObservationForDocument, completionUiMiddlewareCallbacks, nestedSnippetTransactionTookOwnership } from '../languageClient/completionUiBridge';
 
 suite('extension activation', () => {
 	test('renders the completion response observed by the VS Code suggest pipeline', async () => {
@@ -51,11 +51,10 @@ suite('extension activation', () => {
 			command.command === languageClientCommands.triggerSuggestAtSnippetPlaceholder));
 	});
 
-	test('keeps a nested collection completion in its inner type slot', () => {
-		assert.strictEqual(shouldMoveToFinalSnippetTabstop(true, 4, 5), false);
-		assert.strictEqual(shouldMoveToFinalSnippetTabstop(true, 4, 4), true);
-		assert.strictEqual(shouldMoveToFinalSnippetTabstop(true, 4, undefined), true);
-		assert.strictEqual(shouldMoveToFinalSnippetTabstop(false, 4, undefined), false);
+	test('retains map placeholder progression unless a nested snippet takes ownership', () => {
+		assert.strictEqual(nestedSnippetTransactionTookOwnership(4, 4), false);
+		assert.strictEqual(nestedSnippetTransactionTookOwnership(4, undefined), false);
+		assert.strictEqual(nestedSnippetTransactionTookOwnership(4, 5), true);
 	});
 
 	test('accepts only a complete Rust-authored if completion contract', () => {

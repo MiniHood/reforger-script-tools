@@ -355,7 +355,8 @@ async function advanceSnippetPlaceholderAfterAccept(
 	}
 
 	const transaction = pendingSnippetSuggestTransaction;
-	if (!shouldMoveToFinalSnippetTabstop(moveToFinalTabstop, transactionId, transaction?.id)) {
+	if (moveToFinalTabstop === true
+		&& nestedSnippetTransactionTookOwnership(transactionId, transaction?.id)) {
 		diagnostic('completion.transaction.nestedSnippetTookOwnership', {
 			transactionId: typeof transactionId === 'number' ? transactionId : undefined,
 		});
@@ -394,13 +395,11 @@ async function advanceSnippetPlaceholderAfterAccept(
 
 /** A nested generic completion owns its own selected type slot. Its parent
  * must not advance the active snippet to a final tabstop after that handoff. */
-export function shouldMoveToFinalSnippetTabstop(
-	moveToFinalTabstop: unknown,
+export function nestedSnippetTransactionTookOwnership(
 	expectedTransactionId: unknown,
 	activeTransactionId: number | undefined,
 ): boolean {
-	return moveToFinalTabstop === true
-		&& (activeTransactionId === undefined || activeTransactionId === expectedTransactionId);
+	return activeTransactionId !== undefined && activeTransactionId !== expectedTransactionId;
 }
 
 async function moveToFinalSnippetTabstop(transactionId: number): Promise<void> {
