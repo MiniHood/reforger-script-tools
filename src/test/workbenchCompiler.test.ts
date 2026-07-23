@@ -153,6 +153,38 @@ suite('Workbench compiler validation', () => {
 		}
 	});
 
+	test('save validates immediately without waiting for the idle delay', async function () {
+		this.timeout(4_000);
+		const workspace = onlyWorkspaceFolder();
+		const source = await createTemporaryScript(workspace, 'ImmediateSave');
+		const peer = await startNetApiPeer(request => {
+			const payload = request.payload as { APIFunc?: string };
+			return payload.APIFunc === 'IsWorkbenchRunning'
+				? { errorCode: 'Ok', payload: { IsRunning: true, ScriptsCompiled: true } }
+				: { errorCode: 'Ok', payload: { Errors: [], Warnings: [], Success: true } };
+		});
+		try {
+			await configurePeer(peer.port, 5);
+			await waitFor(() => peer.requests.some(request =>
+				(request.payload as { APIFunc?: string }).APIFunc === 'IsWorkbenchRunning'));
+			const document = await vscode.workspace.openTextDocument(source.filePath);
+			await vscode.window.showTextDocument(document);
+			await applyAppend(document, '// validate immediately on save');
+			assert.strictEqual(validationRequests(peer).length, 0);
+
+			assert.strictEqual(await document.save(), true);
+			await waitFor(
+				() => validationRequests(peer).length === 1 ? true : undefined,
+				2_000,
+			);
+			assert.strictEqual(document.isDirty, false);
+		} finally {
+			await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
+			await source.remove();
+			await peer.close();
+		}
+	});
+
 	test('uses the default three-second idle delay for automatic validation', async function () {
 		this.timeout(7_000);
 		const workspace = onlyWorkspaceFolder();

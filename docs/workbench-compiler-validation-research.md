@@ -354,18 +354,21 @@ The extension exposes these user-facing validation controls:
 
 | Setting | Default | Contract |
 | --- | --- | --- |
-| `reforgerScriptTools.workbenchCompilerValidationDelay` | `3` | A positive whole-second idle delay enables Continuous Compiler Validation; `0` is manual-only. |
-| `reforgerScriptTools.workbenchCompilerValidationProfile` | `WORKBENCH` | A constrained profile setting. `WORKBENCH` is the only initially verified allowed value. |
+| `reforgerScriptTools.workbench.compilerValidationDelaySeconds` | `3` | A positive idle delay enables Continuous Compiler Validation for saves and idle typing; the delay applies only to idle typing, while saves validate immediately. `0` is manual-only. |
+| `reforgerScriptTools.workbench.compilerValidationProfile` | `WORKBENCH` | A constrained profile setting. `WORKBENCH` is the only initially verified allowed value. |
 
 An explicit **Reforger: Validate Scripts in Workbench** command remains
-available when the Gateway is ready. With a positive delay, a save or an idle
-pause on the active Enforce Script document schedules one validation. Idle
-validation saves only that active document; it never saves every dirty tab.
-If saving fails, it does not validate, preserves prior Workbench evidence as
-stale, and reports a `save-failed` outcome. One validation may run at a time;
-later triggers coalesce into one follow-up validation after the latest delay.
-Changing any Gateway or validation setting applies immediately and supersedes
-queued work without a reload.
+available when the Gateway is ready. With a positive delay, saving an eligible
+Enforce Script cancels its pending idle timer and starts validation immediately.
+The delay is the fallback for unsaved typing: after an idle pause on the active
+document, the extension saves only that document and validates it. It never
+saves every dirty tab, and the extension-initiated save does not schedule a
+duplicate validation. If saving fails, it does not validate, preserves prior
+Workbench evidence as stale, and reports a `save-failed` outcome. One
+validation may run at a time; later triggers coalesce into one follow-up
+validation, with saves bypassing any remaining idle delay. Changing any Gateway
+or validation setting applies immediately and supersedes queued work without a
+reload.
 
 ### Diagnostics, status, and observability
 

@@ -130,14 +130,18 @@ disposal likewise invalidates in-flight continuations so they cannot publish or
 restart polling after extension deactivation. The extension never scans for
 another port or rewrites endpoint settings.
 
-Continuous validation is single-flight. A positive idle delay reacts to an
-eligible save or saves only the active dirty Enfusion Script after the idle
-period, then validates the configured profile. A zero delay is manual-only.
-Triggers during a validation collapse into one follow-up operation. A failed
-save does not call Workbench and does not retry compilation until another user
-or editor trigger occurs. When another edit arrives during an in-flight
-validation, it supersedes earlier queued triggers so the single follow-up
-cannot begin before the newest idle interval has elapsed.
+Continuous validation is single-flight. With a positive idle delay, an eligible
+save cancels any pending idle timer and validates immediately. Unsaved typing
+uses the delay as a fallback: after the active dirty Enfusion Script has been
+idle for that period, the adapter saves only that document and validates the
+configured profile. The adapter suppresses the save event it initiated so one
+idle trigger cannot produce a duplicate validation. A zero delay is
+manual-only. Triggers during a validation collapse into one follow-up
+operation. A failed save does not call Workbench and does not retry compilation
+until another user or editor trigger occurs. When another edit arrives during
+an in-flight validation, it supersedes earlier queued triggers so the single
+follow-up cannot begin before the newest idle interval has elapsed; an explicit
+save bypasses that remaining idle wait.
 
 Each completed validation is one atomic compiler diagnostic set. A successful
 clean result removes the old Workbench set; a failed transaction retains it.

@@ -95,11 +95,12 @@ Workbench compiler truth.
 _Avoid_: compiler diagnostic, validation error
 
 **Continuous Compiler Validation**:
-The default-on scheduling of Workbench script validation after a saved edit or
-an idle pause that first saves the changed script. Its single delay setting
-allows manual-only validation as an explicit opt-out; it is separate from the
-language engine's continuous parsing. It is single-flight: later edits
-coalesce into one follow-up run rather than overlapping compiler requests.
+The default-on scheduling of Workbench script validation immediately after a
+save, or after an idle pause that first saves the changed script. Its single
+delay setting applies only to unsaved typing and allows manual-only validation
+as an explicit opt-out; it is separate from the language engine's continuous
+parsing. It is single-flight: later edits coalesce into one follow-up run
+rather than overlapping compiler requests.
 _Avoid_: auto-parsing, live compiler, background build
 
 **Validation Save Target**:

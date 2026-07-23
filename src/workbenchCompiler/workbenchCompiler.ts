@@ -264,14 +264,23 @@ class WorkbenchCompilerController implements vscode.Disposable {
 
 	private onDocumentSaved(document: vscode.TextDocument): void {
 		if (!eligibleDocument(document)
-			|| this.savesStartedByValidation.has(document.uri.toString())) {
+			|| this.savesStartedByValidation.has(document.uri.toString())
+			|| this.disposed
+			|| !this.configuration.enabled
+			|| this.configuration.validationDelaySeconds <= 0) {
 			return;
 		}
-		this.scheduleValidation({
+		this.clearValidationTimer();
+		const request: ValidationRequest = {
 			generation: this.configurationGeneration,
 			trigger: 'save',
 			requestedAtMs: Date.now(),
+		};
+		diagnostic('workbenchValidationScheduled', {
+			trigger: request.trigger,
+			delayMs: 0,
 		});
+		void this.queueValidation(request);
 	}
 
 	private scheduleValidation(request: ValidationRequest): void {
