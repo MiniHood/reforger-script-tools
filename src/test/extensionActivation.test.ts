@@ -49,10 +49,15 @@ suite('extension activation', () => {
 					{ name: 'ResourceManager', bounds: { x: 100, y: 240, width: 300, height: 20 }, isSelected: false },
 				],
 			}],
-		}, ['Resource', 'ResourceName', 'ResourceManager']);
+		});
 		assert.match(report, /Rendered Suggest Widget \(Windows UI Automation\)/);
 		assert.match(report, /Bounds: 100,200 300x120/);
 		assert.match(report, /\| 2 \| yes \| ResourceName \|/);
+	});
+
+	test('refuses to guess which unrelated accessibility list is the suggest widget', () => {
+		const report = formatUiAutomationPayload({ status: 'no-suggest-widget', focusedElement: 'GC_Sounds.c', lists: [] });
+		assert.match(report, /No rendered rows are reported rather than guessing/);
 	});
 
 	test('registers editor-facing commands', async () => {
