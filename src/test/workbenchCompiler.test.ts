@@ -180,6 +180,54 @@ suite('Workbench compiler validation', () => {
 		}
 	});
 
+	test('validates once after the first successful startup connection', async () => {
+		const configuration = vscode.workspace.getConfiguration(workbenchConfig.section);
+		await configuration.update(
+			workbenchConfig.settings.enabled,
+			false,
+			vscode.ConfigurationTarget.Global,
+		);
+		await vscode.commands.executeCommand(workbenchTestCommands.restartCompiler);
+		await vscode.commands.executeCommand(workbenchTestCommands.armStartupValidation);
+		const peer = await startNetApiPeer(request => {
+			const payload = request.payload as { APIFunc?: string };
+			return payload.APIFunc === 'IsWorkbenchRunning'
+				? {
+					errorCode: 'Ok',
+					payload: { IsRunning: true, ScriptsCompiled: true },
+				}
+				: {
+					errorCode: 'Ok',
+					payload: { Errors: [], Warnings: [], Success: true },
+				};
+		});
+		try {
+			await configurePeer(peer.port, 0);
+			await waitFor(() => validationRequests(peer).length === 1 ? true : undefined);
+			const completed = await waitFor(async () => {
+				const observation = await observeWorkbenchCompiler();
+				return observation.phase === 'ready'
+					&& observation.validationOutput.includes(
+						'[SUCCESS] Compilation completed successfully.',
+					)
+					? observation
+					: undefined;
+			});
+
+			const operations = peer.requests.map(request =>
+				(request.payload as { APIFunc?: string }).APIFunc);
+			assert.deepStrictEqual(operations.slice(0, 2), [
+				'IsWorkbenchRunning',
+				'ValidateScripts',
+			]);
+			assert.match(completed.tooltip, /Validation succeeded/);
+			await new Promise(resolve => setTimeout(resolve, 100));
+			assert.strictEqual(validationRequests(peer).length, 1);
+		} finally {
+			await peer.close();
+		}
+	});
+
 	test('idle validation saves only the active script before compiling', async () => {
 		const workspace = onlyWorkspaceFolder();
 		const active = await createTemporaryScript(workspace, 'Active');

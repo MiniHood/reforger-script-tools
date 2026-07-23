@@ -66,7 +66,7 @@ interface RenderedDiagnosticSet {
 
 interface ValidationRequest {
 	generation: number;
-	trigger: 'edit' | 'save' | 'manual';
+	trigger: 'edit' | 'save' | 'manual' | 'startup';
 	requestedAtMs: number;
 	documentToSave?: vscode.TextDocument;
 	revealOutput?: boolean;
@@ -96,7 +96,8 @@ interface WorkbenchCompilerFailure {
 }
 
 export function registerWorkbenchCompilerFeatures(context: vscode.ExtensionContext): void {
-	let controller = new WorkbenchCompilerController();
+	const startupValidationEnabled = context.extensionMode !== vscode.ExtensionMode.Test;
+	let controller = new WorkbenchCompilerController(startupValidationEnabled);
 	controller.start(context.extensionMode);
 	context.subscriptions.push(controller);
 	if (context.extensionMode === vscode.ExtensionMode.Test) {
@@ -106,9 +107,12 @@ export function registerWorkbenchCompilerFeatures(context: vscode.ExtensionConte
 			}),
 			vscode.commands.registerCommand(workbenchTestCommands.restartCompiler, () => {
 				controller.dispose();
-				controller = new WorkbenchCompilerController();
+				controller = new WorkbenchCompilerController(false);
 				controller.start(context.extensionMode);
 				context.subscriptions.push(controller);
+			}),
+			vscode.commands.registerCommand(workbenchTestCommands.armStartupValidation, () => {
+				controller.armStartupValidation();
 			}),
 		);
 	}
@@ -147,8 +151,12 @@ class WorkbenchCompilerController implements vscode.Disposable {
 	private latestValidationOutputLinks: ValidationOutputLink[] = [];
 	private validationOutputGeneration = 0;
 	private activeValidationStartedAtMs: number | undefined;
+	private startupValidationAttempted = false;
+	private validationCompletedThisSession = false;
 	private staleReason: string | undefined;
 	private disposed = false;
+
+	public constructor(private startupValidationEnabled: boolean) {}
 
 	public start(extensionMode: vscode.ExtensionMode): void {
 		this.statusItem.name = 'Reforger Workbench';
@@ -191,6 +199,10 @@ class WorkbenchCompilerController implements vscode.Disposable {
 			));
 		}
 		this.applyConfiguration();
+	}
+
+	public armStartupValidation(): void {
+		this.startupValidationEnabled = true;
 	}
 
 	public dispose(): void {
@@ -430,6 +442,7 @@ class WorkbenchCompilerController implements vscode.Disposable {
 			this.scheduleProbe(unavailableRetryMs, request.generation);
 			return;
 		}
+		this.validationCompletedThisSession = true;
 		const staleReason = editGeneration !== this.scriptEditGeneration
 			? 'scripts changed while validation was running'
 			: hadDirtyScriptsAtRequest || hasDirtyEligibleDocuments()
@@ -709,7 +722,29 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		this.lastFailure = undefined;
 		this.lastStatus = result.value;
 		this.setPhase('ready');
+		if (this.shouldRequestStartupValidation()) {
+			this.startupValidationAttempted = true;
+			const request: ValidationRequest = {
+				generation,
+				trigger: 'startup',
+				requestedAtMs: Date.now(),
+			};
+			diagnostic('workbenchValidationScheduled', {
+				trigger: request.trigger,
+				delayMs: 0,
+			});
+			void this.queueValidation(request);
+			return;
+		}
 		this.scheduleProbe(readyHeartbeatMs, generation);
+	}
+
+	private shouldRequestStartupValidation(): boolean {
+		return this.startupValidationEnabled
+			&& !this.startupValidationAttempted
+			&& !this.validationCompletedThisSession
+			&& this.configuration.validationProfile.kind === 'supported'
+			&& onlyAddonWorkspace() !== undefined;
 	}
 
 	private noteFailure(

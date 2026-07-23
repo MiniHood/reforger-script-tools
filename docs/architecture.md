@@ -130,18 +130,26 @@ disposal likewise invalidates in-flight continuations so they cannot publish or
 restart polling after extension deactivation. The extension never scans for
 another port or rewrites endpoint settings.
 
-Continuous validation is single-flight. With a positive idle delay, an eligible
-save cancels any pending idle timer and validates immediately. Unsaved typing
-uses the delay as a fallback: after the active dirty Enfusion Script has been
-idle for that period, the adapter saves only that document and validates the
-configured profile. The adapter suppresses the save event it initiated so one
-idle trigger cannot produce a duplicate validation. A zero delay is
-manual-only. Triggers during a validation collapse into one follow-up
-operation. A failed save does not call Workbench and does not retry compilation
-until another user or editor trigger occurs. When another edit arrives during
-an in-flight validation, it supersedes earlier queued triggers so the single
-follow-up cannot begin before the newest idle interval has elapsed; an explicit
-save bypasses that remaining idle wait.
+The first successful status probe in an extension session schedules one startup
+validation so compiler state is established without waiting for a save or edit.
+A validation that already completed earlier in that session satisfies this
+requirement. The startup attempt is not re-armed by heartbeats, reconnects, or
+configuration changes, and a transport failure does not create a retry loop.
+This one operation is independent of the idle-delay setting and never saves a
+dirty document.
+
+Continuous validation is single-flight. With a positive idle delay, an
+eligible save cancels any pending idle timer and validates immediately. Unsaved
+typing uses the delay as a fallback: after the active dirty Enfusion Script has
+been idle for that period, the adapter saves only that document and validates
+the configured profile. The adapter suppresses the save event it initiated so
+one idle trigger cannot produce a duplicate validation. A zero delay disables
+edit/save automation after the session's startup validation. Triggers during a
+validation collapse into one follow-up operation. A failed save does not call
+Workbench and does not retry compilation until another user or editor trigger
+occurs. When another edit arrives during an in-flight validation, it supersedes
+earlier queued triggers so the single follow-up cannot begin before the newest
+idle interval has elapsed; an explicit save bypasses that remaining idle wait.
 
 Each completed validation is one atomic compiler diagnostic set. A successful
 clean result removes the old Workbench set; a failed transaction retains it.

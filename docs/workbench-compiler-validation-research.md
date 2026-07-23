@@ -218,8 +218,9 @@ saved eligible document
 ```
 
 No save or validation should block the VS Code save operation. Do not validate
-on extension activation, every successful health probe/reconnect, every cursor
-move, or every text change before a save.
+on every successful health probe/reconnect, every cursor move, or every text
+change before a save. The accepted contract below adds one session-start
+validation after the first successful status probe.
 
 ### Diagnostics and stale-result policy
 
@@ -354,21 +355,28 @@ The extension exposes these user-facing validation controls:
 
 | Setting | Default | Contract |
 | --- | --- | --- |
-| `reforgerScriptTools.workbench.compilerValidationDelaySeconds` | `3` | A positive idle delay enables Continuous Compiler Validation for saves and idle typing; the delay applies only to idle typing, while saves validate immediately. `0` is manual-only. |
+| `reforgerScriptTools.workbench.compilerValidationDelaySeconds` | `3` | A positive idle delay enables Continuous Compiler Validation for saves and idle typing; the delay applies only to idle typing, while saves validate immediately. `0` disables edit/save automation after the one session-start validation. |
 | `reforgerScriptTools.workbench.compilerValidationProfile` | `WORKBENCH` | A constrained profile setting. `WORKBENCH` is the only initially verified allowed value. |
 
 An explicit **Reforger: Validate Scripts in Workbench** command remains
-available when the Gateway is ready. With a positive delay, saving an eligible
-Enforce Script cancels its pending idle timer and starts validation immediately.
-The delay is the fallback for unsaved typing: after an idle pause on the active
-document, the extension saves only that document and validates it. It never
-saves every dirty tab, and the extension-initiated save does not schedule a
-duplicate validation. If saving fails, it does not validate, preserves prior
-Workbench evidence as stale, and reports a `save-failed` outcome. One
-validation may run at a time; later triggers coalesce into one follow-up
-validation, with saves bypassing any remaining idle delay. Changing any Gateway
-or validation setting applies immediately and supersedes queued work without a
-reload.
+available when the Gateway is ready. The first successful status probe in an
+extension session schedules one validation to establish current compiler state.
+If another validation already completed earlier in the session, it satisfies
+that requirement. Heartbeats, reconnects, and configuration changes do not
+re-arm the startup attempt, and a transport failure does not create a startup
+retry loop. This startup operation ignores the idle-delay setting and validates
+the saved project state without saving dirty documents.
+
+With a positive delay, saving an eligible Enforce Script cancels its pending
+idle timer and starts validation immediately. The delay is the fallback for
+unsaved typing: after an idle pause on the active document, the extension saves
+only that document and validates it. It never saves every dirty tab, and the
+extension-initiated save does not schedule a duplicate validation. If saving
+fails, it does not validate, preserves prior Workbench evidence as stale, and
+reports a `save-failed` outcome. One validation may run at a time; later
+triggers coalesce into one follow-up validation, with saves bypassing any
+remaining idle delay. Changing any Gateway or validation setting applies
+immediately and supersedes queued work without a reload.
 
 ### Diagnostics, status, and observability
 

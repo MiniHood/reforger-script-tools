@@ -144,7 +144,7 @@
           "minimum": 0,
           "maximum": 60,
           "title": "Workbench Compiler Validation: Idle Delay",
-          "markdownDescription": "Seconds of editing inactivity before the active Enfusion Script is saved and validated. Saving validates immediately without waiting for this delay. Set to `0` for manual validation only."
+          "markdownDescription": "Seconds of editing inactivity before the active Enfusion Script is saved and validated. Saving validates immediately without waiting for this delay. Set to `0` to disable edit/save automation; the one session-start validation and manual command remain available."
         },
         "reforgerScriptTools.workbench.compilerValidationProfile": {
           "type": "string",
