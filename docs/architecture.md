@@ -26,6 +26,59 @@ top-level wiring requests a language-server restart. The replacement server then
 builds its external game-data layer from that source; game-data acquisition does
 not perform language analysis itself.
 
+## Proposed MCP and Workbench Flow
+
+The local MCP server described here is a future integration boundary, not part
+of the current language-server runtime. It must preserve the same ownership
+rules: Rust remains the Enfusion language authority, direct files remain the
+authority for durable workspace content, and Workbench remains the authority
+for live editor/engine facts.
+
+```mermaid
+flowchart LR
+    Client[MCP client] -->|MCP: local stdio / JSON-RPC| Host[Local MCP host]
+
+    subgraph HostBoundary[Local MCP host: public AI-facing boundary]
+        Host --> Files[Project gateway<br/>bounded file reads and staged writes]
+        Host --> Rust[Rust language-engine adapter<br/>symbols, diagnostics, edits]
+        Host --> Evidence[Evidence-catalogue adapter<br/>game data and wiki documents]
+        Host --> Net[Workbench NET API adapter<br/>private typed client]
+        Policy[Tool catalogue and operation policy<br/>schemas, consent metadata, limits] --> Host
+    end
+
+    Net -->|NET API: local private protocol| Workbench[Running Reforger Workbench<br/>external editor process]
+    Workbench --> Plugin[Project Workbench plugin<br/>typed engine/resource/world handlers]
+
+    Files -->|filesystem facts and staged changes| Host
+    Rust -->|language facts| Host
+    Evidence -->|cited reference facts| Host
+    Plugin -->|typed live-editor DTOs| Workbench
+    Workbench -->|NET API response| Net
+
+    Workbench -.->|closed, not ready, timeout,<br/>or incompatible plugin| Net
+    Net -.->|sanitized availability/error state| Host
+    Host -.->|Workbench capability unavailable;<br/>file/Rust/evidence tools remain available| Client
+```
+
+The NET API is not part of MCP and is not exposed as a second public server. It
+is a private adapter route from the local MCP host to the external Workbench
+process. The custom plugin runs inside Workbench, not in the MCP host. A
+Workbench failure therefore removes only manifest-backed editor capabilities;
+it must not prevent filesystem, language-engine, or evidence-catalogue tools
+from operating.
+
+| Boundary | Request/data flow | Failure handling |
+| --- | --- | --- |
+| MCP client ↔ local MCP host | Named MCP tools/resources and structured results. | The host returns a typed unavailable/error result with a recovery hint. |
+| MCP host ↔ files/Rust/evidence | Direct bounded reads, staged writes, language queries, and cited reference queries. | Preserve each source's own diagnostics; do not substitute Workbench facts. |
+| MCP host ↔ NET API adapter | The host selects a named allowed capability; the adapter owns codec, timeout, retry, and connection handling. | Sanitize/log the transport category, clear the Workbench capability allowlist, and resume discovery. |
+| NET API adapter ↔ Workbench plugin | Versioned request/response DTOs for editor/resource/world operations. | A missing, stale, or incompatible plugin marks its operations unavailable; never fall back to raw handler dispatch or guessed file semantics. |
+
+MCP result objects must identify the source of each fact: `filesystem`,
+`language-engine`, `evidence-catalogue`, or `workbench`. A result may combine
+sources, but it must not imply that a file-derived fact describes current live
+Workbench state.
+
 ## Module Boundaries
 
 | Module | Owns | Must not own |
@@ -108,3 +161,6 @@ publish a later generation without changing that request's meaning.
 - Keep editor bridges event-driven and narrow; they transport or apply
   Rust-authored results rather than classify source.
 - Keep expensive analysis out of extension activation and the editor UI path.
+- Keep a future MCP host as an adapter: it may compose file, Rust, evidence,
+  and Workbench facts, but it must not become a second Enfusion semantic engine
+  or expose raw NET API handler dispatch.
