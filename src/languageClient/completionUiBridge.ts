@@ -332,18 +332,26 @@ async function advanceSnippetPlaceholderAfterAccept(
 		transactionId,
 		placeholderIndex: transaction.nextPlaceholderIndex - 1,
 	});
-	try {
-		await vscode.commands.executeCommand('jumpToNextSnippetPlaceholder');
-		diagnostic('completion.transaction.nextPlaceholderDispatched', {
-			transactionId,
-			placeholderIndex: transaction.nextPlaceholderIndex,
-		});
-	} catch {
-		diagnostic('completion.transaction.nextPlaceholderDispatchError', {
-			transactionId,
-			placeholderIndex: transaction.nextPlaceholderIndex,
-		});
-	}
+	// VS Code normally advances a snippet completion to its next tabstop before
+	// this completion command runs. A second jump would skip that tabstop (the
+	// value slot of map<K, V>, for example) after it has already requested type
+	// completion. Preserve a deferred fallback for hosts that do not advance.
+	setTimeout(() => {
+		const current = pendingSnippetSuggestTransaction;
+		if (!current || current.id !== transactionId || current.awaitingCompletionResponse) {
+			return;
+		}
+		void vscode.commands.executeCommand('jumpToNextSnippetPlaceholder').then(
+			() => diagnostic('completion.transaction.nextPlaceholderDispatched', {
+				transactionId,
+				placeholderIndex: current.nextPlaceholderIndex,
+			}),
+			() => diagnostic('completion.transaction.nextPlaceholderDispatchError', {
+				transactionId,
+				placeholderIndex: current.nextPlaceholderIndex,
+			}),
+		);
+	}, 0);
 }
 
 function isVscodeCommand(value: unknown): value is vscode.Command {
