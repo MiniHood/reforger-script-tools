@@ -807,6 +807,137 @@ fn external_static_owner_has_members(
         })
 }
 
+/// Produces the one base-call completion that corresponds to the callable the
+/// user is currently overriding. This is a bounded current-snapshot recovery:
+/// it reads only the enclosing class/method shape while the full document
+/// analysis is pending, then takes the callable signature from immutable
+/// external indexes.
+pub(crate) fn completion_report_for_current_super_at_offset_with_external_indexes(
+    source: &str,
+    offset: usize,
+    workspace_index: Option<&SymbolIndex>,
+    game_data_index: Option<&SymbolIndex>,
+) -> Option<LspCompletionReport> {
+    let start = Instant::now();
+    let region = BoundedCompletionRegion::for_current_override(source, offset)?;
+    (!completion_cursor_is_in_comment_or_string(&region.tokens, offset)).then_some(())?;
+    let context = region.current_super_call_context(source, offset)?;
+    if start.elapsed() > LOCAL_SCOPE_QUERY_DEADLINE {
+        return None;
+    }
+
+    let mut candidates = Vec::new();
+    for index in ExternalIndexes::new(workspace_index, game_data_index).ordered() {
+        candidates.extend(
+            completion_candidates_for_owner(index, &context.base_type, false)
+                .into_iter()
+                .filter(is_overridable_method_candidate)
+                .filter(|candidate| candidate.name.as_deref() == Some(&context.method_name)),
+        );
+    }
+    let candidates = combine_completion_candidates(candidates);
+    let empty_local_index = SymbolIndex::default();
+    let (mut items, source_kind_counts, origin_counts) = completion_items_for_candidates(
+        &candidates,
+        range_for_span(source, context.prefix_span),
+        Some("BaseCall"),
+        CompletionInsertContext::Normal,
+        Some("super"),
+        CompletionRenderContext::new(&empty_local_index, workspace_index, game_data_index),
+    );
+    for (order, item) in items.iter_mut().enumerate() {
+        item.label = format!("super.{}", item.label);
+        item.filter_text = Some("super".to_string());
+        item.sort_text = Some(format!("000:base-call:{order:03}:{}", item.label));
+        item.text_edit.new_text = format!("super.{}", item.text_edit.new_text);
+    }
+    let (items, is_incomplete) = cap_completion_items(items);
+    Some(LspCompletionReport {
+        candidate_count: items.len(),
+        list: LspCompletionList {
+            is_incomplete,
+            items,
+        },
+        query_quality: QueryQuality::Exact,
+        recovery_reason: None,
+        parse_diagnostics: 0,
+        completion_context: "super".to_string(),
+        receiver_text: Some("super".to_string()),
+        owner_type: Some(context.base_type),
+        prefix: context.prefix,
+        source_kind_counts,
+        origin_counts,
+        failure_reason: None,
+        timings: LspCompletionTimings {
+            total: start.elapsed(),
+            ..LspCompletionTimings::default()
+        },
+    })
+}
+
+fn super_call_completion_report_for_indexes(
+    source: &str,
+    parse_diagnostics: usize,
+    offset: usize,
+    local_index: &SymbolIndex,
+    workspace_index: Option<&SymbolIndex>,
+    game_data_index: Option<&SymbolIndex>,
+    total_start: Instant,
+) -> Option<LspCompletionReport> {
+    let region = BoundedCompletionRegion::for_current_override(source, offset)?;
+    let context = region.current_super_call_context(source, offset)?;
+    let mut candidates = completion_candidates_for_owner(local_index, &context.base_type, false);
+    if let Some(index) = workspace_index {
+        candidates.extend(completion_candidates_for_owner(index, &context.base_type, false));
+    }
+    if let Some(index) = game_data_index {
+        candidates.extend(completion_candidates_for_owner(index, &context.base_type, false));
+    }
+    let candidates = combine_completion_candidates(
+        candidates
+            .into_iter()
+            .filter(is_overridable_method_candidate)
+            .filter(|candidate| candidate.name.as_deref() == Some(&context.method_name))
+            .collect(),
+    );
+    let (mut items, source_kind_counts, origin_counts) = completion_items_for_candidates(
+        &candidates,
+        range_for_span(source, context.prefix_span),
+        Some("BaseCall"),
+        CompletionInsertContext::Normal,
+        Some("super"),
+        CompletionRenderContext::new(local_index, workspace_index, game_data_index),
+    );
+    for (order, item) in items.iter_mut().enumerate() {
+        item.label = format!("super.{}", item.label);
+        item.filter_text = Some("super".to_string());
+        item.sort_text = Some(format!("000:base-call:{order:03}:{}", item.label));
+        item.text_edit.new_text = format!("super.{}", item.text_edit.new_text);
+    }
+    let (items, is_incomplete) = cap_completion_items(items);
+    (!items.is_empty()).then_some(LspCompletionReport {
+        candidate_count: items.len(),
+        list: LspCompletionList {
+            is_incomplete,
+            items,
+        },
+        query_quality: QueryQuality::Exact,
+        recovery_reason: None,
+        parse_diagnostics,
+        completion_context: "super".to_string(),
+        receiver_text: Some("super".to_string()),
+        owner_type: Some(context.base_type),
+        prefix: context.prefix,
+        source_kind_counts,
+        origin_counts,
+        failure_reason: None,
+        timings: LspCompletionTimings {
+            total: total_start.elapsed(),
+            ..LspCompletionTimings::default()
+        },
+    })
+}
+
 /// Runs the bounded current-revision argument-label query for one bare,
 /// already-resolved callable. The query admits only a valid current CST and a
 /// simple identifier callee, so it cannot combine current argument text with
@@ -900,6 +1031,13 @@ struct CurrentOverrideCompletionContext {
     prefix: String,
     prefix_span: TextSpan,
     typed_modifiers: BTreeSet<String>,
+}
+
+struct CurrentSuperCallCompletionContext {
+    base_type: String,
+    method_name: String,
+    prefix: String,
+    prefix_span: TextSpan,
 }
 
 impl BoundedCompletionRegion {
@@ -1143,6 +1281,77 @@ impl BoundedCompletionRegion {
             prefix,
             prefix_span,
             typed_modifiers: bounded_typed_declaration_modifiers(&self.tokens, prefix_span),
+        })
+    }
+
+    fn current_super_call_context(
+        &self,
+        source: &str,
+        offset: usize,
+    ) -> Option<CurrentSuperCallCompletionContext> {
+        let prefix_span = lexical_completion_prefix_span(&self.tokens, offset);
+        let prefix = source.get(prefix_span.start..prefix_span.end)?.to_string();
+        completion_name_match_rank("super", &prefix)?;
+        let tokens = self.significant_before(prefix_span.start);
+
+        let body_open = tokens
+            .iter()
+            .rposition(|token| token.kind == TokenKind::LeftBrace)?;
+        let before_body = &tokens[..body_open];
+        (before_body.last()?.kind == TokenKind::RightParen).then_some(())?;
+        let mut depth = 0usize;
+        let parameters_open = before_body.iter().enumerate().rev().find_map(|(index, token)| {
+            match token.kind {
+                TokenKind::RightParen => {
+                    depth += 1;
+                    None
+                }
+                TokenKind::LeftParen if depth == 1 => Some(index),
+                TokenKind::LeftParen => {
+                    depth = depth.checked_sub(1)?;
+                    None
+                }
+                _ => None,
+            }
+        })?;
+        let method = before_body.get(parameters_open.checked_sub(1)?)?;
+        (method.kind == TokenKind::Identifier).then_some(())?;
+        let method_name = source
+            .get(method.span.start..method.span.end)?
+            .to_string();
+
+        let mut class_bases = BTreeMap::new();
+        for window in tokens.windows(5) {
+            if matches!(window[0].kind, TokenKind::Keyword(Keyword::Class))
+                && window[1].kind == TokenKind::Identifier
+                && window[2].kind == TokenKind::Colon
+                && window[3].kind == TokenKind::Identifier
+                && window[4].kind == TokenKind::LeftBrace
+            {
+                class_bases.insert(
+                    window[4].span.start,
+                    source
+                        .get(window[3].span.start..window[3].span.end)?
+                        .to_string(),
+                );
+            }
+        }
+        let mut scopes = Vec::new();
+        for token in tokens {
+            match token.kind {
+                TokenKind::LeftBrace => scopes.push(class_bases.remove(&token.span.start)),
+                TokenKind::RightBrace => {
+                    scopes.pop()?;
+                }
+                _ => {}
+            }
+        }
+        let base_type = scopes.into_iter().rev().flatten().next()?;
+        Some(CurrentSuperCallCompletionContext {
+            base_type,
+            method_name,
+            prefix,
+            prefix_span,
         })
     }
 }
@@ -2526,6 +2735,18 @@ fn completion_report_for_offset(
             return fallback;
         }
         return member_report;
+    }
+
+    if let Some(report) = super_call_completion_report_for_indexes(
+        source,
+        analysis.parse_diagnostics,
+        offset,
+        &analysis.index,
+        workspace_index,
+        game_data_index,
+        total_start,
+    ) {
+        return report;
     }
 
     let top_level_context =
@@ -5513,6 +5734,39 @@ mod tests {
             .items
             .iter()
             .any(|item| item.label == "ResourceName"));
+    }
+
+    #[test]
+    fn pending_super_completion_inserts_the_matching_base_call() {
+        let source = r#"class Child : Base
+{
+	override void OnPostInit(IEntity owner)
+	{
+		sup
+	}
+}
+"#;
+        let external = file_index_for_source(
+            "class Base { void OnPostInit(IEntity owner); }",
+        )
+        .index;
+        let offset = source.find("sup\n").unwrap() + 3;
+
+        let report = completion_report_for_current_super_at_offset_with_external_indexes(
+            source,
+            offset,
+            Some(&external),
+            None,
+        )
+        .expect("the pending super response should be available");
+        let item = report
+            .list
+            .items
+            .iter()
+            .find(|item| item.label == "super.OnPostInit")
+            .expect("expected a matching base-call completion");
+        assert_eq!(item.text_edit.new_text, "super.OnPostInit(${1:owner})");
+        assert_eq!(item.insert_text_format, Some(2));
     }
 
     #[test]

@@ -1581,6 +1581,37 @@ class Example : Base
 }
 
 #[test]
+fn completion_expands_super_to_the_matching_base_call() {
+    let source = r#"class Base
+{
+	void OnPostInit(IEntity owner);
+}
+
+class Example : Base
+{
+	override void OnPostInit(IEntity owner)
+	{
+		sup
+	}
+}
+"#;
+    let report = completion_report_for_source_position_with_external(
+        source,
+        position_after_needle(source, "sup"),
+        None,
+    );
+
+    let item = report
+        .list
+        .items
+        .iter()
+        .find(|item| item.label == "super.OnPostInit")
+        .expect("expected the matching base-call completion");
+    assert_eq!(item.text_edit.new_text, "super.OnPostInit(${1:owner})");
+    assert_eq!(item.insert_text_format, Some(2));
+}
+
+#[test]
 fn completion_follows_external_game_api_return_type_chain() {
     let game_source = r#"class Example
 {

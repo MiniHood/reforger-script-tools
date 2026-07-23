@@ -90,6 +90,14 @@ declaration-tail behavior.
 
 ### Completion gotchas
 
+- Inside an overriding method, the `super` prefix is an override-aware callable
+  completion rather than a plain keyword: it inserts the matching indexed base
+  call, including required parameter placeholders (for example,
+  `super.OnPostInit(${1:owner})`). The bounded current-snapshot path uses the
+  enclosing class/method shape and external index signature so this remains
+  available before whole-document analysis publishes; the analyzed path
+  produces the same result.
+
 - A completion produced without matching current-document semantic facts is a
   provisional fallback, even when it has fewer items than the normal cap. It
   must set LSP `isIncomplete: true` and preserve that state through every

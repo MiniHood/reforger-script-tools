@@ -9,6 +9,7 @@ use super::{
     completion_report_for_current_override_at_offset_with_external_indexes,
     completion_report_for_current_preprocessor_at_offset_with_external_indexes,
     completion_report_for_current_receiver_at_offset_with_external_indexes,
+    completion_report_for_current_super_at_offset_with_external_indexes,
     completion_report_for_lexical_source_at_offset_with_external_indexes,
     completion_report_for_lexical_source_with_external_indexes,
     debug_hover_report_for_cached_analysis_with_external_indexes,
@@ -332,6 +333,12 @@ impl FeatureDispatcher<'_> {
                                                 indexes.workspace.as_deref(),
                                                 indexes.game_data.as_deref(),
                                             )
+                                            .or_else(|| completion_report_for_current_super_at_offset_with_external_indexes(
+                                                &document.text,
+                                                offset,
+                                                indexes.workspace.as_deref(),
+                                                indexes.game_data.as_deref(),
+                                            ))
                                             .or_else(|| completion_report_for_current_override_at_offset_with_external_indexes(
                                                 &document.text,
                                                 offset,
