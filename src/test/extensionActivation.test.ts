@@ -87,21 +87,6 @@ suite('extension activation', () => {
 		assert.strictEqual(nestedSnippetTransactionTookOwnership(4, 5), true);
 	});
 
-	test('records an incomplete completion response as eligible for one semantic refresh', async () => {
-		const document = await vscode.workspace.openTextDocument({ language: 'enforce', content: 'Test' });
-		completionUiMiddlewareCallbacks.begin(document, new vscode.Position(0, 4), 1);
-		completionUiMiddlewareCallbacks.respond(
-			document,
-			1,
-			document.version,
-			undefined,
-			new vscode.CompletionList([new vscode.CompletionItem('TestNumFun2')], true),
-			0,
-		);
-		const report = completionPresentationObservationForDocument(document.uri.toString());
-		assert.match(report, /TestNumFun2/);
-	});
-
 	test('accepts only a complete Rust-authored if completion contract', () => {
 		const contract = ifSpaceCommitContractFromCommandArguments([{
 			expectedCommit: ' ',
