@@ -182,7 +182,7 @@ impl<'index> IndexQuery<'index> {
         mode: EditorTopLevelCompletionMode,
         limit: usize,
     ) -> Vec<EditorCompletionCandidate> {
-        if prefix.is_empty() {
+        if prefix.is_empty() && mode != EditorTopLevelCompletionMode::Type {
             return Vec::new();
         }
         if limit == 0 {
@@ -193,7 +193,7 @@ impl<'index> IndexQuery<'index> {
         let mut key_order = Vec::<String>::new();
 
         for (name, ids) in self.index.top_level_names() {
-            if completion_name_match_rank(name, prefix).is_none() {
+            if !prefix.is_empty() && completion_name_match_rank(name, prefix).is_none() {
                 continue;
             }
             for id in ids {

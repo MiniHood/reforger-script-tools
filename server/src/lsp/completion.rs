@@ -2024,6 +2024,11 @@ fn top_level_fallback_report_for_prefix_span(
     context: UnavailableCompletionContext,
 ) -> LspCompletionReport {
     let total_start = Instant::now();
+    let mode = if empty_collection_type_slot_before_offset(source, prefix_span.end) {
+        EditorTopLevelCompletionMode::Type
+    } else {
+        EditorTopLevelCompletionMode::Value
+    };
     let prefix = source
         .get(prefix_span.start..prefix_span.end)
         .unwrap_or_default()
@@ -2031,7 +2036,7 @@ fn top_level_fallback_report_for_prefix_span(
     let empty_local_index = SymbolIndex::default();
     let candidates = top_level_source_completion_candidates(
         &prefix,
-        EditorTopLevelCompletionMode::Value,
+        mode,
         &empty_local_index,
         workspace_index,
         game_data_index,
@@ -2047,17 +2052,25 @@ fn top_level_fallback_report_for_prefix_span(
         Some(&prefix),
         render_context,
     );
-    let keyword_items = keyword_completion_items(
+    if mode == EditorTopLevelCompletionMode::Type {
+        rank_indexed_type_completion_items(&mut items, &prefix);
+    }
+    let mut keyword_items = keyword_completion_items(
         &prefix,
         range_for_span(source, prefix_span),
-        EditorTopLevelCompletionMode::Value,
+        mode,
         declaration_keyword_context(source, prefix_span.start),
     );
+    if mode == EditorTopLevelCompletionMode::Type {
+        keyword_items.retain(|item| item.label != "void");
+    }
     if !keyword_items.is_empty() {
         remove_items_shadowed_by_keywords(&mut items, &keyword_items);
         items.extend(keyword_items);
     }
-    add_return_separator_to_completion_items(source, prefix_span, &mut items);
+    if mode == EditorTopLevelCompletionMode::Value {
+        add_return_separator_to_completion_items(source, prefix_span, &mut items);
+    }
     let (items, is_incomplete) = cap_completion_items(items);
     let mut report = LspCompletionReport {
         candidate_count: items.len(),
@@ -2068,7 +2081,11 @@ fn top_level_fallback_report_for_prefix_span(
         query_quality: QueryQuality::Exact,
         recovery_reason: None,
         parse_diagnostics: 0,
-        completion_context: "top-level".to_string(),
+        completion_context: if mode == EditorTopLevelCompletionMode::Type {
+            "type".to_string()
+        } else {
+            "top-level".to_string()
+        },
         receiver_text: None,
         owner_type: None,
         prefix,
@@ -2080,12 +2097,16 @@ fn top_level_fallback_report_for_prefix_span(
             ..LspCompletionTimings::default()
         },
     };
-    report.completion_context = match context {
-        UnavailableCompletionContext::Member => "member-unavailable-top-level-fallback",
-        UnavailableCompletionContext::Argument => "argument-unavailable-top-level-fallback",
-        UnavailableCompletionContext::TopLevel => "top-level",
-    }
-    .to_string();
+    report.completion_context = if mode == EditorTopLevelCompletionMode::Type {
+        "type".to_string()
+    } else {
+        match context {
+            UnavailableCompletionContext::Member => "member-unavailable-top-level-fallback",
+            UnavailableCompletionContext::Argument => "argument-unavailable-top-level-fallback",
+            UnavailableCompletionContext::TopLevel => "top-level",
+        }
+        .to_string()
+    };
     report.receiver_text = None;
     report.owner_type = None;
     report.failure_reason = Some(context.reason().to_string());
@@ -5114,6 +5135,41 @@ mod tests {
                 .filter(|item| item.label == "array")
                 .count(),
             1
+        );
+    }
+
+    #[test]
+    fn lexical_pending_empty_collection_slot_keeps_indexed_type_candidates() {
+        let source = "class Example { void Run(array<> value) {} }";
+        let external = file_index_for_source("class GameCollectionElement {}").index;
+        assert!(top_level_source_completion_candidates(
+            "",
+            EditorTopLevelCompletionMode::Type,
+            &SymbolIndex::default(),
+            Some(&external),
+            None,
+            32,
+        )
+        .iter()
+        .any(|candidate| candidate.name.as_deref() == Some("GameCollectionElement")));
+        let offset = source.find("array<").unwrap() + "array<".len();
+        assert!(empty_collection_type_slot_before_offset(source, offset));
+        let report = completion_report_for_lexical_source_with_external_indexes(
+            source,
+            range_for_span(source, TextSpan::new(0, offset)).end,
+            Some(&external),
+            None,
+        );
+
+        assert_eq!(report.completion_context, "type");
+        assert!(report.list.items.iter().any(|item| item.label == "int"));
+        assert!(
+            report
+                .list
+                .items
+                .iter()
+                .any(|item| item.label == "GameCollectionElement"),
+            "{report:?}"
         );
     }
 
