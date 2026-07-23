@@ -1831,6 +1831,35 @@ fn completion_keeps_collection_snippet_after_an_incomplete_preceding_line() {
 }
 
 #[test]
+fn completion_keeps_all_type_candidates_after_an_incomplete_preceding_line() {
+    let external = file_index_for_source("class GameWidget {}").index;
+    for (prefix, label, new_text) in [
+        ("boo", "bool", "bool"),
+        ("r", "ref", "ref ${1}"),
+        ("arr", "array", "array<${1}>$0"),
+        ("se", "set", "set<${1}>$0"),
+        ("ma", "map", "map<${1}, ${2}>$0"),
+        ("GameW", "GameWidget", "GameWidget"),
+    ] {
+        let source = format!(
+            "class Example\n{{\n\tvoid Do()\n\t{{\n\t\tint value =\n\t\t{prefix}\n\t}}\n}}"
+        );
+        let report = completion_report_for_source_position_with_external(
+            &source,
+            position_after_needle(&source, prefix),
+            Some(&external),
+        );
+        let item = report
+            .list
+            .items
+            .iter()
+            .find(|item| item.label == label)
+            .unwrap_or_else(|| panic!("{label} completion after incomplete line: {report:?}"));
+        assert_eq!(item.text_edit.new_text, new_text, "{label} after incomplete line");
+    }
+}
+
+#[test]
 fn completion_expands_map_and_ref_type_slots() {
     let map_source = "class Example { void Run(m value) {} }";
     let map_report = completion_report_for_source_position_with_external(
