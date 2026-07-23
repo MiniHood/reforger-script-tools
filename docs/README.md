@@ -36,5 +36,8 @@ implementation slice is progress, not a completed ticket.
   boundary and feature catalogue for a local Reforger MCP server.
 - [Workbench NET API exploration journal](workbench-net-api-research.md):
   extracted protocol evidence, adapter boundary, and validation backlog.
+- [Workbench compiler-validation research](workbench-compiler-validation-research.md):
+  `ValidateScripts` contract, continuous-validation design, diagnostics, and
+  live-session acceptance experiments.
 - [s&box MCP server review](sbox-mcp-research.md): first-party MCP-host and
   tool-authoring patterns relevant to the Reforger MCP design.

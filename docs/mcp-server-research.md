@@ -73,7 +73,7 @@ requirements before it creates new editor value.
 | Asset inspection | Read a registered resource's engine-resolved metadata, container shape, child data, or material list. | Workbench NET API | Read-only |
 | Asset lifecycle | Register/rebuild/import an asset; update an engine-managed resource/container. | Workbench NET API | Explicit confirmation; return affected files |
 | Workbench navigation | Open a resource or bring a named module forward. | Workbench NET API | Explicit user-visible action |
-| Verification | Run compiler-backed script validation and normalize its errors/warnings into file locations. | Workbench NET API | Explicit invocation |
+| Verification | Run compiler-backed script validation and normalize its errors/warnings into file locations. | Workbench NET API | Manual or explicitly user-enabled saved-idle policy |
 | World editing | Inspect selection; run a narrowly named, undo-grouped custom plugin operation. | Custom NET API handler | Preview/confirmation/undo contract |
 | Testing | Run an explicit Workbench/autotest target and return structured report artifacts. | Workbench plugin/API | Explicit invocation |
 

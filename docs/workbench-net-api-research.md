@@ -228,15 +228,18 @@ Workbench is ongoing availability state. Suggested wording and state are:
 | Discovering | `$(sync~spin) Checking for Reforger Workbench…` | None. |
 | Socket reached; Workbench not ready | `$(sync~spin) Reforger Workbench is starting…` | None. |
 | `ScriptsCompiled` is false | `$(sync~spin) Reforger Workbench is compiling scripts…` | Read-only health only. |
-| Health plus custom capabilities succeed | `$(plug) Reforger Workbench ready` | Only handlers named in the capability response. |
+| Built-in health succeeds | `$(plug) Reforger Workbench connected` | Built-in `validate_scripts`; custom-plugin handlers remain unavailable until negotiated. |
+| Custom capabilities succeed | `$(plug) Reforger Workbench ready` | Built-in `validate_scripts` plus only handlers named in the capability response. |
 | Connection lost | `$(circle-slash) Reforger Workbench unavailable — retrying` | None until re-established. |
 
 The documented `IsWorkbenchRunning` response supplies both `IsRunning` and
 `ScriptsCompiled`; use those facts rather than a successful TCP connection as
-the readiness decision. After it reports ready, call the project's custom
-`capabilities` handler once and cache only that connection's typed allowlist.
+the readiness decision. Once ready, the built-in `ValidateScripts` capability
+is available without a project plugin. Call the project's custom `capabilities`
+handler separately and cache only that connection's typed plugin allowlist.
 This ensures a Workbench instance with an absent, stale, or incompatible plugin
-does not expose speculative MCP tools.
+still supports the proven compiler route but does not expose speculative custom
+MCP tools.
 
 Start with one immediate probe, retry once per second while unavailable, and
 use a five-second heartbeat while ready. Do not poll every 500 ms: each NET API
@@ -247,11 +250,13 @@ not every failed retry; show no recurring warning popup. A status-bar command
 may offer immediate reconnect and reveal the last error/category in a tooltip.
 
 `ValidateScripts` is compiler-backed verification, not a health check. Offer it
-as an explicit MCP tool/command with a declared configuration (`WORKBENCH`,
-`PC`, and so on), return structured diagnostics, and require normal mutation/
-operation consent. Do not run it automatically at activation, after every
-reconnect, or on every save: it can be expensive and changes the meaning of an
-availability indicator into an unsolicited build.
+as a named command/tool with a declared configuration (`WORKBENCH`, `PC`, and
+so on) and return structured diagnostics. Do not run it unconditionally at
+activation, after every reconnect, or for every save. A user-controlled
+automatic mode may schedule one debounced, coalesced validation after a saved
+edit burst; it must not validate an unsaved buffer or block a save. The detailed
+contract, trigger modes, diagnostics freshness policy, and live acceptance
+experiments are in [Workbench compiler-validation research](workbench-compiler-validation-research.md).
 
 When the ready connection first succeeds, the host should cache the capability
 manifest and its revision. Re-read it after a reconnect and whenever a
@@ -307,7 +312,7 @@ Our plugin must therefore publish its own versioned `capabilities` response.
 
 | Capability | Evidence in installed source | MCP recommendation |
 | --- | --- | --- |
-| Workbench/compiler health and script validation | `NetApiDocs.c` | Initial capability. Use status for readiness and `ValidateScripts` only on explicit request. |
+| Workbench/compiler health and script validation | `NetApiDocs.c` | Initial built-in capability. Use status for readiness; validation is manual by default and may use an explicitly enabled saved-idle policy. |
 | Resolve a resource, inspect its class/container/metadata, inspect prefab children, list game materials | `ResourceInfo.c` | Initial read-only capability, but bound recursive expansion and result size. |
 | Loaded projects, addon/path ownership, prefab discovery, GUID/resource-ID/path mapping | `EnfusionBlenderTools/AssetLibraryUtils.c`, `LoadedProjects.c`, `CheckGUID.c`, `EBTEmatUtils.c` | Initial read-only capability after canonical project-root validation. |
 | Query physics-layer presets and membership | `EnfusionBlenderTools/LayerPresets.c` | Suitable read-only capability. |

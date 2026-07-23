@@ -1,0 +1,276 @@
+# Workbench compiler-validation research
+
+Research date: 2026-07-23. This journal records the evidence and proposed
+architecture for a first Workbench NET API feature: compiler-backed script
+validation in the VS Code extension. It is a design/research record, not an
+implementation commitment or proof from a live Workbench session.
+
+## Scope and evidence standard
+
+The feature is named **Workbench script validation** in the UI and public
+contract. The built-in endpoint is named `ValidateScripts`, but the documented
+operation validates an explicit script *configuration*; it is not documented as
+"compile this named file".
+
+Confirmed protocol facts come from the engine-owned extracted source at:
+
+- `C:\Users\Gray\AppData\Roaming\Code\User\globalStorage\undefined_publisher.reforger-sript-tools\game-data\scripts\WorkbenchGameCommon\NetApiDocs.c:11-220`; and
+- `C:\Users\Gray\AppData\Roaming\Code\User\globalStorage\undefined_publisher.reforger-sript-tools\game-data\scripts\WorkbenchGameCommon\generated\NetApi\NetApiHandler.c:15-35`.
+
+The current official [Workbench NET API reference](https://community.bistudio.com/wikidata/external-data/arma-reforger/EnfusionScriptAPIPublic/Page_NetApi.html)
+corroborates the request, response, and built-in endpoint contract. The
+official [NetApiHandler reference](https://community.bistudio.com/wikidata/external-data/arma-reforger/EnfusionScriptAPIPublic/interfaceNetApiHandler.html)
+corroborates custom-handler dispatch. No live Workbench probe has yet been run
+for this feature; claims in **Live-validation gaps** must not be promoted to
+facts until that happens.
+
+## Confirmed built-in contract
+
+### Transport and readiness
+
+NET API is a client-initiated protocol to a running Workbench. Each transaction
+uses a new TCP/IP connection and receives one response; requests contain
+protocol version, client ID, content type, and a UTF-8 JSON payload
+(`NetApiDocs.c:18-65`). The public MCP server owns this private transport
+adapter; Workbench is external to the MCP server.
+
+The documented readiness probe is:
+
+```json
+{ "APIFunc": "IsWorkbenchRunning" }
+```
+
+Its response has both `IsRunning` and `ScriptsCompiled` booleans, where the
+latter is documented as whether scripts compiled successfully
+(`NetApiDocs.c:84-97`). A reachable socket alone is therefore not enough to
+claim that compiler-backed validation is ready. The documented
+`IsWorldEditorRunning` response has the same two fields, but World Editor is
+not required for `ValidateScripts` (`NetApiDocs.c:98-110`).
+
+### Request shape and scope
+
+The entire documented request is:
+
+```json
+{
+  "APIFunc": "ValidateScripts",
+  "Configuration": "WORKBENCH"
+}
+```
+
+`Configuration` is required and is described as a script configuration from
+project settings, with examples `WORKBENCH`, `PC`, `PLAYSTATION`, and `XBOX`
+(`NetApiDocs.c:112-119`). There is no documented file path, resource ID,
+document URI, source text, editor-buffer revision, target class, addon filter,
+or cancellation parameter.
+
+Therefore these statements are confirmed:
+
+- The built-in operation validates a selected configuration, not a named file.
+- One request can report diagnostics for multiple files in that configuration.
+- The host must require an explicit configuration value; it must not silently
+  invent a target configuration.
+
+It does **not** follow that every file in every configuration is compiled, or
+that a successful result means a particular active VS Code document was
+included. Those are live-validation questions.
+
+### Response shape
+
+The endpoint returns a JSON payload with `Errors`, `Warnings`, and `Success`
+(`NetApiDocs.c:120-153`). Each documented diagnostic object has:
+
+| Field | Confirmed meaning |
+| --- | --- |
+| `error` | Human-readable compiler error or warning text. |
+| `file` | Resource-relative source path. |
+| `fileAbs` | Optional absolute path, documented as present for unpacked scripts. |
+| `addon` | Optional addon name, documented as present for unpacked scripts. |
+| `line` | Source line location. The documentation does not state whether numbering is zero- or one-based. |
+
+NET API also frames every response with an error-code string separate from the
+endpoint-specific JSON payload (`NetApiDocs.c:156-174`). The MCP host must
+treat a transport/protocol error and a completed validation containing compiler
+errors as different outcomes. `Success` is documented as a field, but its exact
+relationship to errors and warnings needs a live fixture; do not infer it from
+the single example response.
+
+## What this cannot validate
+
+The built-in request cannot carry the unsaved text of a VS Code document. The
+complete documented parameter list contains only `APIFunc` and `Configuration`.
+Consequently, an external extension cannot ask this built-in endpoint to
+compile an arbitrary unsaved VS Code buffer. It can only receive validation of
+the source state available to Workbench at the time of the request.
+
+For a normal file-backed workspace, that means a dirty VS Code buffer must be
+saved before its changes can be expected to affect a Workbench validation. This
+is an inference from the missing buffer-content/revision parameter and the
+separate-process architecture, not a claim that Workbench never has its own
+unsaved editor buffers. A custom handler could be designed to accept text, but
+it would not make the built-in compiler validate that text unless the handler
+has a proven engine-supported in-memory compilation route. No such route was
+found in the reviewed source or official NET API reference.
+
+Likewise, no documented request cancellation, cancellation token, progress
+event, queue status, or request correlation field exists. Closing an external
+TCP connection is not a documented cancellation mechanism and must not be used
+as one until a live experiment establishes the outcome.
+
+## Proposed extension behavior
+
+The goal is continuous *authoritative* compiler feedback without presenting
+diagnostics for an older saved snapshot as though they describe current text.
+This complements, rather than replaces, immediate Rust language-engine
+diagnostics for dirty buffers.
+
+### Status-bar lifecycle
+
+After game-data acquisition and the language engine's initial external index
+are ready, activate an optional Workbench connection controller. A persistent
+lower-right status-bar item communicates availability; a progress notification
+is reserved for bounded work.
+
+| State | Suggested text | Compiler validation availability |
+| --- | --- | --- |
+| Index not ready | No Workbench state shown yet. | Not started. |
+| Discovering | `$(sync~spin) Looking for Reforger Workbench...` | Unavailable. |
+| Workbench starting | `$(sync~spin) Reforger Workbench is starting...` | Unavailable. |
+| Scripts compiling | `$(sync~spin) Reforger Workbench is preparing scripts...` | Unavailable pending proof that requests are safe here. |
+| Ready | `$(check) Reforger Workbench connected` | `ValidateScripts` available. |
+| Validating | `$(sync~spin) Validating scripts in Workbench...` | One validation in flight. |
+| Lost | `$(circle-slash) Reforger Workbench unavailable - retrying` | Unavailable; file and Rust features remain available. |
+
+Probe immediately once the index-ready signal arrives, then every second while
+unavailable. On a healthy connection, use a five-second `IsWorkbenchRunning`
+heartbeat. Readiness is `IsRunning == true` and `ScriptsCompiled == true`, not
+just TCP success. The first compiler feature is built-in and does not depend on
+the future custom plugin or its `capabilities` manifest.
+
+### Commands and automatic modes
+
+Expose a manual command, **Reforger: Validate Scripts in Workbench**, with an
+optional keybinding. It requests an explicitly selected configuration and is
+always available when the connection is ready.
+
+Automatic validation should be a user-controlled policy, separate from
+connection health. A future setting may use these modes:
+
+| Mode | Trigger | Required behavior |
+| --- | --- | --- |
+| `manual` | Command/keybinding only. | Never starts validation automatically. |
+| `onSave` | A supported Enforce Script document is saved. | Debounce/coalesce then validate the chosen configuration. |
+| `onTypeIdle` | A supported dirty document remains idle for the configured interval. | Explicitly saves the document first; validate only after a successful save. This mode must make its save behavior clear to the user. |
+
+`onTypeIdle` is the appropriate answer to a user who wants feedback after each
+meaningful edit burst rather than only at an unpredictable manual save. It is
+not "compile on every line": a line/cursor event has no new disk state by
+itself, and it produces avoidable transient diagnostics. A default idle delay
+of 750 ms is a starting design value, not an API fact; make it configurable and
+validate its cost in live Workbench sessions. Users who already use VS Code
+auto-save can use `onSave` and get the same saved-idle behavior without the
+extension initiating saves.
+
+For either automatic mode, the scheduler must be single-flight:
+
+```text
+saved eligible document
+  -> reset short debounce timer
+  -> if no validation runs, validate selected configuration
+  -> if validation runs, retain only one latest pending run
+  -> after response, run the retained latest request if needed
+```
+
+No save or validation should block the VS Code save operation. Do not validate
+on extension activation, every successful health probe/reconnect, every cursor
+move, or every text change before a save.
+
+### Diagnostics and stale-result policy
+
+Map completed Workbench diagnostics into a dedicated VS Code diagnostic
+collection labelled `Workbench`; never merge them silently with the Rust
+language-engine collection. Preserve diagnostic severity, `file`, optional
+`fileAbs`, optional `addon`, line, selected configuration, request time, and
+the source authority (`workbench-compiler`) in the host result model.
+
+Resolve locations in this order only after proving the mapping against fixture
+projects: validated canonical `fileAbs`; project/addon-aware resolution of
+`file`; otherwise an unlocated diagnostic associated with the validation
+result. Do not guess a workspace path from a relative string. The line base,
+column availability, packed-resource path mapping, and multi-root/addon
+selection are all live-validation gaps.
+
+Capture the VS Code document version and/or saved file fingerprint when a
+validation is scheduled. If an affected document has changed or become dirty
+before the response is applied, mark the result stale and schedule the one
+latest validation rather than claiming it describes the new text. Because
+`ValidateScripts` is configuration-wide and has no source-revision token, this
+is a host-side best-effort freshness rule, not a server guarantee.
+
+## Proposed host boundary
+
+```text
+VS Code save or explicit command
+  -> compiler-validation scheduler (mode, debounce, coalescing, freshness)
+  -> Workbench connection controller (ready state)
+  -> private NET API adapter
+  -> ValidateScripts { Configuration }
+  -> Workbench diagnostic normalizer
+  -> dedicated Workbench VS Code diagnostic collection
+```
+
+The extension host owns scheduling, user settings, status-bar presentation,
+timeouts, connection retries, stale-result suppression, path mapping, and VS
+Code diagnostics. The NET API adapter owns only framing and typed requests.
+Workbench owns the compiler and its source/configuration truth. The Rust
+language engine remains the immediate source of unsaved-buffer diagnostics.
+
+Do not add a generic `call_workbench_api` path: `ValidateScripts` is a named,
+typed built-in operation with a dedicated request and result mapper.
+
+## Live-validation gaps and acceptance experiments
+
+Before implementation is considered complete, run and record these experiments
+against every supported Workbench/Reforger version:
+
+1. Enable NET API through the documented Workbench control and make an
+   `IsWorkbenchRunning` byte-level probe. Record endpoint discovery method,
+   healthy latency, `IsRunning`/`ScriptsCompiled` transitions, connection-close
+   behavior, and sanitized errors.
+2. Call `ValidateScripts` for each relevant configuration on a clean fixture,
+   then add a deliberate error and warning. Record the response envelope,
+   `Success` semantics, exact `Errors`/`Warnings` shape, line-number base, and
+   whether both arrays may be absent or empty.
+3. Put errors in different addons and packed/unpacked locations. Verify
+   `file`, `fileAbs`, `addon`, duplicate path handling, and conversion to
+   VS Code URIs.
+4. Edit a file in VS Code without saving, invoke validation, then save and
+   invoke it again. Confirm precisely which source state Workbench sees. Also
+   test a document with VS Code auto-save and, separately, an extension-initiated
+   save if `onTypeIdle` is implemented.
+5. Issue overlapping validations and disconnect the client while one is in
+   flight. Measure serialization/concurrency, timeout behavior, whether
+   closing the connection cancels or merely abandons the response, and any
+   Workbench-side side effects. Do not ship cancellation semantics before this
+   experiment.
+6. Request validation while `ScriptsCompiled` is false and during Workbench
+   startup. Establish whether the readiness gate is necessary, sufficient, or
+   needs a user-visible retry state.
+7. Measure normal and large-project latency and resource cost. Choose default
+   idle delay, timeout, and automatic-mode defaults from those measurements,
+   rather than assuming a whole-configuration validation is cheap.
+
+## Decision record
+
+- Build the first NET API feature around the stock `ValidateScripts` endpoint;
+  no custom plugin is required for its initial transport contract.
+- Publicly call it Workbench script validation, because the only proven target
+  is a selected configuration, not a file-level compiler invocation.
+- Support continuous feedback through saved-idle validation and immediate Rust
+  feedback for unsaved text; never claim external Workbench validation covers a
+  dirty buffer.
+- Treat availability, validation execution, compiler failure, stale results,
+  and transport failure as distinct states with distinct UI/diagnostic behavior.
+- Keep all unproven behavior - endpoint discovery, diagnostics conventions,
+  performance, concurrency, cancellation, and exact source snapshot - behind
+  the live-validation backlog.
