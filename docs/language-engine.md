@@ -103,11 +103,6 @@ declaration-tail behavior.
   first lets a plain identifier completion race and replace the parameterized
   snippet in the UI. Keep that recovery for explicitly provisional paths and
   debug inspection, never as the final normal-completion response.
-- A callable whose first required parameter is `func` needs the snippet Suggest
-  bridge at that parameter's placeholder. Parameter hints describe `func` but
-  do not open the function-choice completion list; keep ordinary callable
-  parameters on parameter hints and use the bridge only for this
-  signature-proven callable-reference case.
 - An active positional `func` parameter is slot metadata, not a function
   candidate. Exclude its parameter-label item before argument labels merge
   with ordinary value completion; do not solve that category error by adding

@@ -3096,10 +3096,10 @@ class Example
 }
 
 #[test]
-fn rpc_completion_opens_suggest_for_its_function_parameter() {
+fn callable_completion_keeps_a_function_parameter_as_a_normal_selected_placeholder() {
     let source = r#"class GenericComponent
 {
-	void Rpc(func method, void p0 = NULL);
+	void UseCallback(func method, void p0 = NULL);
 }
 
 class Example
@@ -3107,14 +3107,14 @@ class Example
 	void Run()
 	{
 		GenericComponent component;
-		component.Rp
+		component.UseCal
 	}
 }
 "#;
 
     let report = completion_report_for_source_position_with_external(
         source,
-        position_after_needle(source, "component.Rp"),
+        position_after_needle(source, "component.UseCal"),
         None,
     );
 
@@ -3122,20 +3122,14 @@ class Example
         .list
         .items
         .iter()
-        .find(|item| item.label == "Rpc")
-        .expect("expected RPC completion");
-    assert_eq!(item.text_edit.new_text, "Rpc(${1:method})");
+        .find(|item| item.label == "UseCallback")
+        .expect("expected callback completion");
+    assert_eq!(item.text_edit.new_text, "UseCallback(${1:method})");
     assert_eq!(
         item.command
             .as_ref()
             .map(|command| command.command.as_str()),
-        Some("reforger-sript-tools.completion.triggerSuggestAtSnippetPlaceholder")
-    );
-    assert_eq!(
-        item.command
-            .as_ref()
-            .and_then(|command| command.arguments.as_ref()),
-        Some(&vec![serde_json::Value::String("method".to_string())])
+        Some("editor.action.triggerParameterHints")
     );
 }
 
