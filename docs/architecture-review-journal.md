@@ -351,6 +351,27 @@ test passes because without this policy owner, each auto-commit caller must
 independently reason about verification freshness and staged scope. This keeps
 the tool's stated guarantee local and preserves unrelated user work.
 
+### AR-016 — Semantic-file construction scans preprocessor lines three times for overlapping facts
+
+**Strength:** Strong
+**Files:** `server/src/semantic_file.rs:134-159, 497-531, 789-922`
+
+For every parsed file, `SemanticFile::build` constructs `DirectiveContextMap`
+by walking all source lines, then `add_preprocessor_macro_definitions` walks all
+lines again, then `source.lines().count()` walks them a third time solely for
+telemetry. The first two passes both recognize preprocessor directives and
+derive adjacent semantic facts, but use separate textual recognizers. This is
+normal work for every workspace and game-data source file, not just recovery
+input.
+
+Make preprocessor extraction one compiler-owned module that produces line
+contexts, macro definitions, and the line count in a single scan. `SemanticFile`
+can consume that immutable fact rather than interpret directive text twice.
+The deletion test passes because otherwise every semantic consumer needs to
+recreate directive classification and traversal policy. This improves locality,
+prevents drift between `#define` and conditional recognition, and cuts repeated
+index-build work.
+
 ## Reviewed slices
 
 ### 2026-07-23 — Repository inventory, build/configuration
