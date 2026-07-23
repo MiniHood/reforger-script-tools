@@ -5,6 +5,11 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { languageClientCommands } from '../extensionConfig/languageClient';
 import {
+	workbenchCommands,
+	workbenchConfig,
+	workbenchDefaults,
+} from '../extensionConfig/workbench';
+import {
 	blockCommentPairPosition,
 	ifSpaceCommitContractFromCommandArguments,
 } from '../languageClient/languageClient';
@@ -79,6 +84,40 @@ suite('extension activation', () => {
 		const contributedCommands = extension.packageJSON.contributes.commands as Array<{ command: string }>;
 		assert.ok(contributedCommands.some(command =>
 			command.command === languageClientCommands.triggerSuggestAtSnippetPlaceholder));
+		assert.ok(commands.includes(workbenchCommands.validateScripts));
+		assert.ok(contributedCommands.some(command =>
+			command.command === workbenchCommands.validateScripts));
+	});
+
+	test('contributes the Workbench endpoint and compiler-validation defaults', () => {
+		const extension = vscode.extensions.all.find(
+			candidate => candidate.packageJSON.name === 'reforger-sript-tools',
+		);
+		assert.ok(extension, 'development extension is discoverable');
+		const properties = extension.packageJSON.contributes.configuration.properties as Record<
+			string,
+			{ default?: unknown; enum?: unknown[] }
+		>;
+		assert.strictEqual(
+			properties[`${workbenchConfig.section}.${workbenchConfig.settings.enabled}`]?.default,
+			workbenchDefaults.enabled,
+		);
+		assert.strictEqual(
+			properties[`${workbenchConfig.section}.${workbenchConfig.settings.host}`]?.default,
+			workbenchDefaults.host,
+		);
+		assert.strictEqual(
+			properties[`${workbenchConfig.section}.${workbenchConfig.settings.port}`]?.default,
+			workbenchDefaults.port,
+		);
+		assert.strictEqual(
+			properties[`${workbenchConfig.section}.${workbenchConfig.settings.validationDelaySeconds}`]?.default,
+			workbenchDefaults.validationDelaySeconds,
+		);
+		assert.deepStrictEqual(
+			properties[`${workbenchConfig.section}.${workbenchConfig.settings.validationProfile}`]?.enum,
+			['WORKBENCH'],
+		);
 	});
 
 	test('retains map placeholder progression unless a nested snippet takes ownership', () => {

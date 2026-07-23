@@ -1,0 +1,586 @@
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import * as vscode from 'vscode';
+import { diagnostic } from '../diagnostics/diagnostics';
+import {
+	workbenchCommands,
+	workbenchConfig,
+	workbenchDefaults,
+	workbenchDiagnostics,
+} from '../extensionConfig/workbench';
+import {
+	WorkbenchCompilerDiagnostic,
+	WorkbenchGateway,
+	WorkbenchGatewayFailureCategory,
+	WorkbenchValidationProfile,
+	WorkbenchValidationResult,
+} from '../workbenchGateway/workbenchGateway';
+
+const unavailableRetryMs = 1_000;
+const readyHeartbeatMs = 5_000;
+
+type WorkbenchUiPhase =
+	| 'disabled'
+	| 'connecting'
+	| 'starting'
+	| 'ready'
+	| 'validating'
+	| 'unavailable';
+
+export interface WorkbenchCompilerObservation {
+	phase: WorkbenchUiPhase;
+	text: string;
+	tooltip: string;
+}
+
+type WorkbenchObservationGlobal = typeof globalThis & {
+	__reforgerScriptToolsWorkbenchCompilerObservation?: WorkbenchCompilerObservation;
+};
+
+export function workbenchCompilerObservation(): WorkbenchCompilerObservation {
+	const observation = (globalThis as WorkbenchObservationGlobal)
+		.__reforgerScriptToolsWorkbenchCompilerObservation;
+	return observation
+		? { ...observation }
+		: { phase: 'connecting', text: '', tooltip: '' };
+}
+
+interface WorkbenchConfiguration {
+	enabled: boolean;
+	host: string;
+	port: number;
+	validationDelaySeconds: number;
+	validationProfile: string;
+}
+
+interface RenderedDiagnosticSet {
+	uri: vscode.Uri;
+	diagnostics: vscode.Diagnostic[];
+}
+
+interface ValidationRequest {
+	generation: number;
+	documentToSave?: vscode.TextDocument;
+}
+
+interface WorkbenchCompilerFailure {
+	category: WorkbenchGatewayFailureCategory | 'save-failed';
+	recoveryHint: string;
+}
+
+export function registerWorkbenchCompilerFeatures(context: vscode.ExtensionContext): void {
+	const controller = new WorkbenchCompilerController();
+	controller.start();
+	context.subscriptions.push(controller);
+}
+
+class WorkbenchCompilerController implements vscode.Disposable {
+	private configuration = readConfiguration();
+	private gateway = createGateway(this.configuration);
+	private readonly compilerDiagnostics = vscode.languages.createDiagnosticCollection(
+		workbenchDiagnostics.collectionName,
+	);
+	private readonly statusItem = vscode.window.createStatusBarItem(
+		vscode.StatusBarAlignment.Right,
+		100,
+	);
+	private readonly disposables: vscode.Disposable[] = [];
+	private readonly freshDiagnostics = new Map<string, RenderedDiagnosticSet>();
+	private probeTimer: NodeJS.Timeout | undefined;
+	private validationTimer: NodeJS.Timeout | undefined;
+	private pendingValidation: ValidationRequest | undefined;
+	private readonly savesStartedByValidation = new Set<string>();
+	private configurationGeneration = 0;
+	private validating = false;
+	private phase: WorkbenchUiPhase = 'connecting';
+	private lastOutcome = 'No validation has completed.';
+	private lastFailure: WorkbenchCompilerFailure | undefined;
+
+	public start(): void {
+		this.statusItem.name = 'Reforger Workbench';
+		this.statusItem.command = workbenchCommands.validateScripts;
+		this.statusItem.show();
+		this.disposables.push(
+			this.statusItem,
+			this.compilerDiagnostics,
+			vscode.commands.registerCommand(
+				workbenchCommands.validateScripts,
+				() => this.requestManualValidation(),
+			),
+			vscode.workspace.onDidChangeConfiguration(event => {
+				if (event.affectsConfiguration(workbenchConfig.section)) {
+					this.applyConfiguration();
+				}
+			}),
+			vscode.workspace.onDidChangeTextDocument(event => {
+				this.onDocumentChanged(event.document);
+			}),
+			vscode.workspace.onDidSaveTextDocument(document => {
+				this.onDocumentSaved(document);
+			}),
+		);
+		this.applyConfiguration();
+	}
+
+	public dispose(): void {
+		this.clearProbeTimer();
+		this.clearValidationTimer();
+		for (const disposable of this.disposables.splice(0)) {
+			disposable.dispose();
+		}
+	}
+
+	private applyConfiguration(): void {
+		this.configurationGeneration += 1;
+		this.configuration = readConfiguration();
+		this.gateway = createGateway(this.configuration);
+		this.clearProbeTimer();
+		this.clearValidationTimer();
+		this.pendingValidation = undefined;
+		this.markDiagnosticsStale('Workbench configuration changed');
+		this.lastFailure = undefined;
+		if (!this.configuration.enabled) {
+			this.setPhase('disabled');
+			return;
+		}
+		this.setPhase('connecting');
+		this.scheduleProbe(0, this.configurationGeneration);
+	}
+
+	private async requestManualValidation(): Promise<void> {
+		if (!this.configuration.enabled) {
+			this.setPhase('disabled');
+			this.markDiagnosticsStale('Workbench NET API integration is disabled');
+			return;
+		}
+		if (this.configuration.validationProfile !== 'WORKBENCH') {
+			this.noteFailure({
+				category: 'unsupported',
+				recoveryHint: 'Select the supported WORKBENCH validation profile.',
+			});
+			return;
+		}
+		if (!onlyAddonWorkspace()) {
+			this.noteFailure({
+				category: 'unsupported',
+				recoveryHint: 'Open one Reforger addon project as the VS Code workspace.',
+			});
+			return;
+		}
+		const activeDocument = eligibleActiveDocument();
+		await this.queueValidation({
+			generation: this.configurationGeneration,
+			...(activeDocument?.isDirty ? { documentToSave: activeDocument } : {}),
+		});
+	}
+
+	private onDocumentChanged(document: vscode.TextDocument): void {
+		if (!eligibleDocument(document)) {
+			return;
+		}
+		this.markDiagnosticsStale('the script has newer edits');
+		if (vscode.window.activeTextEditor?.document.uri.toString() === document.uri.toString()) {
+			this.scheduleValidation({ generation: this.configurationGeneration, documentToSave: document });
+		}
+	}
+
+	private onDocumentSaved(document: vscode.TextDocument): void {
+		if (!eligibleDocument(document)
+			|| this.savesStartedByValidation.has(document.uri.toString())) {
+			return;
+		}
+		this.scheduleValidation({ generation: this.configurationGeneration });
+	}
+
+	private scheduleValidation(request: ValidationRequest): void {
+		if (!this.configuration.enabled || this.configuration.validationDelaySeconds <= 0) {
+			return;
+		}
+		this.clearValidationTimer();
+		const delayMs = this.configuration.validationDelaySeconds * 1_000;
+		this.validationTimer = setTimeout(() => {
+			this.validationTimer = undefined;
+			if (request.generation !== this.configurationGeneration) {
+				return;
+			}
+			if (request.documentToSave
+				&& vscode.window.activeTextEditor?.document.uri.toString()
+					!== request.documentToSave.uri.toString()) {
+				return;
+			}
+			void this.queueValidation(request);
+		}, delayMs);
+	}
+
+	private async queueValidation(request: ValidationRequest): Promise<void> {
+		if (request.generation !== this.configurationGeneration) {
+			return;
+		}
+		if (this.validating) {
+			this.pendingValidation = request;
+			return;
+		}
+		this.validating = true;
+		this.clearProbeTimer();
+		this.setPhase('validating');
+		try {
+			const saved = !request.documentToSave?.isDirty
+				|| await this.saveForValidation(request.documentToSave);
+			if (request.generation !== this.configurationGeneration) {
+				return;
+			}
+			if (!saved) {
+				this.lastOutcome = 'Validation skipped because the active script could not be saved.';
+				this.noteFailure({
+					category: 'save-failed',
+					recoveryHint: 'Save the active script, then retry validation.',
+				});
+				this.scheduleProbe(readyHeartbeatMs, request.generation);
+				return;
+			}
+			await this.validate(request.generation);
+		} finally {
+			this.validating = false;
+			const pending = this.pendingValidation;
+			this.pendingValidation = undefined;
+			if (pending && pending.generation === this.configurationGeneration) {
+				void this.queueValidation(pending);
+			} else if (request.generation !== this.configurationGeneration
+				&& this.configuration.enabled) {
+				this.scheduleProbe(0, this.configurationGeneration);
+			}
+		}
+	}
+
+	private async saveForValidation(document: vscode.TextDocument): Promise<boolean> {
+		const key = document.uri.toString();
+		this.savesStartedByValidation.add(key);
+		try {
+			return await document.save();
+		} catch {
+			return false;
+		} finally {
+			this.savesStartedByValidation.delete(key);
+		}
+	}
+
+	private async validate(generation: number): Promise<void> {
+		if (generation !== this.configurationGeneration) {
+			return;
+		}
+		const result = await this.gateway.validateScripts(
+			this.configuration.validationProfile as WorkbenchValidationProfile,
+		);
+		if (generation !== this.configurationGeneration) {
+			return;
+		}
+		if (!result.ok) {
+			this.lastOutcome = `Validation failed: ${result.failure.category}.`;
+			this.noteFailure(result.failure);
+			this.scheduleProbe(unavailableRetryMs, generation);
+			return;
+		}
+		this.publishValidationResult(result.value);
+		this.lastFailure = undefined;
+		this.lastOutcome = result.value.success
+			? `Validation succeeded at ${new Date().toLocaleTimeString()}.`
+			: `Validation completed with ${result.value.diagnostics.length} finding(s) at ${new Date().toLocaleTimeString()}.`;
+		this.setPhase('ready');
+		diagnostic('workbenchCompilerDiagnosticSet', {
+			outcome: result.value.success ? 'success' : 'compiler-findings',
+			diagnosticCount: result.value.diagnostics.length,
+		});
+		this.scheduleProbe(readyHeartbeatMs, generation);
+	}
+
+	private publishValidationResult(result: WorkbenchValidationResult): void {
+		const projected = projectDiagnostics(result.diagnostics);
+		const next = new Map<string, RenderedDiagnosticSet>();
+		for (const item of projected.located) {
+			const key = item.uri.toString();
+			const existing = next.get(key);
+			if (existing) {
+				existing.diagnostics.push(item.diagnostic);
+			} else {
+				next.set(key, { uri: item.uri, diagnostics: [item.diagnostic] });
+			}
+		}
+		const entries: Array<[vscode.Uri, readonly vscode.Diagnostic[] | undefined]> = [];
+		for (const previous of this.freshDiagnostics.values()) {
+			entries.push([previous.uri, undefined]);
+		}
+		for (const current of next.values()) {
+			entries.push([current.uri, current.diagnostics]);
+		}
+		this.compilerDiagnostics.set(entries);
+		this.freshDiagnostics.clear();
+		for (const [key, value] of next) {
+			this.freshDiagnostics.set(key, value);
+		}
+		if (projected.unresolved > 0) {
+			diagnostic('workbenchUnresolvedDiagnosticLocations', {
+				count: projected.unresolved,
+			});
+		}
+	}
+
+	private markDiagnosticsStale(reason: string): void {
+		if (this.freshDiagnostics.size === 0) {
+			return;
+		}
+		const entries: Array<[vscode.Uri, readonly vscode.Diagnostic[]]> = [];
+		for (const set of this.freshDiagnostics.values()) {
+			entries.push([set.uri, set.diagnostics.map(original => {
+				const stale = new vscode.Diagnostic(
+					original.range,
+					`[Stale Workbench result — ${reason}] ${original.message}`,
+					original.severity,
+				);
+				stale.source = `${workbenchDiagnostics.source} (stale)`;
+				stale.code = original.code;
+				return stale;
+			})]);
+		}
+		this.compilerDiagnostics.set(entries);
+	}
+
+	private async probe(generation: number): Promise<void> {
+		if (generation !== this.configurationGeneration || !this.configuration.enabled) {
+			return;
+		}
+		if (this.validating) {
+			this.scheduleProbe(unavailableRetryMs, generation);
+			return;
+		}
+		const result = await this.gateway.getStatus();
+		if (generation !== this.configurationGeneration || this.validating) {
+			return;
+		}
+		if (!result.ok) {
+			this.noteFailure(result.failure);
+			this.scheduleProbe(unavailableRetryMs, generation);
+			return;
+		}
+		this.lastFailure = undefined;
+		if (result.value.isRunning && result.value.scriptsCompiled) {
+			this.setPhase('ready');
+			this.scheduleProbe(readyHeartbeatMs, generation);
+		} else {
+			this.setPhase('starting');
+			this.scheduleProbe(unavailableRetryMs, generation);
+		}
+	}
+
+	private noteFailure(
+		failure: WorkbenchCompilerFailure,
+		outcome: string = failure.category,
+	): void {
+		this.lastFailure = failure;
+		this.markDiagnosticsStale(
+			failure.category === 'save-failed'
+				? 'the active script could not be saved'
+				: 'Workbench is unavailable',
+		);
+		this.setPhase('unavailable');
+		diagnostic('workbenchStateOutcome', {
+			state: 'unavailable',
+			outcome,
+			category: failure.category,
+		});
+	}
+
+	private scheduleProbe(delayMs: number, generation: number): void {
+		this.clearProbeTimer();
+		this.probeTimer = setTimeout(() => {
+			this.probeTimer = undefined;
+			void this.probe(generation);
+		}, delayMs);
+	}
+
+	private clearProbeTimer(): void {
+		if (this.probeTimer) {
+			clearTimeout(this.probeTimer);
+			this.probeTimer = undefined;
+		}
+	}
+
+	private clearValidationTimer(): void {
+		if (this.validationTimer) {
+			clearTimeout(this.validationTimer);
+			this.validationTimer = undefined;
+		}
+	}
+
+	private setPhase(phase: WorkbenchUiPhase): void {
+		if (this.phase !== phase) {
+			diagnostic('workbenchStateTransition', {
+				from: this.phase,
+				to: phase,
+			});
+		}
+		this.phase = phase;
+		const presentation = statusPresentation(phase);
+		this.statusItem.text = phase === 'unavailable' && this.lastFailure?.category === 'save-failed'
+			? '$(warning) Workbench save failed'
+			: presentation.text;
+		const detail = phase === 'unavailable' && this.lastFailure?.category === 'save-failed'
+			? 'Compiler validation stopped because the active script could not be saved.'
+			: presentation.detail;
+		const endpoint = `${this.configuration.host}:${this.configuration.port}`;
+		this.statusItem.tooltip = [
+			detail,
+			`Endpoint: ${endpoint}`,
+			`Profile: ${this.configuration.validationProfile}`,
+			this.lastOutcome,
+			...(this.lastFailure
+				? [`Failure: ${this.lastFailure.category}. ${this.lastFailure.recoveryHint}`]
+				: []),
+			'Workbench validates its currently open project; the built-in API cannot prove that it matches this VS Code workspace.',
+			'Select to validate scripts now.',
+		].join('\n\n');
+		(globalThis as WorkbenchObservationGlobal)
+			.__reforgerScriptToolsWorkbenchCompilerObservation = {
+			phase,
+			text: this.statusItem.text,
+			tooltip: this.statusItem.tooltip,
+		};
+	}
+}
+
+function readConfiguration(): WorkbenchConfiguration {
+	const configuration = vscode.workspace.getConfiguration(workbenchConfig.section);
+	return {
+		enabled: configuration.get(workbenchConfig.settings.enabled, workbenchDefaults.enabled),
+		host: configuration.get(workbenchConfig.settings.host, workbenchDefaults.host),
+		port: configuration.get(workbenchConfig.settings.port, workbenchDefaults.port),
+		validationDelaySeconds: configuration.get(
+			workbenchConfig.settings.validationDelaySeconds,
+			workbenchDefaults.validationDelaySeconds,
+		),
+		validationProfile: configuration.get(
+			workbenchConfig.settings.validationProfile,
+			workbenchDefaults.validationProfile,
+		),
+	};
+}
+
+function createGateway(configuration: WorkbenchConfiguration): WorkbenchGateway {
+	return new WorkbenchGateway({
+		enabled: configuration.enabled,
+		endpoint: {
+			host: configuration.host,
+			port: configuration.port,
+		},
+		record: record => {
+			diagnostic('workbenchGatewayDiagnosticRecord', {
+				capability: record.capability,
+				outcome: record.outcome,
+				durationMs: record.durationMs,
+			});
+		},
+	});
+}
+
+function statusPresentation(phase: WorkbenchUiPhase): { text: string; detail: string } {
+	switch (phase) {
+		case 'disabled':
+			return { text: '$(circle-slash) Workbench disabled', detail: 'Workbench NET API integration is disabled.' };
+		case 'connecting':
+			return { text: '$(sync~spin) Workbench connecting', detail: 'Connecting to the configured Workbench endpoint.' };
+		case 'starting':
+			return { text: '$(sync~spin) Workbench starting', detail: 'Workbench is running but scripts are not ready.' };
+		case 'ready':
+			return { text: '$(check) Workbench ready', detail: 'Workbench compiler validation is ready.' };
+		case 'validating':
+			return { text: '$(sync~spin) Workbench validating', detail: 'Workbench is validating scripts.' };
+		case 'unavailable':
+			return { text: '$(warning) Workbench unavailable', detail: 'Workbench is unavailable; retrying the configured endpoint.' };
+	}
+}
+
+function projectDiagnostics(diagnostics: WorkbenchCompilerDiagnostic[]): {
+	located: Array<{ uri: vscode.Uri; diagnostic: vscode.Diagnostic }>;
+	unresolved: number;
+} {
+	const workspace = onlyAddonWorkspace();
+	if (!workspace) {
+		return { located: [], unresolved: diagnostics.length };
+	}
+	const located: Array<{ uri: vscode.Uri; diagnostic: vscode.Diagnostic }> = [];
+	let unresolved = 0;
+	for (const compilerDiagnostic of diagnostics) {
+		const uri = projectLocation(workspace, compilerDiagnostic);
+		if (!uri) {
+			unresolved += 1;
+			continue;
+		}
+		const line = Math.max(0, compilerDiagnostic.location.line - 1);
+		const rendered = new vscode.Diagnostic(
+			new vscode.Range(line, 0, line, 0),
+			compilerDiagnostic.message,
+			compilerDiagnostic.severity === 'error'
+				? vscode.DiagnosticSeverity.Error
+				: vscode.DiagnosticSeverity.Warning,
+		);
+		rendered.source = workbenchDiagnostics.source;
+		located.push({ uri, diagnostic: rendered });
+	}
+	return { located, unresolved };
+}
+
+function projectLocation(
+	workspace: vscode.WorkspaceFolder,
+	diagnostic: WorkbenchCompilerDiagnostic,
+): vscode.Uri | undefined {
+	const root = realPath(workspace.uri.fsPath);
+	const candidate = diagnostic.location.fileAbs ?? diagnostic.location.file;
+	if (!root || candidate.length === 0) {
+		return undefined;
+	}
+	if (!diagnostic.location.fileAbs
+		&& diagnostic.location.addon
+		&& diagnostic.location.addon.toLowerCase() !== workspace.name.toLowerCase()) {
+		return undefined;
+	}
+	const resolved = path.isAbsolute(candidate)
+		? path.resolve(candidate)
+		: path.resolve(root, candidate);
+	const canonical = realPath(resolved);
+	return canonical && isContained(root, canonical)
+		? vscode.Uri.file(canonical)
+		: undefined;
+}
+
+function isContained(root: string, candidate: string): boolean {
+	const relative = path.relative(root, candidate);
+	return relative === ''
+		|| (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+}
+
+function realPath(candidate: string): string | undefined {
+	try {
+		return fs.realpathSync.native(candidate);
+	} catch {
+		return undefined;
+	}
+}
+
+function onlyAddonWorkspace(): vscode.WorkspaceFolder | undefined {
+	const folders = vscode.workspace.workspaceFolders;
+	return folders?.length === 1 ? folders[0] : undefined;
+}
+
+function eligibleActiveDocument(): vscode.TextDocument | undefined {
+	const document = vscode.window.activeTextEditor?.document;
+	return document && eligibleDocument(document) ? document : undefined;
+}
+
+function eligibleDocument(document: vscode.TextDocument): boolean {
+	const workspace = onlyAddonWorkspace();
+	if (!workspace || document.languageId !== 'enforce' || document.uri.scheme !== 'file') {
+		return false;
+	}
+	const root = realPath(workspace.uri.fsPath);
+	const candidate = realPath(document.uri.fsPath);
+	return Boolean(root && candidate && isContained(root, candidate));
+}

@@ -6,6 +6,7 @@ import {
 	logLanguageClientStartupTiming,
 	registerLanguageClientFeatures,
 } from './languageClient/languageClient';
+import { registerWorkbenchCompilerFeatures } from './workbenchCompiler/workbenchCompiler';
 
 export function activate(context: vscode.ExtensionContext) {
 	initializeDiagnostics(context);
@@ -16,6 +17,7 @@ export function activate(context: vscode.ExtensionContext) {
 	});
 	const refreshLanguageClientGameData = registerLanguageClientFeatures(context);
 	registerGameDataFeatures(context, refreshLanguageClientGameData);
+	registerWorkbenchCompilerFeatures(context);
 	logLanguageClientStartupTiming(context, 'activationEnd');
 	diagnostic('activationEnd');
 }

@@ -26,7 +26,7 @@ top-level wiring requests a language-server restart. The replacement server then
 builds its external game-data layer from that source; game-data acquisition does
 not perform language analysis itself.
 
-## Proposed MCP and Workbench Flow
+## Workbench Runtime and Proposed MCP Flow
 
 The local MCP server described here is a future integration boundary, not part
 of the current language-server runtime. It must preserve the same ownership
@@ -104,6 +104,37 @@ Workbench compiler diagnostics are an extension-owned source, separate from
 the Rust language server's provisional parser diagnostics. A future MCP host
 may consume the normalized Workbench results, but it must not use the Gateway
 to emulate compiler facts from files or expose the NET API as a public server.
+
+## Workbench Compiler Validation
+
+The extension constructs a new short-lived TCP connection for each Gateway
+operation. `getStatus()` and `validateScripts(profile)` are the complete public
+Gateway capability surface for the initial feature. The Gateway validates the
+configured loopback endpoint, owns the proprietary framing and response
+decoding, applies capability-specific deadlines, and returns typed failures.
+It reports only sanitized capability names, outcomes, and timings to the
+extension diagnostic log.
+
+The compiler adapter probes the exact configured endpoint immediately, retries
+an unavailable or starting Workbench once per second, and uses a five-second
+heartbeat while ready. Configuration changes replace the Gateway generation
+immediately; queued work and results from older generations cannot publish.
+The extension never scans for another port or rewrites endpoint settings.
+
+Continuous validation is single-flight. A positive idle delay reacts to an
+eligible save or saves only the active dirty Enfusion Script after the idle
+period, then validates the configured profile. A zero delay is manual-only.
+Triggers during a validation collapse into one follow-up operation. A failed
+save does not call Workbench and does not retry compilation until another user
+or editor trigger occurs.
+
+Each completed validation is one atomic compiler diagnostic set. A successful
+clean result removes the old Workbench set; a failed transaction retains it.
+Newer edits, configuration changes, and Workbench outages re-render retained
+findings as explicitly stale. The adapter projects a location only when its
+canonical path exists inside the single addon workspace. An explicit external
+absolute path is never replaced by a plausible relative guess. Rust language
+diagnostics remain in their independent LSP-owned collection throughout.
 
 Within the language-client bridge, the composition root retains server lifecycle
 and restart policy. Focused bridges own workspace-script notifications, hover

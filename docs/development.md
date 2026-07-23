@@ -49,6 +49,33 @@ When game data is installed or a manual game-data folder is chosen, the client
 restarts the language server so its external index uses the new source. Wait for
 that restart before judging game-API language features.
 
+## Workbench Integration Verification
+
+The deterministic Gateway tests run against a local TCP peer and verify real
+wire framing, response decoding, typed failures, deadlines, and sanitized
+outcomes. The compiler tests run in the Extension Development Host with
+`src/test/workspace` opened as the single addon workspace. Use a focused
+iteration command such as:
+
+```powershell
+npm run compile-tests
+node esbuild.js
+npx vscode-test --grep "Workbench Gateway|Workbench compiler validation" --timeout 15000
+```
+
+The full `npm test` gate remains required before completion.
+
+Automated peers do not replace live Workbench acceptance. With NET API enabled
+in Workbench, open the same addon folder in VS Code and verify the configured
+endpoint (default `127.0.0.1:5775`) before relying on protocol assumptions.
+Run a clean `WORKBENCH` validation, introduce and save a deliberate compiler
+error, and confirm the reported file and line. Then edit again to observe a
+stale finding and fix the error to observe atomic replacement. Also verify
+disabled integration, a deliberately wrong configured port, and a save
+conflict. Record any Workbench version-specific error-code, line-number, or
+readiness behavior in the existing Workbench research journals before changing
+the codec or diagnostic projection.
+
 ## Documentation Changes
 
 For documentation-only changes, run `git diff --check` and verify changed
