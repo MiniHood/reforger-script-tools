@@ -264,6 +264,28 @@ module, every consumer of external spans must rediscover file loading and UTF-16
 coordinate conversion. This keeps source-coordinate policy local and removes
 avoidable foreground I/O.
 
+### AR-012 — Hover rendering owns an unindexed hard-coded `Attribute` language contract
+
+**Strength:** Strong
+**Files:** `server/src/lsp/hover_render.rs:11-21, 966-1080`; `server/src/lsp/completion.rs:7271`; `server/examples/lsp_completion_report.rs:99`
+
+The presentation module embeds the full `Attribute` constructor signature and
+duplicates its parameter names/types again as `attribute_param_specs`. It then
+parses attribute text against that private schema to manufacture hover details.
+The same language fact also appears in completion fixtures and reports, while
+normal callable display is derived from the indexed semantic model. This makes
+one built-in behave through a renderer-only semantic path: a Workbench or game
+data change can leave hover, completion fixtures, and indexed callable facts
+out of agreement.
+
+Move the exceptional built-in declaration into a single compiler-owned
+language-facts module (or consume the indexed declaration when available), and
+have hover rendering receive a generic callable/attribute projection. The
+renderer then owns only presentation. The deletion test passes: deleting its
+embedded schema removes special Enfusion interpretation from presentation
+without making callers recreate it. This restores one language authority and
+lets parser, completion, signature help, and hover verify the same fact.
+
 ## Reviewed slices
 
 ### 2026-07-23 — Repository inventory, build/configuration
