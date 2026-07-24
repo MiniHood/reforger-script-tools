@@ -545,12 +545,10 @@ fn is_identifier_like_semantic_type(token_type: &str) -> bool {
             | "enum"
             | "type"
             | "function"
-            | "method"
-            | "field"
+            | "reforgerField"
             | "variable"
             | "parameter"
             | "enumMember"
-            | "decorator"
             | "typeParameter"
     )
 }

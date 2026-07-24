@@ -58,8 +58,7 @@ to the native VS Code customization setting:
 {
   "editor.semanticTokenColorCustomizations": {
     "rules": {
-      "function:enforce": "#ffcc66",
-      "reforgerField:enforce": "#d8dee9"
+      "function:enforce": "#ffcc66"
     }
   }
 }

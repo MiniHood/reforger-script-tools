@@ -6163,7 +6163,7 @@ fn parser_diagnostic_projection_expands_zero_width_ranges() {
 
 #[test]
 fn debug_hover_report_includes_language_engine_context() {
-    let source = "class Smoke\n{\n\tvoid Run(int value);\n}\n";
+    let source = "class Smoke\n{\n\tstatic void Run(int value);\n}\n";
     let hover_position = position_for_needle(source, "Run(int", "Run");
 
     let report = debug_hover_report_for_source_position(source, hover_position);
@@ -6178,7 +6178,11 @@ fn debug_hover_report_includes_language_engine_context() {
     assert!(report.contains("Smoke.Run(int value) -> void"));
     assert!(report.contains("`Method`"));
     assert!(report.contains("`function`"));
+    assert!(report.contains("`declaration, static`"));
+    assert!(report.contains("VS Code applies the extension's Enforce palette"));
+    assert!(!report.contains("bundled semantic-token theme palette"));
     assert!(!report.contains("| Color |"));
+    assert!(!report.contains("#f3ad58"));
 }
 
 #[test]
