@@ -289,6 +289,8 @@ struct LspServer<W: Write> {
     logger: LspLogger,
     external_index: ExternalIndexHandle,
     document_runtime: DocumentRuntime,
+    client_initialized: bool,
+    pending_external_index_progress: Option<Value>,
     shutdown_requested: bool,
 }
 
@@ -691,7 +693,13 @@ impl<W: Write> LspServer<W> {
                     }))?;
                 }
             }
-            "initialized" => self.log("notification initialized"),
+            "initialized" => {
+                self.log("notification initialized");
+                self.client_initialized = true;
+                if let Some(params) = self.pending_external_index_progress.take() {
+                    self.publish_external_index_progress(params)?;
+                }
+            }
             "shutdown" => {
                 self.log("request shutdown");
                 self.shutdown_requested = true;
@@ -716,8 +724,17 @@ impl<W: Write> LspServer<W> {
     }
 
     fn handle_internal_event(&mut self, event: ServerEvent) -> Result<(), String> {
+        if let ServerEvent::ExternalIndexProgress { phase } = event {
+            self.publish_external_index_progress(json!({ "phase": phase }))?;
+            return Ok(());
+        }
         if matches!(event, ServerEvent::ExternalIndexChanged) {
             let external_status = self.external_index.status_summary();
+            self.publish_external_index_progress(json!({
+                "phase": "complete",
+                "status": external_status.status,
+                "gameDataFiles": external_status.game_data_files,
+            }))?;
             for effect in self.document_runtime.observe_semantic_external_generation(
                 external_status.generation,
                 external_status.status,
@@ -756,6 +773,18 @@ impl<W: Write> LspServer<W> {
         Ok(())
     }
 
+    fn publish_external_index_progress(&mut self, params: Value) -> Result<(), String> {
+        if !self.client_initialized {
+            self.pending_external_index_progress = Some(params);
+            return Ok(());
+        }
+        self.deliver_effect(RuntimeEffect::Notification(json!({
+            "jsonrpc": "2.0",
+            "method": "reforger/externalIndexProgress",
+            "params": params,
+        })))
+    }
+
     #[cfg(test)]
     fn new(writer: W, options: LspServerOptions) -> Self {
         Self::new_with_runtime_senders(writer, options, None, None, None)
@@ -781,6 +810,8 @@ impl<W: Write> LspServer<W> {
                 analysis_scheduler,
                 options.bracket_coloring,
             ),
+            client_initialized: false,
+            pending_external_index_progress: None,
             shutdown_requested: false,
         };
         server.log(&format!(

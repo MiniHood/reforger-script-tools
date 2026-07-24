@@ -79,6 +79,9 @@ pub(super) enum ServerEvent {
         result: Value,
         elapsed_ms: u128,
     },
+    ExternalIndexProgress {
+        phase: String,
+    },
     ExternalIndexChanged,
 }
 

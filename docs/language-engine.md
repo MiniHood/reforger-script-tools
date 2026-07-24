@@ -112,6 +112,13 @@ request. A completed rich projection requests an editor refresh immediately.
 Protocol input, worker completions, transport closure, and external-index
 publication wake the same coordinator event stream. No periodic channel poll
 stands between foreground, semantic, and rich publication.
+The external-index worker also publishes its existing cache/build phase names
+through `reforger/externalIndexProgress`. Its terminal `complete` notification
+is emitted only after the new immutable external-index generation is
+published. Before the client's `initialized` notification, the composition
+root retains only the latest phase and publishes it after the client has
+installed its handler. The TypeScript client translates the phase and terminal
+status into editor progress text without inferring index state.
 Rich-token projection reuses identifier classifications only for exact,
 byte-identical callable regions when the current file-visible declaration
 structure and external-index generation still match. Edited and root-level

@@ -12,6 +12,7 @@ import {
 } from '../extensionConfig/workbench';
 import {
 	blockCommentPairPosition,
+	externalIndexProgressMessage,
 	ifSpaceCommitContractFromCommandArguments,
 } from '../languageClient/languageClient';
 import { positionFromByteOffset } from '../languageClient/symbolLocationBridge';
@@ -40,6 +41,18 @@ import {
 import { RestartCoordinator } from '../languageClient/restartCoordinator';
 
 suite('extension activation', () => {
+	test('presents external index phases as user-facing progress', () => {
+		assert.equal(externalIndexProgressMessage('fingerprint-start'), 'Checking for game-data changes');
+		assert.equal(externalIndexProgressMessage('cache-load-hit'), 'Loading saved script index');
+		assert.equal(externalIndexProgressMessage('source-rebuild-start'), 'Indexing game-data scripts');
+		assert.equal(externalIndexProgressMessage('cache-write-start'), 'Saving script index');
+		assert.equal(externalIndexProgressMessage('workspace-rebuild-start'), 'Indexing workspace scripts');
+		assert.equal(externalIndexProgressMessage('complete', 'ready'), 'Script index ready');
+		assert.equal(externalIndexProgressMessage('complete', 'failed'), 'Script indexing failed');
+		assert.equal(externalIndexProgressMessage('complete', 'missing'), 'Script index unavailable');
+		assert.equal(externalIndexProgressMessage('future-phase'), 'Indexing scripts');
+	});
+
 	test('applies semantic hover foregrounds inside command links', () => {
 		const markdown = [
 			'<span data-semantic-token="keyword">bool</span> ',

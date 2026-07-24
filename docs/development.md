@@ -93,8 +93,10 @@ them, so verify the active development session after a server rebuild rather
 than assuming a previous process reflects the change.
 
 When game data is installed or a manual game-data folder is chosen, the client
-restarts the language server so its external index uses the new source. Wait for
-that restart before judging game-API language features.
+restarts the language server so its external index uses the new source. The
+**Reforger game data** progress notification remains visible through the index
+phases and closes when the replacement index is published; wait for it to close
+before judging game-API language features.
 
 ## Workbench Integration Verification
 

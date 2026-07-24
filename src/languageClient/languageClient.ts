@@ -7,7 +7,9 @@ import {
 	LanguageClient,
 	type ErrorHandler,
 	type LanguageClientOptions,
+	NotificationType,
 	type ServerOptions,
+	State,
 	TransportKind,
 } from 'vscode-languageclient/node';
 import { gameDataConfig, gameDataStorage } from '../extensionConfig/gameData';
@@ -26,6 +28,7 @@ import {
 	languageClientIds,
 	languageClientLanguage,
 	languageClientLogs,
+	languageClientNotifications,
 	languageClientRequests,
 	languageClientServer,
 } from '../extensionConfig/languageClient';
@@ -77,6 +80,20 @@ let startupTimingLogDirectoryReady: Promise<void> | undefined;
 let firstDocumentOpenTimingLogged = false;
 let firstSemanticTokenTimingLogged = false;
 
+interface ExternalIndexProgressParams {
+	phase: string;
+	status?: string;
+	gameDataFiles?: number;
+}
+
+type ExternalIndexProgress = vscode.Progress<{ message?: string; increment?: number }>;
+
+interface ExternalIndexProgressSession {
+	progress: ExternalIndexProgress;
+}
+
+let activeExternalIndexProgressSession: ExternalIndexProgressSession | undefined;
+
 export function logLanguageClientStartupTiming(
 	context: vscode.ExtensionContext,
 	event: string,
@@ -119,7 +136,7 @@ function sanitizeDiagnosticFields(fields: Record<string, string | number | boole
 	return safe;
 }
 
-export function registerLanguageClientFeatures(context: vscode.ExtensionContext): () => void {
+export function registerLanguageClientFeatures(context: vscode.ExtensionContext): () => Promise<void> {
 	logLanguageClientStartupTiming(context, 'languageClientRegistrationStart');
 	const outputChannel = vscode.window.createOutputChannel(languageClientIds.name, { log: true });
 	const debugOutputChannel = vscode.window.createOutputChannel(languageClientIds.debugOutputName);
@@ -160,8 +177,30 @@ export function registerLanguageClientFeatures(context: vscode.ExtensionContext)
 		}
 	});
 	logLanguageClientStartupTiming(context, 'languageClientRegistrationEnd');
-	return () => {
-		void restartLanguageClient(context, outputChannel, 'game-data source changed');
+	return async () => {
+		await vscode.window.withProgress(
+			{
+				location: vscode.ProgressLocation.Notification,
+				title: 'Reforger game data',
+				cancellable: false,
+			},
+			async progress => {
+				const session = { progress };
+				activeExternalIndexProgressSession = session;
+				progress.report({ message: 'Preparing script index' });
+				try {
+					await restartLanguageClient(
+						context,
+						outputChannel,
+						'game-data source changed',
+					);
+				} finally {
+					if (activeExternalIndexProgressSession === session) {
+						activeExternalIndexProgressSession = undefined;
+					}
+				}
+			},
+		);
 	};
 }
 
@@ -214,6 +253,7 @@ async function startLanguageClient(
 	context: vscode.ExtensionContext,
 	outputChannel: vscode.LogOutputChannel,
 	bracketColoring: BracketColoringMode,
+	externalIndexProgress?: ExternalIndexProgress,
 ): Promise<void> {
 	logLanguageClientStartupTiming(context, 'languageClientStartBegin');
 	const serverPath = await resolveServerPath(context);
@@ -327,8 +367,15 @@ async function startLanguageClient(
 		clientOptions,
 	);
 	logLanguageClientStartupTiming(context, 'languageClientCreated');
+	const externalIndexMonitor = externalIndexProgress
+		? monitorExternalIndexProgress(client, externalIndexProgress)
+		: undefined;
+	if (externalIndexMonitor) {
+		clientDisposables.push(externalIndexMonitor.disposable);
+	}
 
 	try {
+		externalIndexProgress?.report({ message: 'Starting language server' });
 		logLanguageClientStartupTiming(context, 'languageServerProcessSpawnRequested', {
 			serverPath,
 			transport: 'stdio',
@@ -347,7 +394,9 @@ async function startLanguageClient(
 		if (usesCustomScopeDelimiterPresentation(bracketColoring)) {
 			clientDisposables.push(registerActiveScopeDelimiterBridge(client));
 		}
+		await externalIndexMonitor?.completion;
 	} catch (error) {
+		externalIndexMonitor?.disposable.dispose();
 		const message = error instanceof Error ? error.message : String(error);
 		outputChannel.appendLine(`Language server failed to start: ${message}`);
 		logLanguageClientStartupTiming(context, 'languageClientStartFailed', {
@@ -434,8 +483,86 @@ async function restartLanguageClient(
 		}
 		const bracketColoring = getBracketColoringMode();
 		await synchronizeBracketColoringEditorMode(bracketColoring, outputChannel);
-		await startLanguageClient(context, outputChannel, bracketColoring);
+		await startLanguageClient(
+			context,
+			outputChannel,
+			bracketColoring,
+			activeExternalIndexProgressSession?.progress,
+		);
 	});
+}
+
+function monitorExternalIndexProgress(
+	activeClient: LanguageClient,
+	progress: ExternalIndexProgress,
+): { completion: Promise<void>; disposable: vscode.Disposable } {
+	let complete = false;
+	let resolveCompletion: (() => void) | undefined;
+	const completion = new Promise<void>(resolve => {
+		resolveCompletion = resolve;
+	});
+	const finish = () => {
+		if (!complete) {
+			complete = true;
+			resolveCompletion?.();
+		}
+	};
+	const notification = activeClient.onNotification(
+		new NotificationType<ExternalIndexProgressParams>(languageClientNotifications.externalIndexProgress),
+		params => {
+			progress.report({ message: externalIndexProgressMessage(params.phase, params.status) });
+			if (params.phase === 'complete') {
+				finish();
+			}
+		},
+	);
+	const stateChanges = activeClient.onDidChangeState(event => {
+		if (event.newState === State.Stopped) {
+			finish();
+		}
+	});
+	return {
+		completion,
+		disposable: vscode.Disposable.from(notification, stateChanges, { dispose: finish }),
+	};
+}
+
+export function externalIndexProgressMessage(phase: string, status?: string): string {
+	switch (phase) {
+		case 'validate-scripts-root-start':
+		case 'validate-scripts-root-end':
+			return 'Checking game-data scripts';
+		case 'fingerprint-start':
+		case 'fingerprint-end':
+			return 'Checking for game-data changes';
+		case 'cache-load-start':
+		case 'cache-load-hit':
+			return 'Loading saved script index';
+		case 'cache-load-miss':
+		case 'source-rebuild-start':
+			return 'Indexing game-data scripts';
+		case 'source-rebuild-end':
+			return 'Finalizing game-data index';
+		case 'map-rebuild-start':
+		case 'map-rebuild-end':
+			return 'Preparing symbol lookups';
+		case 'cache-write-start':
+		case 'cache-write-end':
+			return 'Saving script index';
+		case 'workspace-rebuild-start':
+		case 'workspace-rebuild-end':
+			return 'Indexing workspace scripts';
+		case 'complete':
+			if (status === 'ready') {
+				return 'Script index ready';
+			}
+			if (status === 'failed') {
+				return 'Script indexing failed';
+			}
+			return 'Script index unavailable';
+		default:
+			return 'Indexing scripts';
+	}
 }
 
 async function synchronizeBracketColoringEditorMode(

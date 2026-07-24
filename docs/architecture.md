@@ -22,9 +22,11 @@ notifications. The server turns them into immutable language facts; the client
 renders or transports the resulting editor behavior.
 
 When the extension installs game data or the user selects a manual source, the
-top-level wiring requests a language-server restart. The replacement server then
-builds its external game-data layer from that source; game-data acquisition does
-not perform language analysis itself.
+top-level wiring awaits a language-server restart. The replacement server then
+builds its external game-data layer from that source and publishes its existing
+index phases to the language-client bridge, which keeps a VS Code progress
+notification visible until the new immutable index is published. Game-data
+acquisition does not perform language analysis itself.
 
 ## Workbench Runtime and Proposed MCP Flow
 

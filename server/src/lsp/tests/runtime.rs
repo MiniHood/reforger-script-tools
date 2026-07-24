@@ -1,4 +1,48 @@
 #[test]
+fn external_index_progress_is_published_as_a_client_notification() {
+    let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
+
+    server
+        .handle_internal_event(ServerEvent::ExternalIndexProgress {
+            phase: "source-rebuild-start".to_string(),
+        })
+        .unwrap();
+    assert!(
+        server.writer.is_empty(),
+        "progress must wait until the client has installed its notification handler"
+    );
+    server
+        .handle_message(
+            json!({
+                "jsonrpc": "2.0",
+                "method": "initialized",
+                "params": {},
+            }),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+
+    let messages = read_test_messages(&server.writer);
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0]["method"], "reforger/externalIndexProgress");
+    assert_eq!(
+        messages[0]["params"]["phase"],
+        serde_json::Value::String("source-rebuild-start".to_string())
+    );
+
+    server.writer.clear();
+    server
+        .handle_internal_event(ServerEvent::ExternalIndexChanged)
+        .unwrap();
+    let messages = read_test_messages(&server.writer);
+    assert_eq!(messages[0]["method"], "reforger/externalIndexProgress");
+    assert_eq!(messages[0]["params"]["phase"], "complete");
+    assert_eq!(messages[0]["params"]["status"], "missing");
+}
+
+#[test]
 fn one_cpu_capacity_reserves_execution_for_foreground() {
     assert_eq!(
         RuntimeWorkCapacity::for_logical_cpus(1),

@@ -72,6 +72,7 @@ export const languageClientRequests = {
 
 export const languageClientNotifications = {
 	foregroundReady: 'reforger/foregroundReady',
+	externalIndexProgress: 'reforger/externalIndexProgress',
 	workspaceFileChanged: 'reforger/workspaceFileChanged',
 	workspaceFileDeleted: 'reforger/workspaceFileDeleted',
 } as const;

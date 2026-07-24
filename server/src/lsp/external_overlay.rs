@@ -439,6 +439,7 @@ pub(crate) fn start_external_index(
     thread::spawn(move || {
         let thread_logger = logger.clone();
         let panic_state = state.clone();
+        let progress_sender = event_sender.clone();
         if let Err(payload) = catch_unwind(AssertUnwindSafe(|| {
             run_external_index_thread(
                 state,
@@ -447,6 +448,7 @@ pub(crate) fn start_external_index(
                 metadata_path,
                 workspace_roots,
                 logger,
+                progress_sender,
             );
         })) {
             let panic_message = payload
@@ -479,6 +481,7 @@ fn run_external_index_thread(
     metadata_path: Option<PathBuf>,
     workspace_roots: Vec<PathBuf>,
     logger: LspLogger,
+    event_sender: Option<ServerEventSender>,
 ) {
     let start = Instant::now();
     logger.log(&format!(
@@ -512,6 +515,11 @@ fn run_external_index_thread(
                         phase,
                         phase_start.elapsed().as_millis()
                     ));
+                    if let Some(sender) = &event_sender {
+                        let _ = sender.send(ServerEvent::ExternalIndexProgress {
+                            phase: phase.to_string(),
+                        });
+                    }
                 },
             ))
         }
@@ -525,12 +533,26 @@ fn run_external_index_thread(
     ));
 
     let workspace_start = Instant::now();
+    if !workspace_roots.is_empty() {
+        if let Some(sender) = &event_sender {
+            let _ = sender.send(ServerEvent::ExternalIndexProgress {
+                phase: "workspace-rebuild-start".to_string(),
+            });
+        }
+    }
     logger.log(&format!(
         "externalIndex workspace start roots={} elapsed_ms={}",
         format_paths(&workspace_roots),
         start.elapsed().as_millis()
     ));
     let workspace_result = build_workspace_indexes(&workspace_roots, &logger, start);
+    if !workspace_roots.is_empty() {
+        if let Some(sender) = &event_sender {
+            let _ = sender.send(ServerEvent::ExternalIndexProgress {
+                phase: "workspace-rebuild-end".to_string(),
+            });
+        }
+    }
     let workspace_ready_ms = workspace_start.elapsed().as_millis();
     logger.log(&format!(
         "externalIndex workspace load returned success={} elapsed_ms={}",
@@ -1021,10 +1043,16 @@ mod tests {
             Some(sender.into()),
         );
 
-        assert!(matches!(
-            receiver.recv_timeout(Duration::from_secs(1)),
-            Ok(ServerEvent::ExternalIndexChanged)
-        ));
+        let mut saw_progress = false;
+        loop {
+            match receiver.recv_timeout(Duration::from_secs(1)) {
+                Ok(ServerEvent::ExternalIndexProgress { .. }) => saw_progress = true,
+                Ok(ServerEvent::ExternalIndexChanged) => break,
+                Ok(_) => {}
+                Err(error) => panic!("external index publication did not wake runtime: {error}"),
+            }
+        }
+        assert!(saw_progress, "index phases must wake the runtime before publication");
     }
 
     #[test]

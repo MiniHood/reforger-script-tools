@@ -1449,6 +1449,7 @@ impl DocumentRuntime {
         match event {
             ServerEvent::TransportClosed
             | ServerEvent::Incoming { .. }
+            | ServerEvent::ExternalIndexProgress { .. }
             | ServerEvent::ExternalIndexChanged => None,
             event @ ServerEvent::RichSemanticTokensReady { .. } => Some(Ok(
                 self.interpret_rich_ready_event(event, current_external_generation)?
