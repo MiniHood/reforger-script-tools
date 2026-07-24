@@ -1649,7 +1649,7 @@ impl Parser<'_> {
             if at_top_level && !saw_equal && matches!(kind, TokenKind::Dot | TokenKind::Question) {
                 return false;
             }
-            if at_top_level && !saw_name_after_type && kind == TokenKind::LeftParen {
+            if at_top_level && !saw_equal && kind == TokenKind::LeftParen {
                 return false;
             }
             if at_top_level && is_assignment_operator(kind) && !saw_name_after_type {
@@ -1668,10 +1668,7 @@ impl Parser<'_> {
                 return false;
             }
 
-            if at_top_level
-                && index > self.position
-                && matches!(kind, TokenKind::Identifier | TokenKind::Keyword(_))
-            {
+            if at_top_level && index > self.position && kind == TokenKind::Identifier {
                 saw_name_after_type = true;
                 saw_newline_after_name = false;
             }
@@ -1742,10 +1739,7 @@ impl Parser<'_> {
                 return false;
             }
 
-            if at_top_level
-                && index > self.position
-                && matches!(kind, TokenKind::Identifier | TokenKind::Keyword(_))
-            {
+            if at_top_level && index > self.position && kind == TokenKind::Identifier {
                 saw_name_after_type = true;
             }
 
@@ -3020,6 +3014,44 @@ class AfterInvalid
         assert_eq!(count_kind(&parse.root, SyntaxKind::ExpressionStatement), 1);
         assert_eq!(count_kind(&parse.root, SyntaxKind::LocalDeclStatement), 0);
         assert_eq!(count_kind(&parse.root, SyntaxKind::IfStatement), 1);
+    }
+
+    #[test]
+    fn bare_identifier_before_following_statement_stays_an_expression() {
+        let before_control_statement = r#"class Example
+{
+	void Run()
+	{
+		asdasdsadasd
+		if (true)
+			return;
+	}
+}
+"#;
+        let before_call_statement = r#"class Example
+{
+	void Run()
+	{
+		asdasdsadasd
+		DoThing();
+	}
+}
+"#;
+
+        for (source, following_kind, expression_count) in [
+            (before_control_statement, SyntaxKind::IfStatement, 1),
+            (before_call_statement, SyntaxKind::CallExpression, 2),
+        ] {
+            let parse = parse_source(source);
+
+            assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
+            assert_eq!(
+                count_kind(&parse.root, SyntaxKind::ExpressionStatement),
+                expression_count
+            );
+            assert_eq!(count_kind(&parse.root, SyntaxKind::LocalDeclStatement), 0);
+            assert_eq!(count_kind(&parse.root, following_kind), 1);
+        }
     }
 
     #[test]

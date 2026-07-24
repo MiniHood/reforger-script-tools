@@ -1798,6 +1798,41 @@ mod tests {
     }
 
     #[test]
+    fn unresolved_statement_identifier_keeps_the_default_editor_foreground() {
+        let before_control_statement = r#"class Example
+{
+	void Run()
+	{
+		asdasdsadasd
+		if (true)
+			return;
+	}
+}
+"#;
+        let before_call_statement = r#"class Example
+{
+	void Run()
+	{
+		asdasdsadasd
+		DoThing();
+	}
+}
+"#;
+
+        for source in [before_control_statement, before_call_statement] {
+            let report = semantic_tokens_report_for_source(source);
+
+            assert!(
+                report
+                    .decoded
+                    .iter()
+                    .all(|token| token.text != "asdasdsadasd"),
+                "an unresolved statement identifier must not receive a semantic token"
+            );
+        }
+    }
+
+    #[test]
     fn lexical_bracket_modes_classify_only_parser_proven_generic_angles() {
         let source = "class Example { array<int> values; array<int>> broken; void Run() { bool less = 1 < 2; int shifted = 8 >> 1; } }";
         let generic_open = source.find("array<int>").unwrap() + "array".len();
