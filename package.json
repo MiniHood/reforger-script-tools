@@ -1,8 +1,13 @@
 {
-  "name": "reforger-sript-tools",
+  "name": "reforger-script-tools",
   "displayName": "Reforger Script Tools",
   "description": "Enfusion Script language support and Workbench compiler integration for Arma Reforger.",
-  "version": "0.0.1",
+  "publisher": "burn0ut7",
+  "version": "1.0.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/burn0ut7/reforger-script-tools"
+  },
   "engines": {
     "vscode": "^1.125.0"
   },
