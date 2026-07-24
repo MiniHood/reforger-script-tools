@@ -888,6 +888,18 @@ fn append_timing(
         .iter()
         .map(|row| row.semantic_timings.declaration_overlay_ms)
         .sum();
+    let semantic_type_detail_overlay_ms: u128 = rows
+        .iter()
+        .map(|row| row.semantic_timings.type_detail_overlay_ms)
+        .sum();
+    let semantic_symbol_declaration_overlay_ms: u128 = rows
+        .iter()
+        .map(|row| row.semantic_timings.symbol_declaration_overlay_ms)
+        .sum();
+    let semantic_delimiter_overlay_ms: u128 = rows
+        .iter()
+        .map(|row| row.semantic_timings.delimiter_overlay_ms)
+        .sum();
     let semantic_sort_filter_split_ms: u128 = rows
         .iter()
         .map(|row| row.semantic_timings.sort_filter_split_ms)
@@ -901,6 +913,10 @@ fn append_timing(
         .iter()
         .map(|row| row.semantic_timings.identifier_resolver_calls)
         .sum();
+    let delimiter_resolver_calls: usize = rows
+        .iter()
+        .map(|row| row.semantic_timings.delimiter_resolver_calls)
+        .sum();
     report.push_str("\n## Semantic Projection Internal Timing\n\n");
     report.push_str("| Phase | Milliseconds |\n");
     report.push_str("| --- | ---: |\n");
@@ -910,6 +926,26 @@ fn append_timing(
     writeln!(
         report,
         "| Declaration overlay | {semantic_declaration_overlay_ms} |"
+    )
+    .unwrap();
+    writeln!(
+        report,
+        "|   Type details | {semantic_type_detail_overlay_ms} |"
+    )
+    .unwrap();
+    writeln!(
+        report,
+        "|   Declaration symbols | {semantic_symbol_declaration_overlay_ms} |"
+    )
+    .unwrap();
+    writeln!(
+        report,
+        "|   Scope delimiters | {semantic_delimiter_overlay_ms} |"
+    )
+    .unwrap();
+    writeln!(
+        report,
+        "|   Scope delimiter resolver calls | {delimiter_resolver_calls} |"
     )
     .unwrap();
     writeln!(

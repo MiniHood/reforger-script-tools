@@ -102,10 +102,14 @@ pub struct LspSemanticTokenTimings {
     pub token_loop_ms: u128,
     pub resolver_ms: u128,
     pub declaration_overlay_ms: u128,
+    pub type_detail_overlay_ms: u128,
+    pub symbol_declaration_overlay_ms: u128,
+    pub delimiter_overlay_ms: u128,
     pub sort_filter_split_ms: u128,
     pub encode_ms: u128,
     pub decode_debug_ms: u128,
     pub identifier_resolver_calls: usize,
+    pub delimiter_resolver_calls: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -642,13 +646,15 @@ fn semantic_raw_tokens(
     let declaration_overlay_elapsed = declaration_overlay_start.elapsed();
 
     let delimiter_overlay_start = Instant::now();
-    let delimiters = super::scope_delimiters::semantic_scope_delimiters_for_analysis(
+    let delimiter_projection = super::scope_delimiters::semantic_scope_delimiters_for_analysis(
         source,
         analysis,
         ExternalIndexes::new(workspace_index, game_data_index),
         mode == SemanticTokenMode::Rich,
         should_cancel,
     )?;
+    let delimiter_resolver_calls = delimiter_projection.dynamic_owner_resolver_calls;
+    let delimiters = delimiter_projection.delimiters;
     let generic_angle_offsets = generic_angle_offsets_for_delimiters(source, &delimiters);
     let operator_type = semantic_type_index("operator");
     tokens = tokens
@@ -742,10 +748,14 @@ fn semantic_raw_tokens(
             declaration_overlay_ms: type_detail_overlay_elapsed.as_millis()
                 + declaration_overlay_elapsed.as_millis()
                 + delimiter_overlay_elapsed.as_millis(),
+            type_detail_overlay_ms: type_detail_overlay_elapsed.as_millis(),
+            symbol_declaration_overlay_ms: declaration_overlay_elapsed.as_millis(),
+            delimiter_overlay_ms: delimiter_overlay_elapsed.as_millis(),
             sort_filter_split_ms: sort_filter_split_start.elapsed().as_millis(),
             encode_ms: 0,
             decode_debug_ms: 0,
             identifier_resolver_calls,
+            delimiter_resolver_calls,
         },
     })
 }
@@ -896,10 +906,14 @@ fn lexical_raw_tokens(
             token_loop_ms: token_loop_start.elapsed().as_millis(),
             resolver_ms: 0,
             declaration_overlay_ms: 0,
+            type_detail_overlay_ms: 0,
+            symbol_declaration_overlay_ms: 0,
+            delimiter_overlay_ms: 0,
             sort_filter_split_ms: sort_filter_split_start.elapsed().as_millis(),
             encode_ms: 0,
             decode_debug_ms: 0,
             identifier_resolver_calls: 0,
+            delimiter_resolver_calls: 0,
         },
     })
 }

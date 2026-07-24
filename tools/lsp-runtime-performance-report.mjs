@@ -855,6 +855,10 @@ function compactDetail(record) {
     "queue_ms",
     "resolver_ms",
     "resolver_calls",
+    "type_detail_ms",
+    "declaration_symbols_ms",
+    "delimiter_ms",
+    "delimiter_resolver_calls",
     "reason",
   ]) {
     if (record.fields[key] !== undefined) {

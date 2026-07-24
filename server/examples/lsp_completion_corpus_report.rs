@@ -36,12 +36,20 @@ fn run() -> Result<(), String> {
     }
 
     let discovery_start = Instant::now();
-    let mut files = Vec::new();
-    collect_c_files(&args.scripts_path, &mut files)?;
-    files.sort();
-    if let Some(max_files) = args.max_files {
-        files.truncate(max_files);
-    }
+    let files = if let Some(file_path) = args.file_path.clone() {
+        if !file_path.is_file() {
+            return Err(format!("File does not exist: {}", file_path.display()));
+        }
+        vec![file_path]
+    } else {
+        let mut files = Vec::new();
+        collect_c_files(&args.scripts_path, &mut files)?;
+        files.sort();
+        if let Some(max_files) = args.max_files {
+            files.truncate(max_files);
+        }
+        files
+    };
     let discovery_elapsed = discovery_start.elapsed();
 
     let external_start = Instant::now();
@@ -172,6 +180,7 @@ struct Args {
     out_path: PathBuf,
     profile_label: String,
     max_files: Option<usize>,
+    file_path: Option<PathBuf>,
     max_checks: usize,
 }
 
@@ -181,6 +190,7 @@ impl Args {
         let mut out_path = None;
         let mut profile_label = "debug".to_string();
         let mut max_files = None;
+        let mut file_path = None;
         let mut max_checks = 1000usize;
         let mut args = env::args().skip(1);
 
@@ -196,6 +206,12 @@ impl Args {
                     out_path = Some(PathBuf::from(
                         args.next()
                             .ok_or_else(|| "--out requires a path".to_string())?,
+                    ));
+                }
+                "--file" => {
+                    file_path = Some(PathBuf::from(
+                        args.next()
+                            .ok_or_else(|| "--file requires a path".to_string())?,
                     ));
                 }
                 "--profile-label" => {
@@ -234,6 +250,7 @@ impl Args {
             out_path: resolve_repo_path(out_path, DEFAULT_OUTPUT),
             profile_label,
             max_files,
+            file_path,
             max_checks,
         })
     }
@@ -370,6 +387,9 @@ fn render_report(
     writeln!(report).unwrap();
     writeln!(report, "- Source path: `{}`", args.scripts_path.display()).unwrap();
     writeln!(report, "- Profile: `{}`", args.profile_label).unwrap();
+    if let Some(file_path) = &args.file_path {
+        writeln!(report, "- Target file: `{}`", file_path.display()).unwrap();
+    }
     writeln!(report, "- Files scanned: {}", totals.files).unwrap();
     writeln!(
         report,
@@ -838,5 +858,5 @@ fn escape_table(value: &str) -> String {
 }
 
 fn print_help() {
-    println!("Usage: cargo run --manifest-path server/Cargo.toml --example lsp_completion_corpus_report -- [--scripts <path>] [--out <path>] [--profile-label <label>] [--max-files <n>] [--max-checks <n>]");
+    println!("Usage: cargo run --manifest-path server/Cargo.toml --example lsp_completion_corpus_report -- [--scripts <path>] [--file <path>] [--out <path>] [--profile-label <label>] [--max-files <n>] [--max-checks <n>]");
 }

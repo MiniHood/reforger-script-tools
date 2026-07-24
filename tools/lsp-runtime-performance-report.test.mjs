@@ -95,6 +95,20 @@ test("reports source-free game-data cache bytes for rebuilt, loaded, and migrate
   assert.doesNotMatch(report, /DO_NOT_COPY/);
 });
 
+test("reports rich semantic-token phase timings without source payloads", () => {
+  const report = runReport(
+    "[1000] semanticTokensRich ready uri=file:///workspace/GC_MarkerArea.c revision=42 external_generation=9 resolver_ms=31 resolver_calls=96 type_detail_ms=1 declaration_symbols_ms=0 delimiter_ms=140 delimiter_resolver_calls=601 source=DO_NOT_COPY elapsed_ms=182",
+  );
+
+  assert.match(report, /resolver_ms=31/);
+  assert.match(report, /resolver_calls=96/);
+  assert.match(report, /type_detail_ms=1/);
+  assert.match(report, /declaration_symbols_ms=0/);
+  assert.match(report, /delimiter_ms=140/);
+  assert.match(report, /delimiter_resolver_calls=601/);
+  assert.doesNotMatch(report, /DO_NOT_COPY/);
+});
+
 test("correlates first current-snapshot token and completion responses without payload data", () => {
   const report = runReport([
     "[1000] notification didChange uri=file:///workspace/GC_MarkerArea.c version=7 revision=42 cached_analysis=false analysis_state=pending elapsed_ms=2",

@@ -34,13 +34,18 @@ pub(crate) struct ScopeDelimiter {
     pub(crate) anchor_kind: ScopeDelimiterAnchorKind,
 }
 
+pub(crate) struct ScopeDelimiterProjection {
+    pub(crate) delimiters: Vec<ScopeDelimiter>,
+    pub(crate) dynamic_owner_resolver_calls: usize,
+}
+
 pub(crate) fn semantic_scope_delimiters_for_analysis(
     source: &str,
     analysis: &FileIndexAnalysis,
     external_indexes: ExternalIndexes<'_>,
     resolve_dynamic_owners: bool,
     should_cancel: Option<&dyn Fn() -> bool>,
-) -> Option<Vec<ScopeDelimiter>> {
+) -> Option<ScopeDelimiterProjection> {
     let mut delimiters = collect_scope_delimiters(
         &analysis.parse,
         &analysis.lexer_tokens,
@@ -49,7 +54,10 @@ pub(crate) fn semantic_scope_delimiters_for_analysis(
     )?;
     if !resolve_dynamic_owners {
         delimiters.retain(delimiter_anchor_is_structurally_proven);
-        return Some(delimiters);
+        return Some(ScopeDelimiterProjection {
+            delimiters,
+            dynamic_owner_resolver_calls: 0,
+        });
     }
     let resolver = ReferenceResolver::new_with_parse_scope_and_external_indexes(
         source,
@@ -76,7 +84,10 @@ pub(crate) fn semantic_scope_delimiters_for_analysis(
             proven.push(delimiter);
         }
     }
-    Some(proven)
+    Some(ScopeDelimiterProjection {
+        delimiters: proven,
+        dynamic_owner_resolver_calls: dynamic_owners,
+    })
 }
 
 pub(crate) fn scope_delimiters_for_syntax(

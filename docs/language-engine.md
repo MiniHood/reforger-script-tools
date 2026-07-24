@@ -109,6 +109,11 @@ analyzed snapshots return the same active ranges; resolver-dependent foreground
 classification remains `reforgerPunctuation` until matching analysis exists.
 Background semantic projection retains its existing cancellation contract and
 bounded token output.
+Rich semantic-token telemetry separates identifier resolution, type-detail
+overlays, declaration-symbol overlays, and scope-delimiter overlays. It also
+records identifier and delimiter resolver-call counts without source text or
+token payloads, so large-file cost can be attributed without weakening the
+semantic projection.
 
 ## Snapshot Rules
 

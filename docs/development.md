@@ -24,6 +24,11 @@ For Rust-only work, run `cargo test` from `server/` in addition to focused
 tests. For extension-facing TypeScript, language-client, or bundled-server
 changes, run `npm run compile` after the final source edit.
 
+The Rust development profile retains debug information and assertions but uses
+optimized code. This keeps the bundled development language server
+representative enough for large-file editor latency while preserving the
+release profile as the packaging authority.
+
 ## Ticket Completion
 
 Break a ticket into small, behavior-preserving implementation slices when that

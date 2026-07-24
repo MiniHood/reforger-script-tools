@@ -908,10 +908,12 @@ impl DocumentRuntime {
             .semantic_tokens
             .set_rich(revision, external_generation, projection);
         let mut effects = vec![RuntimeEffect::Log(format!(
-            "semanticTokensRich ready uri={} revision={} external_generation={} tokens={} external_index_status={} parse_diagnostics={} lex_ms={} token_loop_ms={} resolver_ms={} resolver_calls={} encode_ms={} elapsed_ms={}",
+            "semanticTokensRich ready uri={} revision={} external_generation={} tokens={} external_index_status={} parse_diagnostics={} lex_ms={} token_loop_ms={} resolver_ms={} resolver_calls={} type_detail_ms={} declaration_symbols_ms={} delimiter_ms={} delimiter_resolver_calls={} encode_ms={} elapsed_ms={}",
             uri, revision, external_generation, token_count, external_status, parse_diagnostics,
             timings.lex_ms, timings.token_loop_ms, timings.resolver_ms,
-            timings.identifier_resolver_calls, timings.encode_ms, elapsed_ms
+            timings.identifier_resolver_calls, timings.type_detail_overlay_ms,
+            timings.symbol_declaration_overlay_ms, timings.delimiter_overlay_ms,
+            timings.delimiter_resolver_calls, timings.encode_ms, elapsed_ms
         ))];
         let replayed = self.replay_deferred_semantic_token_requests(
             &uri,
