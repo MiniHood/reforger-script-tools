@@ -15,8 +15,8 @@ import {
 const repoUrl = `https://github.com/${gameDataRepository.owner}/${gameDataRepository.name}`;
 const githubApiBase = `https://api.github.com/repos/${gameDataRepository.owner}/${gameDataRepository.name}`;
 
-const downloadChoice = 'Download';
-const setManualFolderChoice = 'Set Manual Folder';
+const downloadChoice = 'Download Game Data';
+const setManualFolderChoice = 'Browse Game Data';
 
 export interface GameDataMetadata {
 	repoUrl: string;
