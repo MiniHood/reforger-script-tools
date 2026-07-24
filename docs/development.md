@@ -47,6 +47,19 @@ between iterations. The optional latency budget makes the command fail for a
 local regression loop; it is deliberately supplied by the caller rather than
 treated as a portable machine-independent threshold.
 
+For a live editor capture, generate the runtime report from the local
+language-server log:
+
+```powershell
+node tools/lsp-runtime-performance-report.mjs --since-minutes 10
+```
+
+The first-response section distinguishes rich-token convergence from the
+editor's later collection request and reports how often rich work finished
+before that request. The extension diagnostic log records the corresponding
+edit-to-middleware age and event-loop-turn delay without document paths, source
+text, identifiers, or LSP payloads.
+
 ## Ticket Completion
 
 Break a ticket into small, behavior-preserving implementation slices when that

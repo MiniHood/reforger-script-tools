@@ -100,9 +100,9 @@ impl OpenDocument {
         self.document_symbols.clear();
         self.document_symbols_ready = false;
         self.semantic_tokens.cancel_pending();
-        // The next semantic-token request replaces the cached snapshot with a
-        // lexical projection for this revision before rich analysis refreshes
-        // it. An older projection is never returned for the new revision.
+        // The current rich worker may replace the cache before VS Code asks
+        // for this revision. If the request wins that race, it installs the
+        // lexical fallback internally and still waits for rich publication.
     }
 
     pub(crate) fn analysis_ready(&self) -> bool {
@@ -236,15 +236,15 @@ impl OpenDocument {
 
 /// The complete token state that may be published for one document revision.
 ///
-/// The lexical baseline is the authoritative first response: it is derived
-/// solely from the current snapshot text. A rich projection is an optional
-/// replacement overlay, never an input to the lexical pass. The server only
+/// A lexical baseline is materialized only when an editor request outruns the
+/// current rich worker. It is derived solely from the current snapshot text
+/// and remains an internal fallback while that request waits. The server only
 /// supports full semantic-token responses today, so a changed overlay receives
 /// a new opaque result id rather than attempting an unsafe delta against a
 /// former result.
 pub(crate) struct TokenSnapshot {
     revision: u64,
-    lexical_baseline: LspSemanticTokenProjection,
+    lexical_baseline: Option<LspSemanticTokenProjection>,
     rich_overlay: Option<RichTokenOverlay>,
 }
 
@@ -304,10 +304,10 @@ pub(crate) struct TokenSelection<'a> {
 }
 
 impl TokenSnapshot {
-    fn new(revision: u64, lexical_baseline: LspSemanticTokenProjection) -> Self {
+    fn new(revision: u64) -> Self {
         Self {
             revision,
-            lexical_baseline,
+            lexical_baseline: None,
             rich_overlay: None,
         }
     }
@@ -326,7 +326,10 @@ impl TokenSnapshot {
             };
         }
         TokenSelection {
-            projection: &self.lexical_baseline,
+            projection: self
+                .lexical_baseline
+                .as_ref()
+                .expect("selection requires a lexical or rich projection"),
             kind: TokenProjectionKind::LexicalBaseline,
             result_id: format!("reforger:{}:lexical", self.revision),
             disposition: TokenResultDisposition::Full,
@@ -382,12 +385,19 @@ impl SemanticTokenCache {
             .as_ref()
             .is_none_or(|snapshot| snapshot.revision != revision)
         {
-            self.snapshot = Some(TokenSnapshot::new(revision, lexical_baseline()));
+            self.snapshot = Some(TokenSnapshot::new(revision));
         }
         self.discard_rich_for_other_external_generation(external_generation);
+        let snapshot = self
+            .snapshot
+            .as_mut()
+            .expect("semantic token snapshot was just installed");
+        if snapshot.rich_overlay.is_none() && snapshot.lexical_baseline.is_none() {
+            snapshot.lexical_baseline = Some(lexical_baseline());
+        }
         self.snapshot
             .as_ref()
-            .expect("lexical token snapshot was just installed")
+            .expect("semantic token snapshot was just installed")
             .select(external_generation)
     }
 
@@ -413,18 +423,22 @@ impl SemanticTokenCache {
         rich_elapsed_ms: u128,
         projection: LspSemanticTokenProjection,
     ) {
-        if let Some(snapshot) = self
+        if self
             .snapshot
-            .as_mut()
-            .filter(|snapshot| snapshot.revision == revision)
+            .as_ref()
+            .is_none_or(|snapshot| snapshot.revision != revision)
         {
-            snapshot.set_rich(
+            self.snapshot = Some(TokenSnapshot::new(revision));
+        }
+        self.snapshot
+            .as_mut()
+            .expect("semantic token snapshot was just installed")
+            .set_rich(
                 external_generation,
                 workspace_excludes_document,
                 rich_elapsed_ms,
                 projection,
             );
-        }
         self.pending = None;
     }
 
@@ -439,12 +453,10 @@ impl SemanticTokenCache {
         })
     }
 
-    /// Rich projection is useful only after VS Code has requested a lexical
-    /// baseline for this exact revision. That baseline is the refresh target.
     pub(crate) fn needs_rich_projection(&self, revision: u64, external_generation: u64) -> bool {
-        self.snapshot.as_ref().is_some_and(|snapshot| {
-            snapshot.revision == revision
-                && snapshot
+        self.snapshot.as_ref().is_none_or(|snapshot| {
+            snapshot.revision != revision
+                || snapshot
                     .rich_overlay
                     .as_ref()
                     .is_none_or(|overlay| overlay.external_generation != external_generation)

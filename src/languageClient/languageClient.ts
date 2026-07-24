@@ -59,6 +59,7 @@ import {
 	usesCustomScopeDelimiterPresentation,
 } from './bracketColoringBridge';
 import { RestartCoordinator } from './restartCoordinator';
+import { registerSemanticTokenTimingBridge } from './semanticTokenTimingBridge';
 
 export { blockCommentPairPosition } from './typingAssistBridge';
 export { ifSpaceCommitContractFromCommandArguments } from './completionUiBridge';
@@ -277,6 +278,8 @@ async function startLanguageClient(
 		},
 	};
 
+	const semanticTokenTiming = registerSemanticTokenTimingBridge();
+	clientDisposables.push(semanticTokenTiming);
 	const clientOptions: LanguageClientOptions = {
 		documentSelector: [...languageClientDocumentSelector],
 		outputChannel,
@@ -289,12 +292,15 @@ async function startLanguageClient(
 			provideHover: () => null,
 			...createCompletionMiddleware(completionUiMiddlewareCallbacks),
 			provideDocumentSemanticTokens: async (document, token, next) => {
+				const timing = semanticTokenTiming.start(document);
 				const startedAt = Date.now();
 				try {
 					const result = await next(document, token);
+					semanticTokenTiming.complete(timing, 'ok', token.isCancellationRequested);
 					logFirstSemanticTokenResponse(context, document, startedAt, 'ok');
 					return result;
 				} catch (error) {
+					semanticTokenTiming.complete(timing, 'error', token.isCancellationRequested);
 					logFirstSemanticTokenResponse(context, document, startedAt, 'error', error);
 					throw error;
 				}

@@ -210,6 +210,7 @@ function renderReport(input) {
   lines.push(`- Cancelled rich semantic-token records: ${summary.cancelledRichCount}`);
   lines.push(`- Foreground responses with declared query quality: ${queryQuality.declared} / ${queryQuality.records}`);
   lines.push(`- Capture field gaps: ${captureFields.totalMissing}`);
+  lines.push(`- Rich convergence observations: ${snapshotQuality.firstRich.latencies.length} / ${snapshotQuality.acceptedSnapshots}`);
   lines.push(`- First usable token observations: ${snapshotQuality.firstToken.latencies.length} / ${snapshotQuality.acceptedSnapshots}`);
   lines.push(`- First completion observations: ${snapshotQuality.firstCompletion.latencies.length} / ${snapshotQuality.acceptedSnapshots}`);
   lines.push(`- Slowest operation: ${slowRecords[0] ? `${slowRecords[0].operation} (${formatMs(slowRecords[0].elapsedMs)})` : "None"}`);
@@ -338,8 +339,9 @@ function renderReport(input) {
   lines.push("");
   lines.push("Latency is observed from an accepted `didOpen`/`didChange` snapshot to the first matching token or completion response in this log. It measures end-to-end log time, not source text or completion payload contents. Missing pairs are reported as unavailable rather than estimated.");
   lines.push("");
-  table(lines, ["Response", "Observed", "Unpaired", "P95", "Max", "Lexical-pending"], [
-    ["Usable tokens", snapshotQuality.firstToken.latencies.length, snapshotQuality.firstToken.unpaired, formatMs(percentile(snapshotQuality.firstToken.latencies, 0.95)), formatMs(maxOrZero(snapshotQuality.firstToken.latencies)), snapshotQuality.firstToken.lexicalPending],
+  table(lines, ["Response", "Observed", "Unpaired", "P95", "Max", "Detail"], [
+    ["Rich convergence", snapshotQuality.firstRich.latencies.length, snapshotQuality.firstRich.unpaired, formatMs(percentile(snapshotQuality.firstRich.latencies, 0.95)), formatMs(maxOrZero(snapshotQuality.firstRich.latencies)), `${snapshotQuality.firstRich.beforeRequest} before request`],
+    ["Usable tokens", snapshotQuality.firstToken.latencies.length, snapshotQuality.firstToken.unpaired, formatMs(percentile(snapshotQuality.firstToken.latencies, 0.95)), formatMs(maxOrZero(snapshotQuality.firstToken.latencies)), `${snapshotQuality.firstToken.lexicalPending} lexical-pending`],
     ["Completion", snapshotQuality.firstCompletion.latencies.length, snapshotQuality.firstCompletion.unpaired, formatMs(percentile(snapshotQuality.firstCompletion.latencies, 0.95)), formatMs(maxOrZero(snapshotQuality.firstCompletion.latencies)), "n/a"],
   ]);
   lines.push("");
@@ -692,6 +694,7 @@ function summarizeCaptureWindows(revisionRows) {
 
 function summarizeSnapshotQuality(records) {
   const snapshots = new Map();
+  const firstRich = { latencies: [], unpaired: 0, beforeRequest: 0 };
   const firstToken = { latencies: [], unpaired: 0, lexicalPending: 0 };
   const firstCompletion = { latencies: [], unpaired: 0 };
   let acceptedSnapshots = 0;
@@ -704,7 +707,7 @@ function summarizeSnapshotQuality(records) {
     if (isAcceptedSnapshot(record)) {
       const key = snapshotKey(record);
       if (key) {
-        snapshots.set(key, { timestamp: record.timestamp, firstToken: false, firstCompletion: false });
+        snapshots.set(key, { timestamp: record.timestamp, firstRich: false, firstToken: false, firstCompletion: false, semanticRequestSeen: false });
         acceptedSnapshots += 1;
       }
       continue;
@@ -716,6 +719,17 @@ function summarizeSnapshotQuality(records) {
     }
     if (isStaleSemanticTerminal(record)) {
       staleSemanticPublications += 1;
+      continue;
+    }
+    if (record.operation === "semanticTokensRich ready") {
+      const snapshot = snapshots.get(snapshotKey(record));
+      if (!snapshot) {
+        firstRich.unpaired += 1;
+      } else if (!snapshot.firstRich) {
+        snapshot.firstRich = true;
+        firstRich.latencies.push(Math.max(0, record.timestamp - snapshot.timestamp));
+        if (!snapshot.semanticRequestSeen) firstRich.beforeRequest += 1;
+      }
       continue;
     }
     const isToken = record.operation === "request semanticTokens";
@@ -731,6 +745,7 @@ function summarizeSnapshotQuality(records) {
     currentForegroundResponses += 1;
     const latency = Math.max(0, record.timestamp - snapshot.timestamp);
     if (isToken && !snapshot.firstToken) {
+      snapshot.semanticRequestSeen = true;
       snapshot.firstToken = true;
       firstToken.latencies.push(latency);
       if (record.fields.mode === "lexical-pending") firstToken.lexicalPending += 1;
@@ -740,7 +755,7 @@ function summarizeSnapshotQuality(records) {
       firstCompletion.latencies.push(latency);
     }
   }
-  return { acceptedSnapshots, currentForegroundResponses, unpairedForegroundResponses, matchingSemanticPublications, staleSemanticPublications, firstToken, firstCompletion };
+  return { acceptedSnapshots, currentForegroundResponses, unpairedForegroundResponses, matchingSemanticPublications, staleSemanticPublications, firstRich, firstToken, firstCompletion };
 }
 
 function isAcceptedSnapshot(record) {

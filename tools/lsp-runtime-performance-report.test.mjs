@@ -142,11 +142,24 @@ test("correlates first current-snapshot token and completion responses without p
     "[1020] request semanticTokens uri=file:///workspace/GC_MarkerArea.c revision=42 mode=lexical-pending tokens=3 elapsed_ms=2",
     "[1040] documentAnalysis ready uri=file:///workspace/GC_MarkerArea.c revision=42 elapsed_ms=40",
   ].join("\n"));
-  assert.match(report, /Usable tokens.*1.*0.*20 ms.*20 ms.*1/);
+  assert.match(report, /Usable tokens.*1.*0.*20 ms.*20 ms.*1 lexical-pending/);
   assert.match(report, /Completion.*1.*0.*15 ms.*15 ms/);
   assert.match(report, /Accepted snapshots.*1/);
   assert.match(report, /Current foreground responses.*2/);
   assert.match(report, /Matching semantic publications.*1/);
+});
+
+test("reports rich semantic convergence that finishes before the editor request", () => {
+  const report = runReport([
+    "[1000] notification didChange uri=file:///workspace/GC_MarkerArea.c version=7 revision=42 elapsed_ms=2",
+    "[1005] documentAnalysis ready uri=file:///workspace/GC_MarkerArea.c revision=42 elapsed_ms=5",
+    "[1030] semanticTokensRich ready uri=file:///workspace/GC_MarkerArea.c revision=42 external_generation=9 elapsed_ms=25",
+    "[1050] request semanticTokens uri=file:///workspace/GC_MarkerArea.c revision=42 mode=rich-overlay outcome=responded elapsed_ms=0",
+  ].join("\n"));
+
+  assert.match(report, /Rich convergence observations: 1 \/ 1/);
+  assert.match(report, /Rich convergence.*1.*0.*30 ms.*30 ms.*1 before request/);
+  assert.match(report, /Usable tokens.*1.*0.*50 ms.*50 ms.*0 lexical-pending/);
 });
 
 test("keeps unpaired revisions distinct and parses explicit admission plus cancellation-tail telemetry", () => {

@@ -606,6 +606,80 @@ fn semantic_tokens_wait_for_current_analysis_instead_of_publishing_a_lexical_fla
 }
 
 #[test]
+fn rich_semantic_tokens_converge_before_the_first_editor_request() {
+    let (sender, receiver) = mpsc::channel();
+    let scheduler = OpenDocumentAnalysisScheduler::start(sender);
+    let mut server = LspServer::new_with_runtime_senders(
+        Vec::new(),
+        LspServerOptions::default(),
+        None,
+        Some(scheduler),
+        None,
+    );
+    let uri = "file:///Scripts/ProactiveTokens.c";
+    server
+        .handle_message(
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": { "textDocument": {
+                    "uri": uri,
+                    "languageId": "enforce",
+                    "version": 1,
+                    "text": "class ProactiveTokens { void Run() {} }"
+                }}
+            }),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+
+    for expected in ["foreground", "semantic analysis", "rich semantic tokens"] {
+        server
+            .handle_internal_event(
+                receiver
+                    .recv_timeout(Duration::from_secs(1))
+                    .unwrap_or_else(|_| panic!("missing {expected} worker result")),
+            )
+            .unwrap();
+    }
+
+    assert!(
+        server
+            .document_runtime
+            .test_document_state(uri)
+            .unwrap()
+            .rich_semantic_tokens,
+        "the current rich projection must converge without waiting for an editor request"
+    );
+    assert!(
+        String::from_utf8_lossy(&server.writer)
+            .contains("\"method\":\"workspace/semanticTokens/refresh\""),
+        "proactive convergence must ask the editor to collect the ready projection"
+    );
+
+    server.writer.clear();
+    server
+        .handle_message(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "textDocument/semanticTokens/full",
+                "params": { "textDocument": { "uri": uri } }
+            }),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+
+    let output = String::from_utf8_lossy(&server.writer);
+    assert!(output.contains("\"id\":1"), "{output}");
+    assert!(output.contains("\"resultId\":\"reforger:1:rich:"), "{output}");
+}
+
+#[test]
 fn pending_semantic_tokens_receive_content_modified_when_typing_supersedes_the_revision() {
     let (sender, _receiver) = mpsc::channel();
     let scheduler = OpenDocumentAnalysisScheduler::start(sender);

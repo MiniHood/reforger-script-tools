@@ -105,13 +105,15 @@ pending, the bridge preserves the settled active-pair decoration; only a
 current terminal response atomically replaces or clears it. A stale response
 does not alter the visible pair. A rejected foreground task returns a terminal
 empty result rather than a retry signal.
-After every source edit, the current snapshot's lexical baseline is cached as
-an internal input to rich projection, but it is not published as an interim
-full-document response. The semantic-token request remains pending while the
-already-scheduled foreground and semantic workers produce the current rich
-overlay, then publishes that overlay as one replacement. This keeps the
-editor's settled semantic presentation visible instead of briefly replacing it
-with lexical or theme-default colors. A newer edit, an external-index
+After every source edit, foreground analysis, semantic analysis, and rich-token
+projection advance as soon as their dependencies are ready. There is no idle
+delay and rich work is never gated on the editor's first semantic-token
+request. A completed rich projection requests an editor refresh immediately.
+If an editor request outruns that work, the current snapshot's lexical baseline
+is materialized only as an internal fallback; the request remains pending and
+publishes the rich overlay as one replacement. This keeps the editor's settled
+semantic presentation visible instead of briefly replacing it with lexical or
+theme-default colors. A newer edit, an external-index
 generation change, worker overload, or document close rejects the superseded
 pending request with `Content modified`; waiting is revision- and
 generation-bounded and never moves parsing or resolution onto the request
@@ -154,6 +156,11 @@ declaration, lexical-scope, member, file-top-level, external-top-level, and
 candidate-selection phases. Member resolution uses a name-bounded view of the
 preferred class and its base chain; it does not construct the full completion
 member projection when resolving one identifier.
+The extension diagnostic log records the source-free interval from its latest
+observed document version to semantic-token middleware invocation, the next
+event-loop-turn delay, and middleware completion time. The runtime performance
+report separately correlates accepted server revisions with rich convergence
+and records whether convergence finished before the editor's request.
 Rich workers retain one revision-tagged delimiter-owner cache per open
 document. Resolver-dependent owners are grouped by stable callable identity,
 exact callable source, and the file-local declaration structure that can

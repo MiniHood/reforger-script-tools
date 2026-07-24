@@ -713,7 +713,20 @@ impl<W: Write> LspServer<W> {
 
     fn handle_internal_event(&mut self, event: ServerEvent) -> Result<(), String> {
         let external_generation = self.external_index.status_summary().generation;
-        let external_indexes = self.external_index.snapshot();
+        let document_identity = match &event {
+            ServerEvent::DocumentAnalysisReady { task, .. } => self
+                .document_runtime
+                .document_path_identity(task.uri())
+                .map(str::to_owned),
+            _ => None,
+        };
+        let external_indexes = document_identity
+            .as_deref()
+            .map(|identity| {
+                self.external_index
+                    .snapshot_for_document_identity(Some(identity))
+            })
+            .unwrap_or_else(|| self.external_index.snapshot());
         let Some(result) = interpret_background_event(
             &mut self.document_runtime,
             event,
