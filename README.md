@@ -55,3 +55,44 @@ Tools`, or add the keys to `settings.json`.
 | `reforgerScriptTools.workbench.enabled` | `true` | Enable Workbench NET API status checks and compiler validation. |
 | `reforgerScriptTools.workbench.host` | `"127.0.0.1"` | Workbench NET API loopback host. IPv4 loopback addresses and `::1` are accepted. |
 | `reforgerScriptTools.workbench.port` | `5775` | Workbench NET API port, from `1` through `65535`. The extension does not scan other ports. |
+
+## Customize Semantic Colors
+
+The extension supplies default Enfusion Script colors through VS Code's native
+semantic-token settings. VS Code applies these defaults automatically, so they
+do not appear in **User Settings (JSON)** until you add your own overrides.
+
+To change a color:
+
+1. Open the Command Palette with `Ctrl+Shift+P`.
+2. Run **Preferences: Open User Settings (JSON)**.
+3. Add the selectors you want to override under
+   `editor.semanticTokenColorCustomizations.rules`.
+
+For example:
+
+```json
+{
+  "editor.semanticTokenColorCustomizations": {
+    "rules": {
+      "class:enforce": "#4EC9B0",
+      "function:enforce": "#DCDCAA",
+      "reforgerField:enforce": "#9CDCFE",
+      "keyword:enforce": "#569CD6",
+      "comment:enforce": "#6A9955",
+      "string:enforce": "#CE9178",
+      "reforgerPunctuation:enforce": "#D4D4D4"
+    }
+  }
+}
+```
+
+Only the selectors included in the user's settings are changed; all others keep
+the extension defaults. The `:enforce` suffix limits each rule to Enfusion
+Script. Available selectors are:
+
+`class:enforce`, `enum:enforce`, `type:enforce`, `typeParameter:enforce`,
+`function:enforce`, `reforgerField:enforce`, `variable:enforce`,
+`parameter:enforce`, `enumMember:enforce`, `number:enforce`,
+`operator:enforce`, `reforgerPunctuation:enforce`, `keyword:enforce`,
+`comment:enforce`, `string:enforce`, and `reforgerPreprocessor:enforce`.
