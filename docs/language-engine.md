@@ -109,6 +109,9 @@ After every source edit, foreground analysis, semantic analysis, and rich-token
 projection advance as soon as their dependencies are ready. There is no idle
 delay and rich work is never gated on the editor's first semantic-token
 request. A completed rich projection requests an editor refresh immediately.
+Protocol input, worker completions, transport closure, and external-index
+publication wake the same coordinator event stream. No periodic channel poll
+stands between foreground, semantic, and rich publication.
 If an editor request outruns that work, the current snapshot's lexical baseline
 is materialized only as an internal fallback; the request remains pending and
 publishes the rich overlay as one replacement. This keeps the editor's settled

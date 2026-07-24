@@ -251,6 +251,12 @@ and the external-index snapshot at the request boundary so downstream feature
 code cannot accidentally combine facts from different generations. Logging is
 best-effort observation; it cannot participate in request admission or response
 delivery.
+Incoming protocol messages, runtime-worker completions, transport closure, and
+external-index publication share one bounded, wakeable event stream. Every
+event is immediately runnable when published; the coordinator never polls one
+channel while work waits on another. Full-sync edit coalescing remains an
+admission optimization over already-queued messages, not a timer or an idle
+delay.
 
 The Document Runtime owns the mutable lifecycle of open-document snapshots:
 admission, cancellation, deferred document-backed work, semantic-token refresh

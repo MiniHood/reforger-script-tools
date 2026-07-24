@@ -21,6 +21,7 @@ use std::thread;
 use std::time::Instant;
 
 pub(super) enum ServerEvent {
+    TransportClosed,
     Incoming {
         received_at: Instant,
         result: Result<Value, String>,
@@ -77,6 +78,34 @@ pub(super) enum ServerEvent {
         result: Value,
         elapsed_ms: u128,
     },
+    ExternalIndexChanged,
+}
+
+#[derive(Clone)]
+pub(super) enum ServerEventSender {
+    Async(mpsc::Sender<ServerEvent>),
+    Bounded(mpsc::SyncSender<ServerEvent>),
+}
+
+impl ServerEventSender {
+    pub(super) fn send(&self, event: ServerEvent) -> Result<(), mpsc::SendError<ServerEvent>> {
+        match self {
+            Self::Async(sender) => sender.send(event),
+            Self::Bounded(sender) => sender.send(event),
+        }
+    }
+}
+
+impl From<mpsc::Sender<ServerEvent>> for ServerEventSender {
+    fn from(sender: mpsc::Sender<ServerEvent>) -> Self {
+        Self::Async(sender)
+    }
+}
+
+impl From<mpsc::SyncSender<ServerEvent>> for ServerEventSender {
+    fn from(sender: mpsc::SyncSender<ServerEvent>) -> Self {
+        Self::Bounded(sender)
+    }
 }
 
 pub(super) struct RichSemanticTokensJob {
@@ -230,7 +259,7 @@ pub(super) struct RuntimeWorkExecutor {
         Mutex<BTreeMap<(TaskClass, String), RuntimeWorkJob>>,
         Condvar,
     )>,
-    pub(super) sender: mpsc::Sender<ServerEvent>,
+    pub(super) sender: ServerEventSender,
     #[cfg(test)]
     pub(super) test_before_execute: Option<RuntimeWorkTestHook>,
 }
@@ -331,17 +360,17 @@ impl RuntimeWorkJob {
 }
 
 impl RuntimeWorkExecutor {
-    pub(super) fn start(sender: mpsc::Sender<ServerEvent>) -> Self {
+    pub(super) fn start(sender: impl Into<ServerEventSender>) -> Self {
         Self::start_with_capacity(sender, RuntimeWorkCapacity::available())
     }
 
     pub(super) fn start_with_capacity(
-        sender: mpsc::Sender<ServerEvent>,
+        sender: impl Into<ServerEventSender>,
         capacity: RuntimeWorkCapacity,
     ) -> Self {
         let scheduler = Self {
             state: Arc::new((Mutex::new(BTreeMap::new()), Condvar::new())),
-            sender,
+            sender: sender.into(),
             #[cfg(test)]
             test_before_execute: None,
         };
@@ -359,13 +388,13 @@ impl RuntimeWorkExecutor {
 
     #[cfg(test)]
     pub(super) fn start_with_capacity_and_test_hook(
-        sender: mpsc::Sender<ServerEvent>,
+        sender: impl Into<ServerEventSender>,
         capacity: RuntimeWorkCapacity,
         test_before_execute: RuntimeWorkTestHook,
     ) -> Self {
         let scheduler = Self {
             state: Arc::new((Mutex::new(BTreeMap::new()), Condvar::new())),
-            sender,
+            sender: sender.into(),
             test_before_execute: Some(test_before_execute),
         };
         for _ in 0..capacity.foreground_workers {

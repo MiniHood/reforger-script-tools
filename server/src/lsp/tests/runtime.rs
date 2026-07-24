@@ -294,8 +294,7 @@ fn position_index_stops_when_cancellation_arrives_mid_build() {
 fn channel_runtime_coalesces_contiguous_full_sync_changes_before_outline_request() {
     let uri = "file:///Scripts/Coalesced.c";
     let log_path = test_log_path("coalesced_channel_changes");
-    let (incoming_sender, incoming_receiver) = mpsc::channel();
-    let (internal_sender, internal_receiver) = mpsc::channel();
+    let (event_sender, event_receiver) = mpsc::channel();
     let mut server = LspServer::new(
         Vec::new(),
         LspServerOptions {
@@ -304,7 +303,7 @@ fn channel_runtime_coalesces_contiguous_full_sync_changes_before_outline_request
         },
     );
     let send = |value| {
-        incoming_sender
+        event_sender
             .send(ServerEvent::Incoming {
                 received_at: Instant::now(),
                 result: Ok(value),
@@ -351,12 +350,9 @@ fn channel_runtime_coalesces_contiguous_full_sync_changes_before_outline_request
         "method": "textDocument/documentSymbol",
         "params": { "textDocument": { "uri": uri } }
     }));
-    drop(incoming_sender);
-    drop(internal_sender);
+    drop(event_sender);
 
-    server
-        .run_message_channels(incoming_receiver, internal_receiver)
-        .unwrap();
+    server.run_message_channels(event_receiver).unwrap();
 
     let output = String::from_utf8(server.writer).unwrap();
     assert!(output.contains("\"id\":1"));
@@ -371,6 +367,90 @@ fn channel_runtime_coalesces_contiguous_full_sync_changes_before_outline_request
     assert!(log.contains("version=4"));
     assert!(log.contains("coalesced_changes=2 superseded_changes=1"));
     cleanup_log(&log_path);
+}
+
+#[test]
+fn channel_runtime_worker_results_do_not_wait_for_unrelated_incoming_messages() {
+    let uri = "file:///Scripts/EventDrivenRuntime.c";
+    let (event_sender, event_receiver) = mpsc::channel();
+    let (foreground_started_sender, foreground_started_receiver) = mpsc::channel();
+    let (release_foreground_sender, release_foreground_receiver) = mpsc::channel();
+    let release_foreground_receiver = Arc::new(Mutex::new(Some(release_foreground_receiver)));
+    let hook_release = release_foreground_receiver.clone();
+    let scheduler = RuntimeWorkExecutor::start_with_capacity_and_test_hook(
+        event_sender.clone(),
+        RuntimeWorkCapacity::for_logical_cpus(2),
+        Arc::new(move |class| {
+            if class == TaskClass::Foreground {
+                foreground_started_sender
+                    .send(())
+                    .expect("test waits for foreground start");
+                hook_release
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .expect("foreground hook runs once")
+                    .recv()
+                    .expect("test releases foreground work");
+            }
+        }),
+    );
+    let mut server = LspServer::new_with_runtime_senders(
+        Vec::new(),
+        LspServerOptions::default(),
+        None,
+        Some(scheduler),
+        None,
+    );
+    event_sender
+        .send(ServerEvent::Incoming {
+            received_at: Instant::now(),
+            result: Ok(json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": { "textDocument": {
+                    "uri": uri,
+                    "languageId": "enforce",
+                    "version": 1,
+                    "text": "class EventDrivenRuntime { void Run() {} }"
+                }}
+            })),
+        })
+        .unwrap();
+
+    let control = thread::spawn(move || {
+        foreground_started_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("foreground worker starts");
+        // Release the result after the coordinator has returned to its
+        // blocking receive. An unrelated incoming message must not be needed
+        // to make foreground -> semantic -> rich publication advance.
+        thread::sleep(Duration::from_millis(10));
+        release_foreground_sender
+            .send(())
+            .expect("release foreground worker");
+        thread::sleep(Duration::from_millis(50));
+        for message in [
+            json!({"jsonrpc": "2.0", "id": 1, "method": "shutdown"}),
+            json!({"jsonrpc": "2.0", "method": "exit"}),
+        ] {
+            event_sender
+                .send(ServerEvent::Incoming {
+                    received_at: Instant::now(),
+                    result: Ok(message),
+                })
+                .expect("send lifecycle message");
+        }
+    });
+
+    server.run_message_channels(event_receiver).unwrap();
+    control.join().unwrap();
+
+    let output = String::from_utf8(server.writer).unwrap();
+    assert!(
+        output.contains("\"method\":\"workspace/semanticTokens/refresh\""),
+        "worker publication waited for the unrelated shutdown message: {output}"
+    );
 }
 
 #[test]
@@ -429,7 +509,7 @@ fn document_analysis_scheduler_bounds_distinct_pending_documents() {
     // otherwise drains this queue before capacity can be observed.
     let scheduler = RuntimeWorkExecutor {
         state: Arc::new((Mutex::new(BTreeMap::new()), Condvar::new())),
-        sender,
+        sender: sender.into(),
         test_before_execute: None,
     };
     for index in 0..=MAX_PENDING_DOCUMENT_ANALYSIS_JOBS {

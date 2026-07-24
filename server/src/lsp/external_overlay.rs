@@ -1,6 +1,8 @@
 #[cfg(test)]
 use super::file_uri_path_identity;
-use super::{file_path_identity, format_paths, LspLogger, LspServerOptions};
+use super::{
+    file_path_identity, format_paths, LspLogger, LspServerOptions, ServerEvent, ServerEventSender,
+};
 use crate::index::SymbolIndex;
 use crate::index_cache::{
     load_or_build_game_data_index_with_progress, GameDataIndexCacheConfig, RuntimeIndexSummary,
@@ -389,6 +391,7 @@ impl ExternalIndexHandle {
 pub(crate) fn start_external_index(
     options: &LspServerOptions,
     logger: LspLogger,
+    event_sender: Option<ServerEventSender>,
 ) -> ExternalIndexHandle {
     if (options.game_data_scripts.is_none() || options.index_cache.is_none())
         && options.workspace_scripts.is_empty()
@@ -460,6 +463,9 @@ pub(crate) fn start_external_index(
                 state.error = Some(format!("external-index startup panicked: {panic_message}"));
                 state.generation += 1;
             }
+        }
+        if let Some(sender) = event_sender {
+            let _ = sender.send(ServerEvent::ExternalIndexChanged);
         }
     });
 
@@ -996,6 +1002,30 @@ fn recompute_summary(
 mod tests {
     use super::*;
     use crate::lsp::file_uri_for_path;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    #[test]
+    fn external_index_publication_wakes_the_runtime_without_polling() {
+        let missing_scripts =
+            std::env::temp_dir().join(format!("reforger-missing-game-data-{}", std::process::id()));
+        let cache = missing_scripts.with_extension("bin");
+        let (sender, receiver) = mpsc::channel();
+        let _handle = start_external_index(
+            &LspServerOptions {
+                game_data_scripts: Some(missing_scripts),
+                index_cache: Some(cache),
+                ..LspServerOptions::default()
+            },
+            LspLogger::new(None, None),
+            Some(sender.into()),
+        );
+
+        assert!(matches!(
+            receiver.recv_timeout(Duration::from_secs(1)),
+            Ok(ServerEvent::ExternalIndexChanged)
+        ));
+    }
 
     #[test]
     fn workspace_file_ingestion_uses_compiler_owned_semantic_facts() {

@@ -112,7 +112,9 @@ use response_writer::RuntimeEffect;
 use runtime_scheduler::{
     DebugCompletionJob, DebugHoverJob, DebugRequestJob, RichSemanticTokensJob, ServerEvent,
 };
-use runtime_scheduler::{ForegroundDocumentJob, OpenDocumentAnalysisJob, RuntimeWorkExecutor};
+use runtime_scheduler::{
+    ForegroundDocumentJob, OpenDocumentAnalysisJob, RuntimeWorkExecutor, ServerEventSender,
+};
 #[cfg(test)]
 use semantic_tokens::LspSemanticTokenProjection;
 use semantic_tokens::{
@@ -176,15 +178,14 @@ pub struct LspServerOptions {
 
 pub fn run_stdio(options: LspServerOptions) -> Result<(), String> {
     let stdout = io::stdout();
-    let (incoming_sender, incoming_receiver) = mpsc::sync_channel(INCOMING_EVENT_QUEUE_CAPACITY);
-    let (internal_sender, internal_receiver) = mpsc::channel();
-    let analysis_scheduler = RuntimeWorkExecutor::start(internal_sender.clone());
+    let (event_sender, event_receiver) = mpsc::sync_channel(INCOMING_EVENT_QUEUE_CAPACITY);
+    let analysis_scheduler = RuntimeWorkExecutor::start(event_sender.clone());
     let mut server = LspServer::new_with_runtime_senders(
         stdout.lock(),
         options,
         None,
         Some(analysis_scheduler),
-        Some(internal_sender),
+        Some(event_sender.clone().into()),
     );
     thread::spawn(move || {
         let stdin = io::stdin();
@@ -192,7 +193,7 @@ pub fn run_stdio(options: LspServerOptions) -> Result<(), String> {
         loop {
             match read_message(&mut reader) {
                 Ok(Some(message)) => {
-                    if incoming_sender
+                    if event_sender
                         .send(ServerEvent::Incoming {
                             received_at: Instant::now(),
                             result: Ok(message),
@@ -202,9 +203,12 @@ pub fn run_stdio(options: LspServerOptions) -> Result<(), String> {
                         break;
                     }
                 }
-                Ok(None) => break,
+                Ok(None) => {
+                    let _ = event_sender.send(ServerEvent::TransportClosed);
+                    break;
+                }
                 Err(error) => {
-                    let _ = incoming_sender.send(ServerEvent::Incoming {
+                    let _ = event_sender.send(ServerEvent::Incoming {
                         received_at: Instant::now(),
                         result: Err(error),
                     });
@@ -213,7 +217,7 @@ pub fn run_stdio(options: LspServerOptions) -> Result<(), String> {
             }
         }
     });
-    server.run_message_channels(incoming_receiver, internal_receiver)
+    server.run_message_channels(event_receiver)
 }
 
 #[cfg(test)]
@@ -712,6 +716,17 @@ impl<W: Write> LspServer<W> {
     }
 
     fn handle_internal_event(&mut self, event: ServerEvent) -> Result<(), String> {
+        if matches!(event, ServerEvent::ExternalIndexChanged) {
+            let external_status = self.external_index.status_summary();
+            for effect in self.document_runtime.observe_semantic_external_generation(
+                external_status.generation,
+                external_status.status,
+                None,
+            ) {
+                self.deliver_effect(effect)?;
+            }
+            return Ok(());
+        }
         let external_generation = self.external_index.status_summary().generation;
         let document_identity = match &event {
             ServerEvent::DocumentAnalysisReady { task, .. } => self
@@ -751,13 +766,13 @@ impl<W: Write> LspServer<W> {
         options: LspServerOptions,
         _removed_rich_scheduler: Option<()>,
         analysis_scheduler: Option<RuntimeWorkExecutor>,
-        _internal_sender: Option<mpsc::Sender<ServerEvent>>,
+        event_sender: Option<ServerEventSender>,
     ) -> Self {
         let logger = LspLogger::new(
             options.log_path.clone(),
             options.diagnostic_log_path.clone(),
         );
-        let external_index = start_external_index(&options, logger.clone());
+        let external_index = start_external_index(&options, logger.clone(), event_sender);
         let server = Self {
             writer,
             logger,

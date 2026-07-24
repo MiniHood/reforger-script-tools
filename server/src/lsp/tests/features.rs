@@ -5,7 +5,7 @@ fn full_shared_executor_evicts_or_drops_rich_before_semantic() {
     // eviction deterministically, without a dispatch race.
     let scheduler = RuntimeWorkExecutor {
         state: Arc::new((Mutex::new(BTreeMap::new()), Condvar::new())),
-        sender,
+        sender: sender.into(),
         test_before_execute: None,
     };
     let now = Instant::now();

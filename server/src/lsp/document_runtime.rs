@@ -1440,7 +1440,9 @@ impl DocumentRuntime {
         external_indexes: ExternalIndexSnapshot,
     ) -> Option<Result<Vec<RuntimeEffect>, String>> {
         match event {
-            ServerEvent::Incoming { .. } => None,
+            ServerEvent::TransportClosed
+            | ServerEvent::Incoming { .. }
+            | ServerEvent::ExternalIndexChanged => None,
             event @ ServerEvent::RichSemanticTokensReady { .. } => Some(Ok(
                 self.interpret_rich_ready_event(event, current_external_generation)?
             )),
