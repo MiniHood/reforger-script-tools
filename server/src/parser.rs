@@ -1530,7 +1530,7 @@ impl Parser<'_> {
             return false;
         }
 
-        if !partial_field_has_declarator(children) {
+        if !partial_declaration_has_declarator(children) {
             return false;
         }
 
@@ -1552,7 +1552,7 @@ impl Parser<'_> {
             return false;
         }
 
-        if !partial_field_has_declarator(children) {
+        if !partial_declaration_has_declarator(children) {
             return false;
         }
 
@@ -1578,6 +1578,9 @@ impl Parser<'_> {
 
     fn starts_new_statement_after_unterminated_local(&self, children: &[SyntaxElement]) -> bool {
         if children.is_empty() || !self.current_token_can_start_statement_after_local() {
+            return false;
+        }
+        if !partial_declaration_has_declarator(children) {
             return false;
         }
 
@@ -1669,6 +1672,14 @@ impl Parser<'_> {
             }
 
             if at_top_level && index > self.position && kind == TokenKind::Identifier {
+                if matches!(
+                    self.next_non_trivia_kind_after(index + 1),
+                    Some(TokenKind::Operator(
+                        Operator::PlusPlus | Operator::MinusMinus
+                    ))
+                ) {
+                    return false;
+                }
                 saw_name_after_type = true;
                 saw_newline_after_name = false;
             }
@@ -2391,7 +2402,7 @@ fn is_assignment_operator(kind: TokenKind) -> bool {
     )
 }
 
-fn partial_field_has_declarator(children: &[SyntaxElement]) -> bool {
+fn partial_declaration_has_declarator(children: &[SyntaxElement]) -> bool {
     let tokens = significant_declarator_tokens_in_elements(children);
     let name_like_count = tokens
         .iter()
@@ -3037,10 +3048,27 @@ class AfterInvalid
 	}
 }
 "#;
+        let before_postfix_statement = r#"class Example
+{
+	void Run()
+	{
+		int testnum = 5;
+		asdasdsadasd // Still showing as class green
 
-        for (source, following_kind, expression_count) in [
-            (before_control_statement, SyntaxKind::IfStatement, 1),
-            (before_call_statement, SyntaxKind::CallExpression, 2),
+		testnum++;
+	}
+}
+"#;
+
+        for (source, following_kind, expression_count, local_count) in [
+            (before_control_statement, SyntaxKind::IfStatement, 1, 0),
+            (before_call_statement, SyntaxKind::CallExpression, 2, 0),
+            (
+                before_postfix_statement,
+                SyntaxKind::PostfixExpression,
+                2,
+                1,
+            ),
         ] {
             let parse = parse_source(source);
 
@@ -3049,8 +3077,51 @@ class AfterInvalid
                 count_kind(&parse.root, SyntaxKind::ExpressionStatement),
                 expression_count
             );
-            assert_eq!(count_kind(&parse.root, SyntaxKind::LocalDeclStatement), 0);
+            assert_eq!(
+                count_kind(&parse.root, SyntaxKind::LocalDeclStatement),
+                local_count
+            );
             assert_eq!(count_kind(&parse.root, following_kind), 1);
+        }
+    }
+
+    #[test]
+    fn multiline_local_declaration_keeps_its_declarator() {
+        let user_defined = r#"class Example
+{
+	void Run()
+	{
+		SomeType
+			value;
+	}
+}
+"#;
+        let primitive = r#"class Example
+{
+	void Run()
+	{
+		int
+			value;
+	}
+}
+"#;
+        let generic = r#"class Example
+{
+	void Run()
+	{
+		array<int>
+			values;
+	}
+}
+"#;
+
+        for source in [user_defined, primitive, generic] {
+            let parse = parse_source(source);
+
+            assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
+            assert_eq!(count_kind(&parse.root, SyntaxKind::LocalDeclStatement), 1);
+            assert_eq!(count_kind(&parse.root, SyntaxKind::Declarator), 1);
+            assert_eq!(count_kind(&parse.root, SyntaxKind::ExpressionStatement), 0);
         }
     }
 

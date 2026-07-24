@@ -41,7 +41,7 @@ detailed class, function, enum-value, variable, and field classifications
 rather than collapsing to a decorator token. An unresolved bare statement
 identifier receives no semantic token and therefore keeps the editor's default
 foreground; parser recovery must not promote it to a declaration type by
-consuming the following control or call statement. The Rust engine emits no
+consuming a structurally separate following statement. The Rust engine emits no
 foreground values. `package.json` owns the Enforce-qualified default palette,
 which users may override through native VS Code semantic-token settings.
 For hover Markdown, Rust emits the same semantic type names as inert

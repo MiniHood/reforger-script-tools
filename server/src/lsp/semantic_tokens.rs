@@ -1818,8 +1818,23 @@ mod tests {
 	}
 }
 "#;
+        let before_postfix_statement = r#"class Example
+{
+	void Run()
+	{
+		int testnum = 5;
+		asdasdsadasd // Still showing as class green
 
-        for source in [before_control_statement, before_call_statement] {
+		testnum++;
+	}
+}
+"#;
+
+        for source in [
+            before_control_statement,
+            before_call_statement,
+            before_postfix_statement,
+        ] {
             let report = semantic_tokens_report_for_source(source);
 
             assert!(
