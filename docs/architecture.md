@@ -28,6 +28,12 @@ index phases to the language-client bridge, which keeps a VS Code progress
 notification visible until the new immutable index is published. Game-data
 acquisition does not perform language analysis itself.
 
+Downloaded game-data files are created read-only so editor navigation cannot
+accidentally modify the extension-managed source. The containing directories
+and installation metadata remain writable so the acquisition owner can replace
+the complete scripts tree during a later update. Manual sources retain their
+existing filesystem permissions.
+
 ## Workbench Runtime and Proposed MCP Flow
 
 The local MCP server described here is a future integration boundary, not part

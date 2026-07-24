@@ -366,7 +366,7 @@ async function extractScriptsArchive(archive: Uint8Array, stagingRoot: string): 
 
 		const targetPath = path.join(scriptsRoot, ...pathParts);
 		await fs.mkdir(path.dirname(targetPath), { recursive: true });
-		await fs.writeFile(targetPath, content);
+		await fs.writeFile(targetPath, content, { mode: 0o444 });
 		fileCount += 1;
 		byteCount += content.byteLength;
 	}
