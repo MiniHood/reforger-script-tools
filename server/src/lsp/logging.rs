@@ -60,6 +60,20 @@ impl LspLogger {
         }
     }
 
+    pub(super) fn log_lazy(&self, message: impl FnOnce() -> String) {
+        if self.path.is_some() {
+            self.log(&message());
+        }
+    }
+
+    pub(super) fn operational_enabled(&self) -> bool {
+        self.path.is_some()
+    }
+
+    pub(super) fn diagnostic_enabled(&self) -> bool {
+        self.diagnostic.is_some()
+    }
+
     pub(super) fn diagnostic(&self, event: &str, fields: Value) {
         let Some(writer) = &self.diagnostic else {
             return;
@@ -73,6 +87,12 @@ impl LspLogger {
         });
         if serde_json::to_writer(&mut *writer, &record).is_ok() {
             let _ = writer.write_all(b"\n");
+        }
+    }
+
+    pub(super) fn diagnostic_lazy(&self, event: &str, fields: impl FnOnce() -> Value) {
+        if self.diagnostic.is_some() {
+            self.diagnostic(event, fields());
         }
     }
 

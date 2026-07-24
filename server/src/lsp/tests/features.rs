@@ -7001,3 +7001,24 @@ fn diagnostic_log_is_structured_and_does_not_add_unprovided_source_content() {
     assert!(!record.contains("class Secret"));
     let _ = fs::remove_file(path);
 }
+
+#[test]
+fn disabled_logging_does_not_construct_operational_or_diagnostic_records() {
+    let logger = LspLogger::new(None, None);
+    let operational_evaluated = Cell::new(false);
+    let diagnostic_evaluated = Cell::new(false);
+
+    logger.log_lazy(|| {
+        operational_evaluated.set(true);
+        "expensive operational record".to_string()
+    });
+    logger.diagnostic_lazy("rpc.completed", || {
+        diagnostic_evaluated.set(true);
+        json!({"expensive": "diagnostic record"})
+    });
+
+    assert!(!logger.operational_enabled());
+    assert!(!logger.diagnostic_enabled());
+    assert!(!operational_evaluated.get());
+    assert!(!diagnostic_evaluated.get());
+}

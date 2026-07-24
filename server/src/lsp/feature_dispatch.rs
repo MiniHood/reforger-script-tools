@@ -42,6 +42,8 @@ struct FeatureDispatcher<'a> {
     external_index: &'a mut ExternalIndexHandle,
     document_runtime: &'a mut DocumentRuntime,
     shutdown_requested: bool,
+    operational_logging: bool,
+    diagnostic_logging: bool,
     effects: Vec<RuntimeEffect>,
 }
 
@@ -53,11 +55,15 @@ pub(super) fn execute_feature_or_workspace_message(
     queue_ms: Option<u128>,
     coalesced_changes: usize,
     superseded_changes: usize,
+    operational_logging: bool,
+    diagnostic_logging: bool,
 ) -> Result<FeatureDispatchOutcome, String> {
     FeatureDispatcher {
         external_index,
         document_runtime,
         shutdown_requested,
+        operational_logging,
+        diagnostic_logging,
         effects: Vec::new(),
     }
     .dispatch(routed, queue_ms, coalesced_changes, superseded_changes)
@@ -87,9 +93,10 @@ impl FeatureDispatcher<'_> {
             }
             return Ok(self.finish(false));
         };
-        self.effects.push(RuntimeEffect::Diagnostic {
-            event: "rpc.received",
-            data: json!({
+        self.effects.push(RuntimeEffect::diagnostic_lazy(
+            self.diagnostic_logging,
+            "rpc.received",
+            || json!({
                 "method": method,
                 "command": format!("{command:?}"),
                 "request": message.id.is_some(),
@@ -97,14 +104,14 @@ impl FeatureDispatcher<'_> {
                 "coalescedChanges": coalesced_changes,
                 "supersededChanges": superseded_changes,
             }),
-        });
+        ));
 
         if self.shutdown_requested && method != "exit" {
             let error = "Server has already received shutdown";
             if let Some(id) = message.id.clone() {
                 self.respond_error(id, -32600, error)?;
             } else {
-                self.log(&format!(
+                self.log(|| format!(
                     "notification ignored after shutdown method={method}"
                 ));
             }
@@ -115,7 +122,7 @@ impl FeatureDispatcher<'_> {
             if let Some(id) = message.id.clone() {
                 self.respond_error(id, -32602, &error)?;
             } else {
-                self.log(&format!(
+                self.log(|| format!(
                     "notification ignored invalid_params method={method} error={error}"
                 ));
             }
@@ -153,7 +160,11 @@ impl FeatureDispatcher<'_> {
                         previous_generation,
                     )
                 });
-                for effect in update_workspace_file(&mut self.external_index, params.clone()) {
+                for effect in update_workspace_file(
+                    &mut self.external_index,
+                    params.clone(),
+                    self.operational_logging,
+                ) {
                     self.deliver_effect(effect)?;
                 }
                 let generation = self.external_index.status_summary().generation;
@@ -167,7 +178,11 @@ impl FeatureDispatcher<'_> {
                 else {
                     unreachable!("workspace deletion method has a workspace command");
                 };
-                for effect in delete_workspace_file(&mut self.external_index, params.clone()) {
+                for effect in delete_workspace_file(
+                    &mut self.external_index,
+                    params.clone(),
+                    self.operational_logging,
+                ) {
                     self.deliver_effect(effect)?;
                 }
             }
@@ -203,14 +218,16 @@ impl FeatureDispatcher<'_> {
                                     projection_ms = projection.projection_ms;
                                     parse_diagnostics = projection.parse_diagnostics;
                                     symbol_count = document_symbol_count(&projection.symbols);
-                                    (range_repair_count, range_repair_samples) =
-                                        document_symbol_range_repairs(&projection.symbols, 8);
+                                    if self.operational_logging || self.diagnostic_logging {
+                                        (range_repair_count, range_repair_samples) =
+                                            document_symbol_range_repairs(&projection.symbols, 8);
+                                    }
                                     projection.symbols
                                 })
                         })
                         .map(|symbols| serde_json::to_value(symbols).unwrap_or(Value::Null))
                         .unwrap_or(Value::Null);
-                    self.log(&format!(
+                    self.log(|| format!(
                         "request documentSymbol uri={} bytes={} revision={} query_quality={} document_symbols_cached={} document_symbol_ms={} symbols={} parse_diagnostics={} range_repairs={} queue_ms={} elapsed_ms={}",
                         log_uri,
                         bytes,
@@ -225,15 +242,16 @@ impl FeatureDispatcher<'_> {
                         start.elapsed().as_millis()
                     ));
                     if range_repair_count > 0 {
-                        self.deliver_effect(RuntimeEffect::Diagnostic {
-                            event: "documentSymbol.rangeRepaired",
-                            data: json!({
+                        self.deliver_effect(RuntimeEffect::diagnostic_lazy(
+                            self.diagnostic_logging,
+                            "documentSymbol.rangeRepaired",
+                            || json!({
                                 "revision": revision,
                                 "bytes": bytes,
                                 "repairCount": range_repair_count,
                                 "samples": range_repair_samples,
                             }),
-                        })?;
+                        ))?;
                     }
                     self.respond(id, result)?;
                 }
@@ -442,7 +460,7 @@ impl FeatureDispatcher<'_> {
                         .unwrap_or_else(|| {
                             serde_json::to_value(empty_completion_list()).unwrap_or(Value::Null)
                         });
-                    self.log(&format!(
+                    self.log(|| format!(
                         "request completion uri={} bytes={} revision={} foreground_ready={} cached_analysis={} query_quality={:?} recovery_reason={} context={} receiver={} owner_type={} prefix={} candidates={} response_labels={} failure_reason={} external_index_status={} external_index_layers={} parse_diagnostics={} context_ms={} lookup_ms={} render_ms={} queue_ms={} elapsed_ms={}",
                         log_uri,
                         bytes,
@@ -577,7 +595,7 @@ impl FeatureDispatcher<'_> {
                         })
                         .unwrap_or_else(|| json!({ "edits": [], "reason": "declined" }));
                     if let Some((outcome, owner, version_match, reason)) = trace {
-                        self.log(&format!(
+                        self.log(|| format!(
                             "inputRoute operation={} outcome={outcome} reason={reason} owner={owner} version_match={version_match} elapsed_ms={}",
                             params.as_ref().map(|params| params.operation.as_str()).unwrap_or("unknown"),
                             started_at.elapsed().as_millis()
@@ -636,7 +654,7 @@ impl FeatureDispatcher<'_> {
                             }))
                         })
                         .unwrap_or_else(|| json!({ "edits": [] }));
-                    self.log(&format!(
+                    self.log(|| format!(
                         "request blockCommentPair uri={} bytes={} version={} outcome={} elapsed_ms={}",
                         log_uri,
                         bytes,
@@ -741,7 +759,7 @@ impl FeatureDispatcher<'_> {
                             }))
                         })
                         .unwrap_or_else(|| json!({ "version": -1, "pairs": [] }));
-                    self.log(&format!(
+                    self.log(|| format!(
                         "request activeScopeDelimiters uri={} requested_version={} response_version={} positions={} pairs={} elapsed_ms={}",
                         log_uri,
                         requested_version,
@@ -804,7 +822,7 @@ impl FeatureDispatcher<'_> {
                             ))
                         })
                         .unwrap_or_else(|| json!([]));
-                    self.log(&format!(
+                    self.log(|| format!(
                         "request rangeFormatting uri={} bytes={} version={} edits={} outcome={} elapsed_ms={}",
                         log_uri,
                         bytes,
@@ -895,7 +913,7 @@ impl FeatureDispatcher<'_> {
                         .flatten()
                         .map(|help| serde_json::to_value(help).unwrap_or(Value::Null))
                         .unwrap_or(Value::Null);
-                    self.log(&format!(
+                    self.log(|| format!(
                         "request signatureHelp uri={} bytes={} revision={} cached_analysis={} context={} active_parameter={} candidates={} selected={} failure_reason={} external_index_status={} external_index_layers={} parse_diagnostics={} context_ms={} lookup_ms={} render_ms={} queue_ms={} elapsed_ms={}",
                         log_uri,
                         bytes,
@@ -962,7 +980,7 @@ impl FeatureDispatcher<'_> {
                             .select_semantic_tokens(&uri, external_generation);
                     }
                     if !selection.ready_to_publish && selection.rich_work.is_some() {
-                        self.log(&format!(
+                        self.log(|| format!(
                             "request semanticTokens uri={} bytes={} revision={} cached_analysis=true mode={} outcome=rejected-rich-overload tokens={} external_index_status={} external_generation={} parse_diagnostics={} lex_ms={} token_loop_ms={} resolver_ms={} resolver_calls={} encode_ms={} queue_ms={} elapsed_ms={}",
                             selection.uri,
                             selection.bytes,
@@ -992,7 +1010,7 @@ impl FeatureDispatcher<'_> {
                         for effect in effects {
                             self.deliver_effect(effect)?;
                         }
-                        self.log(&format!(
+                        self.log(|| format!(
                             "request semanticTokens uri={} bytes={} revision={} cached_analysis={} mode={} outcome=deferred tokens={} external_index_status={} external_generation={} parse_diagnostics={} lex_ms={} token_loop_ms={} resolver_ms={} resolver_calls={} encode_ms={} queue_ms={} elapsed_ms={}",
                             selection.uri,
                             selection.bytes,
@@ -1014,7 +1032,7 @@ impl FeatureDispatcher<'_> {
                         return Ok(self.finish(false));
                     }
                     let result = serde_json::to_value(&selection.tokens).unwrap_or(Value::Null);
-                    self.log(&format!(
+                    self.log(|| format!(
                         "request semanticTokens uri={} bytes={} revision={} cached_analysis=true mode={} outcome={} tokens={} external_index_status={} external_generation={} parse_diagnostics={} lex_ms={} token_loop_ms={} resolver_ms={} resolver_calls={} encode_ms={} queue_ms={} elapsed_ms={}",
                         selection.uri,
                         selection.bytes,
@@ -1136,7 +1154,7 @@ impl FeatureDispatcher<'_> {
                         .flatten()
                         .map(|hover| serde_json::to_value(hover).unwrap_or(Value::Null))
                         .unwrap_or(Value::Null);
-                    self.log(&format!(
+                    self.log(|| format!(
                         "request hover uri={} bytes={} revision={} query_quality={:?} cached_analysis={} hit={} selection_source={} selected_source={} resolver_reason={} identifier_context={} resolver_candidates={} receiver_owner={} receiver_failure={} external_index_status={} external_index_layers={} label={} kind={} parse_diagnostics={} queue_ms={} elapsed_ms={}",
                         log_uri,
                         bytes,
@@ -1247,7 +1265,7 @@ impl FeatureDispatcher<'_> {
                         })
                         .map(|links| serde_json::to_value(links).unwrap_or(Value::Null))
                         .unwrap_or(Value::Null);
-                    self.log(&format!(
+                    self.log(|| format!(
                         "request definition uri={} bytes={} revision={} query_quality={:?} cached_analysis={} hit={} selected_source={} resolver_reason={} identifier_context={} resolver_candidates={} external_index_status={} external_index_layers={} label={} kind={} parse_diagnostics={} queue_ms={} elapsed_ms={}",
                         log_uri,
                         bytes,
@@ -1300,7 +1318,7 @@ impl FeatureDispatcher<'_> {
                                     {
                                         Ok(task) => task,
                                         Err((retained_jobs, retained_bytes)) => {
-                                            self.log(&format!(
+                                            self.log(|| format!(
                                             "request debugHover skipped uri={} revision={} reason=runtime-overload retained_jobs={} retained_bytes={} elapsed_ms={}",
                                             uri,
                                             revision,
@@ -1380,7 +1398,7 @@ impl FeatureDispatcher<'_> {
                                 log_uri
                             ))
                         });
-                    self.log(&format!(
+                    self.log(|| format!(
                         "request debugHover uri={} bytes={} revision={} cached_analysis=true hit={} label={} elapsed_ms={}",
                         log_uri,
                         bytes,
@@ -1421,7 +1439,7 @@ impl FeatureDispatcher<'_> {
                                     {
                                         Ok(task) => task,
                                         Err((retained_jobs, retained_bytes)) => {
-                                            self.log(&format!(
+                                            self.log(|| format!(
                                             "request debugCompletion skipped uri={} revision={} reason=runtime-overload retained_jobs={} retained_bytes={} elapsed_ms={}",
                                             uri,
                                             revision,
@@ -1520,7 +1538,7 @@ impl FeatureDispatcher<'_> {
                                 log_uri
                             ))
                         });
-                    self.log(&format!(
+                    self.log(|| format!(
                         "request debugCompletion uri={} bytes={} revision={} cached_analysis=true context={} candidates={} signature_context={} signature_candidates={} external_index_status={} external_index_layers={} queue_ms={} elapsed_ms={}",
                         log_uri,
                         bytes,
@@ -1552,14 +1570,15 @@ impl FeatureDispatcher<'_> {
             self.deliver_effect(effect)?;
         }
         let should_exit = self.shutdown_requested && method == "exit";
-        self.effects.push(RuntimeEffect::Diagnostic {
-            event: "rpc.completed",
-            data: json!({
+        self.effects.push(RuntimeEffect::diagnostic_lazy(
+            self.diagnostic_logging,
+            "rpc.completed",
+            || json!({
                 "method": method,
                 "outcome": if should_exit { "exit" } else { "complete" },
                 "elapsedMs": started_at.elapsed().as_millis(),
             }),
-        });
+        ));
         Ok(self.finish(should_exit))
     }
 
@@ -1575,8 +1594,10 @@ impl FeatureDispatcher<'_> {
         Ok(())
     }
 
-    fn log(&mut self, message: &str) {
-        self.effects.push(RuntimeEffect::Log(message.to_string()));
+    fn log(&mut self, message: impl FnOnce() -> String) {
+        if self.operational_logging {
+            self.effects.push(RuntimeEffect::Log(message()));
+        }
     }
 
     fn respond(&mut self, id: Value, result: Value) -> Result<(), String> {

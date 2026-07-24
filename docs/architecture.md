@@ -261,7 +261,11 @@ separate concerns. A document query captures both the open-document snapshot
 and the external-index snapshot at the request boundary so downstream feature
 code cannot accidentally combine facts from different generations. Logging is
 best-effort observation; it cannot participate in request admission or response
-delivery.
+delivery. Support logging is opt-in for the complete extension session. When
+disabled, the client passes no server log paths and hot request producers skip
+constructing operational and structured diagnostic records. Changing the
+setting therefore requires a VS Code window reload so the extension and its
+server start with one coherent logging mode.
 Incoming protocol messages, runtime-worker completions, transport closure, and
 external-index publication share one bounded, wakeable event stream. Every
 event is immediately runnable when published; the coordinator never polls one

@@ -46,7 +46,6 @@ export const languageClientServer = {
 export const languageClientLogs = {
 	rootFolder: 'logs',
 	serverLogFile: 'language-server.log',
-	startupTimingLogFile: 'language-client-startup.log',
 	hoverDebugFolder: 'hover-debug',
 	hoverDebugLatestFile: 'latest.md',
 	completionDebugFolder: 'completion-debug',

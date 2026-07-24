@@ -145,7 +145,7 @@
         "reforgerScriptTools.diagnostics.enabled": {
           "type": "boolean",
           "default": false,
-          "description": "Write detailed local extension and language-server support logs. Enable only while investigating a problem; logs exclude source text and LSP payloads."
+          "description": "Write detailed local extension and language-server support logs after the VS Code window is reloaded. Enable only while investigating a problem; logs exclude source text and LSP payloads."
         },
         "reforgerScriptTools.experimentalAutoFormatting": {
           "type": "boolean",

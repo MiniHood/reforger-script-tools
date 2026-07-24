@@ -551,6 +551,8 @@ impl<W: Write> LspServer<W> {
             queue_ms,
             coalesced_changes,
             superseded_changes,
+            self.logger.operational_enabled(),
+            self.logger.diagnostic_enabled(),
         )?;
         for effect in outcome.effects {
             self.deliver_effect(effect)?;
@@ -563,7 +565,7 @@ impl<W: Write> LspServer<W> {
             if let Some(id) = routed.message.id {
                 self.respond_error(id, -32602, &error)?;
             } else {
-                self.log(&format!("notification ignored invalid_params method=textDocument/didClose error={error}"));
+                self.log_lazy(|| format!("notification ignored invalid_params method=textDocument/didClose error={error}"));
             }
             return Ok(false);
         }
@@ -599,7 +601,7 @@ impl<W: Write> LspServer<W> {
             if let Some(id) = routed.message.id {
                 self.respond_error(id, -32602, &error)?;
             } else {
-                self.log(&format!(
+                self.log_lazy(|| format!(
                     "notification ignored invalid_params method={method} error={error}"
                 ));
             }
@@ -646,9 +648,9 @@ impl<W: Write> LspServer<W> {
             .method
             .as_deref()
             .expect("lifecycle command has a method");
-        self.logger.diagnostic(
+        self.logger.diagnostic_lazy(
             "rpc.received",
-            json!({
+            || json!({
                 "method": method,
                 "command": "Lifecycle",
                 "request": routed.message.id.is_some(),
@@ -661,7 +663,7 @@ impl<W: Write> LspServer<W> {
             if let Some(id) = routed.message.id {
                 self.respond_error(id, -32600, "Server has already received shutdown")?;
             } else {
-                self.log(&format!(
+                self.log_lazy(|| format!(
                     "notification ignored after shutdown method={method}"
                 ));
             }
@@ -716,9 +718,9 @@ impl<W: Write> LspServer<W> {
             _ => unreachable!("only lifecycle methods reach the lifecycle executor"),
         }
         let should_exit = self.shutdown_requested && method == "exit";
-        self.logger.diagnostic(
+        self.logger.diagnostic_lazy(
             "rpc.completed",
-            json!({"method": method, "outcome": if should_exit { "exit" } else { "complete" }, "elapsedMs": started_at.elapsed().as_millis()}),
+            || json!({"method": method, "outcome": if should_exit { "exit" } else { "complete" }, "elapsedMs": started_at.elapsed().as_millis()}),
         );
         Ok(should_exit)
     }
@@ -801,6 +803,7 @@ impl<W: Write> LspServer<W> {
             options.log_path.clone(),
             options.diagnostic_log_path.clone(),
         );
+        let operational_logging = logger.operational_enabled();
         let external_index = start_external_index(&options, logger.clone(), event_sender);
         let server = Self {
             writer,
@@ -809,12 +812,13 @@ impl<W: Write> LspServer<W> {
             document_runtime: DocumentRuntime::new_with_bracket_coloring(
                 analysis_scheduler,
                 options.bracket_coloring,
+                operational_logging,
             ),
             client_initialized: false,
             pending_external_index_progress: None,
             shutdown_requested: false,
         };
-        server.log(&format!(
+        server.log_lazy(|| format!(
             "startup server={SERVER_NAME} version={SERVER_VERSION} game_data_scripts={} index_cache={} workspace_roots={} bracket_coloring={:?} external_index_status={}",
             options
                 .game_data_scripts
@@ -830,9 +834,9 @@ impl<W: Write> LspServer<W> {
             options.bracket_coloring,
             server.external_index.status_summary().status
         ));
-        server.logger.diagnostic(
+        server.logger.diagnostic_lazy(
             "startup",
-            json!({
+            || json!({
                 "gameDataConfigured": options.game_data_scripts.is_some(),
                 "workspaceRoots": options.workspace_scripts.len(),
                 "indexCacheConfigured": options.index_cache.is_some(),
@@ -860,6 +864,10 @@ impl<W: Write> LspServer<W> {
 
     fn log(&self, message: &str) {
         self.logger.log(message);
+    }
+
+    fn log_lazy(&self, message: impl FnOnce() -> String) {
+        self.logger.log_lazy(message);
     }
 }
 

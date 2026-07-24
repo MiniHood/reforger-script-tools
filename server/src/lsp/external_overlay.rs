@@ -399,9 +399,9 @@ pub(crate) fn start_external_index(
         return ExternalIndexHandle::missing();
     }
 
-    logger.diagnostic(
+    logger.diagnostic_lazy(
         "externalIndex.started",
-        json!({
+        || json!({
             "gameDataConfigured": options.game_data_scripts.is_some(),
             "workspaceRoots": options.workspace_scripts.len(),
         }),
@@ -456,7 +456,7 @@ pub(crate) fn start_external_index(
                 .copied()
                 .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
                 .unwrap_or("<non-string panic>");
-            thread_logger.log(&format!(
+            thread_logger.log_lazy(|| format!(
                 "externalIndex thread panic error={}",
                 panic_message
             ));
@@ -484,7 +484,7 @@ fn run_external_index_thread(
     event_sender: Option<ServerEventSender>,
 ) {
     let start = Instant::now();
-    logger.log(&format!(
+    logger.log_lazy(|| format!(
         "externalIndex start game_data_scripts={} workspace_roots={}",
         scripts_root
             .as_ref()
@@ -496,7 +496,7 @@ fn run_external_index_thread(
     let game_data_start = Instant::now();
     let game_data_result = match (scripts_root, cache_path) {
         (Some(scripts_root), Some(cache_path)) => {
-            logger.log(&format!(
+            logger.log_lazy(|| format!(
                 "externalIndex gameData start scripts={} cache={}",
                 scripts_root.display(),
                 cache_path.display()
@@ -510,7 +510,7 @@ fn run_external_index_thread(
                     metadata_path,
                 },
                 |phase| {
-                    phase_logger.log(&format!(
+                    phase_logger.log_lazy(|| format!(
                         "externalIndex gameData phase={} elapsed_ms={}",
                         phase,
                         phase_start.elapsed().as_millis()
@@ -526,7 +526,7 @@ fn run_external_index_thread(
         _ => None,
     };
     let game_data_ready_ms = game_data_start.elapsed().as_millis();
-    logger.log(&format!(
+    logger.log_lazy(|| format!(
         "externalIndex gameData load returned has_result={} elapsed_ms={}",
         game_data_result.is_some(),
         start.elapsed().as_millis()
@@ -540,7 +540,7 @@ fn run_external_index_thread(
             });
         }
     }
-    logger.log(&format!(
+    logger.log_lazy(|| format!(
         "externalIndex workspace start roots={} elapsed_ms={}",
         format_paths(&workspace_roots),
         start.elapsed().as_millis()
@@ -554,13 +554,13 @@ fn run_external_index_thread(
         }
     }
     let workspace_ready_ms = workspace_start.elapsed().as_millis();
-    logger.log(&format!(
+    logger.log_lazy(|| format!(
         "externalIndex workspace load returned success={} elapsed_ms={}",
         workspace_result.is_ok(),
         start.elapsed().as_millis()
     ));
 
-    logger.log(&format!(
+    logger.log_lazy(|| format!(
         "externalIndex publish start elapsed_ms={}",
         start.elapsed().as_millis()
     ));
@@ -571,7 +571,7 @@ fn run_external_index_thread(
                 let cache_status = result.cache_status.as_str().to_string();
                 let cache_detail = result.cache_status.detail().map(str::to_string);
                 let fingerprint = result.fingerprint.summary();
-                logger.log(&format!(
+                logger.log_lazy(|| format!(
                 "externalIndex gameData ready cache_status={} cache_detail={} files={} symbols={} parse_diagnostics={} cache_file_bytes={} cache_file_read_ms={} cache_decode_ms={} cache_validate_ms={} cache_map_rebuild_ms={} cache_total_ms={} elapsed_ms={}",
                 cache_status,
                 cache_detail.as_deref().unwrap_or("<none>"),
@@ -595,7 +595,7 @@ fn run_external_index_thread(
                 )
             }
             Some(Err(error)) => {
-                logger.log(&format!(
+                logger.log_lazy(|| format!(
                     "externalIndex gameData failed error={} elapsed_ms={}",
                     error,
                     start.elapsed().as_millis()
@@ -608,7 +608,7 @@ fn run_external_index_thread(
 
     let baseline_workspace_files = match workspace_result {
         Ok((workspace_files, workspace_summary)) => {
-            logger.log(&format!(
+            logger.log_lazy(|| format!(
                 "externalIndex workspace ready roots={} files={} symbols={} parse_diagnostics={} elapsed_ms={}",
                 format_paths(&workspace_roots),
                 workspace_summary.files,
@@ -619,7 +619,7 @@ fn run_external_index_thread(
             workspace_files
         }
         Err(error) => {
-            logger.log(&format!(
+            logger.log_lazy(|| format!(
                 "externalIndex workspace failed roots={} error={} elapsed_ms={}",
                 format_paths(&workspace_roots),
                 error,
@@ -689,7 +689,7 @@ fn run_external_index_thread(
         );
     };
 
-    logger.log(&format!(
+    logger.log_lazy(|| format!(
         "externalIndex layered status={} files={} symbols={} workspace_files={} workspace_symbols={} game_data_files={} game_data_symbols={} game_data_ready_ms={} workspace_ready_ms={} layered_ready_ms={} elapsed_ms={}",
         status.as_str(),
         summary.as_ref().map(|summary| summary.files).unwrap_or(0),
@@ -703,9 +703,9 @@ fn run_external_index_thread(
         start.elapsed().as_millis(),
         start.elapsed().as_millis()
     ));
-    logger.diagnostic(
+    logger.diagnostic_lazy(
         "externalIndex.completed",
-        json!({
+        || json!({
             "status": status.as_str(),
             "files": summary.as_ref().map(|summary| summary.files).unwrap_or(0),
             "symbols": summary.as_ref().map(|summary| summary.indexed_symbols).unwrap_or(0),
@@ -727,7 +727,7 @@ fn build_workspace_indexes(
     String,
 > {
     let roots = normalize_workspace_roots(roots);
-    logger.log(&format!(
+    logger.log_lazy(|| format!(
         "externalIndex workspace roots normalized requested={} unique={} roots={} elapsed_ms={}",
         roots.requested_count,
         roots.paths.len(),
@@ -747,7 +747,7 @@ fn build_workspace_indexes(
     }
     files.sort();
     files.dedup();
-    logger.log(&format!(
+    logger.log_lazy(|| format!(
         "externalIndex workspace discovered files={} elapsed_ms={}",
         files.len(),
         external_start.elapsed().as_millis()
@@ -756,7 +756,7 @@ fn build_workspace_indexes(
     let mut indexed_files = BTreeMap::new();
     for file in files {
         let file_start = Instant::now();
-        logger.log(&format!(
+        logger.log_lazy(|| format!(
             "externalIndex workspace file start path={} total_elapsed_ms={}",
             file.display(),
             external_start.elapsed().as_millis()
@@ -771,7 +771,7 @@ fn build_workspace_indexes(
                 .unwrap_or_else(|| PathBuf::from("."))
         });
         let indexed = build_workspace_file_index(&root, &file, &source);
-        logger.log(&format!(
+        logger.log_lazy(|| format!(
             "externalIndex workspace file indexed path={} bytes={} symbols={} parse_diagnostics={} elapsed_ms={} total_elapsed_ms={}",
             file.display(),
             indexed.bytes,

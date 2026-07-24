@@ -78,10 +78,6 @@ const restartCoordinator = new RestartCoordinator();
 let initialStartup: Promise<void> | undefined;
 const workspaceWatcherDebounceMs = 250;
 const startupTimingSessionStartMs = Date.now();
-const startupTimingSessionId = `${startupTimingSessionStartMs}-${process.pid}`;
-let startupTimingWriteQueue: Promise<void> = Promise.resolve();
-let startupTimingLogPath: string | undefined;
-let startupTimingLogDirectoryReady: Promise<void> | undefined;
 let firstDocumentOpenTimingLogged = false;
 let firstSemanticTokenTimingLogged = false;
 
@@ -100,35 +96,15 @@ interface ExternalIndexProgressSession {
 let activeExternalIndexProgressSession: ExternalIndexProgressSession | undefined;
 
 export function logLanguageClientStartupTiming(
-	context: vscode.ExtensionContext,
+	_context: vscode.ExtensionContext,
 	event: string,
 	fields: Record<string, string | number | boolean | undefined> = {},
 ): void {
 	const elapsedMs = Date.now() - startupTimingSessionStartMs;
-	const record = {
-		timestamp: new Date().toISOString(),
-		session: startupTimingSessionId,
+	diagnostic(`startup.${event}`, {
 		elapsedMs,
-		event,
-		...fields,
-	};
-	startupTimingLogPath ??= path.join(
-		context.globalStorageUri.fsPath,
-		languageClientLogs.rootFolder,
-		languageClientLogs.startupTimingLogFile,
-	);
-	const logPath = startupTimingLogPath;
-	startupTimingLogDirectoryReady ??= fs
-		.mkdir(path.dirname(logPath), { recursive: true })
-		.then(() => undefined);
-
-	startupTimingWriteQueue = startupTimingWriteQueue
-		.then(async () => {
-			await startupTimingLogDirectoryReady;
-			await fs.appendFile(logPath, `${JSON.stringify(record)}\n`, 'utf8');
-		})
-		.catch(() => undefined);
-	diagnostic(`startup.${event}`, sanitizeDiagnosticFields(fields));
+		...sanitizeDiagnosticFields(fields),
+	});
 }
 
 function sanitizeDiagnosticFields(fields: Record<string, string | number | boolean | undefined>): Record<string, string | number | boolean | undefined> {

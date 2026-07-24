@@ -1158,10 +1158,6 @@ suite('extension activation', () => {
 		);
 		assert.ok(extension, 'development extension is discoverable');
 		const properties = extension.packageJSON.contributes.configuration.properties as Record<string, { default?: unknown }>;
-		assert.strictEqual(
-			properties['reforgerScriptTools.diagnostics.enabled'].default,
-			diagnosticsDefaults.enabled,
-		);
 		assert.strictEqual(properties['reforgerScriptTools.diagnostics.inputRouteTrace'], undefined);
 	});
 

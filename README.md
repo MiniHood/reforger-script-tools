@@ -62,9 +62,10 @@ Tools`, or add the keys to `settings.json`.
 
 Support logging is disabled by default so normal editor requests do not incur
 diagnostic disk I/O. When troubleshooting, enable
-`reforgerScriptTools.diagnostics.enabled`, reproduce the problem, and then
-disable it again. Logs are stored in the extension's VS Code global storage
-area and omit source text and LSP payloads.
+`reforgerScriptTools.diagnostics.enabled`, reload the VS Code window, and
+reproduce the problem. Disable the setting and reload again when finished.
+Logs are stored in the extension's VS Code global storage area and omit source
+text and LSP payloads.
 
 ## Development
 

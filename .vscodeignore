@@ -21,7 +21,6 @@ esbuild.js
 eslint.config.mjs
 package-lock.json
 tsconfig.json
-vsc-extension-quickstart.md
 
 # Generated files that are not extension runtime assets
 **/*.map
