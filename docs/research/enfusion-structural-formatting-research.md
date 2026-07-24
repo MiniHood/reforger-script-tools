@@ -36,7 +36,7 @@ unbraced branches, conditional compilation, native/proto declarations,
 attributes, generated files, comments, and differing declaration layouts.
 The language engine should provide parser and semantic facts; the VS Code
 client must only apply the versioned edit as described in
-[Language engine](language-engine.md) and [Key input routing](key-input-routing.md).
+[Language engine](../language-engine.md) and [Key input routing](../key-input-routing.md).
 
 ## A. Deterministic type and Enter actions
 

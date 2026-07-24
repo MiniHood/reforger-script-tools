@@ -5,6 +5,10 @@ export const diagnosticsConfig = {
 	},
 } as const;
 
+export const diagnosticsDefaults = {
+	enabled: false,
+} as const;
+
 export const diagnosticsLogs = {
 	rootFolder: 'logs',
 	extensionFile: 'extension-diagnostics.jsonl',

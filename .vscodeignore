@@ -1,20 +1,28 @@
+# Repository and development-only material
+.codex/**
+.github/**
 .vscode/**
 .vscode-test/**
-out/**
+.vs/**
+docs/**
 node_modules/**
-src/**
+out/**
 server/**
+src/**
 tools/**
-documentation/tools/**
-tools/fixtures/**
-tools/reports/**
+
+# Development configuration and internal guidance
 .gitignore
-.yarnrc
+.vscodeignore
+.vscode-test.mjs
+AGENTS.md
+CONTEXT.md
 esbuild.js
+eslint.config.mjs
+package-lock.json
+tsconfig.json
 vsc-extension-quickstart.md
-**/tsconfig.json
-**/eslint.config.mjs
+
+# Generated files that are not extension runtime assets
 **/*.map
-**/*.ts
-**/.vscode-test.*
 **/*.report.md

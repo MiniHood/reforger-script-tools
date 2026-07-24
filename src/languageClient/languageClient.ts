@@ -18,7 +18,11 @@ import {
 	type BracketColoringMode,
 	getBracketColoringMode,
 } from '../extensionConfig/bracketColoring';
-import { diagnostic, languageServerDiagnosticPath } from '../diagnostics/diagnostics';
+import {
+	diagnostic,
+	diagnosticsEnabled,
+	languageServerDiagnosticPath,
+} from '../diagnostics/diagnostics';
 import {
 	languageClientCrashHandling,
 	languageClientCompletion,
@@ -284,16 +288,19 @@ async function startLanguageClient(
 		},
 	);
 
-	const logsRoot = path.join(context.globalStorageUri.fsPath, languageClientLogs.rootFolder);
-	await fs.mkdir(logsRoot, { recursive: true });
-
 	const serverArgs = [
-		'--log',
-		path.join(logsRoot, languageClientLogs.serverLogFile),
 		'--index-cache',
 		path.join(context.globalStorageUri.fsPath, languageClientIndexCache.rootFolder, languageClientIndexCache.gameDataIndexFile),
 		...bracketColoringServerArguments(bracketColoring),
 	];
+	if (diagnosticsEnabled()) {
+		const logsRoot = path.join(context.globalStorageUri.fsPath, languageClientLogs.rootFolder);
+		await fs.mkdir(logsRoot, { recursive: true });
+		serverArgs.push(
+			'--log',
+			path.join(logsRoot, languageClientLogs.serverLogFile),
+		);
+	}
 	const diagnosticPath = languageServerDiagnosticPath(context);
 	if (diagnosticPath) {
 		serverArgs.push('--diagnostic-log', diagnosticPath);

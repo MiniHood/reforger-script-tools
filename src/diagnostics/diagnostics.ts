@@ -1,7 +1,11 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { diagnosticsConfig, diagnosticsLogs } from '../extensionConfig/diagnostics';
+import {
+	diagnosticsConfig,
+	diagnosticsDefaults,
+	diagnosticsLogs,
+} from '../extensionConfig/diagnostics';
 
 type DiagnosticField = string | number | boolean | undefined;
 
@@ -12,7 +16,10 @@ let logPath = '';
 let writeQueue: Promise<void> = Promise.resolve();
 
 export function initializeDiagnostics(context: vscode.ExtensionContext): void {
-	enabled = vscode.workspace.getConfiguration(diagnosticsConfig.section).get<boolean>(diagnosticsConfig.settings.enabled, true);
+	enabled = vscode.workspace.getConfiguration(diagnosticsConfig.section).get<boolean>(
+		diagnosticsConfig.settings.enabled,
+		diagnosticsDefaults.enabled,
+	);
 	inputRouteTrace = enabled && context.extensionMode === vscode.ExtensionMode.Development;
 	session = `${Date.now()}-${process.pid}`;
 	logPath = path.join(context.globalStorageUri.fsPath, diagnosticsLogs.rootFolder, diagnosticsLogs.extensionFile);

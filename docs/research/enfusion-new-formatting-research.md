@@ -80,7 +80,7 @@ selections, and multiple-caret edits.
 
 This agrees with the repository's existing collection-tail decision: arrays
 offer `= {};` before explicit `new array<T>`, while sets/maps use constructor
-forms ([key-input routing](key-input-routing.md#collection-declaration-tail)).
+forms ([key-input routing](../key-input-routing.md#collection-declaration-tail)).
 It also preserves the existing separation: constructor selection belongs to
 completion, not Enter ([structural research](enfusion-structural-formatting-research.md#c-completion-snippet-and-code-action-opportunities)).
 

@@ -3,6 +3,7 @@ import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
+import { diagnosticsDefaults } from '../extensionConfig/diagnostics';
 import { gameDataCommands } from '../extensionConfig/gameData';
 import { languageClientCommands } from '../extensionConfig/languageClient';
 import {
@@ -203,6 +204,10 @@ suite('extension activation', () => {
 		assert.strictEqual(
 			properties[`${workbenchConfig.section}.${workbenchConfig.settings.port}`]?.default,
 			workbenchDefaults.port,
+		);
+		assert.strictEqual(
+			properties['reforgerScriptTools.diagnostics.enabled']?.default,
+			diagnosticsDefaults.enabled,
 		);
 		assert.strictEqual(
 			properties[`${workbenchConfig.section}.compilerValidationDelaySeconds`],
@@ -1153,7 +1158,10 @@ suite('extension activation', () => {
 		);
 		assert.ok(extension, 'development extension is discoverable');
 		const properties = extension.packageJSON.contributes.configuration.properties as Record<string, { default?: unknown }>;
-		assert.strictEqual(properties['reforgerScriptTools.diagnostics.enabled'].default, true);
+		assert.strictEqual(
+			properties['reforgerScriptTools.diagnostics.enabled'].default,
+			diagnosticsDefaults.enabled,
+		);
 		assert.strictEqual(properties['reforgerScriptTools.diagnostics.inputRouteTrace'], undefined);
 	});
 

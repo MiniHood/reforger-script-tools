@@ -1,7 +1,7 @@
 {
   "name": "reforger-sript-tools",
   "displayName": "Reforger Script Tools",
-  "description": "",
+  "description": "Enfusion Script language support and Workbench compiler integration for Arma Reforger.",
   "version": "0.0.1",
   "engines": {
     "vscode": "^1.125.0"
@@ -144,8 +144,8 @@
         },
         "reforgerScriptTools.diagnostics.enabled": {
           "type": "boolean",
-          "default": true,
-          "description": "Write local extension and language-server diagnostic performance logs. Logs exclude source text and LSP payloads."
+          "default": false,
+          "description": "Write detailed local extension and language-server support logs. Enable only while investigating a problem; logs exclude source text and LSP payloads."
         },
         "reforgerScriptTools.experimentalAutoFormatting": {
           "type": "boolean",
