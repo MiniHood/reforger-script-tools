@@ -4,6 +4,7 @@ import * as vscode from 'vscode';
 import type { LanguageClient } from 'vscode-languageclient/node';
 import { diagnostic } from '../diagnostics/diagnostics';
 import { languageClientCommands, languageClientLanguage, languageClientLogs, languageClientRequests } from '../extensionConfig/languageClient';
+import { hoverSemanticPaletteReport } from './hoverSemanticPalette';
 import { renderedSuggestWidgetReport } from './suggestWidgetUiReport';
 
 export function registerDebugCommandBridge(
@@ -34,7 +35,8 @@ async function debugHoverAtCursor(context: vscode.ExtensionContext, client: () =
 	}
 	try {
 		const position = editor.selection.active;
-		const report = await activeClient.sendRequest<string>(languageClientRequests.debugHover, requestParams(editor, position));
+		const serverReport = await activeClient.sendRequest<string>(languageClientRequests.debugHover, requestParams(editor, position));
+		const report = `${hoverSemanticPaletteReport(editor.document)}\n\n---\n\n## Server Debug Analysis\n\n${serverReport}`;
 		const reportPath = await writeReport(context, editor, position, report, 'hover');
 		output.clear(); output.appendLine(`Hover debug report written to: ${reportPath}`); output.appendLine(''); output.appendLine(report); output.show(true);
 		diagnostic('command.debugHover.complete', { elapsedMs: Date.now() - startedAt });

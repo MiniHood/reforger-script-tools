@@ -30,9 +30,72 @@ import {
 	bracketColoringServerArguments,
 	usesCustomScopeDelimiterPresentation,
 } from '../languageClient/bracketColoringBridge';
+import {
+	applyHoverSemanticPalette,
+	hoverSemanticForegrounds,
+	hoverSemanticPaletteForDocument,
+	hoverSemanticPaletteReport,
+} from '../languageClient/hoverSemanticPalette';
 import { RestartCoordinator } from '../languageClient/restartCoordinator';
 
 suite('extension activation', () => {
+	test('applies semantic hover foregrounds inside command links', () => {
+		const markdown = [
+			'<span data-semantic-token="keyword">bool</span> ',
+			'<a href="command:test"><span data-semantic-token="function">Run</span></a>',
+			' in <span data-semantic-token="class">Example</span>',
+		].join('');
+
+		const rendered = applyHoverSemanticPalette(markdown, {
+			keyword: '#59A6E9',
+			function: '#f3ad58',
+			class: '#40b5ac',
+		});
+
+		assert.equal(
+			rendered,
+			[
+				'<span style="color:#59A6E9;">bool</span> ',
+				'<a href="command:test"><span style="color:#f3ad58;">Run</span></a>',
+				' in <span style="color:#40b5ac;">Example</span>',
+			].join(''),
+		);
+	});
+
+	test('resolves language and active-theme semantic hover overrides', () => {
+		const foregrounds = hoverSemanticForegrounds({
+			rules: {
+				'function:enforce': '#f3ad58',
+				'class:enforce': { foreground: '#40b5ac' },
+			},
+			'[Default Light Modern]': {
+				rules: {
+					'function:enforce': { foreground: '#8a3e00' },
+				},
+			},
+		}, 'Default Light Modern', 'enforce');
+
+		assert.equal(foregrounds.function, '#8a3e00');
+		assert.equal(foregrounds.class, '#40b5ac');
+	});
+
+	test('uses the effective Enforce palette in hover rendering and debug output', async () => {
+		const document = await vscode.workspace.openTextDocument({
+			language: 'enforce',
+			content: 'class Example {}',
+		});
+		const palette = hoverSemanticPaletteForDocument(document);
+		const report = hoverSemanticPaletteReport(document);
+
+		assert.equal(palette.enabled, true);
+		assert.equal(palette.foregrounds.function, '#f3ad58');
+		assert.equal(palette.foregrounds.class, '#40b5ac');
+		assert.equal(palette.foregrounds.keyword, '#59A6E9');
+		assert.match(report, /## VS Code Hover Presentation/);
+		assert.match(report, /\| `function` \| `function:enforce` \| `#f3ad58` \|/);
+		assert.match(report, /overriding the normal hover-link blue/);
+	});
+
 	test('renders the completion response observed by the VS Code suggest pipeline', async () => {
 		const document = await vscode.workspace.openTextDocument({ language: 'enforce', content: '\t#' });
 		completionUiMiddlewareCallbacks.begin(document, new vscode.Position(0, 2), 1);

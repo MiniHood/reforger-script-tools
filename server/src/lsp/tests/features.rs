@@ -1396,7 +1396,7 @@ class SCR_BaseGameModeComponent
         report.identifier_context,
         Some(IdentifierContext::TypePosition)
     );
-    assert!(markdown.contains("<strong><span style=\"font-size:1.12em;\">Class</span></strong>"));
+    assert!(markdown.contains("<strong><span style=\"font-size:1.12em;\"><span data-semantic-token=\"keyword\">Class</span></span></strong>"));
     assert!(markdown.contains(
         "data-code=\"class SCR_BaseGameModeStateComponent : SCR_BaseGameModeComponent\""
     ));
@@ -6180,6 +6180,8 @@ fn debug_hover_report_includes_language_engine_context() {
     assert!(report.contains("`function`"));
     assert!(report.contains("`declaration, static`"));
     assert!(report.contains("VS Code applies the extension's Enforce palette"));
+    assert!(report.contains("data-semantic-token=\"function\""));
+    assert!(report.contains("data-semantic-token=\"keyword\""));
     assert!(!report.contains("bundled semantic-token theme palette"));
     assert!(!report.contains("| Color |"));
     assert!(!report.contains("#f3ad58"));

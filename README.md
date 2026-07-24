@@ -95,3 +95,15 @@ disable the palette for Enforce while keeping their chosen theme:
 Use **Developer: Inspect Editor Tokens and Scopes** on Enforce source to see
 the semantic token type under the cursor. User and workspace semantic-token
 rules take precedence over the extension defaults.
+
+Hover declarations use the same effective foreground rules, including
+language-specific and active-theme overrides. VS Code does not apply editor
+semantic tokens inside Markdown hovers automatically, so the extension maps
+the Rust-authored hover roles to the effective native palette when rendering
+the hover.
+
+Run **Reforger Script Tools: Debug Hover At Cursor** from the Command Palette
+(`Ctrl+F1` by default) to write the latest hover report. It records the active
+theme, semantic-highlighting state, every resolved hover foreground, the
+server-side semantic tokens around the cursor, and the raw role-marked hover
+markup.

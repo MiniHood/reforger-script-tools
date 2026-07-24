@@ -12,3 +12,7 @@ individual rules or disable semantic highlighting through native VS Code
 settings; font styles remain theme-owned, the existing bracket modes retain
 their behavior, and an official light palette is deferred until it is
 deliberately designed and contrast-tested.
+
+Markdown hovers consume this same effective native palette through
+Rust-authored semantic-role markers and a thin TypeScript presentation bridge;
+they do not introduce server-owned colors or a duplicate hover palette.

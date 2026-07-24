@@ -209,8 +209,12 @@ Semantic Palette. It contributes Enforce-qualified native VS Code semantic
 token rules instead of a complete theme, so the user retains their selected
 theme and may override or disable the palette through normal VS Code settings.
 The Rust server owns the semantic-token legend and classifications but emits no
-foreground values. The editor shell does not generate settings, apply
-foreground decorations, or duplicate the palette at runtime.
+foreground values. Hover Markdown is not an editor semantic-token surface, so
+Rust marks hover fragments with semantic roles and the hover bridge applies
+foregrounds resolved from the same effective native VS Code setting. This
+keeps command links from substituting the workbench link color without
+creating a second palette. The editor shell does not generate settings or
+apply foreground decorations.
 
 Within the language-client bridge, the composition root retains server lifecycle
 and restart policy. Focused bridges own workspace-script notifications, hover
@@ -231,6 +235,13 @@ unchanged. Typing-assist bridges share a small
 versioned editor-edit transaction contract while retaining their own trigger
 and Rust request policy. Each bridge transports Rust-authored facts or applies
 editor behavior; none interprets Enfusion source.
+
+The hover debug command combines two boundaries in one report: the TypeScript
+bridge records the active theme, effective semantic-highlighting state, and
+resolved role foregrounds; Rust records token classification, symbol
+resolution, and the role-marked hover Markdown. This makes presentation
+failures distinguishable from language-classification failures without logging
+source outside the existing explicit debug artifact.
 
 Within the LSP, transport framing, incoming-message scheduling, request routing,
 runtime scheduling, background-event publication, response writing, operational

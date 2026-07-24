@@ -158,6 +158,11 @@ Enforce-specific VS Code preference to disable it takes precedence. Its
 definition is authoritative; no selectable full Reforger color theme exists.
 The authoritative foreground rules are one native VS Code semantic-token
 customization block; the language engine owns classifications but no colors.
+VS Code does not apply editor semantic-token styling inside Markdown hovers, so
+the hover bridge resolves that same effective customization block and applies
+its foregrounds to Rust-authored semantic-role markers. The bridge never owns
+a second palette. The hover debug report records both the resolved client
+foregrounds and the server classifications/markup.
 The shipped colors preserve the established dark-oriented palette. A light
 theme may select theme-specific Reforger Semantic Palette Overrides; an
 official light palette requires its own deliberate design and contrast

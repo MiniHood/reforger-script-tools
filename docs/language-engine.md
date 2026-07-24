@@ -41,6 +41,12 @@ detailed class, function, enum-value, variable, and field classifications
 rather than collapsing to a decorator token. The Rust engine emits no
 foreground values. `package.json` owns the Enforce-qualified default palette,
 which users may override through native VS Code semantic-token settings.
+For hover Markdown, Rust emits the same semantic type names as inert
+`data-semantic-token` role markers. The TypeScript hover bridge resolves and
+applies the effective native foreground rules because VS Code does not project
+editor semantic tokens into Markdown content. Rust still owns classification,
+the client still owns presentation, and neither layer carries a second color
+table.
 
 Scope delimiters are one shared syntax projection used by semantic tokens and
 the active-pair request. Parser-proven `{}`, `()`, `[]`, and generic `<>`

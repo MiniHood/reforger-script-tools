@@ -94,11 +94,11 @@ fn render_header(
     if let Some(container) = hover_container_name(display) {
         return format!(
             "<span style=\"font-size:1.12em;\"><strong>{}</strong> in <strong>{}</strong></span>",
-            escape_html_text(kind),
+            semantic_text(kind, hover_header_semantic_token_type(display.kind)),
             render_type_identifier(&container, context)
         );
     }
-    let header = escape_html_text(kind);
+    let header = semantic_text(kind, hover_header_semantic_token_type(display.kind));
     format!("<strong><span style=\"font-size:1.12em;\">{header}</span></strong>")
 }
 
@@ -294,16 +294,22 @@ fn render_enum_members(
     let sample = members
         .iter()
         .map(|candidate| {
-            let mut rendered =
-                linked_symbol_text(&candidate.display.label, &candidate.display, context);
+            let mut rendered = linked_symbol_text(
+                &candidate.display.label,
+                hover_semantic_token_type(candidate.display.kind),
+                &candidate.display,
+                context,
+            );
             if let Some(value) = candidate
                 .display
                 .detail
                 .as_deref()
                 .and_then(|detail| detail.strip_prefix("value "))
             {
-                rendered.push_str(" = ");
-                rendered.push_str(&escape_html_text(value));
+                rendered.push(' ');
+                rendered.push_str(&semantic_text("=", "operator"));
+                rendered.push(' ');
+                rendered.push_str(&render_lexical_text(value));
             }
             rendered
         })
@@ -338,6 +344,28 @@ fn render_metadata(display: &SymbolDisplayInfo) -> Option<String> {
         None
     } else {
         Some(parts.join("\n\n"))
+    }
+}
+
+fn hover_semantic_token_type(kind: SymbolKind) -> &'static str {
+    match kind {
+        SymbolKind::Class => "class",
+        SymbolKind::Enum => "enum",
+        SymbolKind::Typedef => "type",
+        SymbolKind::TypeParameter => "typeParameter",
+        SymbolKind::Function | SymbolKind::Method => "function",
+        SymbolKind::Constructor | SymbolKind::Destructor => "class",
+        SymbolKind::GlobalField | SymbolKind::Field => "reforgerField",
+        SymbolKind::Parameter => "parameter",
+        SymbolKind::EnumMember => "enumMember",
+        SymbolKind::LocalVariable | SymbolKind::PreprocessorMacro => "variable",
+    }
+}
+
+fn hover_header_semantic_token_type(kind: SymbolKind) -> &'static str {
+    match kind {
+        SymbolKind::Class | SymbolKind::Enum | SymbolKind::Constructor => "keyword",
+        _ => hover_semantic_token_type(kind),
     }
 }
 
@@ -442,12 +470,17 @@ fn render_callable_declaration(
 
     let mut parts = Vec::new();
     if !modifiers.is_empty() {
-        parts.push(escape_words(modifiers));
+        parts.push(semantic_words(modifiers, "keyword"));
     }
     if !return_type.is_empty() {
         parts.push(render_type_text(return_type, context));
     }
-    parts.push(linked_symbol_text(&display.label, display, context));
+    parts.push(linked_symbol_text(
+        &display.label,
+        hover_semantic_token_type(display.kind),
+        display,
+        context,
+    ));
     let mut rendered = parts.join(" ");
     rendered.push_str(&render_callable_params(params_and_suffix, context));
     rendered
@@ -467,14 +500,14 @@ fn render_callable_params(
     let params = &params_and_suffix[open + 1..close];
     let after = &params_and_suffix[close..];
     let mut rendered = String::new();
-    rendered.push_str(&escape_html_text(before));
+    rendered.push_str(&semantic_text(before, "reforgerPunctuation"));
     let rendered_params = split_top_level_arguments(params)
         .into_iter()
         .map(|param| render_parameter_declaration(&param, context))
         .collect::<Vec<_>>()
-        .join(&format!("{} ", escape_html_text(",")));
+        .join(&format!("{} ", semantic_text(",", "reforgerPunctuation")));
     rendered.push_str(&rendered_params);
-    rendered.push_str(&escape_html_text(after));
+    rendered.push_str(&semantic_text(after, "reforgerPunctuation"));
     rendered
 }
 
@@ -501,18 +534,18 @@ fn render_parameter_declaration(
     let mut rendered = Vec::new();
     for token in &tokens[..tokens.len() - 1] {
         if is_parameter_modifier(token) {
-            rendered.push(escape_html_text(token));
+            rendered.push(semantic_text(token, "keyword"));
         } else {
             rendered.push(render_type_text(token, context));
         }
     }
-    rendered.push(escape_html_text(name));
+    rendered.push(semantic_text(name, "parameter"));
     let mut value = rendered.join(" ");
     if let Some(default) = default {
         value.push(' ');
-        value.push_str(&escape_html_text("="));
+        value.push_str(&semantic_text("=", "operator"));
         value.push(' ');
-        value.push_str(&escape_html_text(default));
+        value.push_str(&render_lexical_text(default));
     }
     value
 }
@@ -537,14 +570,18 @@ fn render_type_text(type_text: &str, context: Option<&HoverRenderContext<'_, '_>
                 if token_type == "class" {
                     rendered.push_str(&render_type_identifier(text, context));
                 } else {
-                    rendered.push_str(&escape_html_text(text));
+                    rendered.push_str(&semantic_text(text, token_type));
                 }
             }
-            TokenKind::Operator(_) | TokenKind::LeftBracket | TokenKind::RightBracket => {
-                rendered.push_str(&escape_html_text(text));
+            TokenKind::Operator(_) => {
+                rendered.push_str(&semantic_text(text, "operator"));
             }
-            TokenKind::Comma | TokenKind::Colon | TokenKind::Dot => {
-                rendered.push_str(&escape_html_text(text));
+            TokenKind::LeftBracket
+            | TokenKind::RightBracket
+            | TokenKind::Comma
+            | TokenKind::Colon
+            | TokenKind::Dot => {
+                rendered.push_str(&semantic_text(text, "reforgerPunctuation"));
             }
             _ => rendered.push_str(&escape_html_text(text)),
         }
@@ -558,9 +595,14 @@ fn render_type_text(type_text: &str, context: Option<&HoverRenderContext<'_, '_>
 
 fn render_type_identifier(text: &str, context: Option<&HoverRenderContext<'_, '_>>) -> String {
     if let Some(display) = context.and_then(|context| find_type_display(context, text)) {
-        return linked_symbol_text(text, &display, context);
+        return linked_symbol_text(
+            text,
+            hover_semantic_token_type(display.kind),
+            &display,
+            context,
+        );
     }
-    escape_html_text(text)
+    semantic_text(text, "class")
 }
 
 fn find_type_display(
@@ -593,10 +635,11 @@ fn find_type_display_in_query(query: &IndexQuery<'_>, name: &str) -> Option<Symb
 
 fn linked_symbol_text(
     text: &str,
+    token_type: &str,
     display: &SymbolDisplayInfo,
     context: Option<&HoverRenderContext<'_, '_>>,
 ) -> String {
-    let label = escape_html_text(text);
+    let label = semantic_text(text, token_type);
     let Some(command_uri) = context
         .and_then(|context| context.links)
         .and_then(|links| hover_command_uri_for_display(display, links))
@@ -663,8 +706,13 @@ fn render_preprocessor_macro_declaration(
     };
     format!(
         "{} {}",
-        escape_html_text("#define"),
-        linked_symbol_text(name, display, context)
+        semantic_text("#define", "reforgerPreprocessor"),
+        linked_symbol_text(
+            name,
+            hover_semantic_token_type(display.kind),
+            display,
+            context
+        )
     )
 }
 
@@ -686,21 +734,26 @@ fn render_keyword_name_declaration(
         .map_or((name_and_suffix, ""), |(name, suffix)| (name, suffix));
     let mut rendered = format!(
         "{} {}",
-        escape_html_text(keyword),
-        linked_symbol_text(name, display, context)
+        semantic_text(keyword, "keyword"),
+        linked_symbol_text(
+            name,
+            hover_semantic_token_type(display.kind),
+            display,
+            context
+        )
     );
     if !inline_suffix.is_empty() {
-        rendered.push_str(&escape_html_text(":"));
+        rendered.push_str(&semantic_text(":", "reforgerPunctuation"));
         rendered.push(' ');
         rendered.push_str(&render_type_identifier(inline_suffix.trim(), context));
     } else if name_and_suffix.ends_with(':') {
-        rendered.push_str(&escape_html_text(":"));
+        rendered.push_str(&semantic_text(":", "reforgerPunctuation"));
     }
     if !suffix.is_empty() {
         let suffix = suffix.trim();
         if let Some(base) = suffix.strip_prefix(':') {
             rendered.push(' ');
-            rendered.push_str(&escape_html_text(":"));
+            rendered.push_str(&semantic_text(":", "reforgerPunctuation"));
             let base = base.trim();
             if !base.is_empty() {
                 rendered.push(' ');
@@ -728,9 +781,14 @@ fn render_typedef_declaration(
     };
     format!(
         "{} {} {}",
-        escape_html_text("typedef"),
+        semantic_text("typedef", "keyword"),
         render_type_text(target.trim(), context),
-        linked_symbol_text(name.trim(), display, context)
+        linked_symbol_text(
+            name.trim(),
+            hover_semantic_token_type(display.kind),
+            display,
+            context
+        )
     )
 }
 
@@ -751,12 +809,17 @@ fn render_typed_name_declaration(
     let type_text = prefix[return_type_start..].trim();
     let mut parts = Vec::new();
     if !modifiers.is_empty() {
-        parts.push(escape_words(modifiers));
+        parts.push(semantic_words(modifiers, "keyword"));
     }
     if !type_text.is_empty() {
         parts.push(render_type_text(type_text, context));
     }
-    parts.push(linked_symbol_text(&display.label, display, context));
+    parts.push(linked_symbol_text(
+        &display.label,
+        hover_semantic_token_type(display.kind),
+        display,
+        context,
+    ));
     let mut rendered = parts.join(" ");
     if !suffix.is_empty() {
         rendered.push(' ');
@@ -775,8 +838,13 @@ fn render_name_first_declaration(
     };
     let mut rendered = String::new();
     rendered.push_str(&escape_html_text(&declaration[..name_start]));
-    rendered.push_str(&linked_symbol_text(&display.label, display, context));
-    rendered.push_str(&escape_html_text(
+    rendered.push_str(&linked_symbol_text(
+        &display.label,
+        hover_semantic_token_type(display.kind),
+        display,
+        context,
+    ));
+    rendered.push_str(&render_lexical_text(
         &declaration[name_start + display.label.len()..],
     ));
     rendered
@@ -971,7 +1039,11 @@ fn render_attribute_params(display: &AttributeDisplay) -> Option<String> {
 
 fn render_attribute_constructor(context: Option<&HoverRenderContext<'_, '_>>) -> String {
     let rendered = render_attribute_constructor_signature(context);
-    format!("{}\n\n{}", render_section_header("Constructor"), rendered)
+    format!(
+        "### {}\n\n{}",
+        semantic_text("Constructor", "keyword"),
+        rendered
+    )
 }
 
 fn render_attribute_constructor_signature(context: Option<&HoverRenderContext<'_, '_>>) -> String {
@@ -1112,10 +1184,10 @@ fn is_identifier_char(ch: char) -> bool {
     ch == '_' || ch.is_ascii_alphanumeric()
 }
 
-fn escape_words(value: &str) -> String {
+fn semantic_words(value: &str, token_type: &str) -> String {
     value
         .split_whitespace()
-        .map(escape_html_text)
+        .map(|word| semantic_text(word, token_type))
         .collect::<Vec<_>>()
         .join(" ")
 }
@@ -1135,6 +1207,63 @@ fn hover_type_token_type(type_text: &str) -> &'static str {
 
 fn is_parameter_modifier(value: &str) -> bool {
     matches!(value, "out" | "inout" | "notnull" | "const")
+}
+
+fn render_lexical_text(value: &str) -> String {
+    let mut rendered = String::new();
+    let mut cursor = 0usize;
+    for token in lex(value) {
+        if token.kind == TokenKind::Eof {
+            continue;
+        }
+        if token.span.start > cursor {
+            rendered.push_str(&escape_html_text(&value[cursor..token.span.start]));
+        }
+        let text = &value[token.span.start..token.span.end];
+        let token_type = match token.kind {
+            TokenKind::LineComment
+            | TokenKind::DocLineComment
+            | TokenKind::BlockComment
+            | TokenKind::DocBlockComment
+            | TokenKind::UnterminatedBlockComment => Some("comment"),
+            TokenKind::String | TokenKind::UnterminatedString => Some("string"),
+            TokenKind::Number | TokenKind::InvalidNumber => Some("number"),
+            TokenKind::Keyword(keyword) if keyword.is_class_like_type() => Some("class"),
+            TokenKind::Keyword(_) => Some("keyword"),
+            TokenKind::Operator(_) => Some("operator"),
+            TokenKind::LeftBrace
+            | TokenKind::RightBrace
+            | TokenKind::LeftParen
+            | TokenKind::RightParen
+            | TokenKind::LeftBracket
+            | TokenKind::RightBracket
+            | TokenKind::Semicolon
+            | TokenKind::Colon
+            | TokenKind::Comma
+            | TokenKind::Dot
+            | TokenKind::Question => Some("reforgerPunctuation"),
+            TokenKind::Hash => Some("reforgerPreprocessor"),
+            _ => None,
+        };
+        if let Some(token_type) = token_type {
+            rendered.push_str(&semantic_text(text, token_type));
+        } else {
+            rendered.push_str(&escape_html_text(text));
+        }
+        cursor = token.span.end;
+    }
+    if cursor < value.len() {
+        rendered.push_str(&escape_html_text(&value[cursor..]));
+    }
+    rendered
+}
+
+fn semantic_text(value: &str, token_type: &str) -> String {
+    format!(
+        "<span data-semantic-token=\"{}\">{}</span>",
+        escape_html_attr(token_type),
+        escape_html_text(value)
+    )
 }
 
 fn escape_inline_code(value: &str) -> String {
@@ -1199,7 +1328,7 @@ mod tests {
         );
 
         assert!(
-            markdown.contains("<strong><span style=\"font-size:1.12em;\">field</span></strong>")
+            markdown.contains("<strong><span style=\"font-size:1.12em;\"><span data-semantic-token=\"reforgerField\">field</span></span></strong>")
         );
         assert!(markdown.contains("data-code=\"protected ref array&lt;int&gt; m_Values\""));
         assert_theme_owned_foreground(&markdown);
@@ -1265,9 +1394,25 @@ mod tests {
         );
 
         assert!(markdown.contains(
-            "<span style=\"font-size:1.12em;\"><strong>Function</strong> in <strong>Example</strong></span>\n<div"
+            "<span style=\"font-size:1.12em;\"><strong><span data-semantic-token=\"function\">Function</span></strong> in <strong><span data-semantic-token=\"class\">Example</span></strong></span>\n<div"
         ));
         assert!(markdown.contains("data-code=\"bool Run(int value)\""));
+        assert!(
+            markdown.contains("<span data-semantic-token=\"function\">Function</span>"),
+            "{markdown}"
+        );
+        assert!(
+            markdown.contains("<span data-semantic-token=\"class\">Example</span>"),
+            "{markdown}"
+        );
+        assert!(
+            markdown.contains("<span data-semantic-token=\"keyword\">bool</span>"),
+            "{markdown}"
+        );
+        assert!(
+            markdown.contains("<span data-semantic-token=\"function\">Run</span>"),
+            "{markdown}"
+        );
         assert_theme_owned_foreground(&markdown);
         assert!(markdown.contains("Runs the example."));
         assert!(!markdown.contains("### Parameters"));
@@ -1314,7 +1459,7 @@ mod tests {
         );
 
         assert!(
-            markdown.contains("<strong><span style=\"font-size:1.12em;\">Class</span></strong>")
+            markdown.contains("<strong><span style=\"font-size:1.12em;\"><span data-semantic-token=\"keyword\">Class</span></span></strong>")
         );
         assert!(markdown.contains("data-code=\"class Example : Base\""));
         assert_theme_owned_foreground(&markdown);
@@ -1382,6 +1527,14 @@ class Example : Base
         assert!(markdown.contains("%22endByte%22"));
         assert!(markdown.contains("Base"));
         assert!(markdown.contains("Make"));
+        assert!(
+            markdown.contains("><span data-semantic-token=\"class\">Base</span></a>"),
+            "{markdown}"
+        );
+        assert!(
+            markdown.contains("><span data-semantic-token=\"function\">Make</span></a>"),
+            "{markdown}"
+        );
         assert_theme_owned_foreground(&markdown);
     }
 
@@ -1473,8 +1626,10 @@ class Child : Base
         assert!(markdown.contains("string uiwidget = UIWidgets.Flags"));
         assert!(markdown.contains("ParamEnumArray enums = ParamEnumArray.FromEnum(EGameFlags)"));
         assert!(markdown.contains("string category = WB_GAME_MODE_CATEGORY"));
-        assert!(markdown.contains("### Constructor"));
-        assert!(markdown.contains("void Attribute("));
+        assert!(markdown.contains("### <span data-semantic-token=\"keyword\">Constructor</span>"));
+        assert!(markdown.contains(
+            "<span data-semantic-token=\"keyword\">void</span> <span data-semantic-token=\"class\">Attribute</span><span data-semantic-token=\"reforgerPunctuation\">(</span>"
+        ));
         assert_theme_owned_foreground(&markdown);
         assert!(!markdown.contains("string desc = \"Test flags.\""));
     }
@@ -1506,10 +1661,12 @@ class Child : Base
             }),
         );
 
-        assert!(markdown.contains("<strong><span style=\"font-size:1.12em;\">Enum</span></strong>"));
+        assert!(markdown.contains("<strong><span style=\"font-size:1.12em;\"><span data-semantic-token=\"keyword\">Enum</span></span></strong>"));
         assert!(markdown.contains("data-code=\"enum ExampleEnum\""));
         assert!(markdown.contains("### Enum Values"));
-        assert!(markdown.contains("First</a> = 1") || markdown.contains("First = 1"));
+        assert!(markdown.contains(
+            "<span data-semantic-token=\"enumMember\">First</span> <span data-semantic-token=\"operator\">=</span> <span data-semantic-token=\"number\">1</span>"
+        ));
         assert!(markdown.contains("Second"));
         assert!(markdown.contains("Fifth"));
         assert_theme_owned_foreground(&markdown);
@@ -1545,8 +1702,10 @@ class Child : Base
 
         assert!(markdown.contains("### Enum Values"));
         assert!(markdown.contains("<a href=\"command:reforger-sript-tools.openSymbolLocation?"));
-        assert!(markdown.contains(">First</a>"));
-        assert!(markdown.contains(" = 1"));
+        assert!(markdown.contains("><span data-semantic-token=\"enumMember\">First</span></a>"));
+        assert!(markdown.contains(
+            "<span data-semantic-token=\"operator\">=</span> <span data-semantic-token=\"number\">1</span>"
+        ));
         assert!(!markdown.contains("```enforce"));
         assert!(!markdown.contains("[<span"));
         assert_theme_owned_foreground(&markdown);
@@ -1652,7 +1811,7 @@ class Example
             }),
         );
 
-        assert!(markdown.contains("<span style=\"font-size:1.12em;\"><strong>Enum Value</strong> in <strong>SCR_EGameModeState</strong></span>"));
+        assert!(markdown.contains("<span style=\"font-size:1.12em;\"><strong><span data-semantic-token=\"enumMember\">Enum Value</span></strong> in <strong><span data-semantic-token=\"enum\">SCR_EGameModeState</span></strong></span>"));
         assert!(markdown.contains("data-code=\"PREGAME = 0\""));
         assert_theme_owned_foreground(&markdown);
     }

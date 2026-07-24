@@ -2,6 +2,11 @@ import * as vscode from 'vscode';
 import type { LanguageClient } from 'vscode-languageclient/node';
 import { diagnostic } from '../diagnostics/diagnostics';
 import { languageClientDocumentSelector } from '../extensionConfig/languageClient';
+import {
+	applyHoverSemanticPalette,
+	hoverSemanticPaletteForDocument,
+	type HoverSemanticPalette,
+} from './hoverSemanticPalette';
 import { rangeFromLsp, type LspRange } from './versionedEditorEdit';
 
 interface LspHoverResponse {
@@ -32,7 +37,9 @@ export function registerHtmlHoverBridge(
 					token,
 				);
 				diagnostic('lsp.hover', { outcome: hover ? 'hit' : 'empty', elapsedMs: Date.now() - startedAt });
-				return hover ? hoverFromLspResponse(hover) : null;
+				return hover
+					? hoverFromLspResponse(hover, hoverSemanticPaletteForDocument(document))
+					: null;
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				outputChannel.debug(`HTML hover request failed for ${document.uri.toString()}: ${message}`);
@@ -43,25 +50,39 @@ export function registerHtmlHoverBridge(
 	});
 }
 
-function hoverFromLspResponse(hover: LspHoverResponse): vscode.Hover | null {
+function hoverFromLspResponse(
+	hover: LspHoverResponse,
+	palette: HoverSemanticPalette,
+): vscode.Hover | null {
 	const contents = Array.isArray(hover.contents) ? hover.contents : [hover.contents];
-	const markdown = contents.map(content => htmlMarkdownContent(content));
+	const markdown = contents.map(content => htmlMarkdownContent(content, palette));
 	if (markdown.length === 0) {
 		return null;
 	}
 	return new vscode.Hover(markdown, hover.range ? rangeFromLsp(hover.range) : undefined);
 }
 
-function htmlMarkdownContent(content: LspMarkupContent | string): vscode.MarkdownString {
+function htmlMarkdownContent(
+	content: LspMarkupContent | string,
+	palette: HoverSemanticPalette,
+): vscode.MarkdownString {
 	const markdown = new vscode.MarkdownString();
 	markdown.isTrusted = true;
 	markdown.supportHtml = true;
 	if (typeof content === 'string') {
-		markdown.appendMarkdown(content);
+		markdown.appendMarkdown(
+			applyHoverSemanticPalette(content, palette.foregrounds, palette.enabled),
+		);
 	} else if (content.kind === 'plaintext') {
 		markdown.appendText(content.value ?? '');
 	} else {
-		markdown.appendMarkdown(content.value ?? '');
+		markdown.appendMarkdown(
+			applyHoverSemanticPalette(
+				content.value ?? '',
+				palette.foregrounds,
+				palette.enabled,
+			),
+		);
 	}
 	return markdown;
 }
