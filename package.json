@@ -15,11 +15,7 @@
     "Other"
   ],
   "activationEvents": [
-    "onStartupFinished",
-    "onCommand:reforger-sript-tools.workbench.validateScripts",
-    "onCommand:reforger-sript-tools.debug.hoverAtCursor",
-    "onCommand:reforger-sript-tools.debug.completionAtCursor",
-    "onCommand:reforger-sript-tools.completion.triggerSuggestAtSnippetPlaceholder"
+    "onLanguage:enforce"
   ],
   "main": "./dist/extension.js",
   "contributes": {

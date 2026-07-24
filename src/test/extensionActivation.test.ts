@@ -163,9 +163,27 @@ suite('extension activation', () => {
 		assert.match(report, /No rendered rows are reported rather than guessing/);
 	});
 
+	test('activates only for detected Enforce Script documents', () => {
+		const extension = vscode.extensions.all.find(
+			candidate => candidate.packageJSON.name === 'reforger-script-tools',
+		);
+		assert.ok(extension, 'development extension is discoverable');
+
+		assert.deepStrictEqual(extension.packageJSON.activationEvents, ['onLanguage:enforce']);
+		const languages = extension.packageJSON.contributes.languages as Array<{
+			id: string;
+			filenamePatterns?: string[];
+		}>;
+		const enforce = languages.find(language => language.id === 'enforce');
+		assert.deepStrictEqual(enforce?.filenamePatterns, [
+			'**/Scripts/**/*.c',
+			'**/scripts/**/*.c',
+		]);
+	});
+
 	test('registers editor-facing commands', async () => {
 		const extension = vscode.extensions.all.find(
-			candidate => candidate.packageJSON.name === 'reforger-sript-tools',
+			candidate => candidate.packageJSON.name === 'reforger-script-tools',
 		);
 		assert.ok(extension, 'development extension is discoverable');
 		await extension.activate();
@@ -186,7 +204,7 @@ suite('extension activation', () => {
 
 	test('contributes only actionable Workbench and game-data settings', () => {
 		const extension = vscode.extensions.all.find(
-			candidate => candidate.packageJSON.name === 'reforger-sript-tools',
+			candidate => candidate.packageJSON.name === 'reforger-script-tools',
 		);
 		assert.ok(extension, 'development extension is discoverable');
 		const properties = extension.packageJSON.contributes.configuration.properties as Record<
@@ -317,7 +335,7 @@ suite('extension activation', () => {
 
 	test('contributes native pairs and narrow if-family indentation', async () => {
 		const extension = vscode.extensions.all.find(
-			candidate => candidate.packageJSON.name === 'reforger-sript-tools',
+			candidate => candidate.packageJSON.name === 'reforger-script-tools',
 		);
 		assert.ok(extension, 'development extension is discoverable');
 		const configuration = JSON.parse(await fs.readFile(
@@ -384,7 +402,7 @@ suite('extension activation', () => {
 
 	test('contributes one three-mode bracket coloring setting with semantic ownership by default', () => {
 		const extension = vscode.extensions.all.find(
-			candidate => candidate.packageJSON.name === 'reforger-sript-tools',
+			candidate => candidate.packageJSON.name === 'reforger-script-tools',
 		);
 		assert.ok(extension, 'development extension is discoverable');
 		const properties = extension.packageJSON.contributes.configuration.properties as Record<string, {
@@ -408,7 +426,7 @@ suite('extension activation', () => {
 
 	test('contributes one Enforce semantic palette without a complete color theme', () => {
 		const extension = vscode.extensions.all.find(
-			candidate => candidate.packageJSON.name === 'reforger-sript-tools',
+			candidate => candidate.packageJSON.name === 'reforger-script-tools',
 		);
 		assert.ok(extension, 'development extension is discoverable');
 		const contributes = extension.packageJSON.contributes as {
@@ -1154,7 +1172,7 @@ suite('extension activation', () => {
 
 	test('keeps input-route traces out of the user configuration', () => {
 		const extension = vscode.extensions.all.find(
-			candidate => candidate.packageJSON.name === 'reforger-sript-tools',
+			candidate => candidate.packageJSON.name === 'reforger-script-tools',
 		);
 		assert.ok(extension, 'development extension is discoverable');
 		const properties = extension.packageJSON.contributes.configuration.properties as Record<string, { default?: unknown }>;
@@ -1163,7 +1181,7 @@ suite('extension activation', () => {
 
 	test('enables Experimental Auto Formatting by default', () => {
 		const extension = vscode.extensions.all.find(
-			candidate => candidate.packageJSON.name === 'reforger-sript-tools',
+			candidate => candidate.packageJSON.name === 'reforger-script-tools',
 		);
 		assert.ok(extension, 'development extension is discoverable');
 		const properties = extension.packageJSON.contributes.configuration.properties as Record<string, {
@@ -1177,7 +1195,7 @@ suite('extension activation', () => {
 
 	test('applies directive separators only while Experimental Auto Formatting is enabled', async () => {
 		const extension = vscode.extensions.all.find(
-			candidate => candidate.packageJSON.name === 'reforger-sript-tools',
+			candidate => candidate.packageJSON.name === 'reforger-script-tools',
 		);
 		assert.ok(extension, 'development extension is discoverable');
 		await extension.activate();
@@ -1203,7 +1221,7 @@ suite('extension activation', () => {
 	test('serves directive and Macro completion through the live Extension Development Host', async function () {
 		this.timeout(10_000);
 		const extension = vscode.extensions.all.find(
-			candidate => candidate.packageJSON.name === 'reforger-sript-tools',
+			candidate => candidate.packageJSON.name === 'reforger-script-tools',
 		);
 		assert.ok(extension, 'development extension is discoverable');
 		await extension.activate();
@@ -1231,7 +1249,7 @@ suite('extension activation', () => {
 
 	test('keeps Enter available for line breaks in Enforce suggestions', () => {
 		const extension = vscode.extensions.all.find(
-			candidate => candidate.packageJSON.name === 'reforger-sript-tools',
+			candidate => candidate.packageJSON.name === 'reforger-script-tools',
 		);
 		assert.ok(extension, 'development extension is discoverable');
 		const defaults = extension.packageJSON.contributes.configurationDefaults as Record<string, Record<string, unknown>>;
@@ -1240,7 +1258,7 @@ suite('extension activation', () => {
 
 	test('routes Enter only outside native editing modes', () => {
 		const extension = vscode.extensions.all.find(
-			candidate => candidate.packageJSON.name === 'reforger-sript-tools',
+			candidate => candidate.packageJSON.name === 'reforger-script-tools',
 		);
 		assert.ok(extension, 'development extension is discoverable');
 		const keybindings = extension.packageJSON.contributes.keybindings as Array<{

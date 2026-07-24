@@ -21,6 +21,12 @@ Game data and workspace scripts enter through resolved paths and document/file
 notifications. The server turns them into immutable language facts; the client
 renders or transports the resulting editor behavior.
 
+VS Code activates the extension shell when a document is detected as the
+contributed `enforce` language. Script files matching `**/Scripts/**/*.c` or
+`**/scripts/**/*.c` enter that language automatically; a document explicitly
+assigned the Enforce language does as well. Opening an unrelated workspace does
+not activate the extension.
+
 When the extension installs game data or the user selects a manual source, the
 top-level wiring awaits a language-server restart. The replacement server then
 builds its external game-data layer from that source and publishes its existing
