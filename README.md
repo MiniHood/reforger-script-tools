@@ -4,6 +4,26 @@ Reforger Script Tools brings Enfusion Script language support and Arma Reforger
 Workbench compiler feedback to Visual Studio Code. Everything needed by the
 extension is included; no additional tools or runtimes are required.
 
+## Unofficial Project and Product Terms
+
+Reforger Script Tools is an independent, unofficial project. It is not
+affiliated with, authorized by, endorsed by, or supported by Bohemia
+Interactive a.s.
+
+Use of this extension with Bohemia Interactive games, tools, services, or
+content remains subject to all applicable end-user license agreements, terms of
+use, and content licenses, including the
+[Arma Reforger EULA](https://reforger.armaplatform.com/eula) and
+[Arma Reforger Workshop Terms of Use](https://reforger.armaplatform.com/workshop-terms)
+where applicable. This extension is not designed or intended to circumvent
+those agreements, violate license restrictions, or enable others to do so.
+Users are responsible for ensuring that their use complies with the agreements
+and licenses applicable to the Bohemia Interactive products and content they
+use.
+
+Bohemia Interactive, Arma, Arma Reforger, and associated logos and designs are
+trademarks or registered trademarks of Bohemia Interactive a.s.
+
 ## Features
 
 - Enfusion Script syntax highlighting and semantic colors.
