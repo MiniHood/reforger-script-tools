@@ -1164,8 +1164,7 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
     ) {
         let mut matching = Vec::new();
         for owner in member_lookup_owners(index, owner) {
-            let lookup = index.completion_members_named_for_preferred_class(&owner, member_name);
-            for id in lookup.members.iter().copied() {
+            for id in index.preferred_members_named_for_class(&owner, member_name) {
                 if index.symbol(id).is_some_and(|symbol| {
                     is_member_lookup_kind(symbol.kind)
                         && symbol.name.as_deref() == Some(member_name)
@@ -1427,8 +1426,7 @@ fn push_class_member_candidates_from_index_with_reason(
     candidates: &mut Vec<ReferenceCandidate>,
     seen: &mut BTreeSet<CandidateKey>,
 ) {
-    let lookup = index.completion_members_named_for_preferred_class(class_name, token_text);
-    for member in lookup.members {
+    for member in index.preferred_members_named_for_class(class_name, token_text) {
         push_index_candidate(index, candidates, seen, source, member, reason);
     }
 }
@@ -1752,21 +1750,7 @@ fn matching_members_for_exact_owner(
     owner: &str,
     name: &str,
 ) -> Vec<GlobalSymbolId> {
-    let lookup = index.completion_members_named_for_preferred_class(owner, name);
-    matching_members_from_ids(index, lookup.members.iter().copied(), name)
-}
-
-fn matching_members_from_ids(
-    index: &SymbolIndex,
-    ids: impl Iterator<Item = GlobalSymbolId>,
-    name: &str,
-) -> Vec<GlobalSymbolId> {
-    ids.filter(|id| {
-        index.symbol(*id).is_some_and(|symbol| {
-            is_member_lookup_kind(symbol.kind) && symbol.name.as_deref() == Some(name)
-        })
-    })
-    .collect()
+    index.preferred_members_named_for_class(owner, name)
 }
 
 fn is_member_lookup_kind(kind: SymbolKind) -> bool {

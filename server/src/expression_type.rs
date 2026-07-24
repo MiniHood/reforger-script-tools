@@ -649,8 +649,7 @@ impl<'source, 'index> ExpressionTypeEnvironment<'source, 'index> {
         name: &str,
     ) -> Option<ExpressionType> {
         for owner in member_lookup_owners(index, owner) {
-            let lookup = index.completion_members_named_for_preferred_class(&owner, name);
-            let matching = matching_members_from_ids(index, lookup.members.iter().copied(), name);
+            let matching = index.preferred_members_named_for_class(&owner, name);
             for id in index.preferred_from_symbols(&matching) {
                 let Some(symbol) = index.symbol(id) else {
                     continue;
@@ -1366,21 +1365,7 @@ fn matching_members_for_exact_owner(
     owner: &str,
     name: &str,
 ) -> Vec<GlobalSymbolId> {
-    let lookup = index.completion_members_named_for_preferred_class(owner, name);
-    matching_members_from_ids(index, lookup.members.iter().copied(), name)
-}
-
-fn matching_members_from_ids(
-    index: &SymbolIndex,
-    ids: impl Iterator<Item = GlobalSymbolId>,
-    name: &str,
-) -> Vec<GlobalSymbolId> {
-    ids.filter(|id| {
-        index.symbol(*id).is_some_and(|symbol| {
-            is_member_lookup_kind(symbol.kind) && symbol.name.as_deref() == Some(name)
-        })
-    })
-    .collect()
+    index.preferred_members_named_for_class(owner, name)
 }
 
 fn simple_callee_name(expression: Expression<'_, '_>) -> Option<String> {
@@ -1397,13 +1382,6 @@ fn simple_callee_name(expression: Expression<'_, '_>) -> Option<String> {
         return None;
     }
     Some(text[token.span.start..token.span.end].to_string())
-}
-
-fn is_member_lookup_kind(kind: SymbolKind) -> bool {
-    matches!(
-        kind,
-        SymbolKind::Field | SymbolKind::Method | SymbolKind::Constructor | SymbolKind::Destructor
-    )
 }
 
 fn is_pseudo_class_member_name(name: &str) -> bool {

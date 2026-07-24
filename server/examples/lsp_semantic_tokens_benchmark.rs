@@ -108,6 +108,13 @@ fn run() -> Result<(), String> {
             .collect(),
     );
     print_metric(
+        "resolver_declaration_ms",
+        samples
+            .iter()
+            .map(|sample| sample.timings.resolver_declaration_ms)
+            .collect(),
+    );
+    print_metric(
         "resolver_scope_ms",
         samples
             .iter()
@@ -122,10 +129,24 @@ fn run() -> Result<(), String> {
             .collect(),
     );
     print_metric(
+        "resolver_top_level_ms",
+        samples
+            .iter()
+            .map(|sample| sample.timings.resolver_top_level_ms)
+            .collect(),
+    );
+    print_metric(
         "resolver_external_ms",
         samples
             .iter()
             .map(|sample| sample.timings.resolver_external_ms)
+            .collect(),
+    );
+    print_metric(
+        "resolver_selection_ms",
+        samples
+            .iter()
+            .map(|sample| sample.timings.resolver_selection_ms)
             .collect(),
     );
 

@@ -35,7 +35,7 @@ index, use the dedicated benchmark example:
 ```powershell
 cargo run --manifest-path server/Cargo.toml --example lsp_semantic_tokens_benchmark -- `
   --scripts <game-data-scripts-path> `
-  --file <large-enforce-file> `
+  --file <large-enfusion-file> `
   --iterations 7 `
   --max-median-resolver-ms <local-budget>
 ```

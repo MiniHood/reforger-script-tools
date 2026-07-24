@@ -1024,18 +1024,19 @@ impl SymbolIndex {
     }
 
     pub fn completion_members_for_preferred_class(&self, owner: &str) -> CompletionMemberLookup {
-        let member_segments = self.preferred_class_member_segments_including_bases(owner);
+        let member_segments = self.preferred_class_member_segments_including_bases(owner, None);
         self.completion_from_member_segments(member_segments)
     }
 
-    pub fn completion_members_named_for_preferred_class(
+    pub fn preferred_members_named_for_class(
         &self,
         owner: &str,
         member_name: &str,
-    ) -> CompletionMemberLookup {
+    ) -> Vec<GlobalSymbolId> {
         let member_segments =
-            self.preferred_class_member_segments_named_including_bases(owner, member_name);
+            self.preferred_class_member_segments_including_bases(owner, Some(member_name));
         self.completion_from_member_segments(member_segments)
+            .members
     }
 
     fn completion_from_member_segments(
@@ -1463,25 +1464,11 @@ impl SymbolIndex {
     fn preferred_class_member_segments_including_bases(
         &self,
         owner: &str,
+        member_name: Option<&str>,
     ) -> Vec<Vec<GlobalSymbolId>> {
         let mut segments = Vec::new();
         let mut visited = BTreeSet::new();
         self.add_preferred_class_member_segments_including_bases(
-            owner,
-            &mut visited,
-            &mut segments,
-        );
-        segments
-    }
-
-    fn preferred_class_member_segments_named_including_bases(
-        &self,
-        owner: &str,
-        member_name: &str,
-    ) -> Vec<Vec<GlobalSymbolId>> {
-        let mut segments = Vec::new();
-        let mut visited = BTreeSet::new();
-        self.add_preferred_class_member_segments_named_including_bases(
             owner,
             member_name,
             &mut visited,
@@ -1511,28 +1498,7 @@ impl SymbolIndex {
     fn add_preferred_class_member_segments_including_bases(
         &self,
         owner: &str,
-        visited: &mut BTreeSet<String>,
-        segments: &mut Vec<Vec<GlobalSymbolId>>,
-    ) {
-        if !visited.insert(owner.to_string()) {
-            return;
-        }
-
-        let classes = self.preferred_classes_by_name(owner);
-        for class_id in &classes {
-            segments.push(self.direct_members_for_class_declaration(*class_id));
-        }
-
-        let Some(base_name) = self.first_class_base_name(&classes) else {
-            return;
-        };
-        self.add_preferred_class_member_segments_including_bases(&base_name, visited, segments);
-    }
-
-    fn add_preferred_class_member_segments_named_including_bases(
-        &self,
-        owner: &str,
-        member_name: &str,
+        member_name: Option<&str>,
         visited: &mut BTreeSet<String>,
         segments: &mut Vec<Vec<GlobalSymbolId>>,
     ) {
@@ -1549,11 +1515,13 @@ impl SymbolIndex {
                 .filter(|child_id| {
                     self.symbol(*child_id).is_some_and(|symbol| {
                         is_class_member_kind(symbol.kind)
-                            && symbol.name.as_deref() == Some(member_name)
+                            && member_name.is_none_or(|member_name| {
+                                symbol.name.as_deref() == Some(member_name)
+                            })
                     })
                 })
                 .collect::<Vec<_>>();
-            if !members.is_empty() {
+            if member_name.is_none() || !members.is_empty() {
                 segments.push(members);
             }
         }
@@ -1561,7 +1529,7 @@ impl SymbolIndex {
         let Some(base_name) = self.first_class_base_name(&classes) else {
             return;
         };
-        self.add_preferred_class_member_segments_named_including_bases(
+        self.add_preferred_class_member_segments_including_bases(
             &base_name,
             member_name,
             visited,
@@ -1591,20 +1559,6 @@ impl SymbolIndex {
         } else {
             Some(base.to_string())
         }
-    }
-
-    fn direct_members_for_class_declaration(
-        &self,
-        class_id: GlobalSymbolId,
-    ) -> Vec<GlobalSymbolId> {
-        self.children(class_id)
-            .iter()
-            .copied()
-            .filter(|child_id| {
-                self.symbol(*child_id)
-                    .is_some_and(|symbol| is_class_member_kind(symbol.kind))
-            })
-            .collect()
     }
 
     pub fn completion_member_key(&self, id: GlobalSymbolId) -> String {
@@ -2763,7 +2717,7 @@ class Child : Base
     }
 
     #[test]
-    fn named_preferred_class_completion_matches_the_full_projection() {
+    fn preferred_named_members_match_the_full_completion_projection() {
         let base = catalog(
             r#"class BaseGameMode
 {
@@ -2794,32 +2748,15 @@ class Child : Base
         let index = SymbolIndex::from_catalogs([&base, &game, &workspace]);
 
         let full = index.completion_members_for_preferred_class("SCR_BaseGameMode");
-        let named =
-            index.completion_members_named_for_preferred_class("SCR_BaseGameMode", "OnGameStart");
-        let expected_raw = full
-            .raw_candidates
-            .iter()
-            .copied()
-            .filter(|id| index.symbol(*id).unwrap().name.as_deref() == Some("OnGameStart"))
-            .collect::<Vec<_>>();
+        let named = index.preferred_members_named_for_class("SCR_BaseGameMode", "OnGameStart");
         let expected_members = full
             .members
             .iter()
             .copied()
             .filter(|id| index.symbol(*id).unwrap().name.as_deref() == Some("OnGameStart"))
             .collect::<Vec<_>>();
-        let expected_shadowed = full
-            .shadowed_groups
-            .iter()
-            .filter(|group| {
-                index.symbol(group.kept).unwrap().name.as_deref() == Some("OnGameStart")
-            })
-            .cloned()
-            .collect::<Vec<_>>();
 
-        assert_eq!(named.raw_candidates, expected_raw);
-        assert_eq!(named.members, expected_members);
-        assert_eq!(named.shadowed_groups, expected_shadowed);
+        assert_eq!(named, expected_members);
     }
 
     #[test]
