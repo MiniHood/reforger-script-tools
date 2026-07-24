@@ -39,6 +39,10 @@ import {
 	hoverSemanticPaletteReport,
 } from '../languageClient/hoverSemanticPalette';
 import { RestartCoordinator } from '../languageClient/restartCoordinator';
+import {
+	semanticTokenBoundaryGuardDecorationOptions,
+	semanticTokenBoundaryRanges,
+} from '../languageClient/semanticTokenBoundaryGuardBridge';
 
 suite('extension activation', () => {
 	test('presents external index phases as user-facing progress', () => {
@@ -549,6 +553,34 @@ suite('extension activation', () => {
 		assert.strictEqual(options.borderStyle, 'solid');
 		assert.strictEqual(options.borderWidth, '1px');
 		assert.strictEqual(options.color, undefined);
+	});
+
+	test('guards both semantic-token edges with the editor default foreground', () => {
+		const options = semanticTokenBoundaryGuardDecorationOptions();
+		assert.strictEqual(
+			(options.color as vscode.ThemeColor).id,
+			'editor.foreground',
+		);
+		assert.strictEqual(
+			options.rangeBehavior,
+			vscode.DecorationRangeBehavior.OpenOpen,
+		);
+	});
+
+	test('projects unique boundary guards for delimiter and comment tokens', () => {
+		const ranges = semanticTokenBoundaryRanges({
+			data: new Uint32Array([
+				2, 7, 1, 8, 0,
+				0, 1, 1, 8, 0,
+				1, 8, 9, 9, 0,
+			]),
+		});
+
+		assert.deepStrictEqual(
+			ranges.map(range => `${range.start.line}:${range.start.character}`),
+			['2:7', '2:8', '2:9', '3:8', '3:17'],
+		);
+		assert.ok(ranges.every(range => range.isEmpty));
 	});
 
 	test('projects current multi-caret scope delimiter responses into editor ranges', async () => {

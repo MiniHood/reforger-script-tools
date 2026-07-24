@@ -63,6 +63,7 @@ import {
 } from './bracketColoringBridge';
 import { RestartCoordinator } from './restartCoordinator';
 import { registerSemanticTokenTimingBridge } from './semanticTokenTimingBridge';
+import { registerSemanticTokenBoundaryGuardBridge } from './semanticTokenBoundaryGuardBridge';
 
 export { blockCommentPairPosition } from './typingAssistBridge';
 export { ifSpaceCommitContractFromCommandArguments } from './completionUiBridge';
@@ -331,6 +332,8 @@ async function startLanguageClient(
 
 	const semanticTokenTiming = registerSemanticTokenTimingBridge();
 	clientDisposables.push(semanticTokenTiming);
+	const semanticTokenBoundaryGuard = registerSemanticTokenBoundaryGuardBridge();
+	clientDisposables.push(semanticTokenBoundaryGuard);
 	const clientOptions: LanguageClientOptions = {
 		documentSelector: [...languageClientDocumentSelector],
 		outputChannel,
@@ -345,8 +348,12 @@ async function startLanguageClient(
 			provideDocumentSemanticTokens: async (document, token, next) => {
 				const timing = semanticTokenTiming.start(document);
 				const startedAt = Date.now();
+				const version = document.version;
 				try {
 					const result = await next(document, token);
+					if (!token.isCancellationRequested && result) {
+						semanticTokenBoundaryGuard.update(document, version, result);
+					}
 					semanticTokenTiming.complete(timing, 'ok', token.isCancellationRequested);
 					logFirstSemanticTokenResponse(context, document, startedAt, 'ok');
 					return result;

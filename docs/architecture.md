@@ -215,17 +215,21 @@ Rust marks hover fragments with semantic roles and the hover bridge applies
 foregrounds resolved from the same effective native VS Code setting. This
 keeps command links from substituting the workbench link color without
 creating a second palette. The editor shell does not generate settings or
-apply foreground decorations.
+classify source for foreground presentation. Its one editor foreground
+decoration is an invisible default-foreground guard derived directly from
+settled semantic-token boundaries; it contains newly inserted text until the
+current token response arrives and never assigns a semantic role.
 
 Within the language-client bridge, the composition root retains server lifecycle
 and restart policy. Focused bridges own workspace-script notifications, hover
 rendering, diagnostic command UI, development-server watching, completion UI
-transactions, typing-assist transactions, and active scope-delimiter
-presentation. The scope-delimiter bridge forwards current carets to the
-version-aware Rust request and applies the returned ranges with the standard
-theme bracket-match background and border; semantic-token rules retain sole
-ownership of foreground presentation. A pending current-revision request is
-retried only when the server publishes that revision's foreground-ready event;
+transactions, typing-assist transactions, semantic-token boundary guarding,
+and active scope-delimiter presentation. The scope-delimiter bridge forwards
+current carets to the version-aware Rust request and applies the returned
+ranges with the standard theme bracket-match background and border;
+semantic-token rules retain sole ownership of foreground presentation. A
+pending current-revision request is retried only when the server publishes
+that revision's foreground-ready event;
 the bridge has no retry timer. Workspace file events are likewise read and
 published immediately with monotonically increasing per-path sequences, so
 out-of-order reads are rejected by Rust without a debounce delay. Development

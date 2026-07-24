@@ -155,8 +155,13 @@ generic-angle offsets only when the foreground worker has published them for
 the current snapshot. While foreground syntax is pending, angle operators keep
 their lexical operator classification in the cached projection; the request
 path neither reparses nor reuses stale delimiter facts.
-New text typed beside or inside a delimiter therefore cannot inherit that
-delimiter's foreground while the richer projection is pending.
+For each settled response, the TypeScript bridge derives zero-width guards at
+both edges of every encoded semantic token. A guard uses the editor's default
+foreground and expands only over text inserted at that exact boundary. The
+current response replaces all guard positions. This keeps a retained opener,
+comment, string, identifier, or other semantic range from briefly lending its
+old foreground to new text while the richer projection is pending; it does not
+change the server's classifications or create a client-side language model.
 Active-pair requests decline documents larger than 128 KiB and cap caret input.
 Pair selection depends only on parser-proven structure, so foreground and
 analyzed snapshots return the same active ranges; resolver-dependent foreground

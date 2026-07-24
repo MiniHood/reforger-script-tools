@@ -199,6 +199,15 @@ selectors are `reforgerField:enforce`, `reforgerPunctuation:enforce`, and
 contracts.
 _Avoid_: undeclared token type, generic variable, generic operator
 
+**Semantic Token Boundary Guard**:
+The Enforce-only editor presentation that places invisible, zero-width
+default-foreground ranges at both edges of every settled semantic token.
+The ranges expand only over text inserted at that exact boundary, preventing
+VS Code's retained semantic range from briefly lending its old foreground to
+the new text. A current semantic-token response atomically replaces the guard
+positions; it does not change Rust classifications or define another palette.
+_Avoid_: syntax decoration, client-side token classification, fallback palette
+
 **Scope Delimiter**:
 A matched Enfusion curly-brace, parenthesis, square-bracket, or parser-proven generic-angle-bracket pair whose presentation is classified by its immediate semantic anchor when one exists, otherwise by the syntactic scope that contains it.
 Calls and index expressions use their callable or indexed symbol as that anchor; a block uses the declaration or control header that introduces it.
@@ -216,7 +225,8 @@ When an editing snapshot cannot prove a code delimiter's owner, it retains ordin
 After an edit, the current lexical token projection remains an internal input
 and is never published as an interim full response. The editor keeps its
 settled semantic presentation until the current rich projection replaces it;
-inserted text never inherits a delimiter's foreground.
+the Semantic Token Boundary Guard keeps inserted text in the default
+foreground during that interval.
 The active Scope Delimiter is the innermost matched pair that contains the caret.
 Its active range includes the caret immediately after its opener or immediately before its closer.
 Its active-pair decoration remains settled while a current projection or
