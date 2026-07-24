@@ -82,14 +82,22 @@ and classification remain in Rust tokens while VS Code owns their foreground
 presentation. The editor bridge retries a current pending snapshot until its
 foreground projection is ready; a rejected
 foreground task returns a terminal empty result rather than a retry signal.
-After every source edit, the semantic-token request returns the current
-snapshot's lexical baseline immediately, replacing any editor-tracked rich
-delimiter ranges before background analysis publishes the updated overlay.
+After every source edit, the current snapshot's lexical baseline is cached as
+an internal input to rich projection, but it is not published as an interim
+full-document response. The semantic-token request remains pending while the
+already-scheduled foreground and semantic workers produce the current rich
+overlay, then publishes that overlay as one replacement. This keeps the
+editor's settled semantic presentation visible instead of briefly replacing it
+with lexical or theme-default colors. A newer edit, an external-index
+generation change, worker overload, or document close rejects the superseded
+pending request with `Content modified`; waiting is revision- and
+generation-bounded and never moves parsing or resolution onto the request
+path.
 For punctuation and native VS Code modes, that baseline consumes parser-proven
 generic-angle offsets only when the foreground worker has published them for
 the current snapshot. While foreground syntax is pending, angle operators keep
-their lexical operator classification; the request path neither reparses nor
-reuses stale delimiter facts.
+their lexical operator classification in the cached projection; the request
+path neither reparses nor reuses stale delimiter facts.
 New text typed beside or inside a delimiter therefore cannot inherit that
 delimiter's foreground while the richer projection is pending.
 Active-pair requests decline documents larger than 128 KiB and cap caret input.

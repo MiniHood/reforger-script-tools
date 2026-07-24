@@ -5945,7 +5945,7 @@ fn only_single_full_text_changes_are_coalescible() {
 }
 
 #[test]
-fn semantic_tokens_replace_old_rich_ranges_with_current_lexical_response() {
+fn semantic_tokens_replace_old_rich_ranges_only_with_current_rich_response() {
     let mut server = LspServer::new(Vec::new(), LspServerOptions::default());
     let uri = "file:///Scripts/StableTokens.c";
     for (method, params) in [(
@@ -5992,11 +5992,10 @@ fn semantic_tokens_replace_old_rich_ranges_with_current_lexical_response() {
     let output = String::from_utf8_lossy(&server.writer);
     assert!(output.contains("\"id\":2"));
     assert!(
-        output.contains("\"resultId\":\"reforger:2:lexical\""),
+        output.contains("\"resultId\":\"reforger:2:rich:"),
         "{output}"
     );
-    assert!(!output.contains("\"resultId\":\"reforger:2:rich:"));
-    assert!(!output.contains("workspace/semanticTokens/refresh"));
+    assert!(!output.contains("\"resultId\":\"reforger:2:lexical\""));
 }
 
 #[test]

@@ -905,7 +905,7 @@ impl FeatureDispatcher<'_> {
                 }
             }
             "textDocument/semanticTokens/full" => {
-                if let Some(id) = message.id {
+                if let Some(id) = message.id.clone() {
                     let start = Instant::now();
                     let RequestCommand::Feature(FeatureCommand::SemanticTokensFull(params)) =
                         &command
@@ -916,7 +916,7 @@ impl FeatureDispatcher<'_> {
                     let external_index_summary = self.external_index.status_summary();
                     let external_index_status = external_index_summary.status;
                     let external_generation = external_index_summary.generation;
-                    let selection = params
+                    let mut selection = params
                         .as_ref()
                         .map(|params| {
                             self.document_runtime.select_semantic_tokens(
@@ -928,6 +928,75 @@ impl FeatureDispatcher<'_> {
                             self.document_runtime
                                 .select_semantic_tokens("<missing>", external_generation)
                         });
+                    if let Some((uri, rich_revision, rich_external_generation)) =
+                        selection.rich_work.clone()
+                    {
+                        let external_indexes = self.external_index.snapshot();
+                        let effects = self.document_runtime.admit_rich_semantic_tokens(
+                            &uri,
+                            rich_revision,
+                            external_indexes,
+                            rich_external_generation,
+                        );
+                        for effect in effects {
+                            self.deliver_effect(effect)?;
+                        }
+                        selection = self
+                            .document_runtime
+                            .select_semantic_tokens(&uri, external_generation);
+                    }
+                    if !selection.ready_to_publish && selection.rich_work.is_some() {
+                        self.log(&format!(
+                            "request semanticTokens uri={} bytes={} revision={} cached_analysis=true mode={} outcome=rejected-rich-overload tokens={} external_index_status={} external_generation={} parse_diagnostics={} lex_ms={} token_loop_ms={} resolver_ms={} resolver_calls={} encode_ms={} queue_ms={} elapsed_ms={}",
+                            selection.uri,
+                            selection.bytes,
+                            selection.revision,
+                            selection.projection_mode,
+                            selection.token_count,
+                            external_index_status,
+                            external_generation,
+                            selection.parse_diagnostics,
+                            selection.lex_ms,
+                            selection.token_loop_ms,
+                            selection.resolver_ms,
+                            selection.resolver_calls,
+                            selection.encode_ms,
+                            queue_ms,
+                            start.elapsed().as_millis()
+                        ));
+                        self.respond_error(id, -32801, "Content modified")?;
+                        return Ok(self.finish(false));
+                    }
+                    if !selection.ready_to_publish {
+                        let effects = self.document_runtime.defer_semantic_token_request(
+                            &message,
+                            command.clone(),
+                            external_generation,
+                        )?;
+                        for effect in effects {
+                            self.deliver_effect(effect)?;
+                        }
+                        self.log(&format!(
+                            "request semanticTokens uri={} bytes={} revision={} cached_analysis={} mode={} outcome=deferred tokens={} external_index_status={} external_generation={} parse_diagnostics={} lex_ms={} token_loop_ms={} resolver_ms={} resolver_calls={} encode_ms={} queue_ms={} elapsed_ms={}",
+                            selection.uri,
+                            selection.bytes,
+                            selection.revision,
+                            selection.projection_mode != "lexical-pending",
+                            selection.projection_mode,
+                            selection.token_count,
+                            external_index_status,
+                            external_generation,
+                            selection.parse_diagnostics,
+                            selection.lex_ms,
+                            selection.token_loop_ms,
+                            selection.resolver_ms,
+                            selection.resolver_calls,
+                            selection.encode_ms,
+                            queue_ms,
+                            start.elapsed().as_millis()
+                        ));
+                        return Ok(self.finish(false));
+                    }
                     let result = serde_json::to_value(&selection.tokens).unwrap_or(Value::Null);
                     self.log(&format!(
                         "request semanticTokens uri={} bytes={} revision={} cached_analysis=true mode={} outcome={} tokens={} external_index_status={} external_generation={} parse_diagnostics={} lex_ms={} token_loop_ms={} resolver_ms={} resolver_calls={} encode_ms={} queue_ms={} elapsed_ms={}",
@@ -949,20 +1018,6 @@ impl FeatureDispatcher<'_> {
                         start.elapsed().as_millis()
                     ));
                     self.respond(id, result)?;
-                    if let Some((uri, rich_revision, rich_external_generation)) =
-                        selection.rich_work
-                    {
-                        let external_indexes = self.external_index.snapshot();
-                        let effects = self.document_runtime.admit_rich_semantic_tokens(
-                            &uri,
-                            rich_revision,
-                            external_indexes,
-                            rich_external_generation,
-                        );
-                        for effect in effects {
-                            self.deliver_effect(effect)?;
-                        }
-                    }
                 }
             }
             "textDocument/hover" => {

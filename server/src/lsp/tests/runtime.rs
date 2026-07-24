@@ -465,7 +465,7 @@ fn document_analysis_scheduler_bounds_distinct_pending_documents() {
 }
 
 #[test]
-fn semantic_tokens_pending_baseline_schedules_rich_after_analysis_completion() {
+fn semantic_tokens_wait_for_current_analysis_instead_of_publishing_a_lexical_flash() {
     let (sender, receiver) = mpsc::channel();
     let scheduler = OpenDocumentAnalysisScheduler::start(sender);
     let mut server = LspServer::new_with_runtime_senders(
@@ -493,7 +493,13 @@ fn semantic_tokens_pending_baseline_schedules_rich_after_analysis_completion() {
             0,
         )
         .unwrap();
-    assert!(!server.document_runtime.test_document_state(uri).unwrap().analysis_ready);
+    assert!(
+        !server
+            .document_runtime
+            .test_document_state(uri)
+            .unwrap()
+            .analysis_ready
+    );
 
     server
         .handle_message(
@@ -510,26 +516,163 @@ fn semantic_tokens_pending_baseline_schedules_rich_after_analysis_completion() {
         .unwrap();
 
     let output = String::from_utf8_lossy(&server.writer);
-    assert!(output.contains("\"id\":1"));
-    assert!(output.contains("\"data\":["));
-    assert!(output.contains("\"resultId\":\"reforger:1:lexical\""));
+    assert!(
+        !output.contains("\"id\":1"),
+        "publishing a lexical response clears settled semantic colors: {output}"
+    );
 
-    let mut rich_ready = false;
-    for _ in 0..3 {
+    let mut rich_response = false;
+    for _ in 0..4 {
         let event = receiver
             .recv_timeout(Duration::from_secs(2))
-            .expect("foreground, analysis, then rich worker event");
-        rich_ready |= matches!(&event, ServerEvent::RichSemanticTokensReady { .. });
+            .expect("foreground, analysis, rich worker, then deferred response");
         server.handle_internal_event(event).unwrap();
-        if rich_ready {
+        let output = String::from_utf8_lossy(&server.writer);
+        rich_response =
+            output.contains("\"id\":1") && output.contains("\"resultId\":\"reforger:1:rich:");
+        if rich_response {
             break;
         }
     }
     assert!(
-        rich_ready,
-        "current lexical baseline must converge to rich tokens"
+        rich_response,
+        "the pending request must complete from current rich analysis: {}",
+        String::from_utf8_lossy(&server.writer)
     );
-    assert!(String::from_utf8_lossy(&server.writer).contains("workspace/semanticTokens/refresh"));
+    assert!(
+        !String::from_utf8_lossy(&server.writer).contains("\"resultId\":\"reforger:1:lexical\"")
+    );
+
+    server.writer.clear();
+    server
+        .handle_message(
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didChange",
+                "params": {
+                    "textDocument": { "uri": uri, "version": 2 },
+                    "contentChanges": [{
+                        "text": "// edited while typing\r\nclass Pending { void Run() {} }"
+                    }]
+                }
+            }),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+    server
+        .handle_message(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "textDocument/semanticTokens/full",
+                "params": { "textDocument": { "uri": uri } }
+            }),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+
+    let output = String::from_utf8_lossy(&server.writer);
+    assert!(
+        !output.contains("\"id\":2"),
+        "an edit must not publish its lexical cache while rich analysis is pending: {output}"
+    );
+    assert!(!output.contains("\"resultId\":\"reforger:2:lexical\""));
+
+    let mut edited_rich_response = false;
+    for _ in 0..4 {
+        let event = receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("edited foreground, analysis, rich worker, then deferred response");
+        server.handle_internal_event(event).unwrap();
+        let output = String::from_utf8_lossy(&server.writer);
+        edited_rich_response =
+            output.contains("\"id\":2") && output.contains("\"resultId\":\"reforger:2:rich:");
+        if edited_rich_response {
+            break;
+        }
+    }
+    assert!(
+        edited_rich_response,
+        "the edited request must complete from the current rich projection: {}",
+        String::from_utf8_lossy(&server.writer)
+    );
+    assert!(
+        !String::from_utf8_lossy(&server.writer).contains("\"resultId\":\"reforger:2:lexical\"")
+    );
+}
+
+#[test]
+fn pending_semantic_tokens_receive_content_modified_when_typing_supersedes_the_revision() {
+    let (sender, _receiver) = mpsc::channel();
+    let scheduler = OpenDocumentAnalysisScheduler::start(sender);
+    let mut server = LspServer::new_with_runtime_senders(
+        Vec::new(),
+        LspServerOptions::default(),
+        None,
+        Some(scheduler),
+        None,
+    );
+    let uri = "file:///Scripts/SupersededTokens.c";
+    server
+        .handle_message(
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": { "textDocument": {
+                    "uri": uri,
+                    "languageId": "enforce",
+                    "version": 1,
+                    "text": "class First {}"
+                }}
+            }),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+    server
+        .handle_message(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "textDocument/semanticTokens/full",
+                "params": { "textDocument": { "uri": uri } }
+            }),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+    assert!(!String::from_utf8_lossy(&server.writer).contains("\"id\":1"));
+
+    server
+        .handle_message(
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didChange",
+                "params": {
+                    "textDocument": { "uri": uri, "version": 2 },
+                    "contentChanges": [{ "text": "class Second {}" }]
+                }
+            }),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+
+    let output = String::from_utf8_lossy(&server.writer);
+    assert!(output.contains("\"id\":1"), "{output}");
+    assert!(output.contains("\"code\":-32801"), "{output}");
+    assert!(
+        output.contains("\"message\":\"Content modified\""),
+        "{output}"
+    );
+    assert!(!output.contains("\"resultId\":\"reforger:1:lexical\""));
 }
 
 #[test]

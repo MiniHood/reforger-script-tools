@@ -34,6 +34,7 @@ pub(super) struct DocumentRuntime {
     runtime: AnalysisRuntime,
     analysis_scheduler: Option<RuntimeWorkExecutor>,
     deferred_document_requests: BTreeMap<String, Vec<DeferredDocumentRequest>>,
+    deferred_semantic_token_requests: BTreeMap<String, Vec<DeferredSemanticTokenRequest>>,
     bracket_coloring: BracketColoringMode,
     next_server_request_id: u64,
     semantic_tokens_refresh_in_flight: Option<String>,
@@ -58,6 +59,7 @@ pub(super) struct SemanticTokensSelection {
     pub(super) token_loop_ms: u128,
     pub(super) encode_ms: u128,
     pub(super) rich_work: Option<(String, u64, u64)>,
+    pub(super) ready_to_publish: bool,
 }
 
 #[cfg(test)]
@@ -85,6 +87,7 @@ impl DocumentRuntime {
             runtime: AnalysisRuntime::new(AdmissionLimits::new(64, 64 * 1024 * 1024)),
             analysis_scheduler,
             deferred_document_requests: BTreeMap::new(),
+            deferred_semantic_token_requests: BTreeMap::new(),
             bracket_coloring,
             next_server_request_id: 1,
             semantic_tokens_refresh_in_flight: None,
@@ -197,6 +200,7 @@ impl DocumentRuntime {
             token_loop_ms: 0,
             encode_ms: 0,
             rich_work: None,
+            ready_to_publish: true,
         };
         let Some(document) = self.documents.get_mut(uri) else {
             return selection;
@@ -235,6 +239,7 @@ impl DocumentRuntime {
             TokenProjectionKind::LexicalBaseline => "lexical-pending",
             TokenProjectionKind::RichOverlay => "rich-overlay",
         };
+        selection.ready_to_publish = kind == TokenProjectionKind::RichOverlay;
         debug_assert_eq!(disposition, TokenResultDisposition::Full);
         if kind == TokenProjectionKind::LexicalBaseline
             && document.analysis_ready()
@@ -277,6 +282,7 @@ impl DocumentRuntime {
                 }
             }
         }
+        self.reject_deferred_semantic_token_requests(uri, None, None, &mut effects);
         effects.push(RuntimeEffect::Notification(clear_diagnostics_message(uri)));
         effects.push(RuntimeEffect::Log(format!(
             "notification didClose uri={uri}"
@@ -400,6 +406,7 @@ impl DocumentRuntime {
         };
         if let Some(scheduler) = self.analysis_scheduler.clone() {
             self.discard_deferred_document_requests_for_revision(&uri, revision, &mut effects)?;
+            self.reject_deferred_semantic_token_requests(&uri, None, None, &mut effects);
             self.admit_foreground(&uri, revision, scheduler);
             effects.push(RuntimeEffect::Log(format!(
                 "notification didChange uri={} bytes={} version={} revision={} foreground_state=pending analysis_state=waiting-foreground queue_ms={} coalesced_changes={} superseded_changes={} analysis_elapsed_ms={}",
@@ -504,6 +511,72 @@ impl DocumentRuntime {
         Ok(())
     }
 
+    fn reject_deferred_semantic_token_requests(
+        &mut self,
+        uri: &str,
+        revision: Option<u64>,
+        external_generation: Option<u64>,
+        effects: &mut Vec<RuntimeEffect>,
+    ) -> usize {
+        let Some(pending) = self.deferred_semantic_token_requests.remove(uri) else {
+            return 0;
+        };
+        let mut retained = Vec::new();
+        let mut rejected = 0;
+        for request in pending {
+            let revision_matches = revision.is_none_or(|value| request.revision == value);
+            let generation_matches =
+                external_generation.is_none_or(|value| request.external_generation == value);
+            if revision_matches && generation_matches {
+                if let Some(id) = request.routed.message.id {
+                    effects.push(RuntimeEffect::Error {
+                        id,
+                        code: -32801,
+                        message: "Content modified".to_string(),
+                    });
+                }
+                rejected += 1;
+            } else {
+                retained.push(request);
+            }
+        }
+        if !retained.is_empty() {
+            self.deferred_semantic_token_requests
+                .insert(uri.to_string(), retained);
+        }
+        rejected
+    }
+
+    fn replay_deferred_semantic_token_requests(
+        &mut self,
+        uri: &str,
+        revision: u64,
+        external_generation: u64,
+        effects: &mut Vec<RuntimeEffect>,
+    ) -> usize {
+        let Some(pending) = self.deferred_semantic_token_requests.remove(uri) else {
+            return 0;
+        };
+        let mut retained = Vec::new();
+        let mut replayed = 0;
+        for request in pending {
+            if request.revision == revision && request.external_generation == external_generation {
+                effects.push(RuntimeEffect::ReplayDeferred {
+                    routed: request.routed,
+                    queue_ms: request.received_at.elapsed().as_millis(),
+                });
+                replayed += 1;
+            } else {
+                retained.push(request);
+            }
+        }
+        if !retained.is_empty() {
+            self.deferred_semantic_token_requests
+                .insert(uri.to_string(), retained);
+        }
+        replayed
+    }
+
     /// Interprets completion events whose only observable outcome is a
     /// request response. Freshness belongs to the runtime that admitted the
     /// task; the composition root only delivers the returned effects.
@@ -585,25 +658,30 @@ impl DocumentRuntime {
             .clone();
         let source = document.snapshot.text().to_string();
         let _ = document;
-        self.admit_semantic_after_foreground_runtime(&uri, revision);
-        Some(vec![
+        let mut effects = vec![
             RuntimeEffect::Notification(publish_diagnostics_message(&uri, version, &source, &diagnostics)),
             RuntimeEffect::Log(format!(
                 "foreground ready uri={} version={} revision={} lexical_state=ready syntax_state=ready elapsed_ms={}",
                 uri, version, revision, elapsed_ms
             )),
-        ])
+        ];
+        effects.extend(self.admit_semantic_after_foreground_runtime(&uri, revision));
+        Some(effects)
     }
 
-    fn admit_semantic_after_foreground_runtime(&mut self, uri: &str, revision: u64) {
+    fn admit_semantic_after_foreground_runtime(
+        &mut self,
+        uri: &str,
+        revision: u64,
+    ) -> Vec<RuntimeEffect> {
         let Some(scheduler) = self.analysis_scheduler.clone() else {
-            return;
+            return Vec::new();
         };
         let Some(document) = self.documents.get(uri) else {
-            return;
+            return Vec::new();
         };
         if document.revision != revision || !document.foreground_ready() {
-            return;
+            return Vec::new();
         }
         let snapshot = document.snapshot.clone();
         let request_id = self.next_server_request_id;
@@ -627,8 +705,22 @@ impl DocumentRuntime {
                         document.reject_pending_analysis();
                     }
                 }
+                let mut effects = Vec::new();
+                let _ = self.discard_deferred_document_requests_for_revision(
+                    uri,
+                    revision,
+                    &mut effects,
+                );
+                self.reject_deferred_semantic_token_requests(
+                    uri,
+                    Some(revision),
+                    None,
+                    &mut effects,
+                );
+                return effects;
             }
         }
+        Vec::new()
     }
 
     pub(super) fn interpret_analysis_event(
@@ -709,6 +801,12 @@ impl DocumentRuntime {
                             {
                                 return Some(Err(error));
                             }
+                            self.reject_deferred_semantic_token_requests(
+                                task.uri(),
+                                Some(task.revision()),
+                                None,
+                                &mut effects,
+                            );
                         }
                     }
                 }
@@ -746,10 +844,16 @@ impl DocumentRuntime {
                 .semantic_tokens
                 .cancel_pending_if_matches(revision, external_generation);
         }
-        let effects = vec![RuntimeEffect::Log(format!(
+        let mut effects = vec![RuntimeEffect::Log(format!(
             "semanticTokensRich skipped uri={} revision={} external_generation={} reason={} elapsed_ms={}",
             uri, revision, external_generation, reason, elapsed_ms
         ))];
+        self.reject_deferred_semantic_token_requests(
+            &uri,
+            Some(revision),
+            Some(external_generation),
+            &mut effects,
+        );
         Some(effects)
     }
 
@@ -809,7 +913,15 @@ impl DocumentRuntime {
             timings.lex_ms, timings.token_loop_ms, timings.resolver_ms,
             timings.identifier_resolver_calls, timings.encode_ms, elapsed_ms
         ))];
-        self.request_semantic_tokens_refresh_effect(&mut effects);
+        let replayed = self.replay_deferred_semantic_token_requests(
+            &uri,
+            revision,
+            external_generation,
+            &mut effects,
+        );
+        if replayed == 0 {
+            self.request_semantic_tokens_refresh_effect(&mut effects);
+        }
         Some(effects)
     }
 
@@ -862,6 +974,22 @@ impl DocumentRuntime {
             return Vec::new();
         }
         self.last_semantic_external_generation = generation;
+        let pending_uris = self
+            .deferred_semantic_token_requests
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut effects = Vec::new();
+        for uri in pending_uris {
+            let rejected =
+                self.reject_deferred_semantic_token_requests(&uri, None, None, &mut effects);
+            if rejected > 0 {
+                effects.push(RuntimeEffect::Log(format!(
+                    "request semanticTokens invalidated uri={} reason=external-generation-changed rejected_requests={}",
+                    uri, rejected
+                )));
+            }
+        }
         for document in self.documents.values_mut() {
             document
                 .semantic_tokens
@@ -870,10 +998,10 @@ impl DocumentRuntime {
                 .semantic_tokens
                 .discard_rich_for_other_external_generation(generation);
         }
-        let mut effects = vec![RuntimeEffect::Log(format!(
+        effects.push(RuntimeEffect::Log(format!(
             "semanticTokens external overlay changed generation={} status={} documents={} requesting_refresh=true",
             generation, status, self.documents.len()
-        ))];
+        )));
         self.request_semantic_tokens_refresh_effect(&mut effects);
         effects
     }
@@ -920,10 +1048,17 @@ impl DocumentRuntime {
                 retained_bytes,
                 ..
             } => {
-                return vec![RuntimeEffect::Log(format!(
+                let mut effects = vec![RuntimeEffect::Log(format!(
                     "semanticTokensRich skipped uri={} revision={} external_generation={} reason=runtime-overload retained_jobs={} retained_bytes={}",
                     uri, revision, generation, retained_jobs, retained_bytes
                 ))];
+                self.reject_deferred_semantic_token_requests(
+                    uri,
+                    Some(revision),
+                    Some(generation),
+                    &mut effects,
+                );
+                return effects;
             }
         };
         self.documents
@@ -1035,6 +1170,72 @@ impl DocumentRuntime {
         Ok((true, effects))
     }
 
+    pub(super) fn defer_semantic_token_request(
+        &mut self,
+        message: &super::RpcMessage,
+        command: RequestCommand,
+        external_generation: u64,
+    ) -> Result<Vec<RuntimeEffect>, String> {
+        let Some(uri) = request_document_uri(message.params.as_ref()) else {
+            return Ok(Vec::new());
+        };
+        let Some(document) = self.documents.get(&uri) else {
+            return Ok(Vec::new());
+        };
+        let revision = document.revision;
+        let mut effects = Vec::new();
+        if document.analysis_rejected() {
+            if let Some(id) = message.id.clone() {
+                effects.push(RuntimeEffect::Error {
+                    id,
+                    code: -32801,
+                    message: "Content modified".to_string(),
+                });
+            }
+            effects.push(RuntimeEffect::Log(format!(
+                "request semanticTokens rejected uri={} revision={} reason=analysis-overload",
+                uri, revision
+            )));
+            return Ok(effects);
+        }
+        let pending = self
+            .deferred_semantic_token_requests
+            .entry(uri.clone())
+            .or_default();
+        if pending.len() >= MAX_PENDING_DOCUMENT_REQUESTS_PER_URI {
+            if let Some(id) = message.id.clone() {
+                effects.push(RuntimeEffect::Error {
+                    id,
+                    code: -32801,
+                    message: "Content modified".to_string(),
+                });
+            }
+            effects.push(RuntimeEffect::Log(format!(
+                "request semanticTokens rejected uri={} revision={} reason=capacity",
+                uri, revision
+            )));
+            return Ok(effects);
+        }
+        pending.push(DeferredSemanticTokenRequest {
+            revision,
+            external_generation,
+            received_at: Instant::now(),
+            routed: RoutedRequest {
+                command,
+                message: message.clone(),
+                parameter_error: None,
+            },
+        });
+        effects.push(RuntimeEffect::Log(format!(
+            "request semanticTokens deferred uri={} revision={} external_generation={} pending_requests={}",
+            uri,
+            revision,
+            external_generation,
+            pending.len()
+        )));
+        Ok(effects)
+    }
+
     /// Admits a debug capture on the runtime's rich lane. The returned task
     /// identity remains the sole authority for its worker result.
     pub(super) fn admit_debug_capture(
@@ -1109,13 +1310,27 @@ impl DocumentRuntime {
                         }
                     }
                 }
-                Some(Ok(vec![RuntimeEffect::Log(format!(
+                let mut effects = vec![RuntimeEffect::Log(format!(
                     "foreground skipped uri={} revision={} reason={} elapsed_ms={}",
                     task.uri(),
                     task.revision(),
                     reason,
                     elapsed_ms
-                ))]))
+                ))];
+                if current {
+                    let _ = self.discard_deferred_document_requests_for_revision(
+                        task.uri(),
+                        task.revision(),
+                        &mut effects,
+                    );
+                    self.reject_deferred_semantic_token_requests(
+                        task.uri(),
+                        Some(task.revision()),
+                        None,
+                        &mut effects,
+                    );
+                }
+                Some(Ok(effects))
             }
             event @ ServerEvent::DocumentAnalysisReady { .. }
             | event @ ServerEvent::DocumentAnalysisSkipped { .. } => {
@@ -1127,6 +1342,13 @@ impl DocumentRuntime {
 
 pub(super) struct DeferredDocumentRequest {
     pub(super) revision: u64,
+    pub(super) received_at: Instant,
+    pub(super) routed: RoutedRequest,
+}
+
+pub(super) struct DeferredSemanticTokenRequest {
+    pub(super) revision: u64,
+    pub(super) external_generation: u64,
     pub(super) received_at: Instant,
     pub(super) routed: RoutedRequest,
 }

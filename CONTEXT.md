@@ -214,7 +214,10 @@ Delimiter characters in comments inherit comment coloring and are never active S
 Delimiter characters in strings inherit string coloring and are never active Scope Delimiters.
 Preprocessor directive text does not participate in delimiter classification or matching.
 When an editing snapshot cannot prove a code delimiter's owner, it retains ordinary punctuation coloring until analysis can classify it.
-After an edit, the current lexical token projection replaces any stale rich delimiter ranges before updated semantic ownership is published; inserted text never inherits a delimiter's foreground.
+After an edit, the current lexical token projection remains an internal input
+and is never published as an interim full response. The editor keeps its
+settled semantic presentation until the current rich projection replaces it;
+inserted text never inherits a delimiter's foreground.
 The active Scope Delimiter is the innermost matched pair that contains the caret.
 Its active range includes the caret immediately after its opener or immediately before its closer.
 _Avoid_: bracket formatting, rainbow bracket
