@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import {
 	languageClientLanguage,
+	languageClientNotifications,
 	languageClientRequests,
 } from '../extensionConfig/languageClient';
 import {
@@ -19,6 +20,13 @@ interface ActiveScopeDelimiterResponse {
 
 export interface ActiveScopeDelimiterRequestClient {
 	sendRequest<Result>(method: string, params: unknown): Promise<Result>;
+}
+
+interface ActiveScopeDelimiterBridgeClient extends ActiveScopeDelimiterRequestClient {
+	onNotification(
+		method: string,
+		handler: (params: { uri: string; version: number }) => void,
+	): vscode.Disposable;
 }
 
 export function activeScopeDelimiterDecorationOptions(): vscode.DecorationRenderOptions {
@@ -100,7 +108,7 @@ export async function refreshActiveScopeDelimiterDecorationForSnapshot(
 }
 
 export function registerActiveScopeDelimiterBridge(
-	client: ActiveScopeDelimiterRequestClient,
+	client: ActiveScopeDelimiterBridgeClient,
 ): vscode.Disposable {
 	const decoration = vscode.window.createTextEditorDecorationType(
 		activeScopeDelimiterDecorationOptions(),
@@ -108,21 +116,12 @@ export function registerActiveScopeDelimiterBridge(
 	let disposed = false;
 	let generation = 0;
 	let decoratedEditor: vscode.TextEditor | undefined;
-	let pendingRetry: ReturnType<typeof setTimeout> | undefined;
 
 	const clearDecoratedEditor = () => {
-		if (pendingRetry) {
-			clearTimeout(pendingRetry);
-			pendingRetry = undefined;
-		}
 		decoratedEditor?.setDecorations(decoration, []);
 		decoratedEditor = undefined;
 	};
 	const refresh = (editor: vscode.TextEditor | undefined = vscode.window.activeTextEditor) => {
-		if (pendingRetry) {
-			clearTimeout(pendingRetry);
-			pendingRetry = undefined;
-		}
 		const requestGeneration = ++generation;
 		if (!editor || editor.document.languageId !== languageClientLanguage.id) {
 			clearDecoratedEditor();
@@ -146,17 +145,24 @@ export function registerActiveScopeDelimiterBridge(
 			client,
 			isCurrent,
 			ranges => editor.setDecorations(decoration, ranges),
-		).then(foregroundReady => {
-			if (!foregroundReady && isCurrent()) {
-				pendingRetry = setTimeout(() => refresh(editor), 25);
-			}
-		}).catch(() => {
+		).catch(() => {
 			if (isCurrent()) {
 				editor.setDecorations(decoration, []);
 			}
 		});
 	};
 
+	const foregroundReady = client.onNotification(
+		languageClientNotifications.foregroundReady,
+		params => {
+			const editor = vscode.window.activeTextEditor;
+			if (editor
+				&& editor.document.uri.toString() === params.uri
+				&& editor.document.version === params.version) {
+				refresh(editor);
+			}
+		},
+	);
 	const activeEditorChanges = vscode.window.onDidChangeActiveTextEditor(editor => {
 		refresh(editor);
 	});
@@ -175,6 +181,7 @@ export function registerActiveScopeDelimiterBridge(
 
 	return vscode.Disposable.from(
 		activeEditorChanges,
+		foregroundReady,
 		selectionChanges,
 		documentChanges,
 		{

@@ -708,19 +708,40 @@ suite('extension activation', () => {
 		});
 		await vscode.window.showTextDocument(document);
 		let requestCount = 0;
+		let foregroundReady: ((params: { uri: string; version: number }) => void) | undefined;
+		let resolveFirstRequest: (() => void) | undefined;
+		let resolveSecondRequest: (() => void) | undefined;
+		const firstRequest = new Promise<void>(resolve => {
+			resolveFirstRequest = resolve;
+		});
+		const secondRequest = new Promise<void>(resolve => {
+			resolveSecondRequest = resolve;
+		});
 		const registration = registerActiveScopeDelimiterBridge({
 			sendRequest: async <Result>() => {
 				requestCount += 1;
+				(requestCount === 1 ? resolveFirstRequest : resolveSecondRequest)?.();
 				return {
 					version: document.version,
 					pending: requestCount === 1,
 					pairs: [],
 				} as Result;
 			},
+			onNotification: (method, handler) => {
+				assert.strictEqual(method, 'reforger/foregroundReady');
+				foregroundReady = handler;
+				return new vscode.Disposable(() => undefined);
+			},
 		});
 		try {
-			await new Promise(resolve => setTimeout(resolve, 80));
-			assert.ok(requestCount >= 2, 'pending foreground state triggers a current-snapshot retry');
+			await firstRequest;
+			assert.strictEqual(requestCount, 1, 'pending state does not poll');
+			foregroundReady?.({
+				uri: document.uri.toString(),
+				version: document.version,
+			});
+			await secondRequest;
+			assert.strictEqual(requestCount, 2, 'foreground publication triggers the retry');
 		} finally {
 			registration.dispose();
 		}
@@ -741,6 +762,7 @@ suite('extension activation', () => {
 					pairs: [],
 				} as Result;
 			},
+			onNotification: () => new vscode.Disposable(() => undefined),
 		});
 		try {
 			await new Promise(resolve => setTimeout(resolve, 20));

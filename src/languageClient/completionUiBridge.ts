@@ -26,7 +26,7 @@ interface SnippetSuggestTransaction {
 	nextPlaceholderIndex: number;
 	selectionProbeCount: number;
 	selectionListener: vscode.Disposable;
-	cleanupTimer: ReturnType<typeof setTimeout>;
+	cleanupTimer?: ReturnType<typeof setTimeout>;
 	suggestDispatchScheduled: boolean;
 	awaitingCompletionResponse: boolean;
 	awaitingSnippetAdvance: boolean;
@@ -287,7 +287,6 @@ function triggerSuggestAtSnippetPlaceholder(...expectedSelectionTexts: unknown[]
 		nextPlaceholderIndex: 0,
 		selectionProbeCount: 0,
 		selectionListener,
-		cleanupTimer: setTimeout(() => undefined, 0),
 		suggestDispatchScheduled: false,
 		awaitingCompletionResponse: false,
 		awaitingSnippetAdvance: false,
@@ -305,12 +304,12 @@ function triggerSuggestAtSnippetPlaceholder(...expectedSelectionTexts: unknown[]
 	if (expectedSelectionTextSequence[0].length > 0) {
 		tryTrigger(editor, 'command');
 	} else {
-		setTimeout(() => {
+		queueMicrotask(() => {
 			const activeEditor = vscode.window.activeTextEditor;
 			if (activeEditor) {
 				tryTrigger(activeEditor, 'command');
 			}
-		}, 0);
+		});
 	}
 }
 
@@ -604,7 +603,9 @@ function resetSnippetSuggestTransactionTimeout(
 	transaction: SnippetSuggestTransaction,
 	reason: string,
 ): void {
-	clearTimeout(transaction.cleanupTimer);
+	if (transaction.cleanupTimer) {
+		clearTimeout(transaction.cleanupTimer);
+	}
 	transaction.cleanupTimer = setTimeout(() => {
 		if (pendingSnippetSuggestTransaction?.id === transaction.id) {
 			diagnostic('completion.transaction.abandoned', {
@@ -623,7 +624,9 @@ function clearSnippetSuggestTransaction(expectedId?: number): void {
 		return;
 	}
 	transaction.selectionListener.dispose();
-	clearTimeout(transaction.cleanupTimer);
+	if (transaction.cleanupTimer) {
+		clearTimeout(transaction.cleanupTimer);
+	}
 	pendingSnippetSuggestTransaction = undefined;
 }
 

@@ -223,7 +223,13 @@ transactions, typing-assist transactions, and active scope-delimiter
 presentation. The scope-delimiter bridge forwards current carets to the
 version-aware Rust request and applies the returned ranges with the standard
 theme bracket-match background and border; semantic-token rules retain sole
-ownership of foreground presentation. The single application-scoped
+ownership of foreground presentation. A pending current-revision request is
+retried only when the server publishes that revision's foreground-ready event;
+the bridge has no retry timer. Workspace file events are likewise read and
+published immediately with monotonically increasing per-path sequences, so
+out-of-order reads are rejected by Rust without a debounce delay. Development
+binary events request an immediate serialized restart. The single
+application-scoped
 bracket-coloring setting selects semantic-owner colors, Reforger punctuation,
 or native VS Code presentation consistently across VS Code windows.
 The language client synchronizes VS Code's language-specific bracket-coloring

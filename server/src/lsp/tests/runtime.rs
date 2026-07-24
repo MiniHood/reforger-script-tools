@@ -451,6 +451,10 @@ fn channel_runtime_worker_results_do_not_wait_for_unrelated_incoming_messages() 
         output.contains("\"method\":\"workspace/semanticTokens/refresh\""),
         "worker publication waited for the unrelated shutdown message: {output}"
     );
+    assert!(
+        output.contains("\"method\":\"reforger/foregroundReady\""),
+        "foreground publication must wake the scope-decoration bridge: {output}"
+    );
 }
 
 #[test]
@@ -1448,8 +1452,15 @@ fn pending_analysis_clears_repaired_parser_diagnostics_before_worker_publication
 
     let output = String::from_utf8(server.writer).unwrap();
     let mut reader = BufReader::new(output.as_bytes());
-    let broken = read_message(&mut reader).unwrap().unwrap();
-    let repaired = read_message(&mut reader).unwrap().unwrap();
+    let mut diagnostics = Vec::new();
+    while let Some(message) = read_message(&mut reader).unwrap() {
+        if message["method"] == "textDocument/publishDiagnostics" {
+            diagnostics.push(message);
+        }
+    }
+    let [broken, repaired] = diagnostics.as_slice() else {
+        panic!("expected broken and repaired diagnostic publications");
+    };
     assert_eq!(broken["params"]["version"], 1);
     assert!(!broken["params"]["diagnostics"]
         .as_array()

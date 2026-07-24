@@ -71,6 +71,7 @@ export const languageClientRequests = {
 } as const;
 
 export const languageClientNotifications = {
+	foregroundReady: 'reforger/foregroundReady',
 	workspaceFileChanged: 'reforger/workspaceFileChanged',
 	workspaceFileDeleted: 'reforger/workspaceFileDeleted',
 } as const;

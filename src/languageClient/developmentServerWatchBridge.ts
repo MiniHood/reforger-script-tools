@@ -4,13 +4,15 @@ import { languageClientServer } from '../extensionConfig/languageClient';
 
 let watcher: vscode.FileSystemWatcher | undefined;
 let watchedPath: string | undefined;
-let restartTimer: NodeJS.Timeout | undefined;
+let restartInFlight: Promise<void> | undefined;
+let restartRequested = false;
+let watcherGeneration = 0;
 
-/** Watches only the development server binary and requests a debounced restart. */
+/** Watches only the development server binary and serializes immediate restarts. */
 export function registerDevelopmentServerWatchBridge(
 	context: vscode.ExtensionContext,
 	serverPath: string,
-	onRestart: () => void,
+	onRestart: () => Promise<void>,
 ): void {
 	if (context.extensionMode !== vscode.ExtensionMode.Development) {
 		return;
@@ -23,34 +25,39 @@ export function registerDevelopmentServerWatchBridge(
 	}
 
 	watcher?.dispose();
+	const generation = ++watcherGeneration;
 	watchedPath = developmentPath;
 	watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(
 		path.dirname(developmentPath),
 		path.basename(developmentPath),
 	));
-	const scheduleRestart = (): void => {
-		if (restartTimer) {
-			clearTimeout(restartTimer);
+	const requestRestart = (): void => {
+		if (restartInFlight) {
+			restartRequested = true;
+			return;
 		}
-		restartTimer = setTimeout(() => {
-			restartTimer = undefined;
-			onRestart();
-		}, 500);
+		const run = async (): Promise<void> => {
+			do {
+				restartRequested = false;
+				await onRestart();
+			} while (restartRequested && watcherGeneration === generation);
+		};
+		restartInFlight = run().finally(() => {
+			restartInFlight = undefined;
+		});
 	};
 
 	context.subscriptions.push(
 		watcher,
-		watcher.onDidCreate(scheduleRestart),
-		watcher.onDidChange(scheduleRestart),
+		watcher.onDidCreate(requestRestart),
+		watcher.onDidChange(requestRestart),
 	);
 }
 
 export function disposeDevelopmentServerWatchBridge(): void {
+	watcherGeneration += 1;
 	watcher?.dispose();
 	watcher = undefined;
 	watchedPath = undefined;
-	if (restartTimer) {
-		clearTimeout(restartTimer);
-		restartTimer = undefined;
-	}
+	restartRequested = false;
 }

@@ -228,9 +228,18 @@ async function startLanguageClient(
 		serverPath,
 		extensionMode: extensionModeName(context.extensionMode),
 	});
-	registerDevelopmentServerWatchBridge(context, serverPath, () => {
-		void restartLanguageClient(context, outputChannel, 'development language-server binary changed');
-	});
+	registerDevelopmentServerWatchBridge(
+		context,
+		serverPath,
+		async () => {
+			try {
+				await restartLanguageClient(context, outputChannel, 'development language-server binary changed');
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				outputChannel.appendLine(`Development language-server restart failed: ${message}`);
+			}
+		},
+	);
 
 	const logsRoot = path.join(context.globalStorageUri.fsPath, languageClientLogs.rootFolder);
 	await fs.mkdir(logsRoot, { recursive: true });
