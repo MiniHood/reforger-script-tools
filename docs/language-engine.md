@@ -31,6 +31,17 @@ New language behavior belongs in the appropriate shared layer when more than
 one feature can benefit. A feature-specific adapter is appropriate only when
 it projects existing facts into an LSP response.
 
+The semantic-token legend is a classification contract, not a color palette.
+It uses the standard `function` token for both global and class functions while
+retaining their distinct `Function` and `Method` symbol kinds inside the
+language model. Reforger-facing custom types are `reforgerField`,
+`reforgerPunctuation`, and `reforgerPreprocessor`; their VS Code supertypes are
+`property`, `operator`, and `keyword`. Attribute expressions keep their
+detailed class, function, enum-value, variable, and field classifications
+rather than collapsing to a decorator token. The Rust engine emits no
+foreground values. `package.json` owns the Enforce-qualified default palette,
+which users may override through native VS Code semantic-token settings.
+
 Scope delimiters are one shared syntax projection used by semantic tokens and
 the active-pair request. Parser-proven `{}`, `()`, `[]`, and generic `<>`
 inherit the semantic token kind of their immediate owner; when a construct has
@@ -43,24 +54,27 @@ not reclassified as generic delimiters. A parser-proven unmatched opener may
 be colored for recovery, but only matched pairs can become active.
 Call, construction, and index anchors are admitted only after the resolver
 selects a compatible symbol; unresolved or category-invalid candidates remain
-punctuation. Attribute delimiters use the semantic `decorator` token kind
-without changing the attribute class name's existing classification.
+`reforgerPunctuation`. Attribute delimiters inherit the attribute class
+classification without changing the attribute expression's detailed token
+roles.
 
 `reforgerScriptTools.bracketColoring` selects one presentation for the whole
 projection. `semantic`, the default, uses the owner classification above.
-`punctuation` emits every code delimiter as the theme's ordinary semantic
-`punctuation` token while retaining parser-proven active-pair matching.
+`punctuation` emits every code delimiter as `reforgerPunctuation` while
+retaining parser-proven active-pair matching.
 `vscode` omits code delimiters from the custom semantic-token projection so
 VS Code owns both their foreground colors and matching presentation. No mode
-hard-codes a foreground color, so theme customization remains authoritative.
+hard-codes a foreground color in Rust, so the manifest palette and user
+customization remain authoritative.
 
 `reforger/activeScopeDelimiters` is a bounded, version-aware projection for all
 current carets. It selects the innermost matched semantic pair at each caret,
 coalesces duplicate pairs, and may use the current foreground parse while
 whole-document semantic analysis is pending. The response contains the document
-version, foreground-readiness state, and delimiter ranges; ownership and color
-decisions remain in Rust and semantic tokens. The editor bridge retries a
-current pending snapshot until its foreground projection is ready; a rejected
+version, foreground-readiness state, and delimiter ranges; semantic ownership
+and classification remain in Rust tokens while VS Code owns their foreground
+presentation. The editor bridge retries a current pending snapshot until its
+foreground projection is ready; a rejected
 foreground task returns a terminal empty result rather than a retry signal.
 After every source edit, the semantic-token request returns the current
 snapshot's lexical baseline immediately, replacing any editor-tracked rich
@@ -75,9 +89,9 @@ delimiter's foreground while the richer projection is pending.
 Active-pair requests decline documents larger than 128 KiB and cap caret input.
 Pair selection depends only on parser-proven structure, so foreground and
 analyzed snapshots return the same active ranges; resolver-dependent foreground
-coloring remains punctuation until matching analysis exists. Background
-semantic projection retains its existing cancellation contract and bounded
-token output.
+classification remains `reforgerPunctuation` until matching analysis exists.
+Background semantic projection retains its existing cancellation contract and
+bounded token output.
 
 ## Snapshot Rules
 

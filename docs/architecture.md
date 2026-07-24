@@ -204,16 +204,24 @@ identity/location in one Workbench response before the extension projects or
 renders them. If Workbench returns both error and warning copies, error wins.
 Different messages, locations, or source identities remain distinct findings.
 
+`package.json` is the single foreground owner for the dark-oriented Reforger
+Semantic Palette. It contributes Enforce-qualified native VS Code semantic
+token rules instead of a complete theme, so the user retains their selected
+theme and may override or disable the palette through normal VS Code settings.
+The Rust server owns the semantic-token legend and classifications but emits no
+foreground values. The editor shell does not generate settings, apply
+foreground decorations, or duplicate the palette at runtime.
+
 Within the language-client bridge, the composition root retains server lifecycle
 and restart policy. Focused bridges own workspace-script notifications, hover
 rendering, diagnostic command UI, development-server watching, completion UI
 transactions, typing-assist transactions, and active scope-delimiter
 presentation. The scope-delimiter bridge forwards current carets to the
 version-aware Rust request and applies the returned ranges with the standard
-theme bracket-match background and border; semantic tokens retain sole
-ownership of foreground color. The single application-scoped bracket-coloring
-setting selects semantic-owner colors, ordinary punctuation, or native VS Code
-presentation consistently across VS Code windows.
+theme bracket-match background and border; semantic-token rules retain sole
+ownership of foreground presentation. The single application-scoped
+bracket-coloring setting selects semantic-owner colors, Reforger punctuation,
+or native VS Code presentation consistently across VS Code windows.
 The language client synchronizes VS Code's language-specific bracket-coloring
 and matching controls with that mode and restarts the server with the same
 selection. Semantic-owner and punctuation modes disable native presentation

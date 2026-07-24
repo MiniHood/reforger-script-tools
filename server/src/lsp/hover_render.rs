@@ -1,7 +1,6 @@
 use crate::index_query::{EditorCompletionCandidate, EditorCompletionOrigin, IndexQuery};
 use crate::lexer::{lex, TokenKind};
 use crate::lsp::file_uri_for_path;
-use crate::lsp::semantic_tokens::semantic_token_color_for_type;
 use crate::lsp::symbol_kind_label;
 use crate::model::SymbolKind;
 use crate::symbol_display::{documentation_display, DocumentationDisplay, SymbolDisplayInfo};
@@ -1204,16 +1203,8 @@ fn is_parameter_modifier(value: &str) -> bool {
     matches!(value, "out" | "inout" | "notnull" | "const")
 }
 
-fn colored_text(value: &str, token_type: &str) -> String {
-    let color = semantic_token_color_for_type(token_type);
-    if color == "<default>" {
-        escape_html_text(value)
-    } else {
-        format!(
-            "<span style=\"color:{color};\">{}</span>",
-            escape_html_text(value)
-        )
-    }
+fn colored_text(value: &str, _token_type: &str) -> String {
+    escape_html_text(value)
 }
 
 fn escape_inline_code(value: &str) -> String {
@@ -1277,24 +1268,18 @@ mod tests {
             }),
         );
 
-        assert!(markdown.contains("<span style=\"color:#cfcfcf;\">field</span>"));
         assert!(
-            markdown.contains("<strong><span style=\"font-size:1.12em;\"><span style=\"color:#cfcfcf;\">field</span></span></strong>")
+            markdown.contains("<strong><span style=\"font-size:1.12em;\">field</span></strong>")
         );
         assert!(markdown.contains("data-code=\"protected ref array&lt;int&gt; m_Values\""));
-        assert!(markdown.contains("<span style=\"color:#59A6E9;\">protected</span>"));
-        assert!(markdown.contains("<span style=\"color:#59A6E9;\">ref</span>"));
-        assert!(markdown.contains("<span style=\"color:#40b5ac;\">array</span>"));
-        assert!(markdown.contains("<span style=\"color:#bfbfbf;\">&lt;</span>"));
-        assert!(markdown.contains("<span style=\"color:#59A6E9;\">int</span>"));
-        assert!(markdown.contains("<span style=\"color:#cfcfcf;\">m_Values</span>"));
+        assert_theme_owned_foreground(&markdown);
         assert!(!markdown.contains("**Detail:** `type ref array<int>`"));
         assert!(!markdown.contains("Modifiers: protected"));
         assert!(!markdown.contains("Attributes: Attribute"));
     }
 
     #[test]
-    fn renders_preprocessor_macro_with_directive_coloring() {
+    fn renders_preprocessor_macro_declaration() {
         let index = index("#define ENABLE_BASE_DESTRUCTION\n");
         let query = IndexQuery::new(&index);
         let display = query
@@ -1316,8 +1301,7 @@ mod tests {
 
         assert!(markdown.contains("Preprocessor Macro"));
         assert!(markdown.contains("data-code=\"#define ENABLE_BASE_DESTRUCTION\""));
-        assert!(markdown.contains("<span style=\"color:#d4fd95;\">#define</span>"));
-        assert!(markdown.contains("<span style=\"color:#cfcfcf;\">ENABLE_BASE_DESTRUCTION</span>"));
+        assert_theme_owned_foreground(&markdown);
     }
 
     #[test]
@@ -1351,11 +1335,10 @@ mod tests {
         );
 
         assert!(markdown.contains(
-            "<span style=\"font-size:1.12em;\"><strong><span style=\"color:#f3ad58;\">Function</span></strong> in <strong><span style=\"color:#40b5ac;\">Example</span></strong></span>\n<div"
+            "<span style=\"font-size:1.12em;\"><strong>Function</strong> in <strong>Example</strong></span>\n<div"
         ));
         assert!(markdown.contains("data-code=\"bool Run(int value)\""));
-        assert!(markdown.contains("<span style=\"color:#59A6E9;\">bool</span>"));
-        assert!(markdown.contains("<span style=\"color:#f3ad58;\">Run</span>"));
+        assert_theme_owned_foreground(&markdown);
         assert!(markdown.contains("Runs the example."));
         assert!(!markdown.contains("### Parameters"));
         assert!(markdown.contains("`in` value Input value."));
@@ -1364,7 +1347,6 @@ mod tests {
         assert!(markdown.contains("`return` true when accepted."));
         assert!(markdown.contains("`warning` Can fail."));
         assert!(markdown.contains("`note` Use from tests."));
-        assert!(!markdown.contains("<span style=\"color:#59A6E9;\">return</span>"));
     }
 
     #[test]
@@ -1401,24 +1383,27 @@ mod tests {
             }),
         );
 
-        assert!(markdown.contains("<span style=\"color:#59A6E9;\">Class</span>"));
+        assert!(
+            markdown.contains("<strong><span style=\"font-size:1.12em;\">Class</span></strong>")
+        );
         assert!(markdown.contains("data-code=\"class Example : Base\""));
-        assert!(markdown.contains("<span style=\"color:#59A6E9;\">class</span>"));
-        assert!(markdown.contains("<span style=\"color:#40b5ac;\">Example</span>"));
-        assert!(markdown.contains("<span style=\"color:#bfbfbf;\">:</span>"));
-        assert!(markdown.contains("<span style=\"color:#40b5ac;\">Base</span>"));
+        assert_theme_owned_foreground(&markdown);
         assert!(!markdown.contains("**Detail:** `base Base`"));
         assert!(markdown.contains("### Constructors"));
         assert!(!markdown.contains("### Destructors"));
         assert!(!markdown.contains("~Example"));
         assert!(markdown.contains("### Functions"));
         assert!(markdown.contains("### Fields"));
-        assert!(markdown.contains("<span style=\"color:#f3ad58;\">Run</span>"));
-        assert!(markdown.contains("<span style=\"color:#f3ad58;\">Stop</span>"));
-        assert!(markdown.contains("<span style=\"color:#f3ad58;\">OnGameStateChanged</span>"));
-        assert!(markdown.contains("<span style=\"color:#f3ad58;\">EngineEvent</span>"));
-        assert!(markdown.contains("<span style=\"color:#f3ad58;\">GetAffiliatedState</span>"));
-        assert!(markdown.contains("<span style=\"color:#cfcfcf;\">m_Value</span>"));
+        for name in [
+            "Run",
+            "Stop",
+            "OnGameStateChanged",
+            "EngineEvent",
+            "GetAffiliatedState",
+            "m_Value",
+        ] {
+            assert!(markdown.contains(name), "{name}: {markdown}");
+        }
         assert!(!markdown.contains("InternalRun"));
         assert!(!markdown.contains("PrivateRun"));
         assert!(!markdown.contains("m_InternalValue"));
@@ -1465,8 +1450,9 @@ class Example : Base
         assert!(markdown.contains("%22uri%22"));
         assert!(markdown.contains("%22startByte%22"));
         assert!(markdown.contains("%22endByte%22"));
-        assert!(markdown.contains("<span style=\"color:#40b5ac;\">Base</span>"));
-        assert!(markdown.contains("<span style=\"color:#f3ad58;\">Make</span>"));
+        assert!(markdown.contains("Base"));
+        assert!(markdown.contains("Make"));
+        assert_theme_owned_foreground(&markdown);
     }
 
     #[test]
@@ -1514,10 +1500,9 @@ class Child : Base
         assert!(base_run > child_run);
         assert!(fields > base_run);
         assert!(!markdown.contains("### Inherited members"));
-        assert!(markdown.contains("<span style=\"color:#f3ad58;\">ChildRun</span>"));
-        assert!(markdown.contains("<span style=\"color:#f3ad58;\">BaseRun</span>"));
-        assert!(markdown.contains("<span style=\"color:#cfcfcf;\">m_ChildValue</span>"));
-        assert!(markdown.contains("<span style=\"color:#cfcfcf;\">m_BaseValue</span>"));
+        assert!(markdown.contains("m_ChildValue"));
+        assert!(markdown.contains("m_BaseValue"));
+        assert_theme_owned_foreground(&markdown);
         assert!(!markdown.contains("inherited from"));
         assert!(!markdown.contains("ProtectedRun"));
         assert!(!markdown.contains("PrivateRun"));
@@ -1558,10 +1543,9 @@ class Child : Base
         assert!(markdown.contains("string uiwidget = UIWidgets.Flags"));
         assert!(markdown.contains("ParamEnumArray enums = ParamEnumArray.FromEnum(EGameFlags)"));
         assert!(markdown.contains("string category = WB_GAME_MODE_CATEGORY"));
-        assert!(markdown.contains("### <span style=\"color:#59A6E9;\">Constructor</span>"));
-        assert!(markdown.contains(
-            "<span style=\"color:#59A6E9;\">void</span> <span style=\"color:#40b5ac;\">Attribute</span><span style=\"color:#bfbfbf;\">(</span>"
-        ));
+        assert!(markdown.contains("### Constructor"));
+        assert!(markdown.contains("void Attribute("));
+        assert_theme_owned_foreground(&markdown);
         assert!(!markdown.contains("string desc = \"Test flags.\""));
     }
 
@@ -1592,16 +1576,13 @@ class Child : Base
             }),
         );
 
-        assert!(markdown.contains(
-            "<strong><span style=\"font-size:1.12em;\"><span style=\"color:#59A6E9;\">Enum</span></span></strong>"
-        ));
+        assert!(markdown.contains("<strong><span style=\"font-size:1.12em;\">Enum</span></strong>"));
         assert!(markdown.contains("data-code=\"enum ExampleEnum\""));
-        assert!(markdown.contains("<span style=\"color:#59A6E9;\">enum</span>"));
-        assert!(markdown.contains("<span style=\"color:#40b5ac;\">ExampleEnum</span>"));
         assert!(markdown.contains("### Enum Values"));
-        assert!(markdown.contains("<span style=\"color:#cfcfcf;\">First</span> = 1"));
-        assert!(markdown.contains("<span style=\"color:#cfcfcf;\">Second</span>"));
-        assert!(markdown.contains("<span style=\"color:#cfcfcf;\">Fifth</span>"));
+        assert!(markdown.contains("First</a> = 1") || markdown.contains("First = 1"));
+        assert!(markdown.contains("Second"));
+        assert!(markdown.contains("Fifth"));
+        assert_theme_owned_foreground(&markdown);
         assert!(!markdown.contains(" // value"));
     }
 
@@ -1634,10 +1615,11 @@ class Child : Base
 
         assert!(markdown.contains("### Enum Values"));
         assert!(markdown.contains("<a href=\"command:reforger-sript-tools.openSymbolLocation?"));
-        assert!(markdown.contains("<span style=\"color:#cfcfcf;\">First</span>"));
+        assert!(markdown.contains(">First</a>"));
         assert!(markdown.contains(" = 1"));
         assert!(!markdown.contains("```enforce"));
         assert!(!markdown.contains("[<span"));
+        assert_theme_owned_foreground(&markdown);
     }
 
     #[test]
@@ -1707,15 +1689,10 @@ class Example
                 markdown.contains(expected),
                 "missing {expected:?} in {markdown}"
             );
+            assert_theme_owned_foreground(&markdown);
             if kind == SymbolKind::Destructor {
-                assert!(
-                    markdown.contains("<span style=\"color:#40b5ac;\">Destructor</span>"),
-                    "{markdown}"
-                );
-                assert!(
-                    markdown.contains("<span style=\"color:#40b5ac;\">Example</span>"),
-                    "{markdown}"
-                );
+                assert!(markdown.contains("Destructor"), "{markdown}");
+                assert!(markdown.contains("Example"), "{markdown}");
             }
         }
     }
@@ -1745,8 +1722,9 @@ class Example
             }),
         );
 
-        assert!(markdown.contains("<span style=\"font-size:1.12em;\"><strong><span style=\"color:#cfcfcf;\">Enum Value</span></strong> in <strong><span style=\"color:#40b5ac;\">SCR_EGameModeState</span></strong></span>"));
+        assert!(markdown.contains("<span style=\"font-size:1.12em;\"><strong>Enum Value</strong> in <strong>SCR_EGameModeState</strong></span>"));
         assert!(markdown.contains("data-code=\"PREGAME = 0\""));
+        assert_theme_owned_foreground(&markdown);
     }
 
     #[test]
@@ -1776,9 +1754,14 @@ class Example
         );
 
         assert!(markdown.contains("data-code=\"int i = 0\""));
-        assert!(markdown.contains("<span style=\"color:#59A6E9;\">int</span>"));
-        assert!(markdown.contains("<span style=\"color:#cfcfcf;\">i</span> = 0"));
-        assert!(!markdown.contains(">i</span>nt"));
+        assert_theme_owned_foreground(&markdown);
+    }
+
+    fn assert_theme_owned_foreground(markdown: &str) {
+        assert!(
+            !markdown.contains("style=\"color:"),
+            "Rust hover rendering must not own foreground colors: {markdown}"
+        );
     }
 
     fn index(source: &str) -> SymbolIndex {

@@ -16,8 +16,7 @@ pub(crate) const SEMANTIC_TOKEN_TYPES: &[&str] = &[
     "enum",
     "type",
     "function",
-    "method",
-    "field",
+    "reforgerField",
     "variable",
     "parameter",
     "enumMember",
@@ -26,9 +25,8 @@ pub(crate) const SEMANTIC_TOKEN_TYPES: &[&str] = &[
     "string",
     "number",
     "operator",
-    "punctuation",
-    "preprocessor",
-    "decorator",
+    "reforgerPunctuation",
+    "reforgerPreprocessor",
     "typeParameter",
 ];
 
@@ -116,7 +114,6 @@ pub struct SemanticTokenDebug {
     pub range: LspRange,
     pub token_type: &'static str,
     pub modifiers: Vec<&'static str>,
-    pub color: &'static str,
 }
 
 pub fn semantic_tokens_report_for_source(source: &str) -> LspSemanticTokenReport {
@@ -271,7 +268,6 @@ fn semantic_tokens_report_for_cached_analysis_mode(
             range: range_for_span(source, token.span),
             token_type: semantic_token_type_name(token.token_type),
             modifiers: semantic_modifier_names(token.modifiers),
-            color: semantic_token_color(token.token_type),
         })
         .collect::<Vec<_>>();
     let encode_start = Instant::now();
@@ -500,7 +496,7 @@ fn semantic_raw_tokens(
                 AttributeIdentifierRole::AttributeName => semantic_type_index("class"),
                 AttributeIdentifierRole::NamedArgumentLabel => semantic_type_index("variable"),
                 AttributeIdentifierRole::StaticOwner => semantic_type_index("class"),
-                AttributeIdentifierRole::MemberCallName => semantic_type_index("method"),
+                AttributeIdentifierRole::MemberCallName => semantic_type_index("function"),
                 AttributeIdentifierRole::MemberValueName => semantic_type_index("enumMember"),
                 AttributeIdentifierRole::TypeLikeUnqualifiedValue => semantic_type_index("class"),
                 AttributeIdentifierRole::UnqualifiedValue => semantic_type_index("variable"),
@@ -523,7 +519,7 @@ fn semantic_raw_tokens(
         if let Some(role) = call_roles.get(&token_index).copied() {
             let token_type = match role {
                 CallIdentifierRole::UnqualifiedCall => semantic_type_index("function"),
-                CallIdentifierRole::MemberCall => semantic_type_index("method"),
+                CallIdentifierRole::MemberCall => semantic_type_index("function"),
             };
             push_raw_semantic_token(
                 &mut tokens,
@@ -683,7 +679,7 @@ fn semantic_raw_tokens(
                 || delimiter.anchor_kind
                     == super::scope_delimiters::ScopeDelimiterAnchorKind::Punctuation
             {
-                semantic_type_index("punctuation")
+                semantic_type_index("reforgerPunctuation")
             } else if let Some((_, token_type)) =
                 owner_types.get(&(delimiter.anchor.start, delimiter.anchor.end))
             {
@@ -790,7 +786,7 @@ fn lexical_raw_tokens(
                 AttributeIdentifierRole::AttributeName => semantic_type_index("class"),
                 AttributeIdentifierRole::NamedArgumentLabel => semantic_type_index("variable"),
                 AttributeIdentifierRole::StaticOwner => semantic_type_index("class"),
-                AttributeIdentifierRole::MemberCallName => semantic_type_index("method"),
+                AttributeIdentifierRole::MemberCallName => semantic_type_index("function"),
                 AttributeIdentifierRole::MemberValueName => semantic_type_index("enumMember"),
                 AttributeIdentifierRole::TypeLikeUnqualifiedValue => semantic_type_index("class"),
                 AttributeIdentifierRole::UnqualifiedValue => semantic_type_index("variable"),
@@ -805,7 +801,7 @@ fn lexical_raw_tokens(
         if let Some(role) = call_roles.get(&token_index).copied() {
             let token_type = match role {
                 CallIdentifierRole::UnqualifiedCall => semantic_type_index("function"),
-                CallIdentifierRole::MemberCall => semantic_type_index("method"),
+                CallIdentifierRole::MemberCall => semantic_type_index("function"),
             };
             push_raw_semantic_token(
                 &mut tokens,
@@ -847,7 +843,7 @@ fn lexical_raw_tokens(
                         &mut tokens,
                         RawSemanticToken {
                             span: TextSpan::new(offset, offset + 1),
-                            token_type: semantic_type_index("punctuation"),
+                            token_type: semantic_type_index("reforgerPunctuation"),
                             modifiers: 0,
                             priority: 10,
                         },
@@ -1217,8 +1213,8 @@ fn lexical_semantic_type(kind: TokenKind) -> Option<u32> {
         | TokenKind::Colon
         | TokenKind::Comma
         | TokenKind::Dot
-        | TokenKind::Question => Some(semantic_type_index("punctuation")),
-        TokenKind::Hash => Some(semantic_type_index("preprocessor")),
+        | TokenKind::Question => Some(semantic_type_index("reforgerPunctuation")),
+        TokenKind::Hash => Some(semantic_type_index("reforgerPreprocessor")),
         _ => None,
     }
 }
@@ -1242,9 +1238,9 @@ fn symbol_semantic_type(kind: SymbolKind) -> Option<u32> {
         SymbolKind::EnumMember => Some(semantic_type_index("enumMember")),
         SymbolKind::Typedef => Some(semantic_type_index("type")),
         SymbolKind::Function => Some(semantic_type_index("function")),
-        SymbolKind::GlobalField | SymbolKind::Field => Some(semantic_type_index("field")),
+        SymbolKind::GlobalField | SymbolKind::Field => Some(semantic_type_index("reforgerField")),
         SymbolKind::Constructor | SymbolKind::Destructor => Some(semantic_type_index("class")),
-        SymbolKind::Method => Some(semantic_type_index("method")),
+        SymbolKind::Method => Some(semantic_type_index("function")),
         SymbolKind::Parameter => Some(semantic_type_index("parameter")),
         SymbolKind::LocalVariable | SymbolKind::PreprocessorMacro => {
             Some(semantic_type_index("variable"))
@@ -1624,24 +1620,6 @@ fn semantic_modifier_names(modifiers: u32) -> Vec<&'static str> {
         .collect()
 }
 
-pub(crate) fn semantic_token_color_for_type(token_type: &str) -> &'static str {
-    match token_type {
-        "class" | "enum" | "type" | "typeParameter" => "#40b5ac",
-        "function" | "method" => "#f3ad58",
-        "enumMember" | "variable" | "field" | "parameter" | "number" => "#cfcfcf",
-        "keyword" => "#59A6E9",
-        "comment" => "#59aa59",
-        "string" => "#c178dd",
-        "operator" | "punctuation" => "#bfbfbf",
-        "preprocessor" | "decorator" => "#d4fd95",
-        _ => "<default>",
-    }
-}
-
-fn semantic_token_color(token_type: u32) -> &'static str {
-    semantic_token_color_for_type(semantic_token_type_name(token_type))
-}
-
 fn previous_non_trivia(tokens: &[Token], index: usize) -> Option<Token> {
     tokens[..index]
         .iter()
@@ -1671,7 +1649,7 @@ fn is_preprocessor_line_token(source: &str, token: Token) -> bool {
 
 fn preprocessor_line_semantic_type(source: &str, token: Token) -> Option<u32> {
     if token.kind == TokenKind::Hash || is_preprocessor_directive_token(source, token) {
-        return Some(semantic_type_index("preprocessor"));
+        return Some(semantic_type_index("reforgerPreprocessor"));
     }
     if token.kind == TokenKind::Identifier {
         return Some(semantic_type_index("variable"));
@@ -1769,15 +1747,15 @@ mod tests {
         );
         assert_eq!(
             lexical_token_type_at_offset(&punctuation, generic_open),
-            Some(semantic_type_index("punctuation")),
+            Some(semantic_type_index("reforgerPunctuation")),
         );
         assert_eq!(
             lexical_token_type_at_offset(&punctuation, generic_close),
-            Some(semantic_type_index("punctuation")),
+            Some(semantic_type_index("reforgerPunctuation")),
         );
         assert_eq!(
             lexical_token_type_at_offset(&punctuation, mixed_closers),
-            Some(semantic_type_index("punctuation")),
+            Some(semantic_type_index("reforgerPunctuation")),
         );
         assert_eq!(
             lexical_token_type_at_offset(&punctuation, mixed_closers + 1),

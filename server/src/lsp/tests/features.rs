@@ -170,7 +170,7 @@ class Example
     assert!(report
         .decoded
         .iter()
-        .any(|token| token.text == "Run" && token.token_type == "method"));
+        .any(|token| token.text == "Run" && token.token_type == "function"));
     assert!(report
         .decoded
         .iter()
@@ -179,7 +179,7 @@ class Example
         !report
             .decoded
             .iter()
-            .any(|token| token.text == "Example" && token.token_type == "method"),
+            .any(|token| token.text == "Example" && token.token_type == "function"),
         "{:?}",
         report.decoded
     );
@@ -187,7 +187,7 @@ class Example
         report
             .decoded
             .iter()
-            .filter(|token| token.text == "Run" && token.token_type == "method")
+            .filter(|token| token.text == "Run" && token.token_type == "function")
             .count()
             >= 2
     );
@@ -212,7 +212,7 @@ class Example
     assert!(report
         .decoded
         .iter()
-        .any(|token| token.text == "COUNT" && token.token_type == "field"));
+        .any(|token| token.text == "COUNT" && token.token_type == "reforgerField"));
     assert!(report
         .decoded
         .iter()
@@ -252,13 +252,13 @@ class Example
     assert!(report
         .decoded
         .iter()
-        .any(|token| token.text == "ifdef" && token.token_type == "preprocessor"));
+        .any(|token| token.text == "ifdef" && token.token_type == "reforgerPreprocessor"));
     assert!(report
         .decoded
         .iter()
-        .any(|token| token.text == "define" && token.token_type == "preprocessor"));
-    assert_semantic_token(&report, "DEBUG", "variable", Some("#cfcfcf"));
-    assert_semantic_token(&report, "GAME_MODE_DEBUG", "variable", Some("#cfcfcf"));
+        .any(|token| token.text == "define" && token.token_type == "reforgerPreprocessor"));
+    assert_semantic_token(&report, "DEBUG", "variable");
+    assert_semantic_token(&report, "GAME_MODE_DEBUG", "variable");
 }
 
 #[test]
@@ -301,10 +301,7 @@ class map<Class TKey, Class TValue> {}
         let position = position_for_needle(&source, declaration, name);
         assert!(
             semantic.decoded.iter().any(|token| {
-                token.text == name
-                    && token.token_type == "class"
-                    && token.range.start == position
-                    && token.color == "#40b5ac"
+                token.text == name && token.token_type == "class" && token.range.start == position
             }),
             "{declaration}: {:?}",
             semantic.decoded
@@ -566,11 +563,11 @@ class Example { protected ref ScriptInvoker m_OnGameEnd = new ScriptInvoker(); }
         "{:?}",
         report.decoded
     );
-    assert_semantic_token(&report, "SCR_InstigatorContextData", "class", None);
-    assert_semantic_token(&report, "IEntity", "class", None);
-    assert_semantic_token(&report, "array", "class", None);
-    assert_semantic_token(&report, "EResourceType", "enum", None);
-    assert_semantic_token(&report, "ScriptInvokerBase", "class", None);
+    assert_semantic_token(&report, "SCR_InstigatorContextData", "class");
+    assert_semantic_token(&report, "IEntity", "class");
+    assert_semantic_token(&report, "array", "class");
+    assert_semantic_token(&report, "EResourceType", "enum");
+    assert_semantic_token(&report, "ScriptInvokerBase", "class");
     assert!(
         report
             .decoded
@@ -595,19 +592,14 @@ class Example { protected ref ScriptInvoker m_OnGameEnd = new ScriptInvoker(); }
 
     let report = fast_semantic_tokens_report_for_source(source);
 
-    assert_semantic_token(&report, "void", "keyword", Some("#59A6E9"));
-    assert_semantic_token(&report, "int", "keyword", Some("#59A6E9"));
-    assert_semantic_token(&report, "KickCauseCode", "class", Some("#40b5ac"));
-    assert_semantic_token(
-        &report,
-        "SCR_InstigatorContextData",
-        "class",
-        Some("#40b5ac"),
-    );
-    assert_semantic_token(&report, "IEntity", "class", Some("#40b5ac"));
-    assert_semantic_token(&report, "array", "class", Some("#40b5ac"));
-    assert_semantic_token(&report, "EResourceType", "class", Some("#40b5ac"));
-    assert_semantic_token(&report, "ScriptInvokerBase", "class", Some("#40b5ac"));
+    assert_semantic_token(&report, "void", "keyword");
+    assert_semantic_token(&report, "int", "keyword");
+    assert_semantic_token(&report, "KickCauseCode", "class");
+    assert_semantic_token(&report, "SCR_InstigatorContextData", "class");
+    assert_semantic_token(&report, "IEntity", "class");
+    assert_semantic_token(&report, "array", "class");
+    assert_semantic_token(&report, "EResourceType", "class");
+    assert_semantic_token(&report, "ScriptInvokerBase", "class");
     assert_semantic_token_count_at_least(&report, "ScriptInvoker", "class", 2);
 }
 
@@ -651,7 +643,7 @@ class Example
     let report = semantic_tokens_report_for_source(source);
 
     for text in ["bool", "int", "float", "typename", "true", "false"] {
-        assert_semantic_token(&report, text, "keyword", Some("#59A6E9"));
+        assert_semantic_token(&report, text, "keyword");
     }
     for text in [
         "string",
@@ -688,8 +680,8 @@ class Example
 
     let report = semantic_tokens_report_for_source(source);
 
-    assert_semantic_token(&report, "EHealthState", "enum", Some("#40b5ac"));
-    assert_semantic_token(&report, "INJURED", "enumMember", Some("#cfcfcf"));
+    assert_semantic_token(&report, "EHealthState", "enum");
+    assert_semantic_token(&report, "INJURED", "enumMember");
 }
 
 #[test]
@@ -762,31 +754,14 @@ enum EGameFlags
 
     let report = semantic_tokens_report_for_source_with_external(source, Some(&external));
 
-    assert_semantic_token(&report, "Attribute", "class", Some("#40b5ac"));
-    assert_semantic_token(&report, "uiwidget", "variable", Some("#cfcfcf"));
-    assert_semantic_token(&report, "UIWidgets", "class", Some("#40b5ac"));
-    assert_semantic_token(&report, "Flags", "enumMember", Some("#cfcfcf"));
-    assert_semantic_token(&report, "ParamEnumArray", "class", Some("#40b5ac"));
-    assert_semantic_token(&report, "FromEnum", "method", Some("#f3ad58"));
-    assert_semantic_token(&report, "EGameFlags", "enum", Some("#40b5ac"));
-    assert_semantic_token(&report, "WB_GAME_MODE_CATEGORY", "field", Some("#cfcfcf"));
-    assert!(
-        !report.decoded.iter().any(|token| {
-            matches!(
-                token.text.as_str(),
-                "Attribute"
-                    | "uiwidget"
-                    | "UIWidgets"
-                    | "Flags"
-                    | "ParamEnumArray"
-                    | "FromEnum"
-                    | "EGameFlags"
-                    | "WB_GAME_MODE_CATEGORY"
-            ) && token.token_type == "decorator"
-        }),
-        "{:?}",
-        report.decoded
-    );
+    assert_semantic_token(&report, "Attribute", "class");
+    assert_semantic_token(&report, "uiwidget", "variable");
+    assert_semantic_token(&report, "UIWidgets", "class");
+    assert_semantic_token(&report, "Flags", "enumMember");
+    assert_semantic_token(&report, "ParamEnumArray", "class");
+    assert_semantic_token(&report, "FromEnum", "function");
+    assert_semantic_token(&report, "EGameFlags", "enum");
+    assert_semantic_token(&report, "WB_GAME_MODE_CATEGORY", "reforgerField");
 
     let _ = fs::remove_dir_all(root);
 }
@@ -814,10 +789,10 @@ fn semantic_tokens_refine_unqualified_attribute_arguments_with_external_facts() 
 "#;
 
     let fast_report = semantic_tokens_report_for_source(source);
-    assert_semantic_token(&fast_report, "EGameFlags", "class", Some("#40b5ac"));
+    assert_semantic_token(&fast_report, "EGameFlags", "class");
 
     let rich_report = semantic_tokens_report_for_source_with_external(source, Some(&external));
-    assert_semantic_token(&rich_report, "EGameFlags", "enum", Some("#40b5ac"));
+    assert_semantic_token(&rich_report, "EGameFlags", "enum");
 
     let _ = fs::remove_dir_all(root);
 }
@@ -833,37 +808,14 @@ fn semantic_tokens_color_attribute_expression_shape_before_external_index_is_rea
 
     let report = semantic_tokens_report_for_source(source);
 
-    assert_semantic_token(&report, "Attribute", "class", Some("#40b5ac"));
-    assert_semantic_token(&report, "uiwidget", "variable", Some("#cfcfcf"));
-    assert_semantic_token(&report, "UIWidgets", "class", Some("#40b5ac"));
-    assert_semantic_token(&report, "Flags", "enumMember", Some("#cfcfcf"));
-    assert_semantic_token(&report, "ParamEnumArray", "class", Some("#40b5ac"));
-    assert_semantic_token(&report, "FromEnum", "method", Some("#f3ad58"));
-    assert_semantic_token(&report, "EGameFlags", "class", Some("#40b5ac"));
-    assert_semantic_token(
-        &report,
-        "WB_GAME_MODE_CATEGORY",
-        "variable",
-        Some("#cfcfcf"),
-    );
-    assert!(
-        report
-            .decoded
-            .iter()
-            .filter(|token| matches!(
-                token.text.as_str(),
-                "Attribute"
-                    | "uiwidget"
-                    | "UIWidgets"
-                    | "Flags"
-                    | "ParamEnumArray"
-                    | "FromEnum"
-                    | "WB_GAME_MODE_CATEGORY"
-            ))
-            .all(|token| token.token_type != "decorator"),
-        "{:?}",
-        report.decoded
-    );
+    assert_semantic_token(&report, "Attribute", "class");
+    assert_semantic_token(&report, "uiwidget", "variable");
+    assert_semantic_token(&report, "UIWidgets", "class");
+    assert_semantic_token(&report, "Flags", "enumMember");
+    assert_semantic_token(&report, "ParamEnumArray", "class");
+    assert_semantic_token(&report, "FromEnum", "function");
+    assert_semantic_token(&report, "EGameFlags", "class");
+    assert_semantic_token(&report, "WB_GAME_MODE_CATEGORY", "variable");
 }
 
 #[test]
@@ -879,7 +831,7 @@ fn semantic_tokens_keep_attribute_shape_after_invalid_previous_line() {
 
     let report = semantic_tokens_report_for_source(source);
 
-    assert_semantic_token(&report, "RplRpc", "class", Some("#40b5ac"));
+    assert_semantic_token(&report, "RplRpc", "class");
     assert!(
         !report
             .decoded
@@ -904,8 +856,8 @@ fn semantic_tokens_color_call_shapes_before_rich_resolution() {
 
     let report = semantic_tokens_report_for_source(source);
 
-    assert_semantic_token(&report, "RunTimer", "function", Some("#f3ad58"));
-    assert_semantic_token(&report, "GetDuration", "method", Some("#f3ad58"));
+    assert_semantic_token(&report, "RunTimer", "function");
+    assert_semantic_token(&report, "GetDuration", "function");
 }
 
 #[test]
@@ -924,12 +876,12 @@ fn semantic_tokens_color_static_member_shapes_before_rich_resolution() {
 
     let report = semantic_tokens_report_for_source(source);
 
-    assert_semantic_token(&report, "SCR_EGameModeState", "class", Some("#40b5ac"));
-    assert_semantic_token(&report, "GAME", "enumMember", Some("#cfcfcf"));
-    assert_semantic_token(&report, "EHealthState", "class", Some("#40b5ac"));
-    assert_semantic_token(&report, "INJURED", "enumMember", Some("#cfcfcf"));
-    assert_semantic_token(&report, "GRAY_TEST2", "class", Some("#40b5ac"));
-    assert_semantic_token(&report, "testnum", "enumMember", Some("#cfcfcf"));
+    assert_semantic_token(&report, "SCR_EGameModeState", "class");
+    assert_semantic_token(&report, "GAME", "enumMember");
+    assert_semantic_token(&report, "EHealthState", "class");
+    assert_semantic_token(&report, "INJURED", "enumMember");
+    assert_semantic_token(&report, "GRAY_TEST2", "class");
+    assert_semantic_token(&report, "testnum", "enumMember");
     assert!(
         !report
             .decoded
@@ -969,11 +921,11 @@ class Example
 
     let report = fast_semantic_tokens_report_for_source(source);
 
-    assert_semantic_token(&report, "owner", "parameter", Some("#cfcfcf"));
-    assert_semantic_token(&report, "localOwner", "variable", Some("#cfcfcf"));
+    assert_semantic_token(&report, "owner", "parameter");
+    assert_semantic_token(&report, "localOwner", "variable");
     assert_semantic_token_count_at_least(&report, "owner", "variable", 2);
-    assert_semantic_token(&report, "GRAY_TEST2", "class", Some("#40b5ac"));
-    assert_semantic_token(&report, "testnum", "enumMember", Some("#cfcfcf"));
+    assert_semantic_token(&report, "GRAY_TEST2", "class");
+    assert_semantic_token(&report, "testnum", "enumMember");
 }
 
 #[test]
@@ -1444,17 +1396,18 @@ class SCR_BaseGameModeComponent
         report.identifier_context,
         Some(IdentifierContext::TypePosition)
     );
-    assert!(markdown.contains("<span style=\"color:#59A6E9;\">Class</span>"));
+    assert!(markdown.contains("<strong><span style=\"font-size:1.12em;\">Class</span></strong>"));
     assert!(markdown.contains(
         "data-code=\"class SCR_BaseGameModeStateComponent : SCR_BaseGameModeComponent\""
     ));
     assert!(markdown.contains("Base component for handling game mode states."));
     assert!(markdown.contains("### Functions"));
-    assert!(markdown.contains("<span style=\"color:#f3ad58;\">GetAllowControls</span>"));
-    assert!(markdown.contains("<span style=\"color:#f3ad58;\">GetDuration</span>"));
+    assert!(markdown.contains("GetAllowControls"));
+    assert!(markdown.contains("GetDuration"));
     assert!(!markdown.contains("### Inherited members"));
-    assert!(markdown.contains("<span style=\"color:#f3ad58;\">InheritedRun</span>"));
+    assert!(markdown.contains("InheritedRun"));
     assert!(!markdown.contains("inherited from"));
+    assert!(!markdown.contains("style=\"color:"));
 }
 
 #[test]
@@ -1502,11 +1455,12 @@ class SCR_BaseGameModeComponent
         "data-code=\"class SCR_BaseGameModeStateComponent : SCR_BaseGameModeComponent\""
     ));
     assert!(markdown.contains("### Functions"));
-    assert!(markdown.contains("<span style=\"color:#f3ad58;\">GetAllowControls</span>"));
-    assert!(markdown.contains("<span style=\"color:#f3ad58;\">GetDuration</span>"));
+    assert!(markdown.contains("GetAllowControls"));
+    assert!(markdown.contains("GetDuration"));
     assert!(!markdown.contains("### Inherited members"));
-    assert!(markdown.contains("<span style=\"color:#f3ad58;\">InheritedRun</span>"));
+    assert!(markdown.contains("InheritedRun"));
     assert!(!markdown.contains("inherited from"));
+    assert!(!markdown.contains("style=\"color:"));
 }
 
 #[test]
@@ -5925,9 +5879,7 @@ class Example
     let markdown = hover.contents.value;
 
     assert!(markdown.contains("data-code=\"protected void Run(int value = 4)\""));
-    assert!(markdown.contains("<span style=\"color:#59A6E9;\">protected</span>"));
-    assert!(markdown.contains("<span style=\"color:#59A6E9;\">void</span>"));
-    assert!(markdown.contains("<span style=\"color:#f3ad58;\">Run</span>"));
+    assert!(!markdown.contains("style=\"color:"));
     assert!(markdown.contains("Runs the example."));
     assert!(!markdown.contains("Modifiers: protected"));
     assert!(!markdown.contains("Attributes: Attribute"));
@@ -6225,8 +6177,8 @@ fn debug_hover_report_includes_language_engine_context() {
     assert!(report.contains("- Label: `Run`"));
     assert!(report.contains("Smoke.Run(int value) -> void"));
     assert!(report.contains("`Method`"));
-    assert!(report.contains("`method`"));
-    assert!(report.contains("#f3ad58"));
+    assert!(report.contains("`function`"));
+    assert!(!report.contains("| Color |"));
 }
 
 #[test]
@@ -6258,20 +6210,20 @@ class Example<T>
         ("class Example<T>\n{", '{', "class"),
         ("m_Enabled = (true)", '(', "class"),
         ("m_Enabled = (true)", ')', "class"),
-        ("Run(array<int>", '(', "method"),
+        ("Run(array<int>", '(', "function"),
         ("Run(array<int>", '<', "class"),
         ("Run(array<int>", '>', "class"),
-        ("values)\n\t{", ')', "method"),
-        ("values)\n\t{", '{', "method"),
-        ("enabled = (true)", '(', "method"),
-        ("enabled = (true)", ')', "method"),
+        ("values)\n\t{", ')', "function"),
+        ("values)\n\t{", '{', "function"),
+        ("enabled = (true)", '(', "function"),
+        ("enabled = (true)", ')', "function"),
         ("if ((values", '(', "keyword"),
         ("(values[0])", '(', "keyword"),
         ("values[0]", '[', "parameter"),
         ("values[0]", ']', "parameter"),
         ("\n\t\t{\n\t\t\tthis.Run", '{', "keyword"),
-        ("this.Run(values[0])", '(', "method"),
-        ("this.Run(values[0])", ')', "method"),
+        ("this.Run(values[0])", '(', "function"),
+        ("this.Run(values[0])", ')', "function"),
     ] {
         assert_semantic_delimiter_at(source, &report, needle, delimiter, token_type);
     }
@@ -6289,8 +6241,8 @@ fn bracket_coloring_modes_choose_semantic_punctuation_or_native_delimiters() {
     assert_semantic_delimiter_at(source, &semantic, "Example<T>\n{", '{', "class");
     assert_semantic_delimiter_at(source, &semantic, "Example<T>", '<', "class");
     assert_semantic_delimiter_at(source, &semantic, "Example<T>", '>', "class");
-    assert_semantic_delimiter_at(source, &semantic, "Run(array", '(', "method");
-    assert_semantic_delimiter_at(source, &semantic, "values)\n\t{", ')', "method");
+    assert_semantic_delimiter_at(source, &semantic, "Run(array", '(', "function");
+    assert_semantic_delimiter_at(source, &semantic, "values)\n\t{", ')', "function");
 
     let punctuation = semantic_tokens_report_for_source_with_bracket_coloring(
         source,
@@ -6304,7 +6256,13 @@ fn bracket_coloring_modes_choose_semantic_punctuation_or_native_delimiters() {
         ("values)\n\t{", ')'),
         ("values)\n\t{", '{'),
     ] {
-        assert_semantic_delimiter_at(source, &punctuation, needle, delimiter, "punctuation");
+        assert_semantic_delimiter_at(
+            source,
+            &punctuation,
+            needle,
+            delimiter,
+            "reforgerPunctuation",
+        );
     }
 
     let vscode = semantic_tokens_report_for_source_with_bracket_coloring(
@@ -6362,7 +6320,7 @@ fn bracket_coloring_modes_preserve_the_unproven_half_of_a_recovery_operator() {
     assert!(punctuation
         .decoded
         .iter()
-        .any(|token| token.range == first && token.token_type == "punctuation"));
+        .any(|token| token.range == first && token.token_type == "reforgerPunctuation"));
     assert!(punctuation
         .decoded
         .iter()
@@ -6399,7 +6357,7 @@ class Widget
     let report = semantic_tokens_report_for_source(source);
 
     for (needle, delimiter, token_type) in [
-        ("GROUP(x)", '(', "punctuation"),
+        ("GROUP(x)", '(', "reforgerPunctuation"),
         ("[Attribute", '[', "class"),
         ("Attribute(\"", '(', "class"),
         (")]\nclass", ']', "class"),
@@ -6407,18 +6365,18 @@ class Widget
         ("array<string>", '<', "class"),
         ("string>> values", '>', "class"),
         ("> values = ", '>', "class"),
-        ("= { {} }", '{', "punctuation"),
-        ("{} }", '{', "punctuation"),
-        ("extra = {}", '{', "punctuation"),
-        ("extra = {}", '}', "punctuation"),
+        ("= { {} }", '{', "reforgerPunctuation"),
+        ("{} }", '{', "reforgerPunctuation"),
+        ("extra = {}", '{', "reforgerPunctuation"),
+        ("extra = {}", '}', "reforgerPunctuation"),
         ("new Widget()", '(', "class"),
         ("new Widget()", ')', "class"),
         ("1 < 2", '<', "operator"),
     ] {
         assert_semantic_delimiter_at(source, &report, needle, delimiter, token_type);
     }
-    assert_semantic_token(&report, "\"([{}])\"", "string", None);
-    assert_semantic_token(&report, "// ([{}])", "comment", None);
+    assert_semantic_token(&report, "\"([{}])\"", "string");
+    assert_semantic_token(&report, "// ([{}])", "comment");
 }
 
 #[test]
@@ -6474,7 +6432,7 @@ fn semantic_scope_delimiters_require_proven_dynamic_owners() {
         ("new MissingType()", '('),
         ("new MissingType()", ')'),
     ] {
-        assert_semantic_delimiter_at(source, &report, needle, delimiter, "punctuation");
+        assert_semantic_delimiter_at(source, &report, needle, delimiter, "reforgerPunctuation");
     }
 }
 
@@ -6482,11 +6440,11 @@ fn semantic_scope_delimiters_require_proven_dynamic_owners() {
 fn semantic_scope_delimiters_color_only_proven_unmatched_openers() {
     let proven_source = "class Example\n{\n\tvoid Run(\n";
     let proven = semantic_tokens_report_for_source(proven_source);
-    assert_semantic_delimiter_at(proven_source, &proven, "Run(", '(', "method");
+    assert_semantic_delimiter_at(proven_source, &proven, "Run(", '(', "function");
 
     let unproven_source = "[\n";
     let unproven = semantic_tokens_report_for_source(unproven_source);
-    assert_semantic_delimiter_at(unproven_source, &unproven, "[", '[', "punctuation");
+    assert_semantic_delimiter_at(unproven_source, &unproven, "[", '[', "reforgerPunctuation");
 }
 
 #[test]

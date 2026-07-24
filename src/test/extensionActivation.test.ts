@@ -313,6 +313,68 @@ suite('extension activation', () => {
 		]);
 	});
 
+	test('contributes one Enforce semantic palette without a complete color theme', () => {
+		const extension = vscode.extensions.all.find(
+			candidate => candidate.packageJSON.name === 'reforger-sript-tools',
+		);
+		assert.ok(extension, 'development extension is discoverable');
+		const contributes = extension.packageJSON.contributes as {
+			themes?: unknown;
+			semanticTokenTypes?: Array<{
+				id: string;
+				superType: string;
+				description: string;
+			}>;
+			configurationDefaults: Record<string, Record<string, unknown>>;
+		};
+
+		assert.strictEqual(contributes.themes, undefined);
+		assert.deepStrictEqual(contributes.semanticTokenTypes, [
+			{
+				id: 'reforgerField',
+				superType: 'property',
+				description: 'An Enforce Script field.',
+			},
+			{
+				id: 'reforgerPunctuation',
+				superType: 'operator',
+				description: 'Enforce Script punctuation.',
+			},
+			{
+				id: 'reforgerPreprocessor',
+				superType: 'keyword',
+				description: 'Enforce Script preprocessor syntax.',
+			},
+		]);
+		assert.strictEqual(
+			contributes.configurationDefaults['[enforce]']['editor.semanticHighlighting.enabled'],
+			true,
+		);
+		assert.deepStrictEqual(
+			contributes.configurationDefaults['editor.semanticTokenColorCustomizations'],
+			{
+				rules: {
+					'class:enforce': '#40b5ac',
+					'enum:enforce': '#40b5ac',
+					'type:enforce': '#40b5ac',
+					'typeParameter:enforce': '#40b5ac',
+					'function:enforce': '#f3ad58',
+					'reforgerField:enforce': '#cfcfcf',
+					'variable:enforce': '#cfcfcf',
+					'parameter:enforce': '#cfcfcf',
+					'enumMember:enforce': '#cfcfcf',
+					'number:enforce': '#cfcfcf',
+					'operator:enforce': '#cfcfcf',
+					'reforgerPunctuation:enforce': '#cfcfcf',
+					'keyword:enforce': '#59A6E9',
+					'comment:enforce': '#59aa59',
+					'string:enforce': '#c178dd',
+					'reforgerPreprocessor:enforce': '#d4fd95',
+				},
+			},
+		);
+	});
+
 	test('uses the bracket coloring mode as the sole Enforce native presentation control', async () => {
 		const scope = { languageId: 'enforce' };
 		const editorConfiguration = () => vscode.workspace.getConfiguration('editor', scope);

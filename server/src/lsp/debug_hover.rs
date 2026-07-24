@@ -305,7 +305,7 @@ fn append_semantic_token_context(
     game_data_index: Option<&SymbolIndex>,
     offset: Option<usize>,
 ) {
-    report.push_str("Semantic token types/colors are produced by the Rust language server and the bundled semantic-token theme palette. TextMate scopes are not used for Enforce coloring.\n\n");
+    report.push_str("Semantic token types are produced by the Rust language server. VS Code applies the extension's Enforce palette and any user semantic-token customizations; TextMate scopes are not used for Enforce coloring.\n\n");
     let semantic = semantic_tokens_report_for_cached_analysis_with_external_indexes(
         source,
         analysis,
@@ -331,8 +331,8 @@ fn append_semantic_token_context(
     let start = center.saturating_sub(DEBUG_TOKEN_CONTEXT);
     let end = (center + DEBUG_TOKEN_CONTEXT + 1).min(semantic.decoded.len());
 
-    report.push_str("| Hit | Text | Range | Semantic type | Modifiers | Color |\n");
-    report.push_str("| --- | --- | --- | --- | --- | --- |\n");
+    report.push_str("| Hit | Text | Range | Semantic type | Modifiers |\n");
+    report.push_str("| --- | --- | --- | --- | --- |\n");
     for index in start..end {
         let token = &semantic.decoded[index];
         let span = TextSpan::new(
@@ -341,13 +341,12 @@ fn append_semantic_token_context(
         );
         let hit = offset.is_some_and(|offset| span_contains_or_touches_offset(span, offset));
         report.push_str(&format!(
-            "| {} | `{}` | `{}` | `{}` | `{}` | `{}` |\n",
+            "| {} | `{}` | `{}` | `{}` | `{}` |\n",
             if hit { "*" } else { "" },
             escape_table_text(&token.text),
             format_range_from_lsp(token.range),
             token.token_type,
             token.modifiers.join(", "),
-            token.color,
         ));
     }
 }

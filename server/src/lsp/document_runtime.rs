@@ -1392,7 +1392,7 @@ mod tests {
         let closers = source.find(">>").unwrap();
         let punctuation_type = super::super::SEMANTIC_TOKEN_TYPES
             .iter()
-            .position(|token_type| *token_type == "punctuation")
+            .position(|token_type| *token_type == "reforgerPunctuation")
             .unwrap() as u32;
         let operator_type = super::super::SEMANTIC_TOKEN_TYPES
             .iter()

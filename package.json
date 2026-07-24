@@ -38,15 +38,26 @@
         ]
       }
     ],
-    "themes": [
+    "semanticTokenTypes": [
       {
-        "label": "Reforger Enforce Dark",
-        "uiTheme": "vs-dark",
-        "path": "./themes/reforger-enforce-dark-color-theme.json"
+        "id": "reforgerField",
+        "superType": "property",
+        "description": "An Enforce Script field."
+      },
+      {
+        "id": "reforgerPunctuation",
+        "superType": "operator",
+        "description": "Enforce Script punctuation."
+      },
+      {
+        "id": "reforgerPreprocessor",
+        "superType": "keyword",
+        "description": "Enforce Script preprocessor syntax."
       }
     ],
     "configurationDefaults": {
       "[enforce]": {
+        "editor.semanticHighlighting.enabled": true,
         "editor.bracketPairColorization.enabled": false,
         "editor.matchBrackets": "never",
         "editor.quickSuggestions": {
@@ -57,6 +68,26 @@
         "editor.acceptSuggestionOnEnter": "off",
         "editor.suggest.showKeywords": true,
         "editor.wordBasedSuggestions": "off"
+      },
+      "editor.semanticTokenColorCustomizations": {
+        "rules": {
+          "class:enforce": "#40b5ac",
+          "enum:enforce": "#40b5ac",
+          "type:enforce": "#40b5ac",
+          "typeParameter:enforce": "#40b5ac",
+          "function:enforce": "#f3ad58",
+          "reforgerField:enforce": "#cfcfcf",
+          "variable:enforce": "#cfcfcf",
+          "parameter:enforce": "#cfcfcf",
+          "enumMember:enforce": "#cfcfcf",
+          "number:enforce": "#cfcfcf",
+          "operator:enforce": "#cfcfcf",
+          "reforgerPunctuation:enforce": "#cfcfcf",
+          "keyword:enforce": "#59A6E9",
+          "comment:enforce": "#59aa59",
+          "string:enforce": "#c178dd",
+          "reforgerPreprocessor:enforce": "#d4fd95"
+        }
       }
     },
     "commands": [
@@ -132,7 +163,7 @@
             "Visual Studio Code Colors"
           ],
           "title": "Bracket Coloring",
-          "markdownDescription": "Choose how Enfusion Script brackets are colored across VS Code windows. **Semantic Owner Colors** follows the nearest type, callable, variable, decorator, or keyword. **Punctuation Color** uses the theme's ordinary punctuation color. **Visual Studio Code Colors** uses native bracket-pair coloring and matching. This setting controls the Enforce-specific VS Code bracket presentation settings."
+          "markdownDescription": "Choose how Enfusion Script brackets are colored across VS Code windows. **Semantic Owner Colors** follows the nearest type, callable, variable, attribute, or keyword. **Punctuation Color** uses the Reforger Semantic Palette's punctuation color. **Visual Studio Code Colors** uses native bracket-pair coloring and matching. This setting controls the Enforce-specific VS Code bracket presentation settings."
         },
         "reforgerScriptTools.workbench.enabled": {
           "type": "boolean",

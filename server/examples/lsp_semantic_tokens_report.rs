@@ -76,12 +76,12 @@ fn render_report(report: &LspSemanticTokenReport) -> String {
     let _ = writeln!(output, "| Semantic tokens | {} |", report.decoded.len());
 
     output.push_str("\n## Decoded Tokens\n\n");
-    output.push_str("| Text | Range | Type | Modifiers | Color |\n");
-    output.push_str("| --- | --- | --- | --- | --- |\n");
+    output.push_str("| Text | Range | Type | Modifiers |\n");
+    output.push_str("| --- | --- | --- | --- |\n");
     for token in &report.decoded {
         let _ = writeln!(
             output,
-            "| `{}` | `L{}:C{}-L{}:C{}` | `{}` | `{}` | `{}` |",
+            "| `{}` | `L{}:C{}-L{}:C{}` | `{}` | `{}` |",
             escape_table_text(&token.text),
             token.range.start.line,
             token.range.start.character,
@@ -89,7 +89,6 @@ fn render_report(report: &LspSemanticTokenReport) -> String {
             token.range.end.character,
             token.token_type,
             token.modifiers.join(", "),
-            token.color,
         );
     }
 

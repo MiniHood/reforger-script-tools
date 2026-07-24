@@ -1477,8 +1477,8 @@ fn framed_lsp_smoke_test_handles_signature_help() {
 }
 
 #[test]
-fn framed_lsp_smoke_test_handles_semantic_tokens() {
-    let source = "class Smoke\n{\n\tvoid Run(int value)\n\t{\n\t\tstring name = \"x\";\n\t}\n}\n";
+fn framed_lsp_exposes_the_public_enforce_semantic_palette_contract() {
+    let source = "#define FEATURE\nvoid GlobalFunction();\nclass PaletteClass\n{\n\tint m_Field;\n\tvoid MemberFunction(int parameter)\n\t{\n\t\tint local = parameter + m_Field;\n\t}\n}\n";
     let mut input = Vec::new();
     write_test_message(
         &mut input,
@@ -1496,7 +1496,7 @@ fn framed_lsp_smoke_test_handles_semantic_tokens() {
             "method": "textDocument/didOpen",
             "params": {
                 "textDocument": {
-                    "uri": "file:///Scripts/Smoke.c",
+                    "uri": "file:///Scripts/Palette.c",
                     "languageId": "enforce",
                     "version": 1,
                     "text": source
@@ -1512,7 +1512,7 @@ fn framed_lsp_smoke_test_handles_semantic_tokens() {
             "method": "textDocument/semanticTokens/full",
             "params": {
                 "textDocument": {
-                    "uri": "file:///Scripts/Smoke.c"
+                    "uri": "file:///Scripts/Palette.c"
                 }
             }
         }),
@@ -1533,7 +1533,7 @@ fn framed_lsp_smoke_test_handles_semantic_tokens() {
             "method": "textDocument/semanticTokens/full",
             "params": {
                 "textDocument": {
-                    "uri": "file:///Scripts/Smoke.c"
+                    "uri": "file:///Scripts/Palette.c"
                 }
             }
         }),
@@ -1559,13 +1559,68 @@ fn framed_lsp_smoke_test_handles_semantic_tokens() {
     let mut output = Vec::new();
     run(input.as_slice(), &mut output, LspServerOptions::default()).unwrap();
 
-    let output_text = String::from_utf8(output).unwrap();
-    assert!(output_text.contains("\"semanticTokensProvider\""));
-    assert!(output_text.contains("\"tokenTypes\":[\"class\",\"enum\",\"type\""));
-    assert!(output_text.contains("\"id\":2"));
-    assert!(output_text.contains("\"method\":\"workspace/semanticTokens/refresh\""));
-    assert!(output_text.contains("\"id\":4"));
-    assert!(output_text.contains("\"data\":["));
+    let messages = read_test_messages(&output);
+    let initialize = test_response_with_id(&messages, 1);
+    let legend = initialize["result"]["capabilities"]["semanticTokensProvider"]["legend"]
+        ["tokenTypes"]
+        .as_array()
+        .expect("initialize response must publish a semantic token legend")
+        .iter()
+        .map(|value| value.as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        legend,
+        [
+            "class",
+            "enum",
+            "type",
+            "function",
+            "reforgerField",
+            "variable",
+            "parameter",
+            "enumMember",
+            "keyword",
+            "comment",
+            "string",
+            "number",
+            "operator",
+            "reforgerPunctuation",
+            "reforgerPreprocessor",
+            "typeParameter",
+        ]
+    );
+
+    assert!(messages
+        .iter()
+        .any(|message| { message["method"] == "workspace/semanticTokens/refresh" }));
+    let response = test_response_with_id(&messages, 4);
+    let data = response["result"]["data"]
+        .as_array()
+        .expect("semantic token response must contain token data")
+        .iter()
+        .map(|value| value.as_u64().unwrap() as u32)
+        .collect::<Vec<_>>();
+    let decoded = decode_test_semantic_tokens(source, &legend, &data);
+
+    for expected in [
+        ("FEATURE", "variable"),
+        ("GlobalFunction", "function"),
+        ("PaletteClass", "class"),
+        ("m_Field", "reforgerField"),
+        ("MemberFunction", "function"),
+        ("parameter", "parameter"),
+        ("+", "operator"),
+        (";", "reforgerPunctuation"),
+        ("#", "reforgerPreprocessor"),
+        ("define", "reforgerPreprocessor"),
+    ] {
+        assert!(
+            decoded
+                .iter()
+                .any(|actual| actual.0 == expected.0 && actual.1 == expected.1),
+            "missing decoded semantic token {expected:?}; decoded tokens: {decoded:#?}"
+        );
+    }
 }
 
 #[test]
@@ -2605,6 +2660,65 @@ fn write_test_message(output: &mut Vec<u8>, value: Value) {
     output.extend_from_slice(&body);
 }
 
+fn read_test_messages(input: &[u8]) -> Vec<Value> {
+    let mut messages = Vec::new();
+    let mut cursor = 0usize;
+    while cursor < input.len() {
+        let header_end = input[cursor..]
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .map(|offset| cursor + offset)
+            .expect("framed test output must contain a complete header");
+        let header = std::str::from_utf8(&input[cursor..header_end]).unwrap();
+        let content_length = header
+            .lines()
+            .find_map(|line| line.strip_prefix("Content-Length: "))
+            .expect("framed test output must contain Content-Length")
+            .parse::<usize>()
+            .unwrap();
+        let body_start = header_end + 4;
+        let body_end = body_start + content_length;
+        messages.push(serde_json::from_slice(&input[body_start..body_end]).unwrap());
+        cursor = body_end;
+    }
+    messages
+}
+
+fn test_response_with_id(messages: &[Value], id: i64) -> &Value {
+    messages
+        .iter()
+        .find(|message| message["id"].as_i64() == Some(id) && message.get("result").is_some())
+        .unwrap_or_else(|| panic!("missing test response with id {id}; messages: {messages:#?}"))
+}
+
+fn decode_test_semantic_tokens(
+    source: &str,
+    legend: &[String],
+    data: &[u32],
+) -> Vec<(String, String)> {
+    assert_eq!(data.len() % 5, 0, "semantic token data must use LSP groups");
+    let lines = source.split('\n').collect::<Vec<_>>();
+    let mut line = 0usize;
+    let mut character = 0usize;
+    data.chunks_exact(5)
+        .map(|token| {
+            line += token[0] as usize;
+            character = if token[0] == 0 {
+                character + token[1] as usize
+            } else {
+                token[1] as usize
+            };
+            let text = lines[line]
+                .chars()
+                .skip(character)
+                .take(token[2] as usize)
+                .collect::<String>();
+            let token_type = legend[token[3] as usize].clone();
+            (text, token_type)
+        })
+        .collect()
+}
+
 #[test]
 fn read_message_rejects_an_oversized_header_before_parsing() {
     let input = format!("X-Long: {}\r\n\r\n", "x".repeat(16 * 1024));
@@ -2695,19 +2809,13 @@ fn position_after_needle(source: &str, needle: &str) -> LspPosition {
     position_for_offset(source, start + needle.len())
 }
 
-fn assert_semantic_token(
-    report: &LspSemanticTokenReport,
-    text: &str,
-    token_type: &str,
-    color: Option<&str>,
-) {
+fn assert_semantic_token(report: &LspSemanticTokenReport, text: &str, token_type: &str) {
     assert!(
-        report.decoded.iter().any(|token| {
-            token.text == text
-                && token.token_type == token_type
-                && color.is_none_or(|color| token.color == color)
-        }),
-        "missing semantic token text={text:?} type={token_type:?} color={color:?}: {:?}",
+        report
+            .decoded
+            .iter()
+            .any(|token| token.text == text && token.token_type == token_type),
+        "missing semantic token text={text:?} type={token_type:?}: {:?}",
         report.decoded
     );
 }
@@ -2740,9 +2848,10 @@ fn assert_semantic_type_family_token_count_at_least(
         .iter()
         .filter(|token| {
             token.text == text
-                && ((matches!(token.token_type, "class" | "type" | "typeParameter")
-                    && token.color == "#40b5ac")
-                    || (token.token_type == "enum" && token.color == "#40b5ac"))
+                && matches!(
+                    token.token_type,
+                    "class" | "enum" | "type" | "typeParameter"
+                )
         })
         .count();
     assert!(
