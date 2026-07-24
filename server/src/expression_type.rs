@@ -649,7 +649,7 @@ impl<'source, 'index> ExpressionTypeEnvironment<'source, 'index> {
         name: &str,
     ) -> Option<ExpressionType> {
         for owner in member_lookup_owners(index, owner) {
-            let lookup = index.completion_members_for_preferred_class(&owner);
+            let lookup = index.completion_members_named_for_preferred_class(&owner, name);
             let matching = matching_members_from_ids(index, lookup.members.iter().copied(), name);
             for id in index.preferred_from_symbols(&matching) {
                 let Some(symbol) = index.symbol(id) else {
@@ -1366,7 +1366,7 @@ fn matching_members_for_exact_owner(
     owner: &str,
     name: &str,
 ) -> Vec<GlobalSymbolId> {
-    let lookup = index.completion_members_for_preferred_class(owner);
+    let lookup = index.completion_members_named_for_preferred_class(owner, name);
     matching_members_from_ids(index, lookup.members.iter().copied(), name)
 }
 

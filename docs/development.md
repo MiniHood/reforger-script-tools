@@ -29,6 +29,24 @@ optimized code. This keeps the bundled development language server
 representative enough for large-file editor latency while preserving the
 release profile as the packaging authority.
 
+For repeatable semantic-token latency checks against an installed game-data
+index, use the dedicated benchmark example:
+
+```powershell
+cargo run --manifest-path server/Cargo.toml --example lsp_semantic_tokens_benchmark -- `
+  --scripts <game-data-scripts-path> `
+  --file <large-enforce-file> `
+  --iterations 7 `
+  --max-median-resolver-ms <local-budget>
+```
+
+The command builds the external index once, warms the projection, reports
+minimum/median/p95/maximum wall and resolver phase timings, and verifies that
+token count, resolver-call count, and encoded-token fingerprint remain stable
+between iterations. The optional latency budget makes the command fail for a
+local regression loop; it is deliberately supplied by the caller rather than
+treated as a portable machine-independent threshold.
+
 ## Ticket Completion
 
 Break a ticket into small, behavior-preserving implementation slices when that

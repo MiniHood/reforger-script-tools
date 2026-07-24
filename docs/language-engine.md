@@ -149,7 +149,11 @@ Rich semantic-token telemetry separates identifier resolution,
 declaration-symbol overlays, and scope-delimiter overlays. It also records
 identifier and delimiter resolver-call counts without source text or token
 payloads, so large-file cost can be attributed without weakening the semantic
-projection.
+projection. Identifier-resolution timing is further divided into context,
+declaration, lexical-scope, member, file-top-level, external-top-level, and
+candidate-selection phases. Member resolution uses a name-bounded view of the
+preferred class and its base chain; it does not construct the full completion
+member projection when resolving one identifier.
 Rich workers retain one revision-tagged delimiter-owner cache per open
 document. Resolver-dependent owners are grouped by stable callable identity,
 exact callable source, and the file-local declaration structure that can

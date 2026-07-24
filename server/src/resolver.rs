@@ -13,6 +13,7 @@ use crate::scope::LexicalScopeModel;
 use crate::syntax::{Parse, SyntaxElement, SyntaxKind, SyntaxNode};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone)]
 pub struct ReferenceResolver<'source, 'index> {
@@ -34,6 +35,17 @@ pub struct ReferenceResolution {
     pub selected: Option<ReferenceCandidate>,
     pub reason: ResolutionReason,
     pub receiver: Option<ReceiverResolution>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct ReferenceResolverTimings {
+    pub(crate) context: Duration,
+    pub(crate) declaration: Duration,
+    pub(crate) scope: Duration,
+    pub(crate) member: Duration,
+    pub(crate) top_level: Duration,
+    pub(crate) external: Duration,
+    pub(crate) selection: Duration,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -285,6 +297,23 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
     }
 
     pub fn resolve_identifier_token(&self, token_span: TextSpan) -> Option<ReferenceResolution> {
+        self.resolve_identifier_token_inner(token_span, None)
+    }
+
+    pub(crate) fn resolve_identifier_token_profiled(
+        &self,
+        token_span: TextSpan,
+    ) -> (Option<ReferenceResolution>, ReferenceResolverTimings) {
+        let mut timings = ReferenceResolverTimings::default();
+        let resolution = self.resolve_identifier_token_inner(token_span, Some(&mut timings));
+        (resolution, timings)
+    }
+
+    fn resolve_identifier_token_inner(
+        &self,
+        token_span: TextSpan,
+        mut timings: Option<&mut ReferenceResolverTimings>,
+    ) -> Option<ReferenceResolution> {
         if token_span.start >= token_span.end
             || token_span.end > self.source.len()
             || !self.source.is_char_boundary(token_span.start)
@@ -293,8 +322,12 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
             return None;
         }
 
+        let context_start = timings.is_some().then(Instant::now);
         let token_text = self.source[token_span.start..token_span.end].to_string();
         if let Some(reason) = preprocessor_reason_for_token(self.source, token_span, &token_text) {
+            if let (Some(timings), Some(start)) = (timings.as_deref_mut(), context_start) {
+                timings.context += start.elapsed();
+            }
             if reason == ResolutionReason::PreprocessorMacro {
                 return Some(self.resolve_preprocessor_macro_token(token_text, token_span));
             }
@@ -309,6 +342,9 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
             });
         }
         if is_attribute_named_argument_token(self.source, token_span) {
+            if let (Some(timings), Some(start)) = (timings.as_deref_mut(), context_start) {
+                timings.context += start.elapsed();
+            }
             return Some(ReferenceResolution {
                 token_text,
                 token_span,
@@ -322,6 +358,9 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
         if next_significant_char_after_span(self.source, token_span) == Some(':')
             && named_argument_label_at_offset(self.source, &self.parse().root, token_span).is_some()
         {
+            if let (Some(timings), Some(start)) = (timings.as_deref_mut(), context_start) {
+                timings.context += start.elapsed();
+            }
             return Some(ReferenceResolution {
                 token_text,
                 token_span,
@@ -348,30 +387,55 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
         } else {
             syntax_context
         };
+        if let (Some(timings), Some(start)) = (timings.as_deref_mut(), context_start) {
+            timings.context += start.elapsed();
+        }
         let mut candidates = Vec::new();
         let mut seen = BTreeSet::new();
 
+        let declaration_start = timings.is_some().then(Instant::now);
         self.push_declaration_hits(&token_text, token_span, &mut candidates, &mut seen);
+        if let (Some(timings), Some(start)) = (timings.as_deref_mut(), declaration_start) {
+            timings.declaration += start.elapsed();
+        }
 
         let receiver = if let Some(member_access) = member_access {
-            Some(self.push_receiver_member_candidates(
+            let member_start = timings.is_some().then(Instant::now);
+            let receiver = self.push_receiver_member_candidates(
                 &member_access,
                 &token_text,
                 token_span.start,
                 &mut candidates,
                 &mut seen,
-            ))
+            );
+            if let (Some(timings), Some(start)) = (timings.as_deref_mut(), member_start) {
+                timings.member += start.elapsed();
+            }
+            Some(receiver)
         } else if identifier_context == IdentifierContext::TypePosition {
+            let scope_start = timings.is_some().then(Instant::now);
             self.push_class_type_parameters(
                 &token_text,
                 token_span.start,
                 &mut candidates,
                 &mut seen,
             );
+            if let (Some(timings), Some(start)) = (timings.as_deref_mut(), scope_start) {
+                timings.scope += start.elapsed();
+            }
+            let top_level_start = timings.is_some().then(Instant::now);
             self.push_type_like_top_level(&token_text, &mut candidates, &mut seen);
+            if let (Some(timings), Some(start)) = (timings.as_deref_mut(), top_level_start) {
+                timings.top_level += start.elapsed();
+            }
+            let external_start = timings.is_some().then(Instant::now);
             self.push_external_type_like(&token_text, &mut candidates, &mut seen);
+            if let (Some(timings), Some(start)) = (timings.as_deref_mut(), external_start) {
+                timings.external += start.elapsed();
+            }
             None
         } else {
+            let scope_start = timings.is_some().then(Instant::now);
             self.push_callable_locals_and_parameters(
                 &token_text,
                 token_span.start,
@@ -384,12 +448,28 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
                 &mut candidates,
                 &mut seen,
             );
+            if let (Some(timings), Some(start)) = (timings.as_deref_mut(), scope_start) {
+                timings.scope += start.elapsed();
+            }
+            let member_start = timings.is_some().then(Instant::now);
             self.push_class_members(&token_text, token_span.start, &mut candidates, &mut seen);
+            if let (Some(timings), Some(start)) = (timings.as_deref_mut(), member_start) {
+                timings.member += start.elapsed();
+            }
+            let top_level_start = timings.is_some().then(Instant::now);
             self.push_top_level(&token_text, &mut candidates, &mut seen);
+            if let (Some(timings), Some(start)) = (timings.as_deref_mut(), top_level_start) {
+                timings.top_level += start.elapsed();
+            }
+            let external_start = timings.is_some().then(Instant::now);
             self.push_external(&token_text, &mut candidates, &mut seen);
+            if let (Some(timings), Some(start)) = (timings.as_deref_mut(), external_start) {
+                timings.external += start.elapsed();
+            }
             None
         };
 
+        let selection_start = timings.is_some().then(Instant::now);
         candidates.retain(|candidate| {
             identifier_context_accepts_kind(identifier_context, candidate.kind)
         });
@@ -403,6 +483,9 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
                     .map(|_| ResolutionReason::ReceiverUnresolved)
             })
             .unwrap_or(ResolutionReason::Unresolved);
+        if let (Some(timings), Some(start)) = (timings.as_deref_mut(), selection_start) {
+            timings.selection += start.elapsed();
+        }
 
         Some(ReferenceResolution {
             token_text,
@@ -1081,7 +1164,7 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
     ) {
         let mut matching = Vec::new();
         for owner in member_lookup_owners(index, owner) {
-            let lookup = index.completion_members_for_preferred_class(&owner);
+            let lookup = index.completion_members_named_for_preferred_class(&owner, member_name);
             for id in lookup.members.iter().copied() {
                 if index.symbol(id).is_some_and(|symbol| {
                     is_member_lookup_kind(symbol.kind)
@@ -1344,14 +1427,9 @@ fn push_class_member_candidates_from_index_with_reason(
     candidates: &mut Vec<ReferenceCandidate>,
     seen: &mut BTreeSet<CandidateKey>,
 ) {
-    let lookup = index.completion_members_for_preferred_class(class_name);
+    let lookup = index.completion_members_named_for_preferred_class(class_name, token_text);
     for member in lookup.members {
-        let Some(symbol) = index.symbol(member) else {
-            continue;
-        };
-        if symbol.name.as_deref() == Some(token_text) {
-            push_index_candidate(index, candidates, seen, source, member, reason);
-        }
+        push_index_candidate(index, candidates, seen, source, member, reason);
     }
 }
 
@@ -1674,7 +1752,7 @@ fn matching_members_for_exact_owner(
     owner: &str,
     name: &str,
 ) -> Vec<GlobalSymbolId> {
-    let lookup = index.completion_members_for_preferred_class(owner);
+    let lookup = index.completion_members_named_for_preferred_class(owner, name);
     matching_members_from_ids(index, lookup.members.iter().copied(), name)
 }
 

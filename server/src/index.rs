@@ -1028,6 +1028,16 @@ impl SymbolIndex {
         self.completion_from_member_segments(member_segments)
     }
 
+    pub fn completion_members_named_for_preferred_class(
+        &self,
+        owner: &str,
+        member_name: &str,
+    ) -> CompletionMemberLookup {
+        let member_segments =
+            self.preferred_class_member_segments_named_including_bases(owner, member_name);
+        self.completion_from_member_segments(member_segments)
+    }
+
     fn completion_from_member_segments(
         &self,
         member_segments: Vec<Vec<GlobalSymbolId>>,
@@ -1464,6 +1474,22 @@ impl SymbolIndex {
         segments
     }
 
+    fn preferred_class_member_segments_named_including_bases(
+        &self,
+        owner: &str,
+        member_name: &str,
+    ) -> Vec<Vec<GlobalSymbolId>> {
+        let mut segments = Vec::new();
+        let mut visited = BTreeSet::new();
+        self.add_preferred_class_member_segments_named_including_bases(
+            owner,
+            member_name,
+            &mut visited,
+            &mut segments,
+        );
+        segments
+    }
+
     fn add_member_segments_for_class_including_bases(
         &self,
         owner: &str,
@@ -1501,6 +1527,46 @@ impl SymbolIndex {
             return;
         };
         self.add_preferred_class_member_segments_including_bases(&base_name, visited, segments);
+    }
+
+    fn add_preferred_class_member_segments_named_including_bases(
+        &self,
+        owner: &str,
+        member_name: &str,
+        visited: &mut BTreeSet<String>,
+        segments: &mut Vec<Vec<GlobalSymbolId>>,
+    ) {
+        if !visited.insert(owner.to_string()) {
+            return;
+        }
+
+        let classes = self.preferred_classes_by_name(owner);
+        for class_id in &classes {
+            let members = self
+                .children(*class_id)
+                .iter()
+                .copied()
+                .filter(|child_id| {
+                    self.symbol(*child_id).is_some_and(|symbol| {
+                        is_class_member_kind(symbol.kind)
+                            && symbol.name.as_deref() == Some(member_name)
+                    })
+                })
+                .collect::<Vec<_>>();
+            if !members.is_empty() {
+                segments.push(members);
+            }
+        }
+
+        let Some(base_name) = self.first_class_base_name(&classes) else {
+            return;
+        };
+        self.add_preferred_class_member_segments_named_including_bases(
+            &base_name,
+            member_name,
+            visited,
+            segments,
+        );
     }
 
     fn preferred_class_base_name(&self, owner: &str) -> Option<String> {
@@ -2694,6 +2760,66 @@ class Child : Base
                 .kind,
             SourceKind::GameData
         );
+    }
+
+    #[test]
+    fn named_preferred_class_completion_matches_the_full_projection() {
+        let base = catalog(
+            r#"class BaseGameMode
+{
+	void BaseOnly();
+	void OnGameStart();
+}
+"#,
+            game_metadata("BaseGameMode.c"),
+        );
+        let game = catalog(
+            r#"class SCR_BaseGameMode : BaseGameMode
+{
+	void OnGameStart();
+	void GameOnly();
+}
+"#,
+            game_metadata("SCR_BaseGameMode.c"),
+        );
+        let workspace = catalog(
+            r#"modded class SCR_BaseGameMode
+{
+	override void OnGameStart();
+	void WorkspaceOnly();
+}
+"#,
+            workspace_metadata("SCR_BaseGameMode.c"),
+        );
+        let index = SymbolIndex::from_catalogs([&base, &game, &workspace]);
+
+        let full = index.completion_members_for_preferred_class("SCR_BaseGameMode");
+        let named =
+            index.completion_members_named_for_preferred_class("SCR_BaseGameMode", "OnGameStart");
+        let expected_raw = full
+            .raw_candidates
+            .iter()
+            .copied()
+            .filter(|id| index.symbol(*id).unwrap().name.as_deref() == Some("OnGameStart"))
+            .collect::<Vec<_>>();
+        let expected_members = full
+            .members
+            .iter()
+            .copied()
+            .filter(|id| index.symbol(*id).unwrap().name.as_deref() == Some("OnGameStart"))
+            .collect::<Vec<_>>();
+        let expected_shadowed = full
+            .shadowed_groups
+            .iter()
+            .filter(|group| {
+                index.symbol(group.kept).unwrap().name.as_deref() == Some("OnGameStart")
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+
+        assert_eq!(named.raw_candidates, expected_raw);
+        assert_eq!(named.members, expected_members);
+        assert_eq!(named.shadowed_groups, expected_shadowed);
     }
 
     #[test]

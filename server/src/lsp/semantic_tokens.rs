@@ -5,7 +5,10 @@ use crate::lsp::{
     file_index_for_source, range_for_span, span_text, FileIndexAnalysis, LspPositionIndex, LspRange,
 };
 use crate::model::SymbolKind;
-use crate::resolver::{CandidateSource, ReferenceCandidate, ReferenceResolver, ResolutionReason};
+use crate::resolver::{
+    CandidateSource, ReferenceCandidate, ReferenceResolver, ReferenceResolverTimings,
+    ResolutionReason,
+};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
@@ -94,6 +97,13 @@ pub struct LspSemanticTokenTimings {
     pub lex_ms: u128,
     pub token_loop_ms: u128,
     pub resolver_ms: u128,
+    pub resolver_context_ms: u128,
+    pub resolver_declaration_ms: u128,
+    pub resolver_scope_ms: u128,
+    pub resolver_member_ms: u128,
+    pub resolver_top_level_ms: u128,
+    pub resolver_external_ms: u128,
+    pub resolver_selection_ms: u128,
     pub declaration_overlay_ms: u128,
     pub symbol_declaration_overlay_ms: u128,
     pub delimiter_overlay_ms: u128,
@@ -441,6 +451,7 @@ fn semantic_raw_tokens(
     );
 
     let mut resolver_elapsed = Duration::default();
+    let mut resolver_timings = ReferenceResolverTimings::default();
     let mut identifier_resolver_calls = 0usize;
     let mut resolved_identifier_kinds = BTreeMap::new();
     let token_loop_start = Instant::now();
@@ -476,8 +487,16 @@ fn semantic_raw_tokens(
             }
             identifier_resolver_calls += 1;
             let resolver_start = Instant::now();
-            let resolution = resolver.resolve_identifier_token(token.span);
+            let (resolution, token_timings) =
+                resolver.resolve_identifier_token_profiled(token.span);
             resolver_elapsed += resolver_start.elapsed();
+            resolver_timings.context += token_timings.context;
+            resolver_timings.declaration += token_timings.declaration;
+            resolver_timings.scope += token_timings.scope;
+            resolver_timings.member += token_timings.member;
+            resolver_timings.top_level += token_timings.top_level;
+            resolver_timings.external += token_timings.external;
+            resolver_timings.selection += token_timings.selection;
             resolved_identifier_kinds.insert(
                 (token.span.start, token.span.end),
                 resolution
@@ -656,6 +675,13 @@ fn semantic_raw_tokens(
             lex_ms: lex_elapsed.as_millis(),
             token_loop_ms: token_loop_elapsed.as_millis(),
             resolver_ms: resolver_elapsed.as_millis(),
+            resolver_context_ms: resolver_timings.context.as_millis(),
+            resolver_declaration_ms: resolver_timings.declaration.as_millis(),
+            resolver_scope_ms: resolver_timings.scope.as_millis(),
+            resolver_member_ms: resolver_timings.member.as_millis(),
+            resolver_top_level_ms: resolver_timings.top_level.as_millis(),
+            resolver_external_ms: resolver_timings.external.as_millis(),
+            resolver_selection_ms: resolver_timings.selection.as_millis(),
             declaration_overlay_ms: declaration_overlay_elapsed.as_millis()
                 + delimiter_overlay_elapsed.as_millis(),
             symbol_declaration_overlay_ms: declaration_overlay_elapsed.as_millis(),
@@ -778,6 +804,13 @@ fn lexical_raw_tokens(
             lex_ms: lex_elapsed.as_millis(),
             token_loop_ms: token_loop_start.elapsed().as_millis(),
             resolver_ms: 0,
+            resolver_context_ms: 0,
+            resolver_declaration_ms: 0,
+            resolver_scope_ms: 0,
+            resolver_member_ms: 0,
+            resolver_top_level_ms: 0,
+            resolver_external_ms: 0,
+            resolver_selection_ms: 0,
             declaration_overlay_ms: 0,
             symbol_declaration_overlay_ms: 0,
             delimiter_overlay_ms: 0,

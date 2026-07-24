@@ -884,6 +884,34 @@ fn append_timing(
         .iter()
         .map(|row| row.semantic_timings.resolver_ms)
         .sum();
+    let semantic_resolver_context_ms: u128 = rows
+        .iter()
+        .map(|row| row.semantic_timings.resolver_context_ms)
+        .sum();
+    let semantic_resolver_declaration_ms: u128 = rows
+        .iter()
+        .map(|row| row.semantic_timings.resolver_declaration_ms)
+        .sum();
+    let semantic_resolver_scope_ms: u128 = rows
+        .iter()
+        .map(|row| row.semantic_timings.resolver_scope_ms)
+        .sum();
+    let semantic_resolver_member_ms: u128 = rows
+        .iter()
+        .map(|row| row.semantic_timings.resolver_member_ms)
+        .sum();
+    let semantic_resolver_top_level_ms: u128 = rows
+        .iter()
+        .map(|row| row.semantic_timings.resolver_top_level_ms)
+        .sum();
+    let semantic_resolver_external_ms: u128 = rows
+        .iter()
+        .map(|row| row.semantic_timings.resolver_external_ms)
+        .sum();
+    let semantic_resolver_selection_ms: u128 = rows
+        .iter()
+        .map(|row| row.semantic_timings.resolver_selection_ms)
+        .sum();
     let semantic_declaration_overlay_ms: u128 = rows
         .iter()
         .map(|row| row.semantic_timings.declaration_overlay_ms)
@@ -931,6 +959,41 @@ fn append_timing(
     writeln!(report, "| Lex | {semantic_lex_ms} |").unwrap();
     writeln!(report, "| Token loop | {semantic_token_loop_ms} |").unwrap();
     writeln!(report, "| Resolver calls | {semantic_resolver_ms} |").unwrap();
+    writeln!(
+        report,
+        "|   Context classification | {semantic_resolver_context_ms} |"
+    )
+    .unwrap();
+    writeln!(
+        report,
+        "|   Declaration lookup | {semantic_resolver_declaration_ms} |"
+    )
+    .unwrap();
+    writeln!(
+        report,
+        "|   Lexical scope lookup | {semantic_resolver_scope_ms} |"
+    )
+    .unwrap();
+    writeln!(
+        report,
+        "|   Member lookup | {semantic_resolver_member_ms} |"
+    )
+    .unwrap();
+    writeln!(
+        report,
+        "|   File top-level lookup | {semantic_resolver_top_level_ms} |"
+    )
+    .unwrap();
+    writeln!(
+        report,
+        "|   External top-level lookup | {semantic_resolver_external_ms} |"
+    )
+    .unwrap();
+    writeln!(
+        report,
+        "|   Candidate selection | {semantic_resolver_selection_ms} |"
+    )
+    .unwrap();
     writeln!(
         report,
         "| Declaration overlay | {semantic_declaration_overlay_ms} |"
