@@ -20,7 +20,7 @@ use super::{
     MAX_PENDING_DOCUMENT_REQUESTS_PER_URI,
 };
 use crate::analysis_runtime::{AdmissionLimits, AnalysisRuntime, UpsertOutcome};
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::Path;
 #[cfg(test)]
@@ -716,14 +716,10 @@ impl DocumentRuntime {
         let _ = document;
         let mut effects = vec![
             RuntimeEffect::Notification(publish_diagnostics_message(&uri, version, &source, &diagnostics)),
-            RuntimeEffect::Notification(json!({
-                "jsonrpc": "2.0",
-                "method": "reforger/foregroundReady",
-                "params": {
-                    "uri": uri,
-                    "version": version,
-                }
-            })),
+            RuntimeEffect::ForegroundReady {
+                uri: uri.clone(),
+                version,
+            },
             RuntimeEffect::Log(format!(
                 "foreground ready uri={} version={} revision={} lexical_state=ready syntax_state=ready elapsed_ms={}",
                 uri, version, revision, elapsed_ms

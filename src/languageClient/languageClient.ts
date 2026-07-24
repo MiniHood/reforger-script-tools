@@ -231,13 +231,15 @@ async function startLanguageClient(
 	registerDevelopmentServerWatchBridge(
 		context,
 		serverPath,
-		async () => {
-			try {
-				await restartLanguageClient(context, outputChannel, 'development language-server binary changed');
-			} catch (error) {
+		() => {
+			void restartLanguageClient(
+				context,
+				outputChannel,
+				'development language-server binary changed',
+			).catch(error => {
 				const message = error instanceof Error ? error.message : String(error);
 				outputChannel.appendLine(`Development language-server restart failed: ${message}`);
-			}
+			});
 		},
 	);
 

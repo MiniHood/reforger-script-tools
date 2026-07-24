@@ -18,6 +18,10 @@ pub(super) enum RuntimeEffect {
     RequestSemanticTokensRefresh {
         id: String,
     },
+    ForegroundReady {
+        uri: String,
+        version: i32,
+    },
     Notification(Value),
     Response {
         id: Value,
@@ -49,6 +53,14 @@ impl<W: Write> LspServer<W> {
                 "id": id,
                 "method": "workspace/semanticTokens/refresh",
                 "params": null
+            })),
+            RuntimeEffect::ForegroundReady { uri, version } => self.write_message(json!({
+                "jsonrpc": "2.0",
+                "method": "reforger/foregroundReady",
+                "params": {
+                    "uri": uri,
+                    "version": version,
+                }
             })),
             RuntimeEffect::Notification(message) => self.write_message(message),
             RuntimeEffect::Response { id, result } => self.respond(id, result),
