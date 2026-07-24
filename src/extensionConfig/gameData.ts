@@ -7,6 +7,7 @@ export const gameDataRepository = {
 export const gameDataCommands = {
 	checkForUpdates: 'reforger-sript-tools.gameData.checkForUpdates',
 	openStorageFolder: 'reforger-sript-tools.gameData.openStorageFolder',
+	selectManualFolder: 'reforger-sript-tools.gameData.selectManualFolder',
 } as const;
 
 export const gameDataConfig = {

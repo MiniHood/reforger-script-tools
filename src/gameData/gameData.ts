@@ -95,6 +95,9 @@ export function registerGameDataFeatures(
 			await fs.mkdir(storageRoot, { recursive: true });
 			await vscode.env.openExternal(vscode.Uri.file(storageRoot));
 		}),
+		vscode.commands.registerCommand(gameDataCommands.selectManualFolder, async () => {
+			await promptAndSetManualFolder(context, onGameDataSourceChanged);
+		}),
 	);
 
 	void runGameDataStartupCheck(context, false, onGameDataSourceChanged);

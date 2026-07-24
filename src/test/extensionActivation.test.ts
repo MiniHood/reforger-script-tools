@@ -3,6 +3,7 @@ import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
+import { gameDataCommands } from '../extensionConfig/gameData';
 import { languageClientCommands } from '../extensionConfig/languageClient';
 import {
 	workbenchCommands,
@@ -156,6 +157,7 @@ suite('extension activation', () => {
 		assert.ok(commands.includes(languageClientCommands.debugCompletionAtCursor));
 		assert.ok(commands.includes(languageClientCommands.triggerSuggestAtSnippetPlaceholder));
 		assert.ok(commands.includes(languageClientCommands.advanceSnippetPlaceholderAfterAccept));
+		assert.ok(commands.includes(gameDataCommands.selectManualFolder));
 		const contributedCommands = extension.packageJSON.contributes.commands as Array<{ command: string }>;
 		assert.ok(contributedCommands.some(command =>
 			command.command === languageClientCommands.triggerSuggestAtSnippetPlaceholder));
@@ -164,7 +166,7 @@ suite('extension activation', () => {
 			command.command === workbenchCommands.validateScripts));
 	});
 
-	test('contributes the Workbench endpoint and compiler-validation defaults', () => {
+	test('contributes only actionable Workbench and game-data settings', () => {
 		const extension = vscode.extensions.all.find(
 			candidate => candidate.packageJSON.name === 'reforger-sript-tools',
 		);
@@ -186,13 +188,19 @@ suite('extension activation', () => {
 			workbenchDefaults.port,
 		);
 		assert.strictEqual(
-			properties[`${workbenchConfig.section}.${workbenchConfig.settings.validationDelaySeconds}`]?.default,
-			workbenchDefaults.validationDelaySeconds,
+			properties[`${workbenchConfig.section}.compilerValidationDelaySeconds`],
+			undefined,
 		);
-		assert.deepStrictEqual(
-			properties[`${workbenchConfig.section}.${workbenchConfig.settings.validationProfile}`]?.enum,
-			['WORKBENCH'],
+		assert.strictEqual(
+			properties[`${workbenchConfig.section}.compilerValidationProfile`],
+			undefined,
 		);
+		const manualFolderSetting = properties['reforgerScriptTools.gameData.manualFolder'] as {
+			markdownDescription?: string;
+		};
+		assert.ok(manualFolderSetting.markdownDescription?.includes(
+			`command:${gameDataCommands.selectManualFolder}`,
+		));
 	});
 
 	test('retains map placeholder progression unless a nested snippet takes ownership', () => {

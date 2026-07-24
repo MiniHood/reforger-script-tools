@@ -135,17 +135,16 @@ validation so compiler state is established without waiting for a save or edit.
 A validation that already completed earlier in that session satisfies this
 requirement. The startup attempt is not re-armed by heartbeats, reconnects, or
 configuration changes, and a transport failure does not create a retry loop.
-This one operation is independent of the idle-delay setting and never saves a
+This one operation is independent of the fixed idle interval and never saves a
 dirty document.
 
-Continuous validation is single-flight. With a positive idle delay, an
-eligible save cancels any pending idle timer and validates immediately. Unsaved
-typing uses the delay as a fallback: after the active dirty Enfusion Script has
-been idle for that period, the adapter saves only that document and validates
-the configured profile. The adapter suppresses the save event it initiated so
-one idle trigger cannot produce a duplicate validation. A zero delay disables
-edit/save automation after the session's startup validation. Triggers during a
-validation collapse into one follow-up operation. A failed save does not call
+Continuous validation is single-flight. An eligible save cancels any pending
+idle timer and validates immediately. Unsaved typing uses a fixed three-second
+idle interval: after the active dirty Enfusion Script has been idle for that
+period, the adapter saves only that document and validates through Workbench.
+The adapter suppresses the save event it initiated so one idle trigger cannot
+produce a duplicate validation. Triggers during a validation collapse into one
+follow-up operation. A failed save does not call
 Workbench and does not retry compilation until another user or editor trigger
 occurs. When another edit arrives during an in-flight validation, it supersedes
 earlier queued triggers so the single follow-up cannot begin before the newest

@@ -33,8 +33,8 @@ notifications.
 _Avoid_: connection popup, compiler progress notification, NET API console
 
 **Live Gateway Configuration**:
-The immediate application of Workbench NET API enablement, endpoint, profile,
-and validation-delay setting changes. A changed setting supersedes queued work;
+The immediate application of Workbench NET API enablement and endpoint setting
+changes. A changed setting supersedes queued work;
 existing compiler evidence remains stale until a result under the new
 configuration succeeds.
 _Avoid_: reload-only setting, deferred reconfiguration, mixed configuration
@@ -111,9 +111,8 @@ _Avoid_: compiler diagnostic, validation error
 **Continuous Compiler Validation**:
 The default-on scheduling of Workbench script validation once after the first
 successful Workbench connection in an extension session, immediately after a
-save, or after an idle pause that first saves the changed script. Its single
-delay setting applies only to edit/save automation; `0` retains the one startup
-validation and otherwise selects manual-only behavior. It is separate from the
+save, or after a fixed three-second idle pause that first saves the changed
+script. It is separate from the
 language engine's continuous parsing and is single-flight: later edits coalesce
 into one follow-up run rather than overlapping compiler requests.
 _Avoid_: auto-parsing, live compiler, background build
@@ -125,10 +124,10 @@ only their Provisional Parser Diagnostics until separately saved or visited.
 _Avoid_: workspace auto-save, save-all validation, dirty-project snapshot
 
 **Validation Profile**:
-The named Workbench compilation configuration selected by an extension setting
-for a Workbench Compiler Validation request. Continuous Compiler Validation
-initially selects the only supported, verified value: `WORKBENCH`.
-_Avoid_: hidden compiler mode, target guess, endpoint parameter
+The internal Workbench compilation configuration used for every Workbench
+Compiler Validation request. It is fixed to the only supported, verified value:
+`WORKBENCH`.
+_Avoid_: user-selectable compiler mode, target guess, endpoint parameter
 
 **Stale Workbench Compiler Diagnostic**:
 A Workbench Compiler Diagnostic from a prior saved snapshot when a newer

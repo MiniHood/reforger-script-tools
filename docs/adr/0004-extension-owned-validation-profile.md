@@ -1,6 +1,6 @@
 # Extension-owned validation profile
 
-The selected Workbench compilation configuration is an extension-owned
-Validation Profile setting, initially defaulting to `WORKBENCH`, rather than a
-hidden Gateway choice.  The Gateway continues to own NET API transport and
-endpoint discovery because those are not user workflow controls.
+The Workbench compilation configuration is internal compiler policy, fixed to
+the only verified value, `WORKBENCH`. It is not a user setting because no
+supported alternative exists. The Gateway continues to own NET API transport
+and endpoint discovery because those are not user workflow controls.

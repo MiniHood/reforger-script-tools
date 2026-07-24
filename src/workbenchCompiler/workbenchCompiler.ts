@@ -14,7 +14,6 @@ import {
 	WorkbenchGateway,
 	WorkbenchGatewayFailureCategory,
 	WorkbenchStatus,
-	WorkbenchValidationProfile,
 	WorkbenchValidationResult,
 } from '../workbenchGateway/workbenchGateway';
 import {
@@ -24,6 +23,10 @@ import {
 
 const unavailableRetryMs = 1_000;
 const readyHeartbeatMs = 5_000;
+const workbenchValidation = {
+	idleDelaySeconds: 3,
+	profile: 'WORKBENCH',
+} as const;
 
 type WorkbenchUiPhase =
 	| 'disabled'
@@ -47,16 +50,10 @@ export interface WorkbenchCompilerObservation {
 	lastValidationResult?: WorkbenchValidationResult;
 }
 
-type ValidationProfileSelection =
-	| { kind: 'supported'; value: WorkbenchValidationProfile }
-	| { kind: 'unsupported'; configuredValue: string };
-
 interface WorkbenchConfiguration {
 	enabled: boolean;
 	host: string;
 	port: number;
-	validationDelaySeconds: number;
-	validationProfile: ValidationProfileSelection;
 }
 
 interface RenderedDiagnosticSet {
@@ -248,13 +245,6 @@ class WorkbenchCompilerController implements vscode.Disposable {
 			this.markDiagnosticsStale('Workbench NET API integration is disabled');
 			return;
 		}
-		if (this.configuration.validationProfile.kind === 'unsupported') {
-			this.noteFailure({
-				category: 'unsupported',
-				recoveryHint: 'Select the supported WORKBENCH validation profile.',
-			});
-			return;
-		}
 		if (!onlyAddonWorkspace()) {
 			this.noteFailure({
 				category: 'unsupported',
@@ -292,8 +282,7 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		if (!eligibleDocument(document)
 			|| this.savesStartedByValidation.has(document.uri.toString())
 			|| this.disposed
-			|| !this.configuration.enabled
-			|| this.configuration.validationDelaySeconds <= 0) {
+			|| !this.configuration.enabled) {
 			return;
 		}
 		this.clearValidationTimer();
@@ -310,16 +299,14 @@ class WorkbenchCompilerController implements vscode.Disposable {
 	}
 
 	private scheduleValidation(request: ValidationRequest): void {
-		if (this.disposed
-			|| !this.configuration.enabled
-			|| this.configuration.validationDelaySeconds <= 0) {
+		if (this.disposed || !this.configuration.enabled) {
 			return;
 		}
 		this.clearValidationTimer();
 		if (this.validating) {
 			this.pendingValidation = undefined;
 		}
-		const delayMs = this.configuration.validationDelaySeconds * 1_000;
+		const delayMs = workbenchValidation.idleDelaySeconds * 1_000;
 		diagnostic('workbenchValidationScheduled', {
 			trigger: request.trigger,
 			delayMs,
@@ -406,19 +393,10 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		if (this.disposed || request.generation !== this.configurationGeneration) {
 			return;
 		}
-		if (this.configuration.validationProfile.kind === 'unsupported') {
-			this.noteFailure({
-				category: 'unsupported',
-				recoveryHint: 'Select the supported WORKBENCH validation profile.',
-			});
-			return;
-		}
 		const hadDirtyScriptsAtRequest = hasDirtyEligibleDocuments();
 		const validationStartedAtMs = Date.now();
 		this.activeValidationStartedAtMs = validationStartedAtMs;
-		const validation = this.gateway.validateScripts(
-			this.configuration.validationProfile.value,
-		);
+		const validation = this.gateway.validateScripts(workbenchValidation.profile);
 		this.publishValidationPending(
 			validationStartedAtMs,
 			request.revealOutput === true,
@@ -743,7 +721,6 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		return this.startupValidationEnabled
 			&& !this.startupValidationAttempted
 			&& !this.validationCompletedThisSession
-			&& this.configuration.validationProfile.kind === 'supported'
 			&& onlyAddonWorkspace() !== undefined;
 	}
 
@@ -814,7 +791,6 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		this.statusItem.tooltip = [
 			detail,
 			`Endpoint: ${endpoint}`,
-			`Profile: ${validationProfileLabel(this.configuration.validationProfile)}`,
 			...(this.lastStatus
 				? [
 					'Workbench API: connected.',
@@ -869,14 +845,6 @@ function readConfiguration(): WorkbenchConfiguration {
 		enabled: configuration.get(workbenchConfig.settings.enabled, workbenchDefaults.enabled),
 		host: configuration.get(workbenchConfig.settings.host, workbenchDefaults.host),
 		port: configuration.get(workbenchConfig.settings.port, workbenchDefaults.port),
-		validationDelaySeconds: configuration.get(
-			workbenchConfig.settings.validationDelaySeconds,
-			workbenchDefaults.validationDelaySeconds,
-		),
-		validationProfile: readValidationProfile(configuration.get(
-			workbenchConfig.settings.validationProfile,
-			workbenchDefaults.validationProfile,
-		)),
 	};
 }
 
@@ -897,17 +865,6 @@ function createGateway(configuration: WorkbenchConfiguration): WorkbenchGateway 
 	});
 }
 
-function readValidationProfile(configuredValue: string): ValidationProfileSelection {
-	return configuredValue === 'WORKBENCH'
-		? { kind: 'supported', value: configuredValue }
-		: { kind: 'unsupported', configuredValue };
-}
-
-function validationProfileLabel(selection: ValidationProfileSelection): string {
-	return selection.kind === 'supported'
-		? selection.value
-		: selection.configuredValue;
-}
 
 function cloneValidationResult(result: WorkbenchValidationResult): WorkbenchValidationResult {
 	return {
