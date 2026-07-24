@@ -1478,7 +1478,7 @@ fn framed_lsp_smoke_test_handles_signature_help() {
 
 #[test]
 fn framed_lsp_exposes_the_public_enforce_semantic_palette_contract() {
-    let source = "#define FEATURE\nvoid GlobalFunction();\nclass PaletteClass\n{\n\tint m_Field;\n\tvoid MemberFunction(int parameter)\n\t{\n\t\tint local = parameter + m_Field;\n\t}\n}\n";
+    let source = "#define FEATURE\nenum PaletteEnum\n{\n\tPaletteValue = 7\n}\ntypedef int PaletteType;\nvoid GlobalFunction();\nclass PaletteClass\n{\n\tint m_Field;\n\tvoid MemberFunction(int parameter)\n\t{\n\t\t// Palette comment\n\t\tstring localText = \"value\";\n\t\tint local = parameter + m_Field;\n\t}\n}\n";
     let mut input = Vec::new();
     write_test_message(
         &mut input,
@@ -1604,15 +1604,26 @@ fn framed_lsp_exposes_the_public_enforce_semantic_palette_contract() {
 
     for expected in [
         ("FEATURE", "variable"),
+        ("PaletteEnum", "enum"),
+        ("PaletteValue", "enumMember"),
+        ("7", "number"),
+        ("PaletteType", "type"),
         ("GlobalFunction", "function"),
         ("PaletteClass", "class"),
         ("m_Field", "reforgerField"),
         ("MemberFunction", "function"),
         ("parameter", "parameter"),
+        ("localText", "variable"),
+        ("// Palette comment", "comment"),
+        ("\"value\"", "string"),
+        ("void", "keyword"),
         ("+", "operator"),
         (";", "reforgerPunctuation"),
         ("#", "reforgerPreprocessor"),
         ("define", "reforgerPreprocessor"),
+        ("{", "enum"),
+        ("{", "class"),
+        ("(", "function"),
     ] {
         assert!(
             decoded

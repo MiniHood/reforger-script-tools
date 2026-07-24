@@ -66,9 +66,24 @@ to the native VS Code customization setting:
 ```
 
 The shipped palette is intentionally dark-oriented and does not switch when a
-light theme is selected. Light-theme users can override only the selectors
-that need more contrast, or disable the palette for Enforce while keeping
-their chosen theme:
+light theme is selected. A user can attach corrections to one named light
+theme so VS Code applies them only while that theme is active. Replace the
+example color with the contrast-tested value you prefer:
+
+```json
+{
+  "editor.semanticTokenColorCustomizations": {
+    "[Default Light Modern]": {
+      "rules": {
+        "function:enforce": "#8a3e00"
+      }
+    }
+  }
+}
+```
+
+Light-theme users can override only the selectors that need more contrast, or
+disable the palette for Enforce while keeping their chosen theme:
 
 ```json
 {
