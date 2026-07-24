@@ -9,8 +9,7 @@ extension is included; no additional tools or runtimes are required.
 - Enfusion Script syntax highlighting and semantic colors.
 - Context-aware completion, snippets, signature help, hover information, and
   go to definition.
-- Document symbols and workspace-aware indexing of addon scripts and Reforger
-  game data.
+- Document symbols and indexing of Reforger base-game data.
 - Editor errors and authoritative Workbench compiler results shown separately.
 - Range formatting plus experimental automatic formatting while typing,
   including indentation, comment pairs, and preprocessor separators.
@@ -41,6 +40,12 @@ three seconds.
 
 These steps follow Bohemia Interactive's official
 [Resource Manager options documentation](https://community.bistudio.com/wiki/Arma_Reforger%3AResource_Manager%3A_Options#Enable_net_API).
+
+## Known Limitations
+
+Additional addons outside the Reforger base-game data are not currently
+supported as language-feature reference data. Support may be added in the
+future after Bohemia Interactive releases its official VS Code extension.
 
 ## Settings
 
