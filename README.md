@@ -1,59 +1,122 @@
 # Reforger Script Tools
 
-Reforger Script Tools adds parser-first Enforce Script support for Arma Reforger modding in VS Code. It focuses on fast code intelligence, Workbench validation, base-game API indexing, and editor assists that match Reforger script patterns.
+Reforger Script Tools brings Enfusion Script language support and Arma Reforger
+Workbench compiler feedback to Visual Studio Code. Everything needed by the
+extension is included; no additional tools or runtimes are required.
+
+## Unofficial Project and Product Terms
+
+Reforger Script Tools is an independent, unofficial project. It is not
+affiliated with, authorized by, endorsed by, or supported by Bohemia
+Interactive a.s.
+
+Use of this extension with Bohemia Interactive games, tools, services, or
+content remains subject to all applicable end-user license agreements, terms of
+use, and content licenses, including but not limited to the
+[Arma Reforger EULA](https://reforger.armaplatform.com/eula) and
+[Arma Reforger Workshop Terms of Use](https://reforger.armaplatform.com/workshop-terms). This extension is not designed or intended to circumvent
+those agreements, violate license restrictions, or enable others to do so.
+Users are responsible for ensuring that their use complies with the agreements
+and licenses applicable to the Bohemia Interactive products and content they
+use.
+
+Bohemia Interactive, Arma, Arma Reforger, and associated logos and designs are
+trademarks or registered trademarks of Bohemia Interactive a.s.
 
 ## Features
 
-- Enforce Script language support for `.c` files.
-- Parser-backed completions for keywords, locals, parameters, current class members, inherited members, receiver members, indexed classes, enums, and Reforger API symbols.
-- Callable-aware completions for callback APIs such as invokers, RPC methods, and script call queues.
-- Hover, Go to Definition, references, rename, document highlights, document symbols, workspace symbols, and semantic highlighting from a shared language model.
-- Workbench validation through the Reforger Workbench Net API, with current-file issues grouped first.
-- Downloaded or user-provided base-game script data indexing for API lookup.
-- Reforger-themed semantic colors and parser-backed bracket coloring.
-- Optional typed assists for safe brackets, comments, class inheritance colons, declaration initializers, and semicolons.
+- Enfusion Script syntax highlighting and semantic colors.
+- Context-aware completion, snippets, signature help, hover information, and
+  go to definition.
+- Document symbols and indexing of Reforger base-game data.
+- Editor errors and authoritative Workbench compiler results shown separately.
+- Range formatting plus experimental automatic formatting while typing,
+  including indentation, comment pairs, and preprocessor separators.
+- Semantic, punctuation-colored, or native VS Code bracket presentation.
+- Automatic game-data updates, with an optional local game-data folder.
+- Automatic and manual script validation through the Workbench NET API.
 
-## Requirements
+The extension recognizes `.c` files under `Scripts` or `scripts` directories as
+Enfusion Script.
 
-- Visual Studio Code `1.125.0` or newer.
-- Arma Reforger Tools / Workbench for validation features.
-- Workbench Net API must be reachable for `Reforger: Validate Scripts`. The default endpoint is `127.0.0.1:5775`.
+## Enable the Workbench NET API
 
-The extension can use downloaded BI script data by default. You can also point it at local exported script data with `reforgerScriptTools.gameScriptDataPath`.
+Workbench compiler validation requires Arma Reforger Tools and a running
+Workbench instance with your addon project open.
 
-## Commands
+1. In Workbench, select **Workbench > Options**.
+2. Open the **Workbench** tab.
+3. Enable **Enable net API**.
+4. Select **OK** to save the setting.
+5. In VS Code, leave the extension endpoint at its default
+   `127.0.0.1:5775`, or set it to the loopback endpoint used by Workbench.
 
-- `Reforger: Validate Scripts`
-- `Reforger: Check Workbench Status`
-- `Reforger: Refresh Game Data`
-- `Reforger: Capture AC Debug Log`
+The extension reconnects automatically. The Workbench status item shows
+availability, and **Reforger Script Tools: Validate Scripts in Workbench** runs
+validation manually. Workbench validation is also requested at session start,
+after an eligible save, and after the active dirty script has been idle for
+three seconds.
 
-## Extension Settings
+These steps follow Bohemia Interactive's official
+[Resource Manager options documentation](https://community.bistudio.com/wiki/Arma_Reforger%3AResource_Manager%3A_Options#Enable_net_API).
 
-This extension contributes these settings:
+## Known Limitations
 
-- `reforgerScriptTools.validateOnSave`: Validate Enforce scripts on save.
-- `reforgerScriptTools.netApiHost`: Workbench Net API host.
-- `reforgerScriptTools.netApiPort`: Workbench Net API port.
-- `reforgerScriptTools.netApiTimeoutMs`: Workbench Net API timeout.
-- `reforgerScriptTools.showBaseGameWarnings`: Include base-game warnings in validation output.
-- `reforgerScriptTools.showSuccessMessage`: Show a notification when validation succeeds.
-- `reforgerScriptTools.gameScriptDataPath`: Optional local folder containing Reforger script data.
-- `reforgerScriptTools.checkGameScriptUpdates`: Check for updated BI script data during startup.
-- `reforgerScriptTools.formatting.semicolons.enabled`: Enable semicolon typed assists. Default: `true`.
-- `reforgerScriptTools.formatting.autoBrackets.enabled`: Enable safe bracket/body typed assists. Default: `true`.
-- `reforgerScriptTools.formatting.classInheritanceColon.enabled`: Enable expanding `class Name ` to `class Name : `. Default: `true`.
-- `reforgerScriptTools.formatting.comments.enabled`: Enable standalone block comment opener expansion. Default: `true`.
-- `reforgerScriptTools.formatting.equalSigns.enabled`: Enable simple declaration initializer expansion. Default: `true`.
+Additional addons outside the Reforger base-game data are not currently
+supported as language-feature reference data. Support may be added in the
+future after Bohemia Interactive releases its official VS Code extension.
 
-## Known Issues
+## Settings
 
-- This extension is in a parser-first rework. Some language features may be conservative while the shared parser/model/index pipeline is expanded.
-- Workbench validation depends on the Workbench Net API being enabled and reachable.
-- Indexed base-game API completions depend on downloaded or configured script data.
+Open **Preferences: Open Settings (UI)** and search for `Reforger Script
+Tools`, or add the keys to `settings.json`.
 
-## Release Notes
+| Setting | Default | Description |
+| --- | --- | --- |
+| `reforgerScriptTools.gameData.manualFolder` | `""` | Optional local Reforger game-data folder. Select either the folder containing `scripts/` or the `scripts/` folder itself. This disables GitHub game-data checks and downloads. |
+| `reforgerScriptTools.experimentalAutoFormatting` | `true` | Apply experimental automatic source edits, including typing assists and preprocessor directive separators. |
+| `reforgerScriptTools.bracketColoring` | `"semantic"` | Use `"semantic"` owner colors, `"punctuation"` palette color, or native `"vscode"` bracket coloring and matching. This setting applies across VS Code windows. |
+| `reforgerScriptTools.workbench.enabled` | `true` | Enable Workbench NET API status checks and compiler validation. |
+| `reforgerScriptTools.workbench.host` | `"127.0.0.1"` | Workbench NET API loopback host. IPv4 loopback addresses and `::1` are accepted. |
+| `reforgerScriptTools.workbench.port` | `5775` | Workbench NET API port, from `1` through `65535`. The extension does not scan other ports. |
 
-### 0.0.1
+## Customize Semantic Colors
 
-Initial parser-first preview release.
+The extension supplies default Enfusion Script colors through VS Code's native
+semantic-token settings. VS Code applies these defaults automatically, so they
+do not appear in **User Settings (JSON)** until you add your own overrides.
+
+To change a color:
+
+1. Open the Command Palette with `Ctrl+Shift+P`.
+2. Run **Preferences: Open User Settings (JSON)**.
+3. Add the selectors you want to override under
+   `editor.semanticTokenColorCustomizations.rules`.
+
+For example:
+
+```json
+{
+  "editor.semanticTokenColorCustomizations": {
+    "rules": {
+      "class:enforce": "#4EC9B0",
+      "function:enforce": "#DCDCAA",
+      "reforgerField:enforce": "#9CDCFE",
+      "keyword:enforce": "#569CD6",
+      "comment:enforce": "#6A9955",
+      "string:enforce": "#CE9178",
+      "reforgerPunctuation:enforce": "#D4D4D4"
+    }
+  }
+}
+```
+
+Only the selectors included in the user's settings are changed; all others keep
+the extension defaults. The `:enforce` suffix limits each rule to Enfusion
+Script. Available selectors are:
+
+`class:enforce`, `enum:enforce`, `type:enforce`, `typeParameter:enforce`,
+`function:enforce`, `reforgerField:enforce`, `variable:enforce`,
+`parameter:enforce`, `enumMember:enforce`, `number:enforce`,
+`operator:enforce`, `reforgerPunctuation:enforce`, `keyword:enforce`,
+`comment:enforce`, `string:enforce`, and `reforgerPreprocessor:enforce`.

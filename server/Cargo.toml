@@ -1,0 +1,16 @@
+[package]
+name = "reforger_language_server"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "reforger_language_server"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+url = "2.5"
+
+[profile.dev]
+opt-level = 2

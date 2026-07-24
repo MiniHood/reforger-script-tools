@@ -1,13 +1,31 @@
-out/
-dist/
-node_modules/
-.vscode-test/
-.cache/
-coverage/
-*.vsix
+# Dependency and build outputs
+/node_modules/
+/out/
+/dist/
+/server/target/
+/.vscode-test/
+/.cache/
+/coverage/
+/tools/reports/
+
+# Local editor and operating-system state
+/.vs/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Local logs and packaged artifacts
 *.log
-logs/
-check.out
+*.vsix
+/logs/
+/check.out
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# Local secrets; commit an example file when configuration is required.
+.env
+.env.*
+!.env.example
