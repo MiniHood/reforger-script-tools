@@ -98,6 +98,7 @@ pub struct SymbolIndex {
     symbols: Vec<IndexedSymbol>,
     by_name: BTreeMap<String, Vec<GlobalSymbolId>>,
     top_level_by_name: BTreeMap<String, Vec<GlobalSymbolId>>,
+    top_level_by_folded_name: BTreeMap<String, Vec<GlobalSymbolId>>,
     by_kind: BTreeMap<SymbolKind, Vec<GlobalSymbolId>>,
     children: BTreeMap<GlobalSymbolId, Vec<GlobalSymbolId>>,
     classes_by_name: BTreeMap<String, Vec<GlobalSymbolId>>,
@@ -187,11 +188,14 @@ impl From<&SymbolIndex> for SymbolIndexSnapshot {
 
 impl From<SymbolIndexSnapshot> for SymbolIndex {
     fn from(snapshot: SymbolIndexSnapshot) -> Self {
+        let top_level_by_name = snapshot.top_level_by_name.into_iter().collect();
+        let top_level_by_folded_name = folded_top_level_names(&top_level_by_name);
         Self {
             files: snapshot.files,
             symbols: snapshot.symbols,
             by_name: snapshot.by_name.into_iter().collect(),
-            top_level_by_name: snapshot.top_level_by_name.into_iter().collect(),
+            top_level_by_name,
+            top_level_by_folded_name,
             by_kind: snapshot.by_kind.into_iter().collect(),
             children: snapshot.children.into_iter().collect(),
             classes_by_name: snapshot.classes_by_name.into_iter().collect(),
@@ -1167,6 +1171,17 @@ impl SymbolIndex {
         &self.top_level_by_name
     }
 
+    pub fn top_level_symbols_with_ascii_case_insensitive_prefix(
+        &self,
+        prefix: &str,
+    ) -> impl Iterator<Item = GlobalSymbolId> + '_ {
+        let folded_prefix = prefix.to_ascii_lowercase();
+        self.top_level_by_folded_name
+            .range(folded_prefix.clone()..)
+            .take_while(move |(name, _)| name.starts_with(&folded_prefix))
+            .flat_map(|(_, ids)| ids.iter().copied())
+    }
+
     pub fn duplicate_names(&self) -> Vec<(&str, &[GlobalSymbolId])> {
         self.by_name
             .iter()
@@ -1227,6 +1242,7 @@ impl SymbolIndex {
         }
         let mut by_name = BTreeMap::<String, Vec<GlobalSymbolId>>::new();
         let mut top_level_by_name = BTreeMap::<String, Vec<GlobalSymbolId>>::new();
+        let mut top_level_by_folded_name = BTreeMap::<String, Vec<GlobalSymbolId>>::new();
         let mut by_kind = BTreeMap::<SymbolKind, Vec<GlobalSymbolId>>::new();
         let mut children = BTreeMap::<GlobalSymbolId, Vec<GlobalSymbolId>>::new();
         let mut classes_by_name = BTreeMap::<String, Vec<GlobalSymbolId>>::new();
@@ -1252,6 +1268,10 @@ impl SymbolIndex {
             if symbol.parent.is_none() {
                 top_level_by_name
                     .entry(name.clone())
+                    .or_default()
+                    .push(symbol.id);
+                top_level_by_folded_name
+                    .entry(name.to_ascii_lowercase())
                     .or_default()
                     .push(symbol.id);
             }
@@ -1305,6 +1325,7 @@ impl SymbolIndex {
 
         self.by_name = by_name;
         self.top_level_by_name = top_level_by_name;
+        self.top_level_by_folded_name = top_level_by_folded_name;
         self.by_kind = by_kind;
         self.children = children;
         self.classes_by_name = classes_by_name;
@@ -1343,6 +1364,10 @@ impl SymbolIndex {
         if symbol.parent.is_none() {
             self.top_level_by_name
                 .entry(name.clone())
+                .or_default()
+                .push(symbol.id);
+            self.top_level_by_folded_name
+                .entry(name.to_ascii_lowercase())
                 .or_default()
                 .push(symbol.id);
         }
@@ -1564,6 +1589,19 @@ impl SymbolIndex {
             .collect::<Vec<_>>()
             .join(", ")
     }
+}
+
+fn folded_top_level_names(
+    top_level_by_name: &BTreeMap<String, Vec<GlobalSymbolId>>,
+) -> BTreeMap<String, Vec<GlobalSymbolId>> {
+    let mut folded = BTreeMap::<String, Vec<GlobalSymbolId>>::new();
+    for (name, ids) in top_level_by_name {
+        folded
+            .entry(name.to_ascii_lowercase())
+            .or_default()
+            .extend(ids.iter().copied());
+    }
+    folded
 }
 
 fn map_entry_count<K>(map: &BTreeMap<K, Vec<GlobalSymbolId>>) -> usize {
@@ -1910,6 +1948,27 @@ class Example : Base
         assert!(children.iter().any(|id| index
             .symbol(*id)
             .is_some_and(|symbol| symbol.name.as_deref() == Some("Run"))));
+    }
+
+    #[test]
+    fn top_level_prefix_lookup_is_ascii_case_insensitive_and_bounded() {
+        let source = r#"class SCR_Alpha {}
+class scr_Beta {}
+class Other {}
+"#;
+        let catalog = catalog(source, SourceFileMetadata::unknown());
+        let index = SymbolIndex::from_catalogs([&catalog]);
+
+        let names = index
+            .top_level_symbols_with_ascii_case_insensitive_prefix("ScR_")
+            .filter_map(|id| index.symbol(id).and_then(|symbol| symbol.name.as_deref()))
+            .collect::<Vec<_>>();
+
+        assert_eq!(names, vec!["SCR_Alpha", "scr_Beta"]);
+        assert!(index
+            .top_level_symbols_with_ascii_case_insensitive_prefix("SCR_G")
+            .next()
+            .is_none());
     }
 
     #[test]

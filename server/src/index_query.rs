@@ -192,58 +192,109 @@ impl<'index> IndexQuery<'index> {
             return Vec::new();
         }
 
-        let mut ids_by_key = BTreeMap::<String, Vec<GlobalSymbolId>>::new();
-        let mut key_order = Vec::<String>::new();
+        if !prefix.is_empty() && prefix.is_ascii() {
+            let prefix_ids = self
+                .index
+                .top_level_symbols_with_ascii_case_insensitive_prefix(prefix)
+                .collect::<Vec<_>>();
+            // Prefix matches always outrank fuzzy matches. The prefix-only result is
+            // authoritative only when it fills the cap; otherwise the full scan must
+            // still admit lower-ranked fuzzy candidates.
+            if prefix_ids.len() >= limit {
+                let prefix_candidates =
+                    self.completion_top_level_candidates_for_ids(prefix, mode, prefix_ids, limit);
+                if prefix_candidates.len() >= limit {
+                    return prefix_candidates;
+                }
+            }
+        }
 
-        for (name, ids) in self.index.top_level_names() {
-            if !prefix.is_empty() && completion_name_match_rank(name, prefix).is_none() {
+        self.completion_top_level_limited_full_scan(prefix, mode, limit)
+    }
+
+    fn completion_top_level_limited_full_scan(
+        &self,
+        prefix: &str,
+        mode: EditorTopLevelCompletionMode,
+        limit: usize,
+    ) -> Vec<EditorCompletionCandidate> {
+        let ids = self
+            .index
+            .top_level_names()
+            .iter()
+            .filter(|(name, _)| {
+                prefix.is_empty() || completion_name_match_rank(name, prefix).is_some()
+            })
+            .flat_map(|(_, ids)| ids.iter().copied());
+        self.completion_top_level_candidates_for_ids(prefix, mode, ids, limit)
+    }
+
+    fn completion_top_level_candidates_for_ids(
+        &self,
+        prefix: &str,
+        mode: EditorTopLevelCompletionMode,
+        ids: impl IntoIterator<Item = GlobalSymbolId>,
+        limit: usize,
+    ) -> Vec<EditorCompletionCandidate> {
+        let mut ids_by_key = BTreeMap::<String, Vec<GlobalSymbolId>>::new();
+
+        for id in ids {
+            let Some(symbol) = self.index.symbol(id) else {
+                continue;
+            };
+            let Some(name) = symbol.name.as_deref() else {
+                continue;
+            };
+            if !self.is_editor_completion_source(symbol.id) {
                 continue;
             }
-            for id in ids {
-                let Some(symbol) = self.index.symbol(*id) else {
-                    continue;
-                };
-                if !self.is_editor_completion_source(symbol.id) {
-                    continue;
-                }
-                if !top_level_completion_kind_allowed(symbol.kind, mode) {
-                    continue;
-                }
-                let key = top_level_completion_key(self.index, symbol.id, symbol.kind, name);
-                if !ids_by_key.contains_key(&key) {
-                    key_order.push(key.clone());
-                }
-                ids_by_key.entry(key).or_default().push(symbol.id);
+            if !top_level_completion_kind_allowed(symbol.kind, mode) {
+                continue;
             }
+            let key = top_level_completion_key(self.index, symbol.id, symbol.kind, name);
+            ids_by_key.entry(key).or_default().push(symbol.id);
         }
 
-        let mut candidates = Vec::new();
-        for key in key_order {
-            let mut ids = ids_by_key.remove(&key).unwrap_or_default();
+        let mut preferred_ids = Vec::with_capacity(ids_by_key.len());
+        for (_, mut ids) in ids_by_key {
             ids.sort_by(|left, right| self.compare_symbol_preference(*left, *right));
-            if let Some(candidate) = ids
-                .first()
-                .copied()
-                .and_then(|id| self.editor_top_level_completion_candidate(id))
-            {
-                candidates.push(candidate);
+            if let Some(id) = ids.first().copied() {
+                preferred_ids.push(id);
             }
         }
 
-        candidates.sort_by(|left, right| {
-            completion_name_match_rank(&left.display.label, prefix)
+        // Rank the cheap indexed facts first so doc-rich editor displays are built
+        // only for candidates that can survive the completion cap.
+        preferred_ids.sort_by(|left, right| {
+            let left_symbol = self.index.symbol(*left);
+            let right_symbol = self.index.symbol(*right);
+            let left_name = left_symbol
+                .and_then(|symbol| symbol.name.as_deref())
+                .unwrap_or("");
+            let right_name = right_symbol
+                .and_then(|symbol| symbol.name.as_deref())
+                .unwrap_or("");
+            let left_kind = left_symbol
+                .map(|symbol| symbol.kind)
+                .unwrap_or(SymbolKind::Class);
+            let right_kind = right_symbol
+                .map(|symbol| symbol.kind)
+                .unwrap_or(SymbolKind::Class);
+
+            completion_name_match_rank(left_name, prefix)
                 .unwrap_or(u16::MAX)
-                .cmp(&completion_name_match_rank(&right.display.label, prefix).unwrap_or(u16::MAX))
-                .then_with(|| left.display.label.cmp(&right.display.label))
+                .cmp(&completion_name_match_rank(right_name, prefix).unwrap_or(u16::MAX))
+                .then_with(|| left_name.cmp(right_name))
                 .then_with(|| {
-                    completion_kind_rank(left.kind).cmp(&completion_kind_rank(right.kind))
+                    completion_kind_rank(left_kind).cmp(&completion_kind_rank(right_kind))
                 })
-                .then_with(|| right.source_priority.cmp(&left.source_priority))
-                .then_with(|| left.id.file_id.cmp(&right.id.file_id))
-                .then_with(|| left.id.symbol_id.cmp(&right.id.symbol_id))
+                .then_with(|| self.compare_symbol_preference(*left, *right))
         });
-        candidates.truncate(limit);
-        candidates
+        preferred_ids
+            .into_iter()
+            .filter_map(|id| self.editor_top_level_completion_candidate(id))
+            .take(limit)
+            .collect()
     }
 
     pub fn completion_symbols(
@@ -1036,6 +1087,99 @@ int SCR_Global;
         assert!(completion
             .iter()
             .any(|candidate| candidate.name.as_deref() == Some("RplProp")));
+    }
+
+    #[test]
+    fn top_level_prefix_fast_path_matches_the_authoritative_full_scan() {
+        let mut source = String::new();
+        for index in 0..400 {
+            source.push_str(&format!("class SCR_Generated{index} {{}}\n"));
+        }
+        source.push_str("class scr_lowercase {}\n");
+        source.push_str("class SpecialCandidateReference {}\n");
+        let catalog = catalog(&source, game_metadata("Game.c"));
+        let index = SymbolIndex::from_catalogs([&catalog]);
+        let query = IndexQuery::new(&index);
+
+        for mode in [
+            EditorTopLevelCompletionMode::Type,
+            EditorTopLevelCompletionMode::Value,
+        ] {
+            let accelerated = query.completion_top_level_limited("sCr_", mode, 250);
+            let full_scan = query.completion_top_level_limited_full_scan("sCr_", mode, 250);
+
+            assert_eq!(accelerated, full_scan);
+            assert_eq!(accelerated.len(), 250);
+        }
+    }
+
+    #[test]
+    fn top_level_prefix_fast_path_falls_back_for_fuzzy_matches() {
+        let catalog = catalog(
+            r#"class RplType {}
+class RenderPipeline {}
+"#,
+            game_metadata("Game.c"),
+        );
+        let index = SymbolIndex::from_catalogs([&catalog]);
+        let query = IndexQuery::new(&index);
+
+        let accelerated =
+            query.completion_top_level_limited("rp", EditorTopLevelCompletionMode::Type, 250);
+        let full_scan = query.completion_top_level_limited_full_scan(
+            "rp",
+            EditorTopLevelCompletionMode::Type,
+            250,
+        );
+
+        assert_eq!(accelerated, full_scan);
+        assert!(accelerated
+            .iter()
+            .any(|candidate| candidate.name.as_deref() == Some("RenderPipeline")));
+    }
+
+    #[test]
+    fn bounded_top_level_selection_preserves_kind_and_source_preference_order() {
+        let mut game_source = String::from(
+            r#"class SCR_A {}
+enum SCR_A {}
+typedef int SCR_A;
+void SCR_A();
+int SCR_A;
+"#,
+        );
+        for index in 0..300 {
+            game_source.push_str(&format!("class SCR_ZGenerated{index} {{}}\n"));
+        }
+        let game = catalog(&game_source, game_metadata("Game.c"));
+        let workspace = catalog("class SCR_A {}\n", workspace_metadata("Workspace.c"));
+        let index = SymbolIndex::from_catalogs([&game, &workspace]);
+        let query = IndexQuery::new(&index);
+
+        let completion =
+            query.completion_top_level_limited("SCR_", EditorTopLevelCompletionMode::Value, 250);
+        let leading = completion
+            .iter()
+            .take(5)
+            .map(|candidate| {
+                (
+                    candidate.name.as_deref(),
+                    candidate.kind,
+                    candidate.source_kind,
+                )
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            leading,
+            vec![
+                (Some("SCR_A"), SymbolKind::Class, SourceKind::Workspace),
+                (Some("SCR_A"), SymbolKind::Enum, SourceKind::GameData),
+                (Some("SCR_A"), SymbolKind::Typedef, SourceKind::GameData),
+                (Some("SCR_A"), SymbolKind::Function, SourceKind::GameData),
+                (Some("SCR_A"), SymbolKind::GlobalField, SourceKind::GameData),
+            ]
+        );
     }
 
     #[test]
