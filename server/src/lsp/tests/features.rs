@@ -158,7 +158,7 @@ class Example
 #endif
 "#;
 
-    let report = fast_semantic_tokens_report_for_source(source);
+    let report = semantic_tokens_report_for_source(source);
 
     assert_eq!(report.parse_diagnostics, 0);
     assert!(!report.tokens.data.is_empty());
@@ -221,10 +221,7 @@ class Example
         .decoded
         .iter()
         .any(|token| token.text == "name" && token.token_type == "variable"));
-    assert!(report
-        .decoded
-        .iter()
-        .any(|token| token.text == "Attribute" && token.token_type == "class"));
+    assert_no_semantic_token(&report, "Attribute");
     assert!(report
         .decoded
         .iter()
@@ -568,19 +565,12 @@ class Example { protected ref ScriptInvoker m_OnGameEnd = new ScriptInvoker(); }
     assert_semantic_token(&report, "array", "class");
     assert_semantic_token(&report, "EResourceType", "enum");
     assert_semantic_token(&report, "ScriptInvokerBase", "class");
-    assert!(
-        report
-            .decoded
-            .iter()
-            .any(|token| token.text == "NONE" && token.token_type == "enumMember"),
-        "{:?}",
-        report.decoded
-    );
+    assert_semantic_token(&report, "NONE", "reforgerField");
     let _ = fs::remove_dir_all(root);
 }
 
 #[test]
-fn semantic_tokens_color_source_backed_type_spans_before_external_index_is_ready() {
+fn semantic_tokens_leave_unresolved_source_backed_type_spans_unclassified() {
     let source = "\
 void SCR_BaseGameMode_OnPlayerDisconnected(int playerId, KickCauseCode cause = KickCauseCode.NONE, int timeout = -1);
 void SCR_BaseGameMode_OnControllableDestroyed(notnull SCR_InstigatorContextData instigatorContextData);
@@ -590,17 +580,22 @@ typedef ScriptInvokerBase<OnPreloadFinished> OnPreloadFinishedInvoker;
 class Example { protected ref ScriptInvoker m_OnGameEnd = new ScriptInvoker(); }
 ";
 
-    let report = fast_semantic_tokens_report_for_source(source);
+    let report = semantic_tokens_report_for_source(source);
 
     assert_semantic_token(&report, "void", "keyword");
     assert_semantic_token(&report, "int", "keyword");
-    assert_semantic_token(&report, "KickCauseCode", "class");
-    assert_semantic_token(&report, "SCR_InstigatorContextData", "class");
-    assert_semantic_token(&report, "IEntity", "class");
-    assert_semantic_token(&report, "array", "class");
-    assert_semantic_token(&report, "EResourceType", "class");
-    assert_semantic_token(&report, "ScriptInvokerBase", "class");
-    assert_semantic_token_count_at_least(&report, "ScriptInvoker", "class", 2);
+    for text in [
+        "KickCauseCode",
+        "SCR_InstigatorContextData",
+        "IEntity",
+        "array",
+        "EResourceType",
+        "ScriptInvokerBase",
+        "OnPreloadFinished",
+        "ScriptInvoker",
+    ] {
+        assert_no_semantic_token(&report, text);
+    }
 }
 
 #[test]
@@ -685,10 +680,11 @@ class Example
 }
 
 #[test]
-fn semantic_tokens_keep_generic_callback_type_arguments_type_colored() {
+fn semantic_tokens_keep_resolved_generic_callback_roles() {
     let source = "\
 void SCR_BaseGameMode_PlayerId(int playerId);
 typedef func SCR_BaseGameMode_PlayerId;
+class ScriptInvokerBase<Class T> {}
 class Example
 {
 \tprotected ref ScriptInvokerBase<SCR_BaseGameMode_PlayerId> m_OnPlayerAuditSuccess = new ScriptInvokerBase<SCR_BaseGameMode_PlayerId>();
@@ -697,8 +693,8 @@ class Example
 
     let report = semantic_tokens_report_for_source(source);
 
-    assert_semantic_type_family_token_count_at_least(&report, "SCR_BaseGameMode_PlayerId", 2);
-    assert_semantic_token_count_at_least(&report, "ScriptInvokerBase", "class", 2);
+    assert_semantic_token_count_at_least(&report, "SCR_BaseGameMode_PlayerId", "type", 3);
+    assert_semantic_token_count_at_least(&report, "ScriptInvokerBase", "class", 3);
     assert_eq!(
         report
             .decoded
@@ -755,7 +751,7 @@ enum EGameFlags
     let report = semantic_tokens_report_for_source_with_external(source, Some(&external));
 
     assert_semantic_token(&report, "Attribute", "class");
-    assert_semantic_token(&report, "uiwidget", "variable");
+    assert_no_semantic_token(&report, "uiwidget");
     assert_semantic_token(&report, "UIWidgets", "class");
     assert_semantic_token(&report, "Flags", "enumMember");
     assert_semantic_token(&report, "ParamEnumArray", "class");
@@ -788,8 +784,8 @@ fn semantic_tokens_refine_unqualified_attribute_arguments_with_external_facts() 
 }
 "#;
 
-    let fast_report = semantic_tokens_report_for_source(source);
-    assert_semantic_token(&fast_report, "EGameFlags", "class");
+    let unresolved_report = semantic_tokens_report_for_source(source);
+    assert_no_semantic_token(&unresolved_report, "EGameFlags");
 
     let rich_report = semantic_tokens_report_for_source_with_external(source, Some(&external));
     assert_semantic_token(&rich_report, "EGameFlags", "enum");
@@ -798,7 +794,7 @@ fn semantic_tokens_refine_unqualified_attribute_arguments_with_external_facts() 
 }
 
 #[test]
-fn semantic_tokens_color_attribute_expression_shape_before_external_index_is_ready() {
+fn semantic_tokens_leave_unresolved_attribute_expression_identifiers_unclassified() {
     let source = r#"class Example
 {
 	[Attribute("0", uiwidget: UIWidgets.Flags, "Test", "", ParamEnumArray.FromEnum(EGameFlags), WB_GAME_MODE_CATEGORY)]
@@ -808,18 +804,22 @@ fn semantic_tokens_color_attribute_expression_shape_before_external_index_is_rea
 
     let report = semantic_tokens_report_for_source(source);
 
-    assert_semantic_token(&report, "Attribute", "class");
-    assert_semantic_token(&report, "uiwidget", "variable");
-    assert_semantic_token(&report, "UIWidgets", "class");
-    assert_semantic_token(&report, "Flags", "enumMember");
-    assert_semantic_token(&report, "ParamEnumArray", "class");
-    assert_semantic_token(&report, "FromEnum", "function");
-    assert_semantic_token(&report, "EGameFlags", "class");
-    assert_semantic_token(&report, "WB_GAME_MODE_CATEGORY", "variable");
+    for text in [
+        "Attribute",
+        "uiwidget",
+        "UIWidgets",
+        "Flags",
+        "ParamEnumArray",
+        "FromEnum",
+        "EGameFlags",
+        "WB_GAME_MODE_CATEGORY",
+    ] {
+        assert_no_semantic_token(&report, text);
+    }
 }
 
 #[test]
-fn semantic_tokens_keep_attribute_shape_after_invalid_previous_line() {
+fn semantic_tokens_leave_unresolved_attribute_after_invalid_previous_line_unclassified() {
     let source = r#"class Example
 {
 	this
@@ -831,19 +831,13 @@ fn semantic_tokens_keep_attribute_shape_after_invalid_previous_line() {
 
     let report = semantic_tokens_report_for_source(source);
 
-    assert_semantic_token(&report, "RplRpc", "class");
-    assert!(
-        !report
-            .decoded
-            .iter()
-            .any(|token| token.text == "RplRpc" && token.token_type == "function"),
-        "{:?}",
-        report.decoded
-    );
+    for text in ["RplRpc", "RplChannel", "Reliable", "RplRcver", "Server"] {
+        assert_no_semantic_token(&report, text);
+    }
 }
 
 #[test]
-fn semantic_tokens_color_call_shapes_before_rich_resolution() {
+fn semantic_tokens_leave_unresolved_call_shapes_unclassified() {
     let source = r#"class Example
 {
 	void Run()
@@ -856,12 +850,13 @@ fn semantic_tokens_color_call_shapes_before_rich_resolution() {
 
     let report = semantic_tokens_report_for_source(source);
 
-    assert_semantic_token(&report, "RunTimer", "function");
-    assert_semantic_token(&report, "GetDuration", "function");
+    for text in ["RunTimer", "stateComponent", "GetDuration"] {
+        assert_no_semantic_token(&report, text);
+    }
 }
 
 #[test]
-fn semantic_tokens_keep_unterminated_call_before_next_statement_function_colored() {
+fn semantic_tokens_leave_unresolved_unterminated_call_unclassified() {
     let source = r#"class Example
 {
 	void Run(int value)
@@ -876,19 +871,11 @@ fn semantic_tokens_keep_unterminated_call_before_next_statement_function_colored
 
     let report = semantic_tokens_report_for_source(source);
 
-    assert_semantic_token(&report, "GetGame", "function");
-    assert!(
-        !report
-            .decoded
-            .iter()
-            .any(|token| token.text == "GetGame" && token.token_type == "class"),
-        "{:?}",
-        report.decoded
-    );
+    assert_no_semantic_token(&report, "GetGame");
 }
 
 #[test]
-fn semantic_tokens_color_static_member_shapes_before_rich_resolution() {
+fn semantic_tokens_leave_unresolved_static_member_shapes_unclassified() {
     let source = r#"class Example
 {
 	void Run()
@@ -903,24 +890,24 @@ fn semantic_tokens_color_static_member_shapes_before_rich_resolution() {
 
     let report = semantic_tokens_report_for_source(source);
 
-    assert_semantic_token(&report, "SCR_EGameModeState", "class");
-    assert_semantic_token(&report, "GAME", "enumMember");
-    assert_semantic_token(&report, "EHealthState", "class");
-    assert_semantic_token(&report, "INJURED", "enumMember");
-    assert_semantic_token(&report, "GRAY_TEST2", "class");
-    assert_semantic_token(&report, "testnum", "enumMember");
-    assert!(
-        !report
-            .decoded
-            .iter()
-            .any(|token| token.text == "stateComponent" && token.token_type == "class"),
-        "{:?}",
-        report.decoded
-    );
+    for text in [
+        "SCR_BaseGameModeStateComponent",
+        "GetStateComponent",
+        "SCR_EGameModeState",
+        "GAME",
+        "EHealthState",
+        "INJURED",
+        "GRAY_TEST2",
+        "testnum",
+        "GetDuration",
+    ] {
+        assert_no_semantic_token(&report, text);
+    }
+    assert_semantic_token(&report, "stateComponent", "variable");
 }
 
 #[test]
-fn semantic_tokens_color_scope_references_before_rich_resolution() {
+fn semantic_tokens_color_resolved_scope_references_by_their_actual_kind() {
     let source = r#"class OwnerType
 {
 	void Run()
@@ -946,13 +933,13 @@ class Example
 }
 "#;
 
-    let report = fast_semantic_tokens_report_for_source(source);
+    let report = semantic_tokens_report_for_source(source);
 
     assert_semantic_token(&report, "owner", "parameter");
     assert_semantic_token(&report, "localOwner", "variable");
     assert_semantic_token_count_at_least(&report, "owner", "variable", 2);
-    assert_semantic_token(&report, "GRAY_TEST2", "class");
-    assert_semantic_token(&report, "testnum", "enumMember");
+    assert_no_semantic_token(&report, "GRAY_TEST2");
+    assert_no_semantic_token(&report, "testnum");
 }
 
 #[test]
@@ -1310,7 +1297,7 @@ fn hover_type_position_selects_class_instead_of_constructor() {
     );
     assert_eq!(
         constructor_call.identifier_context,
-        Some(IdentifierContext::ValueOrCallable)
+        Some(IdentifierContext::ConstructedType)
     );
 }
 
@@ -1336,7 +1323,7 @@ class Example
     assert_eq!(report.selected_label.as_deref(), Some("GetOrigin"));
     assert_eq!(
         report.identifier_context,
-        Some(IdentifierContext::MemberAccess)
+        Some(IdentifierContext::MemberCallable)
     );
     assert_eq!(
         report.resolver_reason,
@@ -1992,7 +1979,7 @@ fn completion_treats_an_incomplete_callable_parameter_as_a_type_position() {
         .find(|item| item.label == "array")
         .expect("expected array type completion");
     assert_eq!(array.text_edit.new_text, "array<${1}>$0");
-    let semantic = fast_semantic_tokens_report_for_source(source);
+    let semantic = semantic_tokens_report_for_source(source);
     assert!(
         !semantic
             .decoded
@@ -6267,7 +6254,8 @@ fn debug_hover_report_includes_language_engine_context() {
 
 #[test]
 fn semantic_scope_delimiters_follow_their_immediate_owner() {
-    let source = r#"enum Mode
+    let source = r#"class array<Class T> {}
+enum Mode
 {
 	One
 }
@@ -6424,6 +6412,8 @@ fn bracket_coloring_modes_preserve_the_unproven_half_of_a_recovery_operator() {
 #[test]
 fn semantic_scope_delimiters_cover_typed_constructs_and_lexical_exclusions() {
     let source = r#"#define GROUP(x) [x]
+class Attribute {}
+class array<Class T> {}
 [Attribute("([{}])")]
 class Widget
 {

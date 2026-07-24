@@ -38,12 +38,24 @@ language model. Reforger-facing custom types are `reforgerField`,
 `reforgerPunctuation`, and `reforgerPreprocessor`; their VS Code supertypes are
 `property`, `operator`, and `keyword`. Attribute expressions keep their
 detailed class, function, enum-value, variable, and field classifications
-rather than collapsing to a decorator token. An unresolved bare statement
-identifier receives no semantic token and therefore keeps the editor's default
-foreground; parser recovery must not promote it to a declaration type by
-consuming a structurally separate following statement. The Rust engine emits no
-foreground values. `package.json` owns the Enforce-qualified default palette,
-which users may override through native VS Code semantic-token settings.
+rather than collapsing to a decorator token when those roles resolve. The
+settled rich projection emits an identifier token only for a declaration, a
+proven local or parameter reference, or a resolver-selected symbol compatible
+with its context. Type references, generic arguments, constructor operands,
+attributes, static/member access, and call shapes remain provisional syntax
+facts rather than classification proof. An unresolved identifier therefore
+receives no semantic token and keeps the editor's default foreground. A
+value-only symbol found in a type position is likewise left unclassified.
+Callable, constructor, attribute, member-call, and member-owner contexts reject
+same-name symbols of an incompatible kind before hover, definition, or semantic
+tokens select them. Rich projection resolves every non-declaration identifier
+in the snapshot; cancellation and the final token-output cap bound the work
+without dropping a fixed suffix of an otherwise valid file.
+Parser recovery must not promote an unresolved statement to a declaration type
+by consuming a structurally separate following statement. The Rust engine emits
+no foreground values. `package.json` owns the Enforce-qualified default
+palette, which users may override through native VS Code semantic-token
+settings.
 For hover Markdown, Rust emits the same semantic type names as inert
 `data-semantic-token` role markers. The TypeScript hover bridge resolves and
 applies the effective native foreground rules because VS Code does not project
@@ -53,7 +65,8 @@ table.
 During incomplete editing, a statement-leading `Name(...)` shape remains a
 call expression even before its terminating semicolon is present. Declaration
 recovery must not consume a following statement or reclassify that callable
-name as a type.
+name as a type. The call name receives function coloring only when resolution
+proves a callable symbol.
 
 Scope delimiters are one shared syntax projection used by semantic tokens and
 the active-pair request. Parser-proven `{}`, `()`, `[]`, and generic `<>`
@@ -102,7 +115,8 @@ with lexical or theme-default colors. A newer edit, an external-index
 generation change, worker overload, or document close rejects the superseded
 pending request with `Content modified`; waiting is revision- and
 generation-bounded and never moves parsing or resolution onto the request
-path.
+path. The lexical cache classifies lexical facts only; it never guesses an
+identifier's class, function, field, variable, or enum role from text shape.
 Rich projection uses a workspace-index view that excludes the active
 document's own indexed contribution. Capturing that view on the request path
 records only immutable per-file contributions; the rich worker constructs the
@@ -131,11 +145,11 @@ analyzed snapshots return the same active ranges; resolver-dependent foreground
 classification remains `reforgerPunctuation` until matching analysis exists.
 Background semantic projection retains its existing cancellation contract and
 bounded token output.
-Rich semantic-token telemetry separates identifier resolution, type-detail
-overlays, declaration-symbol overlays, and scope-delimiter overlays. It also
-records identifier and delimiter resolver-call counts without source text or
-token payloads, so large-file cost can be attributed without weakening the
-semantic projection.
+Rich semantic-token telemetry separates identifier resolution,
+declaration-symbol overlays, and scope-delimiter overlays. It also records
+identifier and delimiter resolver-call counts without source text or token
+payloads, so large-file cost can be attributed without weakening the semantic
+projection.
 Rich workers retain one revision-tagged delimiter-owner cache per open
 document. Resolver-dependent owners are grouped by stable callable identity,
 exact callable source, and the file-local declaration structure that can

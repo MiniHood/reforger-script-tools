@@ -888,10 +888,6 @@ fn append_timing(
         .iter()
         .map(|row| row.semantic_timings.declaration_overlay_ms)
         .sum();
-    let semantic_type_detail_overlay_ms: u128 = rows
-        .iter()
-        .map(|row| row.semantic_timings.type_detail_overlay_ms)
-        .sum();
     let semantic_symbol_declaration_overlay_ms: u128 = rows
         .iter()
         .map(|row| row.semantic_timings.symbol_declaration_overlay_ms)
@@ -938,11 +934,6 @@ fn append_timing(
     writeln!(
         report,
         "| Declaration overlay | {semantic_declaration_overlay_ms} |"
-    )
-    .unwrap();
-    writeln!(
-        report,
-        "|   Type details | {semantic_type_detail_overlay_ms} |"
     )
     .unwrap();
     writeln!(

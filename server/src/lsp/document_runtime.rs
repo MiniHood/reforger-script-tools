@@ -982,11 +982,10 @@ impl DocumentRuntime {
             projection,
         );
         let mut effects = vec![RuntimeEffect::Log(format!(
-            "semanticTokensRich ready uri={} revision={} external_generation={} task_external_generation={} tokens={} external_index_status={} workspace_excludes_document={} parse_diagnostics={} lex_ms={} token_loop_ms={} resolver_ms={} resolver_calls={} type_detail_ms={} declaration_symbols_ms={} delimiter_ms={} delimiter_resolver_calls={} delimiter_owners_reused={} delimiter_owners_invalidated={} delimiter_owners_recomputed={} encode_ms={} elapsed_ms={}",
+            "semanticTokensRich ready uri={} revision={} external_generation={} task_external_generation={} tokens={} external_index_status={} workspace_excludes_document={} parse_diagnostics={} lex_ms={} token_loop_ms={} resolver_ms={} resolver_calls={} declaration_symbols_ms={} delimiter_ms={} delimiter_resolver_calls={} delimiter_owners_reused={} delimiter_owners_invalidated={} delimiter_owners_recomputed={} encode_ms={} elapsed_ms={}",
             uri, revision, publication.external_generation, external_generation, token_count, external_status, workspace_excludes_document, parse_diagnostics,
             timings.lex_ms, timings.token_loop_ms, timings.resolver_ms,
-            timings.identifier_resolver_calls, timings.type_detail_overlay_ms,
-            timings.symbol_declaration_overlay_ms, timings.delimiter_overlay_ms,
+            timings.identifier_resolver_calls, timings.symbol_declaration_overlay_ms, timings.delimiter_overlay_ms,
             timings.delimiter_resolver_calls, timings.delimiter_owners_reused,
             timings.delimiter_owners_invalidated, timings.delimiter_owners_recomputed,
             timings.encode_ms, elapsed_ms

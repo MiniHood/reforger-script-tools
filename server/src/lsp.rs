@@ -115,17 +115,16 @@ use runtime_scheduler::{
 use runtime_scheduler::{ForegroundDocumentJob, OpenDocumentAnalysisJob, RuntimeWorkExecutor};
 #[cfg(test)]
 use semantic_tokens::LspSemanticTokenProjection;
-pub use semantic_tokens::{
-    fast_semantic_tokens_for_source, fast_semantic_tokens_report_for_source,
-    semantic_tokens_for_source_with_external, semantic_tokens_report_for_source,
-    semantic_tokens_report_for_source_with_bracket_coloring,
-    semantic_tokens_report_for_source_with_external, BracketColoringMode, LspSemanticTokenReport,
-    LspSemanticTokenTimings, SemanticTokenDebug,
-};
 use semantic_tokens::{
     generic_angle_offsets_for_delimiters, lexical_semantic_tokens_for_source_with_bracket_coloring,
     semantic_tokens_for_cached_analysis_with_external_indexes_incremental_cancelled,
     LspSemanticTokensFull, SEMANTIC_TOKEN_MODIFIERS, SEMANTIC_TOKEN_TYPES,
+};
+pub use semantic_tokens::{
+    semantic_tokens_for_source_with_external, semantic_tokens_report_for_source,
+    semantic_tokens_report_for_source_with_bracket_coloring,
+    semantic_tokens_report_for_source_with_external, BracketColoringMode, LspSemanticTokenReport,
+    LspSemanticTokenTimings, SemanticTokenDebug,
 };
 use signature_help::{
     signature_help_debug_markdown, signature_help_report_for_cached_analysis_with_external_indexes,

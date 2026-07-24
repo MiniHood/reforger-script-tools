@@ -2831,6 +2831,14 @@ fn assert_semantic_token(report: &LspSemanticTokenReport, text: &str, token_type
     );
 }
 
+fn assert_no_semantic_token(report: &LspSemanticTokenReport, text: &str) {
+    assert!(
+        report.decoded.iter().all(|token| token.text != text),
+        "unexpected semantic token text={text:?}: {:?}",
+        report.decoded
+    );
+}
+
 fn assert_semantic_token_count_at_least(
     report: &LspSemanticTokenReport,
     text: &str,

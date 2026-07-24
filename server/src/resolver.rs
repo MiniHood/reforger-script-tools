@@ -10,7 +10,7 @@ use crate::lexer::{lex, Keyword, Operator, TextSpan, Token, TokenKind};
 use crate::model::{SourceCategory, SourceKind, SymbolKind};
 use crate::parser::parse_source;
 use crate::scope::LexicalScopeModel;
-use crate::syntax::{Parse, SyntaxElement, SyntaxNode};
+use crate::syntax::{Parse, SyntaxElement, SyntaxKind, SyntaxNode};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
@@ -160,7 +160,12 @@ impl ResolutionReason {
 pub enum IdentifierContext {
     DeclarationName,
     MemberAccess,
+    MemberCallable,
+    MemberOwner,
     TypePosition,
+    ConstructedType,
+    Callable,
+    AttributeType,
     ValueOrCallable,
 }
 
@@ -169,7 +174,12 @@ impl IdentifierContext {
         match self {
             Self::DeclarationName => "declaration-name",
             Self::MemberAccess => "member-access",
+            Self::MemberCallable => "member-callable",
+            Self::MemberOwner => "member-owner",
             Self::TypePosition => "type-position",
+            Self::ConstructedType => "constructed-type",
+            Self::Callable => "callable",
+            Self::AttributeType => "attribute-type",
             Self::ValueOrCallable => "value-or-callable",
         }
     }
@@ -328,10 +338,15 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
             } else {
                 None
             };
+        let syntax_context = self.identifier_context(token_span);
         let identifier_context = if member_access.is_some() {
-            IdentifierContext::MemberAccess
+            if syntax_context == IdentifierContext::MemberCallable {
+                IdentifierContext::MemberCallable
+            } else {
+                IdentifierContext::MemberAccess
+            }
         } else {
-            self.identifier_context(token_span)
+            syntax_context
         };
         let mut candidates = Vec::new();
         let mut seen = BTreeSet::new();
@@ -355,14 +370,6 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
             );
             self.push_type_like_top_level(&token_text, &mut candidates, &mut seen);
             self.push_external_type_like(&token_text, &mut candidates, &mut seen);
-            self.push_callable_locals_and_parameters(
-                &token_text,
-                token_span.start,
-                &mut candidates,
-                &mut seen,
-            );
-            self.push_class_members(&token_text, token_span.start, &mut candidates, &mut seen);
-            self.push_top_level(&token_text, &mut candidates, &mut seen);
             None
         } else {
             self.push_callable_locals_and_parameters(
@@ -383,6 +390,9 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
             None
         };
 
+        candidates.retain(|candidate| {
+            identifier_context_accepts_kind(identifier_context, candidate.kind)
+        });
         let selected = candidates.first().cloned();
         let reason = selected
             .as_ref()
@@ -669,6 +679,10 @@ impl<'source, 'index> ReferenceResolver<'source, 'index> {
             .any(|symbol| symbol.selection_span == token_span)
         {
             return IdentifierContext::DeclarationName;
+        }
+
+        if let Some(context) = syntax_identifier_context(&self.parse().root, token_span) {
+            return context;
         }
 
         if self.file_index.symbols().iter().any(|symbol| {
@@ -1700,6 +1714,117 @@ fn span_contains_span(outer: TextSpan, inner: TextSpan) -> bool {
     outer.start <= inner.start && inner.end <= outer.end
 }
 
+fn syntax_identifier_context(node: &SyntaxNode, token_span: TextSpan) -> Option<IdentifierContext> {
+    if !span_contains_span(node.span, token_span) {
+        return None;
+    }
+    if node.kind == SyntaxKind::GenericArgList {
+        return Some(IdentifierContext::TypePosition);
+    }
+
+    let direct_name_span = |node: &SyntaxNode| {
+        (node.kind == SyntaxKind::NameExpression)
+            .then(|| {
+                node.children.iter().find_map(|child| match child {
+                    SyntaxElement::Token(token) if !token.kind.is_trivia() => Some(token.span),
+                    _ => None,
+                })
+            })
+            .flatten()
+    };
+
+    match node.kind {
+        SyntaxKind::Attribute => {
+            if node.children.iter().any(
+                |child| matches!(child, SyntaxElement::Token(token) if token.span == token_span),
+            ) {
+                return Some(IdentifierContext::AttributeType);
+            }
+        }
+        SyntaxKind::NewExpression => {
+            if node.children.iter().any(|child| {
+                matches!(
+                    child,
+                    SyntaxElement::Node(name)
+                        if direct_name_span(name) == Some(token_span)
+                )
+            }) {
+                return Some(IdentifierContext::ConstructedType);
+            }
+        }
+        SyntaxKind::CallExpression => {
+            let callee = node.children.iter().find_map(|child| match child {
+                SyntaxElement::Node(child) if child.kind != SyntaxKind::ArgumentList => {
+                    Some(child.as_ref())
+                }
+                _ => None,
+            });
+            if let Some(callee) = callee {
+                if direct_name_span(callee) == Some(token_span) {
+                    return Some(IdentifierContext::Callable);
+                }
+                if callee.kind == SyntaxKind::MemberAccessExpression
+                    && callee.children.iter().rev().find_map(|child| match child {
+                        SyntaxElement::Node(name) => direct_name_span(name),
+                        SyntaxElement::Token(_) => None,
+                    }) == Some(token_span)
+                {
+                    return Some(IdentifierContext::MemberCallable);
+                }
+            }
+        }
+        SyntaxKind::MemberAccessExpression => {
+            if node.children.iter().find_map(|child| match child {
+                SyntaxElement::Node(receiver) => direct_name_span(receiver),
+                SyntaxElement::Token(_) => None,
+            }) == Some(token_span)
+            {
+                return Some(IdentifierContext::MemberOwner);
+            }
+        }
+        _ => {}
+    }
+
+    node.children.iter().find_map(|child| match child {
+        SyntaxElement::Node(child) => syntax_identifier_context(child, token_span),
+        SyntaxElement::Token(_) => None,
+    })
+}
+
+fn identifier_context_accepts_kind(context: IdentifierContext, kind: SymbolKind) -> bool {
+    match context {
+        IdentifierContext::TypePosition => matches!(
+            kind,
+            SymbolKind::Class | SymbolKind::Enum | SymbolKind::Typedef | SymbolKind::TypeParameter
+        ),
+        IdentifierContext::ConstructedType => {
+            matches!(kind, SymbolKind::Class | SymbolKind::Constructor)
+        }
+        IdentifierContext::AttributeType => kind == SymbolKind::Class,
+        IdentifierContext::Callable | IdentifierContext::MemberCallable => matches!(
+            kind,
+            SymbolKind::Function
+                | SymbolKind::Method
+                | SymbolKind::Constructor
+                | SymbolKind::Destructor
+        ),
+        IdentifierContext::MemberOwner => matches!(
+            kind,
+            SymbolKind::Class
+                | SymbolKind::Enum
+                | SymbolKind::Typedef
+                | SymbolKind::TypeParameter
+                | SymbolKind::GlobalField
+                | SymbolKind::Field
+                | SymbolKind::Parameter
+                | SymbolKind::LocalVariable
+        ),
+        IdentifierContext::DeclarationName
+        | IdentifierContext::MemberAccess
+        | IdentifierContext::ValueOrCallable => true,
+    }
+}
+
 fn type_position_span_is_reliable(
     source: &str,
     symbol: &IndexedSymbol,
@@ -2092,13 +2217,115 @@ class Example
 
         assert_eq!(
             constructor_call.identifier_context,
-            IdentifierContext::ValueOrCallable
+            IdentifierContext::ConstructedType
         );
         assert_eq!(constructor_call.reason, ResolutionReason::ClassMember);
         assert_eq!(
             constructor_call.selected.unwrap().kind,
             SymbolKind::Constructor
         );
+    }
+
+    #[test]
+    fn generic_argument_in_new_expression_is_a_type_position() {
+        let source = r#"typedef int Callback;
+class Box<Class T>
+{
+	void Box();
+}
+class Example
+{
+	void Run()
+	{
+		Box<Callback> value = new Box<Callback>();
+	}
+}
+"#;
+        let index = index_for_source(source, workspace_metadata("Example.c"));
+
+        let resolution = resolve_at_needle(&index, source, "new Box<Callback>()", "Callback");
+
+        assert_eq!(
+            resolution.identifier_context,
+            IdentifierContext::TypePosition
+        );
+        assert_eq!(resolution.selected.unwrap().kind, SymbolKind::Typedef);
+    }
+
+    #[test]
+    fn incompatible_symbol_kinds_do_not_resolve_for_syntax_roles() {
+        let source = r#"void WrongAttribute();
+void WrongStaticOwner();
+
+class Owner
+{
+	int WrongMemberCall;
+}
+
+[WrongAttribute()]
+class Example
+{
+	int WrongCall;
+	int WrongConstructed;
+
+	void Run(Owner owner, int CollisionParameter)
+	{
+		int CollisionLocal;
+		map<CollisionParameter, CollisionLocal> invalidTypes;
+		WrongCall();
+		WrongConstructed invalidType = new WrongConstructed();
+		WrongStaticOwner.Value;
+		owner.WrongMemberCall();
+	}
+}
+"#;
+        let index = index_for_source(source, workspace_metadata("Example.c"));
+        let cases = [
+            (
+                "[WrongAttribute()]",
+                "WrongAttribute",
+                IdentifierContext::AttributeType,
+            ),
+            (
+                "map<CollisionParameter",
+                "CollisionParameter",
+                IdentifierContext::TypePosition,
+            ),
+            (
+                "CollisionLocal> invalidTypes",
+                "CollisionLocal",
+                IdentifierContext::TypePosition,
+            ),
+            ("WrongCall();", "WrongCall", IdentifierContext::Callable),
+            (
+                "new WrongConstructed()",
+                "WrongConstructed",
+                IdentifierContext::ConstructedType,
+            ),
+            (
+                "WrongStaticOwner.Value",
+                "WrongStaticOwner",
+                IdentifierContext::MemberOwner,
+            ),
+            (
+                "owner.WrongMemberCall()",
+                "WrongMemberCall",
+                IdentifierContext::MemberCallable,
+            ),
+        ];
+
+        for (needle, cursor, expected_context) in cases {
+            let resolution = resolve_at_needle(&index, source, needle, cursor);
+            assert_eq!(resolution.identifier_context, expected_context);
+            assert!(
+                resolution.selected.is_none(),
+                "an incompatible same-name symbol resolved for {cursor}: {resolution:#?}"
+            );
+            assert!(
+                resolution.candidates.is_empty(),
+                "incompatible candidates survived for {cursor}: {resolution:#?}"
+            );
+        }
     }
 
     #[test]
@@ -2176,7 +2403,7 @@ class Child : Base {}
 
         assert_eq!(
             resolution.identifier_context,
-            IdentifierContext::MemberAccess
+            IdentifierContext::MemberCallable
         );
         assert_eq!(resolution.reason, ResolutionReason::ReceiverMember);
         assert_eq!(
@@ -2311,7 +2538,7 @@ class Example
 
         assert_eq!(
             resolution.identifier_context,
-            IdentifierContext::MemberAccess
+            IdentifierContext::MemberCallable
         );
         assert_eq!(resolution.reason, ResolutionReason::ReceiverMember);
         assert_eq!(
@@ -2377,7 +2604,7 @@ class Example
 
         assert_eq!(
             resolution.identifier_context,
-            IdentifierContext::MemberAccess
+            IdentifierContext::MemberCallable
         );
         assert_eq!(resolution.reason, ResolutionReason::ReceiverMember);
         assert_eq!(
@@ -2407,7 +2634,7 @@ class Example : Base
 
         assert_eq!(
             resolution.identifier_context,
-            IdentifierContext::MemberAccess
+            IdentifierContext::MemberCallable
         );
         assert_eq!(resolution.reason, ResolutionReason::ReceiverMember);
         assert_eq!(
@@ -2443,7 +2670,7 @@ class Example
 
         assert_eq!(
             resolution.identifier_context,
-            IdentifierContext::MemberAccess
+            IdentifierContext::MemberCallable
         );
         assert_eq!(resolution.reason, ResolutionReason::StaticMember);
         assert_eq!(
@@ -2579,7 +2806,7 @@ class Example
 
         assert_eq!(
             resolution.identifier_context,
-            IdentifierContext::MemberAccess
+            IdentifierContext::MemberCallable
         );
         assert_eq!(resolution.reason, ResolutionReason::EngineClassCast);
         let selected = resolution.selected.as_ref().unwrap();
@@ -2803,7 +3030,7 @@ class Example
 
         assert_eq!(
             resolution.identifier_context,
-            IdentifierContext::MemberAccess
+            IdentifierContext::MemberCallable
         );
         assert_eq!(resolution.reason, ResolutionReason::ReceiverMember);
         assert_eq!(
@@ -2839,7 +3066,7 @@ class Example
 
         assert_eq!(
             resolution.identifier_context,
-            IdentifierContext::MemberAccess
+            IdentifierContext::MemberCallable
         );
         assert_eq!(resolution.reason, ResolutionReason::ReceiverMember);
         assert_eq!(
@@ -3932,7 +4159,7 @@ class Example
 
         assert_eq!(
             resolution.identifier_context,
-            IdentifierContext::MemberAccess
+            IdentifierContext::MemberCallable
         );
         assert_eq!(resolution.reason, ResolutionReason::ReceiverUnresolved);
         assert!(resolution.selected.is_none());
@@ -4389,13 +4616,13 @@ class Example
         let resolution = resolve_at_needle(&index, source, "Shared value", "Shared");
 
         assert_eq!(resolution.reason, ResolutionReason::TopLevel);
-        assert_eq!(resolution.candidates.len(), 3);
+        assert_eq!(resolution.candidates.len(), 2);
         assert_eq!(resolution.selected.unwrap().kind, SymbolKind::Class);
         assert!(resolution
             .candidates
             .iter()
             .any(|candidate| candidate.kind == SymbolKind::Typedef));
-        assert!(resolution
+        assert!(!resolution
             .candidates
             .iter()
             .any(|candidate| candidate.kind == SymbolKind::Function));

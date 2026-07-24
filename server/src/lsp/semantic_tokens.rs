@@ -1,12 +1,11 @@
 use crate::index::SymbolIndex;
-use crate::lexer::{lex, Keyword, TextSpan, Token, TokenKind};
+use crate::lexer::{lex, TextSpan, Token, TokenKind};
 use crate::lsp::external_indexes::ExternalIndexes;
 use crate::lsp::{
     file_index_for_source, range_for_span, span_text, FileIndexAnalysis, LspPositionIndex, LspRange,
 };
 use crate::model::SymbolKind;
 use crate::resolver::{CandidateSource, ReferenceCandidate, ReferenceResolver, ResolutionReason};
-use crate::syntax::{SyntaxElement, SyntaxKind, SyntaxNode};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
@@ -43,15 +42,9 @@ const SEMANTIC_MOD_DECLARATION: u32 = 1 << 0;
 const SEMANTIC_MOD_STATIC: u32 = 1 << 1;
 const SEMANTIC_MOD_READONLY: u32 = 1 << 2;
 const SEMANTIC_MOD_MODIFICATION: u32 = 1 << 5;
-const TYPE_SPAN_PRIORITY: u8 = 70;
 const RESOLVER_REFERENCE_PRIORITY: u8 = 60;
-const SCOPE_REFERENCE_PRIORITY: u8 = 75;
 const RESOLVER_TYPE_REFERENCE_PRIORITY: u8 = 80;
 const MAX_RAW_SEMANTIC_TOKENS: usize = 200_000;
-/// Rich resolver coloring is optional refinement. Keeping this bounded means
-/// one pathological file cannot monopolize a background worker after the
-/// lexical/fast baseline is already available to the editor.
-const MAX_RICH_RESOLVER_CALLS: usize = 96;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct LspSemanticTokens {
@@ -102,7 +95,6 @@ pub struct LspSemanticTokenTimings {
     pub token_loop_ms: u128,
     pub resolver_ms: u128,
     pub declaration_overlay_ms: u128,
-    pub type_detail_overlay_ms: u128,
     pub symbol_declaration_overlay_ms: u128,
     pub delimiter_overlay_ms: u128,
     pub sort_filter_split_ms: u128,
@@ -133,25 +125,12 @@ pub fn semantic_tokens_report_for_source_with_bracket_coloring(
     bracket_coloring: BracketColoringMode,
 ) -> LspSemanticTokenReport {
     let analysis = file_index_for_source(source);
-    semantic_tokens_report_for_cached_analysis_mode(
+    semantic_tokens_report_for_cached_analysis_with_bracket_coloring(
         source,
         &analysis,
         None,
         None,
-        SemanticTokenMode::Rich,
         bracket_coloring,
-    )
-}
-
-pub fn fast_semantic_tokens_report_for_source(source: &str) -> LspSemanticTokenReport {
-    let analysis = file_index_for_source(source);
-    semantic_tokens_report_for_cached_analysis_mode(
-        source,
-        &analysis,
-        None,
-        None,
-        SemanticTokenMode::Fast,
-        BracketColoringMode::Semantic,
     )
 }
 
@@ -169,11 +148,6 @@ pub fn semantic_tokens_for_source_with_external(
 ) -> LspSemanticTokenProjection {
     let analysis = file_index_for_source(source);
     semantic_tokens_for_cached_analysis_with_external(source, &analysis, external_index)
-}
-
-pub fn fast_semantic_tokens_for_source(source: &str) -> LspSemanticTokenProjection {
-    let analysis = file_index_for_source(source);
-    fast_semantic_tokens_for_cached_analysis(source, &analysis)
 }
 
 /// Projects only facts available from the current lexer input.
@@ -238,22 +212,20 @@ pub(crate) fn semantic_tokens_report_for_cached_analysis_with_external_indexes(
     workspace_index: Option<&SymbolIndex>,
     game_data_index: Option<&SymbolIndex>,
 ) -> LspSemanticTokenReport {
-    semantic_tokens_report_for_cached_analysis_mode(
+    semantic_tokens_report_for_cached_analysis_with_bracket_coloring(
         source,
         analysis,
         workspace_index,
         game_data_index,
-        SemanticTokenMode::Rich,
         BracketColoringMode::Semantic,
     )
 }
 
-fn semantic_tokens_report_for_cached_analysis_mode(
+fn semantic_tokens_report_for_cached_analysis_with_bracket_coloring(
     source: &str,
     analysis: &FileIndexAnalysis,
     workspace_index: Option<&SymbolIndex>,
     game_data_index: Option<&SymbolIndex>,
-    mode: SemanticTokenMode,
     bracket_coloring: BracketColoringMode,
 ) -> LspSemanticTokenReport {
     let raw_projection = semantic_raw_tokens(
@@ -261,7 +233,6 @@ fn semantic_tokens_report_for_cached_analysis_mode(
         analysis,
         workspace_index,
         game_data_index,
-        mode,
         bracket_coloring,
         None,
         None,
@@ -333,7 +304,6 @@ pub(crate) fn semantic_tokens_for_cached_analysis_with_external_indexes_and_brac
         analysis,
         workspace_index,
         game_data_index,
-        SemanticTokenMode::Rich,
         bracket_coloring,
         None,
         None,
@@ -362,7 +332,6 @@ pub(crate) fn semantic_tokens_for_cached_analysis_with_external_indexes_incremen
         analysis,
         workspace_index,
         game_data_index,
-        SemanticTokenMode::Rich,
         bracket_coloring,
         Some(delimiter_cache_context),
         Some(should_cancel),
@@ -376,25 +345,6 @@ pub(crate) fn semantic_tokens_for_cached_analysis_with_external_indexes_incremen
         projection,
         delimiter_owner_cache,
     })
-}
-
-pub(crate) fn fast_semantic_tokens_for_cached_analysis(
-    source: &str,
-    analysis: &FileIndexAnalysis,
-) -> LspSemanticTokenProjection {
-    let raw_projection = semantic_raw_tokens(
-        source,
-        analysis,
-        None,
-        None,
-        SemanticTokenMode::Fast,
-        BracketColoringMode::Semantic,
-        None,
-        None,
-    )
-    .expect("fast semantic token projection is not cancellable");
-    encode_projection(source, analysis, raw_projection, None)
-        .expect("fast semantic token projection is not cancellable")
 }
 
 fn encode_projection(
@@ -450,12 +400,6 @@ struct RawSemanticTokenProjection {
     delimiter_owner_cache: Option<super::scope_delimiters::DelimiterOwnerProjectionCache>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SemanticTokenMode {
-    Fast,
-    Rich,
-}
-
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum BracketColoringMode {
     #[default]
@@ -469,7 +413,6 @@ fn semantic_raw_tokens(
     analysis: &FileIndexAnalysis,
     workspace_index: Option<&SymbolIndex>,
     game_data_index: Option<&SymbolIndex>,
-    mode: SemanticTokenMode,
     bracket_coloring: BracketColoringMode,
     delimiter_request: Option<super::scope_delimiters::DelimiterProjectionCacheContext<'_>>,
     should_cancel: Option<&dyn Fn() -> bool>,
@@ -480,9 +423,6 @@ fn semantic_raw_tokens(
         return None;
     }
     let mut tokens = Vec::new();
-    let attribute_roles = attribute_identifier_roles(source, lexer_tokens);
-    let call_roles = call_identifier_roles(lexer_tokens);
-    let static_member_roles = static_member_identifier_roles(source, lexer_tokens);
     let declaration_spans = analysis
         .index
         .symbols()
@@ -492,15 +432,13 @@ fn semantic_raw_tokens(
         })
         .map(|symbol| (symbol.selection_span.start, symbol.selection_span.end))
         .collect::<std::collections::BTreeSet<_>>();
-    let resolver = (mode == SemanticTokenMode::Rich).then(|| {
-        ReferenceResolver::new_with_parse_scope_and_external_indexes(
-            source,
-            &analysis.index,
-            &analysis.parse,
-            &analysis.scope,
-            ExternalIndexes::new(workspace_index, game_data_index).ordered(),
-        )
-    });
+    let resolver = ReferenceResolver::new_with_parse_scope_and_external_indexes(
+        source,
+        &analysis.index,
+        &analysis.parse,
+        &analysis.scope,
+        ExternalIndexes::new(workspace_index, game_data_index).ordered(),
+    );
 
     let mut resolver_elapsed = Duration::default();
     let mut identifier_resolver_calls = 0usize;
@@ -519,51 +457,6 @@ fn semantic_raw_tokens(
             }
             continue;
         }
-        if let Some(role) = attribute_roles.get(&token_index).copied() {
-            let token_type = match role {
-                AttributeIdentifierRole::AttributeName => semantic_type_index("class"),
-                AttributeIdentifierRole::NamedArgumentLabel => semantic_type_index("variable"),
-                AttributeIdentifierRole::StaticOwner => semantic_type_index("class"),
-                AttributeIdentifierRole::MemberCallName => semantic_type_index("function"),
-                AttributeIdentifierRole::MemberValueName => semantic_type_index("enumMember"),
-                AttributeIdentifierRole::TypeLikeUnqualifiedValue => semantic_type_index("class"),
-                AttributeIdentifierRole::UnqualifiedValue => semantic_type_index("variable"),
-            };
-            let priority = match role {
-                AttributeIdentifierRole::UnqualifiedValue => RESOLVER_REFERENCE_PRIORITY,
-                AttributeIdentifierRole::TypeLikeUnqualifiedValue => TYPE_SPAN_PRIORITY,
-                _ => TYPE_SPAN_PRIORITY,
-            };
-            push_raw_semantic_token(&mut tokens, raw_semantic(*token, token_type, 0, priority));
-            if !matches!(
-                role,
-                AttributeIdentifierRole::UnqualifiedValue
-                    | AttributeIdentifierRole::TypeLikeUnqualifiedValue
-            ) || mode == SemanticTokenMode::Fast
-            {
-                continue;
-            }
-        }
-        if let Some(role) = call_roles.get(&token_index).copied() {
-            let token_type = match role {
-                CallIdentifierRole::UnqualifiedCall => semantic_type_index("function"),
-                CallIdentifierRole::MemberCall => semantic_type_index("function"),
-            };
-            push_raw_semantic_token(
-                &mut tokens,
-                raw_semantic(*token, token_type, 0, RESOLVER_REFERENCE_PRIORITY),
-            );
-        }
-        if let Some(role) = static_member_roles.get(&token_index).copied() {
-            let token_type = match role {
-                StaticMemberIdentifierRole::Owner => semantic_type_index("class"),
-                StaticMemberIdentifierRole::MemberValue => semantic_type_index("enumMember"),
-            };
-            push_raw_semantic_token(
-                &mut tokens,
-                raw_semantic(*token, token_type, 0, TYPE_SPAN_PRIORITY),
-            );
-        }
         if bracket_coloring == BracketColoringMode::VsCode
             && is_standard_bracket_token_kind(token.kind)
         {
@@ -577,29 +470,13 @@ fn semantic_raw_tokens(
             };
             push_raw_semantic_token(&mut tokens, raw_semantic(*token, token_type, 0, priority));
         }
-        if token.kind == TokenKind::Identifier
-            && !declaration_spans.contains(&(token.span.start, token.span.end))
-        {
-            if let Some(token_type) = scope_reference_semantic_type(source, analysis, *token) {
-                push_raw_semantic_token(
-                    &mut tokens,
-                    raw_semantic(*token, token_type, 0, SCOPE_REFERENCE_PRIORITY),
-                );
-                continue;
-            }
-        }
-        if token.kind == TokenKind::Identifier
-            && mode == SemanticTokenMode::Rich
-            && identifier_resolver_calls < MAX_RICH_RESOLVER_CALLS
-        {
+        if token.kind == TokenKind::Identifier {
             if declaration_spans.contains(&(token.span.start, token.span.end)) {
                 continue;
             }
             identifier_resolver_calls += 1;
             let resolver_start = Instant::now();
-            let resolution = resolver
-                .as_ref()
-                .and_then(|resolver| resolver.resolve_identifier_token(token.span));
+            let resolution = resolver.resolve_identifier_token(token.span);
             resolver_elapsed += resolver_start.elapsed();
             resolved_identifier_kinds.insert(
                 (token.span.start, token.span.end),
@@ -635,24 +512,6 @@ fn semantic_raw_tokens(
     }
     let token_loop_elapsed = token_loop_start.elapsed();
 
-    let type_detail_overlay_start = Instant::now();
-    overlay_syntax_type_references(
-        source,
-        &analysis.parse.root,
-        &mut tokens,
-        should_cancel,
-        &mut 0,
-    )?;
-    overlay_source_backed_type_details(source, &analysis.index, &mut tokens, should_cancel)?;
-    overlay_source_backed_new_expression_types(
-        source,
-        &analysis.parse.root,
-        &mut tokens,
-        should_cancel,
-        &mut 0,
-    )?;
-    let type_detail_overlay_elapsed = type_detail_overlay_start.elapsed();
-
     let declaration_overlay_start = Instant::now();
     for symbol in analysis.index.symbols() {
         if should_cancel.is_some_and(|should_cancel| should_cancel()) {
@@ -685,7 +544,7 @@ fn semantic_raw_tokens(
             analysis,
             ExternalIndexes::new(workspace_index, game_data_index),
             &resolved_identifier_kinds,
-            mode == SemanticTokenMode::Rich,
+            true,
             request,
             should_cancel,
         )?
@@ -695,7 +554,7 @@ fn semantic_raw_tokens(
             analysis,
             ExternalIndexes::new(workspace_index, game_data_index),
             &resolved_identifier_kinds,
-            mode == SemanticTokenMode::Rich,
+            true,
             should_cancel,
         )?
     };
@@ -797,10 +656,8 @@ fn semantic_raw_tokens(
             lex_ms: lex_elapsed.as_millis(),
             token_loop_ms: token_loop_elapsed.as_millis(),
             resolver_ms: resolver_elapsed.as_millis(),
-            declaration_overlay_ms: type_detail_overlay_elapsed.as_millis()
-                + declaration_overlay_elapsed.as_millis()
+            declaration_overlay_ms: declaration_overlay_elapsed.as_millis()
                 + delimiter_overlay_elapsed.as_millis(),
-            type_detail_overlay_ms: type_detail_overlay_elapsed.as_millis(),
             symbol_declaration_overlay_ms: declaration_overlay_elapsed.as_millis(),
             delimiter_overlay_ms: delimiter_overlay_elapsed.as_millis(),
             sort_filter_split_ms: sort_filter_split_start.elapsed().as_millis(),
@@ -829,9 +686,6 @@ fn lexical_raw_tokens(
     }
 
     let mut tokens = Vec::new();
-    let attribute_roles = attribute_identifier_roles(source, lexer_tokens);
-    let call_roles = call_identifier_roles(lexer_tokens);
-    let static_member_roles = static_member_identifier_roles(source, lexer_tokens);
     let token_loop_start = Instant::now();
 
     for (token_index, token) in lexer_tokens.iter().enumerate() {
@@ -846,43 +700,6 @@ fn lexical_raw_tokens(
                 push_raw_semantic_token(&mut tokens, raw_semantic(*token, token_type, 0, 20));
             }
             continue;
-        }
-        if let Some(role) = attribute_roles.get(&token_index).copied() {
-            let token_type = match role {
-                AttributeIdentifierRole::AttributeName => semantic_type_index("class"),
-                AttributeIdentifierRole::NamedArgumentLabel => semantic_type_index("variable"),
-                AttributeIdentifierRole::StaticOwner => semantic_type_index("class"),
-                AttributeIdentifierRole::MemberCallName => semantic_type_index("function"),
-                AttributeIdentifierRole::MemberValueName => semantic_type_index("enumMember"),
-                AttributeIdentifierRole::TypeLikeUnqualifiedValue => semantic_type_index("class"),
-                AttributeIdentifierRole::UnqualifiedValue => semantic_type_index("variable"),
-            };
-            let priority = match role {
-                AttributeIdentifierRole::UnqualifiedValue => RESOLVER_REFERENCE_PRIORITY,
-                AttributeIdentifierRole::TypeLikeUnqualifiedValue => TYPE_SPAN_PRIORITY,
-                _ => TYPE_SPAN_PRIORITY,
-            };
-            push_raw_semantic_token(&mut tokens, raw_semantic(*token, token_type, 0, priority));
-        }
-        if let Some(role) = call_roles.get(&token_index).copied() {
-            let token_type = match role {
-                CallIdentifierRole::UnqualifiedCall => semantic_type_index("function"),
-                CallIdentifierRole::MemberCall => semantic_type_index("function"),
-            };
-            push_raw_semantic_token(
-                &mut tokens,
-                raw_semantic(*token, token_type, 0, RESOLVER_REFERENCE_PRIORITY),
-            );
-        }
-        if let Some(role) = static_member_roles.get(&token_index).copied() {
-            let token_type = match role {
-                StaticMemberIdentifierRole::Owner => semantic_type_index("class"),
-                StaticMemberIdentifierRole::MemberValue => semantic_type_index("enumMember"),
-            };
-            push_raw_semantic_token(
-                &mut tokens,
-                raw_semantic(*token, token_type, 0, TYPE_SPAN_PRIORITY),
-            );
         }
         if bracket_coloring == BracketColoringMode::VsCode
             && is_standard_bracket_token_kind(token.kind)
@@ -962,7 +779,6 @@ fn lexical_raw_tokens(
             token_loop_ms: token_loop_start.elapsed().as_millis(),
             resolver_ms: 0,
             declaration_overlay_ms: 0,
-            type_detail_overlay_ms: 0,
             symbol_declaration_overlay_ms: 0,
             delimiter_overlay_ms: 0,
             sort_filter_split_ms: sort_filter_split_start.elapsed().as_millis(),
@@ -1033,219 +849,6 @@ fn is_standard_bracket_token_kind(kind: TokenKind) -> bool {
             | TokenKind::LeftBracket
             | TokenKind::RightBracket
     )
-}
-
-fn scope_reference_semantic_type(
-    source: &str,
-    analysis: &FileIndexAnalysis,
-    token: Token,
-) -> Option<u32> {
-    if token.span.end > source.len() || token.span.start >= token.span.end {
-        return None;
-    }
-    let name = &source[token.span.start..token.span.end];
-    let symbol_id = analysis
-        .scope
-        .visible_symbols_named(&analysis.index, name, token.span.start)
-        .into_iter()
-        .next()?;
-    let symbol = analysis.index.symbol(symbol_id)?;
-    match symbol.kind {
-        SymbolKind::Parameter | SymbolKind::LocalVariable => symbol_semantic_type(symbol.kind),
-        _ => None,
-    }
-}
-
-fn overlay_source_backed_type_details(
-    source: &str,
-    index: &SymbolIndex,
-    tokens: &mut Vec<RawSemanticToken>,
-    should_cancel: Option<&dyn Fn() -> bool>,
-) -> Option<()> {
-    for (symbol_index, symbol) in index.symbols().iter().enumerate() {
-        if symbol_index % 64 == 0 && should_cancel.is_some_and(|should_cancel| should_cancel()) {
-            return None;
-        }
-        if let Some(type_text_span) = symbol.detail.type_text_span {
-            push_type_tokens_in_span(
-                source,
-                type_text_span,
-                semantic_type_index("class"),
-                TYPE_SPAN_PRIORITY,
-                tokens,
-            );
-        }
-        if let Some(return_type_text_span) = symbol.detail.return_type_text_span {
-            push_type_tokens_in_span(
-                source,
-                return_type_text_span,
-                semantic_type_index("class"),
-                TYPE_SPAN_PRIORITY,
-                tokens,
-            );
-        }
-        if let Some(base_type_span) = symbol.detail.base_type_span {
-            let Some(token_type) = base_type_semantic_type(symbol.kind) else {
-                continue;
-            };
-            push_identifier_tokens_in_span(
-                source,
-                base_type_span,
-                token_type,
-                TYPE_SPAN_PRIORITY,
-                tokens,
-            );
-        }
-    }
-    Some(())
-}
-
-fn overlay_syntax_type_references(
-    source: &str,
-    node: &SyntaxNode,
-    tokens: &mut Vec<RawSemanticToken>,
-    should_cancel: Option<&dyn Fn() -> bool>,
-    visited_nodes: &mut usize,
-) -> Option<()> {
-    if *visited_nodes % 64 == 0 && should_cancel.is_some_and(|should_cancel| should_cancel()) {
-        return None;
-    }
-    *visited_nodes += 1;
-    if node.kind == SyntaxKind::TypeRef {
-        push_type_tokens_in_span(
-            source,
-            node.span,
-            semantic_type_index("class"),
-            TYPE_SPAN_PRIORITY,
-            tokens,
-        );
-    }
-
-    for child in &node.children {
-        if let SyntaxElement::Node(child) = child {
-            overlay_syntax_type_references(source, child, tokens, should_cancel, visited_nodes)?;
-        }
-    }
-    Some(())
-}
-
-fn overlay_source_backed_new_expression_types(
-    source: &str,
-    node: &SyntaxNode,
-    tokens: &mut Vec<RawSemanticToken>,
-    should_cancel: Option<&dyn Fn() -> bool>,
-    visited_nodes: &mut usize,
-) -> Option<()> {
-    if *visited_nodes % 64 == 0 && should_cancel.is_some_and(|should_cancel| should_cancel()) {
-        return None;
-    }
-    *visited_nodes += 1;
-    if node.kind == SyntaxKind::NewExpression {
-        if let Some(type_name) = first_name_expression_child(node) {
-            push_identifier_tokens_in_span(
-                source,
-                type_name.span,
-                semantic_type_index("class"),
-                TYPE_SPAN_PRIORITY,
-                tokens,
-            );
-        }
-    }
-
-    for child in &node.children {
-        if let SyntaxElement::Node(child) = child {
-            overlay_source_backed_new_expression_types(
-                source,
-                child,
-                tokens,
-                should_cancel,
-                visited_nodes,
-            )?;
-        }
-    }
-    Some(())
-}
-
-fn first_name_expression_child(node: &SyntaxNode) -> Option<&SyntaxNode> {
-    node.children.iter().find_map(|child| match child {
-        SyntaxElement::Node(child) if child.kind == SyntaxKind::NameExpression => Some(&**child),
-        _ => None,
-    })
-}
-
-fn base_type_semantic_type(kind: SymbolKind) -> Option<u32> {
-    match kind {
-        SymbolKind::Class => Some(semantic_type_index("class")),
-        SymbolKind::Enum => Some(semantic_type_index("enum")),
-        _ => None,
-    }
-}
-
-fn push_identifier_tokens_in_span(
-    source: &str,
-    span: TextSpan,
-    token_type: u32,
-    priority: u8,
-    tokens: &mut Vec<RawSemanticToken>,
-) {
-    if span.end > source.len() || span.start >= span.end {
-        return;
-    }
-    for token in lex(&source[span.start..span.end]) {
-        if token.kind != TokenKind::Identifier {
-            continue;
-        }
-        push_raw_semantic_token(
-            tokens,
-            RawSemanticToken {
-                span: TextSpan::new(span.start + token.span.start, span.start + token.span.end),
-                token_type,
-                modifiers: 0,
-                priority,
-            },
-        );
-    }
-}
-
-fn push_type_tokens_in_span(
-    source: &str,
-    span: TextSpan,
-    token_type: u32,
-    priority: u8,
-    tokens: &mut Vec<RawSemanticToken>,
-) {
-    if span.end > source.len() || span.start >= span.end {
-        return;
-    }
-    for token in lex(&source[span.start..span.end]) {
-        let semantic_type = match token.kind {
-            TokenKind::Identifier => Some(token_type),
-            TokenKind::Keyword(keyword) => type_keyword_semantic_type(keyword),
-            _ => None,
-        };
-        let Some(semantic_type) = semantic_type else {
-            continue;
-        };
-        push_raw_semantic_token(
-            tokens,
-            RawSemanticToken {
-                span: TextSpan::new(span.start + token.span.start, span.start + token.span.end),
-                token_type: semantic_type,
-                modifiers: 0,
-                priority,
-            },
-        );
-    }
-}
-
-fn type_keyword_semantic_type(keyword: Keyword) -> Option<u32> {
-    match keyword {
-        Keyword::String | Keyword::Vector => Some(semantic_type_index("class")),
-        Keyword::Void | Keyword::Int | Keyword::Float | Keyword::Bool | Keyword::Typename => {
-            Some(semantic_type_index("keyword"))
-        }
-        _ => None,
-    }
 }
 
 fn raw_semantic(token: Token, token_type: u32, modifiers: u32, priority: u8) -> RawSemanticToken {
@@ -1378,213 +981,6 @@ fn symbol_semantic_modifiers(symbol: &crate::index::IndexedSymbol) -> u32 {
     modifiers
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AttributeIdentifierRole {
-    AttributeName,
-    NamedArgumentLabel,
-    StaticOwner,
-    MemberCallName,
-    MemberValueName,
-    TypeLikeUnqualifiedValue,
-    UnqualifiedValue,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CallIdentifierRole {
-    UnqualifiedCall,
-    MemberCall,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StaticMemberIdentifierRole {
-    Owner,
-    MemberValue,
-}
-
-fn static_member_identifier_roles(
-    source: &str,
-    tokens: &[Token],
-) -> BTreeMap<usize, StaticMemberIdentifierRole> {
-    let mut result = BTreeMap::new();
-    for (index, token) in tokens.iter().enumerate() {
-        if token.kind != TokenKind::Identifier {
-            continue;
-        }
-        let text = &source[token.span.start..token.span.end];
-        let Some(next) = next_non_trivia(tokens, index) else {
-            continue;
-        };
-        if next.kind == TokenKind::Dot && is_type_like_static_owner(text) {
-            result.insert(index, StaticMemberIdentifierRole::Owner);
-            continue;
-        }
-        let Some(previous) = previous_non_trivia(tokens, index) else {
-            continue;
-        };
-        if previous.kind != TokenKind::Dot
-            || next.kind == TokenKind::LeftParen
-            || !previous_dot_owner_is_type_like(source, tokens, index)
-        {
-            continue;
-        }
-        result.insert(index, StaticMemberIdentifierRole::MemberValue);
-    }
-    result
-}
-
-fn previous_dot_owner_is_type_like(source: &str, tokens: &[Token], dot_right_index: usize) -> bool {
-    let Some(dot_index) = tokens[..dot_right_index]
-        .iter()
-        .rposition(|token| !token.kind.is_trivia())
-    else {
-        return false;
-    };
-    if tokens[dot_index].kind != TokenKind::Dot {
-        return false;
-    }
-    let Some(owner) = tokens[..dot_index]
-        .iter()
-        .rev()
-        .find(|token| !token.kind.is_trivia())
-    else {
-        return false;
-    };
-    owner.kind == TokenKind::Identifier
-        && is_type_like_static_owner(&source[owner.span.start..owner.span.end])
-}
-
-fn is_type_like_static_owner(text: &str) -> bool {
-    let Some(first) = text.chars().next() else {
-        return false;
-    };
-    first.is_ascii_uppercase()
-        && text
-            .chars()
-            .any(|character| character.is_ascii_alphanumeric())
-}
-
-fn call_identifier_roles(tokens: &[Token]) -> BTreeMap<usize, CallIdentifierRole> {
-    let mut result = BTreeMap::new();
-    for (index, token) in tokens.iter().enumerate() {
-        if token.kind != TokenKind::Identifier {
-            continue;
-        }
-        let Some(next) = next_non_trivia(tokens, index) else {
-            continue;
-        };
-        let previous = previous_non_trivia(tokens, index);
-        if previous.is_some_and(|previous| previous.kind == TokenKind::Dot)
-            && next.kind == TokenKind::LeftParen
-        {
-            result.insert(index, CallIdentifierRole::MemberCall);
-        } else if next.kind == TokenKind::LeftParen
-            && !previous.is_some_and(|previous| {
-                previous.kind == TokenKind::Dot
-                    || previous.kind == TokenKind::Keyword(Keyword::New)
-                    || previous.kind == TokenKind::Keyword(Keyword::Class)
-                    || previous.kind == TokenKind::Keyword(Keyword::Enum)
-                    || previous.kind == TokenKind::Keyword(Keyword::Typedef)
-            })
-        {
-            result.insert(index, CallIdentifierRole::UnqualifiedCall);
-        }
-    }
-    result
-}
-
-fn attribute_identifier_roles(
-    source: &str,
-    tokens: &[Token],
-) -> BTreeMap<usize, AttributeIdentifierRole> {
-    let mut result = BTreeMap::new();
-    let mut attribute_depth = 0usize;
-    let mut expect_attribute_name = false;
-    for (index, token) in tokens.iter().enumerate() {
-        if attribute_depth > 0 {
-            if expect_attribute_name
-                && matches!(token.kind, TokenKind::Identifier | TokenKind::Keyword(_))
-            {
-                result.insert(index, AttributeIdentifierRole::AttributeName);
-                expect_attribute_name = false;
-            } else if token.kind == TokenKind::Identifier
-                && next_non_trivia(tokens, index).is_some_and(|next| next.kind == TokenKind::Colon)
-            {
-                result.insert(index, AttributeIdentifierRole::NamedArgumentLabel);
-            } else if token.kind == TokenKind::Identifier {
-                let previous = previous_non_trivia(tokens, index);
-                let next = next_non_trivia(tokens, index);
-                let role = if previous.is_some_and(|previous| previous.kind == TokenKind::Dot) {
-                    if next.is_some_and(|next| next.kind == TokenKind::LeftParen) {
-                        AttributeIdentifierRole::MemberCallName
-                    } else {
-                        AttributeIdentifierRole::MemberValueName
-                    }
-                } else if next.is_some_and(|next| next.kind == TokenKind::Dot) {
-                    AttributeIdentifierRole::StaticOwner
-                } else if is_type_like_attribute_value(&source[token.span.start..token.span.end]) {
-                    AttributeIdentifierRole::TypeLikeUnqualifiedValue
-                } else {
-                    AttributeIdentifierRole::UnqualifiedValue
-                };
-                result.insert(index, role);
-            } else if !token.kind.is_trivia() {
-                expect_attribute_name = false;
-            }
-
-            match token.kind {
-                TokenKind::LeftBracket => attribute_depth += 1,
-                TokenKind::RightBracket => attribute_depth = attribute_depth.saturating_sub(1),
-                _ => {}
-            }
-            continue;
-        }
-
-        if token.kind == TokenKind::LeftBracket && starts_attribute_context(source, tokens, index) {
-            attribute_depth = 1;
-            expect_attribute_name = true;
-        }
-    }
-    result
-}
-
-fn is_type_like_attribute_value(text: &str) -> bool {
-    let Some(first) = text.chars().next() else {
-        return false;
-    };
-    if !first.is_ascii_uppercase() {
-        return false;
-    }
-    text.chars().any(|character| character.is_ascii_lowercase())
-}
-
-fn starts_attribute_context(source: &str, tokens: &[Token], index: usize) -> bool {
-    if previous_non_trivia(tokens, index).is_none_or(|token| {
-        matches!(
-            token.kind,
-            TokenKind::LeftBrace
-                | TokenKind::RightBrace
-                | TokenKind::RightBracket
-                | TokenKind::Semicolon
-        )
-    }) {
-        return true;
-    }
-
-    let Some(previous_index) = tokens[..index]
-        .iter()
-        .rposition(|token| !token.kind.is_trivia())
-    else {
-        return true;
-    };
-    let has_line_break = tokens[previous_index + 1..index].iter().any(|token| {
-        token.kind.is_trivia() && source[token.span.start..token.span.end].contains(['\r', '\n'])
-    });
-    has_line_break
-        && next_non_trivia(tokens, index).is_some_and(|token| {
-            matches!(token.kind, TokenKind::Identifier | TokenKind::Keyword(_))
-        })
-}
-
 fn split_multiline_semantic_tokens(
     source: &str,
     tokens: Vec<RawSemanticToken>,
@@ -1692,22 +1088,6 @@ fn semantic_modifier_names(modifiers: u32) -> Vec<&'static str> {
         .enumerate()
         .filter_map(|(index, name)| ((modifiers & (1 << index)) != 0).then_some(*name))
         .collect()
-}
-
-fn previous_non_trivia(tokens: &[Token], index: usize) -> Option<Token> {
-    tokens[..index]
-        .iter()
-        .rev()
-        .copied()
-        .find(|token| !token.kind.is_trivia())
-}
-
-fn next_non_trivia(tokens: &[Token], index: usize) -> Option<Token> {
-    tokens
-        .get(index + 1..)?
-        .iter()
-        .copied()
-        .find(|token| !token.kind.is_trivia())
 }
 
 fn is_preprocessor_line_token(source: &str, token: Token) -> bool {
@@ -1848,6 +1228,192 @@ mod tests {
     }
 
     #[test]
+    fn unresolved_map_type_argument_keeps_the_default_editor_foreground() {
+        let source = r#"class Example
+{
+	void Run()
+	{
+		map<int, sadasdasdasd> testmap = new map<int, int>();
+	}
+}
+"#;
+        let report = semantic_tokens_report_for_source(source);
+
+        assert!(
+            report
+                .decoded
+                .iter()
+                .all(|token| token.text != "sadasdasdasd"),
+            "an unresolved map type argument must not receive a semantic token"
+        );
+    }
+
+    #[test]
+    fn unresolved_identifier_shapes_keep_the_default_editor_foreground() {
+        let source = r#"[MissingAttribute(MissingArgument: MissingAttributeValue, MissingAttributeOwner.MissingAttributeMember)]
+class Example : MissingBase
+{
+	MissingField m_Field;
+
+	MissingReturn Run(MissingParameter parameter)
+	{
+		MissingLocal local;
+		array<MissingArrayItem> arrayValues;
+		set<MissingSetItem> setValues;
+		map<MissingMapKey, MissingMapValue> mapValues;
+		MissingConstructed created = new MissingConstructed();
+		MissingStaticOwner.MissingStaticMember;
+		MissingCall();
+		local.MissingMemberCall();
+	}
+}
+
+typedef MissingAliasTarget MissingAlias;
+"#;
+        let expected_default = [
+            "MissingAttribute",
+            "MissingArgument",
+            "MissingAttributeValue",
+            "MissingAttributeOwner",
+            "MissingAttributeMember",
+            "MissingBase",
+            "MissingField",
+            "MissingReturn",
+            "MissingParameter",
+            "MissingLocal",
+            "MissingArrayItem",
+            "MissingSetItem",
+            "MissingMapKey",
+            "MissingMapValue",
+            "MissingConstructed",
+            "MissingStaticOwner",
+            "MissingStaticMember",
+            "MissingCall",
+            "MissingMemberCall",
+            "MissingAliasTarget",
+        ];
+        let report = semantic_tokens_report_for_source(source);
+        let wrongly_classified = report
+            .decoded
+            .iter()
+            .filter(|token| expected_default.contains(&token.text.as_str()))
+            .collect::<Vec<_>>();
+
+        assert!(
+            wrongly_classified.is_empty(),
+            "unresolved identifier shapes must not receive semantic tokens: {wrongly_classified:#?}"
+        );
+    }
+
+    #[test]
+    fn value_only_symbol_in_a_type_position_keeps_the_default_editor_foreground() {
+        let source = r#"class Example
+{
+	int ValueOnly;
+
+	void Run()
+	{
+		ValueOnly invalidTypeUse;
+	}
+}
+"#;
+        let report = semantic_tokens_report_for_source(source);
+        let classifications = report
+            .decoded
+            .iter()
+            .filter(|token| token.text == "ValueOnly")
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            classifications.len(),
+            1,
+            "only the actual field declaration should be classified: {classifications:#?}"
+        );
+        assert_eq!(classifications[0].token_type, "reforgerField");
+        assert!(classifications[0].modifiers.contains(&"declaration"));
+    }
+
+    #[test]
+    fn local_and_parameter_collisions_in_type_positions_remain_unclassified() {
+        let source = r#"class Example
+{
+	void Run(int CollisionParameter)
+	{
+		int CollisionLocal;
+		map<CollisionParameter, CollisionLocal> invalidTypes;
+	}
+}
+"#;
+        let report = semantic_tokens_report_for_source(source);
+
+        for (name, expected_type) in [
+            ("CollisionParameter", "parameter"),
+            ("CollisionLocal", "variable"),
+        ] {
+            let classifications = report
+                .decoded
+                .iter()
+                .filter(|token| token.text == name)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                classifications.len(),
+                1,
+                "only the value declaration should be classified for {name}: {classifications:#?}"
+            );
+            assert_eq!(classifications[0].token_type, expected_type);
+            assert!(classifications[0].modifiers.contains(&"declaration"));
+        }
+    }
+
+    #[test]
+    fn incompatible_same_name_symbols_do_not_prove_syntax_roles() {
+        let source = r#"void WrongAttribute();
+void WrongStaticOwner();
+
+class Owner
+{
+	int WrongMemberCall;
+}
+
+[WrongAttribute()]
+class Example
+{
+	int WrongCall;
+	int WrongConstructed;
+
+	void Run(Owner owner)
+	{
+		WrongCall();
+		WrongConstructed invalidType = new WrongConstructed();
+		WrongStaticOwner.Value;
+		owner.WrongMemberCall();
+	}
+}
+"#;
+        let report = semantic_tokens_report_for_source(source);
+
+        for name in [
+            "WrongAttribute",
+            "WrongStaticOwner",
+            "WrongMemberCall",
+            "WrongCall",
+            "WrongConstructed",
+        ] {
+            let classifications = report
+                .decoded
+                .iter()
+                .filter(|token| token.text == name)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                classifications.len(),
+                1,
+                "only the incompatible symbol's declaration should be classified for {name}: {classifications:#?}"
+            );
+            assert!(classifications[0].modifiers.contains(&"declaration"));
+        }
+    }
+
+    #[test]
     fn lexical_bracket_modes_classify_only_parser_proven_generic_angles() {
         let source = "class Example { array<int> values; array<int>> broken; void Run() { bool less = 1 < 2; int shifted = 8 >> 1; } }";
         let generic_open = source.find("array<int>").unwrap() + "array".len();
@@ -1937,22 +1503,30 @@ mod tests {
     }
 
     #[test]
-    fn rich_resolver_refinement_has_a_fixed_call_budget() {
-        let source = (0..(MAX_RICH_RESOLVER_CALLS * 3))
-            .map(|index| format!("Unknown{index};\n"))
-            .collect::<String>();
+    fn rich_resolution_reaches_resolved_identifiers_after_the_former_call_budget() {
+        const REFERENCE_COUNT: usize = 128;
+        let mut source = String::from("class Known {}\nclass Example\n{\n\tvoid Run()\n\t{\n");
+        for index in 0..REFERENCE_COUNT {
+            source.push_str(&format!("\t\tKnown value{index};\n"));
+        }
+        source.push_str("\t}\n}\n");
 
-        let projection = semantic_tokens_for_source_with_external(&source, None);
+        let report = semantic_tokens_report_for_source(&source);
+        let known_tokens = report
+            .decoded
+            .iter()
+            .filter(|token| token.text == "Known" && token.token_type == "class")
+            .count();
 
-        assert!(projection.timings.identifier_resolver_calls <= MAX_RICH_RESOLVER_CALLS);
-        assert!(projection.token_count >= MAX_RICH_RESOLVER_CALLS * 2);
+        assert_eq!(known_tokens, REFERENCE_COUNT + 1);
+        assert!(report.timings.identifier_resolver_calls >= REFERENCE_COUNT);
     }
 
     #[test]
     fn multiline_token_expansion_respects_the_final_output_cap() {
         let source = format!("/*\n{}", "x\n".repeat(MAX_RAW_SEMANTIC_TOKENS + 1));
 
-        let projection = fast_semantic_tokens_for_source(&source);
+        let projection = semantic_tokens_for_source_with_external(&source, None);
 
         assert_eq!(projection.tokens.data.len() % 5, 0);
         assert!(projection.tokens.data.len() / 5 <= MAX_RAW_SEMANTIC_TOKENS);
@@ -1977,28 +1551,6 @@ mod tests {
         let result = encode_semantic_tokens(
             &source,
             &tokens,
-            Some(&|| {
-                checks.set(checks.get() + 1);
-                checks.get() >= 2
-            }),
-        );
-
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn type_detail_overlay_stops_when_cancellation_arrives_mid_scan() {
-        let source = (0..128)
-            .map(|index| format!("class Type{index} {{ Type{index} value; }}\n"))
-            .collect::<String>();
-        let analysis = file_index_for_source(&source);
-        let checks = Cell::new(0usize);
-        let mut tokens = Vec::new();
-
-        let result = overlay_source_backed_type_details(
-            &source,
-            &analysis.index,
-            &mut tokens,
             Some(&|| {
                 checks.set(checks.get() + 1);
                 checks.get() >= 2
