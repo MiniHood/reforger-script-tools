@@ -14,10 +14,9 @@ use std::sync::{
 use std::time::Instant;
 
 use super::scope_delimiters::{
-    scope_delimiters_for_syntax, DelimiterOwnerProjectionCache, ScopeDelimiter,
-    MAX_ACTIVE_SCOPE_DELIMITER_SOURCE_BYTES,
+    scope_delimiters_for_syntax, ScopeDelimiter, MAX_ACTIVE_SCOPE_DELIMITER_SOURCE_BYTES,
 };
-use super::semantic_tokens::LspSemanticTokenProjection;
+use super::semantic_tokens::{LspSemanticTokenProjection, RichSemanticProjectionCache};
 use super::LspDocumentSymbol;
 
 pub(crate) struct OpenDocument {
@@ -42,7 +41,7 @@ pub(crate) struct OpenDocument {
     document_symbols: Vec<LspDocumentSymbol>,
     document_symbols_ready: bool,
     pub(crate) semantic_tokens: SemanticTokenCache,
-    delimiter_owner_cache: Option<Arc<DelimiterOwnerProjectionCache>>,
+    rich_projection_cache: Option<Arc<RichSemanticProjectionCache>>,
 }
 
 impl OpenDocument {
@@ -83,7 +82,7 @@ impl OpenDocument {
             document_symbols: Vec::new(),
             document_symbols_ready: false,
             semantic_tokens: SemanticTokenCache::default(),
-            delimiter_owner_cache: None,
+            rich_projection_cache: None,
         }
     }
 
@@ -203,28 +202,28 @@ impl OpenDocument {
         self.document_symbols_ready
     }
 
-    pub(crate) fn delimiter_owner_cache(&self) -> Option<Arc<DelimiterOwnerProjectionCache>> {
-        self.delimiter_owner_cache.clone()
+    pub(crate) fn rich_projection_cache(&self) -> Option<Arc<RichSemanticProjectionCache>> {
+        self.rich_projection_cache.clone()
     }
 
-    pub(crate) fn install_delimiter_owner_cache(
+    pub(crate) fn install_rich_projection_cache(
         &mut self,
         revision: u64,
-        cache: DelimiterOwnerProjectionCache,
+        cache: RichSemanticProjectionCache,
     ) -> bool {
         if revision != self.revision {
             return false;
         }
-        self.delimiter_owner_cache = Some(Arc::new(cache));
+        self.rich_projection_cache = Some(Arc::new(cache));
         true
     }
 
-    pub(crate) fn rebind_delimiter_owner_cache_external_generation(
+    pub(crate) fn rebind_rich_projection_cache_external_generation(
         &mut self,
         previous_generation: u64,
         external_generation: u64,
     ) -> bool {
-        self.delimiter_owner_cache.as_mut().is_some_and(|cache| {
+        self.rich_projection_cache.as_mut().is_some_and(|cache| {
             Arc::make_mut(cache).rebind_external_generation(
                 self.revision,
                 previous_generation,

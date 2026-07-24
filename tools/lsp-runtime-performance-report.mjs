@@ -181,6 +181,7 @@ function renderReport(input) {
   const cancellation = summarizeCancellation(records);
   const richIdentity = summarizeRichIdentity(records);
   const selfSaveRichReuse = summarizeSelfSaveRichReuse(records);
+  const identifierReuse = summarizeIdentifierReuse(records);
   const delimiterOwnerReuse = summarizeDelimiterOwnerReuse(records);
   const captureFields = summarizeCaptureFields(records);
   const externalCache = summarizeExternalCache(records);
@@ -203,6 +204,10 @@ function renderReport(input) {
   lines.push(`- Self-save rich projections reused: ${selfSaveRichReuse.reusedCount}`);
   lines.push(`- Self-save in-flight projections retargeted: ${selfSaveRichReuse.retargetedCount}`);
   lines.push(`- Reused rich elapsed-time reference: ${formatMs(selfSaveRichReuse.referenceElapsedMs)}`);
+  lines.push(`- Identifier results reused: ${identifierReuse.resultsReused}`);
+  lines.push(`- Identifier regions reused: ${identifierReuse.reused}`);
+  lines.push(`- Identifier regions invalidated: ${identifierReuse.invalidated}`);
+  lines.push(`- Identifier regions recomputed: ${identifierReuse.recomputed}`);
   lines.push(`- Delimiter owners reused: ${delimiterOwnerReuse.reused}`);
   lines.push(`- Delimiter owners invalidated: ${delimiterOwnerReuse.invalidated}`);
   lines.push(`- Delimiter owners recomputed: ${delimiterOwnerReuse.recomputed}`);
@@ -287,6 +292,26 @@ function renderReport(input) {
   lines.push(`- Rich stale/skipped total: ${formatMs(summary.staleRichMs)}`);
   lines.push(`- Rich cancelled total: ${formatMs(summary.cancelledRichMs)}`);
   lines.push(`- Fast semantic-token request total: ${formatMs(summary.fastSemanticMs)}`);
+  lines.push("");
+  lines.push("## Incremental Identifier Projection");
+  lines.push("");
+  lines.push("Exact byte-identical callable regions reuse their previous identifier classifications after the current parse proves that file-visible declarations and the external-index generation are unchanged. Root-level and edited regions are resolved from the current snapshot.");
+  lines.push("");
+  if (identifierReuse.rows.length === 0) {
+    lines.push("No incremental identifier telemetry was present in this capture.");
+  } else {
+    table(lines, ["File", "Revision", "External generation", "Results reused", "Regions reused", "Regions invalidated", "Regions recomputed", "Resolver calls", "Resolver elapsed"], identifierReuse.rows.map((row) => [
+      row.fileName || "<none>",
+      row.revision || "<missing>",
+      row.externalGeneration ?? "<missing>",
+      row.resultsReused,
+      row.reused,
+      row.invalidated,
+      row.recomputed,
+      row.resolverCalls ?? "<missing>",
+      row.resolverMs === undefined ? "<missing>" : formatMs(row.resolverMs),
+    ]));
+  }
   lines.push("");
   lines.push("## Incremental Delimiter Projection");
   lines.push("");
@@ -632,6 +657,36 @@ function summarizeDelimiterOwnerReuse(records) {
     }));
   return {
     rows,
+    reused: rows.reduce((total, row) => total + row.reused, 0),
+    invalidated: rows.reduce((total, row) => total + row.invalidated, 0),
+    recomputed: rows.reduce((total, row) => total + row.recomputed, 0),
+  };
+}
+
+function summarizeIdentifierReuse(records) {
+  const rows = records
+    .filter((record) =>
+      record.operation === "semanticTokensRich ready"
+      && (
+        record.fields.identifier_results_reused !== undefined
+        || record.fields.identifier_regions_reused !== undefined
+        || record.fields.identifier_regions_invalidated !== undefined
+        || record.fields.identifier_regions_recomputed !== undefined
+      ))
+    .map((record) => ({
+      fileName: record.fileName,
+      revision: record.revision,
+      externalGeneration: numberField(record.fields, "external_generation"),
+      resultsReused: numberField(record.fields, "identifier_results_reused") ?? 0,
+      reused: numberField(record.fields, "identifier_regions_reused") ?? 0,
+      invalidated: numberField(record.fields, "identifier_regions_invalidated") ?? 0,
+      recomputed: numberField(record.fields, "identifier_regions_recomputed") ?? 0,
+      resolverCalls: numberField(record.fields, "resolver_calls"),
+      resolverMs: numberField(record.fields, "resolver_ms"),
+    }));
+  return {
+    rows,
+    resultsReused: rows.reduce((total, row) => total + row.resultsReused, 0),
     reused: rows.reduce((total, row) => total + row.reused, 0),
     invalidated: rows.reduce((total, row) => total + row.invalidated, 0),
     recomputed: rows.reduce((total, row) => total + row.recomputed, 0),
@@ -989,6 +1044,10 @@ function compactDetail(record) {
     "queue_ms",
     "resolver_ms",
     "resolver_calls",
+    "identifier_results_reused",
+    "identifier_regions_reused",
+    "identifier_regions_invalidated",
+    "identifier_regions_recomputed",
     "type_detail_ms",
     "declaration_symbols_ms",
     "delimiter_ms",

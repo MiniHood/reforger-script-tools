@@ -11,6 +11,7 @@ use crate::resolver::{
 };
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub(crate) const SEMANTIC_TOKEN_TYPES: &[&str] = &[
@@ -111,6 +112,10 @@ pub struct LspSemanticTokenTimings {
     pub encode_ms: u128,
     pub decode_debug_ms: u128,
     pub identifier_resolver_calls: usize,
+    pub identifier_results_reused: usize,
+    pub identifier_regions_reused: usize,
+    pub identifier_regions_invalidated: usize,
+    pub identifier_regions_recomputed: usize,
     pub delimiter_resolver_calls: usize,
     pub delimiter_owners_reused: usize,
     pub delimiter_owners_invalidated: usize,
@@ -325,7 +330,79 @@ pub(crate) fn semantic_tokens_for_cached_analysis_with_external_indexes_and_brac
 
 pub(crate) struct IncrementalSemanticTokenProjection {
     pub(crate) projection: LspSemanticTokenProjection,
-    pub(crate) delimiter_owner_cache: super::scope_delimiters::DelimiterOwnerProjectionCache,
+    pub(crate) cache: RichSemanticProjectionCache,
+}
+
+#[derive(Clone)]
+pub(crate) struct RichSemanticProjectionCache {
+    revision: u64,
+    external_generation: u64,
+    delimiter_owner_cache: super::scope_delimiters::DelimiterOwnerProjectionCache,
+    identifier_cache: IdentifierProjectionCache,
+}
+
+impl RichSemanticProjectionCache {
+    pub(crate) fn rebind_external_generation(
+        &mut self,
+        revision: u64,
+        previous_generation: u64,
+        external_generation: u64,
+    ) -> bool {
+        if self.revision != revision || self.external_generation != previous_generation {
+            return false;
+        }
+        if !self.delimiter_owner_cache.rebind_external_generation(
+            revision,
+            previous_generation,
+            external_generation,
+        ) {
+            return false;
+        }
+        self.external_generation = external_generation;
+        true
+    }
+}
+
+#[derive(Clone)]
+struct IdentifierProjectionCache {
+    source: Arc<str>,
+    structure: Vec<super::scope_delimiters::SemanticStructureFact>,
+    regions: Vec<CachedIdentifierRegion>,
+}
+
+#[derive(Clone)]
+struct CachedIdentifierRegion {
+    span: TextSpan,
+    results: Vec<CachedIdentifierResult>,
+}
+
+#[derive(Clone, Copy)]
+struct CachedIdentifierResult {
+    relative_span: TextSpan,
+    kind: Option<SymbolKind>,
+    token_type: Option<u32>,
+    priority: u8,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct RichSemanticProjectionCacheContext<'cache> {
+    revision: u64,
+    external_generation: u64,
+    previous_cache: Option<&'cache RichSemanticProjectionCache>,
+}
+
+impl<'cache> RichSemanticProjectionCacheContext<'cache> {
+    pub(crate) fn new(
+        revision: u64,
+        external_generation: u64,
+        previous_cache: Option<&'cache RichSemanticProjectionCache>,
+    ) -> Self {
+        Self {
+            revision,
+            external_generation,
+            previous_cache,
+        }
+    }
 }
 
 pub(crate) fn semantic_tokens_for_cached_analysis_with_external_indexes_incremental_cancelled(
@@ -334,7 +411,7 @@ pub(crate) fn semantic_tokens_for_cached_analysis_with_external_indexes_incremen
     workspace_index: Option<&SymbolIndex>,
     game_data_index: Option<&SymbolIndex>,
     bracket_coloring: BracketColoringMode,
-    delimiter_cache_context: super::scope_delimiters::DelimiterProjectionCacheContext<'_>,
+    cache_context: RichSemanticProjectionCacheContext<'_>,
     should_cancel: &dyn Fn() -> bool,
 ) -> Option<IncrementalSemanticTokenProjection> {
     let mut raw_projection = semantic_raw_tokens(
@@ -343,17 +420,26 @@ pub(crate) fn semantic_tokens_for_cached_analysis_with_external_indexes_incremen
         workspace_index,
         game_data_index,
         bracket_coloring,
-        Some(delimiter_cache_context),
+        Some(cache_context),
         Some(should_cancel),
     )?;
     let delimiter_owner_cache = raw_projection
         .delimiter_owner_cache
         .take()
         .expect("incremental rich projection produces a delimiter-owner cache");
+    let identifier_cache = raw_projection
+        .identifier_cache
+        .take()
+        .expect("incremental rich projection produces an identifier cache");
     let projection = encode_projection(source, analysis, raw_projection, Some(should_cancel))?;
     Some(IncrementalSemanticTokenProjection {
         projection,
-        delimiter_owner_cache,
+        cache: RichSemanticProjectionCache {
+            revision: cache_context.revision,
+            external_generation: cache_context.external_generation,
+            delimiter_owner_cache,
+            identifier_cache,
+        },
     })
 }
 
@@ -408,6 +494,7 @@ struct RawSemanticTokenProjection {
     tokens: Vec<RawSemanticToken>,
     timings: LspSemanticTokenTimings,
     delimiter_owner_cache: Option<super::scope_delimiters::DelimiterOwnerProjectionCache>,
+    identifier_cache: Option<IdentifierProjectionCache>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -424,7 +511,7 @@ fn semantic_raw_tokens(
     workspace_index: Option<&SymbolIndex>,
     game_data_index: Option<&SymbolIndex>,
     bracket_coloring: BracketColoringMode,
-    delimiter_request: Option<super::scope_delimiters::DelimiterProjectionCacheContext<'_>>,
+    cache_context: Option<RichSemanticProjectionCacheContext<'_>>,
     should_cancel: Option<&dyn Fn() -> bool>,
 ) -> Option<RawSemanticTokenProjection> {
     let lex_elapsed = Duration::default();
@@ -449,10 +536,57 @@ fn semantic_raw_tokens(
         &analysis.scope,
         ExternalIndexes::new(workspace_index, game_data_index).ordered(),
     );
+    let identifier_structure = if cache_context.is_some() {
+        Some(super::scope_delimiters::semantic_structure_facts(
+            &analysis.index,
+            should_cancel,
+        )?)
+    } else {
+        None
+    };
+    let identifier_regions = if cache_context.is_some() {
+        identifier_reuse_regions(source, &analysis.index)
+    } else {
+        Vec::new()
+    };
+    let reusable_identifier_regions = if let (Some(context), Some(structure)) =
+        (cache_context, identifier_structure.as_deref())
+    {
+        reusable_identifier_regions(
+            source,
+            context,
+            structure,
+            &identifier_regions,
+            should_cancel,
+        )?
+    } else {
+        vec![None; identifier_regions.len()]
+    };
+    let identifier_regions_reused = reusable_identifier_regions
+        .iter()
+        .filter(|region| region.is_some())
+        .count();
+    let identifier_regions_invalidated = cache_context
+        .and_then(|context| context.previous_cache)
+        .map_or(0, |cache| {
+            cache
+                .identifier_cache
+                .regions
+                .len()
+                .saturating_sub(identifier_regions_reused)
+        });
+    let identifier_regions_recomputed = identifier_regions
+        .len()
+        .saturating_sub(identifier_regions_reused);
+    let mut identifier_region_results = identifier_regions
+        .iter()
+        .map(|_| Vec::new())
+        .collect::<Vec<Vec<CachedIdentifierResult>>>();
 
     let mut resolver_elapsed = Duration::default();
     let mut resolver_timings = ReferenceResolverTimings::default();
     let mut identifier_resolver_calls = 0usize;
+    let mut identifier_results_reused = 0usize;
     let mut resolved_identifier_kinds = BTreeMap::new();
     let token_loop_start = Instant::now();
     for (token_index, token) in lexer_tokens.iter().enumerate() {
@@ -485,44 +619,63 @@ fn semantic_raw_tokens(
             if declaration_spans.contains(&(token.span.start, token.span.end)) {
                 continue;
             }
-            identifier_resolver_calls += 1;
-            let resolver_start = Instant::now();
-            let (resolution, token_timings) =
-                resolver.resolve_identifier_token_profiled(token.span);
-            resolver_elapsed += resolver_start.elapsed();
-            resolver_timings.context += token_timings.context;
-            resolver_timings.declaration += token_timings.declaration;
-            resolver_timings.scope += token_timings.scope;
-            resolver_timings.member += token_timings.member;
-            resolver_timings.top_level += token_timings.top_level;
-            resolver_timings.external += token_timings.external;
-            resolver_timings.selection += token_timings.selection;
-            resolved_identifier_kinds.insert(
-                (token.span.start, token.span.end),
-                resolution
+            let region_index = identifier_region_index(&identifier_regions, token.span);
+            let cached = region_index.and_then(|region_index| {
+                let region = reusable_identifier_regions[region_index]?;
+                let relative_span = relative_span(token.span, identifier_regions[region_index])?;
+                cached_identifier_result(region, relative_span)
+            });
+            let result = if let Some(cached) = cached {
+                identifier_results_reused += 1;
+                cached
+            } else {
+                identifier_resolver_calls += 1;
+                let resolver_start = Instant::now();
+                let (resolution, token_timings) =
+                    resolver.resolve_identifier_token_profiled(token.span);
+                resolver_elapsed += resolver_start.elapsed();
+                resolver_timings.context += token_timings.context;
+                resolver_timings.declaration += token_timings.declaration;
+                resolver_timings.scope += token_timings.scope;
+                resolver_timings.member += token_timings.member;
+                resolver_timings.top_level += token_timings.top_level;
+                resolver_timings.external += token_timings.external;
+                resolver_timings.selection += token_timings.selection;
+                let candidate = resolution
                     .as_ref()
-                    .and_then(|resolution| resolution.selected.as_ref())
-                    .map(|candidate| candidate.kind),
-            );
-            if let Some(resolution) = resolution {
-                if let Some(candidate) = resolution.selected {
-                    if let Some(token_type) = candidate_semantic_type(
-                        &candidate,
-                        &analysis.index,
-                        workspace_index,
-                        game_data_index,
-                    ) {
-                        push_raw_semantic_token(
-                            &mut tokens,
-                            RawSemanticToken {
-                                span: token.span,
-                                token_type,
-                                modifiers: 0,
-                                priority: resolver_reference_priority(candidate.kind),
-                            },
-                        );
-                    }
+                    .and_then(|resolution| resolution.selected.as_ref());
+                CachedIdentifierResult {
+                    relative_span: region_index
+                        .and_then(|index| relative_span(token.span, identifier_regions[index]))
+                        .unwrap_or(token.span),
+                    kind: candidate.map(|candidate| candidate.kind),
+                    token_type: candidate.and_then(|candidate| {
+                        candidate_semantic_type(
+                            candidate,
+                            &analysis.index,
+                            workspace_index,
+                            game_data_index,
+                        )
+                    }),
+                    priority: candidate
+                        .map(|candidate| resolver_reference_priority(candidate.kind))
+                        .unwrap_or(0),
                 }
+            };
+            resolved_identifier_kinds.insert((token.span.start, token.span.end), result.kind);
+            if let Some(region_index) = region_index {
+                identifier_region_results[region_index].push(result);
+            }
+            if let Some(token_type) = result.token_type {
+                push_raw_semantic_token(
+                    &mut tokens,
+                    RawSemanticToken {
+                        span: token.span,
+                        token_type,
+                        modifiers: 0,
+                        priority: result.priority,
+                    },
+                );
             }
         }
     }
@@ -557,14 +710,20 @@ fn semantic_raw_tokens(
     let delimiter_overlay_start = Instant::now();
     // Reuse selected kinds resolved earlier in this same immutable snapshot.
     // Dynamic delimiter proof otherwise repeats the identical resolver query.
-    let delimiter_projection = if let Some(request) = delimiter_request {
+    let delimiter_projection = if let Some(context) = cache_context {
         super::scope_delimiters::semantic_scope_delimiters_for_analysis_incremental(
             source,
             analysis,
             ExternalIndexes::new(workspace_index, game_data_index),
             &resolved_identifier_kinds,
             true,
-            request,
+            super::scope_delimiters::DelimiterProjectionCacheContext::new(
+                context.revision,
+                context.external_generation,
+                context
+                    .previous_cache
+                    .map(|cache| &cache.delimiter_owner_cache),
+            ),
             should_cancel,
         )?
     } else {
@@ -690,13 +849,105 @@ fn semantic_raw_tokens(
             encode_ms: 0,
             decode_debug_ms: 0,
             identifier_resolver_calls,
+            identifier_results_reused,
+            identifier_regions_reused,
+            identifier_regions_invalidated,
+            identifier_regions_recomputed,
             delimiter_resolver_calls,
             delimiter_owners_reused,
             delimiter_owners_invalidated,
             delimiter_owners_recomputed,
         },
         delimiter_owner_cache,
+        identifier_cache: cache_context.map(|_| IdentifierProjectionCache {
+            source: Arc::from(source),
+            structure: identifier_structure.unwrap_or_default(),
+            regions: identifier_regions
+                .into_iter()
+                .zip(identifier_region_results)
+                .map(|(span, results)| CachedIdentifierRegion { span, results })
+                .collect(),
+        }),
     })
+}
+
+fn identifier_reuse_regions(source: &str, index: &SymbolIndex) -> Vec<TextSpan> {
+    let mut regions = index
+        .symbols()
+        .iter()
+        .filter(|symbol| {
+            matches!(
+                symbol.kind,
+                SymbolKind::Function
+                    | SymbolKind::Method
+                    | SymbolKind::Constructor
+                    | SymbolKind::Destructor
+            ) && !symbol.span.is_empty()
+                && symbol.span.end <= source.len()
+        })
+        .map(|symbol| symbol.span)
+        .collect::<Vec<_>>();
+    regions.sort_by_key(|span| (span.start, span.end));
+    regions
+}
+
+fn reusable_identifier_regions<'cache>(
+    source: &str,
+    context: RichSemanticProjectionCacheContext<'cache>,
+    structure: &[super::scope_delimiters::SemanticStructureFact],
+    regions: &[TextSpan],
+    should_cancel: Option<&dyn Fn() -> bool>,
+) -> Option<Vec<Option<&'cache CachedIdentifierRegion>>> {
+    let Some(cache) = context.previous_cache.filter(|cache| {
+        cache.revision <= context.revision
+            && cache.external_generation == context.external_generation
+            && cache.identifier_cache.structure == structure
+            && cache.identifier_cache.regions.len() == regions.len()
+    }) else {
+        return Some(vec![None; regions.len()]);
+    };
+    let mut reusable = Vec::with_capacity(regions.len());
+    for (index, current_span) in regions.iter().copied().enumerate() {
+        if index % 64 == 0 && should_cancel.is_some_and(|should_cancel| should_cancel()) {
+            return None;
+        }
+        let cached = cache.identifier_cache.regions.get(index).filter(|cached| {
+            span_text(source, current_span)
+                == span_text(&cache.identifier_cache.source, cached.span)
+        });
+        reusable.push(cached);
+    }
+    Some(reusable)
+}
+
+fn identifier_region_index(regions: &[TextSpan], token_span: TextSpan) -> Option<usize> {
+    let insertion = regions.partition_point(|region| region.start <= token_span.start);
+    insertion
+        .checked_sub(1)
+        .filter(|index| token_span.end <= regions[*index].end)
+}
+
+fn relative_span(span: TextSpan, region: TextSpan) -> Option<TextSpan> {
+    (region.start <= span.start && span.end <= region.end).then(|| {
+        TextSpan::new(
+            span.start.saturating_sub(region.start),
+            span.end.saturating_sub(region.start),
+        )
+    })
+}
+
+fn cached_identifier_result(
+    region: &CachedIdentifierRegion,
+    relative_span: TextSpan,
+) -> Option<CachedIdentifierResult> {
+    region
+        .results
+        .binary_search_by_key(&(relative_span.start, relative_span.end), |result| {
+            (result.relative_span.start, result.relative_span.end)
+        })
+        .ok()
+        .and_then(|index| region.results.get(index))
+        .copied()
 }
 
 fn lexical_raw_tokens(
@@ -818,12 +1069,17 @@ fn lexical_raw_tokens(
             encode_ms: 0,
             decode_debug_ms: 0,
             identifier_resolver_calls: 0,
+            identifier_results_reused: 0,
+            identifier_regions_reused: 0,
+            identifier_regions_invalidated: 0,
+            identifier_regions_recomputed: 0,
             delimiter_resolver_calls: 0,
             delimiter_owners_reused: 0,
             delimiter_owners_invalidated: 0,
             delimiter_owners_recomputed: 0,
         },
         delimiter_owner_cache: None,
+        identifier_cache: None,
     })
 }
 
@@ -1185,6 +1441,112 @@ mod tests {
         assert_eq!(projection.timings.identifier_resolver_calls, 0);
         assert_eq!(projection.tokens.data.len() % 5, 0);
         assert!(projection.token_count >= 3);
+    }
+
+    #[test]
+    fn incremental_projection_reuses_exact_unchanged_callable_identifiers() {
+        let original = "void Known() {}\nclass Example\n{\n\tvoid First() { Known(); }\n\tvoid Second() { Known(); }\n}\n";
+        let edited = "void Known() {}\nclass Example\n{\n\tvoid First() { Known(); }\n\tvoid Second() { int value = 1; Known(); }\n}\n";
+        let original_analysis = file_index_for_source(original);
+        let initial =
+            semantic_tokens_for_cached_analysis_with_external_indexes_incremental_cancelled(
+                original,
+                &original_analysis,
+                None,
+                None,
+                BracketColoringMode::Semantic,
+                RichSemanticProjectionCacheContext::new(1, 7, None),
+                &|| false,
+            )
+            .expect("initial projection");
+        let edited_analysis = file_index_for_source(edited);
+        let incremental =
+            semantic_tokens_for_cached_analysis_with_external_indexes_incremental_cancelled(
+                edited,
+                &edited_analysis,
+                None,
+                None,
+                BracketColoringMode::Semantic,
+                RichSemanticProjectionCacheContext::new(2, 7, Some(&initial.cache)),
+                &|| false,
+            )
+            .expect("edited projection");
+        let full = semantic_tokens_for_cached_analysis_with_external_indexes(
+            edited,
+            &edited_analysis,
+            None,
+            None,
+        );
+
+        assert_eq!(incremental.projection.tokens, full.tokens);
+        assert_eq!(incremental.projection.timings.identifier_results_reused, 1);
+        assert_eq!(incremental.projection.timings.identifier_resolver_calls, 1);
+        assert_eq!(incremental.projection.timings.identifier_regions_reused, 2);
+        assert_eq!(
+            incremental
+                .projection
+                .timings
+                .identifier_regions_invalidated,
+            1
+        );
+    }
+
+    #[test]
+    fn incremental_projection_invalidates_identifier_regions_for_external_changes() {
+        let source =
+            "void Known() {}\nclass Example { void First() { Known(); } void Second() { Known(); } }\n";
+        let analysis = file_index_for_source(source);
+        let initial =
+            semantic_tokens_for_cached_analysis_with_external_indexes_incremental_cancelled(
+                source,
+                &analysis,
+                None,
+                None,
+                BracketColoringMode::Semantic,
+                RichSemanticProjectionCacheContext::new(1, 7, None),
+                &|| false,
+            )
+            .expect("initial projection");
+        let changed_generation =
+            semantic_tokens_for_cached_analysis_with_external_indexes_incremental_cancelled(
+                source,
+                &analysis,
+                None,
+                None,
+                BracketColoringMode::Semantic,
+                RichSemanticProjectionCacheContext::new(1, 8, Some(&initial.cache)),
+                &|| false,
+            )
+            .expect("generation projection");
+
+        assert_eq!(
+            changed_generation
+                .projection
+                .timings
+                .identifier_results_reused,
+            0
+        );
+        assert_eq!(
+            changed_generation
+                .projection
+                .timings
+                .identifier_regions_reused,
+            0
+        );
+        assert_eq!(
+            changed_generation
+                .projection
+                .timings
+                .identifier_regions_invalidated,
+            3
+        );
+        assert_eq!(
+            changed_generation
+                .projection
+                .timings
+                .identifier_resolver_calls,
+            2
+        );
     }
 
     #[test]

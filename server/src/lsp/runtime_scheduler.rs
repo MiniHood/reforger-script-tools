@@ -1,5 +1,6 @@
-use super::scope_delimiters::{DelimiterOwnerProjectionCache, DelimiterProjectionCacheContext};
-use super::semantic_tokens::LspSemanticTokenProjection;
+use super::semantic_tokens::{
+    LspSemanticTokenProjection, RichSemanticProjectionCache, RichSemanticProjectionCacheContext,
+};
 use super::{
     completion_debug_markdown, completion_report_for_cached_analysis_with_external_indexes,
     debug_hover_report_for_cached_analysis_with_external_indexes,
@@ -34,7 +35,7 @@ pub(super) enum ServerEvent {
         external_status: &'static str,
         workspace_excludes_document: bool,
         projection: LspSemanticTokenProjection,
-        delimiter_owner_cache: DelimiterOwnerProjectionCache,
+        cache: RichSemanticProjectionCache,
         elapsed_ms: u128,
     },
     RichSemanticTokensSkipped {
@@ -117,7 +118,7 @@ pub(super) struct RichSemanticTokensJob {
     pub(super) analysis: FileIndexAnalysis,
     pub(super) external_snapshot: ExternalIndexSnapshot,
     pub(super) bracket_coloring: BracketColoringMode,
-    pub(super) previous_delimiter_owner_cache: Option<Arc<DelimiterOwnerProjectionCache>>,
+    pub(super) previous_cache: Option<Arc<RichSemanticProjectionCache>>,
 }
 
 pub(super) enum DebugRequestJob {
@@ -573,10 +574,10 @@ impl RuntimeWorkExecutor {
                         workspace.as_deref(),
                         job.external_snapshot.game_data.as_deref(),
                         job.bracket_coloring,
-                        DelimiterProjectionCacheContext::new(
+                        RichSemanticProjectionCacheContext::new(
                             job.revision,
                             job.external_generation,
-                            job.previous_delimiter_owner_cache.as_deref(),
+                            job.previous_cache.as_deref(),
                         ),
                         &|| job.task.is_cancelled(),
                     );
@@ -589,7 +590,7 @@ impl RuntimeWorkExecutor {
                         external_status: job.external_snapshot.status,
                         workspace_excludes_document,
                         projection: projection.projection,
-                        delimiter_owner_cache: projection.delimiter_owner_cache,
+                        cache: projection.cache,
                         elapsed_ms: job.scheduled_at.elapsed().as_millis(),
                     },
                     None => ServerEvent::RichSemanticTokensSkipped {

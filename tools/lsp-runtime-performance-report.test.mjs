@@ -97,11 +97,15 @@ test("reports source-free game-data cache bytes for rebuilt, loaded, and migrate
 
 test("reports rich semantic-token phase timings without source payloads", () => {
   const report = runReport(
-    "[1000] semanticTokensRich ready uri=file:///workspace/GC_MarkerArea.c revision=42 external_generation=9 resolver_ms=31 resolver_calls=96 type_detail_ms=1 declaration_symbols_ms=0 delimiter_ms=12 delimiter_resolver_calls=18 delimiter_owners_reused=563 delimiter_owners_invalidated=17 delimiter_owners_recomputed=17 source=DO_NOT_COPY elapsed_ms=54",
+    "[1000] semanticTokensRich ready uri=file:///workspace/GC_MarkerArea.c revision=42 external_generation=9 resolver_ms=31 resolver_calls=96 identifier_results_reused=1917 identifier_regions_reused=114 identifier_regions_invalidated=1 identifier_regions_recomputed=1 type_detail_ms=1 declaration_symbols_ms=0 delimiter_ms=12 delimiter_resolver_calls=18 delimiter_owners_reused=563 delimiter_owners_invalidated=17 delimiter_owners_recomputed=17 source=DO_NOT_COPY elapsed_ms=54",
   );
 
   assert.match(report, /resolver_ms=31/);
   assert.match(report, /resolver_calls=96/);
+  assert.match(report, /identifier_results_reused=1917/);
+  assert.match(report, /identifier_regions_reused=114/);
+  assert.match(report, /identifier_regions_invalidated=1/);
+  assert.match(report, /identifier_regions_recomputed=1/);
   assert.match(report, /type_detail_ms=1/);
   assert.match(report, /declaration_symbols_ms=0/);
   assert.match(report, /delimiter_ms=12/);
@@ -109,6 +113,9 @@ test("reports rich semantic-token phase timings without source payloads", () => 
   assert.match(report, /delimiter_owners_reused=563/);
   assert.match(report, /delimiter_owners_invalidated=17/);
   assert.match(report, /delimiter_owners_recomputed=17/);
+  assert.match(report, /## Incremental Identifier Projection/);
+  assert.match(report, /Identifier results reused: 1917/);
+  assert.match(report, /GC_MarkerArea\.c.*42.*9.*1917.*114.*1.*1.*96.*31 ms/);
   assert.match(report, /## Incremental Delimiter Projection/);
   assert.match(report, /GC_MarkerArea\.c.*42.*9.*563.*17.*17.*18.*12 ms/);
   assert.doesNotMatch(report, /DO_NOT_COPY/);

@@ -112,6 +112,12 @@ request. A completed rich projection requests an editor refresh immediately.
 Protocol input, worker completions, transport closure, and external-index
 publication wake the same coordinator event stream. No periodic channel poll
 stands between foreground, semantic, and rich publication.
+Rich-token projection reuses identifier classifications only for exact,
+byte-identical callable regions when the current file-visible declaration
+structure and external-index generation still match. Edited and root-level
+regions resolve against the current snapshot, and the runtime log records
+reused identifier results plus reused, invalidated, and recomputed region
+counts.
 If an editor request outruns that work, the current snapshot's lexical baseline
 is materialized only as an internal fallback; the request remains pending and
 publishes the rich overlay as one replacement. This keeps the editor's settled

@@ -54,13 +54,13 @@ pub(crate) struct DelimiterOwnerProjectionCache {
     revision: u64,
     external_generation: u64,
     source: Arc<str>,
-    structure: Vec<DelimiterStructureFact>,
+    structure: Vec<SemanticStructureFact>,
     regions: Vec<CachedDelimiterRegion>,
     dynamic_owner_count: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct DelimiterStructureFact {
+pub(crate) struct SemanticStructureFact {
     parent_path: Vec<(SymbolKind, Option<String>)>,
     kind: SymbolKind,
     name: Option<String>,
@@ -184,7 +184,7 @@ fn semantic_scope_delimiters_for_analysis_internal(
         should_cancel,
     )?;
     let structure = if cache_context.is_some() {
-        Some(delimiter_structure_facts(&analysis.index, should_cancel)?)
+        Some(semantic_structure_facts(&analysis.index, should_cancel)?)
     } else {
         None
     };
@@ -329,10 +329,10 @@ fn semantic_scope_delimiters_for_analysis_internal(
     })
 }
 
-fn delimiter_structure_facts(
+pub(crate) fn semantic_structure_facts(
     index: &SymbolIndex,
     should_cancel: Option<&dyn Fn() -> bool>,
-) -> Option<Vec<DelimiterStructureFact>> {
+) -> Option<Vec<SemanticStructureFact>> {
     // File-visible declarations can change resolution inside an otherwise
     // byte-identical callable, so they form one exact cache dependency.
     // Locals are excluded because their containing callable source already
@@ -345,8 +345,8 @@ fn delimiter_structure_facts(
         if symbol.kind == SymbolKind::LocalVariable {
             continue;
         }
-        facts.push(DelimiterStructureFact {
-            parent_path: delimiter_symbol_parent_path(index, symbol),
+        facts.push(SemanticStructureFact {
+            parent_path: semantic_symbol_parent_path(index, symbol),
             kind: symbol.kind,
             name: symbol.name.clone(),
             type_text: symbol.detail.type_text.clone(),
@@ -366,7 +366,7 @@ fn delimiter_structure_facts(
     Some(facts)
 }
 
-fn delimiter_symbol_parent_path(
+pub(crate) fn semantic_symbol_parent_path(
     index: &SymbolIndex,
     symbol: &IndexedSymbol,
 ) -> Vec<(SymbolKind, Option<String>)> {
@@ -472,7 +472,7 @@ fn reusable_delimiter_regions<'cache>(
     source: &str,
     revision: u64,
     external_generation: u64,
-    structure: &[DelimiterStructureFact],
+    structure: &[SemanticStructureFact],
     regions: &[CurrentDelimiterRegion],
     previous_cache: Option<&'cache DelimiterOwnerProjectionCache>,
     should_cancel: Option<&dyn Fn() -> bool>,
