@@ -917,6 +917,18 @@ fn append_timing(
         .iter()
         .map(|row| row.semantic_timings.delimiter_resolver_calls)
         .sum();
+    let delimiter_owners_reused: usize = rows
+        .iter()
+        .map(|row| row.semantic_timings.delimiter_owners_reused)
+        .sum();
+    let delimiter_owners_invalidated: usize = rows
+        .iter()
+        .map(|row| row.semantic_timings.delimiter_owners_invalidated)
+        .sum();
+    let delimiter_owners_recomputed: usize = rows
+        .iter()
+        .map(|row| row.semantic_timings.delimiter_owners_recomputed)
+        .sum();
     report.push_str("\n## Semantic Projection Internal Timing\n\n");
     report.push_str("| Phase | Milliseconds |\n");
     report.push_str("| --- | ---: |\n");
@@ -946,6 +958,21 @@ fn append_timing(
     writeln!(
         report,
         "|   Scope delimiter resolver calls | {delimiter_resolver_calls} |"
+    )
+    .unwrap();
+    writeln!(
+        report,
+        "|   Scope delimiter owners reused | {delimiter_owners_reused} |"
+    )
+    .unwrap();
+    writeln!(
+        report,
+        "|   Scope delimiter owners invalidated | {delimiter_owners_invalidated} |"
+    )
+    .unwrap();
+    writeln!(
+        report,
+        "|   Scope delimiter owners recomputed | {delimiter_owners_recomputed} |"
     )
     .unwrap();
     writeln!(

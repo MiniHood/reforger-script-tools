@@ -1,11 +1,12 @@
 use super::external_indexes::ExternalIndexes;
 use super::FileIndexAnalysis;
-use crate::index::SymbolIndex;
+use crate::index::{IndexedSymbol, SymbolIndex};
 use crate::lexer::{Keyword, Operator, TextSpan, Token, TokenKind};
 use crate::model::SymbolKind;
 use crate::resolver::ReferenceResolver;
 use crate::syntax::{Parse, SyntaxElement, SyntaxKind, SyntaxNode};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 pub(crate) const MAX_ACTIVE_SCOPE_DELIMITER_SOURCE_BYTES: usize = 128 * 1024;
 const MAX_SCOPE_DELIMITERS: usize = 200_000;
@@ -37,6 +38,95 @@ pub(crate) struct ScopeDelimiter {
 pub(crate) struct ScopeDelimiterProjection {
     pub(crate) delimiters: Vec<ScopeDelimiter>,
     pub(crate) dynamic_owner_resolver_calls: usize,
+    pub(crate) dynamic_owners_reused: usize,
+    pub(crate) dynamic_owners_invalidated: usize,
+    pub(crate) dynamic_owners_recomputed: usize,
+    pub(crate) owner_cache: Option<DelimiterOwnerProjectionCache>,
+}
+
+/// Previous-revision proof results for resolver-dependent delimiter owners.
+///
+/// Cached entries never carry current ranges into a new revision. The current
+/// parse collects every delimiter again, then an exact callable-region match
+/// may reuse only the boolean proof for the corresponding owner.
+#[derive(Clone)]
+pub(crate) struct DelimiterOwnerProjectionCache {
+    revision: u64,
+    external_generation: u64,
+    source: Arc<str>,
+    structure: Vec<DelimiterStructureFact>,
+    regions: Vec<CachedDelimiterRegion>,
+    dynamic_owner_count: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct DelimiterStructureFact {
+    parent_path: Vec<(SymbolKind, Option<String>)>,
+    kind: SymbolKind,
+    name: Option<String>,
+    type_text: Option<String>,
+    return_type_text: Option<String>,
+    base_type: Option<String>,
+    default_text: Option<String>,
+    enum_value_text: Option<String>,
+    modifiers: Vec<String>,
+    callable_form: Option<&'static str>,
+    conditional_context: Vec<(&'static str, Option<String>)>,
+}
+
+#[derive(Clone)]
+struct CachedDelimiterRegion {
+    identity: DelimiterRegionIdentity,
+    span: TextSpan,
+    dynamic_owner_proofs: Vec<bool>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct DelimiterRegionIdentity {
+    kind: SyntaxKind,
+    declaration_path: Vec<(SyntaxKind, String)>,
+    header: String,
+}
+
+struct CurrentDelimiterRegion {
+    identity: DelimiterRegionIdentity,
+    span: TextSpan,
+}
+
+impl DelimiterOwnerProjectionCache {
+    pub(crate) fn rebind_external_generation(
+        &mut self,
+        revision: u64,
+        previous_generation: u64,
+        external_generation: u64,
+    ) -> bool {
+        if self.revision != revision || self.external_generation != previous_generation {
+            return false;
+        }
+        self.external_generation = external_generation;
+        true
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct DelimiterProjectionCacheContext<'cache> {
+    revision: u64,
+    external_generation: u64,
+    previous_cache: Option<&'cache DelimiterOwnerProjectionCache>,
+}
+
+impl<'cache> DelimiterProjectionCacheContext<'cache> {
+    pub(crate) fn new(
+        revision: u64,
+        external_generation: u64,
+        previous_cache: Option<&'cache DelimiterOwnerProjectionCache>,
+    ) -> Self {
+        Self {
+            revision,
+            external_generation,
+            previous_cache,
+        }
+    }
 }
 
 pub(crate) fn semantic_scope_delimiters_for_analysis(
@@ -47,17 +137,86 @@ pub(crate) fn semantic_scope_delimiters_for_analysis(
     resolve_dynamic_owners: bool,
     should_cancel: Option<&dyn Fn() -> bool>,
 ) -> Option<ScopeDelimiterProjection> {
+    semantic_scope_delimiters_for_analysis_internal(
+        source,
+        analysis,
+        external_indexes,
+        pre_resolved_identifier_kinds,
+        resolve_dynamic_owners,
+        None,
+        should_cancel,
+    )
+}
+
+pub(crate) fn semantic_scope_delimiters_for_analysis_incremental(
+    source: &str,
+    analysis: &FileIndexAnalysis,
+    external_indexes: ExternalIndexes<'_>,
+    pre_resolved_identifier_kinds: &BTreeMap<(usize, usize), Option<SymbolKind>>,
+    resolve_dynamic_owners: bool,
+    cache_context: DelimiterProjectionCacheContext<'_>,
+    should_cancel: Option<&dyn Fn() -> bool>,
+) -> Option<ScopeDelimiterProjection> {
+    semantic_scope_delimiters_for_analysis_internal(
+        source,
+        analysis,
+        external_indexes,
+        pre_resolved_identifier_kinds,
+        resolve_dynamic_owners,
+        Some(cache_context),
+        should_cancel,
+    )
+}
+
+fn semantic_scope_delimiters_for_analysis_internal(
+    source: &str,
+    analysis: &FileIndexAnalysis,
+    external_indexes: ExternalIndexes<'_>,
+    pre_resolved_identifier_kinds: &BTreeMap<(usize, usize), Option<SymbolKind>>,
+    resolve_dynamic_owners: bool,
+    cache_context: Option<DelimiterProjectionCacheContext<'_>>,
+    should_cancel: Option<&dyn Fn() -> bool>,
+) -> Option<ScopeDelimiterProjection> {
     let mut delimiters = collect_scope_delimiters(
         &analysis.parse,
         &analysis.lexer_tokens,
         Some(&analysis.index),
         should_cancel,
     )?;
+    let structure = if cache_context.is_some() {
+        Some(delimiter_structure_facts(&analysis.index, should_cancel)?)
+    } else {
+        None
+    };
+    let regions = if cache_context.is_some() {
+        delimiter_reuse_regions(source, &analysis.parse, should_cancel)?
+    } else {
+        Vec::new()
+    };
     if !resolve_dynamic_owners {
         delimiters.retain(delimiter_anchor_is_structurally_proven);
+        let owner_cache = cache_context.map(|context| DelimiterOwnerProjectionCache {
+            revision: context.revision,
+            external_generation: context.external_generation,
+            source: Arc::from(source),
+            structure: structure.unwrap_or_default(),
+            regions: regions
+                .into_iter()
+                .map(|region| CachedDelimiterRegion {
+                    identity: region.identity,
+                    span: region.span,
+                    dynamic_owner_proofs: Vec::new(),
+                })
+                .collect(),
+            dynamic_owner_count: 0,
+        });
         return Some(ScopeDelimiterProjection {
             delimiters,
             dynamic_owner_resolver_calls: 0,
+            dynamic_owners_reused: 0,
+            dynamic_owners_invalidated: 0,
+            dynamic_owners_recomputed: 0,
+            owner_cache,
         });
     }
     let resolver = ReferenceResolver::new_with_parse_scope_and_external_indexes(
@@ -67,9 +226,39 @@ pub(crate) fn semantic_scope_delimiters_for_analysis(
         &analysis.scope,
         external_indexes.ordered(),
     );
+    let reusable_regions = if let (Some(context), Some(structure)) = (cache_context, &structure) {
+        reusable_delimiter_regions(
+            source,
+            context.revision,
+            context.external_generation,
+            structure,
+            &regions,
+            context.previous_cache,
+            should_cancel,
+        )?
+    } else {
+        vec![None; regions.len()]
+    };
+    let reused_owner_capacity = reusable_regions
+        .iter()
+        .flatten()
+        .map(|region| region.dynamic_owner_proofs.len())
+        .sum::<usize>();
+    let invalidated_owners = cache_context
+        .and_then(|context| context.previous_cache)
+        .map_or(0, |cache| {
+            cache
+                .dynamic_owner_count
+                .saturating_sub(reused_owner_capacity)
+        });
+    let mut region_proofs = regions
+        .iter()
+        .map(|_| Vec::<bool>::new())
+        .collect::<Vec<_>>();
     let mut proven = Vec::with_capacity(delimiters.len());
     let mut dynamic_owner_attempts = 0usize;
     let mut dynamic_owner_resolver_calls = 0usize;
+    let mut dynamic_owners_reused = 0usize;
     for (index, delimiter) in delimiters.into_iter().enumerate() {
         if index % 64 == 0 && should_cancel.is_some_and(|should_cancel| should_cancel()) {
             return None;
@@ -82,25 +271,290 @@ pub(crate) fn semantic_scope_delimiters_for_analysis(
             continue;
         }
         dynamic_owner_attempts += 1;
-        if let Some(candidate_kind) =
+        let region_index = delimiter_region_index(&regions, delimiter.opener);
+        let cached_proof = region_index.and_then(|region_index| {
+            reusable_regions[region_index].and_then(|region| {
+                region
+                    .dynamic_owner_proofs
+                    .get(region_proofs[region_index].len())
+                    .copied()
+            })
+        });
+        let is_proven = if let Some(is_proven) = cached_proof {
+            dynamic_owners_reused += 1;
+            is_proven
+        } else if let Some(candidate_kind) =
             pre_resolved_identifier_kinds.get(&(delimiter.anchor.start, delimiter.anchor.end))
         {
-            if candidate_kind.is_some_and(|candidate_kind| {
+            candidate_kind.is_some_and(|candidate_kind| {
                 delimiter_anchor_kind_is_proven(&delimiter, candidate_kind)
-            }) {
-                proven.push(delimiter);
-            }
-            continue;
+            })
+        } else {
+            dynamic_owner_resolver_calls += 1;
+            delimiter_anchor_is_proven(&delimiter, &analysis.lexer_tokens, &resolver)
+        };
+        if let Some(region_index) = region_index {
+            region_proofs[region_index].push(is_proven);
         }
-        dynamic_owner_resolver_calls += 1;
-        if delimiter_anchor_is_proven(&delimiter, &analysis.lexer_tokens, &resolver) {
+        if is_proven {
             proven.push(delimiter);
         }
     }
+    if should_cancel.is_some_and(|should_cancel| should_cancel()) {
+        return None;
+    }
+    let owner_cache = cache_context.map(|context| DelimiterOwnerProjectionCache {
+        revision: context.revision,
+        external_generation: context.external_generation,
+        source: Arc::from(source),
+        structure: structure.unwrap_or_default(),
+        regions: regions
+            .into_iter()
+            .zip(region_proofs)
+            .map(|(region, dynamic_owner_proofs)| CachedDelimiterRegion {
+                identity: region.identity,
+                span: region.span,
+                dynamic_owner_proofs,
+            })
+            .collect(),
+        dynamic_owner_count: dynamic_owner_attempts,
+    });
     Some(ScopeDelimiterProjection {
         delimiters: proven,
         dynamic_owner_resolver_calls,
+        dynamic_owners_reused,
+        dynamic_owners_invalidated: invalidated_owners,
+        dynamic_owners_recomputed: dynamic_owner_attempts.saturating_sub(dynamic_owners_reused),
+        owner_cache,
     })
+}
+
+fn delimiter_structure_facts(
+    index: &SymbolIndex,
+    should_cancel: Option<&dyn Fn() -> bool>,
+) -> Option<Vec<DelimiterStructureFact>> {
+    // File-visible declarations can change resolution inside an otherwise
+    // byte-identical callable, so they form one exact cache dependency.
+    // Locals are excluded because their containing callable source already
+    // invalidates that callable's owner proofs.
+    let mut facts = Vec::new();
+    for (symbol_index, symbol) in index.symbols().iter().enumerate() {
+        if symbol_index % 64 == 0 && should_cancel.is_some_and(|should_cancel| should_cancel()) {
+            return None;
+        }
+        if symbol.kind == SymbolKind::LocalVariable {
+            continue;
+        }
+        facts.push(DelimiterStructureFact {
+            parent_path: delimiter_symbol_parent_path(index, symbol),
+            kind: symbol.kind,
+            name: symbol.name.clone(),
+            type_text: symbol.detail.type_text.clone(),
+            return_type_text: symbol.detail.return_type_text.clone(),
+            base_type: symbol.detail.base_type.clone(),
+            default_text: symbol.detail.default_text.clone(),
+            enum_value_text: symbol.detail.enum_value_text.clone(),
+            modifiers: symbol.modifiers.clone(),
+            callable_form: symbol.callable_form.map(|form| form.as_str()),
+            conditional_context: symbol
+                .conditional_context
+                .iter()
+                .map(|branch| (branch.kind.as_str(), branch.condition.clone()))
+                .collect(),
+        });
+    }
+    Some(facts)
+}
+
+fn delimiter_symbol_parent_path(
+    index: &SymbolIndex,
+    symbol: &IndexedSymbol,
+) -> Vec<(SymbolKind, Option<String>)> {
+    let mut path = Vec::new();
+    let mut parent = symbol.parent;
+    while let Some(parent_id) = parent {
+        let Some(parent_symbol) = index.symbol(parent_id) else {
+            break;
+        };
+        path.push((parent_symbol.kind, parent_symbol.name.clone()));
+        parent = parent_symbol.parent;
+    }
+    path.reverse();
+    path
+}
+
+fn delimiter_reuse_regions(
+    source: &str,
+    parse: &Parse,
+    should_cancel: Option<&dyn Fn() -> bool>,
+) -> Option<Vec<CurrentDelimiterRegion>> {
+    let mut regions = vec![CurrentDelimiterRegion {
+        identity: DelimiterRegionIdentity {
+            kind: SyntaxKind::SourceFile,
+            declaration_path: Vec::new(),
+            header: String::new(),
+        },
+        span: TextSpan::new(0, source.len()),
+    }];
+    collect_delimiter_reuse_regions(
+        source,
+        &parse.root,
+        &mut Vec::new(),
+        &mut regions,
+        should_cancel,
+        &mut 0,
+    )?;
+    Some(regions)
+}
+
+fn collect_delimiter_reuse_regions(
+    source: &str,
+    node: &SyntaxNode,
+    declaration_path: &mut Vec<(SyntaxKind, String)>,
+    regions: &mut Vec<CurrentDelimiterRegion>,
+    should_cancel: Option<&dyn Fn() -> bool>,
+    visited_nodes: &mut usize,
+) -> Option<()> {
+    *visited_nodes += 1;
+    if *visited_nodes % 64 == 0 && should_cancel.is_some_and(|should_cancel| should_cancel()) {
+        return None;
+    }
+    let declaration_name = match node.kind {
+        SyntaxKind::ClassDecl => name_after_keyword(node, Keyword::Class),
+        SyntaxKind::EnumDecl => name_after_keyword(node, Keyword::Enum),
+        _ => None,
+    }
+    .and_then(|token| source.get(token.span.start..token.span.end))
+    .map(str::to_string);
+    let entered_declaration = declaration_name.is_some();
+    if let Some(name) = declaration_name {
+        declaration_path.push((node.kind, name));
+    }
+
+    if matches!(node.kind, SyntaxKind::FunctionDecl | SyntaxKind::MethodDecl) {
+        let header_end = first_child(node, SyntaxKind::Block)
+            .map_or(node.span.end, |body| body.span.start)
+            .min(source.len());
+        let header = source
+            .get(node.span.start.min(header_end)..header_end)
+            .unwrap_or_default()
+            .to_string();
+        regions.push(CurrentDelimiterRegion {
+            identity: DelimiterRegionIdentity {
+                kind: node.kind,
+                declaration_path: declaration_path.clone(),
+                header,
+            },
+            span: node.span,
+        });
+    } else {
+        for child in &node.children {
+            if let SyntaxElement::Node(child) = child {
+                collect_delimiter_reuse_regions(
+                    source,
+                    child,
+                    declaration_path,
+                    regions,
+                    should_cancel,
+                    visited_nodes,
+                )?;
+            }
+        }
+    }
+
+    if entered_declaration {
+        declaration_path.pop();
+    }
+    Some(())
+}
+
+fn reusable_delimiter_regions<'cache>(
+    source: &str,
+    revision: u64,
+    external_generation: u64,
+    structure: &[DelimiterStructureFact],
+    regions: &[CurrentDelimiterRegion],
+    previous_cache: Option<&'cache DelimiterOwnerProjectionCache>,
+    should_cancel: Option<&dyn Fn() -> bool>,
+) -> Option<Vec<Option<&'cache CachedDelimiterRegion>>> {
+    let Some(cache) = previous_cache.filter(|cache| {
+        cache.revision <= revision
+            && cache.external_generation == external_generation
+            && cache.structure == structure
+    }) else {
+        return Some(vec![None; regions.len()]);
+    };
+    let mut current_identity_counts = BTreeMap::new();
+    for (index, region) in regions.iter().enumerate() {
+        if index % 64 == 0 && should_cancel.is_some_and(|should_cancel| should_cancel()) {
+            return None;
+        }
+        *current_identity_counts
+            .entry(&region.identity)
+            .or_insert(0usize) += 1;
+    }
+    let mut cached_unique_regions = BTreeMap::new();
+    for (index, region) in cache.regions.iter().enumerate() {
+        if index % 64 == 0 && should_cancel.is_some_and(|should_cancel| should_cancel()) {
+            return None;
+        }
+        cached_unique_regions
+            .entry(&region.identity)
+            .and_modify(|unique_index| *unique_index = None)
+            .or_insert(Some(index));
+    }
+    let mut reusable = Vec::with_capacity(regions.len());
+    for (index, region) in regions.iter().enumerate() {
+        if index % 64 == 0 && should_cancel.is_some_and(|should_cancel| should_cancel()) {
+            return None;
+        }
+        let cached = (|| {
+            // Duplicate declaration paths and headers are valid in conditional
+            // or modded source. Their semantic contexts may differ, so an
+            // ambiguous syntax identity is never reusable even when each body
+            // has a distinct exact-source match.
+            if current_identity_counts.get(&region.identity) != Some(&1) {
+                return None;
+            }
+            let current_text = span_text(source, region.span)?;
+            let cached_index = cached_unique_regions
+                .get(&region.identity)
+                .copied()
+                .flatten()?;
+            let cached = cache.regions.get(cached_index)?;
+            (span_text(&cache.source, cached.span) == Some(current_text)).then_some(cached)
+        })();
+        reusable.push(cached);
+    }
+    Some(reusable)
+}
+
+fn delimiter_region_index(
+    regions: &[CurrentDelimiterRegion],
+    delimiter_span: TextSpan,
+) -> Option<usize> {
+    // Region zero is the file root; callable regions are collected in source
+    // order and never nest because collection stops at a callable boundary.
+    let callable_regions = regions.get(1..).unwrap_or_default();
+    let insertion =
+        callable_regions.partition_point(|region| region.span.start <= delimiter_span.start);
+    if let Some((index, region)) = insertion.checked_sub(1).and_then(|index| {
+        callable_regions
+            .get(index)
+            .map(|region| (index + 1, region))
+    }) {
+        if delimiter_span.end <= region.span.end {
+            return Some(index);
+        }
+    }
+    regions.first().and_then(|root| {
+        (root.span.start <= delimiter_span.start && delimiter_span.end <= root.span.end)
+            .then_some(0)
+    })
+}
+
+fn span_text(source: &str, span: TextSpan) -> Option<&str> {
+    source.get(span.start..span.end)
 }
 
 pub(crate) fn scope_delimiters_for_syntax(
@@ -630,7 +1084,8 @@ fn matching_delimiters(opener: TokenKind, closer: TokenKind) -> bool {
 mod tests {
     use super::{
         active_scope_delimiters, scope_delimiters_for_syntax,
-        semantic_scope_delimiters_for_analysis, ScopeDelimiterAnchorKind,
+        semantic_scope_delimiters_for_analysis, semantic_scope_delimiters_for_analysis_incremental,
+        DelimiterProjectionCacheContext, ScopeDelimiterAnchorKind,
     };
     use crate::{
         lexer::lex,
@@ -703,5 +1158,217 @@ mod tests {
             without_reuse.dynamic_owner_resolver_calls - with_reuse.dynamic_owner_resolver_calls,
             2
         );
+    }
+
+    #[test]
+    fn reuses_unchanged_callable_delimiter_owners_across_document_revisions() {
+        let original = "void Known() {}\nclass Example\n{\n\tvoid First() { Known(); }\n\tvoid Second() { Known(); }\n}\n";
+        let edited = "void Known() {}\nclass Example\n{\n\tvoid First() { Known(); }\n\tvoid Second() { int value = 1; Known(); }\n}\n";
+        let original_analysis = file_index_for_source(original);
+        let original_projection = semantic_scope_delimiters_for_analysis_incremental(
+            original,
+            &original_analysis,
+            ExternalIndexes::new(None, None),
+            &BTreeMap::new(),
+            true,
+            DelimiterProjectionCacheContext::new(1, 7, None),
+            None,
+        )
+        .expect("original delimiter projection");
+        let edited_analysis = file_index_for_source(edited);
+        let edited_projection = semantic_scope_delimiters_for_analysis_incremental(
+            edited,
+            &edited_analysis,
+            ExternalIndexes::new(None, None),
+            &BTreeMap::new(),
+            true,
+            DelimiterProjectionCacheContext::new(2, 7, original_projection.owner_cache.as_ref()),
+            None,
+        )
+        .expect("edited delimiter projection");
+        let cold_edited_projection = semantic_scope_delimiters_for_analysis(
+            edited,
+            &edited_analysis,
+            ExternalIndexes::new(None, None),
+            &BTreeMap::new(),
+            true,
+            None,
+        )
+        .expect("cold edited delimiter projection");
+
+        assert_eq!(original_projection.dynamic_owners_recomputed, 2);
+        assert_eq!(edited_projection.dynamic_owners_reused, 1);
+        assert_eq!(edited_projection.dynamic_owners_invalidated, 1);
+        assert_eq!(edited_projection.dynamic_owners_recomputed, 1);
+        assert_eq!(edited_projection.dynamic_owner_resolver_calls, 1);
+        assert_eq!(
+            edited_projection.delimiters,
+            cold_edited_projection.delimiters
+        );
+    }
+
+    #[test]
+    fn reuses_callable_owners_after_an_edit_shifts_their_absolute_offsets() {
+        let original =
+            "void Known() {}\nclass Example\n{\n\tvoid First() { Known(); }\n\tvoid Second() { Known(); }\n}\n";
+        let shifted = "// shifted\nvoid Known() {}\nclass Example\n{\n\tvoid First() { Known(); }\n\tvoid Second() { Known(); }\n}\n";
+        let original_analysis = file_index_for_source(original);
+        let original_projection = semantic_scope_delimiters_for_analysis_incremental(
+            original,
+            &original_analysis,
+            ExternalIndexes::new(None, None),
+            &BTreeMap::new(),
+            true,
+            DelimiterProjectionCacheContext::new(1, 7, None),
+            None,
+        )
+        .expect("original delimiter projection");
+        let shifted_analysis = file_index_for_source(shifted);
+        let shifted_projection = semantic_scope_delimiters_for_analysis_incremental(
+            shifted,
+            &shifted_analysis,
+            ExternalIndexes::new(None, None),
+            &BTreeMap::new(),
+            true,
+            DelimiterProjectionCacheContext::new(2, 7, original_projection.owner_cache.as_ref()),
+            None,
+        )
+        .expect("shifted delimiter projection");
+
+        assert_eq!(shifted_projection.dynamic_owners_reused, 2);
+        assert_eq!(shifted_projection.dynamic_owners_invalidated, 0);
+        assert_eq!(shifted_projection.dynamic_owners_recomputed, 0);
+        assert_eq!(shifted_projection.dynamic_owner_resolver_calls, 0);
+    }
+
+    #[test]
+    fn structural_declaration_changes_invalidate_unchanged_callable_owners() {
+        let original =
+            "class Example\n{\n\tvoid First() { Added(); }\n\tvoid Second() { Added(); }\n}\n";
+        let edited = "void Added() {}\nclass Example\n{\n\tvoid First() { Added(); }\n\tvoid Second() { Added(); }\n}\n";
+        let original_analysis = file_index_for_source(original);
+        let original_projection = semantic_scope_delimiters_for_analysis_incremental(
+            original,
+            &original_analysis,
+            ExternalIndexes::new(None, None),
+            &BTreeMap::new(),
+            true,
+            DelimiterProjectionCacheContext::new(1, 7, None),
+            None,
+        )
+        .expect("original delimiter projection");
+        let edited_analysis = file_index_for_source(edited);
+        let edited_projection = semantic_scope_delimiters_for_analysis_incremental(
+            edited,
+            &edited_analysis,
+            ExternalIndexes::new(None, None),
+            &BTreeMap::new(),
+            true,
+            DelimiterProjectionCacheContext::new(2, 7, original_projection.owner_cache.as_ref()),
+            None,
+        )
+        .expect("edited delimiter projection");
+
+        assert_eq!(edited_projection.dynamic_owners_reused, 0);
+        assert_eq!(edited_projection.dynamic_owners_invalidated, 2);
+        assert_eq!(edited_projection.dynamic_owners_recomputed, 2);
+        assert_eq!(edited_projection.dynamic_owner_resolver_calls, 2);
+    }
+
+    #[test]
+    fn declaration_reordering_invalidates_unchanged_callable_owners() {
+        let original = "void Alpha() {}\nvoid Beta() {}\nclass Example\n{\n\tvoid First() { Alpha(); }\n\tvoid Second() { Beta(); }\n}\n";
+        let edited = "void Beta() {}\nvoid Alpha() {}\nclass Example\n{\n\tvoid First() { Alpha(); }\n\tvoid Second() { Beta(); }\n}\n";
+        let original_analysis = file_index_for_source(original);
+        let original_projection = semantic_scope_delimiters_for_analysis_incremental(
+            original,
+            &original_analysis,
+            ExternalIndexes::new(None, None),
+            &BTreeMap::new(),
+            true,
+            DelimiterProjectionCacheContext::new(1, 7, None),
+            None,
+        )
+        .expect("original delimiter projection");
+        let edited_analysis = file_index_for_source(edited);
+        let edited_projection = semantic_scope_delimiters_for_analysis_incremental(
+            edited,
+            &edited_analysis,
+            ExternalIndexes::new(None, None),
+            &BTreeMap::new(),
+            true,
+            DelimiterProjectionCacheContext::new(2, 7, original_projection.owner_cache.as_ref()),
+            None,
+        )
+        .expect("edited delimiter projection");
+
+        assert_eq!(edited_projection.dynamic_owners_reused, 0);
+        assert_eq!(edited_projection.dynamic_owners_invalidated, 2);
+        assert_eq!(edited_projection.dynamic_owners_recomputed, 2);
+        assert_eq!(edited_projection.dynamic_owner_resolver_calls, 2);
+    }
+
+    #[test]
+    fn duplicate_callable_identities_are_never_reused() {
+        let original = "void Known() {}\nclass Example { void Run() { Known(); } }\nclass Example { void Run() { Missing(); } }\n";
+        let edited = "void Known() {}\nclass Example { void Run() { Missing(); } }\nclass Example { void Run() { Known(); } }\n";
+        let original_analysis = file_index_for_source(original);
+        let original_projection = semantic_scope_delimiters_for_analysis_incremental(
+            original,
+            &original_analysis,
+            ExternalIndexes::new(None, None),
+            &BTreeMap::new(),
+            true,
+            DelimiterProjectionCacheContext::new(1, 7, None),
+            None,
+        )
+        .expect("original delimiter projection");
+        let edited_analysis = file_index_for_source(edited);
+        let edited_projection = semantic_scope_delimiters_for_analysis_incremental(
+            edited,
+            &edited_analysis,
+            ExternalIndexes::new(None, None),
+            &BTreeMap::new(),
+            true,
+            DelimiterProjectionCacheContext::new(2, 7, original_projection.owner_cache.as_ref()),
+            None,
+        )
+        .expect("edited delimiter projection");
+
+        assert_eq!(edited_projection.dynamic_owners_reused, 0);
+        assert_eq!(edited_projection.dynamic_owners_invalidated, 2);
+        assert_eq!(edited_projection.dynamic_owners_recomputed, 2);
+    }
+
+    #[test]
+    fn external_generation_changes_invalidate_all_cached_callable_owners() {
+        let source =
+            "void Known() {}\nclass Example\n{\n\tvoid First() { Known(); }\n\tvoid Second() { Known(); }\n}\n";
+        let analysis = file_index_for_source(source);
+        let original_projection = semantic_scope_delimiters_for_analysis_incremental(
+            source,
+            &analysis,
+            ExternalIndexes::new(None, None),
+            &BTreeMap::new(),
+            true,
+            DelimiterProjectionCacheContext::new(1, 7, None),
+            None,
+        )
+        .expect("original delimiter projection");
+        let next_projection = semantic_scope_delimiters_for_analysis_incremental(
+            source,
+            &analysis,
+            ExternalIndexes::new(None, None),
+            &BTreeMap::new(),
+            true,
+            DelimiterProjectionCacheContext::new(2, 8, original_projection.owner_cache.as_ref()),
+            None,
+        )
+        .expect("next delimiter projection");
+
+        assert_eq!(next_projection.dynamic_owners_reused, 0);
+        assert_eq!(next_projection.dynamic_owners_invalidated, 2);
+        assert_eq!(next_projection.dynamic_owners_recomputed, 2);
+        assert_eq!(next_projection.dynamic_owner_resolver_calls, 2);
     }
 }

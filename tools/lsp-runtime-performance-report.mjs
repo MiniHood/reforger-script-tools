@@ -181,6 +181,7 @@ function renderReport(input) {
   const cancellation = summarizeCancellation(records);
   const richIdentity = summarizeRichIdentity(records);
   const selfSaveRichReuse = summarizeSelfSaveRichReuse(records);
+  const delimiterOwnerReuse = summarizeDelimiterOwnerReuse(records);
   const captureFields = summarizeCaptureFields(records);
   const externalCache = summarizeExternalCache(records);
 
@@ -202,6 +203,9 @@ function renderReport(input) {
   lines.push(`- Self-save rich projections reused: ${selfSaveRichReuse.reusedCount}`);
   lines.push(`- Self-save in-flight projections retargeted: ${selfSaveRichReuse.retargetedCount}`);
   lines.push(`- Reused rich elapsed-time reference: ${formatMs(selfSaveRichReuse.referenceElapsedMs)}`);
+  lines.push(`- Delimiter owners reused: ${delimiterOwnerReuse.reused}`);
+  lines.push(`- Delimiter owners invalidated: ${delimiterOwnerReuse.invalidated}`);
+  lines.push(`- Delimiter owners recomputed: ${delimiterOwnerReuse.recomputed}`);
   lines.push(`- Stale/skipped rich semantic-token records: ${summary.staleRichCount}`);
   lines.push(`- Cancelled rich semantic-token records: ${summary.cancelledRichCount}`);
   lines.push(`- Foreground responses with declared query quality: ${queryQuality.declared} / ${queryQuality.records}`);
@@ -282,6 +286,25 @@ function renderReport(input) {
   lines.push(`- Rich stale/skipped total: ${formatMs(summary.staleRichMs)}`);
   lines.push(`- Rich cancelled total: ${formatMs(summary.cancelledRichMs)}`);
   lines.push(`- Fast semantic-token request total: ${formatMs(summary.fastSemanticMs)}`);
+  lines.push("");
+  lines.push("## Incremental Delimiter Projection");
+  lines.push("");
+  lines.push("Counts cover resolver-dependent delimiter owners only. Reused owners retain proof from an exact stable callable region; ranges still come from the current parse. Invalidated and recomputed counts remain separate because removed owners can be invalidated without a replacement.");
+  lines.push("");
+  if (delimiterOwnerReuse.rows.length === 0) {
+    lines.push("No incremental delimiter-owner telemetry was present in this capture.");
+  } else {
+    table(lines, ["File", "Revision", "External generation", "Reused", "Invalidated", "Recomputed", "Resolver calls", "Delimiter elapsed"], delimiterOwnerReuse.rows.map((row) => [
+      row.fileName || "<none>",
+      row.revision || "<missing>",
+      row.externalGeneration ?? "<missing>",
+      row.reused,
+      row.invalidated,
+      row.recomputed,
+      row.resolverCalls ?? "<missing>",
+      row.delimiterMs === undefined ? "<missing>" : formatMs(row.delimiterMs),
+    ]));
+  }
   lines.push("");
   lines.push("## Self-Save Rich Projection Reuse");
   lines.push("");
@@ -583,6 +606,33 @@ function summarizeSelfSaveRichReuse(records) {
       (total, row) => total + (row.referenceElapsedMs ?? 0),
       0,
     ),
+  };
+}
+
+function summarizeDelimiterOwnerReuse(records) {
+  const rows = records
+    .filter((record) =>
+      record.operation === "semanticTokensRich ready"
+      && (
+        record.fields.delimiter_owners_reused !== undefined
+        || record.fields.delimiter_owners_invalidated !== undefined
+        || record.fields.delimiter_owners_recomputed !== undefined
+      ))
+    .map((record) => ({
+      fileName: record.fileName,
+      revision: record.revision,
+      externalGeneration: numberField(record.fields, "external_generation"),
+      reused: numberField(record.fields, "delimiter_owners_reused") ?? 0,
+      invalidated: numberField(record.fields, "delimiter_owners_invalidated") ?? 0,
+      recomputed: numberField(record.fields, "delimiter_owners_recomputed") ?? 0,
+      resolverCalls: numberField(record.fields, "delimiter_resolver_calls"),
+      delimiterMs: numberField(record.fields, "delimiter_ms"),
+    }));
+  return {
+    rows,
+    reused: rows.reduce((total, row) => total + row.reused, 0),
+    invalidated: rows.reduce((total, row) => total + row.invalidated, 0),
+    recomputed: rows.reduce((total, row) => total + row.recomputed, 0),
   };
 }
 
@@ -928,6 +978,9 @@ function compactDetail(record) {
     "declaration_symbols_ms",
     "delimiter_ms",
     "delimiter_resolver_calls",
+    "delimiter_owners_reused",
+    "delimiter_owners_invalidated",
+    "delimiter_owners_recomputed",
     "reason",
   ]) {
     if (record.fields[key] !== undefined) {

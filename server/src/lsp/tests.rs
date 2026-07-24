@@ -45,6 +45,7 @@ fn rich_semantic_tokens_job(
             workspace_exclusion: None,
         },
         bracket_coloring: BracketColoringMode::Semantic,
+        previous_delimiter_owner_cache: None,
     }
 }
 

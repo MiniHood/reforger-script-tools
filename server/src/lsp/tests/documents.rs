@@ -23,7 +23,7 @@ fn duplicate_did_open_rejects_old_rich_semantic_tokens() {
         .unwrap();
 
     let external_generation = server.external_index.status_summary().generation;
-    let (task, old_revision, projection, cancel) = server
+    let (task, old_revision, projection, delimiter_owner_cache, cancel) = server
         .document_runtime
         .test_prepare_rich_event(uri, external_generation, false);
 
@@ -60,6 +60,7 @@ fn duplicate_did_open_rejects_old_rich_semantic_tokens() {
             external_status: "missing",
             workspace_excludes_document: false,
             projection,
+            delimiter_owner_cache,
             elapsed_ms: 0,
         })
         .unwrap();

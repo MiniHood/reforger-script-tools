@@ -14,9 +14,9 @@ use serde_json::{json, Value};
 use std::cell::Cell;
 #[cfg(test)]
 use std::collections::BTreeMap;
-use std::io::{self, BufReader, Write};
 #[cfg(test)]
 use std::io::Read;
+use std::io::{self, BufReader, Write};
 use std::path::PathBuf;
 use std::sync::mpsc;
 #[cfg(test)]
@@ -123,10 +123,9 @@ pub use semantic_tokens::{
     LspSemanticTokenTimings, SemanticTokenDebug,
 };
 use semantic_tokens::{
-    generic_angle_offsets_for_delimiters,
-    lexical_semantic_tokens_for_source_with_bracket_coloring,
-    semantic_tokens_for_cached_analysis_with_external_indexes_cancelled, LspSemanticTokensFull,
-    SEMANTIC_TOKEN_MODIFIERS, SEMANTIC_TOKEN_TYPES,
+    generic_angle_offsets_for_delimiters, lexical_semantic_tokens_for_source_with_bracket_coloring,
+    semantic_tokens_for_cached_analysis_with_external_indexes_incremental_cancelled,
+    LspSemanticTokensFull, SEMANTIC_TOKEN_MODIFIERS, SEMANTIC_TOKEN_TYPES,
 };
 use signature_help::{
     signature_help_debug_markdown, signature_help_report_for_cached_analysis_with_external_indexes,

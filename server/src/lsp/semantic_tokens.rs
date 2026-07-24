@@ -110,6 +110,9 @@ pub struct LspSemanticTokenTimings {
     pub decode_debug_ms: u128,
     pub identifier_resolver_calls: usize,
     pub delimiter_resolver_calls: usize,
+    pub delimiter_owners_reused: usize,
+    pub delimiter_owners_invalidated: usize,
+    pub delimiter_owners_recomputed: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -261,6 +264,7 @@ fn semantic_tokens_report_for_cached_analysis_mode(
         mode,
         bracket_coloring,
         None,
+        None,
     )
     .expect("semantic token reports are not cancellable");
     let decode_start = Instant::now();
@@ -332,30 +336,46 @@ pub(crate) fn semantic_tokens_for_cached_analysis_with_external_indexes_and_brac
         SemanticTokenMode::Rich,
         bracket_coloring,
         None,
+        None,
     )
     .expect("rich semantic token projection is not cancellable through this entrypoint");
     encode_projection(source, analysis, raw_projection, None)
         .expect("rich semantic token projection is not cancellable through this entrypoint")
 }
 
-pub(crate) fn semantic_tokens_for_cached_analysis_with_external_indexes_cancelled(
+pub(crate) struct IncrementalSemanticTokenProjection {
+    pub(crate) projection: LspSemanticTokenProjection,
+    pub(crate) delimiter_owner_cache: super::scope_delimiters::DelimiterOwnerProjectionCache,
+}
+
+pub(crate) fn semantic_tokens_for_cached_analysis_with_external_indexes_incremental_cancelled(
     source: &str,
     analysis: &FileIndexAnalysis,
     workspace_index: Option<&SymbolIndex>,
     game_data_index: Option<&SymbolIndex>,
     bracket_coloring: BracketColoringMode,
+    delimiter_cache_context: super::scope_delimiters::DelimiterProjectionCacheContext<'_>,
     should_cancel: &dyn Fn() -> bool,
-) -> Option<LspSemanticTokenProjection> {
-    let raw_projection = semantic_raw_tokens(
+) -> Option<IncrementalSemanticTokenProjection> {
+    let mut raw_projection = semantic_raw_tokens(
         source,
         analysis,
         workspace_index,
         game_data_index,
         SemanticTokenMode::Rich,
         bracket_coloring,
+        Some(delimiter_cache_context),
         Some(should_cancel),
     )?;
-    encode_projection(source, analysis, raw_projection, Some(should_cancel))
+    let delimiter_owner_cache = raw_projection
+        .delimiter_owner_cache
+        .take()
+        .expect("incremental rich projection produces a delimiter-owner cache");
+    let projection = encode_projection(source, analysis, raw_projection, Some(should_cancel))?;
+    Some(IncrementalSemanticTokenProjection {
+        projection,
+        delimiter_owner_cache,
+    })
 }
 
 pub(crate) fn fast_semantic_tokens_for_cached_analysis(
@@ -369,6 +389,7 @@ pub(crate) fn fast_semantic_tokens_for_cached_analysis(
         None,
         SemanticTokenMode::Fast,
         BracketColoringMode::Semantic,
+        None,
         None,
     )
     .expect("fast semantic token projection is not cancellable");
@@ -422,10 +443,11 @@ struct RawSemanticToken {
     priority: u8,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone)]
 struct RawSemanticTokenProjection {
     tokens: Vec<RawSemanticToken>,
     timings: LspSemanticTokenTimings,
+    delimiter_owner_cache: Option<super::scope_delimiters::DelimiterOwnerProjectionCache>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -449,6 +471,7 @@ fn semantic_raw_tokens(
     game_data_index: Option<&SymbolIndex>,
     mode: SemanticTokenMode,
     bracket_coloring: BracketColoringMode,
+    delimiter_request: Option<super::scope_delimiters::DelimiterProjectionCacheContext<'_>>,
     should_cancel: Option<&dyn Fn() -> bool>,
 ) -> Option<RawSemanticTokenProjection> {
     let lex_elapsed = Duration::default();
@@ -656,16 +679,34 @@ fn semantic_raw_tokens(
     let delimiter_overlay_start = Instant::now();
     // Reuse selected kinds resolved earlier in this same immutable snapshot.
     // Dynamic delimiter proof otherwise repeats the identical resolver query.
-    let delimiter_projection = super::scope_delimiters::semantic_scope_delimiters_for_analysis(
-        source,
-        analysis,
-        ExternalIndexes::new(workspace_index, game_data_index),
-        &resolved_identifier_kinds,
-        mode == SemanticTokenMode::Rich,
-        should_cancel,
-    )?;
-    let delimiter_resolver_calls = delimiter_projection.dynamic_owner_resolver_calls;
-    let delimiters = delimiter_projection.delimiters;
+    let delimiter_projection = if let Some(request) = delimiter_request {
+        super::scope_delimiters::semantic_scope_delimiters_for_analysis_incremental(
+            source,
+            analysis,
+            ExternalIndexes::new(workspace_index, game_data_index),
+            &resolved_identifier_kinds,
+            mode == SemanticTokenMode::Rich,
+            request,
+            should_cancel,
+        )?
+    } else {
+        super::scope_delimiters::semantic_scope_delimiters_for_analysis(
+            source,
+            analysis,
+            ExternalIndexes::new(workspace_index, game_data_index),
+            &resolved_identifier_kinds,
+            mode == SemanticTokenMode::Rich,
+            should_cancel,
+        )?
+    };
+    let super::scope_delimiters::ScopeDelimiterProjection {
+        delimiters,
+        dynamic_owner_resolver_calls: delimiter_resolver_calls,
+        dynamic_owners_reused: delimiter_owners_reused,
+        dynamic_owners_invalidated: delimiter_owners_invalidated,
+        dynamic_owners_recomputed: delimiter_owners_recomputed,
+        owner_cache: delimiter_owner_cache,
+    } = delimiter_projection;
     let generic_angle_offsets = generic_angle_offsets_for_delimiters(source, &delimiters);
     let operator_type = semantic_type_index("operator");
     tokens = tokens
@@ -767,7 +808,11 @@ fn semantic_raw_tokens(
             decode_debug_ms: 0,
             identifier_resolver_calls,
             delimiter_resolver_calls,
+            delimiter_owners_reused,
+            delimiter_owners_invalidated,
+            delimiter_owners_recomputed,
         },
+        delimiter_owner_cache,
     })
 }
 
@@ -925,7 +970,11 @@ fn lexical_raw_tokens(
             decode_debug_ms: 0,
             identifier_resolver_calls: 0,
             delimiter_resolver_calls: 0,
+            delimiter_owners_reused: 0,
+            delimiter_owners_invalidated: 0,
+            delimiter_owners_recomputed: 0,
         },
+        delimiter_owner_cache: None,
     })
 }
 

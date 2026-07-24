@@ -133,6 +133,16 @@ overlays, declaration-symbol overlays, and scope-delimiter overlays. It also
 records identifier and delimiter resolver-call counts without source text or
 token payloads, so large-file cost can be attributed without weakening the
 semantic projection.
+Rich workers retain one revision-tagged delimiter-owner cache per open
+document. Resolver-dependent owners are grouped by stable callable identity,
+exact callable source, and the file-local declaration structure that can
+change resolution. A later revision may reuse only groups whose identity and
+source remain exact under the same external-index generation; ranges always
+come from the current parse, so edits that shift an unchanged callable do not
+reuse stale offsets. An intersecting callable edit, a structural declaration
+change, or an external generation change recomputes the affected owners.
+Telemetry reports delimiter owners reused, invalidated, and recomputed beside
+the remaining resolver-call count.
 
 ## Snapshot Rules
 

@@ -1,11 +1,10 @@
 use super::request_router::{RequestCommand, RoutedRequest};
 #[cfg(test)]
-use super::semantic_tokens::{
-    fast_semantic_tokens_for_cached_analysis,
-    semantic_tokens_for_cached_analysis_with_external_indexes,
-    semantic_tokens_for_cached_analysis_with_external_indexes_and_bracket_coloring,
-    LspSemanticTokenProjection,
-};
+use super::scope_delimiters::{DelimiterOwnerProjectionCache, DelimiterProjectionCacheContext};
+#[cfg(test)]
+use super::semantic_tokens::semantic_tokens_for_cached_analysis_with_external_indexes_incremental_cancelled;
+#[cfg(test)]
+use super::semantic_tokens::LspSemanticTokenProjection;
 use super::{
     clear_diagnostics_message, document_symbol_count, document_symbols_from_cached_analysis,
     file_index_for_source_with_timings, file_path_identity, file_uri_path_identity,
@@ -146,6 +145,7 @@ impl DocumentRuntime {
         AnalysisTask,
         u64,
         LspSemanticTokenProjection,
+        DelimiterOwnerProjectionCache,
         Arc<AtomicBool>,
     ) {
         let task = self.test_admit_task(uri, TaskClass::Rich);
@@ -157,10 +157,26 @@ impl DocumentRuntime {
             workspace_excludes_document,
             cancel.clone(),
         );
+        let incremental =
+            semantic_tokens_for_cached_analysis_with_external_indexes_incremental_cancelled(
+                &document.text,
+                document.analysis(),
+                None,
+                None,
+                self.bracket_coloring,
+                DelimiterProjectionCacheContext::new(
+                    document.revision,
+                    external_generation,
+                    document.delimiter_owner_cache().as_deref(),
+                ),
+                &|| false,
+            )
+            .expect("test rich projection");
         (
             task,
             document.revision,
-            fast_semantic_tokens_for_cached_analysis(&document.text, document.analysis()),
+            incremental.projection,
+            incremental.delimiter_owner_cache,
             cancel,
         )
     }
@@ -912,6 +928,7 @@ impl DocumentRuntime {
             external_status,
             workspace_excludes_document,
             projection,
+            mut delimiter_owner_cache,
             elapsed_ms,
         } = event
         else {
@@ -949,6 +966,14 @@ impl DocumentRuntime {
         let token_count = projection.token_count;
         let parse_diagnostics = projection.parse_diagnostics;
         let timings = projection.timings.clone();
+        if publication.external_generation != external_generation {
+            let _ = delimiter_owner_cache.rebind_external_generation(
+                revision,
+                external_generation,
+                publication.external_generation,
+            );
+        }
+        let _ = document.install_delimiter_owner_cache(revision, delimiter_owner_cache);
         document.semantic_tokens.set_rich(
             revision,
             publication.external_generation,
@@ -957,12 +982,14 @@ impl DocumentRuntime {
             projection,
         );
         let mut effects = vec![RuntimeEffect::Log(format!(
-            "semanticTokensRich ready uri={} revision={} external_generation={} task_external_generation={} tokens={} external_index_status={} workspace_excludes_document={} parse_diagnostics={} lex_ms={} token_loop_ms={} resolver_ms={} resolver_calls={} type_detail_ms={} declaration_symbols_ms={} delimiter_ms={} delimiter_resolver_calls={} encode_ms={} elapsed_ms={}",
+            "semanticTokensRich ready uri={} revision={} external_generation={} task_external_generation={} tokens={} external_index_status={} workspace_excludes_document={} parse_diagnostics={} lex_ms={} token_loop_ms={} resolver_ms={} resolver_calls={} type_detail_ms={} declaration_symbols_ms={} delimiter_ms={} delimiter_resolver_calls={} delimiter_owners_reused={} delimiter_owners_invalidated={} delimiter_owners_recomputed={} encode_ms={} elapsed_ms={}",
             uri, revision, publication.external_generation, external_generation, token_count, external_status, workspace_excludes_document, parse_diagnostics,
             timings.lex_ms, timings.token_loop_ms, timings.resolver_ms,
             timings.identifier_resolver_calls, timings.type_detail_overlay_ms,
             timings.symbol_declaration_overlay_ms, timings.delimiter_overlay_ms,
-            timings.delimiter_resolver_calls, timings.encode_ms, elapsed_ms
+            timings.delimiter_resolver_calls, timings.delimiter_owners_reused,
+            timings.delimiter_owners_invalidated, timings.delimiter_owners_recomputed,
+            timings.encode_ms, elapsed_ms
         ))];
         if publication.self_save_retargeted {
             effects.push(RuntimeEffect::Log(format!(
@@ -1071,6 +1098,10 @@ impl DocumentRuntime {
                 })
                 .flatten();
             if let Some(self_save_preservation) = self_save_preservation {
+                let _ = document.rebind_delimiter_owner_cache_external_generation(
+                    previous_generation,
+                    generation,
+                );
                 preserved_documents += 1;
                 effects.push(RuntimeEffect::Log(match self_save_preservation {
                     super::open_documents::SelfSaveRichPreservation::Ready {
@@ -1126,6 +1157,7 @@ impl DocumentRuntime {
             return Vec::new();
         }
         let analysis = document.analysis().clone();
+        let previous_delimiter_owner_cache = document.delimiter_owner_cache();
         let snapshot = self
             .runtime
             .latest(uri)
@@ -1174,14 +1206,21 @@ impl DocumentRuntime {
             #[cfg(test)]
             {
                 let workspace = external_indexes.workspace_for_projection();
-                let projection =
-                    semantic_tokens_for_cached_analysis_with_external_indexes_and_bracket_coloring(
+                let incremental =
+                    semantic_tokens_for_cached_analysis_with_external_indexes_incremental_cancelled(
                         task.snapshot().text(),
                         &analysis,
                         workspace.as_deref(),
                         external_indexes.game_data.as_deref(),
                         self.bracket_coloring,
-                    );
+                        DelimiterProjectionCacheContext::new(
+                            revision,
+                            generation,
+                            previous_delimiter_owner_cache.as_deref(),
+                        ),
+                        &|| false,
+                    )
+                    .expect("synchronous test rich projection");
                 return self
                     .interpret_rich_ready_event(
                         ServerEvent::RichSemanticTokensReady {
@@ -1192,7 +1231,8 @@ impl DocumentRuntime {
                             external_status: external_indexes.status,
                             workspace_excludes_document: external_indexes
                                 .workspace_excludes_document(),
-                            projection,
+                            projection: incremental.projection,
+                            delimiter_owner_cache: incremental.delimiter_owner_cache,
                             elapsed_ms: start.elapsed().as_millis(),
                         },
                         generation,
@@ -1211,6 +1251,7 @@ impl DocumentRuntime {
             analysis,
             external_snapshot: external_indexes,
             bracket_coloring: self.bracket_coloring,
+            previous_delimiter_owner_cache,
         });
         Vec::new()
     }
@@ -1468,10 +1509,10 @@ pub(super) struct DeferredSemanticTokenRequest {
 #[cfg(test)]
 mod tests {
     use super::{
-        semantic_tokens_for_cached_analysis_with_external_indexes, AdmissionDisposition,
-        BracketColoringMode, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
-        DocumentRuntime, ExternalIndexSnapshot, OpenDocument, RpcMessage, RuntimeEffect,
-        ServerEvent, TaskClass,
+        semantic_tokens_for_cached_analysis_with_external_indexes_incremental_cancelled,
+        AdmissionDisposition, BracketColoringMode, DelimiterProjectionCacheContext,
+        DidChangeTextDocumentParams, DidOpenTextDocumentParams, DocumentRuntime,
+        ExternalIndexSnapshot, OpenDocument, RpcMessage, RuntimeEffect, ServerEvent, TaskClass,
     };
     use crate::analysis_runtime::UpsertOutcome;
     use crate::lsp::file_uri_for_path;
@@ -1528,14 +1569,18 @@ mod tests {
             AdmissionDisposition::Enqueued { .. } => runtime.runtime.take_next().unwrap(),
             other => panic!("unexpected admission disposition: {other:?}"),
         };
-        let projection = {
+        let incremental = {
             let document = runtime.documents.get(uri).unwrap();
-            semantic_tokens_for_cached_analysis_with_external_indexes(
+            semantic_tokens_for_cached_analysis_with_external_indexes_incremental_cancelled(
                 &document.text,
                 document.analysis(),
                 None,
                 None,
+                BracketColoringMode::Semantic,
+                DelimiterProjectionCacheContext::new(document.revision, 0, None),
+                &|| false,
             )
+            .expect("test rich projection")
         };
         let effects = runtime
             .interpret_rich_ready_event(
@@ -1546,7 +1591,8 @@ mod tests {
                     external_generation: 0,
                     external_status: "missing",
                     workspace_excludes_document: false,
-                    projection,
+                    projection: incremental.projection,
+                    delimiter_owner_cache: incremental.delimiter_owner_cache,
                     elapsed_ms: 0,
                 },
                 0,
@@ -1708,6 +1754,80 @@ mod tests {
     }
 
     #[test]
+    fn changed_document_reuses_unaffected_delimiter_owner_regions() {
+        let mut runtime = DocumentRuntime::new(None);
+        let uri = "file:///delimiter-incremental.c".to_string();
+        let original = "void Known() {}\nclass Example\n{\n\tvoid First() { Known(); }\n\tvoid Second() { Known(); }\n}\n";
+        let edited = "void Known() {}\nclass Example\n{\n\tvoid First() { Known(); }\n\tvoid Second() { int value = 1; Known(); }\n}\n";
+        runtime
+            .open_document(
+                DidOpenTextDocumentParams {
+                    text_document: super::super::TextDocumentItem {
+                        uri: uri.clone(),
+                        version: 1,
+                        text: original.to_string(),
+                    },
+                },
+                0,
+            )
+            .expect("open succeeds");
+
+        let initial = runtime.select_semantic_tokens(&uri, 0);
+        let (_, revision, generation) = initial.rich_work.expect("initial rich work");
+        runtime.admit_rich_semantic_tokens(
+            &uri,
+            revision,
+            ExternalIndexSnapshot {
+                status: "missing",
+                workspace: None,
+                game_data: None,
+                workspace_exclusion: None,
+            },
+            generation,
+        );
+
+        runtime
+            .change_document(
+                DidChangeTextDocumentParams {
+                    text_document: super::super::VersionedTextDocumentIdentifier {
+                        uri: uri.clone(),
+                        version: 2,
+                    },
+                    content_changes: vec![super::super::TextDocumentContentChangeEvent {
+                        range: None,
+                        range_length: None,
+                        text: edited.to_string(),
+                    }],
+                },
+                0,
+                0,
+                0,
+            )
+            .expect("change succeeds");
+        let changed = runtime.select_semantic_tokens(&uri, 0);
+        let (_, revision, generation) = changed.rich_work.expect("changed rich work");
+        let effects = runtime.admit_rich_semantic_tokens(
+            &uri,
+            revision,
+            ExternalIndexSnapshot {
+                status: "missing",
+                workspace: None,
+                game_data: None,
+                workspace_exclusion: None,
+            },
+            generation,
+        );
+
+        assert!(effects.iter().any(|effect| matches!(
+            effect,
+            RuntimeEffect::Log(message)
+                if message.contains("delimiter_owners_reused=1")
+                    && message.contains("delimiter_owners_invalidated=1")
+                    && message.contains("delimiter_owners_recomputed=1")
+        )));
+    }
+
+    #[test]
     fn self_save_carries_eligible_rich_projection_and_invalidates_other_documents() {
         let mut runtime = DocumentRuntime::new(None);
         let saved_uri = "file:///saved.c".to_string();
@@ -1777,7 +1897,8 @@ mod tests {
             .expect("open succeeds");
         runtime.last_semantic_external_generation = 1;
         runtime.select_semantic_tokens(&uri, 1);
-        let (task, revision, projection, cancel) = runtime.test_prepare_rich_event(&uri, 1, true);
+        let (task, revision, projection, delimiter_owner_cache, cancel) =
+            runtime.test_prepare_rich_event(&uri, 1, true);
 
         let effects = runtime.observe_semantic_external_generation(
             2,
@@ -1807,6 +1928,7 @@ mod tests {
                     external_status: "ready",
                     workspace_excludes_document: true,
                     projection,
+                    delimiter_owner_cache,
                     elapsed_ms: 182,
                 },
                 2,
