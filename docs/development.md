@@ -47,6 +47,17 @@ between iterations. The optional latency budget makes the command fail for a
 local regression loop; it is deliberately supplied by the caller rather than
 treated as a portable machine-independent threshold.
 
+For repeatable game-data cache startup measurements, use:
+
+```powershell
+node tools/index-cache-baseline.mjs --out <report-path>
+```
+
+The report compares warm-cache loading with a direct source rebuild in both
+development and release profiles. It separates file read, binary decode, and
+runtime-index construction time, and verifies that file, public-symbol,
+parameter, local-variable-pruning, and lookup-map counts remain consistent.
+
 For a live editor capture, generate the runtime report from the local
 language-server log:
 

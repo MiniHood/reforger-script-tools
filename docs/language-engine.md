@@ -194,6 +194,15 @@ uses the layer snapshot it captured, even if background indexing publishes a
 newer generation while the request is running. Do not introduce competing
 revision tables or mutable shared feature state.
 
+The game-data disk cache stores the validated canonical symbol facts, not a
+second query model. A warm load borrows entries from the cache string table
+while decoding, projects those facts directly into the immutable runtime
+index, and then builds the authoritative lookup maps. Large, independent
+lookup-map families may be built concurrently; their contents and per-key
+symbol order must remain identical to sequential construction. This preserves
+all query features while avoiding an intermediate `FileContribution` graph and
+duplicate string ownership during startup.
+
 ## Boundaries and Evidence
 
 The engine owns language behavior, not VS Code UI, extension settings, or

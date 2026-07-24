@@ -111,6 +111,135 @@ pub struct SymbolIndex {
     lookup_map_rebuild_count: usize,
 }
 
+#[derive(Debug, Default, PartialEq, Eq)]
+struct GeneralLookupMaps {
+    by_name: BTreeMap<String, Vec<GlobalSymbolId>>,
+    top_level_by_name: BTreeMap<String, Vec<GlobalSymbolId>>,
+    top_level_by_folded_name: BTreeMap<String, Vec<GlobalSymbolId>>,
+    by_kind: BTreeMap<SymbolKind, Vec<GlobalSymbolId>>,
+    children: BTreeMap<GlobalSymbolId, Vec<GlobalSymbolId>>,
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct KindNameLookupMaps {
+    classes_by_name: BTreeMap<String, Vec<GlobalSymbolId>>,
+    typedefs_by_name: BTreeMap<String, Vec<GlobalSymbolId>>,
+    functions_by_name: BTreeMap<String, Vec<GlobalSymbolId>>,
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct KindAndOwnerLookupMaps {
+    kind_names: KindNameLookupMaps,
+    members_by_owner: BTreeMap<String, Vec<GlobalSymbolId>>,
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct OwnerNameLookupMaps {
+    methods_by_owner_name: BTreeMap<(String, String), Vec<GlobalSymbolId>>,
+    fields_by_owner_name: BTreeMap<(String, String), Vec<GlobalSymbolId>>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct LookupMaps {
+    general: GeneralLookupMaps,
+    kind_and_owner: KindAndOwnerLookupMaps,
+    owner_name: OwnerNameLookupMaps,
+}
+
+impl LookupMaps {
+    fn build(files: &[IndexedFile], symbols: &[IndexedSymbol]) -> Self {
+        // Below this size, thread startup costs more than the independent map
+        // scans save. Machines with fewer than seven workers use three coarse
+        // families to avoid oversubscription; wider machines split all seven
+        // independent families immediately.
+        const PARALLEL_REBUILD_MIN_SYMBOLS: usize = 10_000;
+        let parallelism = std::thread::available_parallelism()
+            .map(|parallelism| parallelism.get())
+            .unwrap_or(1);
+        if symbols.len() < PARALLEL_REBUILD_MIN_SYMBOLS || parallelism < 3 {
+            return Self::build_sequential(files, symbols);
+        }
+        Self::build_parallel(files, symbols, parallelism)
+    }
+
+    fn build_sequential(files: &[IndexedFile], symbols: &[IndexedSymbol]) -> Self {
+        Self {
+            general: build_general_lookup_maps(symbols),
+            kind_and_owner: build_kind_and_owner_lookup_maps(files, symbols),
+            owner_name: build_owner_name_lookup_maps(files, symbols),
+        }
+    }
+
+    fn build_parallel(
+        files: &[IndexedFile],
+        symbols: &[IndexedSymbol],
+        parallelism: usize,
+    ) -> Self {
+        if parallelism >= 7 {
+            return std::thread::scope(|scope| {
+                let by_name = scope.spawn(|| build_name_lookup_map(symbols));
+                let top_level = scope.spawn(|| build_top_level_lookup_maps(symbols));
+                let structure = scope.spawn(|| build_structure_lookup_maps(symbols));
+                let kind_names = scope.spawn(|| build_kind_name_lookup_maps(symbols));
+                let members = scope.spawn(|| build_member_owner_lookup_map(files, symbols));
+                let methods = scope.spawn(|| build_method_owner_name_lookup_map(files, symbols));
+                let fields = scope.spawn(|| build_field_owner_name_lookup_map(files, symbols));
+                let (top_level_by_name, top_level_by_folded_name) = top_level
+                    .join()
+                    .expect("top-level lookup-map construction should not panic");
+                let (by_kind, children) = structure
+                    .join()
+                    .expect("structural lookup-map construction should not panic");
+                let kind_names = kind_names
+                    .join()
+                    .expect("kind/name lookup-map construction should not panic");
+                Self {
+                    general: GeneralLookupMaps {
+                        by_name: by_name
+                            .join()
+                            .expect("name lookup-map construction should not panic"),
+                        top_level_by_name,
+                        top_level_by_folded_name,
+                        by_kind,
+                        children,
+                    },
+                    kind_and_owner: KindAndOwnerLookupMaps {
+                        kind_names,
+                        members_by_owner: members
+                            .join()
+                            .expect("member/owner lookup-map construction should not panic"),
+                    },
+                    owner_name: OwnerNameLookupMaps {
+                        methods_by_owner_name: methods
+                            .join()
+                            .expect("method owner/name lookup-map construction should not panic"),
+                        fields_by_owner_name: fields
+                            .join()
+                            .expect("field owner/name lookup-map construction should not panic"),
+                    },
+                }
+            });
+        }
+
+        std::thread::scope(|scope| {
+            let general = scope.spawn(|| build_general_lookup_maps(symbols));
+            let kind_and_owner = scope.spawn(|| build_kind_and_owner_lookup_maps(files, symbols));
+            let owner_name = scope.spawn(|| build_owner_name_lookup_maps(files, symbols));
+            Self {
+                general: general
+                    .join()
+                    .expect("general lookup-map construction should not panic"),
+                kind_and_owner: kind_and_owner
+                    .join()
+                    .expect("kind/owner lookup-map construction should not panic"),
+                owner_name: owner_name
+                    .join()
+                    .expect("owner/name lookup-map construction should not panic"),
+            }
+        })
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 struct SymbolIndexSnapshot {
     files: Vec<IndexedFile>,
@@ -234,7 +363,10 @@ impl SymbolIndex {
     ) -> Self {
         let mut index = Self::default();
         for catalog in catalogs {
-            index.add_catalog(catalog);
+            index.append_catalog(catalog);
+        }
+        if !index.files.is_empty() {
+            index.rebuild_lookup_maps();
         }
         index
     }
@@ -294,6 +426,12 @@ impl SymbolIndex {
     }
 
     pub fn add_catalog<'source>(&mut self, catalog: &SymbolCatalog<'source>) -> SourceFileId {
+        let file_id = self.append_catalog(catalog);
+        self.rebuild_lookup_maps();
+        file_id
+    }
+
+    fn append_catalog<'source>(&mut self, catalog: &SymbolCatalog<'source>) -> SourceFileId {
         let file_id = SourceFileId(self.files.len());
         let symbol_start = self.symbols.len();
 
@@ -369,7 +507,6 @@ impl SymbolIndex {
                 callable_form: record.callable_form,
             };
 
-            self.index_symbol(catalog, &symbol);
             self.symbols.push(symbol);
         }
 
@@ -729,87 +866,10 @@ impl SymbolIndex {
         });
 
         for declaration in symbols {
-            let PublicSymbol {
-                id,
-                parent,
-                kind,
-                name,
-                detail,
-                span,
-                selection_span,
-                modifiers,
-                attributes,
-                doc_comments,
-                conditional_context,
-                callable_form,
-                ..
-            } = declaration;
-            let id = GlobalSymbolId {
+            self.symbols.push(indexed_symbol_from_owned_public_symbol(
                 file_id,
-                symbol_id: SymbolId(id.0 as usize),
-            };
-            let parent = parent.map(|parent| GlobalSymbolId {
-                file_id,
-                symbol_id: SymbolId(parent.0 as usize),
-            });
-            let crate::semantic_file::PublicSymbolDetail {
-                type_text,
-                return_type,
-                base_type,
-                default_value,
-                enum_value,
-            } = detail;
-            let (type_text, type_text_span) = owned_public_text(type_text);
-            let (return_type_text, return_type_text_span) = owned_public_text(return_type);
-            let (base_type, base_type_span) = owned_public_text(base_type);
-            let (default_text, default_text_span) = owned_public_text(default_value);
-            let (enum_value_text, enum_value_text_span) = owned_public_text(enum_value);
-            self.symbols.push(IndexedSymbol {
-                id,
-                parent,
-                kind: indexed_symbol_kind(kind),
-                name,
-                span,
-                selection_span,
-                detail: IndexedSymbolDetail {
-                    type_text,
-                    type_text_span,
-                    return_type_text,
-                    return_type_text_span,
-                    base_type,
-                    base_type_span,
-                    default_text,
-                    default_text_span,
-                    enum_value_text,
-                    enum_value_text_span,
-                },
-                attributes: attributes
-                    .into_iter()
-                    .map(|attribute| IndexedAttribute {
-                        name: semantic_attribute_name(&attribute.text).map(str::to_owned),
-                        text: attribute.text,
-                    })
-                    .collect(),
-                modifiers: modifiers.into_iter().map(|value| value.text).collect(),
-                doc_comments: doc_comments
-                    .into_iter()
-                    .map(|comment| IndexedDocComment {
-                        kind: match comment.kind {
-                            SemanticDocCommentKind::Line => DocCommentKind::Line,
-                            SemanticDocCommentKind::Block => DocCommentKind::Block,
-                        },
-                        text: comment.text,
-                    })
-                    .collect(),
-                conditional_context: conditional_context
-                    .into_iter()
-                    .map(|branch| IndexedConditionalBranch {
-                        kind: indexed_conditional_kind(branch.kind),
-                        condition: branch.condition.map(|value| value.text),
-                    })
-                    .collect(),
-                callable_form: callable_form.map(indexed_callable_form),
-            });
+                declaration,
+            ));
         }
 
         file_id
@@ -1251,187 +1311,22 @@ impl SymbolIndex {
         {
             self.lookup_map_rebuild_count += 1;
         }
-        let mut by_name = BTreeMap::<String, Vec<GlobalSymbolId>>::new();
-        let mut top_level_by_name = BTreeMap::<String, Vec<GlobalSymbolId>>::new();
-        let mut top_level_by_folded_name = BTreeMap::<String, Vec<GlobalSymbolId>>::new();
-        let mut by_kind = BTreeMap::<SymbolKind, Vec<GlobalSymbolId>>::new();
-        let mut children = BTreeMap::<GlobalSymbolId, Vec<GlobalSymbolId>>::new();
-        let mut classes_by_name = BTreeMap::<String, Vec<GlobalSymbolId>>::new();
-        let mut typedefs_by_name = BTreeMap::<String, Vec<GlobalSymbolId>>::new();
-        let mut functions_by_name = BTreeMap::<String, Vec<GlobalSymbolId>>::new();
-        let mut methods_by_owner_name = BTreeMap::<(String, String), Vec<GlobalSymbolId>>::new();
-        let mut fields_by_owner_name = BTreeMap::<(String, String), Vec<GlobalSymbolId>>::new();
-        let mut members_by_owner = BTreeMap::<String, Vec<GlobalSymbolId>>::new();
-
-        for symbol in &self.symbols {
-            by_kind.entry(symbol.kind).or_default().push(symbol.id);
-
-            if let Some(parent) = symbol.parent {
-                children.entry(parent).or_default().push(symbol.id);
-            }
-
-            let Some(name) = &symbol.name else {
-                continue;
-            };
-
-            by_name.entry(name.clone()).or_default().push(symbol.id);
-
-            if symbol.parent.is_none() {
-                top_level_by_name
-                    .entry(name.clone())
-                    .or_default()
-                    .push(symbol.id);
-                top_level_by_folded_name
-                    .entry(name.to_ascii_lowercase())
-                    .or_default()
-                    .push(symbol.id);
-            }
-
-            match symbol.kind {
-                SymbolKind::Class => {
-                    classes_by_name
-                        .entry(name.clone())
-                        .or_default()
-                        .push(symbol.id);
-                }
-                SymbolKind::Typedef => {
-                    typedefs_by_name
-                        .entry(name.clone())
-                        .or_default()
-                        .push(symbol.id);
-                }
-                SymbolKind::Function => {
-                    functions_by_name
-                        .entry(name.clone())
-                        .or_default()
-                        .push(symbol.id);
-                }
-                SymbolKind::Method => {
-                    if let Some(owner) = self.parent_class_name(symbol).map(str::to_string) {
-                        methods_by_owner_name
-                            .entry((owner, name.clone()))
-                            .or_default()
-                            .push(symbol.id);
-                    }
-                }
-                _ => {}
-            }
-
-            if is_class_member_kind(symbol.kind) {
-                if let Some(owner) = self.parent_class_name(symbol).map(str::to_string) {
-                    members_by_owner
-                        .entry(owner.clone())
-                        .or_default()
-                        .push(symbol.id);
-
-                    if symbol.kind == SymbolKind::Field {
-                        fields_by_owner_name
-                            .entry((owner, name.clone()))
-                            .or_default()
-                            .push(symbol.id);
-                    }
-                }
-            }
-        }
-
-        self.by_name = by_name;
-        self.top_level_by_name = top_level_by_name;
-        self.top_level_by_folded_name = top_level_by_folded_name;
-        self.by_kind = by_kind;
-        self.children = children;
-        self.classes_by_name = classes_by_name;
-        self.typedefs_by_name = typedefs_by_name;
-        self.functions_by_name = functions_by_name;
-        self.methods_by_owner_name = methods_by_owner_name;
-        self.fields_by_owner_name = fields_by_owner_name;
-        self.members_by_owner = members_by_owner;
-    }
-
-    fn parent_class_name<'a>(&'a self, symbol: &'a IndexedSymbol) -> Option<&'a str> {
-        let parent = symbol.parent?;
-        let parent_symbol = self.symbol(parent)?;
-        if parent_symbol.kind != SymbolKind::Class {
-            return None;
-        }
-        parent_symbol.name.as_deref()
-    }
-
-    fn index_symbol<'source>(&mut self, catalog: &SymbolCatalog<'source>, symbol: &IndexedSymbol) {
-        self.by_kind.entry(symbol.kind).or_default().push(symbol.id);
-
-        if let Some(parent) = symbol.parent {
-            self.children.entry(parent).or_default().push(symbol.id);
-        }
-
-        let Some(name) = &symbol.name else {
-            return;
-        };
-
-        self.by_name
-            .entry(name.clone())
-            .or_default()
-            .push(symbol.id);
-
-        if symbol.parent.is_none() {
-            self.top_level_by_name
-                .entry(name.clone())
-                .or_default()
-                .push(symbol.id);
-            self.top_level_by_folded_name
-                .entry(name.to_ascii_lowercase())
-                .or_default()
-                .push(symbol.id);
-        }
-
-        match symbol.kind {
-            SymbolKind::Class => {
-                self.classes_by_name
-                    .entry(name.clone())
-                    .or_default()
-                    .push(symbol.id);
-            }
-            SymbolKind::Typedef => {
-                self.typedefs_by_name
-                    .entry(name.clone())
-                    .or_default()
-                    .push(symbol.id);
-            }
-            SymbolKind::Function => {
-                self.functions_by_name
-                    .entry(name.clone())
-                    .or_default()
-                    .push(symbol.id);
-            }
-            SymbolKind::Method => {
-                if let Some(owner) = symbol
-                    .parent
-                    .and_then(|parent| catalog.record(parent.symbol_id))
-                    .and_then(|parent| catalog.record_name(parent))
-                {
-                    self.methods_by_owner_name
-                        .entry((owner.to_string(), name.clone()))
-                        .or_default()
-                        .push(symbol.id);
-                }
-            }
-            _ => {}
-        }
-
-        if is_class_member_kind(symbol.kind) {
-            if let Some(owner) = owner_class_name(catalog, symbol) {
-                self.members_by_owner
-                    .entry(owner.to_string())
-                    .or_default()
-                    .push(symbol.id);
-
-                if symbol.kind == SymbolKind::Field {
-                    self.fields_by_owner_name
-                        .entry((owner.to_string(), name.clone()))
-                        .or_default()
-                        .push(symbol.id);
-                }
-            }
-        }
+        let LookupMaps {
+            general,
+            kind_and_owner,
+            owner_name,
+        } = LookupMaps::build(&self.files, &self.symbols);
+        self.by_name = general.by_name;
+        self.top_level_by_name = general.top_level_by_name;
+        self.top_level_by_folded_name = general.top_level_by_folded_name;
+        self.by_kind = general.by_kind;
+        self.children = general.children;
+        self.classes_by_name = kind_and_owner.kind_names.classes_by_name;
+        self.typedefs_by_name = kind_and_owner.kind_names.typedefs_by_name;
+        self.functions_by_name = kind_and_owner.kind_names.functions_by_name;
+        self.members_by_owner = kind_and_owner.members_by_owner;
+        self.methods_by_owner_name = owner_name.methods_by_owner_name;
+        self.fields_by_owner_name = owner_name.fields_by_owner_name;
     }
 
     fn compare_symbol_preference(
@@ -1611,6 +1506,301 @@ impl SymbolIndex {
     }
 }
 
+pub(crate) fn indexed_symbol_from_owned_public_symbol(
+    file_id: SourceFileId,
+    declaration: PublicSymbol,
+) -> IndexedSymbol {
+    let PublicSymbol {
+        id,
+        parent,
+        kind,
+        name,
+        detail,
+        span,
+        selection_span,
+        modifiers,
+        attributes,
+        doc_comments,
+        conditional_context,
+        callable_form,
+        ..
+    } = declaration;
+    let id = GlobalSymbolId {
+        file_id,
+        symbol_id: SymbolId(id.0 as usize),
+    };
+    let parent = parent.map(|parent| GlobalSymbolId {
+        file_id,
+        symbol_id: SymbolId(parent.0 as usize),
+    });
+    let crate::semantic_file::PublicSymbolDetail {
+        type_text,
+        return_type,
+        base_type,
+        default_value,
+        enum_value,
+    } = detail;
+    let (type_text, type_text_span) = owned_public_text(type_text);
+    let (return_type_text, return_type_text_span) = owned_public_text(return_type);
+    let (base_type, base_type_span) = owned_public_text(base_type);
+    let (default_text, default_text_span) = owned_public_text(default_value);
+    let (enum_value_text, enum_value_text_span) = owned_public_text(enum_value);
+    IndexedSymbol {
+        id,
+        parent,
+        kind: indexed_symbol_kind(kind),
+        name,
+        span,
+        selection_span,
+        detail: IndexedSymbolDetail {
+            type_text,
+            type_text_span,
+            return_type_text,
+            return_type_text_span,
+            base_type,
+            base_type_span,
+            default_text,
+            default_text_span,
+            enum_value_text,
+            enum_value_text_span,
+        },
+        attributes: attributes
+            .into_iter()
+            .map(|attribute| IndexedAttribute {
+                name: semantic_attribute_name(&attribute.text).map(str::to_owned),
+                text: attribute.text,
+            })
+            .collect(),
+        modifiers: modifiers.into_iter().map(|value| value.text).collect(),
+        doc_comments: doc_comments
+            .into_iter()
+            .map(|comment| IndexedDocComment {
+                kind: match comment.kind {
+                    SemanticDocCommentKind::Line => DocCommentKind::Line,
+                    SemanticDocCommentKind::Block => DocCommentKind::Block,
+                },
+                text: comment.text,
+            })
+            .collect(),
+        conditional_context: conditional_context
+            .into_iter()
+            .map(|branch| IndexedConditionalBranch {
+                kind: indexed_conditional_kind(branch.kind),
+                condition: branch.condition.map(|value| value.text),
+            })
+            .collect(),
+        callable_form: callable_form.map(indexed_callable_form),
+    }
+}
+
+fn build_general_lookup_maps(symbols: &[IndexedSymbol]) -> GeneralLookupMaps {
+    let (top_level_by_name, top_level_by_folded_name) = build_top_level_lookup_maps(symbols);
+    let (by_kind, children) = build_structure_lookup_maps(symbols);
+    GeneralLookupMaps {
+        by_name: build_name_lookup_map(symbols),
+        top_level_by_name,
+        top_level_by_folded_name,
+        by_kind,
+        children,
+    }
+}
+
+fn build_name_lookup_map(symbols: &[IndexedSymbol]) -> BTreeMap<String, Vec<GlobalSymbolId>> {
+    group_borrowed_string_ids(
+        symbols
+            .iter()
+            .filter_map(|symbol| symbol.name.as_deref().map(|name| (name, symbol.id))),
+    )
+}
+
+fn build_top_level_lookup_maps(
+    symbols: &[IndexedSymbol],
+) -> (
+    BTreeMap<String, Vec<GlobalSymbolId>>,
+    BTreeMap<String, Vec<GlobalSymbolId>>,
+) {
+    let top_level = || {
+        symbols.iter().filter_map(|symbol| {
+            (symbol.parent.is_none())
+                .then(|| symbol.name.as_deref().map(|name| (name, symbol.id)))
+                .flatten()
+        })
+    };
+    let top_level_by_name = group_borrowed_string_ids(top_level());
+    let top_level_by_folded_name =
+        group_owned_string_ids(top_level().map(|(name, id)| (name.to_ascii_lowercase(), id)));
+    (top_level_by_name, top_level_by_folded_name)
+}
+
+fn build_structure_lookup_maps(
+    symbols: &[IndexedSymbol],
+) -> (
+    BTreeMap<SymbolKind, Vec<GlobalSymbolId>>,
+    BTreeMap<GlobalSymbolId, Vec<GlobalSymbolId>>,
+) {
+    let mut by_kind = BTreeMap::<SymbolKind, Vec<GlobalSymbolId>>::new();
+    let mut children = BTreeMap::<GlobalSymbolId, Vec<GlobalSymbolId>>::new();
+    for symbol in symbols {
+        by_kind.entry(symbol.kind).or_default().push(symbol.id);
+        if let Some(parent) = symbol.parent {
+            children.entry(parent).or_default().push(symbol.id);
+        }
+    }
+    (by_kind, children)
+}
+
+fn build_kind_and_owner_lookup_maps(
+    files: &[IndexedFile],
+    symbols: &[IndexedSymbol],
+) -> KindAndOwnerLookupMaps {
+    KindAndOwnerLookupMaps {
+        kind_names: build_kind_name_lookup_maps(symbols),
+        members_by_owner: build_member_owner_lookup_map(files, symbols),
+    }
+}
+
+fn build_kind_name_lookup_maps(symbols: &[IndexedSymbol]) -> KindNameLookupMaps {
+    let symbols_of_kind = |kind| {
+        symbols.iter().filter_map(move |symbol| {
+            (symbol.kind == kind)
+                .then(|| symbol.name.as_deref().map(|name| (name, symbol.id)))
+                .flatten()
+        })
+    };
+    KindNameLookupMaps {
+        classes_by_name: group_borrowed_string_ids(symbols_of_kind(SymbolKind::Class)),
+        typedefs_by_name: group_borrowed_string_ids(symbols_of_kind(SymbolKind::Typedef)),
+        functions_by_name: group_borrowed_string_ids(symbols_of_kind(SymbolKind::Function)),
+    }
+}
+
+fn build_member_owner_lookup_map(
+    files: &[IndexedFile],
+    symbols: &[IndexedSymbol],
+) -> BTreeMap<String, Vec<GlobalSymbolId>> {
+    group_borrowed_string_ids(symbols.iter().filter_map(|symbol| {
+        (symbol.name.is_some() && is_class_member_kind(symbol.kind))
+            .then(|| {
+                parent_class_name_from_parts(files, symbols, symbol).map(|owner| (owner, symbol.id))
+            })
+            .flatten()
+    }))
+}
+
+fn build_owner_name_lookup_maps(
+    files: &[IndexedFile],
+    symbols: &[IndexedSymbol],
+) -> OwnerNameLookupMaps {
+    OwnerNameLookupMaps {
+        methods_by_owner_name: build_method_owner_name_lookup_map(files, symbols),
+        fields_by_owner_name: build_field_owner_name_lookup_map(files, symbols),
+    }
+}
+
+fn build_method_owner_name_lookup_map(
+    files: &[IndexedFile],
+    symbols: &[IndexedSymbol],
+) -> BTreeMap<(String, String), Vec<GlobalSymbolId>> {
+    group_borrowed_string_pair_ids(symbols.iter().filter_map(|symbol| {
+        (symbol.kind == SymbolKind::Method)
+            .then(|| {
+                Some((
+                    parent_class_name_from_parts(files, symbols, symbol)?,
+                    symbol.name.as_deref()?,
+                    symbol.id,
+                ))
+            })
+            .flatten()
+    }))
+}
+
+fn build_field_owner_name_lookup_map(
+    files: &[IndexedFile],
+    symbols: &[IndexedSymbol],
+) -> BTreeMap<(String, String), Vec<GlobalSymbolId>> {
+    group_borrowed_string_pair_ids(symbols.iter().filter_map(|symbol| {
+        (symbol.kind == SymbolKind::Field)
+            .then(|| {
+                Some((
+                    parent_class_name_from_parts(files, symbols, symbol)?,
+                    symbol.name.as_deref()?,
+                    symbol.id,
+                ))
+            })
+            .flatten()
+    }))
+}
+
+fn group_borrowed_string_ids<'a>(
+    entries: impl Iterator<Item = (&'a str, GlobalSymbolId)>,
+) -> BTreeMap<String, Vec<GlobalSymbolId>> {
+    let mut entries = entries.collect::<Vec<_>>();
+    entries.sort_by(|left, right| left.0.cmp(right.0));
+    let mut grouped = Vec::<(String, Vec<GlobalSymbolId>)>::new();
+    for (key, id) in entries {
+        if grouped.last().is_some_and(|(existing, _)| existing == key) {
+            grouped.last_mut().expect("group exists").1.push(id);
+        } else {
+            grouped.push((key.to_string(), vec![id]));
+        }
+    }
+    grouped.into_iter().collect()
+}
+
+fn group_owned_string_ids(
+    entries: impl Iterator<Item = (String, GlobalSymbolId)>,
+) -> BTreeMap<String, Vec<GlobalSymbolId>> {
+    let mut entries = entries.collect::<Vec<_>>();
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
+    let mut grouped = Vec::<(String, Vec<GlobalSymbolId>)>::new();
+    for (key, id) in entries {
+        if grouped.last().is_some_and(|(existing, _)| existing == &key) {
+            grouped.last_mut().expect("group exists").1.push(id);
+        } else {
+            grouped.push((key, vec![id]));
+        }
+    }
+    grouped.into_iter().collect()
+}
+
+fn group_borrowed_string_pair_ids<'a>(
+    entries: impl Iterator<Item = (&'a str, &'a str, GlobalSymbolId)>,
+) -> BTreeMap<(String, String), Vec<GlobalSymbolId>> {
+    let mut entries = entries.collect::<Vec<_>>();
+    entries.sort_by(|left, right| (left.0, left.1).cmp(&(right.0, right.1)));
+    let mut grouped = Vec::<((String, String), Vec<GlobalSymbolId>)>::new();
+    for (owner, name, id) in entries {
+        if grouped
+            .last()
+            .is_some_and(|((existing_owner, existing_name), _)| {
+                existing_owner == owner && existing_name == name
+            })
+        {
+            grouped.last_mut().expect("group exists").1.push(id);
+        } else {
+            grouped.push(((owner.to_string(), name.to_string()), vec![id]));
+        }
+    }
+    grouped.into_iter().collect()
+}
+
+fn parent_class_name_from_parts<'a>(
+    files: &[IndexedFile],
+    symbols: &'a [IndexedSymbol],
+    symbol: &IndexedSymbol,
+) -> Option<&'a str> {
+    let parent = symbol.parent?;
+    let file = files.get(parent.file_id.0)?;
+    let local_index = parent.symbol_id.0;
+    if local_index >= file.symbol_count {
+        return None;
+    }
+    let parent_symbol = symbols.get(file.symbol_start + local_index)?;
+    (parent_symbol.kind == SymbolKind::Class)
+        .then_some(parent_symbol.name.as_deref())
+        .flatten()
+}
+
 fn folded_top_level_names(
     top_level_by_name: &BTreeMap<String, Vec<GlobalSymbolId>>,
 ) -> BTreeMap<String, Vec<GlobalSymbolId>> {
@@ -1626,18 +1816,6 @@ fn folded_top_level_names(
 
 fn map_entry_count<K>(map: &BTreeMap<K, Vec<GlobalSymbolId>>) -> usize {
     map.values().map(Vec::len).sum()
-}
-
-fn owner_class_name<'source>(
-    catalog: &'source SymbolCatalog<'source>,
-    symbol: &IndexedSymbol,
-) -> Option<&'source str> {
-    let parent = symbol.parent?;
-    let parent_record = catalog.record(parent.symbol_id)?;
-    if parent_record.kind != SymbolKind::Class {
-        return None;
-    }
-    catalog.record_name(parent_record)
 }
 
 fn indexed_attributes<'source>(
@@ -1682,7 +1860,7 @@ fn indexed_conditional_context<'source>(
         .collect()
 }
 
-fn indexed_symbol_kind(kind: SemanticDeclarationKind) -> SymbolKind {
+pub(crate) fn indexed_symbol_kind(kind: SemanticDeclarationKind) -> SymbolKind {
     match kind {
         SemanticDeclarationKind::Class => SymbolKind::Class,
         SemanticDeclarationKind::TypeParameter => SymbolKind::TypeParameter,
@@ -1701,7 +1879,7 @@ fn indexed_symbol_kind(kind: SemanticDeclarationKind) -> SymbolKind {
     }
 }
 
-fn indexed_callable_form(form: SemanticCallableForm) -> CallableForm {
+pub(crate) fn indexed_callable_form(form: SemanticCallableForm) -> CallableForm {
     match form {
         SemanticCallableForm::Implementation => CallableForm::Implementation,
         SemanticCallableForm::Declaration => CallableForm::Declaration,
@@ -1709,7 +1887,9 @@ fn indexed_callable_form(form: SemanticCallableForm) -> CallableForm {
     }
 }
 
-fn indexed_conditional_kind(kind: SemanticConditionalBranchKind) -> PreprocessorBranchKind {
+pub(crate) fn indexed_conditional_kind(
+    kind: SemanticConditionalBranchKind,
+) -> PreprocessorBranchKind {
     match kind {
         SemanticConditionalBranchKind::If => PreprocessorBranchKind::If,
         SemanticConditionalBranchKind::Ifdef => PreprocessorBranchKind::Ifdef,
@@ -1719,7 +1899,7 @@ fn indexed_conditional_kind(kind: SemanticConditionalBranchKind) -> Preprocessor
     }
 }
 
-fn semantic_attribute_name(text: &str) -> Option<&str> {
+pub(crate) fn semantic_attribute_name(text: &str) -> Option<&str> {
     let trimmed = text.trim_start();
     let trimmed = trimmed.strip_prefix('[').unwrap_or(trimmed).trim_start();
     let end = trimmed
@@ -1968,6 +2148,32 @@ class Example : Base
         assert!(children.iter().any(|id| index
             .symbol(*id)
             .is_some_and(|symbol| symbol.name.as_deref() == Some("Run"))));
+    }
+
+    #[test]
+    fn parallel_lookup_map_builds_match_sequential_results() {
+        let source = r#"typedef string FactionKey;
+
+void GlobalFn(int value);
+
+class Example : Base
+{
+	int m_Value;
+	void Run(int value);
+}
+"#;
+        let catalog = catalog(source, SourceFileMetadata::unknown());
+        let index = SymbolIndex::from_catalogs([&catalog]);
+        let sequential = LookupMaps::build_sequential(index.files(), index.symbols());
+
+        assert_eq!(
+            LookupMaps::build_parallel(index.files(), index.symbols(), 3),
+            sequential
+        );
+        assert_eq!(
+            LookupMaps::build_parallel(index.files(), index.symbols(), 7),
+            sequential
+        );
     }
 
     #[test]

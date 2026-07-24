@@ -328,6 +328,7 @@ fn append_count_comparison(
     let direct_locals = count_kind(&direct.index, SymbolKind::LocalVariable);
     let direct_parameters = count_kind(&direct.index, SymbolKind::Parameter);
     let expected_pruned_symbols = direct.index.symbols().len().saturating_sub(direct_locals);
+    let direct_pruned_map_counts = direct.index.without_local_variables().map_counts();
     report.push_str(&format!(
         "| Existing cache symbols match direct rebuild minus locals | {} |\n",
         yes_no(existing_cache.index.symbols().len() == expected_pruned_symbols)
@@ -357,8 +358,16 @@ fn append_count_comparison(
         yes_no(existing_cache.index.files().len() == direct.index.files().len())
     ));
     report.push_str(&format!(
-        "| Temp cache files match direct rebuild | {} |\n\n",
+        "| Temp cache files match direct rebuild | {} |\n",
         yes_no(temp_cache.index.files().len() == direct.index.files().len())
+    ));
+    report.push_str(&format!(
+        "| Existing cache lookup-map counts match pruned direct rebuild | {} |\n",
+        yes_no(existing_cache.index.map_counts() == direct_pruned_map_counts)
+    ));
+    report.push_str(&format!(
+        "| Temp cache lookup-map counts match pruned direct rebuild | {} |\n\n",
+        yes_no(temp_cache.index.map_counts() == direct_pruned_map_counts)
     ));
     report.push_str(&format!(
         "Runtime cache pruning removed `{direct_locals}` local-variable symbols and preserved `{direct_parameters}` parameter symbols from the full direct index.\n\n"
@@ -374,20 +383,23 @@ fn append_structural_optimization(
     let v2_style_bytes = serde_json::to_vec(&v2_style)
         .map(|bytes| bytes.len() as u64)
         .unwrap_or(0);
-    let v9_bytes = existing_cache.cache_file_bytes.unwrap_or(0);
-    let v9_detail_spans = detail_span_count(&existing_cache.index);
+    let canonical_cache_bytes = existing_cache.cache_file_bytes.unwrap_or(0);
+    let canonical_cache_detail_spans = detail_span_count(&existing_cache.index);
     let full_detail_spans = detail_span_count(&direct.index);
-    let saved = v2_style_bytes.saturating_sub(v9_bytes);
+    let saved = v2_style_bytes.saturating_sub(canonical_cache_bytes);
 
     report.push_str("## Runtime Cache Structural Optimization\n\n");
-    report.push_str("V9 persists cache metadata plus files/symbols only in a dependency-free binary format, stores repeated strings through an interned string table, stores an explicit index-shape marker, strips source-only detail spans, removes external local variables, and rebuilds lookup maps after load. The v2-style estimate serializes the runtime-pruned index with derived maps still present.\n\n");
+    report.push_str("The current canonical cache persists metadata plus files/symbols only in a dependency-free binary format, stores repeated strings through an interned string table, stores an explicit index-shape marker, strips source-only detail spans, removes external local variables, and rebuilds lookup maps after load. The v2-style estimate serializes the runtime-pruned index with derived maps still present.\n\n");
     report.push_str("| Metric | Value |\n");
     report.push_str("| --- | ---: |\n");
     report.push_str(&format!(
         "| V2-style full-map runtime JSON estimate | {} |\n",
         v2_style_bytes
     ));
-    report.push_str(&format!("| V9 actual cache file bytes | {} |\n", v9_bytes));
+    report.push_str(&format!(
+        "| Current canonical cache file bytes | {} |\n",
+        canonical_cache_bytes
+    ));
     report.push_str(&format!("| Estimated bytes saved | {} |\n", saved));
     report.push_str(&format!(
         "| Estimated size reduction | {} |\n",
@@ -398,8 +410,8 @@ fn append_structural_optimization(
         full_detail_spans
     ));
     report.push_str(&format!(
-        "| V9 cached detail span fields | {} |\n",
-        v9_detail_spans
+        "| Current canonical cached detail span fields | {} |\n",
+        canonical_cache_detail_spans
     ));
     report.push_str(&format!("| Lookup maps persisted | {} |\n", yes_no(false)));
     report.push_str(&format!(
