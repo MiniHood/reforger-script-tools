@@ -861,6 +861,33 @@ fn semantic_tokens_color_call_shapes_before_rich_resolution() {
 }
 
 #[test]
+fn semantic_tokens_keep_unterminated_call_before_next_statement_function_colored() {
+    let source = r#"class Example
+{
+	void Run(int value)
+	{
+		GetGame() // statement still being typed
+
+		if (value > 0)
+			return;
+	}
+}
+"#;
+
+    let report = semantic_tokens_report_for_source(source);
+
+    assert_semantic_token(&report, "GetGame", "function");
+    assert!(
+        !report
+            .decoded
+            .iter()
+            .any(|token| token.text == "GetGame" && token.token_type == "class"),
+        "{:?}",
+        report.decoded
+    );
+}
+
+#[test]
 fn semantic_tokens_color_static_member_shapes_before_rich_resolution() {
     let source = r#"class Example
 {

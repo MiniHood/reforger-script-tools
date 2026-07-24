@@ -1649,6 +1649,9 @@ impl Parser<'_> {
             if at_top_level && !saw_equal && matches!(kind, TokenKind::Dot | TokenKind::Question) {
                 return false;
             }
+            if at_top_level && !saw_name_after_type && kind == TokenKind::LeftParen {
+                return false;
+            }
             if at_top_level && is_assignment_operator(kind) && !saw_name_after_type {
                 return false;
             }
@@ -2995,6 +2998,28 @@ class AfterInvalid
         assert_eq!(count_kind(&parse.root, SyntaxKind::CastExpression), 1);
         assert_eq!(count_kind(&parse.root, SyntaxKind::ThreadStatement), 1);
         assert_eq!(count_kind(&parse.root, SyntaxKind::DeleteStatement), 1);
+    }
+
+    #[test]
+    fn unterminated_call_before_next_statement_stays_an_expression() {
+        let source = r#"class Example
+{
+	void Run(int value)
+	{
+		GetGame() // statement still being typed
+
+		if (value > 0)
+			return;
+	}
+}
+"#;
+        let parse = parse_source(source);
+
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::CallExpression), 1);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::ExpressionStatement), 1);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::LocalDeclStatement), 0);
+        assert_eq!(count_kind(&parse.root, SyntaxKind::IfStatement), 1);
     }
 
     #[test]

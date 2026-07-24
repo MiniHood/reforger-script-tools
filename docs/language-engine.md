@@ -47,6 +47,10 @@ applies the effective native foreground rules because VS Code does not project
 editor semantic tokens into Markdown content. Rust still owns classification,
 the client still owns presentation, and neither layer carries a second color
 table.
+During incomplete editing, a statement-leading `Name(...)` shape remains a
+call expression even before its terminating semicolon is present. Declaration
+recovery must not consume a following statement or reclassify that callable
+name as a type.
 
 Scope delimiters are one shared syntax projection used by semantic tokens and
 the active-pair request. Parser-proven `{}`, `()`, `[]`, and generic `<>`
