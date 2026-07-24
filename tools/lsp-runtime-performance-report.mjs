@@ -180,6 +180,7 @@ function renderReport(input) {
   const admission = summarizeAdmission(records);
   const cancellation = summarizeCancellation(records);
   const richIdentity = summarizeRichIdentity(records);
+  const selfSaveRichReuse = summarizeSelfSaveRichReuse(records);
   const captureFields = summarizeCaptureFields(records);
   const externalCache = summarizeExternalCache(records);
 
@@ -198,6 +199,9 @@ function renderReport(input) {
   lines.push(`- Timed work total: ${formatMs(summary.totalMs)}`);
   lines.push(`- Foreground request/notification time: ${formatMs(summary.foregroundMs)}`);
   lines.push(`- Background rich semantic-token time: ${formatMs(summary.richSemanticMs)}`);
+  lines.push(`- Self-save rich projections reused: ${selfSaveRichReuse.reusedCount}`);
+  lines.push(`- Self-save in-flight projections retargeted: ${selfSaveRichReuse.retargetedCount}`);
+  lines.push(`- Reused rich elapsed-time reference: ${formatMs(selfSaveRichReuse.referenceElapsedMs)}`);
   lines.push(`- Stale/skipped rich semantic-token records: ${summary.staleRichCount}`);
   lines.push(`- Cancelled rich semantic-token records: ${summary.cancelledRichCount}`);
   lines.push(`- Foreground responses with declared query quality: ${queryQuality.declared} / ${queryQuality.records}`);
@@ -278,6 +282,23 @@ function renderReport(input) {
   lines.push(`- Rich stale/skipped total: ${formatMs(summary.staleRichMs)}`);
   lines.push(`- Rich cancelled total: ${formatMs(summary.cancelledRichMs)}`);
   lines.push(`- Fast semantic-token request total: ${formatMs(summary.fastSemanticMs)}`);
+  lines.push("");
+  lines.push("## Self-Save Rich Projection Reuse");
+  lines.push("");
+  lines.push("A `ready` row records an already-complete overlay carried across a self-save. A `pending` row records retargeting only and is not counted as reuse unless a matching rich-ready terminal produces a `completed` row. Observed rich elapsed time includes original scheduling and is reference evidence, not a counterfactual CPU-savings measurement.");
+  lines.push("");
+  if (selfSaveRichReuse.rows.length === 0) {
+    lines.push("No detailed self-save reuse records were present in this capture.");
+  } else {
+    table(lines, ["File", "Revision", "From generation", "To generation", "State", "Observed rich elapsed"], selfSaveRichReuse.rows.map((row) => [
+      row.fileName || "<none>",
+      row.revision || "<missing>",
+      row.previousExternalGeneration ?? "<missing>",
+      row.externalGeneration ?? "<missing>",
+      row.state || "<missing>",
+      row.referenceElapsedMs === undefined ? "Pending" : formatMs(row.referenceElapsedMs),
+    ]));
+  }
   lines.push("");
   lines.push("## Completion Latency");
   lines.push("");
@@ -515,6 +536,54 @@ function summarize(records) {
     }
   }
   return summary;
+}
+
+function summarizeSelfSaveRichReuse(records) {
+  const richReadyKeys = new Set(records
+    .filter((record) => record.operation === "semanticTokensRich ready")
+    .map((record) => [
+      record.uri,
+      record.revision,
+      record.fields.task_external_generation ?? record.fields.external_generation ?? "",
+      record.fields.external_generation ?? "",
+    ].join("\u0000")));
+  const rows = records
+    .filter((record) =>
+      record.operation === "semanticTokens self-save reused"
+      || record.operation === "semanticTokens self-save retargeted")
+    .map((record) => ({
+      operation: record.operation,
+      fileName: record.fileName,
+      uri: record.uri,
+      revision: record.revision,
+      previousExternalGeneration: numberField(record.fields, "previous_external_generation"),
+      externalGeneration: numberField(record.fields, "external_generation"),
+      state: record.fields.state ?? "",
+      referenceElapsedMs: numberField(record.fields, "reference_elapsed_ms"),
+    }));
+  const completedReuseRows = rows.filter((row) => {
+    if (row.operation !== "semanticTokens self-save reused" || row.state !== "completed") {
+      return row.operation === "semanticTokens self-save reused";
+    }
+    return richReadyKeys.has([
+      row.uri,
+      row.revision,
+      row.previousExternalGeneration ?? "",
+      row.externalGeneration ?? "",
+    ].join("\u0000"));
+  });
+  const evidenceRows = rows.filter((row) =>
+    row.operation === "semanticTokens self-save retargeted"
+    || completedReuseRows.includes(row));
+  return {
+    rows: evidenceRows,
+    reusedCount: completedReuseRows.length,
+    retargetedCount: rows.filter((row) => row.operation === "semanticTokens self-save retargeted").length,
+    referenceElapsedMs: completedReuseRows.reduce(
+      (total, row) => total + (row.referenceElapsedMs ?? 0),
+      0,
+    ),
+  };
 }
 
 function summarizeRevisionGroups(records) {

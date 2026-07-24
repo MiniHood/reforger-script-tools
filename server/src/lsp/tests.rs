@@ -42,6 +42,7 @@ fn rich_semantic_tokens_job(
             status: "missing",
             workspace: None,
             game_data: None,
+            workspace_exclusion: None,
         },
         bracket_coloring: BracketColoringMode::Semantic,
     }

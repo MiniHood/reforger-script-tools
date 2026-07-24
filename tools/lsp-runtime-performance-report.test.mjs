@@ -109,6 +109,27 @@ test("reports rich semantic-token phase timings without source payloads", () => 
   assert.doesNotMatch(report, /DO_NOT_COPY/);
 });
 
+test("reports rich projections reused across identical self-save updates", () => {
+  const report = runReport([
+    "[995] semanticTokensRich ready uri=file:///workspace/GC_MarkerArea.c revision=42 external_generation=8 workspace_excludes_document=true elapsed_ms=182",
+    "[1000] semanticTokens self-save reused uri=file:///workspace/GC_MarkerArea.c revision=42 previous_external_generation=8 external_generation=9 state=ready reference_elapsed_ms=182",
+    "[1000] semanticTokens external overlay changed generation=9 status=ready documents=2 preserved_self_save=1 requesting_refresh=true",
+    "[1005] semanticTokens self-save retargeted uri=file:///workspace/GC_Sounds.c revision=7 previous_external_generation=9 external_generation=10 state=pending",
+    "[1010] semanticTokensRich ready uri=file:///workspace/GC_Sounds.c revision=7 external_generation=10 task_external_generation=9 workspace_excludes_document=true elapsed_ms=175",
+    "[1010] semanticTokens self-save reused uri=file:///workspace/GC_Sounds.c revision=7 previous_external_generation=9 external_generation=10 state=completed reference_elapsed_ms=175",
+    "[1020] semanticTokens self-save retargeted uri=file:///workspace/Cancelled.c revision=3 previous_external_generation=10 external_generation=11 state=pending",
+    "[1030] semanticTokens self-save reused uri=file:///workspace/Uncorrelated.c revision=4 previous_external_generation=11 external_generation=12 state=completed reference_elapsed_ms=999",
+  ].join("\n"));
+
+  assert.match(report, /Self-save rich projections reused: 2/);
+  assert.match(report, /Self-save in-flight projections retargeted: 2/);
+  assert.match(report, /Reused rich elapsed-time reference: 357 ms/);
+  assert.match(report, /## Self-Save Rich Projection Reuse/);
+  assert.match(report, /GC_MarkerArea\.c.*42.*8.*9.*ready.*182 ms/);
+  assert.match(report, /GC_Sounds\.c.*7.*9.*10.*pending.*Pending/);
+  assert.match(report, /GC_Sounds\.c.*7.*9.*10.*completed.*175 ms/);
+});
+
 test("correlates first current-snapshot token and completion responses without payload data", () => {
   const report = runReport([
     "[1000] notification didChange uri=file:///workspace/GC_MarkerArea.c version=7 revision=42 cached_analysis=false analysis_state=pending elapsed_ms=2",

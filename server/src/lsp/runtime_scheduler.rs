@@ -30,6 +30,7 @@ pub(super) enum ServerEvent {
         revision: u64,
         external_generation: u64,
         external_status: &'static str,
+        workspace_excludes_document: bool,
         projection: LspSemanticTokenProjection,
         elapsed_ms: u128,
     },
@@ -530,11 +531,14 @@ impl RuntimeWorkExecutor {
                 let _ = self.sender.send(event);
             }
             RuntimeWorkJob::Rich(job) => {
+                let workspace_excludes_document =
+                    job.external_snapshot.workspace_excludes_document();
+                let workspace = job.external_snapshot.workspace_for_projection();
                 let projection =
                     semantic_tokens_for_cached_analysis_with_external_indexes_cancelled(
                         job.task.snapshot().text(),
                         &job.analysis,
-                        job.external_snapshot.workspace.as_deref(),
+                        workspace.as_deref(),
                         job.external_snapshot.game_data.as_deref(),
                         job.bracket_coloring,
                         &|| job.task.is_cancelled(),
@@ -546,6 +550,7 @@ impl RuntimeWorkExecutor {
                         revision: job.revision,
                         external_generation: job.external_generation,
                         external_status: job.external_snapshot.status,
+                        workspace_excludes_document,
                         projection,
                         elapsed_ms: job.scheduled_at.elapsed().as_millis(),
                     },

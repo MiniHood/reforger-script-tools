@@ -101,6 +101,7 @@ impl<W: Write> LspServer<W> {
                     for effect in self.document_runtime.observe_semantic_external_generation(
                         external_status.generation,
                         external_status.status,
+                        None,
                     ) {
                         self.deliver_effect(effect)?;
                     }

@@ -14,7 +14,9 @@ use serde_json::{json, Value};
 use std::cell::Cell;
 #[cfg(test)]
 use std::collections::BTreeMap;
-use std::io::{self, BufReader, Read, Write};
+use std::io::{self, BufReader, Write};
+#[cfg(test)]
+use std::io::Read;
 use std::path::PathBuf;
 use std::sync::mpsc;
 #[cfg(test)]
@@ -35,6 +37,7 @@ mod document_runtime;
 mod external_indexes;
 mod external_overlay;
 mod feature_dispatch;
+mod file_identity;
 mod hover;
 mod hover_render;
 mod incoming_scheduler;
@@ -89,6 +92,7 @@ use document_query::{DocumentQuery, DocumentQueryState};
 use document_runtime::DocumentRuntime;
 pub(crate) use external_overlay::ExternalIndexStatusSummary;
 use external_overlay::{start_external_index, ExternalIndexHandle, ExternalIndexSnapshot};
+use file_identity::{file_path_identity, file_uri_path_identity};
 use hover::{
     hover_report_for_cached_analysis_with_external_indexes, hover_report_for_pending_snapshot,
 };
@@ -121,7 +125,6 @@ pub use semantic_tokens::{
 use semantic_tokens::{
     generic_angle_offsets_for_delimiters,
     lexical_semantic_tokens_for_source_with_bracket_coloring,
-    semantic_tokens_for_cached_analysis_with_external_indexes_and_bracket_coloring,
     semantic_tokens_for_cached_analysis_with_external_indexes_cancelled, LspSemanticTokensFull,
     SEMANTIC_TOKEN_MODIFIERS, SEMANTIC_TOKEN_TYPES,
 };
@@ -215,6 +218,7 @@ pub fn run_stdio(options: LspServerOptions) -> Result<(), String> {
     server.run_message_channels(incoming_receiver, internal_receiver)
 }
 
+#[cfg(test)]
 pub fn run<R: Read, W: Write>(
     reader: R,
     writer: W,
@@ -726,6 +730,7 @@ impl<W: Write> LspServer<W> {
         Ok(())
     }
 
+    #[cfg(test)]
     fn new(writer: W, options: LspServerOptions) -> Self {
         Self::new_with_runtime_senders(writer, options, None, None, None)
     }
@@ -780,6 +785,7 @@ impl<W: Write> LspServer<W> {
         server
     }
 
+    #[cfg(test)]
     fn run<R: Read>(&mut self, reader: R) -> Result<(), String> {
         let mut reader = BufReader::new(reader);
         while let Some(message) = read_message(&mut reader)? {

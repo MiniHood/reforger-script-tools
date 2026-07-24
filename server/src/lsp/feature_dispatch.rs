@@ -28,6 +28,7 @@ use super::{
     RANGE_FORMATTING_METHOD, WORKSPACE_FILE_CHANGED_METHOD, WORKSPACE_FILE_DELETED_METHOD,
 };
 use serde_json::{json, Value};
+use std::path::Path;
 use std::time::Instant;
 
 /// Executes feature and workspace commands from the explicit state they
@@ -135,6 +136,7 @@ impl FeatureDispatcher<'_> {
             }
         }
 
+        let mut semantic_generation_preservation = None;
         match method {
             "$/cancelRequest" => {}
             WORKSPACE_FILE_CHANGED_METHOD => {
@@ -143,8 +145,20 @@ impl FeatureDispatcher<'_> {
                 else {
                     unreachable!("workspace change method has a workspace command");
                 };
+                let previous_generation = self.external_index.status_summary().generation;
+                let preservation = params.as_ref().and_then(|params| {
+                    self.document_runtime.self_save_generation_preservation(
+                        Path::new(&params.path),
+                        &params.text,
+                        previous_generation,
+                    )
+                });
                 for effect in update_workspace_file(&mut self.external_index, params.clone()) {
                     self.deliver_effect(effect)?;
+                }
+                let generation = self.external_index.status_summary().generation;
+                if generation == previous_generation.saturating_add(1) {
+                    semantic_generation_preservation = preservation;
                 }
             }
             WORKSPACE_FILE_DELETED_METHOD => {
@@ -931,7 +945,9 @@ impl FeatureDispatcher<'_> {
                     if let Some((uri, rich_revision, rich_external_generation)) =
                         selection.rich_work.clone()
                     {
-                        let external_indexes = self.external_index.snapshot();
+                        let external_indexes = self.external_index.snapshot_for_document_identity(
+                            self.document_runtime.document_path_identity(&uri),
+                        );
                         let effects = self.document_runtime.admit_rich_semantic_tokens(
                             &uri,
                             rich_revision,
@@ -1531,6 +1547,7 @@ impl FeatureDispatcher<'_> {
         for effect in self.document_runtime.observe_semantic_external_generation(
             external_status.generation,
             external_status.status,
+            semantic_generation_preservation,
         ) {
             self.deliver_effect(effect)?;
         }

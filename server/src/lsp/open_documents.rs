@@ -217,7 +217,39 @@ pub(crate) struct TokenSnapshot {
 
 struct RichTokenOverlay {
     external_generation: u64,
+    workspace_excludes_document: bool,
+    rich_elapsed_ms: u128,
     projection: LspSemanticTokenProjection,
+}
+
+pub(crate) enum SelfSaveRichPreservation {
+    Ready { reference_elapsed_ms: u128 },
+    Pending,
+}
+
+pub(crate) struct RichProjectionPublication {
+    pub(crate) external_generation: u64,
+    pub(crate) self_save_retargeted: bool,
+}
+
+impl SelfSaveRichPreservation {
+    #[cfg(test)]
+    pub(crate) const fn state(&self) -> &'static str {
+        match self {
+            Self::Ready { .. } => "ready",
+            Self::Pending => "pending",
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn reference_elapsed_ms(&self) -> u128 {
+        match self {
+            Self::Ready {
+                reference_elapsed_ms,
+            } => *reference_elapsed_ms,
+            Self::Pending => 0,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -268,9 +300,17 @@ impl TokenSnapshot {
         }
     }
 
-    fn set_rich(&mut self, external_generation: u64, projection: LspSemanticTokenProjection) {
+    fn set_rich(
+        &mut self,
+        external_generation: u64,
+        workspace_excludes_document: bool,
+        rich_elapsed_ms: u128,
+        projection: LspSemanticTokenProjection,
+    ) {
         self.rich_overlay = Some(RichTokenOverlay {
             external_generation,
+            workspace_excludes_document,
+            rich_elapsed_ms,
             projection,
         });
     }
@@ -279,9 +319,15 @@ impl TokenSnapshot {
 #[derive(Default)]
 pub(crate) struct SemanticTokenCache {
     snapshot: Option<TokenSnapshot>,
-    pending_revision: Option<u64>,
-    pending_external_generation: Option<u64>,
-    pending_cancel: Option<Arc<AtomicBool>>,
+    pending: Option<PendingRichProjection>,
+}
+
+struct PendingRichProjection {
+    revision: u64,
+    task_external_generation: u64,
+    publish_external_generation: u64,
+    workspace_excludes_document: bool,
+    cancel: Arc<AtomicBool>,
 }
 
 impl SemanticTokenCache {
@@ -330,6 +376,8 @@ impl SemanticTokenCache {
         &mut self,
         revision: u64,
         external_generation: u64,
+        workspace_excludes_document: bool,
+        rich_elapsed_ms: u128,
         projection: LspSemanticTokenProjection,
     ) {
         if let Some(snapshot) = self
@@ -337,11 +385,14 @@ impl SemanticTokenCache {
             .as_mut()
             .filter(|snapshot| snapshot.revision == revision)
         {
-            snapshot.set_rich(external_generation, projection);
+            snapshot.set_rich(
+                external_generation,
+                workspace_excludes_document,
+                rich_elapsed_ms,
+                projection,
+            );
         }
-        self.pending_revision = None;
-        self.pending_external_generation = None;
-        self.pending_cancel = None;
+        self.pending = None;
     }
 
     pub(crate) fn pending_for_revision_and_external_generation(
@@ -349,8 +400,10 @@ impl SemanticTokenCache {
         revision: u64,
         external_generation: u64,
     ) -> bool {
-        self.pending_revision == Some(revision)
-            && self.pending_external_generation == Some(external_generation)
+        self.pending.as_ref().is_some_and(|pending| {
+            pending.revision == revision
+                && pending.publish_external_generation == external_generation
+        })
     }
 
     /// Rich projection is useful only after VS Code has requested a lexical
@@ -369,28 +422,37 @@ impl SemanticTokenCache {
         &mut self,
         revision: u64,
         external_generation: u64,
+        workspace_excludes_document: bool,
         cancel: Arc<AtomicBool>,
     ) {
         self.cancel_pending();
-        self.pending_revision = Some(revision);
-        self.pending_external_generation = Some(external_generation);
-        self.pending_cancel = Some(cancel);
+        self.pending = Some(PendingRichProjection {
+            revision,
+            task_external_generation: external_generation,
+            publish_external_generation: external_generation,
+            workspace_excludes_document,
+            cancel,
+        });
     }
 
     pub(crate) fn cancel_pending(&mut self) {
-        if let Some(cancel) = self.pending_cancel.take() {
-            cancel.store(true, Ordering::Relaxed);
+        if let Some(pending) = self.pending.take() {
+            pending.cancel.store(true, Ordering::Relaxed);
         }
-        self.pending_revision = None;
-        self.pending_external_generation = None;
     }
 
-    pub(crate) fn cancel_pending_if_matches(&mut self, revision: u64, external_generation: u64) {
-        if self.pending_revision == Some(revision)
-            && self.pending_external_generation == Some(external_generation)
-        {
-            self.cancel_pending();
-        }
+    pub(crate) fn cancel_pending_task(
+        &mut self,
+        revision: u64,
+        task_external_generation: u64,
+    ) -> Option<u64> {
+        let publish_external_generation = self.pending.as_ref().and_then(|pending| {
+            (pending.revision == revision
+                && pending.task_external_generation == task_external_generation)
+                .then_some(pending.publish_external_generation)
+        })?;
+        self.cancel_pending();
+        Some(publish_external_generation)
     }
 
     pub(crate) fn cancel_pending_for_other_external_generation(
@@ -398,11 +460,38 @@ impl SemanticTokenCache {
         external_generation: u64,
     ) {
         if self
-            .pending_external_generation
-            .is_some_and(|pending_generation| pending_generation != external_generation)
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.publish_external_generation != external_generation)
         {
             self.cancel_pending();
         }
+    }
+
+    pub(crate) fn publish_generation_for_ready_task(
+        &self,
+        revision: u64,
+        task_external_generation: u64,
+        current_external_generation: u64,
+        workspace_excludes_document: bool,
+    ) -> Option<RichProjectionPublication> {
+        if task_external_generation == current_external_generation {
+            return Some(RichProjectionPublication {
+                external_generation: current_external_generation,
+                self_save_retargeted: false,
+            });
+        }
+        self.pending.as_ref().and_then(|pending| {
+            (pending.revision == revision
+                && pending.task_external_generation == task_external_generation
+                && pending.publish_external_generation == current_external_generation
+                && pending.workspace_excludes_document
+                && workspace_excludes_document)
+                .then_some(RichProjectionPublication {
+                    external_generation: current_external_generation,
+                    self_save_retargeted: true,
+                })
+        })
     }
 
     /// An external-index generation is part of a rich overlay's identity.
@@ -421,6 +510,42 @@ impl SemanticTokenCache {
                 .expect("snapshot was checked above")
                 .rich_overlay = None;
         }
+    }
+
+    /// Carries a rich projection across the one workspace generation created
+    /// by saving its own source file. This is valid only when the projection
+    /// was built from a workspace view that excluded that file, so the
+    /// generation change cannot alter any of its semantic inputs.
+    pub(crate) fn rebind_self_save_rich_generation(
+        &mut self,
+        revision: u64,
+        previous_external_generation: u64,
+        external_generation: u64,
+    ) -> Option<SelfSaveRichPreservation> {
+        if let Some(overlay) = self
+            .snapshot
+            .as_mut()
+            .filter(|snapshot| snapshot.revision == revision)
+            .and_then(|snapshot| snapshot.rich_overlay.as_mut())
+            .filter(|overlay| {
+                overlay.external_generation == previous_external_generation
+                    && overlay.workspace_excludes_document
+            })
+        {
+            overlay.external_generation = external_generation;
+            return Some(SelfSaveRichPreservation::Ready {
+                reference_elapsed_ms: overlay.rich_elapsed_ms,
+            });
+        }
+        let Some(pending) = self.pending.as_mut().filter(|pending| {
+            pending.revision == revision
+                && pending.publish_external_generation == previous_external_generation
+                && pending.workspace_excludes_document
+        }) else {
+            return None;
+        };
+        pending.publish_external_generation = external_generation;
+        Some(SelfSaveRichPreservation::Pending)
     }
 }
 

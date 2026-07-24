@@ -96,6 +96,21 @@ generation change, worker overload, or document close rejects the superseded
 pending request with `Content modified`; waiting is revision- and
 generation-bounded and never moves parsing or resolution onto the request
 path.
+Rich projection uses a workspace-index view that excludes the active
+document's own indexed contribution. Capturing that view on the request path
+records only immutable per-file contributions; the rich worker constructs the
+excluded aggregate lazily, and the result is cached in a small bounded set for
+the workspace generation. When the file watcher then publishes a save for the
+same canonical file URI with text identical to the open snapshot, and that
+save is the sole generation transition, the runtime carries a ready rich
+overlay into the new generation or retargets matching in-flight work. The
+workspace refresh still invalidates other open documents. Missing exclusion
+proof, mismatched text, skipped generations, and unrelated workspace changes
+all use normal invalidation and reprojection. Runtime telemetry records the
+URI, revision, generation transition, ready or pending state, and the reused
+rich job's observed elapsed time as reference evidence. The elapsed value is
+not presented as a counterfactual CPU-savings measurement because it includes
+the original job's scheduling time.
 For punctuation and native VS Code modes, that baseline consumes parser-proven
 generic-angle offsets only when the foreground worker has published them for
 the current snapshot. While foreground syntax is pending, angle operators keep

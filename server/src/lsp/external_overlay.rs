@@ -1,4 +1,6 @@
-use super::{format_paths, LspLogger, LspServerOptions};
+#[cfg(test)]
+use super::file_uri_path_identity;
+use super::{file_path_identity, format_paths, LspLogger, LspServerOptions};
 use crate::index::SymbolIndex;
 use crate::index_cache::{
     load_or_build_game_data_index_with_progress, GameDataIndexCacheConfig, RuntimeIndexSummary,
@@ -13,9 +15,11 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::Instant;
+
+const MAX_DOCUMENT_EXCLUDED_WORKSPACE_INDEXES: usize = 4;
 
 #[derive(Clone)]
 pub(crate) struct ExternalIndexHandle {
@@ -27,8 +31,10 @@ struct ExternalIndexState {
     status: ExternalIndexStatus,
     generation: u64,
     workspace_index: Option<Arc<SymbolIndex>>,
+    workspace_exclusions: BTreeMap<PathBuf, Arc<DocumentExcludedWorkspaceIndex>>,
+    workspace_paths_by_identity: BTreeMap<String, PathBuf>,
     game_data_index: Option<Arc<SymbolIndex>>,
-    workspace_files: BTreeMap<PathBuf, Arc<WorkspaceIndexedFile>>,
+    workspace_files: Arc<BTreeMap<PathBuf, Arc<WorkspaceIndexedFile>>>,
     workspace_live_changes: BTreeMap<PathBuf, Option<Arc<WorkspaceIndexedFile>>>,
     workspace_last_sequences: BTreeMap<String, u64>,
     workspace_generation: u64,
@@ -52,6 +58,32 @@ struct WorkspaceIndexedFile {
     metadata: SourceFileMetadata,
     bytes: usize,
     parse_diagnostics: usize,
+}
+
+#[derive(Debug)]
+pub(crate) struct DocumentExcludedWorkspaceIndex {
+    files: Arc<BTreeMap<PathBuf, Arc<WorkspaceIndexedFile>>>,
+    excluded_path: PathBuf,
+    projected: OnceLock<Option<Arc<SymbolIndex>>>,
+}
+
+impl DocumentExcludedWorkspaceIndex {
+    fn new(
+        files: Arc<BTreeMap<PathBuf, Arc<WorkspaceIndexedFile>>>,
+        excluded_path: PathBuf,
+    ) -> Self {
+        Self {
+            files,
+            excluded_path,
+            projected: OnceLock::new(),
+        }
+    }
+
+    fn projection(&self) -> Option<Arc<SymbolIndex>> {
+        self.projected
+            .get_or_init(|| workspace_aggregate_excluding(&self.files, &self.excluded_path))
+            .clone()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,6 +131,7 @@ pub(crate) struct ExternalIndexSnapshot {
     pub(crate) status: &'static str,
     pub(crate) workspace: Option<Arc<SymbolIndex>>,
     pub(crate) game_data: Option<Arc<SymbolIndex>>,
+    pub(crate) workspace_exclusion: Option<Arc<DocumentExcludedWorkspaceIndex>>,
 }
 
 impl ExternalIndexSnapshot {
@@ -110,6 +143,30 @@ impl ExternalIndexSnapshot {
             (false, false) => "none",
         }
     }
+
+    pub(crate) fn workspace_for_projection(&self) -> Option<Arc<SymbolIndex>> {
+        self.workspace_exclusion
+            .as_ref()
+            .map(|exclusion| exclusion.projection())
+            .unwrap_or_else(|| self.workspace.clone())
+    }
+
+    pub(crate) fn workspace_excludes_document(&self) -> bool {
+        self.workspace_exclusion.is_some()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_document_excluded() -> Self {
+        Self {
+            status: "ready",
+            workspace: None,
+            game_data: None,
+            workspace_exclusion: Some(Arc::new(DocumentExcludedWorkspaceIndex::new(
+                Arc::new(BTreeMap::new()),
+                PathBuf::from("test-document.c"),
+            ))),
+        }
+    }
 }
 
 impl ExternalIndexHandle {
@@ -119,8 +176,10 @@ impl ExternalIndexHandle {
                 status: ExternalIndexStatus::Missing,
                 generation: 0,
                 workspace_index: None,
+                workspace_exclusions: BTreeMap::new(),
+                workspace_paths_by_identity: BTreeMap::new(),
                 game_data_index: None,
-                workspace_files: BTreeMap::new(),
+                workspace_files: Arc::new(BTreeMap::new()),
                 workspace_live_changes: BTreeMap::new(),
                 workspace_last_sequences: BTreeMap::new(),
                 workspace_generation: 0,
@@ -172,6 +231,53 @@ impl ExternalIndexHandle {
             status: state.status.as_str(),
             workspace: state.workspace_index.clone(),
             game_data: state.game_data_index.clone(),
+            workspace_exclusion: None,
+        }
+    }
+
+    /// Returns the external facts used by rich semantic projection without
+    /// the active document's workspace contribution. The excluded aggregate
+    /// is constructed lazily by the rich worker and cached in a small bounded
+    /// set for the current workspace generation. The request path captures
+    /// only immutable file contributions and never rebuilds an index.
+    pub(crate) fn snapshot_for_document_identity(
+        &self,
+        identity: Option<&str>,
+    ) -> ExternalIndexSnapshot {
+        let Some(identity) = identity else {
+            return self.snapshot();
+        };
+        let mut state = self.state.lock().unwrap();
+        let Some(path) = state.workspace_paths_by_identity.get(identity).cloned() else {
+            return ExternalIndexSnapshot {
+                status: state.status.as_str(),
+                workspace: state.workspace_index.clone(),
+                game_data: state.game_data_index.clone(),
+                workspace_exclusion: None,
+            };
+        };
+        let exclusion = state
+            .workspace_exclusions
+            .get(&path)
+            .cloned()
+            .unwrap_or_else(|| {
+                if state.workspace_exclusions.len() >= MAX_DOCUMENT_EXCLUDED_WORKSPACE_INDEXES {
+                    if let Some(evicted) = state.workspace_exclusions.keys().next().cloned() {
+                        state.workspace_exclusions.remove(&evicted);
+                    }
+                }
+                let exclusion = Arc::new(DocumentExcludedWorkspaceIndex::new(
+                    state.workspace_files.clone(),
+                    path.clone(),
+                ));
+                state.workspace_exclusions.insert(path, exclusion.clone());
+                exclusion
+            });
+        ExternalIndexSnapshot {
+            status: state.status.as_str(),
+            workspace: state.workspace_index.clone(),
+            game_data: state.game_data_index.clone(),
+            workspace_exclusion: Some(exclusion),
         }
     }
 
@@ -235,7 +341,7 @@ impl ExternalIndexHandle {
             let (mut files, workspace_generation, startup_pending) = {
                 let state = self.state.lock().unwrap();
                 (
-                    state.workspace_files.clone(),
+                    state.workspace_files.as_ref().clone(),
                     state.workspace_generation,
                     state.workspace_startup_pending,
                 )
@@ -245,6 +351,7 @@ impl ExternalIndexHandle {
                 files.insert(path.clone(), indexed);
             }
             let (workspace_index, workspace_summary) = workspace_aggregate(&files);
+            let workspace_paths_by_identity = workspace_identity_paths(&files);
             let mut state = self.state.lock().unwrap();
             if state.workspace_generation != workspace_generation {
                 continue;
@@ -255,8 +362,10 @@ impl ExternalIndexHandle {
                     .workspace_live_changes
                     .insert(path.clone(), replacement.clone());
             }
-            state.workspace_files = files;
+            state.workspace_files = Arc::new(files);
             state.workspace_index = workspace_index;
+            state.workspace_exclusions.clear();
+            state.workspace_paths_by_identity = workspace_paths_by_identity;
             state.workspace_summary = workspace_summary;
             let game_data_summary = state.game_data_summary.clone();
             recompute_summary(&mut state, game_data_summary);
@@ -300,8 +409,10 @@ pub(crate) fn start_external_index(
             status: ExternalIndexStatus::Building,
             generation: 0,
             workspace_index: None,
+            workspace_exclusions: BTreeMap::new(),
+            workspace_paths_by_identity: BTreeMap::new(),
             game_data_index: None,
-            workspace_files: BTreeMap::new(),
+            workspace_files: Arc::new(BTreeMap::new()),
             workspace_live_changes: BTreeMap::new(),
             workspace_last_sequences: BTreeMap::new(),
             workspace_generation: 0,
@@ -513,6 +624,7 @@ fn run_external_index_thread(
             }
         }
         let (workspace_index, workspace_summary) = workspace_aggregate(&workspace_files);
+        let workspace_paths_by_identity = workspace_identity_paths(&workspace_files);
 
         let mut state = state.lock().unwrap();
         if state.workspace_generation != workspace_generation {
@@ -523,8 +635,10 @@ fn run_external_index_thread(
         state.cache_status = cache_status.clone();
         state.cache_detail = cache_detail.clone();
         state.fingerprint = fingerprint.clone();
-        state.workspace_files = workspace_files;
+        state.workspace_files = Arc::new(workspace_files);
         state.workspace_index = workspace_index;
+        state.workspace_exclusions.clear();
+        state.workspace_paths_by_identity = workspace_paths_by_identity;
         state.workspace_summary = workspace_summary;
         state.workspace_live_changes.clear();
         state.workspace_startup_pending = false;
@@ -761,6 +875,15 @@ fn workspace_root_for_file(roots: &[PathBuf], file: &Path) -> Option<PathBuf> {
         .cloned()
 }
 
+fn workspace_identity_paths(
+    files: &BTreeMap<PathBuf, Arc<WorkspaceIndexedFile>>,
+) -> BTreeMap<String, PathBuf> {
+    files
+        .keys()
+        .filter_map(|path| file_path_identity(path).map(|identity| (identity, path.clone())))
+        .collect()
+}
+
 fn normalize_workspace_path(path: &Path) -> PathBuf {
     path.canonicalize()
         .unwrap_or_else(|_| lexically_normalized_absolute_path(path))
@@ -818,14 +941,35 @@ fn workspace_aggregate(
 ) -> (Option<Arc<SymbolIndex>>, RuntimeIndexSummary) {
     let workspace_index = (!files.is_empty()).then(|| {
         let mut index = SymbolIndex::default();
-        for file in files.values() {
-            index
-                .add_file_contribution(&file.contribution, file.metadata.clone())
-                .expect("only validated workspace contributions are retained");
-        }
+        index
+            .add_file_contributions(
+                files
+                    .values()
+                    .map(|file| (&file.contribution, file.metadata.clone())),
+            )
+            .expect("only validated workspace contributions are retained");
         Arc::new(index)
     });
     (workspace_index, workspace_summary_from_files(files))
+}
+
+fn workspace_aggregate_excluding(
+    files: &BTreeMap<PathBuf, Arc<WorkspaceIndexedFile>>,
+    excluded_path: &Path,
+) -> Option<Arc<SymbolIndex>> {
+    let retained = files
+        .iter()
+        .filter(|(path, _)| path.as_path() != excluded_path)
+        .map(|(_, file)| (&file.contribution, file.metadata.clone()))
+        .collect::<Vec<_>>();
+    if retained.is_empty() {
+        return None;
+    }
+    let mut index = SymbolIndex::default();
+    index
+        .add_file_contributions(retained)
+        .expect("only validated workspace contributions are retained");
+    Some(Arc::new(index))
 }
 
 fn recompute_summary(
@@ -851,6 +995,7 @@ fn recompute_summary(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lsp::file_uri_for_path;
 
     #[test]
     fn workspace_file_ingestion_uses_compiler_owned_semantic_facts() {
@@ -920,6 +1065,116 @@ class Example : BaseExample
         assert_eq!(state.workspace_last_sequences.values().next(), Some(&3));
         assert_eq!(state.workspace_files.len(), 1);
         assert_eq!(state.workspace_generation, 3);
+    }
+
+    #[test]
+    fn document_snapshot_excludes_and_caches_its_workspace_contribution() {
+        let handle = ExternalIndexHandle::missing();
+        let root = std::env::temp_dir().join("reforger-excluded-workspace-snapshot");
+        let current = root.join("Current.c");
+        let other = root.join("Other.c");
+        handle
+            .update_workspace_file(current.clone(), "class Current {}".to_string(), 1)
+            .unwrap();
+        handle
+            .update_workspace_file(other.clone(), "class Other {}".to_string(), 2)
+            .unwrap();
+        let current_uri = file_uri_for_path(&current).unwrap();
+        let current_uri = if cfg!(windows) {
+            let drive_colon = current_uri.rfind(":/").unwrap();
+            format!(
+                "{}%3A{}",
+                &current_uri[..drive_colon],
+                &current_uri[drive_colon + 1..]
+            )
+        } else {
+            current_uri
+        };
+
+        let full = handle.snapshot();
+        assert!(!full.workspace_excludes_document());
+        assert_eq!(
+            full.workspace
+                .as_ref()
+                .unwrap()
+                .classes_by_name("Current")
+                .len(),
+            1
+        );
+
+        let current_identity = file_uri_path_identity(&current_uri);
+        let excluded = handle.snapshot_for_document_identity(current_identity.as_deref());
+        assert!(excluded.workspace_excludes_document());
+        assert!(
+            excluded
+                .workspace_exclusion
+                .as_ref()
+                .unwrap()
+                .projected
+                .get()
+                .is_none(),
+            "capturing a request snapshot must not aggregate the exclusion index"
+        );
+        let excluded_index = excluded.workspace_for_projection().unwrap();
+        assert!(
+            excluded
+                .workspace_exclusion
+                .as_ref()
+                .unwrap()
+                .projected
+                .get()
+                .is_some(),
+            "the background projection boundary builds the lazy exclusion index"
+        );
+        assert!(excluded_index.classes_by_name("Current").is_empty());
+        assert_eq!(excluded_index.classes_by_name("Other").len(), 1);
+
+        let cached = handle.snapshot_for_document_identity(current_identity.as_deref());
+        assert!(Arc::ptr_eq(
+            excluded.workspace_exclusion.as_ref().unwrap(),
+            cached.workspace_exclusion.as_ref().unwrap()
+        ));
+
+        handle
+            .update_workspace_file(other, "class Replacement {}".to_string(), 3)
+            .unwrap();
+        let refreshed = handle.snapshot_for_document_identity(current_identity.as_deref());
+        assert!(!Arc::ptr_eq(
+            cached.workspace_exclusion.as_ref().unwrap(),
+            refreshed.workspace_exclusion.as_ref().unwrap()
+        ));
+        let refreshed_index = refreshed.workspace_for_projection().unwrap();
+        assert_eq!(refreshed_index.classes_by_name("Replacement").len(), 1);
+    }
+
+    #[test]
+    fn document_excluded_workspace_cache_is_bounded() {
+        let handle = ExternalIndexHandle::missing();
+        let root = std::env::temp_dir().join("reforger-bounded-excluded-workspace-snapshots");
+        let paths = (0..6)
+            .map(|index| root.join(format!("File{index}.c")))
+            .collect::<Vec<_>>();
+        for (index, path) in paths.iter().enumerate() {
+            handle
+                .update_workspace_file(
+                    path.clone(),
+                    format!("class Example{index} {{}}"),
+                    index as u64 + 1,
+                )
+                .unwrap();
+        }
+        for path in paths {
+            let uri = file_uri_for_path(&path).unwrap();
+            let identity = file_uri_path_identity(&uri);
+            assert!(handle
+                .snapshot_for_document_identity(identity.as_deref())
+                .workspace_excludes_document());
+        }
+
+        assert_eq!(
+            handle.state.lock().unwrap().workspace_exclusions.len(),
+            MAX_DOCUMENT_EXCLUDED_WORKSPACE_INDEXES
+        );
     }
 
     #[test]

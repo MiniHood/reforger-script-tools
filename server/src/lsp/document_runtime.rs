@@ -2,24 +2,27 @@ use super::request_router::{RequestCommand, RoutedRequest};
 #[cfg(test)]
 use super::semantic_tokens::{
     fast_semantic_tokens_for_cached_analysis,
-    semantic_tokens_for_cached_analysis_with_external_indexes, LspSemanticTokenProjection,
+    semantic_tokens_for_cached_analysis_with_external_indexes,
+    semantic_tokens_for_cached_analysis_with_external_indexes_and_bracket_coloring,
+    LspSemanticTokenProjection,
 };
 use super::{
     clear_diagnostics_message, document_symbol_count, document_symbols_from_cached_analysis,
-    file_index_for_source_with_timings, generic_angle_offsets_for_delimiters, lex,
+    file_index_for_source_with_timings, file_path_identity, file_uri_path_identity,
+    generic_angle_offsets_for_delimiters, lex,
     lexical_semantic_tokens_for_source_with_bracket_coloring, parse_source,
-    publish_diagnostics_message, request_document_uri,
-    semantic_tokens_for_cached_analysis_with_external_indexes_and_bracket_coloring,
-    AdmissionDisposition, AnalysisTask, BracketColoringMode, DebugRequestJob,
-    DidChangeTextDocumentParams, DidOpenTextDocumentParams, DocumentQuery, ExternalIndexSnapshot,
-    FileIndexAnalysis, FileIndexAnalysisTimings, ForegroundDocumentJob, LspSemanticTokensFull,
-    OpenDocument, OpenDocumentAnalysisJob, PositionIndex, RichSemanticTokensJob, RpcMessage,
-    RuntimeEffect, RuntimeWorkExecutor, ServerEvent, TaskClass, TokenProjectionKind,
-    TokenResultDisposition, MAX_PENDING_DOCUMENT_REQUESTS_PER_URI,
+    publish_diagnostics_message, request_document_uri, AdmissionDisposition, AnalysisTask,
+    BracketColoringMode, DebugRequestJob, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
+    DocumentQuery, ExternalIndexSnapshot, FileIndexAnalysis, FileIndexAnalysisTimings,
+    ForegroundDocumentJob, LspSemanticTokensFull, OpenDocument, OpenDocumentAnalysisJob,
+    PositionIndex, RichSemanticTokensJob, RpcMessage, RuntimeEffect, RuntimeWorkExecutor,
+    ServerEvent, TaskClass, TokenProjectionKind, TokenResultDisposition,
+    MAX_PENDING_DOCUMENT_REQUESTS_PER_URI,
 };
 use crate::analysis_runtime::{AdmissionLimits, AnalysisRuntime, UpsertOutcome};
 use serde_json::Value;
 use std::collections::BTreeMap;
+use std::path::Path;
 #[cfg(test)]
 use std::sync::atomic::AtomicBool;
 #[cfg(test)]
@@ -31,6 +34,7 @@ use std::time::{Duration, Instant};
 /// the LSP composition root.
 pub(super) struct DocumentRuntime {
     documents: BTreeMap<String, OpenDocument>,
+    document_path_identities: BTreeMap<String, String>,
     runtime: AnalysisRuntime,
     analysis_scheduler: Option<RuntimeWorkExecutor>,
     deferred_document_requests: BTreeMap<String, Vec<DeferredDocumentRequest>>,
@@ -62,6 +66,11 @@ pub(super) struct SemanticTokensSelection {
     pub(super) ready_to_publish: bool,
 }
 
+pub(super) struct SemanticGenerationPreservation {
+    pub(super) uri: String,
+    pub(super) previous_generation: u64,
+}
+
 #[cfg(test)]
 pub(super) struct DocumentRuntimeTestState {
     pub(super) revision: u64,
@@ -84,6 +93,7 @@ impl DocumentRuntime {
     ) -> Self {
         Self {
             documents: BTreeMap::new(),
+            document_path_identities: BTreeMap::new(),
             runtime: AnalysisRuntime::new(AdmissionLimits::new(64, 64 * 1024 * 1024)),
             analysis_scheduler,
             deferred_document_requests: BTreeMap::new(),
@@ -131,6 +141,7 @@ impl DocumentRuntime {
         &mut self,
         uri: &str,
         external_generation: u64,
+        workspace_excludes_document: bool,
     ) -> (
         AnalysisTask,
         u64,
@@ -143,6 +154,7 @@ impl DocumentRuntime {
         document.semantic_tokens.mark_pending(
             document.revision,
             external_generation,
+            workspace_excludes_document,
             cancel.clone(),
         );
         (
@@ -175,6 +187,27 @@ impl DocumentRuntime {
         Some(DocumentQuery {
             document: self.documents.get(uri)?,
             external_indexes,
+        })
+    }
+
+    pub(super) fn document_path_identity(&self, uri: &str) -> Option<&str> {
+        self.document_path_identities.get(uri).map(String::as_str)
+    }
+
+    pub(super) fn self_save_generation_preservation(
+        &self,
+        path: &Path,
+        text: &str,
+        previous_generation: u64,
+    ) -> Option<SemanticGenerationPreservation> {
+        let path_identity = file_path_identity(path)?;
+        let (uri, _) = self.documents.iter().find(|(uri, document)| {
+            self.document_path_identities.get(*uri) == Some(&path_identity)
+                && document.text.as_ref() == text
+        })?;
+        Some(SemanticGenerationPreservation {
+            uri: uri.clone(),
+            previous_generation,
         })
     }
 
@@ -271,6 +304,7 @@ impl DocumentRuntime {
             document.semantic_tokens.cancel_pending();
             self.runtime.close(uri, document.snapshot.revision());
         }
+        self.document_path_identities.remove(uri);
         if let Some(pending) = self.deferred_document_requests.remove(uri) {
             for request in pending {
                 if let Some(id) = request.routed.message.id {
@@ -301,6 +335,11 @@ impl DocumentRuntime {
         let text = params.text_document.text;
         let bytes = text.len();
         let mut effects = Vec::new();
+        if let Some(identity) = file_uri_path_identity(&uri) {
+            self.document_path_identities.insert(uri.clone(), identity);
+        } else {
+            self.document_path_identities.remove(&uri);
+        }
         if let Some(mut previous) = self.documents.remove(&uri) {
             previous.semantic_tokens.cancel_pending();
             self.runtime.close(&uri, previous.snapshot.revision());
@@ -839,19 +878,19 @@ impl DocumentRuntime {
             return None;
         };
         self.runtime.complete(&task);
-        if let Some(document) = self.documents.get_mut(&uri) {
+        let publish_external_generation = self.documents.get_mut(&uri).and_then(|document| {
             document
                 .semantic_tokens
-                .cancel_pending_if_matches(revision, external_generation);
-        }
+                .cancel_pending_task(revision, external_generation)
+        });
         let mut effects = vec![RuntimeEffect::Log(format!(
-            "semanticTokensRich skipped uri={} revision={} external_generation={} reason={} elapsed_ms={}",
-            uri, revision, external_generation, reason, elapsed_ms
+            "semanticTokensRich skipped uri={} revision={} external_generation={} publish_external_generation={} reason={} elapsed_ms={}",
+            uri, revision, external_generation, publish_external_generation.unwrap_or(external_generation), reason, elapsed_ms
         ))];
         self.reject_deferred_semantic_token_requests(
             &uri,
             Some(revision),
-            Some(external_generation),
+            Some(publish_external_generation.unwrap_or(external_generation)),
             &mut effects,
         );
         Some(effects)
@@ -871,6 +910,7 @@ impl DocumentRuntime {
             revision,
             external_generation,
             external_status,
+            workspace_excludes_document,
             projection,
             elapsed_ms,
         } = event
@@ -895,30 +935,49 @@ impl DocumentRuntime {
                 uri, revision, document.revision, elapsed_ms
             ))]);
         }
-        if current_external_generation != external_generation {
+        let Some(publication) = document.semantic_tokens.publish_generation_for_ready_task(
+            revision,
+            external_generation,
+            current_external_generation,
+            workspace_excludes_document,
+        ) else {
             return Some(vec![RuntimeEffect::Log(format!(
                 "semanticTokensRich discarded uri={} revision={} external_generation={} current_external_generation={} reason=stale-external-index elapsed_ms={}",
                 uri, revision, external_generation, current_external_generation, elapsed_ms
             ))]);
-        }
+        };
         let token_count = projection.token_count;
         let parse_diagnostics = projection.parse_diagnostics;
         let timings = projection.timings.clone();
-        document
-            .semantic_tokens
-            .set_rich(revision, external_generation, projection);
+        document.semantic_tokens.set_rich(
+            revision,
+            publication.external_generation,
+            workspace_excludes_document,
+            elapsed_ms,
+            projection,
+        );
         let mut effects = vec![RuntimeEffect::Log(format!(
-            "semanticTokensRich ready uri={} revision={} external_generation={} tokens={} external_index_status={} parse_diagnostics={} lex_ms={} token_loop_ms={} resolver_ms={} resolver_calls={} type_detail_ms={} declaration_symbols_ms={} delimiter_ms={} delimiter_resolver_calls={} encode_ms={} elapsed_ms={}",
-            uri, revision, external_generation, token_count, external_status, parse_diagnostics,
+            "semanticTokensRich ready uri={} revision={} external_generation={} task_external_generation={} tokens={} external_index_status={} workspace_excludes_document={} parse_diagnostics={} lex_ms={} token_loop_ms={} resolver_ms={} resolver_calls={} type_detail_ms={} declaration_symbols_ms={} delimiter_ms={} delimiter_resolver_calls={} encode_ms={} elapsed_ms={}",
+            uri, revision, publication.external_generation, external_generation, token_count, external_status, workspace_excludes_document, parse_diagnostics,
             timings.lex_ms, timings.token_loop_ms, timings.resolver_ms,
             timings.identifier_resolver_calls, timings.type_detail_overlay_ms,
             timings.symbol_declaration_overlay_ms, timings.delimiter_overlay_ms,
             timings.delimiter_resolver_calls, timings.encode_ms, elapsed_ms
         ))];
+        if publication.self_save_retargeted {
+            effects.push(RuntimeEffect::Log(format!(
+                "semanticTokens self-save reused uri={} revision={} previous_external_generation={} external_generation={} state=completed reference_elapsed_ms={}",
+                uri,
+                revision,
+                external_generation,
+                publication.external_generation,
+                elapsed_ms
+            )));
+        }
         let replayed = self.replay_deferred_semantic_token_requests(
             &uri,
             revision,
-            external_generation,
+            publication.external_generation,
             &mut effects,
         );
         if replayed == 0 {
@@ -967,6 +1026,7 @@ impl DocumentRuntime {
         &mut self,
         generation: u64,
         status: &'static str,
+        preservation: Option<SemanticGenerationPreservation>,
     ) -> Vec<RuntimeEffect> {
         if self.documents.is_empty() {
             self.last_semantic_external_generation = generation;
@@ -975,7 +1035,12 @@ impl DocumentRuntime {
         if generation == self.last_semantic_external_generation {
             return Vec::new();
         }
+        let previous_generation = self.last_semantic_external_generation;
         self.last_semantic_external_generation = generation;
+        let preservation = preservation.filter(|preservation| {
+            preservation.previous_generation == previous_generation
+                && generation == previous_generation.saturating_add(1)
+        });
         let pending_uris = self
             .deferred_semantic_token_requests
             .keys()
@@ -992,7 +1057,39 @@ impl DocumentRuntime {
                 )));
             }
         }
-        for document in self.documents.values_mut() {
+        let mut preserved_documents = 0usize;
+        for (uri, document) in &mut self.documents {
+            let self_save_preservation = preservation
+                .as_ref()
+                .is_some_and(|preservation| preservation.uri == *uri)
+                .then(|| {
+                    document.semantic_tokens.rebind_self_save_rich_generation(
+                        document.revision,
+                        previous_generation,
+                        generation,
+                    )
+                })
+                .flatten();
+            if let Some(self_save_preservation) = self_save_preservation {
+                preserved_documents += 1;
+                effects.push(RuntimeEffect::Log(match self_save_preservation {
+                    super::open_documents::SelfSaveRichPreservation::Ready {
+                        reference_elapsed_ms,
+                    } => format!(
+                        "semanticTokens self-save reused uri={} revision={} previous_external_generation={} external_generation={} state=ready reference_elapsed_ms={}",
+                        uri,
+                        document.revision,
+                        previous_generation,
+                        generation,
+                        reference_elapsed_ms
+                    ),
+                    super::open_documents::SelfSaveRichPreservation::Pending => format!(
+                        "semanticTokens self-save retargeted uri={} revision={} previous_external_generation={} external_generation={} state=pending",
+                        uri, document.revision, previous_generation, generation
+                    ),
+                }));
+                continue;
+            }
             document
                 .semantic_tokens
                 .cancel_pending_for_other_external_generation(generation);
@@ -1001,8 +1098,8 @@ impl DocumentRuntime {
                 .discard_rich_for_other_external_generation(generation);
         }
         effects.push(RuntimeEffect::Log(format!(
-            "semanticTokens external overlay changed generation={} status={} documents={} requesting_refresh=true",
-            generation, status, self.documents.len()
+            "semanticTokens external overlay changed generation={} status={} documents={} preserved_self_save={} requesting_refresh=true",
+            generation, status, self.documents.len(), preserved_documents
         )));
         self.request_semantic_tokens_refresh_effect(&mut effects);
         effects
@@ -1067,30 +1164,43 @@ impl DocumentRuntime {
             .get_mut(uri)
             .expect("document remains present for admitted rich task")
             .semantic_tokens
-            .mark_pending(revision, generation, task.cancellation_token());
+            .mark_pending(
+                revision,
+                generation,
+                external_indexes.workspace_excludes_document(),
+                task.cancellation_token(),
+            );
         let Some(scheduler) = self.analysis_scheduler.as_ref() else {
-            let projection =
-                semantic_tokens_for_cached_analysis_with_external_indexes_and_bracket_coloring(
-                    task.snapshot().text(),
-                    &analysis,
-                    external_indexes.workspace.as_deref(),
-                    external_indexes.game_data.as_deref(),
-                    self.bracket_coloring,
-                );
-            return self
-                .interpret_rich_ready_event(
-                    ServerEvent::RichSemanticTokensReady {
-                        task: task.identity().clone(),
-                        uri: uri.to_string(),
-                        revision,
-                        external_generation: generation,
-                        external_status: external_indexes.status,
-                        projection,
-                        elapsed_ms: start.elapsed().as_millis(),
-                    },
-                    generation,
-                )
-                .expect("constructed rich event is handled");
+            #[cfg(test)]
+            {
+                let workspace = external_indexes.workspace_for_projection();
+                let projection =
+                    semantic_tokens_for_cached_analysis_with_external_indexes_and_bracket_coloring(
+                        task.snapshot().text(),
+                        &analysis,
+                        workspace.as_deref(),
+                        external_indexes.game_data.as_deref(),
+                        self.bracket_coloring,
+                    );
+                return self
+                    .interpret_rich_ready_event(
+                        ServerEvent::RichSemanticTokensReady {
+                            task: task.identity().clone(),
+                            uri: uri.to_string(),
+                            revision,
+                            external_generation: generation,
+                            external_status: external_indexes.status,
+                            workspace_excludes_document: external_indexes
+                                .workspace_excludes_document(),
+                            projection,
+                            elapsed_ms: start.elapsed().as_millis(),
+                        },
+                        generation,
+                    )
+                    .expect("constructed rich event is handled");
+            }
+            #[cfg(not(test))]
+            unreachable!("production rich projection requires the runtime worker");
         };
         scheduler.schedule_rich(RichSemanticTokensJob {
             task,
@@ -1364,6 +1474,7 @@ mod tests {
         ServerEvent, TaskClass,
     };
     use crate::analysis_runtime::UpsertOutcome;
+    use crate::lsp::file_uri_for_path;
     use serde_json::json;
     use std::time::{Duration, Instant};
 
@@ -1386,6 +1497,7 @@ mod tests {
                     status: "missing",
                     workspace: None,
                     game_data: None,
+                    workspace_exclusion: None,
                 },
             )
             .expect("open document query");
@@ -1433,6 +1545,7 @@ mod tests {
                     revision: 1,
                     external_generation: 0,
                     external_status: "missing",
+                    workspace_excludes_document: false,
                     projection,
                     elapsed_ms: 0,
                 },
@@ -1560,6 +1673,7 @@ mod tests {
                 status: "missing",
                 workspace: None,
                 game_data: None,
+                workspace_exclusion: None,
             },
             generation,
         );
@@ -1591,6 +1705,162 @@ mod tests {
         let changed = runtime.select_semantic_tokens(&uri, 0);
         assert_eq!(changed.tokens.result_id, "reforger:2:lexical");
         assert!(changed.rich_work.is_some());
+    }
+
+    #[test]
+    fn self_save_carries_eligible_rich_projection_and_invalidates_other_documents() {
+        let mut runtime = DocumentRuntime::new(None);
+        let saved_uri = "file:///saved.c".to_string();
+        let dependent_uri = "file:///dependent.c".to_string();
+        for uri in [&saved_uri, &dependent_uri] {
+            runtime
+                .open_document(
+                    DidOpenTextDocumentParams {
+                        text_document: super::super::TextDocumentItem {
+                            uri: uri.clone(),
+                            version: 1,
+                            text: "class Example { void Run() {} }".to_string(),
+                        },
+                    },
+                    1,
+                )
+                .expect("open succeeds");
+        }
+        runtime.last_semantic_external_generation = 1;
+        for uri in [&saved_uri, &dependent_uri] {
+            let selection = runtime.select_semantic_tokens(uri, 1);
+            let (_, revision, generation) = selection.rich_work.expect("rich work");
+            runtime.admit_rich_semantic_tokens(
+                uri,
+                revision,
+                ExternalIndexSnapshot::test_document_excluded(),
+                generation,
+            );
+        }
+
+        let effects = runtime.observe_semantic_external_generation(
+            2,
+            "ready",
+            Some(super::SemanticGenerationPreservation {
+                uri: saved_uri.clone(),
+                previous_generation: 1,
+            }),
+        );
+
+        let saved = runtime.select_semantic_tokens(&saved_uri, 2);
+        assert_eq!(saved.projection_mode, "rich-overlay");
+        assert!(saved.rich_work.is_none());
+        let dependent = runtime.select_semantic_tokens(&dependent_uri, 2);
+        assert_eq!(dependent.projection_mode, "lexical-baseline");
+        assert!(dependent.rich_work.is_some());
+        assert!(effects.iter().any(|effect| matches!(
+            effect,
+            RuntimeEffect::Log(message) if message.contains("preserved_self_save=1")
+        )));
+    }
+
+    #[test]
+    fn self_save_retargets_an_eligible_inflight_rich_projection() {
+        let mut runtime = DocumentRuntime::new(None);
+        let uri = "file:///saved-pending.c".to_string();
+        runtime
+            .open_document(
+                DidOpenTextDocumentParams {
+                    text_document: super::super::TextDocumentItem {
+                        uri: uri.clone(),
+                        version: 1,
+                        text: "class Example { void Run() {} }".to_string(),
+                    },
+                },
+                1,
+            )
+            .expect("open succeeds");
+        runtime.last_semantic_external_generation = 1;
+        runtime.select_semantic_tokens(&uri, 1);
+        let (task, revision, projection, cancel) = runtime.test_prepare_rich_event(&uri, 1, true);
+
+        let effects = runtime.observe_semantic_external_generation(
+            2,
+            "ready",
+            Some(super::SemanticGenerationPreservation {
+                uri: uri.clone(),
+                previous_generation: 1,
+            }),
+        );
+        assert!(!cancel.load(std::sync::atomic::Ordering::Relaxed));
+        assert!(effects.iter().any(|effect| matches!(
+            effect,
+            RuntimeEffect::Log(message)
+                if message.contains("semanticTokens self-save retargeted")
+                    && message.contains("state=pending")
+                    && message.contains("previous_external_generation=1")
+                    && message.contains("external_generation=2")
+        )));
+
+        let ready_effects = runtime
+            .interpret_rich_ready_event(
+                ServerEvent::RichSemanticTokensReady {
+                    task: task.identity().clone(),
+                    uri: uri.clone(),
+                    revision,
+                    external_generation: 1,
+                    external_status: "ready",
+                    workspace_excludes_document: true,
+                    projection,
+                    elapsed_ms: 182,
+                },
+                2,
+            )
+            .expect("rich event belongs to runtime");
+        assert!(ready_effects.iter().any(|effect| matches!(
+            effect,
+            RuntimeEffect::Log(message)
+                if message.contains("semanticTokens self-save reused")
+                    && message.contains("state=completed")
+                    && message.contains("reference_elapsed_ms=182")
+        )));
+
+        let selected = runtime.select_semantic_tokens(&uri, 2);
+        assert_eq!(selected.projection_mode, "rich-overlay");
+        assert!(selected.rich_work.is_none());
+    }
+
+    #[test]
+    fn self_save_preservation_requires_matching_open_uri_and_text() {
+        let mut runtime = DocumentRuntime::new(None);
+        let path = std::env::temp_dir().join("reforger-self-save-preservation.c");
+        let uri = file_uri_for_path(&path).unwrap();
+        let uri = if cfg!(windows) {
+            let drive_colon = uri.rfind(":/").unwrap();
+            format!("{}%3A{}", &uri[..drive_colon], &uri[drive_colon + 1..])
+        } else {
+            uri
+        };
+        let source = "class Current {}";
+        runtime
+            .open_document(
+                DidOpenTextDocumentParams {
+                    text_document: super::super::TextDocumentItem {
+                        uri: uri.clone(),
+                        version: 1,
+                        text: source.to_string(),
+                    },
+                },
+                4,
+            )
+            .expect("open succeeds");
+
+        let preservation = runtime
+            .self_save_generation_preservation(&path, source, 4)
+            .expect("matching save");
+        assert_eq!(preservation.uri, uri);
+        assert_eq!(preservation.previous_generation, 4);
+        assert!(runtime
+            .self_save_generation_preservation(&path, "class Stale {}", 4)
+            .is_none());
+        assert!(runtime
+            .self_save_generation_preservation(&path.with_file_name("Other.c"), source, 4)
+            .is_none());
     }
 
     #[test]

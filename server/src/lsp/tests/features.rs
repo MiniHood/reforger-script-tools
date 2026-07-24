@@ -991,7 +991,7 @@ fn semantic_token_cache_is_keyed_by_external_generation() {
     assert_eq!(selection.result_id, "reforger:7:lexical");
     assert_eq!(selection.disposition, TokenResultDisposition::Full);
 
-    cache.set_rich(7, 1, lexical_baseline);
+    cache.set_rich(7, 1, false, 0, lexical_baseline);
 
     assert!(cache
         .rich_for_revision_and_external_generation(7, 1)
@@ -1013,6 +1013,58 @@ fn semantic_token_cache_is_keyed_by_external_generation() {
     assert!(cache
         .rich_for_revision_and_external_generation(7, 1)
         .is_none());
+}
+
+#[test]
+fn semantic_token_cache_rebinds_only_self_excluded_rich_projection() {
+    let projection = LspSemanticTokenProjection {
+        tokens: LspSemanticTokens {
+            data: vec![1, 2, 3],
+        },
+        token_count: 1,
+        parse_diagnostics: 0,
+        timings: LspSemanticTokenTimings::default(),
+    };
+    let mut eligible = open_documents::SemanticTokenCache::default();
+    eligible.select_or_insert_lexical(7, 1, || projection.clone());
+    eligible.set_rich(7, 1, true, 182, projection.clone());
+
+    let preserved = eligible
+        .rebind_self_save_rich_generation(7, 1, 2)
+        .expect("eligible ready projection");
+    assert_eq!(preserved.state(), "ready");
+    assert_eq!(preserved.reference_elapsed_ms(), 182);
+    let rebound = eligible.select_or_insert_lexical(7, 2, || unreachable!());
+    assert_eq!(rebound.kind, TokenProjectionKind::RichOverlay);
+    assert_eq!(rebound.result_id, "reforger:7:rich:2");
+
+    let mut ineligible = open_documents::SemanticTokenCache::default();
+    ineligible.select_or_insert_lexical(7, 1, || projection.clone());
+    ineligible.set_rich(7, 1, false, 0, projection);
+    assert!(ineligible
+        .rebind_self_save_rich_generation(7, 1, 2)
+        .is_none());
+
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut pending = open_documents::SemanticTokenCache::default();
+    pending.select_or_insert_lexical(7, 1, || LspSemanticTokenProjection {
+        tokens: LspSemanticTokens { data: Vec::new() },
+        token_count: 0,
+        parse_diagnostics: 0,
+        timings: LspSemanticTokenTimings::default(),
+    });
+    pending.mark_pending(7, 1, true, cancel.clone());
+    let preserved = pending
+        .rebind_self_save_rich_generation(7, 1, 2)
+        .expect("eligible pending projection");
+    assert_eq!(preserved.state(), "pending");
+    assert!(pending.pending_for_revision_and_external_generation(7, 2));
+    let publication = pending
+        .publish_generation_for_ready_task(7, 1, 2, true)
+        .expect("retargeted task publishes");
+    assert_eq!(publication.external_generation, 2);
+    assert!(publication.self_save_retargeted);
+    assert!(!cancel.load(std::sync::atomic::Ordering::Relaxed));
 }
 
 #[test]
