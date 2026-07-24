@@ -148,6 +148,53 @@ _Avoid_: incremental compiler output, merged run history, partial refresh
 
 ## LSP Runtime
 
+**Reforger Semantic Palette**:
+The default Enforce-only semantic-token foreground palette. It overlays the
+user's selected VS Code theme for Enforce source without selecting, replacing,
+or otherwise changing that theme. A user may opt out or override any palette
+entry through VS Code's native semantic-token color customization. Semantic
+highlighting is enabled for Enforce by default, while an explicit global or
+Enforce-specific VS Code preference to disable it takes precedence. Its
+definition is authoritative; no selectable full Reforger color theme exists.
+The authoritative foreground rules are one native VS Code semantic-token
+customization block; the language engine owns classifications but no colors.
+The shipped colors preserve the established dark-oriented palette. A light
+theme may select theme-specific Reforger Semantic Palette Overrides; an
+official light palette requires its own deliberate design and contrast
+validation. Palette entries set foreground color only; bold, italic,
+underline, strikethrough, and other font presentation remain owned by the
+selected theme and user overrides.
+_Avoid_: Reforger color theme, enforced workbench theme, editor decoration,
+duplicate palette
+
+**Reforger Semantic Palette Override**:
+A user-authored Enforce-qualified semantic-token rule in VS Code's native
+`editor.semanticTokenColorCustomizations` setting. It replaces or augments one
+Reforger Semantic Palette entry without introducing extension-owned color
+settings or affecting another language.
+_Avoid_: Reforger color preference, palette-settings UI, decoration override
+
+**Function Palette Role**:
+The single Reforger Semantic Palette role for both global functions and class
+methods. `function:enforce` controls their shared foreground color. The
+language model may retain the structural distinction required for membership,
+inheritance, overriding, lookup, and other language behavior; that distinction
+does not create a second color role.
+_Avoid_: method color, `method:enforce`, callable palette split
+
+**Reforger Semantic Token Type**:
+A semantic classification emitted for Enforce source that has no adequate VS
+Code standard token type, or where the standard type would replace established
+Reforger vocabulary at the public customization boundary. Each is namespaced,
+formally registered with a standard semantic supertype, and independently
+addressable by a Reforger Semantic Palette Override. The initial types are
+fields, punctuation, and preprocessor text. A field retains that Reforger name
+while inheriting standard property styling as its fallback. Their public
+selectors are `reforgerField:enforce`, `reforgerPunctuation:enforce`, and
+`reforgerPreprocessor:enforce`; published selector names are compatibility
+contracts.
+_Avoid_: undeclared token type, generic variable, generic operator
+
 **Scope Delimiter**:
 A matched Enfusion curly-brace, parenthesis, square-bracket, or parser-proven generic-angle-bracket pair whose presentation is classified by its immediate semantic anchor when one exists, otherwise by the syntactic scope that contains it.
 Calls and index expressions use their callable or indexed symbol as that anchor; a block uses the declaration or control header that introduces it.
@@ -171,10 +218,11 @@ _Avoid_: bracket formatting, rainbow bracket
 The single application-scoped user preference that selects Scope Delimiter
 presentation consistently across VS Code windows.
 `semantic` is the default and uses each delimiter's semantic owner;
-`punctuation` uses the active theme's ordinary punctuation color for every code
-delimiter; `vscode` delegates delimiter foreground and matching presentation to
-VS Code. The first two modes retain custom innermost-pair highlighting. No mode
-defines a hard-coded color.
+`punctuation` uses the Reforger Semantic Palette's punctuation color for every
+code delimiter; `vscode` delegates delimiter foreground and matching
+presentation to VS Code. The first two modes retain custom innermost-pair
+highlighting and layer their Enforce-only foregrounds over the selected theme.
+No mode defines a hard-coded server color.
 
 **Document Runtime**:
 The owner of open-document snapshots, their analysis lifecycle, and the
