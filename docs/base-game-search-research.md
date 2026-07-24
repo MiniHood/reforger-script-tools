@@ -217,6 +217,90 @@ semantic engine projection, `search_reference` is bounded corpus text search,
 and `reference_catalogue` is stable context. None requires Workbench to be
 running.
 
+### One federated reference-search contract
+
+Use one public `search_reference` tool across extracted game source and the
+official Reforger wiki/document corpus. Keep `search_symbols` separate because
+it is a semantic language query, but do not add parallel
+`search_game_source` and `search_wiki` tools for corpora that share the same
+read-only research intent and result shape. The input should require `query`
+and accept `evidenceKinds`, filters, `limit`, and `cursor`. Use the stable
+evidence kinds `game-data` and `official-wiki`; here `official-wiki` means
+official Reforger documentation/wiki pages, never Wikidata.org.
+
+This keeps the public contract small while preserving separate internal
+retrievers. Split the public tool later only if a source proves to require a
+materially different authorization, availability, query language, latency, or
+result schema. `search_reference` is a valid durable MCP name: current MCP
+guidance says tool names should be unique within a server and use only ASCII
+letters, digits, underscores, hyphens, or dots
+([MCP tools and names](https://modelcontextprotocol.io/specification/2025-11-25/server/tools#tool-names)).
+
+Publish object-shaped `inputSchema` and `outputSchema` definitions and return
+the result in `structuredContent`; when an output schema is declared, the
+server must conform to it. Also return the serialized JSON as text for
+backwards compatibility, then add `resource_link` content blocks for hits that
+can be read through MCP
+([MCP structured tool results](https://modelcontextprotocol.io/specification/2025-11-25/server/tools#structured-content),
+[MCP resource links](https://modelcontextprotocol.io/specification/2025-11-25/server/tools#resource-links)).
+
+Use one shared result envelope:
+
+| Field group | Stable contract |
+| --- | --- |
+| Page | `results`, `returned`, optional `total`, `nextCursor`, and `catalogueRevision`. |
+| Identity | Stable hit ID, `evidenceKind`, evidence authority, document/symbol kind, logical resource URI, and title or logical path. |
+| Match | Bounded excerpt, exact range or document anchor, matched fields, global rank, and within-kind rank. |
+| Provenance | For game data: Reforger/game-data version and content hash. For official docs: canonical official URL, source revision or retrieval timestamp, and content hash. |
+
+Do not rely on generic MCP resource annotations as the provenance record:
+resources expose useful display hints such as `audience`, `priority`, and
+`lastModified`, but version, authority, retrieval identity, and content hash
+must remain explicit fields in the shared DTO
+([MCP resource annotations](https://modelcontextprotocol.io/specification/2025-11-25/server/resources#annotations)).
+The logical resource URI should use a custom server-mediated scheme and retain
+the corpus version; MCP permits custom RFC 3986 schemes and recommends `https`
+only when the client can fetch the resource directly
+([MCP resource URI schemes](https://modelcontextprotocol.io/specification/2025-11-25/server/resources#common-uri-schemes)).
+
+Rank inside each evidence kind first, then fuse deterministically. Exact symbol,
+API, path, or documentation-title matches should precede exact body-text
+matches, which should precede fuzzy or later semantic matches. Combine
+source-local ranks through a documented interleave or rank-fusion rule; never
+compare raw scores from unlike retrievers or erase source identity. A source
+preference may break ties for a proven intent—game source for declaration facts,
+official documentation for documented workflows—but every hit retains its
+authority so ranking is never mistaken for evidence strength.
+
+MCP's standard pagination contract applies to list operations rather than
+arbitrary `tools/call` results. Define `cursor` and `nextCursor` explicitly in
+the search tool schemas while following the same opaque-cursor rules: bind a
+cursor to the normalized query, filters, and catalogue revision; let the server
+choose page size; reject stale or modified cursors instead of silently
+continuing against another corpus generation
+([MCP pagination](https://modelcontextprotocol.io/specification/2025-11-25/server/utilities/pagination)).
+
+For an immutable locally installed catalogue, annotate `search_reference` and
+`read_reference` with `readOnlyHint: true` and `openWorldHint: false`. Omit
+`destructiveHint` and `idempotentHint`, which the schema defines as meaningful
+only for non-read-only tools. These annotations are client hints, not
+enforcement; the server must still validate URIs and maintain its read-only
+boundary
+([MCP `ToolAnnotations`](https://modelcontextprotocol.io/specification/2025-11-25/schema#toolannotations)).
+If official pages are queried live rather than acquired into the immutable
+catalogue, `openWorldHint` must become `true` for the federated tool or the live
+operation must be split into a separately named tool.
+
+Deliver the framework without changing its public shape:
+
+1. Ship deterministic lexical/path/symbol search for `game-data` with the
+   shared DTO, provenance, cursors, and resource reads.
+2. Add licensed, versioned acquisition and indexing for `official-wiki`, then
+   admit it through the same `evidenceKinds` filter and result envelope.
+3. Enable default cross-kind fusion only after relevance tests; add semantic or
+   hybrid ranking later as an optional signal without weakening exact search or
+   citation fidelity.
+
 ## Suggested delivery order
 
 1. Prove the core Rust symbol query against the existing workspace and
