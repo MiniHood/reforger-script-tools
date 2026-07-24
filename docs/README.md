@@ -34,6 +34,8 @@ implementation slice is progress, not a completed ticket.
   the ownership policy for atomic typing assists.
 - [MCP server exploration journal](mcp-server-research.md): proposed capability
   boundary and feature catalogue for a local Reforger MCP server.
+- [Base-game source search research](base-game-search-research.md): language
+  index ownership, VS Code search surfaces, and MCP adapter guidance.
 - [Workbench NET API exploration journal](workbench-net-api-research.md):
   extracted protocol evidence, adapter boundary, and validation backlog.
 - [Workbench compiler-validation research](workbench-compiler-validation-research.md):
