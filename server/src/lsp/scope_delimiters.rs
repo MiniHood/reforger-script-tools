@@ -43,6 +43,7 @@ pub(crate) fn semantic_scope_delimiters_for_analysis(
     source: &str,
     analysis: &FileIndexAnalysis,
     external_indexes: ExternalIndexes<'_>,
+    pre_resolved_identifier_kinds: &BTreeMap<(usize, usize), Option<SymbolKind>>,
     resolve_dynamic_owners: bool,
     should_cancel: Option<&dyn Fn() -> bool>,
 ) -> Option<ScopeDelimiterProjection> {
@@ -67,7 +68,8 @@ pub(crate) fn semantic_scope_delimiters_for_analysis(
         external_indexes.ordered(),
     );
     let mut proven = Vec::with_capacity(delimiters.len());
-    let mut dynamic_owners = 0usize;
+    let mut dynamic_owner_attempts = 0usize;
+    let mut dynamic_owner_resolver_calls = 0usize;
     for (index, delimiter) in delimiters.into_iter().enumerate() {
         if index % 64 == 0 && should_cancel.is_some_and(|should_cancel| should_cancel()) {
             return None;
@@ -76,17 +78,28 @@ pub(crate) fn semantic_scope_delimiters_for_analysis(
             proven.push(delimiter);
             continue;
         }
-        if dynamic_owners >= MAX_RESOLVED_SCOPE_DELIMITER_OWNERS {
+        if dynamic_owner_attempts >= MAX_RESOLVED_SCOPE_DELIMITER_OWNERS {
             continue;
         }
-        dynamic_owners += 1;
+        dynamic_owner_attempts += 1;
+        if let Some(candidate_kind) =
+            pre_resolved_identifier_kinds.get(&(delimiter.anchor.start, delimiter.anchor.end))
+        {
+            if candidate_kind.is_some_and(|candidate_kind| {
+                delimiter_anchor_kind_is_proven(&delimiter, candidate_kind)
+            }) {
+                proven.push(delimiter);
+            }
+            continue;
+        }
+        dynamic_owner_resolver_calls += 1;
         if delimiter_anchor_is_proven(&delimiter, &analysis.lexer_tokens, &resolver) {
             proven.push(delimiter);
         }
     }
     Some(ScopeDelimiterProjection {
         delimiters: proven,
-        dynamic_owner_resolver_calls: dynamic_owners,
+        dynamic_owner_resolver_calls,
     })
 }
 
@@ -467,17 +480,21 @@ fn delimiter_anchor_is_proven(
     else {
         return false;
     };
+    delimiter_anchor_kind_is_proven(delimiter, candidate.kind)
+}
+
+fn delimiter_anchor_kind_is_proven(delimiter: &ScopeDelimiter, candidate_kind: SymbolKind) -> bool {
     match delimiter.anchor_kind {
         ScopeDelimiterAnchorKind::SemanticToken | ScopeDelimiterAnchorKind::Punctuation => true,
         ScopeDelimiterAnchorKind::ResolvedCall => matches!(
-            candidate.kind,
+            candidate_kind,
             SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor
         ),
         ScopeDelimiterAnchorKind::ResolvedConstructor => {
-            matches!(candidate.kind, SymbolKind::Class | SymbolKind::Typedef)
+            matches!(candidate_kind, SymbolKind::Class | SymbolKind::Typedef)
         }
         ScopeDelimiterAnchorKind::ResolvedIndex => !matches!(
-            candidate.kind,
+            candidate_kind,
             SymbolKind::Class
                 | SymbolKind::TypeParameter
                 | SymbolKind::Enum
@@ -611,8 +628,17 @@ fn matching_delimiters(opener: TokenKind, closer: TokenKind) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{active_scope_delimiters, scope_delimiters_for_syntax, ScopeDelimiterAnchorKind};
-    use crate::{lexer::lex, parser::parse_source};
+    use super::{
+        active_scope_delimiters, scope_delimiters_for_syntax,
+        semantic_scope_delimiters_for_analysis, ScopeDelimiterAnchorKind,
+    };
+    use crate::{
+        lexer::lex,
+        lsp::{external_indexes::ExternalIndexes, file_index_for_source},
+        model::SymbolKind,
+        parser::parse_source,
+    };
+    use std::collections::BTreeMap;
 
     #[test]
     fn initializer_braces_keep_active_pair_matching_with_punctuation_color() {
@@ -636,6 +662,46 @@ mod tests {
         assert_eq!(
             active_scope_delimiters(&delimiters, &[closer]),
             vec![*initializer]
+        );
+    }
+
+    #[test]
+    fn reuses_pre_resolved_identifier_kinds_without_changing_delimiters() {
+        let source = "void Known() {}\nvoid Run() { Known(); Missing(); }\n";
+        let analysis = file_index_for_source(source);
+        let without_reuse = semantic_scope_delimiters_for_analysis(
+            source,
+            &analysis,
+            ExternalIndexes::new(None, None),
+            &BTreeMap::new(),
+            true,
+            None,
+        )
+        .expect("delimiter projection");
+        let known_start = source.find("Known();").expect("known call");
+        let missing_start = source.find("Missing();").expect("missing call");
+        let pre_resolved = BTreeMap::from([
+            (
+                (known_start, known_start + "Known".len()),
+                Some(SymbolKind::Function),
+            ),
+            ((missing_start, missing_start + "Missing".len()), None),
+        ]);
+
+        let with_reuse = semantic_scope_delimiters_for_analysis(
+            source,
+            &analysis,
+            ExternalIndexes::new(None, None),
+            &pre_resolved,
+            true,
+            None,
+        )
+        .expect("delimiter projection");
+
+        assert_eq!(with_reuse.delimiters, without_reuse.delimiters);
+        assert_eq!(
+            without_reuse.dynamic_owner_resolver_calls - with_reuse.dynamic_owner_resolver_calls,
+            2
         );
     }
 }

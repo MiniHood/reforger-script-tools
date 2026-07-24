@@ -481,6 +481,7 @@ fn semantic_raw_tokens(
 
     let mut resolver_elapsed = Duration::default();
     let mut identifier_resolver_calls = 0usize;
+    let mut resolved_identifier_kinds = BTreeMap::new();
     let token_loop_start = Instant::now();
     for (token_index, token) in lexer_tokens.iter().enumerate() {
         if token_index % 64 == 0 && should_cancel.is_some_and(|should_cancel| should_cancel()) {
@@ -577,6 +578,13 @@ fn semantic_raw_tokens(
                 .as_ref()
                 .and_then(|resolver| resolver.resolve_identifier_token(token.span));
             resolver_elapsed += resolver_start.elapsed();
+            resolved_identifier_kinds.insert(
+                (token.span.start, token.span.end),
+                resolution
+                    .as_ref()
+                    .and_then(|resolution| resolution.selected.as_ref())
+                    .map(|candidate| candidate.kind),
+            );
             if let Some(resolution) = resolution {
                 if let Some(candidate) = resolution.selected {
                     if let Some(token_type) = candidate_semantic_type(
@@ -646,10 +654,13 @@ fn semantic_raw_tokens(
     let declaration_overlay_elapsed = declaration_overlay_start.elapsed();
 
     let delimiter_overlay_start = Instant::now();
+    // Reuse selected kinds resolved earlier in this same immutable snapshot.
+    // Dynamic delimiter proof otherwise repeats the identical resolver query.
     let delimiter_projection = super::scope_delimiters::semantic_scope_delimiters_for_analysis(
         source,
         analysis,
         ExternalIndexes::new(workspace_index, game_data_index),
+        &resolved_identifier_kinds,
         mode == SemanticTokenMode::Rich,
         should_cancel,
     )?;
