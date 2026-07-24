@@ -611,7 +611,7 @@ suite('extension activation', () => {
 		);
 	});
 
-	test('clears active scope decorations before awaiting current or stale refreshes', async () => {
+	test('keeps active scope decorations until a current refresh replaces them', async () => {
 		const document = await vscode.workspace.openTextDocument({
 			language: 'enforce',
 			content: 'class Example {}',
@@ -631,7 +631,7 @@ suite('extension activation', () => {
 			() => true,
 			ranges => applied.push([...ranges]),
 		);
-		assert.deepStrictEqual(applied, [[]], 'the prior pair clears synchronously');
+		assert.deepStrictEqual(applied, [], 'the prior pair remains while the request is pending');
 		releaseResponse?.({
 			version: document.version,
 			pairs: [{
@@ -640,12 +640,10 @@ suite('extension activation', () => {
 			}],
 		});
 		await refresh;
-		assert.strictEqual(applied.length, 2);
-		assert.deepStrictEqual(applied[0], []);
-		assert.deepStrictEqual(applied[1], [
+		assert.deepStrictEqual(applied, [[
 			new vscode.Range(0, 14, 0, 15),
 			new vscode.Range(0, 15, 0, 16),
-		]);
+		]]);
 
 		const staleApplied: vscode.Range[][] = [];
 		await refreshActiveScopeDelimiterDecorationForSnapshot(
@@ -660,7 +658,22 @@ suite('extension activation', () => {
 			() => true,
 			ranges => staleApplied.push([...ranges]),
 		);
-		assert.deepStrictEqual(staleApplied, [[]]);
+		assert.deepStrictEqual(staleApplied, []);
+
+		const currentEmptyApplied: vscode.Range[][] = [];
+		await refreshActiveScopeDelimiterDecorationForSnapshot(
+			document,
+			[selection],
+			{
+				sendRequest: async <Result>() => ({
+					version: document.version,
+					pairs: [],
+				}) as Result,
+			},
+			() => true,
+			ranges => currentEmptyApplied.push([...ranges]),
+		);
+		assert.deepStrictEqual(currentEmptyApplied, [[]], 'a current terminal response clears the prior pair');
 	});
 
 	test('reports pending scope delimiter projections for a lifecycle retry', async () => {
@@ -685,7 +698,7 @@ suite('extension activation', () => {
 		);
 
 		assert.strictEqual(foregroundReady, false);
-		assert.deepStrictEqual(applied, [[], []]);
+		assert.deepStrictEqual(applied, []);
 	});
 
 	test('retries active scope delimiters when foreground syntax becomes ready', async () => {

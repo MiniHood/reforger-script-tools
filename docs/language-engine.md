@@ -80,8 +80,11 @@ whole-document semantic analysis is pending. The response contains the document
 version, foreground-readiness state, and delimiter ranges; semantic ownership
 and classification remain in Rust tokens while VS Code owns their foreground
 presentation. The editor bridge retries a current pending snapshot until its
-foreground projection is ready; a rejected
-foreground task returns a terminal empty result rather than a retry signal.
+foreground projection is ready. While a request or foreground retry is
+pending, the bridge preserves the settled active-pair decoration; only a
+current terminal response atomically replaces or clears it. A stale response
+does not alter the visible pair. A rejected foreground task returns a terminal
+empty result rather than a retry signal.
 After every source edit, the current snapshot's lexical baseline is cached as
 an internal input to rich projection, but it is not published as an interim
 full-document response. The semantic-token request remains pending while the

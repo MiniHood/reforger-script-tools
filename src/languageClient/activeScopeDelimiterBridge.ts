@@ -87,14 +87,13 @@ export async function refreshActiveScopeDelimiterDecorationForSnapshot(
 	isCurrent: () => boolean,
 	setRanges: (ranges: readonly vscode.Range[]) => void,
 ): Promise<boolean> {
-	setRanges([]);
 	const projection = await activeScopeDelimiterProjectionForSnapshot(
 		document,
 		selections,
 		client,
 		isCurrent,
 	);
-	if (projection && isCurrent()) {
+	if (projection && !projection.pending && isCurrent()) {
 		setRanges(projection.ranges);
 	}
 	return projection?.pending !== true;

@@ -220,6 +220,9 @@ settled semantic presentation until the current rich projection replaces it;
 inserted text never inherits a delimiter's foreground.
 The active Scope Delimiter is the innermost matched pair that contains the caret.
 Its active range includes the caret immediately after its opener or immediately before its closer.
+Its active-pair decoration remains settled while a current projection or
+foreground retry is pending, then a current terminal response atomically
+replaces or clears it. Stale responses never change the visible pair.
 _Avoid_: bracket formatting, rainbow bracket
 
 **Bracket Coloring Mode**:
