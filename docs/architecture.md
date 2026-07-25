@@ -56,7 +56,7 @@ MCP client
   -> existing validated disk cache or extracted source rebuild
 ```
 
-The first shipped tool, `game_data_status`, lazily initializes that catalogue
+The Game Data `game_data_status` tool lazily initializes that catalogue
 and reports its revision, provenance, coverage, counts, cache outcome, limits,
 warnings, and recovery without physical paths. Concurrent calls in one process
 join one initialization. The catalogue revision hashes the canonical logical
@@ -72,6 +72,13 @@ work. Concurrent LSP and MCP processes publish the same atomic derived cache;
 a losing writer may keep its in-memory index only after validating the winner.
 Legacy cache formats that cannot prove the current source-byte digest rebuild
 from source instead of being relabelled as current.
+
+`official_wiki_status` independently locates `resources/official-wiki` from
+the packaged executable rather than the process working directory. It directly
+validates the Markdown source of truth, retains only bounded integrity and
+navigation facts, derives an immutable corpus revision, and reports malformed
+pages without exposing installation paths. The rough `wiki-index.md` is never
+an authoritative page; `index.md` remains one.
 
 The broader flow below remains the expansion boundary. It must preserve the
 same ownership rules: Rust remains the Enfusion language authority, direct

@@ -14,6 +14,7 @@ pub mod index_query;
 pub mod lexer;
 pub mod lsp;
 pub mod mcp;
+pub mod official_wiki;
 pub mod model;
 pub mod parser;
 pub mod preprocessor;

@@ -123,6 +123,7 @@ fn parse_mcp_args(mut args: impl Iterator<Item = String>) -> Result<McpServerOpt
         metadata_path: None,
         cache_path: None,
     };
+    let mut official_wiki_root = None;
 
     while let Some(argument) = args.next() {
         match argument.as_str() {
@@ -133,11 +134,12 @@ fn parse_mcp_args(mut args: impl Iterator<Item = String>) -> Result<McpServerOpt
                 game_data.metadata_path = Some(path_value(&mut args, "--game-data-metadata")?)
             }
             "--index-cache" => game_data.cache_path = Some(path_value(&mut args, "--index-cache")?),
+            "--official-wiki-root" => official_wiki_root = Some(path_value(&mut args, "--official-wiki-root")?),
             _ => return Err(format!("unknown MCP argument '{argument}'")),
         }
     }
 
-    Ok(McpServerOptions { game_data })
+    Ok(McpServerOptions { game_data, official_wiki_root })
 }
 
 fn path_value(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<PathBuf, String> {
@@ -156,7 +158,7 @@ fn string_value(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<S
 
 fn print_help() {
     println!(
-        "Usage:\n  reforger_language_server [LSP options]\n  reforger_language_server mcp [MCP options]\n  reforger_language_server mcp-api\n\nLSP options:\n  --log <path>\n  --diagnostic-log <path>\n  --game-data-scripts <path>\n  --game-data-metadata <path>\n  --index-cache <path>\n  --workspace-scripts <path> (repeatable)\n  --bracket-coloring <semantic|punctuation|vscode>\n\nMCP options:\n  --game-data-scripts <path>\n  --game-data-metadata <path>\n  --index-cache <path>"
+        "Usage:\n  reforger_language_server [LSP options]\n  reforger_language_server mcp [MCP options]\n  reforger_language_server mcp-api\n\nLSP options:\n  --log <path>\n  --diagnostic-log <path>\n  --game-data-scripts <path>\n  --game-data-metadata <path>\n  --index-cache <path>\n  --workspace-scripts <path> (repeatable)\n  --bracket-coloring <semantic|punctuation|vscode>\n\nMCP options:\n  --game-data-scripts <path>\n  --game-data-metadata <path>\n  --index-cache <path>\n  --official-wiki-root <development/test path>"
     );
 }
 

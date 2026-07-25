@@ -71,7 +71,7 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
         .pointer("/result/tools")
         .and_then(Value::as_array)
         .expect("tools/list result");
-    assert_eq!(listed.len(), 4);
+    assert_eq!(listed.len(), 5);
     assert_eq!(listed[0].get("name"), Some(&json!("game_data_status")));
     assert_eq!(
         listed[0].pointer("/annotations/readOnlyHint"),
@@ -111,6 +111,15 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
         Some(&json!("inspect_game_data_symbol"))
     );
     assert_eq!(listed[3].get("name"), Some(&json!("read_game_data_source")));
+    assert_eq!(listed[4].get("name"), Some(&json!("official_wiki_status")));
+    assert_eq!(
+        listed[4].pointer("/annotations/readOnlyHint"),
+        Some(&json!(true))
+    );
+    assert_eq!(
+        listed[4].pointer("/inputSchema/additionalProperties"),
+        Some(&json!(false))
+    );
 
     client.send(json!({
         "jsonrpc": "2.0",
@@ -466,6 +475,90 @@ fn unavailable_status_and_malformed_calls_are_sanitized_and_process_isolated() {
 }
 
 #[test]
+fn official_wiki_status_reports_a_validated_packaged_style_corpus() {
+    let fixture = TempFixture::new("official_wiki_status");
+    let wiki_root = fixture.path().join("official-wiki");
+    fs::create_dir_all(wiki_root.join("Guides")).expect("create wiki fixture");
+    fs::write(
+        wiki_root.join("index.md"),
+        "# [Official index](https://community.bistudio.com/wiki/Category:Arma_Reforger)\n\nAuthoritative index.\n",
+    )
+    .expect("write index");
+    fs::write(
+        wiki_root.join("Guides").join("Getting Started.md"),
+        "# [Getting Started](https://community.bistudio.com/wiki/Arma_Reforger:Getting_Started)\n\nStart here.\n",
+    )
+    .expect("write page");
+    fs::write(wiki_root.join("wiki-index.md"), "# Wiki Markdown Index\n")
+        .expect("write excluded index");
+    fs::write(
+        wiki_root.join("Guides").join("untrusted.md"),
+        "# [Untrusted](https://example.com/wiki/not-authoritative)\n",
+    )
+    .expect("write malformed page");
+
+    let mut client = McpClient::spawn(&[
+        "mcp",
+        "--official-wiki-root",
+        wiki_root.to_str().expect("utf-8 wiki root"),
+    ]);
+    client.initialize(1);
+    client.send(json!({
+        "jsonrpc":"2.0", "id":2, "method":"tools/call",
+        "params":{"name":"official_wiki_status", "arguments":{}}
+    }));
+    let response = client.response(2);
+    let status = response
+        .pointer("/result/structuredContent")
+        .expect("structured official wiki status");
+    assert_eq!(status.get("available"), Some(&json!(true)));
+    assert_eq!(status.get("source"), Some(&json!("evidence-catalogue")));
+    assert_eq!(status.get("fileCount"), Some(&json!(2)));
+    assert_eq!(status.get("invalidFileCount"), Some(&json!(1)));
+    assert_eq!(status.get("invalidFiles"), Some(&json!(["Guides/untrusted.md"])));
+    assert_eq!(status.get("excludedFiles"), Some(&json!(["wiki-index.md"])));
+    assert!(status
+        .get("corpusRevision")
+        .and_then(Value::as_str)
+        .is_some_and(|revision| revision.starts_with("ow1:")));
+    assert_eq!(
+        response.pointer("/result/content/0/text"),
+        Some(&Value::String(status.to_string()))
+    );
+    client.close_stdin();
+    assert!(client.wait_for_exit(Duration::from_secs(3)));
+}
+
+#[test]
+fn official_wiki_status_resolves_resources_from_an_installed_extension_layout() {
+    let fixture = TempFixture::new("installed_official_wiki");
+    let extension = fixture.path().join("extension");
+    let runtime = extension.join("dist").join("server").join("test-platform").join("reforger_language_server.exe");
+    let wiki_root = extension.join("resources").join("official-wiki");
+    fs::create_dir_all(runtime.parent().expect("runtime parent")).expect("create runtime directory");
+    fs::create_dir_all(&wiki_root).expect("create installed corpus");
+    fs::copy(env!("CARGO_BIN_EXE_reforger_language_server"), &runtime).expect("copy packaged runtime");
+    fs::write(
+        wiki_root.join("index.md"),
+        "# [Official index](https://community.bistudio.com/wiki/Category:Arma_Reforger)\n",
+    )
+    .expect("write installed index");
+
+    let mut client = McpClient::spawn_program(&runtime, &["mcp"]);
+    client.initialize(1);
+    client.send(json!({
+        "jsonrpc":"2.0", "id":2, "method":"tools/call",
+        "params":{"name":"official_wiki_status", "arguments":{}}
+    }));
+    assert_eq!(
+        client.response(2).pointer("/result/structuredContent/available"),
+        Some(&json!(true))
+    );
+    client.close_stdin();
+    assert!(client.wait_for_exit(Duration::from_secs(3)));
+}
+
+#[test]
 fn cancellation_and_eof_with_in_flight_initialization_shutdown_cleanly() {
     let fixture = TempFixture::new("mcp_cancel");
     let scripts_root = fixture.path().join("scripts");
@@ -688,8 +781,20 @@ impl McpClient {
         Self::spawn_with_env(args, &[])
     }
 
+    fn spawn_program(program: &Path, args: &[&str]) -> Self {
+        Self::spawn_program_with_env(program, args, &[])
+    }
+
     fn spawn_with_env(args: &[&str], environment: &[(&str, &str)]) -> Self {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_reforger_language_server"));
+        Self::spawn_program_with_env(
+            Path::new(env!("CARGO_BIN_EXE_reforger_language_server")),
+            args,
+            environment,
+        )
+    }
+
+    fn spawn_program_with_env(program: &Path, args: &[&str], environment: &[(&str, &str)]) -> Self {
+        let mut command = Command::new(program);
         command.args(args);
         for (name, value) in environment {
             command.env(name, value);

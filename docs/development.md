@@ -51,6 +51,17 @@ running VS Code process. Restart that MCP process after Game Data changes.
 The generated [MCP API Reference](mcp-api.md) is the inspectable agent-facing
 contract; standard `tools/list` remains authoritative at runtime.
 
+## Official Wiki Corpus
+
+`resources/official-wiki/` contains copied Markdown from the official Arma
+Reforger pages on `community.bistudio.com`. It remains the packaged source of
+truth for the MCP Official Wiki authority; preserve each page's canonical
+source URL in its H1 when updating it. Before redistributing an updated corpus,
+review the upstream site terms and attribution requirements, retain required
+notices, run the corpus validation/package tests, and verify the generated MCP
+API reference. `wiki-index.md` is a rough AI navigation aid only and is never
+authoritative runtime metadata.
+
 For a repeatable release-binary LSP initialization measurement, run:
 
 ```powershell
