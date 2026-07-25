@@ -10,6 +10,11 @@ directory, the complete supporting runtime in
 [`engine/Sandbox.Tools/Mcp`](https://github.com/Facepunch/sbox-public/tree/724eaae0875d6203d230a4056e471c9e8072a9ed/engine/Sandbox.Tools/Mcp),
 and every other MCP reference found by searching the pinned repository.
 
+This is a comparative example bank, not a Reforger implementation plan. The
+[MCP server research](mcp-server-research.md) and Workbench NET API research
+own Reforger architecture and delivery decisions. Do not infer an adopted
+transport, discovery model, tool shape, or roadmap from this source.
+
 The source review corrects an important ambiguity in the earlier documentation
 review. At this commit, the server has **seven permanent host tools** and
 **45 live first-party domain tools**. The host advertises only the seven stable
@@ -450,91 +455,26 @@ It tells the agent to:
 - retain GUIDs and asset paths returned by authoritative lookup tools; and
 - expect every scene edit to push an undo step.
 
-This is important architecture, not prompt decoration. Cross-cutting facts live
-once at server initialization instead of being repeated inconsistently in
+Within s&box, this is architecture rather than prompt decoration. Cross-cutting
+facts live once at initialization instead of being repeated inconsistently in
 every tool description. Tool-specific facts remain with the tool schema.
 
-## What Reforger Script Tools should borrow
+## Optional ideas to evaluate
 
-### 1. Make AI-friendliness a first-class MCP requirement
+These observations are prompts for future evaluation, not requirements. Keep
+only an idea that matches Reforger evidence, the existing ownership boundaries,
+and a demonstrated user workflow.
 
-The MCP interface should be optimized for an agent's complete
-observe-discover-act-verify loop, not merely expose internal functions. Every
-public tool should have:
+| s&box observation | Possible question for Reforger | Not an adoption decision |
+| --- | --- | --- |
+| Strong descriptions and bounded structured results | Does a proposed named tool give an agent enough identity, paging, and recovery information? | Do not copy its dynamic registry. |
+| Status, diagnostics, and Undo support an observe-act-verify loop | Can a typed Workbench operation return authoritative status and native Undo evidence? | Do not infer that an endpoint or handler already exists. |
+| A small stable front door limits context | Does a real Reforger tool surface require progressive discovery? | Do not add toolset search, generic invocation, or reflection without measurement. |
+| Optional image results help visual editor tasks | Is there a proven bounded Workbench image-transfer contract? | Do not copy Streamable HTTP, image behavior, or its editor process model. |
 
-- a stable verb-oriented name;
-- a description that states what it returns and how returned identifiers are
-  consumed;
-- a strict input schema with defaults and bounds;
-- a named structured result for recurrent operations;
-- explicit source identity and authority;
-- deterministic ordering and pagination/truncation facts;
-- a read-only or mutating classification; and
-- actionable errors that name the next recovery tool.
-
-### 2. Keep the official wiki files authoritative
-
-The bundled `resources/official-wiki` Markdown tree should remain the source of
-truth. A useful narrow reference surface would be:
-
-| Proposed capability | Purpose |
-| --- | --- |
-| `reference_status` | Report bundled corpus root, file count, availability, version/source facts that can be derived from the files, and measured search readiness. |
-| `search_reference` | Directly search Markdown with bounded `limit`/`offset`, deterministic ranking/order, snippets, total/truncated facts, relative file path, heading, and source URL when present in the file. |
-| `read_reference` | Read a selected authoritative Markdown file or bounded line/section range using the identifier returned by search. |
-
-This does not require a manifest merely to duplicate source URLs already stored
-in Markdown. It also does not require a persisted search index before
-performance measurements prove one necessary. In-memory file metadata or a
-short-lived cache may be an implementation optimization as long as the
-Markdown remains authoritative and cache invalidation is automatic.
-
-### 3. Preserve this repository's ownership boundaries
-
-s&box can host reflection, schemas, tool invocation, and editor APIs inside one
-C# process. Reforger Script Tools deliberately cannot:
-
-```text
-VS Code extension package
-  resources/
-    official-wiki/
-      *.md                   authoritative bundled reference pages and indexes
-      Content/               topic subtrees retain their copied hierarchy
-      Modding/
-      Support/
-  src/
-    extension.ts             activation and top-level wiring only
-    extensionConfig/         IDs, names, defaults, and limits
-    gameData/                bundled/runtime source resolution
-    languageClient/          process lifecycle and thin editor bridges
-  server/
-    MCP transport/tools
-    direct reference search
-    parser/semantics/index/LSP
-```
-
-TypeScript remains the thin editor shell. Rust owns searching, parsing,
-indexing, semantic work, and MCP behavior. Extension resources must be resolved
-from the installed extension root at runtime and included by the extension
-packaging configuration; they must not be assumed to exist at a development
-workspace path. Workbench-specific actions remain behind their verified
-adapter/handler boundary.
-
-### 4. Start narrow, then grow by coherent toolset
-
-Recommended order:
-
-1. Implement `reference_status`, `search_reference`, and `read_reference`
-   against the bundled Markdown with a measured sub-five-second budget.
-2. Add MCP-level global instructions explaining authority, result identifiers,
-   paging, and the search/read workflow.
-3. Add compiler and project status so agents can verify changes.
-4. Add resource and Workbench capabilities only where the current adapter can
-   provide stable typed contracts.
-5. Add batching only for demonstrated multi-call workflows; preserve ordering,
-   prevalidation, stop-on-error reporting, and mutation boundaries.
-6. Add screenshots or other visual results only after a bounded authoritative
-   capture path exists.
+The current Reforger architecture remains independent: Rust owns offline
+semantic and documentation operations; the private NET API Gateway and a
+versioned Workbench handler package own live editor operations.
 
 ## Practices not to copy blindly
 
@@ -557,14 +497,11 @@ Recommended order:
 
 ## Bottom line
 
-The pinned s&box source demonstrates a mature AI-facing editor design: seven
-stable front-door commands, 45 discoverable first-party capabilities, live
-hotload-aware discovery, generated schemas, bounded structured results,
-actionable errors, editor-native undo, and built-in verification channels.
+The pinned s&box source demonstrates one mature AI-facing editor design:
+seven stable front-door commands, live discovery, generated schemas, bounded
+results, actionable errors, editor-native Undo, and verification channels.
 
-For this extension, the strongest translation is a much smaller initial
-surface over bundled authoritative Markdown: direct bounded search, precise
-source-bearing results, exact reads, status, and clear global instructions.
-That keeps the official wiki files as the source of truth, satisfies the
-AI-friendly goal, and leaves room to introduce measured implementation
-optimizations without turning an index into a second authority.
+Use it as a comparison point when a Reforger feature needs ideas. Reforger
+requirements remain governed by its own authority boundaries, Workbench
+evidence, packaging model, and MCP research; no s&box mechanism is presumed
+portable or required.

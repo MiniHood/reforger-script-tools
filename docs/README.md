@@ -51,6 +51,9 @@ implementation slice is progress, not a completed ticket.
 - [Workbench compiler-validation research](research/workbench-compiler-validation-research.md):
   `ValidateScripts` contract, continuous-validation design, diagnostics, and
   live-session acceptance experiments.
+- [EnfusionMCP Workbench handler review](research/enfusionmcp-workbench-handler-review.md):
+  external handler inventory, capability ideas, and non-adoption warnings for
+  the typed NET API plugin boundary.
 - [Enfusion structural-formatting research](research/enfusion-structural-formatting-research.md):
   evidence and design notes for automated editing behavior.
 - [Enfusion `new` editing research](research/enfusion-new-formatting-research.md):
@@ -60,8 +63,8 @@ implementation slice is progress, not a completed ticket.
 - [Third-party add-on symbol metadata research](research/third-party-addon-symbol-metadata.md):
   licensing and technical boundary for dependency API assistance without source
   extraction.
-- [s&box MCP server review](research/sbox-mcp-research.md): first-party MCP-host and
-  tool-authoring patterns relevant to the Reforger MCP design.
+- [s&box MCP server review](research/sbox-mcp-research.md): comparative source
+  examples for future evaluation; it does not define Reforger MCP architecture.
 - [Official Wiki Corpus report](research/official-wiki-corpus-report.md): validated
   packaged-corpus coverage, MCP retrieval evidence, and AI-use limits.
 - [Game Data Corpus report](research/game-data-corpus-report-2026-07-25.md): live
