@@ -13,6 +13,7 @@ pub const MAX_QUERY_CHARS: usize = 256;
 pub const MAX_CURSOR_BYTES: usize = 2048;
 pub const MAX_OWNER_CHARS: usize = 256;
 pub const MAX_SEARCH_RESULT_BYTES: usize = 256 * 1024;
+const MAX_SEARCH_TEXT_CHARS: usize = 16 * 1024;
 
 #[derive(Debug, Clone, Default)]
 pub struct SourceLineStarts(Vec<usize>);
@@ -543,23 +544,24 @@ fn project_hit(
     let signature = index
         .callable_signature(candidate.id)
         .unwrap_or_else(|| compact_signature(symbol, &candidate.qualified_name));
-    let relative_path = candidate.path;
+    let source_path = candidate.path;
+    let relative_path = bounded_search_text(source_path.clone());
     GameDataSearchHit {
         inspect_input: InspectInput {
             symbol_ref: symbol_ref.clone(),
         },
         read_source_input: ReadSourceInput {
             catalogue_revision: revision.to_string(),
-            relative_path: relative_path.clone(),
+            relative_path: source_path,
             start_line: declaration_range.start_line,
             end_line: declaration_range.end_line,
         },
         symbol_ref,
-        name: symbol.name.clone().unwrap_or_default(),
+        name: bounded_search_text(symbol.name.clone().unwrap_or_default()),
         kind: candidate.kind,
-        qualified_name: candidate.qualified_name,
-        owner,
-        signature,
+        qualified_name: bounded_search_text(candidate.qualified_name),
+        owner: owner.map(bounded_search_text),
+        signature: bounded_search_text(signature),
         documentation_summary: documentation_summary(symbol),
         source_category: file.metadata.category.as_str().to_string(),
         relative_path,
@@ -605,6 +607,16 @@ fn documentation_summary(symbol: &IndexedSymbol) -> Option<String> {
         })
         .find(|line| !line.is_empty())
         .map(|line| line.chars().take(512).collect())
+}
+
+fn bounded_search_text(value: String) -> String {
+    let mut characters = value.chars();
+    let prefix = characters.by_ref().take(MAX_SEARCH_TEXT_CHARS).collect::<String>();
+    if characters.next().is_some() {
+        format!("{prefix}…")
+    } else {
+        prefix
+    }
 }
 fn line_for_offset(starts: &[usize], offset: usize) -> usize {
     starts.partition_point(|start| *start <= offset).max(1)
