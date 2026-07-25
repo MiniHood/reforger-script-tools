@@ -36,6 +36,10 @@ impl SourceLineStarts {
             end_line: line_for_offset(&self.0, end),
         }
     }
+
+    pub(crate) fn line_count(&self) -> usize {
+        self.0.len().max(1)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

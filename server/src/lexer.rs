@@ -204,6 +204,15 @@ pub fn lex(source: &str) -> Vec<Token> {
     Lexer::new(source).lex_all()
 }
 
+pub fn lex_with_control<E>(
+    source: &str,
+    mut check: impl FnMut() -> Result<(), E>,
+) -> Result<Vec<Token>, E> {
+    #[cfg(test)]
+    TEST_LEX_CALL_COUNT.with(|count| count.set(count.get() + 1));
+    Lexer::new(source).lex_all_with_control(&mut check)
+}
+
 struct Lexer<'source> {
     source: &'source str,
     position: usize,
@@ -226,6 +235,19 @@ impl<'source> Lexer<'source> {
 
         self.push(TokenKind::Eof, self.position, self.position);
         self.tokens
+    }
+
+    fn lex_all_with_control<E>(
+        mut self,
+        check: &mut impl FnMut() -> Result<(), E>,
+    ) -> Result<Vec<Token>, E> {
+        while !self.is_at_end() {
+            check()?;
+            self.lex_token();
+        }
+
+        self.push(TokenKind::Eof, self.position, self.position);
+        Ok(self.tokens)
     }
 
     fn lex_token(&mut self) {
@@ -609,6 +631,22 @@ mod tests {
                 TokenKind::Eof,
             ]
         );
+    }
+
+    #[test]
+    fn cancellable_lex_stops_between_tokens() {
+        let mut checks = 0;
+        let result = lex_with_control("class Example {}", || {
+            checks += 1;
+            if checks == 3 {
+                Err(())
+            } else {
+                Ok(())
+            }
+        });
+
+        assert!(result.is_err());
+        assert_eq!(checks, 3);
     }
 
     #[test]

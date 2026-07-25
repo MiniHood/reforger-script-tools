@@ -696,7 +696,7 @@ Copy a hit's `inspectInput` unchanged to `inspect_game_data_symbol`, or its `rea
 
 ## `search_game_data_examples`
 
-Search curated, bounded generated and handwritten Reforger Game Data examples by topic and optional subtopic. The current catalogue supports `resource-loading`/`spawn-prefab`, `replication`/`rpc-authority`, `entity-lifecycle`/`event-mask`, and `ui`/`widget-creation`. Results include code-backed evidence terms, indexed evidence symbols, exact logical source ranges, verification guidance, and copy-ready source-read inputs; comments and strings are not evidence, and this remains separate from semantic symbol search.
+Search curated, bounded generated and handwritten Reforger Game Data examples by topic and optional subtopic. The current catalogue supports resource-loading/spawn-prefab, replication/rpc-authority, entity-lifecycle/event-mask, ui/widget-creation. Results include code-backed evidence terms, indexed evidence symbols, exact logical source ranges, verification guidance, and copy-ready source-read inputs; comments and strings are not evidence, and this remains separate from semantic symbol search.
 
 ### Annotations
 

@@ -7,7 +7,7 @@ use crate::game_data_search::{
 };
 use crate::index::{GlobalSymbolId, SourceFileId, SymbolIndex};
 use crate::index_build::IndexBuildControl;
-use crate::lexer::{lex, TextSpan, TokenKind};
+use crate::lexer::{lex, lex_with_control, TextSpan, TokenKind};
 use crate::model::{SourceCategory, SymbolCatalog, SymbolKind};
 use crate::parser::parse_source;
 use crate::resolver::{
@@ -211,6 +211,13 @@ const EXAMPLE_TOPICS: &[ExampleTopic] = &[
     },
 ];
 
+pub fn example_search_description() -> String {
+    let supported = supported_example_topics();
+    format!(
+        "Search curated, bounded generated and handwritten Reforger Game Data examples by topic and optional subtopic. The current catalogue supports {supported}. Results include code-backed evidence terms, indexed evidence symbols, exact logical source ranges, verification guidance, and copy-ready source-read inputs; comments and strings are not evidence, and this remains separate from semantic symbol search."
+    )
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GameDataExampleSearchRequest {
     pub topic: String,
@@ -347,7 +354,7 @@ pub struct GameDataRelationshipHit {
 
 #[derive(Debug)]
 pub enum GameDataResearchError {
-    InvalidRequest(&'static str),
+    InvalidRequest(String),
     InvalidCursor,
     StaleCursor,
     Inspection(GameDataInspectionError),
@@ -460,7 +467,7 @@ pub fn search_examples(
             .collect::<Vec<_>>();
         symbols.sort();
         symbols.dedup();
-        let rank = example_score(example_topic, source_kind, &hits, source.lines().count());
+        let rank = example_score(example_topic, source_kind, &hits, line_starts.line_count());
         candidates.push((
             rank,
             logical_path(file),
@@ -492,9 +499,9 @@ pub fn search_examples(
         .into_iter()
         .map(
             |(_, path, file_id, evidence_terms, evidence_symbols, evidence_line)| {
-                let line_count = sources
+                let line_count = starts
                     .get(&file_id)
-                    .map(|source| source.lines().count().max(1))
+                    .map(SourceLineStarts::line_count)
                     .unwrap_or(1);
                 let start_line = evidence_line.saturating_sub(EXAMPLE_CONTEXT_BEFORE).max(1);
                 let end_line = (evidence_line + EXAMPLE_CONTEXT_AFTER).min(line_count);
@@ -530,7 +537,6 @@ pub fn search_examples(
             },
         )
         .collect();
-    let _ = starts;
     Ok(GameDataExamplePage {
         source: "evidence-catalogue".to_string(),
         catalogue_revision: revision.to_string(),
@@ -1304,14 +1310,32 @@ fn example_topic(
     {
         return Ok(definition);
     }
-    let message = match topic {
-        "resource-loading" => "unsupported subtopic for resource-loading; use spawn-prefab",
-        "replication" => "unsupported subtopic for replication; use rpc-authority",
-        "entity-lifecycle" => "unsupported subtopic for entity-lifecycle; use event-mask",
-        "ui" => "unsupported subtopic for ui; use widget-creation",
-        _ => "unsupported topic; use resource-loading, replication, entity-lifecycle, or ui",
+    let supported = EXAMPLE_TOPICS
+        .iter()
+        .filter(|definition| definition.topic == topic)
+        .filter_map(|definition| definition.subtopic)
+        .collect::<Vec<_>>();
+    let message = if supported.is_empty() {
+        format!("unsupported topic; use {}", supported_example_topics())
+    } else {
+        format!(
+            "unsupported subtopic for {topic}; use {}",
+            supported.join(", ")
+        )
     };
     Err(GameDataResearchError::InvalidRequest(message))
+}
+
+fn supported_example_topics() -> String {
+    EXAMPLE_TOPICS
+        .iter()
+        .filter_map(|definition| {
+            definition
+                .subtopic
+                .map(|subtopic| format!("{}/{}", definition.topic, subtopic))
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn matches_example_topic(definition: &ExampleTopic, hits: &[String]) -> bool {
@@ -1335,7 +1359,10 @@ fn code_tokens<'source>(
 ) -> Result<Vec<CodeToken<'source>>, GameDataResearchError> {
     check_research_control(control)?;
     let mut result = Vec::new();
-    for (position, token) in lex(source).into_iter().enumerate() {
+    for (position, token) in lex_with_control(source, || check_research_control(control))?
+        .into_iter()
+        .enumerate()
+    {
         if position % 128 == 0 {
             check_research_control(control)?;
         }
@@ -1436,8 +1463,8 @@ fn evidence_weight(topic: &ExampleTopic, term: &str) -> i32 {
         .evidence_terms
         .iter()
         .find(|candidate| candidate.value == term)
-        .map(|candidate| candidate.weight)
-        .unwrap_or(1)
+        .expect("example hit belongs to its topic evidence terms")
+        .weight
 }
 
 fn normalized_required(
@@ -1450,7 +1477,7 @@ fn normalized_required(
         .join(" ")
         .to_lowercase();
     if value.is_empty() || value.chars().count() > 256 {
-        return Err(GameDataResearchError::InvalidRequest(message));
+        return Err(GameDataResearchError::InvalidRequest(message.to_string()));
     }
     Ok(value)
 }
@@ -1464,7 +1491,7 @@ fn canonical_values(
         .map(|values| values.to_vec())
         .unwrap_or_else(|| allowed.iter().map(|value| (*value).to_string()).collect());
     if values.is_empty() {
-        return Err(GameDataResearchError::InvalidRequest(message));
+        return Err(GameDataResearchError::InvalidRequest(message.to_string()));
     }
     let count = values.len();
     let unique = values.into_iter().collect::<BTreeSet<_>>();
@@ -1473,7 +1500,7 @@ fn canonical_values(
             .iter()
             .any(|value| !allowed.contains(&value.as_str()))
     {
-        return Err(GameDataResearchError::InvalidRequest(message));
+        return Err(GameDataResearchError::InvalidRequest(message.to_string()));
     }
     Ok(unique.into_iter().collect())
 }

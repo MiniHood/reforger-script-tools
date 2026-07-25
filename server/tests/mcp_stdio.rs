@@ -460,6 +460,14 @@ fn mcp_game_data_research_tools_complete_the_progressive_lookup_loop() {
     )
     .expect("write generated API fixture");
     fs::write(
+        scripts_root
+            .join("Game")
+            .join("generated")
+            .join("ResearchPatterns.c"),
+        "class GeneratedResearchPatterns\n{\n\tstatic void ConfigureRpc(RplId ownerId)\n\t{\n\t\tRplRpc();\n\t\tRpc(ownerId);\n\t}\n\tstatic void OnPostInit(IEntity owner)\n\t{\n\t\tSetEventMask(owner, EntityEvent.INIT);\n\t}\n\tstatic void CreateWidgets(Widget parent)\n\t{\n\t\tCreateWidget(parent);\n\t}\n}\n",
+    )
+    .expect("write generated research fixture");
+    fs::write(
         scripts_root.join("Game").join("Examples").join("BaseSpawner.c"),
         "class BaseSpawner\n{\n\t//! Perform the configured spawn.\n\tvoid SpawnConfigured(int count = 1);\n}\n",
     )
@@ -644,6 +652,13 @@ fn mcp_game_data_research_tools_complete_the_progressive_lookup_loop() {
         .pointer("/result/structuredContent/verificationGuidance")
         .and_then(Value::as_str)
         .is_some_and(|guidance| guidance.contains("authority")));
+    client.send(json!({"jsonrpc":"2.0","id":31,"method":"tools/call","params":{"name":"search_game_data_examples","arguments":{"topic":"replication","subtopic":"rpc-authority","sourceKinds":["generated"]}}}));
+    assert_eq!(
+        client
+            .response(31)
+            .pointer("/result/structuredContent/results/0/sourceKind"),
+        Some(&json!("generated"))
+    );
     client.send(json!({"jsonrpc":"2.0","id":27,"method":"tools/call","params":{"name":"read_game_data_source","arguments":replication_examples["result"]["structuredContent"]["results"][0]["readSourceInput"]}}));
     assert!(client
         .response(27)
@@ -660,6 +675,13 @@ fn mcp_game_data_research_tools_complete_the_progressive_lookup_loop() {
         .pointer("/result/structuredContent/results/0/evidenceTerms")
         .and_then(Value::as_array)
         .is_some_and(|terms| terms.iter().any(|term| term == "SetEventMask")));
+    client.send(json!({"jsonrpc":"2.0","id":32,"method":"tools/call","params":{"name":"search_game_data_examples","arguments":{"topic":"entity-lifecycle","subtopic":"event-mask","sourceKinds":["generated"]}}}));
+    assert_eq!(
+        client
+            .response(32)
+            .pointer("/result/structuredContent/results/0/sourceKind"),
+        Some(&json!("generated"))
+    );
     client.send(json!({"jsonrpc":"2.0","id":29,"method":"tools/call","params":{"name":"search_game_data_examples","arguments":{"topic":"ui","subtopic":"widget-creation"}}}));
     let widget_examples = client.response(29);
     assert_eq!(
@@ -670,6 +692,13 @@ fn mcp_game_data_research_tools_complete_the_progressive_lookup_loop() {
         .pointer("/result/structuredContent/results/0/evidenceTerms")
         .and_then(Value::as_array)
         .is_some_and(|terms| terms.iter().any(|term| term == "CreateWidgets")));
+    client.send(json!({"jsonrpc":"2.0","id":33,"method":"tools/call","params":{"name":"search_game_data_examples","arguments":{"topic":"ui","subtopic":"widget-creation","sourceKinds":["generated"]}}}));
+    assert_eq!(
+        client
+            .response(33)
+            .pointer("/result/structuredContent/results/0/sourceKind"),
+        Some(&json!("generated"))
+    );
     client.send(json!({"jsonrpc":"2.0","id":30,"method":"tools/call","params":{"name":"search_game_data_examples","arguments":{"topic":"replication","subtopic":"event-mask"}}}));
     assert!(client
         .response(30)
@@ -1923,6 +1952,84 @@ fn timed_out_research_workers_retain_admission_until_they_exit() {
         .pointer("/result/content/0/text")
         .and_then(Value::as_str)
         .is_some_and(|text| text.starts_with("deadline_exceeded:"))));
+    client.close_stdin();
+    assert!(client.wait_for_exit(Duration::from_secs(3)));
+}
+
+#[test]
+fn cancelled_example_searches_release_admission_for_the_next_request() {
+    let fixture = TempFixture::new("mcp_cancelled_example_search_admission");
+    let scripts_root = fixture.path().join("scripts");
+    fs::create_dir_all(&scripts_root).expect("create scripts fixture");
+    let methods = (0..20_000)
+        .map(|index| {
+            format!("void ConfigureRpc{index}(RplId ownerId) {{ RplRpc(); Rpc(ownerId); }}\n")
+        })
+        .collect::<String>();
+    fs::write(
+        scripts_root.join("CancellationExamples.c"),
+        format!("class CancellationExamples {{\n{methods}}}"),
+    )
+    .expect("write large example-search fixture");
+    let cache_path = fixture.path().join("cache").join("game-data-index.bin");
+    let admission_marker = fixture.path().join("admitted-requests");
+    let mut client = McpClient::spawn_with_env(
+        &[
+            "mcp",
+            "--game-data-scripts",
+            scripts_root.to_str().expect("utf-8 scripts path"),
+            "--index-cache",
+            cache_path.to_str().expect("utf-8 cache path"),
+        ],
+        &[(
+            "REFORGER_MCP_TEST_ADMISSION_MARKER",
+            admission_marker.to_str().expect("utf-8 marker path"),
+        )],
+    );
+    client.initialize(1);
+    client.call_status(2);
+    fs::write(&admission_marker, "").expect("clear status admission marker");
+
+    for id in 10..18 {
+        client.send(json!({
+            "jsonrpc":"2.0",
+            "id":id,
+            "method":"tools/call",
+            "params":{"name":"search_game_data_examples","arguments":{"topic":"replication","subtopic":"rpc-authority"}}
+        }));
+    }
+    wait_for_lines(&admission_marker, 8, Duration::from_secs(2));
+    for id in 10..18 {
+        client.send(json!({
+            "jsonrpc":"2.0",
+            "method":"notifications/cancelled",
+            "params":{"requestId":id,"reason":"cancel cooperative example search"}
+        }));
+    }
+    client.send(json!({
+        "jsonrpc":"2.0",
+        "id":19,
+        "method":"tools/call",
+        "params":{"name":"search_game_data_examples","arguments":{"topic":"replication","subtopic":"rpc-authority","limit":1}}
+    }));
+    wait_for_lines(&admission_marker, 9, Duration::from_secs(2));
+    let responses = client.responses_until(19);
+    assert!(responses
+        .iter()
+        .all(|response| response.get("id") != Some(&json!(10))
+            && response.get("id") != Some(&json!(11))
+            && response.get("id") != Some(&json!(12))
+            && response.get("id") != Some(&json!(13))
+            && response.get("id") != Some(&json!(14))
+            && response.get("id") != Some(&json!(15))
+            && response.get("id") != Some(&json!(16))
+            && response.get("id") != Some(&json!(17))));
+    assert_eq!(
+        responses
+            .last()
+            .and_then(|response| response.pointer("/result/structuredContent/returned")),
+        Some(&json!(1))
+    );
     client.close_stdin();
     assert!(client.wait_for_exit(Duration::from_secs(3)));
 }
