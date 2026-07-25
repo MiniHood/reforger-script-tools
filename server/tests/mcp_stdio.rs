@@ -435,6 +435,72 @@ fn mcp_progressive_retrieval_enforces_member_documentation_and_source_bounds() {
 }
 
 #[test]
+fn lossy_utf8_game_data_remains_searchable_and_readable() {
+    let fixture = TempFixture::new("mcp_lossy_utf8");
+    let scripts_root = fixture.path().join("scripts");
+    fs::create_dir_all(scripts_root.join("Game")).expect("create scripts fixture");
+    let mut source = b"class LossyFixture\n{\n\t// invalid byte: ".to_vec();
+    source.push(0xff);
+    source.extend_from_slice(b"\n}\n");
+    fs::write(
+        scripts_root.join("Game").join("LossyFixture.c"),
+        source,
+    )
+    .expect("write lossy UTF-8 fixture");
+    let cache_path = fixture.path().join("cache").join("game-data-index.bin");
+    let mut client = McpClient::spawn(&[
+        "mcp",
+        "--game-data-scripts",
+        scripts_root.to_str().expect("utf-8 scripts path"),
+        "--index-cache",
+        cache_path.to_str().expect("utf-8 cache path"),
+    ]);
+    client.initialize(1);
+
+    client.send(status_call(2));
+    let status = client.response(2);
+    assert_eq!(
+        status.pointer("/result/structuredContent/available"),
+        Some(&json!(true))
+    );
+    assert_eq!(
+        status.pointer("/result/structuredContent/coverage/lossyFiles"),
+        Some(&json!(1))
+    );
+
+    client.send(json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": {
+            "name": "search_game_data_symbols",
+            "arguments": {"query": "LossyFixture"}
+        }
+    }));
+    let search = client.response(3);
+    let read_input = search
+        .pointer("/result/structuredContent/results/0/readSourceInput")
+        .cloned()
+        .expect("lossy source read handoff");
+
+    client.send(json!({
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "tools/call",
+        "params": {
+            "name": "read_game_data_source",
+            "arguments": read_input
+        }
+    }));
+    let read = client.response(4);
+    assert_eq!(read.pointer("/result/isError"), Some(&json!(false)));
+    assert!(read
+        .pointer("/result/structuredContent/content")
+        .and_then(Value::as_str)
+        .is_some_and(|text| text.contains('\u{fffd}')));
+}
+
+#[test]
 fn game_data_revision_is_immutable_per_process_and_shared_cache_loads_warm() {
     let fixture = TempFixture::new("mcp_immutable_revision");
     let scripts_root = fixture.path().join("scripts");

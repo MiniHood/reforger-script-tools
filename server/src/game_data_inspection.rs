@@ -3,7 +3,7 @@ use crate::game_data_search::{
     logical_path, owner_name, qualify, SourceLineStarts,
 };
 use crate::index::{SourceFileId, SymbolIndex};
-use crate::index_build::IndexBuildControl;
+use crate::index_build::{decode_source, IndexBuildControl};
 use crate::index_cache::source_content_digest;
 use crate::symbol_display::documentation_display;
 use serde_json::{json, Value};
@@ -161,8 +161,9 @@ pub fn read_source(
             "relativePath escapes the Game Data root".to_string(),
         ));
     }
-    let source = std::fs::read_to_string(canonical_path)
+    let bytes = std::fs::read(canonical_path)
         .map_err(|_| GameDataInspectionError::GameDataChanged)?;
+    let source = decode_source(&bytes);
     let start = request.start_line.unwrap_or(1);
     if start == 0 {
         return Err(GameDataInspectionError::InvalidSource(

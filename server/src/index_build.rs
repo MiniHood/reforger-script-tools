@@ -22,6 +22,10 @@ const SNIPPET_CONTEXT_LINES: usize = 2;
 const REPLACEMENT_CHARACTER: char = '\u{FFFD}';
 const REPLACEMENT_CHARACTER_LABEL: &str = "<U+FFFD>";
 
+pub(crate) fn decode_source(bytes: &[u8]) -> Cow<'_, str> {
+    String::from_utf8_lossy(bytes)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexSourceRoot {
     pub root_path: PathBuf,
@@ -198,7 +202,7 @@ fn build_file(
     let bytes =
         fs::read(file).map_err(|error| format!("Failed to read {}: {error}", file.display()))?;
     let byte_count = bytes.len();
-    let source = String::from_utf8_lossy(&bytes);
+    let source = decode_source(&bytes);
     let lossy = matches!(source, Cow::Owned(_));
     let source = source.into_owned();
     summary.timings.read_decode += read_decode_start.elapsed();

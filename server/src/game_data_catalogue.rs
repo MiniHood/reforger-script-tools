@@ -5,7 +5,7 @@ use crate::game_data_search::{
     search, GameDataSearchError, GameDataSearchPage, GameDataSearchRequest, SourceLineStarts,
 };
 use crate::index::{SourceFileId, SymbolIndex};
-use crate::index_build::{IndexBuildControl, INDEX_BUILD_CANCELLED};
+use crate::index_build::{decode_source, IndexBuildControl, INDEX_BUILD_CANCELLED};
 use crate::index_cache::{
     load_or_build_game_data_index_with_control, GameDataIndexCacheConfig, GameDataIndexCacheResult,
     IndexCacheStatus, IndexCacheTimings, RuntimeIndexSummary, SourceFingerprint,
@@ -482,7 +482,7 @@ fn ready_state(
                 "Verify the configured Game Data source, then restart the MCP process.",
             );
         };
-        let Ok(source) = fs::read_to_string(path) else {
+        let Ok(bytes) = fs::read(path) else {
             return unavailable_state(
                 source_status(config, Some(&result.fingerprint)),
                 Duration::ZERO,
@@ -491,6 +491,7 @@ fn ready_state(
                 "Verify the configured Game Data source, then restart the MCP process.",
             );
         };
+        let source = decode_source(&bytes);
         source_line_starts.insert(file.id, SourceLineStarts::from_source(&source));
     }
     GameDataCatalogueState {
