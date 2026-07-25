@@ -55,12 +55,15 @@ try {
   if (!wikiRead?.sourceUrl || !wikiRead.content || wikiRead.relativePath !== readInput.relativePath) {
     throw new Error(`Installed wiki read did not complete the search handoff: ${wikiReadSession.stdout}`);
   }
-  runMcp(executable, [
+  const gameDataReadySession = runMcp(executable, [
     '--game-data-scripts', gameDataScripts,
     '--index-cache', gameDataCache,
   ], clientWorkingDirectory, [
     toolCallRequest(2, 'game_data_status', {}),
   ]);
+  if (response(gameDataReadySession, 2).result.structuredContent?.available !== true) {
+    throw new Error(`Installed Game Data catalogue did not become ready: ${gameDataReadySession.stdout}`);
+  }
   const gameDataSession = runMcp(executable, [
     '--game-data-scripts', gameDataScripts,
     '--index-cache', gameDataCache,

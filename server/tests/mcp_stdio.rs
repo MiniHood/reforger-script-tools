@@ -687,6 +687,67 @@ fn read_official_wiki_follows_search_handoffs_with_bounded_continuations() {
 }
 
 #[test]
+fn read_official_wiki_rejects_a_reparse_escape_after_validation() {
+    let fixture = TempFixture::new("official_wiki_reparse_escape");
+    let wiki_root = fixture.path().join("official-wiki");
+    let outside_root = fixture.path().join("outside");
+    fs::create_dir_all(wiki_root.join("Escaped")).expect("create wiki fixture");
+    fs::create_dir_all(&outside_root).expect("create outside fixture");
+    fs::write(
+        wiki_root.join("Escaped").join("Inside.md"),
+        "# [Escaped](https://community.bistudio.com/wiki/Arma_Reforger:Escaped)\ntrusted\n",
+    )
+    .expect("write validated page");
+    fs::write(
+        outside_root.join("Inside.md"),
+        "# [Outside](https://community.bistudio.com/wiki/Arma_Reforger:Outside)\nuntrusted\n",
+    )
+    .expect("write outside page");
+    let mut client = McpClient::spawn(&[
+        "mcp",
+        "--official-wiki-root",
+        wiki_root.to_str().expect("utf-8 wiki root"),
+    ]);
+    client.initialize(1);
+    client.send(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"search_official_wiki","arguments":{"query":"escaped"}}}));
+    let input = client
+        .response(2)
+        .pointer("/result/structuredContent/results/0/readInput")
+        .cloned()
+        .expect("validated read input");
+    let escaped = wiki_root.join("Escaped");
+    fs::remove_dir_all(&escaped).expect("remove validated page directory");
+    create_directory_reparse_escape(&outside_root, &escaped);
+    client.send(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"read_official_wiki","arguments":input}}));
+    assert!(client
+        .response(3)
+        .pointer("/result/content/0/text")
+        .and_then(Value::as_str)
+        .is_some_and(|text| text.starts_with("official_wiki_changed:")));
+    client.close_stdin();
+    assert!(client.wait_for_exit(Duration::from_secs(3)));
+}
+
+#[cfg(target_os = "windows")]
+fn create_directory_reparse_escape(target: &Path, link: &Path) {
+    assert!(
+        Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .status()
+            .expect("create junction")
+            .success(),
+        "create reparse escape"
+    );
+}
+
+#[cfg(unix)]
+fn create_directory_reparse_escape(target: &Path, link: &Path) {
+    std::os::unix::fs::symlink(target, link).expect("create symlink escape");
+}
+
+#[test]
 fn read_official_wiki_defaults_and_clamps_its_line_window() {
     let fixture = TempFixture::new("official_wiki_read_bounds");
     let wiki_root = fixture.path().join("official-wiki");
