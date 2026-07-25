@@ -5,7 +5,10 @@ use crate::game_data_catalogue::{
 use crate::game_data_inspection::GameDataSourceReadRequest;
 use crate::game_data_search::{GameDataSearchPage, GameDataSearchRequest};
 use crate::index_build::{IndexBuildControl, INDEX_BUILD_CANCELLED};
-use crate::official_wiki::{OfficialWikiCorpus, OfficialWikiStatus};
+use crate::official_wiki::{
+    OfficialWikiCorpus, OfficialWikiSearchControl, OfficialWikiSearchError, OfficialWikiSearchPage,
+    OfficialWikiSearchRequest, OfficialWikiStatus,
+};
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, ContentBlock, Implementation, ListToolsResult,
     PaginatedRequestParams, ServerCapabilities, ServerInfo, Tool, ToolAnnotations,
@@ -24,6 +27,7 @@ pub const SEARCH_GAME_DATA_SYMBOLS_TOOL_NAME: &str = "search_game_data_symbols";
 pub const INSPECT_GAME_DATA_SYMBOL_TOOL_NAME: &str = "inspect_game_data_symbol";
 pub const READ_GAME_DATA_SOURCE_TOOL_NAME: &str = "read_game_data_source";
 pub const OFFICIAL_WIKI_STATUS_TOOL_NAME: &str = "official_wiki_status";
+pub const SEARCH_OFFICIAL_WIKI_TOOL_NAME: &str = "search_official_wiki";
 const DEADLINE_EXCEEDED_CODE: &str = "deadline_exceeded";
 const RESPONSE_TOO_LARGE_CODE: &str = "response_too_large";
 const SERVER_NAME: &str = "reforger-script-tools";
@@ -38,6 +42,7 @@ const INSPECT_GAME_DATA_SYMBOL_DESCRIPTION: &str = "Inspect one opaque Game Data
 const READ_GAME_DATA_SOURCE_DESCRIPTION: &str =
     "Read bounded verbatim source from an exact logical Game Data path in the immutable catalogue.";
 const OFFICIAL_WIKI_STATUS_DESCRIPTION: &str = "Validate and report the packaged Official Wiki Corpus. The copied Markdown files remain the source of truth; this reports their immutable revision, usable coverage, bounded exclusions, malformed-page facts, limits, and recovery without physical paths.";
+const SEARCH_OFFICIAL_WIKI_DESCRIPTION: &str = "Search validated packaged Official Wiki Markdown directly for deterministic, section-local passages. Results carry canonical source URLs, exact line ranges, and copy-ready read inputs; this never searches wiki-index.md or exposes an installed path.";
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -70,6 +75,18 @@ struct McpGameDataSourceInput {
     relative_path: String,
     start_line: Option<usize>,
     line_count: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct McpOfficialWikiSearchInput {
+    #[schemars(length(min = 1, max = 256))]
+    query: String,
+    #[schemars(length(min = 1, max = 2048))]
+    path_prefix: Option<String>,
+    limit: Option<usize>,
+    #[schemars(length(max = 2048))]
+    cursor: Option<String>,
 }
 
 #[derive(JsonSchema)]
@@ -167,6 +184,33 @@ impl ReforgerMcpServer {
             result = &mut worker => result.map_err(|_| McpError::internal_error("Official Wiki validation worker failed", None))?,
         };
         typed_success(&status)
+    }
+
+    async fn search_official_wiki(
+        &self,
+        request: OfficialWikiSearchRequest,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let permit = self.admission.clone().acquire_owned();
+        let _permit = tokio::select! {
+            _ = context.ct.cancelled() => return Err(McpError::internal_error("request cancelled", None)),
+            permit = permit => permit.map_err(|_| McpError::internal_error("MCP request admission is unavailable", None))?,
+        };
+        let corpus = self.official_wiki.clone();
+        let control = OfficialWikiSearchControl::default();
+        let worker_control = control.clone();
+        let mut worker = tokio::task::spawn_blocking(move || corpus.search_with_control(request, &worker_control));
+        let deadline = tokio::time::sleep(Duration::from_secs(5));
+        tokio::pin!(deadline);
+        let result = tokio::select! {
+            _ = context.ct.cancelled() => { control.cancel(); let _ = tokio::time::timeout(Duration::from_millis(CANCELLATION_JOIN_GRACE_MS), &mut worker).await; return Err(McpError::internal_error("request cancelled", None)); },
+            _ = &mut deadline => { control.cancel(); let _ = tokio::time::timeout(Duration::from_millis(CANCELLATION_JOIN_GRACE_MS), &mut worker).await; return Ok(tool_error(DEADLINE_EXCEEDED_CODE, "Official Wiki search exceeded its bounded deadline.", "Narrow the query and retry after checking official_wiki_status.")); },
+            result = &mut worker => result.map_err(|_| McpError::internal_error("Official Wiki search worker failed", None))?,
+        };
+        match result {
+            Ok(page) => typed_success(&page),
+            Err(error) => Ok(official_wiki_search_error(error)),
+        }
     }
 
     async fn game_data_status(
@@ -396,6 +440,46 @@ fn search_error(message: &str) -> CallToolResult {
     tool_error(code, message, recovery)
 }
 
+fn official_wiki_search_error(error: OfficialWikiSearchError) -> CallToolResult {
+    match error {
+        OfficialWikiSearchError::Unavailable => tool_error(
+            "official_wiki_unavailable",
+            "The packaged Official Wiki Corpus is unavailable.",
+            "Call official_wiki_status, then reinstall or report a packaging failure.",
+        ),
+        OfficialWikiSearchError::InvalidQuery => tool_error(
+            "invalid_query",
+            "query must be non-empty normalized text of at most 256 characters.",
+            "Supply a non-empty query within the documented bound.",
+        ),
+        OfficialWikiSearchError::InvalidFilter => tool_error(
+            "invalid_filter",
+            "pathPrefix must be a safe logical Markdown subtree.",
+            "Use a relative logical prefix returned by Official Wiki search.",
+        ),
+        OfficialWikiSearchError::InvalidCursor => tool_error(
+            "invalid_cursor",
+            "cursor is invalid for this query or filter.",
+            "Omit the cursor and repeat the search from its first page.",
+        ),
+        OfficialWikiSearchError::StaleCursor => tool_error(
+            "stale_cursor",
+            "cursor belongs to a different Official Wiki Corpus revision.",
+            "Repeat the same search without the cursor.",
+        ),
+        OfficialWikiSearchError::Changed => tool_error(
+            "official_wiki_changed",
+            "A packaged Official Wiki page changed after validation.",
+            "Restart or reconfigure the MCP process against the current installed extension.",
+        ),
+        OfficialWikiSearchError::Cancelled => tool_error(
+            "request_cancelled",
+            "The request was cancelled.",
+            "Retry the request.",
+        ),
+    }
+}
+
 fn deadline_exceeded() -> CallToolResult {
     tool_error(
         DEADLINE_EXCEEDED_CODE,
@@ -472,6 +556,7 @@ impl ServerHandler for ReforgerMcpServer {
             inspect_game_data_symbol_tool(),
             read_game_data_source_tool(),
             official_wiki_status_tool(),
+            search_official_wiki_tool(),
         ]))
     }
 
@@ -482,6 +567,7 @@ impl ServerHandler for ReforgerMcpServer {
             INSPECT_GAME_DATA_SYMBOL_TOOL_NAME => Some(inspect_game_data_symbol_tool()),
             READ_GAME_DATA_SOURCE_TOOL_NAME => Some(read_game_data_source_tool()),
             OFFICIAL_WIKI_STATUS_TOOL_NAME => Some(official_wiki_status_tool()),
+            SEARCH_OFFICIAL_WIKI_TOOL_NAME => Some(search_official_wiki_tool()),
             _ => None,
         }
     }
@@ -575,6 +661,34 @@ impl ServerHandler for ReforgerMcpServer {
             }
             return self.official_wiki_status(context).await;
         }
+        if request.name == SEARCH_OFFICIAL_WIKI_TOOL_NAME {
+            if request.task.is_some() {
+                return Err(McpError::invalid_params(
+                    "search_official_wiki does not support task execution",
+                    None,
+                ));
+            }
+            let input = serde_json::from_value::<McpOfficialWikiSearchInput>(Value::Object(
+                request.arguments.unwrap_or_default(),
+            ))
+            .map_err(|error| {
+                McpError::invalid_params(
+                    format!("Invalid search_official_wiki arguments: {error}"),
+                    None,
+                )
+            })?;
+            return self
+                .search_official_wiki(
+                    OfficialWikiSearchRequest {
+                        query: input.query,
+                        path_prefix: input.path_prefix,
+                        limit: input.limit,
+                        cursor: input.cursor,
+                    },
+                    context,
+                )
+                .await;
+        }
         if request.name != GAME_DATA_STATUS_TOOL_NAME {
             return Err(McpError::invalid_params(
                 format!("Unknown tool '{}'. Use tools/list.", request.name),
@@ -666,14 +780,25 @@ pub fn render_api_reference() -> String {
     let inspect_tool = inspect_game_data_symbol_tool();
     let read_tool = read_game_data_source_tool();
     let wiki_tool = official_wiki_status_tool();
+    let wiki_search_tool = search_official_wiki_tool();
     let inspect_input_schema = serde_json::to_string_pretty(inspect_tool.input_schema.as_ref())
         .expect("inspect input schema serializes");
     let read_input_schema = serde_json::to_string_pretty(read_tool.input_schema.as_ref())
         .expect("source-read input schema serializes");
-    let inspect_output_schema = serde_json::to_string_pretty(inspect_tool.output_schema.as_deref().expect("inspect output schema"))
-        .expect("inspect output schema serializes");
-    let read_output_schema = serde_json::to_string_pretty(read_tool.output_schema.as_deref().expect("source-read output schema"))
-        .expect("source-read output schema serializes");
+    let inspect_output_schema = serde_json::to_string_pretty(
+        inspect_tool
+            .output_schema
+            .as_deref()
+            .expect("inspect output schema"),
+    )
+    .expect("inspect output schema serializes");
+    let read_output_schema = serde_json::to_string_pretty(
+        read_tool
+            .output_schema
+            .as_deref()
+            .expect("source-read output schema"),
+    )
+    .expect("source-read output schema serializes");
 
     let mut reference = format!(
         "<!-- Generated by `reforger_language_server mcp-api`. Do not edit manually. -->\n\
@@ -749,11 +874,17 @@ Copy a hit's `inspectInput` unchanged to `inspect_game_data_symbol`, or its `rea
     let wiki_input_schema = serde_json::to_string_pretty(wiki_tool.input_schema.as_ref())
         .expect("official wiki input schema serializes");
     let wiki_output_schema = serde_json::to_string_pretty(
-        wiki_tool.output_schema.as_deref().expect("official wiki output schema"),
+        wiki_tool
+            .output_schema
+            .as_deref()
+            .expect("official wiki output schema"),
     )
     .expect("official wiki output schema serializes");
     let wiki_annotations = serde_json::to_string_pretty(
-        wiki_tool.annotations.as_ref().expect("official wiki annotations"),
+        wiki_tool
+            .annotations
+            .as_ref()
+            .expect("official wiki annotations"),
     )
     .expect("official wiki annotations serialize");
     reference.push_str(&format!(
@@ -763,6 +894,31 @@ Copy a hit's `inspectInput` unchanged to `inspect_game_data_symbol`, or its `rea
         wiki_annotations,
         wiki_input_schema,
         wiki_output_schema,
+    ));
+    let wiki_search_input_schema =
+        serde_json::to_string_pretty(wiki_search_tool.input_schema.as_ref())
+            .expect("official wiki search input schema serializes");
+    let wiki_search_output_schema = serde_json::to_string_pretty(
+        wiki_search_tool
+            .output_schema
+            .as_deref()
+            .expect("official wiki search output schema"),
+    )
+    .expect("official wiki search output schema serializes");
+    let wiki_search_annotations = serde_json::to_string_pretty(
+        wiki_search_tool
+            .annotations
+            .as_ref()
+            .expect("official wiki search annotations"),
+    )
+    .expect("official wiki search annotations serialize");
+    reference.push_str(&format!(
+        "\n## `{}`\n\n{}\n\n### Annotations\n\n```json\n{}\n```\n\n### Input schema\n\n```json\n{}\n```\n\n### Output schema\n\n```json\n{}\n```\n\n### Limits, matching, and recovery\n\n- `query` is required, normalized whitespace, and limited to 256 characters. `pathPrefix` is an optional safe logical subtree filter.\n- `limit` defaults to 20 and clamps visibly to 1 through 100; cursors are opaque, revision-bound, and limited to 2 KiB.\n- Every normalized query term must match in one heading section plus the page title/path. At most one hit is returned per matching section.\n- Fixed ranking favors exact title/phrase, path, heading, then body matches; logical path and start line break ties. No numeric relevance score is returned.\n- Results are direct UTF-8 Markdown projections, exclude `wiki-index.md`, verify validation hashes, and remain below 256 KiB. A changed page returns `official_wiki_changed`.\n- Excerpts have at most 12 complete lines and 4 KiB; `readInput` can be copied to `read_official_wiki` when that tool is available.\n\n### Stable failures\n\n- `invalid_query`, `invalid_filter`, and `invalid_cursor`: correct the supplied arguments and retry.\n- `stale_cursor`: repeat the same search without the cursor.\n- `official_wiki_unavailable`: call `official_wiki_status`.\n- `official_wiki_changed`: restart or reconfigure the MCP process against the current installed extension.\n\n### Example call\n\n```json\n{{\"name\":\"search_official_wiki\",\"arguments\":{{\"query\":\"Game Master\",\"pathPrefix\":\"Guides/\",\"limit\":20}}}}\n```\n\n### Result handoff\n\nUse a hit's `readInput` unchanged with `read_official_wiki`; preserve `corpusRevision` and the exact logical range.\n",
+        wiki_search_tool.name,
+        wiki_search_tool.description.as_deref().unwrap_or_default(),
+        wiki_search_annotations,
+        wiki_search_input_schema,
+        wiki_search_output_schema,
     ));
     reference
 }
@@ -799,6 +955,27 @@ fn official_wiki_status_tool() -> Tool {
             .read_only(true)
             .open_world(false),
     );
+    if let Some(output_schema) = tool.output_schema.as_mut() {
+        strip_rust_numeric_formats(Arc::make_mut(output_schema));
+    }
+    tool
+}
+
+fn search_official_wiki_tool() -> Tool {
+    let mut tool = Tool::new(
+        SEARCH_OFFICIAL_WIKI_TOOL_NAME,
+        SEARCH_OFFICIAL_WIKI_DESCRIPTION,
+        empty_object_schema(),
+    )
+    .with_title("Search Official Wiki")
+    .with_input_schema::<McpOfficialWikiSearchInput>()
+    .with_output_schema::<OfficialWikiSearchPage>()
+    .with_annotations(
+        ToolAnnotations::with_title("Search Official Wiki")
+            .read_only(true)
+            .open_world(false),
+    );
+    strip_rust_numeric_formats(Arc::make_mut(&mut tool.input_schema));
     if let Some(output_schema) = tool.output_schema.as_mut() {
         strip_rust_numeric_formats(Arc::make_mut(output_schema));
     }

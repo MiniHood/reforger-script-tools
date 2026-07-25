@@ -71,7 +71,7 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
         .pointer("/result/tools")
         .and_then(Value::as_array)
         .expect("tools/list result");
-    assert_eq!(listed.len(), 5);
+    assert_eq!(listed.len(), 6);
     assert_eq!(listed[0].get("name"), Some(&json!("game_data_status")));
     assert_eq!(
         listed[0].pointer("/annotations/readOnlyHint"),
@@ -268,34 +268,63 @@ fn mcp_inspection_and_source_read_reject_stale_and_changed_handoffs() {
     client.initialize(1);
     client.send(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"search_game_data_symbols","arguments":{"query":"Run"}}}));
     let search = client.response(2);
-    let result = search.pointer("/result/structuredContent/results/0").expect("search hit");
+    let result = search
+        .pointer("/result/structuredContent/results/0")
+        .expect("search hit");
     let symbol_ref = result.get("symbolRef").cloned().expect("symbol reference");
-    let revision = search.pointer("/result/structuredContent/catalogueRevision").cloned().expect("revision");
+    let revision = search
+        .pointer("/result/structuredContent/catalogueRevision")
+        .cloned()
+        .expect("revision");
 
     client.send(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"inspect_game_data_symbol","arguments":{"symbolRef":symbol_ref}}}));
     let inspected = client.response(3);
     assert_eq!(inspected.pointer("/result/isError"), Some(&json!(false)));
-    assert_eq!(inspected.pointer("/result/structuredContent/documentation/parameters/0/name"), Some(&json!("value")));
-    assert_eq!(inspected.pointer("/result/structuredContent/documentation/parameters/0/direction"), Some(&json!("in")));
-    assert_eq!(inspected.pointer("/result/structuredContent/documentation/returns"), Some(&json!("true when accepted.")));
-    assert_eq!(inspected.pointer("/result/structuredContent/documentation/warnings/0"), Some(&json!("requires setup.")));
-    assert_eq!(inspected.pointer("/result/structuredContent/documentation/notes/0"), Some(&json!("fixture note.")));
+    assert_eq!(
+        inspected.pointer("/result/structuredContent/documentation/parameters/0/name"),
+        Some(&json!("value"))
+    );
+    assert_eq!(
+        inspected.pointer("/result/structuredContent/documentation/parameters/0/direction"),
+        Some(&json!("in"))
+    );
+    assert_eq!(
+        inspected.pointer("/result/structuredContent/documentation/returns"),
+        Some(&json!("true when accepted."))
+    );
+    assert_eq!(
+        inspected.pointer("/result/structuredContent/documentation/warnings/0"),
+        Some(&json!("requires setup."))
+    );
+    assert_eq!(
+        inspected.pointer("/result/structuredContent/documentation/notes/0"),
+        Some(&json!("fixture note."))
+    );
 
     client.send(json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"inspect_game_data_symbol","arguments":{"symbolRef":"sr1:not-a-reference"}}}));
     let invalid = client.response(4);
     assert_eq!(invalid.pointer("/result/isError"), Some(&json!(true)));
-    assert!(invalid.pointer("/result/content/0/text").and_then(Value::as_str).is_some_and(|text| text.starts_with("invalid_symbol_ref:")));
+    assert!(invalid
+        .pointer("/result/content/0/text")
+        .and_then(Value::as_str)
+        .is_some_and(|text| text.starts_with("invalid_symbol_ref:")));
 
     client.send(json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"read_game_data_source","arguments":{"catalogueRevision":revision,"relativePath":"../Inspectable.c"}}}));
     let invalid_path = client.response(5);
     assert_eq!(invalid_path.pointer("/result/isError"), Some(&json!(true)));
-    assert!(invalid_path.pointer("/result/content/0/text").and_then(Value::as_str).is_some_and(|text| text.starts_with("invalid_arguments:")));
+    assert!(invalid_path
+        .pointer("/result/content/0/text")
+        .and_then(Value::as_str)
+        .is_some_and(|text| text.starts_with("invalid_arguments:")));
 
     fs::write(&source_path, "class Inspectable { int changed; }\n").expect("change backing data");
     client.send(json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"read_game_data_source","arguments":{"catalogueRevision":revision,"relativePath":"Game/Inspectable.c"}}}));
     let changed = client.response(6);
     assert_eq!(changed.pointer("/result/isError"), Some(&json!(true)));
-    assert!(changed.pointer("/result/content/0/text").and_then(Value::as_str).is_some_and(|text| text.starts_with("game_data_changed:")));
+    assert!(changed
+        .pointer("/result/content/0/text")
+        .and_then(Value::as_str)
+        .is_some_and(|text| text.starts_with("game_data_changed:")));
 }
 
 #[test]
@@ -319,42 +348,88 @@ fn mcp_progressive_retrieval_enforces_member_documentation_and_source_bounds() {
     fs::write(&source_path, source).expect("write bounds fixture");
     let cache_path = fixture.path().join("cache").join("game-data-index.bin");
     let mut client = McpClient::spawn(&[
-        "mcp", "--game-data-scripts", scripts_root.to_str().expect("utf-8 scripts path"),
-        "--index-cache", cache_path.to_str().expect("utf-8 cache path"),
+        "mcp",
+        "--game-data-scripts",
+        scripts_root.to_str().expect("utf-8 scripts path"),
+        "--index-cache",
+        cache_path.to_str().expect("utf-8 cache path"),
     ]);
     client.initialize(1);
     client.send(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"search_game_data_symbols","arguments":{"query":"Bounds"}}}));
     let search = client.response(2);
-    let hit = search.pointer("/result/structuredContent/results/0").expect("Bounds hit");
+    let hit = search
+        .pointer("/result/structuredContent/results/0")
+        .expect("Bounds hit");
     let symbol_ref = hit.get("symbolRef").cloned().expect("symbol reference");
-    let revision = search.pointer("/result/structuredContent/catalogueRevision").cloned().expect("catalogue revision");
+    let revision = search
+        .pointer("/result/structuredContent/catalogueRevision")
+        .cloned()
+        .expect("catalogue revision");
 
     client.send(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"inspect_game_data_symbol","arguments":{"symbolRef":symbol_ref}}}));
     let inspected = client.response(3);
     assert_eq!(inspected.pointer("/result/isError"), Some(&json!(false)));
-    let inspection = inspected.pointer("/result/structuredContent").expect("inspection");
+    let inspection = inspected
+        .pointer("/result/structuredContent")
+        .expect("inspection");
     assert_eq!(inspection.pointer("/rawTruncated"), Some(&json!(true)));
-    assert!(inspection.pointer("/rawDocumentation").and_then(Value::as_str).is_some_and(|text| text.len() <= 16 * 1024));
+    assert!(inspection
+        .pointer("/rawDocumentation")
+        .and_then(Value::as_str)
+        .is_some_and(|text| text.len() <= 16 * 1024));
     assert_eq!(inspection.pointer("/membersReturned"), Some(&json!(50)));
     assert_eq!(inspection.pointer("/membersTotal"), Some(&json!(55)));
     assert_eq!(inspection.pointer("/membersTruncated"), Some(&json!(true)));
-    assert_eq!(inspection.pointer("/members/0/name"), Some(&json!("Member00")));
-    assert_eq!(inspection.pointer("/members/49/name"), Some(&json!("Member49")));
-    assert!(inspection.pointer("/membersTruncationGuidance").and_then(Value::as_str).is_some_and(|text| text.contains("search_game_data_symbols")));
+    assert_eq!(
+        inspection.pointer("/members/0/name"),
+        Some(&json!("Member00"))
+    );
+    assert_eq!(
+        inspection.pointer("/members/49/name"),
+        Some(&json!("Member49"))
+    );
+    assert!(inspection
+        .pointer("/membersTruncationGuidance")
+        .and_then(Value::as_str)
+        .is_some_and(|text| text.contains("search_game_data_symbols")));
 
     client.send(json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"read_game_data_source","arguments":{"catalogueRevision":revision,"relativePath":"Game/Missing.c"}}}));
-    assert!(client.response(4).pointer("/result/content/0/text").and_then(Value::as_str).is_some_and(|text| text.starts_with("invalid_arguments:")));
+    assert!(client
+        .response(4)
+        .pointer("/result/content/0/text")
+        .and_then(Value::as_str)
+        .is_some_and(|text| text.starts_with("invalid_arguments:")));
     client.send(json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"read_game_data_source","arguments":{"catalogueRevision":"gd1:stale","relativePath":"Game/Bounds.c"}}}));
-    assert!(client.response(5).pointer("/result/content/0/text").and_then(Value::as_str).is_some_and(|text| text.starts_with("stale_symbol_ref:")));
+    assert!(client
+        .response(5)
+        .pointer("/result/content/0/text")
+        .and_then(Value::as_str)
+        .is_some_and(|text| text.starts_with("stale_symbol_ref:")));
     client.send(json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"read_game_data_source","arguments":{"catalogueRevision":revision,"relativePath":"Game/Bounds.c","startLine":0}}}));
-    assert!(client.response(6).pointer("/result/content/0/text").and_then(Value::as_str).is_some_and(|text| text.starts_with("invalid_arguments:")));
+    assert!(client
+        .response(6)
+        .pointer("/result/content/0/text")
+        .and_then(Value::as_str)
+        .is_some_and(|text| text.starts_with("invalid_arguments:")));
     client.send(json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"read_game_data_source","arguments":{"catalogueRevision":revision,"relativePath":"Game/Bounds.c","startLine":1,"lineCount":999}}}));
     let read = client.response(7);
     assert_eq!(read.pointer("/result/isError"), Some(&json!(false)));
-    assert_eq!(read.pointer("/result/structuredContent/startLine"), Some(&json!(1)));
-    assert_eq!(read.pointer("/result/structuredContent/endLine"), Some(&json!(500)));
-    assert_eq!(read.pointer("/result/structuredContent/truncated"), Some(&json!(true)));
-    assert_eq!(read.pointer("/result/structuredContent/nextStartLine"), Some(&json!(501)));
+    assert_eq!(
+        read.pointer("/result/structuredContent/startLine"),
+        Some(&json!(1))
+    );
+    assert_eq!(
+        read.pointer("/result/structuredContent/endLine"),
+        Some(&json!(500))
+    );
+    assert_eq!(
+        read.pointer("/result/structuredContent/truncated"),
+        Some(&json!(true))
+    );
+    assert_eq!(
+        read.pointer("/result/structuredContent/nextStartLine"),
+        Some(&json!(501))
+    );
 }
 
 #[test]
@@ -475,6 +550,58 @@ fn unavailable_status_and_malformed_calls_are_sanitized_and_process_isolated() {
 }
 
 #[test]
+fn search_official_wiki_projects_validated_sections_and_keeps_the_session_healthy() {
+    let fixture = TempFixture::new("official_wiki_search");
+    let wiki_root = fixture.path().join("official-wiki");
+    fs::create_dir_all(wiki_root.join("Guides")).expect("create wiki fixture");
+    fs::write(
+        wiki_root.join("wiki-index.md"),
+        "# Wiki Markdown Index\nneedle ignored\n",
+    )
+    .expect("write index");
+    fs::write(wiki_root.join("Guides").join("Guide.md"), "# [Guide](https://community.bistudio.com/wiki/Arma_Reforger:Guide)\n\n## Needle\nneedle prose\n\n## Another\nneedle prose\n").expect("write page");
+    let mut client = McpClient::spawn(&[
+        "mcp",
+        "--official-wiki-root",
+        wiki_root.to_str().expect("utf-8 wiki root"),
+    ]);
+    client.initialize(1);
+    client.send(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"search_official_wiki","arguments":{"query":"needle","pathPrefix":"Guides","limit":1}}}));
+    let response = client.response(2);
+    let page = response
+        .pointer("/result/structuredContent")
+        .expect("structured search page");
+    assert_eq!(page.get("returned"), Some(&json!(1)));
+    assert_eq!(page.get("total"), Some(&json!(2)));
+    assert_eq!(page.pointer("/results/0/heading"), Some(&json!("Needle")));
+    assert_eq!(
+        page.pointer("/results/0/readInput/relativePath"),
+        Some(&json!("Guides/Guide.md"))
+    );
+    assert_eq!(
+        response.pointer("/result/content/0/text"),
+        Some(&Value::String(page.to_string()))
+    );
+    let cursor = page.get("nextCursor").cloned().expect("next cursor");
+    client.send(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"search_official_wiki","arguments":{"query":"needle","pathPrefix":"Guides/","cursor":cursor}}}));
+    assert_eq!(
+        client
+            .response(3)
+            .pointer("/result/structuredContent/results/0/heading"),
+        Some(&json!("Another"))
+    );
+    client.send(json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"search_official_wiki","arguments":{"query":"","unexpected":true}}}));
+    assert_eq!(
+        client.response(4).pointer("/error/code"),
+        Some(&json!(-32602))
+    );
+    client.send(json!({"jsonrpc":"2.0","id":5,"method":"ping","params":{}}));
+    assert_eq!(client.response(5).get("result"), Some(&json!({})));
+    client.close_stdin();
+    assert!(client.wait_for_exit(Duration::from_secs(3)));
+}
+
+#[test]
 fn official_wiki_status_reports_a_validated_packaged_style_corpus() {
     let fixture = TempFixture::new("official_wiki_status");
     let wiki_root = fixture.path().join("official-wiki");
@@ -515,7 +642,10 @@ fn official_wiki_status_reports_a_validated_packaged_style_corpus() {
     assert_eq!(status.get("source"), Some(&json!("evidence-catalogue")));
     assert_eq!(status.get("fileCount"), Some(&json!(2)));
     assert_eq!(status.get("invalidFileCount"), Some(&json!(1)));
-    assert_eq!(status.get("invalidFiles"), Some(&json!(["Guides/untrusted.md"])));
+    assert_eq!(
+        status.get("invalidFiles"),
+        Some(&json!(["Guides/untrusted.md"]))
+    );
     assert_eq!(status.get("excludedFiles"), Some(&json!(["wiki-index.md"])));
     assert!(status
         .get("corpusRevision")
@@ -533,11 +663,17 @@ fn official_wiki_status_reports_a_validated_packaged_style_corpus() {
 fn official_wiki_status_resolves_resources_from_an_installed_extension_layout() {
     let fixture = TempFixture::new("installed_official_wiki");
     let extension = fixture.path().join("extension");
-    let runtime = extension.join("dist").join("server").join("test-platform").join("reforger_language_server.exe");
+    let runtime = extension
+        .join("dist")
+        .join("server")
+        .join("test-platform")
+        .join("reforger_language_server.exe");
     let wiki_root = extension.join("resources").join("official-wiki");
-    fs::create_dir_all(runtime.parent().expect("runtime parent")).expect("create runtime directory");
+    fs::create_dir_all(runtime.parent().expect("runtime parent"))
+        .expect("create runtime directory");
     fs::create_dir_all(&wiki_root).expect("create installed corpus");
-    fs::copy(env!("CARGO_BIN_EXE_reforger_language_server"), &runtime).expect("copy packaged runtime");
+    fs::copy(env!("CARGO_BIN_EXE_reforger_language_server"), &runtime)
+        .expect("copy packaged runtime");
     fs::write(
         wiki_root.join("index.md"),
         "# [Official index](https://community.bistudio.com/wiki/Category:Arma_Reforger)\n",
@@ -551,7 +687,9 @@ fn official_wiki_status_resolves_resources_from_an_installed_extension_layout() 
         "params":{"name":"official_wiki_status", "arguments":{}}
     }));
     assert_eq!(
-        client.response(2).pointer("/result/structuredContent/available"),
+        client
+            .response(2)
+            .pointer("/result/structuredContent/available"),
         Some(&json!(true))
     );
     client.close_stdin();

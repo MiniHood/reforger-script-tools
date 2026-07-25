@@ -74,11 +74,17 @@ Legacy cache formats that cannot prove the current source-byte digest rebuild
 from source instead of being relabelled as current.
 
 `official_wiki_status` independently locates `resources/official-wiki` from
-the packaged executable rather than the process working directory. It directly
-validates the Markdown source of truth, retains only bounded integrity and
-navigation facts, derives an immutable corpus revision, and reports malformed
-pages without exposing installation paths. The rough `wiki-index.md` is never
-an authoritative page; `index.md` remains one.
+the packaged executable rather than the process working directory. The
+Official Wiki corpus directly validates its Markdown source of truth, retains
+bounded integrity and navigation facts, derives an immutable corpus revision,
+and reports malformed pages without exposing installation paths.
+`search_official_wiki` is a direct, cancellable projection over those same
+validated UTF-8 files: it verifies each source hash before partitioning pages
+into heading sections, returns cited exact ranges and bounded excerpts, and
+binds its opaque cursor to the normalized query, canonical path prefix, corpus
+revision, and deterministic offset. It never reads `wiki-index.md` as an
+authoritative page; `index.md` remains one. Every Official Wiki search result
+identifies `evidence-catalogue` as its fact source.
 
 The broader flow below remains the expansion boundary. It must preserve the
 same ownership rules: Rust remains the Enfusion language authority, direct
