@@ -35,7 +35,7 @@ fn search_ranks_exact_names_before_other_semantic_matches() {
     assert_eq!(page.results[0].name, "SearchTarget");
     assert_eq!(page.results[0].match_kind, "exactName");
     assert_eq!(page.results[1].name, "PrefixSearchTarget");
-    assert_eq!(page.results[1].match_kind, "qualifiedName");
+    assert_eq!(page.results[1].match_kind, "nameSubstring");
     assert_eq!(page.results[2].name, "m_Value");
     assert_eq!(page.results[2].match_kind, "type");
 }
