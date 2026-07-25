@@ -40,6 +40,50 @@ relative path, and exact passage that support the answer. This lets an AI
 distinguish documented workflow guidance from language-engine, filesystem, or
 live Workbench facts.
 
+## Proposed folder contract
+
+The MCP feature follows the repository's existing TypeScript-shell/Rust-engine
+boundary. This is the intended layout; directories are introduced only when the
+corresponding implementation exists.
+
+```text
+resources/
+  official-wiki/                    # packaged, read-only source of truth
+    index.md                         # official category page; searchable evidence
+    Content/                         # official category hierarchy and pages
+    Modding/
+    Support/
+    wiki-index.md                    # optional AI discovery aid; not search evidence
+
+server/
+  src/
+    evidence/                        # future Rust direct-file search/read contract
+    mcp/                             # future stdio MCP schemas and adapter
+
+src/
+  languageClient/                    # existing bundled-server lifecycle only
+
+tools/
+  # future packaging checks: corpus shape, UTF-8, source URLs, and scan budget
+```
+
+`resources/official-wiki` ships inside the extension and is the only runtime
+location for the official-wiki source corpus. Its category/path hierarchy is
+also the logical identity returned to an AI; do not flatten it into a generated
+database or copy it into `globalStorageUri`. The Rust `evidence` module owns
+safe path validation, direct Markdown scanning, title/source-URL extraction,
+range/excerpt projection, result caps, cancellation, and the five-second
+performance budget. The Rust `mcp` module owns MCP schemas, resources, tool
+registration, cursors, and error mapping, but delegates all matching and file
+reads to `evidence`.
+
+`wiki-index.md` may help an AI discover terminology or categories, but it is
+not authority for a factual answer and must be excluded from ordinary
+`search_reference` scans and results. `tools/` may validate the packaged corpus
+before release, but must not be a runtime dependency. The TypeScript extension
+must not parse, index, or rank wiki content; it only launches the bundled Rust
+server and passes the packaged resource root when that server needs it.
+
 ## Proposed shape
 
 ```
