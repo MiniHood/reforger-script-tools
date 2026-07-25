@@ -467,6 +467,10 @@ fn lossy_utf8_game_data_remains_searchable_and_readable() {
         status.pointer("/result/structuredContent/coverage/lossyFiles"),
         Some(&json!(1))
     );
+    assert_eq!(
+        status.pointer("/result/structuredContent/warnings/0/code"),
+        Some(&json!("lossy_files_present"))
+    );
 
     client.send(json!({
         "jsonrpc": "2.0",
