@@ -71,7 +71,7 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
         .pointer("/result/tools")
         .and_then(Value::as_array)
         .expect("tools/list result");
-    assert_eq!(listed.len(), 2);
+    assert_eq!(listed.len(), 4);
     assert_eq!(listed[0].get("name"), Some(&json!("game_data_status")));
     assert_eq!(
         listed[0].pointer("/annotations/readOnlyHint"),
@@ -106,6 +106,11 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
         listed[1].pointer("/inputSchema/required/0"),
         Some(&json!("query"))
     );
+    assert_eq!(
+        listed[2].get("name"),
+        Some(&json!("inspect_game_data_symbol"))
+    );
+    assert_eq!(listed[3].get("name"), Some(&json!("read_game_data_source")));
 
     client.send(json!({
         "jsonrpc": "2.0",
@@ -195,6 +200,35 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
         results[0].pointer("/readSourceInput/relativePath"),
         Some(&json!("Game/McpFixture.c"))
     );
+
+    client.send(json!({
+        "jsonrpc": "2.0", "id": 5, "method": "tools/call",
+        "params": { "name": "inspect_game_data_symbol", "arguments": results[0]["inspectInput"] }
+    }));
+    let inspection = client.response(5);
+    assert_eq!(inspection.pointer("/result/isError"), Some(&json!(false)));
+    let inspected = inspection
+        .pointer("/result/structuredContent")
+        .expect("inspection result");
+    assert_eq!(
+        inspected.pointer("/qualifiedName"),
+        Some(&json!("McpFixture"))
+    );
+    assert_eq!(
+        inspected.pointer("/relativePath"),
+        Some(&json!("Game/McpFixture.c"))
+    );
+
+    client.send(json!({
+        "jsonrpc": "2.0", "id": 6, "method": "tools/call",
+        "params": { "name": "read_game_data_source", "arguments": { "catalogueRevision": structured["catalogueRevision"], "relativePath": "Game/McpFixture.c", "startLine": 1, "lineCount": 1 } }
+    }));
+    let source = client.response(6);
+    assert_eq!(source.pointer("/result/isError"), Some(&json!(false)));
+    assert!(source
+        .pointer("/result/structuredContent/content")
+        .and_then(Value::as_str)
+        .is_some_and(|text| text.contains("McpFixture")));
 
     client.close_stdin();
     assert!(
@@ -303,7 +337,10 @@ fn unavailable_status_and_malformed_calls_are_sanitized_and_process_isolated() {
             "arguments": {"query": "", "unexpected": true}
         }
     }));
-    assert_eq!(client.response(5).pointer("/error/code"), Some(&json!(-32602)));
+    assert_eq!(
+        client.response(5).pointer("/error/code"),
+        Some(&json!(-32602))
+    );
 
     client.send(json!({
         "jsonrpc": "2.0",

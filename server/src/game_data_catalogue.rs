@@ -1,3 +1,6 @@
+use crate::game_data_inspection::{
+    inspect, read_source, GameDataInspectionError, GameDataSourceReadRequest,
+};
 use crate::game_data_search::{
     search, GameDataSearchError, GameDataSearchPage, GameDataSearchRequest, SourceLineStarts,
 };
@@ -42,6 +45,7 @@ struct GameDataCatalogueState {
     // Ticket #17 adds semantic queries over this exact immutable index.
     index: Option<Arc<SymbolIndex>>,
     source_line_starts: Arc<BTreeMap<SourceFileId, SourceLineStarts>>,
+    source_digest: Option<String>,
 }
 
 impl GameDataCatalogue {
@@ -106,7 +110,70 @@ impl GameDataCatalogue {
         .map_err(GameDataCatalogueSearchError::Search)
     }
 
-    fn lock_state(&self, control: &IndexBuildControl) -> Result<MutexGuard<'_, Option<GameDataCatalogueState>>, String> {
+    pub fn inspect(
+        &self,
+        control: &IndexBuildControl,
+        symbol_ref: String,
+    ) -> Result<serde_json::Value, GameDataInspectionError> {
+        let status = self
+            .status(control)
+            .map_err(GameDataInspectionError::Initialization)?;
+        let revision = status
+            .catalogue_revision
+            .as_deref()
+            .ok_or(GameDataInspectionError::Unavailable)?;
+        let state = self
+            .lock_state(control)
+            .map_err(GameDataInspectionError::Initialization)?;
+        let snapshot = state.as_ref().ok_or(GameDataInspectionError::Unavailable)?;
+        let index = snapshot
+            .index
+            .clone()
+            .ok_or(GameDataInspectionError::Unavailable)?;
+        let starts = snapshot.source_line_starts.clone();
+        drop(state);
+        inspect(&index, &starts, control, revision, &symbol_ref)
+    }
+
+    pub fn read_source(
+        &self,
+        control: &IndexBuildControl,
+        request: GameDataSourceReadRequest,
+    ) -> Result<serde_json::Value, GameDataInspectionError> {
+        let status = self
+            .status(control)
+            .map_err(GameDataInspectionError::Initialization)?;
+        let revision = status
+            .catalogue_revision
+            .as_deref()
+            .ok_or(GameDataInspectionError::Unavailable)?;
+        let state = self
+            .lock_state(control)
+            .map_err(GameDataInspectionError::Initialization)?;
+        let snapshot = state.as_ref().ok_or(GameDataInspectionError::Unavailable)?;
+        let index = snapshot
+            .index
+            .clone()
+            .ok_or(GameDataInspectionError::Unavailable)?;
+        let digest = snapshot
+            .source_digest
+            .clone()
+            .ok_or(GameDataInspectionError::Unavailable)?;
+        drop(state);
+        read_source(
+            &index,
+            control,
+            revision,
+            &self.config.scripts_root,
+            &digest,
+            request,
+        )
+    }
+
+    fn lock_state(
+        &self,
+        control: &IndexBuildControl,
+    ) -> Result<MutexGuard<'_, Option<GameDataCatalogueState>>, String> {
         loop {
             control.check()?;
             match self.state.try_lock() {
@@ -397,6 +464,7 @@ fn ready_state(
         status,
         index: Some(Arc::new(result.index)),
         source_line_starts: Arc::new(source_line_starts),
+        source_digest: Some(result.source_digest),
     }
 }
 
@@ -429,6 +497,7 @@ fn unavailable_state(
         },
         index: None,
         source_line_starts: Arc::new(BTreeMap::new()),
+        source_digest: None,
     }
 }
 

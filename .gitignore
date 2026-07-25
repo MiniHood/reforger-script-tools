@@ -30,3 +30,6 @@ yarn-error.log*
 .env.*
 !.env.example
 /.codex
+/server/target-tests
+/server/target-mcp-api/debug
+/server/target-issue18/debug

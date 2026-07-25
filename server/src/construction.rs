@@ -54,8 +54,8 @@ pub fn compatible_construction_candidates<'index>(
         return Vec::new();
     };
     let external_indexes = external_indexes.into_iter().collect::<Vec<_>>();
-    let mut candidates = IndexQuery::new(local_index)
-        .completion_top_level("", EditorTopLevelCompletionMode::Type);
+    let mut candidates =
+        IndexQuery::new(local_index).completion_top_level("", EditorTopLevelCompletionMode::Type);
     for index in &external_indexes {
         candidates.extend(
             IndexQuery::new(index).completion_top_level("", EditorTopLevelCompletionMode::Type),
@@ -67,12 +67,7 @@ pub fn compatible_construction_candidates<'index>(
         .filter(|candidate| {
             let name = candidate_name(candidate);
             name == owner
-                || class_inherits_from_indexes(
-                    local_index,
-                    &external_indexes,
-                    name,
-                    &owner,
-                )
+                || class_inherits_from_indexes(local_index, &external_indexes, name, &owner)
         })
         .filter(|candidate| {
             constructor_is_accessible_from_indexes(
@@ -391,7 +386,6 @@ impl<'source, 'index> ConstructionQuery<'source, 'index> {
         }
         None
     }
-
 }
 
 fn class_inherits_from_indexes(
@@ -461,12 +455,7 @@ fn constructor_is_accessible_from_indexes(
         }
         protected
             && context.containing_class.as_deref().is_some_and(|owner| {
-                class_inherits_from_indexes(
-                    local_index,
-                    external_indexes,
-                    owner,
-                    candidate_name,
-                )
+                class_inherits_from_indexes(local_index, external_indexes, owner, candidate_name)
             })
     })
 }

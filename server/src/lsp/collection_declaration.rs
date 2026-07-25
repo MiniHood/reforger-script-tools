@@ -219,7 +219,10 @@ mod tests {
             )
             .expect("expected nested collection declaration");
             assert_eq!(declaration.collection, collection);
-            assert_eq!(&source[declaration.type_span.start..declaration.type_span.end], type_text);
+            assert_eq!(
+                &source[declaration.type_span.start..declaration.type_span.end],
+                type_text
+            );
         }
     }
 }

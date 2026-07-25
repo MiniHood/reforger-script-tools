@@ -601,9 +601,9 @@ impl<W: Write> LspServer<W> {
             if let Some(id) = routed.message.id {
                 self.respond_error(id, -32602, &error)?;
             } else {
-                self.log_lazy(|| format!(
-                    "notification ignored invalid_params method={method} error={error}"
-                ));
+                self.log_lazy(|| {
+                    format!("notification ignored invalid_params method={method} error={error}")
+                });
             }
             return Ok(false);
         }
@@ -648,24 +648,21 @@ impl<W: Write> LspServer<W> {
             .method
             .as_deref()
             .expect("lifecycle command has a method");
-        self.logger.diagnostic_lazy(
-            "rpc.received",
-            || json!({
+        self.logger.diagnostic_lazy("rpc.received", || {
+            json!({
                 "method": method,
                 "command": "Lifecycle",
                 "request": routed.message.id.is_some(),
                 "queueMs": queue_ms,
                 "coalescedChanges": coalesced_changes,
                 "supersededChanges": superseded_changes,
-            }),
-        );
+            })
+        });
         if self.shutdown_requested && method != "exit" {
             if let Some(id) = routed.message.id {
                 self.respond_error(id, -32600, "Server has already received shutdown")?;
             } else {
-                self.log_lazy(|| format!(
-                    "notification ignored after shutdown method={method}"
-                ));
+                self.log_lazy(|| format!("notification ignored after shutdown method={method}"));
             }
             return Ok(false);
         }
@@ -834,15 +831,14 @@ impl<W: Write> LspServer<W> {
             options.bracket_coloring,
             server.external_index.status_summary().status
         ));
-        server.logger.diagnostic_lazy(
-            "startup",
-            || json!({
+        server.logger.diagnostic_lazy("startup", || {
+            json!({
                 "gameDataConfigured": options.game_data_scripts.is_some(),
                 "workspaceRoots": options.workspace_scripts.len(),
                 "indexCacheConfigured": options.index_cache.is_some(),
                 "bracketColoring": format!("{:?}", options.bracket_coloring),
-            }),
-        );
+            })
+        });
         server
     }
 

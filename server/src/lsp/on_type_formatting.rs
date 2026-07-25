@@ -81,7 +81,11 @@ pub(super) fn auto_block_class_declaration_enter_plan(
     let line = &source[line_start..cursor];
     let indent_end = line.len() - line.trim_start_matches(char::is_whitespace).len();
     let indent = &line[..indent_end];
-    let newline = if source.contains("\r\n") { "\r\n" } else { "\n" };
+    let newline = if source.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
     let unit = if insert_spaces {
         " ".repeat(tab_size.clamp(1, 16))
     } else {
@@ -169,7 +173,11 @@ pub(super) fn auto_block_protected_method_enter_plan(
     let line = &source[line_start..cursor];
     let indent_end = line.len() - line.trim_start_matches(char::is_whitespace).len();
     let indent = &line[..indent_end];
-    let newline = if source.contains("\r\n") { "\r\n" } else { "\n" };
+    let newline = if source.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
     let unit = if insert_spaces {
         " ".repeat(tab_size.clamp(1, 16))
     } else {
@@ -1315,8 +1323,7 @@ mod tests {
 
     use super::{
         auto_block_class_declaration_enter_plan, auto_block_control_header_enter_plan,
-        auto_block_protected_method_enter_plan,
-        block_comment_pair_plan,
+        auto_block_protected_method_enter_plan, block_comment_pair_plan,
         control_header_block_before_enter_plan, if_header_body_before_enter_plan,
         incomplete_if_header_enter_plan, semicolon_before_enter_plan, semicolon_insertion_offset,
     };
@@ -1364,14 +1371,12 @@ mod tests {
             "the declaration must be recognized independently of the comment"
         );
 
-        let source =
-            "map<int, int> testmap = new map<int, int>()// pressing enter here";
+        let source = "map<int, int> testmap = new map<int, int>()// pressing enter here";
         let plan = semicolon_before_enter_plan(source, source.len())
             .expect("the complete constructor declaration needs a semicolon before Enter");
 
         assert_eq!(
-            plan.replacement,
-            ";// pressing enter here\n",
+            plan.replacement, ";// pressing enter here\n",
             "the semicolon belongs before the trailing comment"
         );
     }

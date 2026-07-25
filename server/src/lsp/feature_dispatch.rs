@@ -96,14 +96,16 @@ impl FeatureDispatcher<'_> {
         self.effects.push(RuntimeEffect::diagnostic_lazy(
             self.diagnostic_logging,
             "rpc.received",
-            || json!({
-                "method": method,
-                "command": format!("{command:?}"),
-                "request": message.id.is_some(),
-                "queueMs": queue_ms,
-                "coalescedChanges": coalesced_changes,
-                "supersededChanges": superseded_changes,
-            }),
+            || {
+                json!({
+                    "method": method,
+                    "command": format!("{command:?}"),
+                    "request": message.id.is_some(),
+                    "queueMs": queue_ms,
+                    "coalescedChanges": coalesced_changes,
+                    "supersededChanges": superseded_changes,
+                })
+            },
         ));
 
         if self.shutdown_requested && method != "exit" {
@@ -111,9 +113,7 @@ impl FeatureDispatcher<'_> {
             if let Some(id) = message.id.clone() {
                 self.respond_error(id, -32600, error)?;
             } else {
-                self.log(|| format!(
-                    "notification ignored after shutdown method={method}"
-                ));
+                self.log(|| format!("notification ignored after shutdown method={method}"));
             }
             return Ok(self.finish(false));
         }
@@ -122,9 +122,9 @@ impl FeatureDispatcher<'_> {
             if let Some(id) = message.id.clone() {
                 self.respond_error(id, -32602, &error)?;
             } else {
-                self.log(|| format!(
-                    "notification ignored invalid_params method={method} error={error}"
-                ));
+                self.log(|| {
+                    format!("notification ignored invalid_params method={method} error={error}")
+                });
             }
             return Ok(self.finish(false));
         }
@@ -245,12 +245,14 @@ impl FeatureDispatcher<'_> {
                         self.deliver_effect(RuntimeEffect::diagnostic_lazy(
                             self.diagnostic_logging,
                             "documentSymbol.rangeRepaired",
-                            || json!({
-                                "revision": revision,
-                                "bytes": bytes,
-                                "repairCount": range_repair_count,
-                                "samples": range_repair_samples,
-                            }),
+                            || {
+                                json!({
+                                    "revision": revision,
+                                    "bytes": bytes,
+                                    "repairCount": range_repair_count,
+                                    "samples": range_repair_samples,
+                                })
+                            },
                         ))?;
                     }
                     self.respond(id, result)?;
@@ -1573,11 +1575,13 @@ impl FeatureDispatcher<'_> {
         self.effects.push(RuntimeEffect::diagnostic_lazy(
             self.diagnostic_logging,
             "rpc.completed",
-            || json!({
-                "method": method,
-                "outcome": if should_exit { "exit" } else { "complete" },
-                "elapsedMs": started_at.elapsed().as_millis(),
-            }),
+            || {
+                json!({
+                    "method": method,
+                    "outcome": if should_exit { "exit" } else { "complete" },
+                    "elapsedMs": started_at.elapsed().as_millis(),
+                })
+            },
         ));
         Ok(self.finish(should_exit))
     }

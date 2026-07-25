@@ -1025,12 +1025,7 @@ fn winner_cache_validates(
     for attempt in 0..VALIDATION_ATTEMPTS {
         let mut winner_timings = IndexCacheTimings::default();
         if matches!(
-            load_cached_index(
-                cache_path,
-                fingerprint,
-                source_digest,
-                &mut winner_timings,
-            ),
+            load_cached_index(cache_path, fingerprint, source_digest, &mut winner_timings,),
             Ok(Some(CacheLoad::Current(_)))
         ) {
             timings.cache_file_read += winner_timings.cache_file_read;
@@ -1128,11 +1123,11 @@ fn load_cached_index(
         let projected = v10
             .into_current(expected_source_digest.to_string())
             .map_err(|error| {
-            format!(
-                "Failed to project v10 index cache {} into canonical facts: {error}",
-                cache_path.display()
-            )
-        })?;
+                format!(
+                    "Failed to project v10 index cache {} into canonical facts: {error}",
+                    cache_path.display()
+                )
+            })?;
         drop(projected);
         timings.cache_decode = decode_start.elapsed();
         timings.cache_validate = timings.cache_decode;
@@ -2673,7 +2668,10 @@ fn source_fingerprint_with_control(
     })
 }
 
-fn source_content_digest(root: &Path, control: &IndexBuildControl) -> Result<String, String> {
+pub(crate) fn source_content_digest(
+    root: &Path,
+    control: &IndexBuildControl,
+) -> Result<String, String> {
     let mut files = Vec::new();
     collect_source_digest_files(root, &mut files, control)?;
     files.sort();
@@ -3251,10 +3249,7 @@ mod tests {
         let scripts = root.join("scripts");
         let source = scripts.join("Game/Example.c");
         let metadata = root.join("metadata.json");
-        write_file(
-            &source,
-            "class Example { void Run() { int value = 1; } }",
-        );
+        write_file(&source, "class Example { void Run() { int value = 1; } }");
         write_file(&metadata, r#"{"commitSha":"v10-migration"}"#);
         let config = GameDataIndexCacheConfig {
             scripts_root: scripts.clone(),
@@ -3266,10 +3261,7 @@ mod tests {
         rewrite_cache_as_v10(&cache, |cached| cached).unwrap();
         assert!(fs::read(&cache).unwrap().starts_with(V10_CACHE_MAGIC));
 
-        write_file(
-            &source,
-            "class Example { void Run() { int value = 2; } }",
-        );
+        write_file(&source, "class Example { void Run() { int value = 2; } }");
         let rebuilt = load_or_build_game_data_index(&config).unwrap();
         assert!(matches!(
             rebuilt.cache_status,

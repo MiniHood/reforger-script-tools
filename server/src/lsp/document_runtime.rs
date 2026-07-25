@@ -348,9 +348,10 @@ impl DocumentRuntime {
         }
         self.reject_deferred_semantic_token_requests(uri, None, None, &mut effects);
         effects.push(RuntimeEffect::Notification(clear_diagnostics_message(uri)));
-        effects.push(runtime_log!(self, format!(
-            "notification didClose uri={uri}"
-        )));
+        effects.push(runtime_log!(
+            self,
+            format!("notification didClose uri={uri}")
+        ));
         effects
     }
 
@@ -445,10 +446,13 @@ impl DocumentRuntime {
         let mut effects = Vec::new();
         let Some(current_version) = self.runtime.latest(&uri).map(|snapshot| snapshot.version())
         else {
-            effects.push(runtime_log!(self, format!(
-                "notification didChange ignored uri={} version={} reason=not_open",
-                uri, version
-            )));
+            effects.push(runtime_log!(
+                self,
+                format!(
+                    "notification didChange ignored uri={} version={} reason=not_open",
+                    uri, version
+                )
+            ));
             return Ok(effects);
         };
         if version <= current_version
@@ -457,10 +461,13 @@ impl DocumentRuntime {
                 UpsertOutcome::Accepted
             )
         {
-            effects.push(runtime_log!(self, format!(
+            effects.push(runtime_log!(
+                self,
+                format!(
                 "notification didChange ignored uri={} version={} current_version={} reason=stale",
                 uri, version, current_version
-            )));
+            )
+            ));
             return Ok(effects);
         }
         let snapshot = self.runtime.latest(&uri).expect("accepted snapshot");
@@ -573,10 +580,13 @@ impl DocumentRuntime {
                 });
             }
         }
-        effects.push(runtime_log!(self, format!(
-            "request deferred discarded uri={} current_revision={} reason=superseded",
-            uri, current_revision
-        )));
+        effects.push(runtime_log!(
+            self,
+            format!(
+                "request deferred discarded uri={} current_revision={} reason=superseded",
+                uri, current_revision
+            )
+        ));
         Ok(())
     }
 
@@ -676,10 +686,13 @@ impl DocumentRuntime {
             ]);
         }
         Some(vec![
-            runtime_log!(self, format!(
-                "request {} uri={} revision={} {} async=true elapsed_ms={}",
-                method, uri, revision, details, elapsed_ms
-            )),
+            runtime_log!(
+                self,
+                format!(
+                    "request {} uri={} revision={} {} async=true elapsed_ms={}",
+                    method, uri, revision, details, elapsed_ms
+                )
+            ),
             RuntimeEffect::Response { id, result },
         ])
     }
@@ -699,23 +712,29 @@ impl DocumentRuntime {
             return None;
         };
         if !self.runtime.complete(&task) {
-            return Some(vec![runtime_log!(self, format!(
-                "foreground discarded uri={} revision={} reason=runtime-stale elapsed_ms={}",
-                task.uri(),
-                task.revision(),
-                elapsed_ms
-            ))]);
+            return Some(vec![runtime_log!(
+                self,
+                format!(
+                    "foreground discarded uri={} revision={} reason=runtime-stale elapsed_ms={}",
+                    task.uri(),
+                    task.revision(),
+                    elapsed_ms
+                )
+            )]);
         }
         let Some(document) = self.documents.get_mut(task.uri()) else {
             return Some(Vec::new());
         };
         if !document.install_foreground(task.revision(), positions, lexer_tokens, syntax) {
-            return Some(vec![runtime_log!(self, format!(
-                "foreground discarded uri={} revision={} reason=stale-install elapsed_ms={}",
-                task.uri(),
-                task.revision(),
-                elapsed_ms
-            ))]);
+            return Some(vec![runtime_log!(
+                self,
+                format!(
+                    "foreground discarded uri={} revision={} reason=stale-install elapsed_ms={}",
+                    task.uri(),
+                    task.revision(),
+                    elapsed_ms
+                )
+            )]);
         }
         let uri = task.uri().to_string();
         let version = document.version;
@@ -848,10 +867,13 @@ impl DocumentRuntime {
                     external_indexes,
                     external_generation,
                 ));
-                effects.push(runtime_log!(self, format!(
-                    "documentAnalysis ready uri={} revision={} elapsed_ms={}",
-                    uri, revision, elapsed_ms
-                )));
+                effects.push(runtime_log!(
+                    self,
+                    format!(
+                        "documentAnalysis ready uri={} revision={} elapsed_ms={}",
+                        uri, revision, elapsed_ms
+                    )
+                ));
                 Some(Ok(effects))
             }
             ServerEvent::DocumentAnalysisSkipped {
@@ -883,13 +905,16 @@ impl DocumentRuntime {
                         }
                     }
                 }
-                effects.push(runtime_log!(self, format!(
-                    "documentAnalysis skipped uri={} revision={} reason={} elapsed_ms={}",
-                    task.uri(),
-                    task.revision(),
-                    reason,
-                    elapsed_ms
-                )));
+                effects.push(runtime_log!(
+                    self,
+                    format!(
+                        "documentAnalysis skipped uri={} revision={} reason={} elapsed_ms={}",
+                        task.uri(),
+                        task.revision(),
+                        reason,
+                        elapsed_ms
+                    )
+                ));
                 Some(Ok(effects))
             }
             _ => None,
@@ -1047,9 +1072,10 @@ impl DocumentRuntime {
         let id = format!("server-{}", self.next_server_request_id);
         self.next_server_request_id += 1;
         self.semantic_tokens_refresh_in_flight = Some(id.clone());
-        effects.push(runtime_log!(self, format!(
-            "request workspace/semanticTokens/refresh id={id}"
-        )));
+        effects.push(runtime_log!(
+            self,
+            format!("request workspace/semanticTokens/refresh id={id}")
+        ));
         effects.push(RuntimeEffect::RequestSemanticTokensRefresh { id });
     }
 
@@ -1304,10 +1330,13 @@ impl DocumentRuntime {
                     message: "Content modified".to_string(),
                 });
             }
-            effects.push(runtime_log!(self, format!(
-                "request deferred rejected uri={} revision={} reason=analysis-overload",
-                uri, revision
-            )));
+            effects.push(runtime_log!(
+                self,
+                format!(
+                    "request deferred rejected uri={} revision={} reason=analysis-overload",
+                    uri, revision
+                )
+            ));
             return Ok((true, effects));
         }
         let pending = self
@@ -1322,10 +1351,13 @@ impl DocumentRuntime {
                     message: "Content modified".to_string(),
                 });
             }
-            effects.push(runtime_log!(self, format!(
-                "request deferred rejected uri={} revision={} reason=capacity",
-                uri, revision
-            )));
+            effects.push(runtime_log!(
+                self,
+                format!(
+                    "request deferred rejected uri={} revision={} reason=capacity",
+                    uri, revision
+                )
+            ));
             return Ok((true, effects));
         }
         pending.push(DeferredDocumentRequest {
@@ -1337,12 +1369,15 @@ impl DocumentRuntime {
                 parameter_error,
             },
         });
-        effects.push(runtime_log!(self, format!(
-            "request deferred uri={} revision={} pending_requests={}",
-            uri,
-            revision,
-            pending.len()
-        )));
+        effects.push(runtime_log!(
+            self,
+            format!(
+                "request deferred uri={} revision={} pending_requests={}",
+                uri,
+                revision,
+                pending.len()
+            )
+        ));
         Ok((true, effects))
     }
 
@@ -1368,10 +1403,13 @@ impl DocumentRuntime {
                     message: "Content modified".to_string(),
                 });
             }
-            effects.push(runtime_log!(self, format!(
-                "request semanticTokens rejected uri={} revision={} reason=analysis-overload",
-                uri, revision
-            )));
+            effects.push(runtime_log!(
+                self,
+                format!(
+                    "request semanticTokens rejected uri={} revision={} reason=analysis-overload",
+                    uri, revision
+                )
+            ));
             return Ok(effects);
         }
         let pending = self
@@ -1386,10 +1424,13 @@ impl DocumentRuntime {
                     message: "Content modified".to_string(),
                 });
             }
-            effects.push(runtime_log!(self, format!(
-                "request semanticTokens rejected uri={} revision={} reason=capacity",
-                uri, revision
-            )));
+            effects.push(runtime_log!(
+                self,
+                format!(
+                    "request semanticTokens rejected uri={} revision={} reason=capacity",
+                    uri, revision
+                )
+            ));
             return Ok(effects);
         }
         pending.push(DeferredSemanticTokenRequest {
@@ -1489,13 +1530,16 @@ impl DocumentRuntime {
                         }
                     }
                 }
-                let mut effects = vec![runtime_log!(self, format!(
-                    "foreground skipped uri={} revision={} reason={} elapsed_ms={}",
-                    task.uri(),
-                    task.revision(),
-                    reason,
-                    elapsed_ms
-                ))];
+                let mut effects = vec![runtime_log!(
+                    self,
+                    format!(
+                        "foreground skipped uri={} revision={} reason={} elapsed_ms={}",
+                        task.uri(),
+                        task.revision(),
+                        reason,
+                        elapsed_ms
+                    )
+                )];
                 if current {
                     let _ = self.discard_deferred_document_requests_for_revision(
                         task.uri(),
@@ -2021,12 +2065,11 @@ mod tests {
 
     #[test]
     fn current_foreground_generic_facts_drive_the_first_punctuation_projection() {
-        let mut runtime =
-            DocumentRuntime::new_with_bracket_coloring(
-                None,
-                BracketColoringMode::Punctuation,
-                false,
-            );
+        let mut runtime = DocumentRuntime::new_with_bracket_coloring(
+            None,
+            BracketColoringMode::Punctuation,
+            false,
+        );
         let uri = "file:///punctuation-baseline.c".to_string();
         let source = "class Example { array<int>> value; }";
         runtime
@@ -2067,11 +2110,7 @@ mod tests {
     #[test]
     fn current_foreground_generic_facts_do_not_remove_semantic_baseline_operators() {
         let mut runtime =
-            DocumentRuntime::new_with_bracket_coloring(
-                None,
-                BracketColoringMode::Semantic,
-                false,
-            );
+            DocumentRuntime::new_with_bracket_coloring(None, BracketColoringMode::Semantic, false);
         let uri = "file:///semantic-baseline.c".to_string();
         let source = "class Example { array<int> value; }";
         runtime

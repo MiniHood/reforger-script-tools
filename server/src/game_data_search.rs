@@ -30,7 +30,7 @@ impl SourceLineStarts {
         Self(starts)
     }
 
-    fn range(&self, start: usize, end: usize) -> SourceLineRange {
+    pub(crate) fn range(&self, start: usize, end: usize) -> SourceLineRange {
         SourceLineRange {
             start_line: line_for_offset(&self.0, start),
             end_line: line_for_offset(&self.0, end),
@@ -186,8 +186,13 @@ pub fn search(
             "owner must be non-empty",
         ));
     }
-    if owner.as_ref().is_some_and(|value| value.chars().count() > MAX_OWNER_CHARS) {
-        return Err(GameDataSearchError::InvalidRequest("owner exceeds 256 characters"));
+    if owner
+        .as_ref()
+        .is_some_and(|value| value.chars().count() > MAX_OWNER_CHARS)
+    {
+        return Err(GameDataSearchError::InvalidRequest(
+            "owner exceeds 256 characters",
+        ));
     }
     let limit = request.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
     let cursor = request.cursor.as_deref().map(decode_cursor).transpose()?;
@@ -446,7 +451,7 @@ fn all_categories() -> Vec<&'static str> {
         "workbench",
     ]
 }
-fn kind_name(kind: SymbolKind) -> &'static str {
+pub(crate) fn kind_name(kind: SymbolKind) -> &'static str {
     match kind {
         SymbolKind::Class => "class",
         SymbolKind::TypeParameter => "typeParameter",
@@ -464,18 +469,18 @@ fn kind_name(kind: SymbolKind) -> &'static str {
         SymbolKind::PreprocessorMacro => "preprocessorMacro",
     }
 }
-fn owner_name(index: &SymbolIndex, symbol: &IndexedSymbol) -> Option<String> {
+pub(crate) fn owner_name(index: &SymbolIndex, symbol: &IndexedSymbol) -> Option<String> {
     symbol
         .parent
         .and_then(|parent| index.symbol(parent))
         .and_then(|parent| parent.name.clone())
 }
-fn qualify(owner: Option<&str>, name: &str) -> String {
+pub(crate) fn qualify(owner: Option<&str>, name: &str) -> String {
     owner
         .map(|owner| format!("{owner}.{name}"))
         .unwrap_or_else(|| name.to_string())
 }
-fn logical_path(file: &crate::index::IndexedFile) -> String {
+pub(crate) fn logical_path(file: &crate::index::IndexedFile) -> String {
     file.metadata
         .relative_path
         .as_ref()
@@ -570,7 +575,7 @@ fn project_hit(
         match_kind: candidate.match_kind.to_string(),
     }
 }
-fn compact_signature(symbol: &IndexedSymbol, qualified_name: &str) -> String {
+pub(crate) fn compact_signature(symbol: &IndexedSymbol, qualified_name: &str) -> String {
     match symbol.kind {
         SymbolKind::Class => symbol
             .detail
@@ -594,7 +599,7 @@ fn compact_signature(symbol: &IndexedSymbol, qualified_name: &str) -> String {
             .unwrap_or_else(|| qualified_name.to_string()),
     }
 }
-fn documentation_summary(symbol: &IndexedSymbol) -> Option<String> {
+pub(crate) fn documentation_summary(symbol: &IndexedSymbol) -> Option<String> {
     symbol
         .doc_comments
         .iter()
@@ -611,7 +616,10 @@ fn documentation_summary(symbol: &IndexedSymbol) -> Option<String> {
 
 fn bounded_search_text(value: String) -> String {
     let mut characters = value.chars();
-    let prefix = characters.by_ref().take(MAX_SEARCH_TEXT_CHARS).collect::<String>();
+    let prefix = characters
+        .by_ref()
+        .take(MAX_SEARCH_TEXT_CHARS)
+        .collect::<String>();
     if characters.next().is_some() {
         format!("{prefix}…")
     } else {
@@ -621,7 +629,7 @@ fn bounded_search_text(value: String) -> String {
 fn line_for_offset(starts: &[usize], offset: usize) -> usize {
     starts.partition_point(|start| *start <= offset).max(1)
 }
-fn encode_symbol_ref(
+pub(crate) fn encode_symbol_ref(
     revision: &str,
     path: &str,
     kind: &str,
@@ -630,7 +638,13 @@ fn encode_symbol_ref(
 ) -> String {
     let mut digest = Sha256::new();
     digest.update(b"sr1\0");
-    for part in [revision, path, kind, qualified_name, &selection_start.to_string()] {
+    for part in [
+        revision,
+        path,
+        kind,
+        qualified_name,
+        &selection_start.to_string(),
+    ] {
         digest.update(part.as_bytes());
         digest.update([0]);
     }

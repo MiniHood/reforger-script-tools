@@ -399,13 +399,12 @@ pub(crate) fn start_external_index(
         return ExternalIndexHandle::missing();
     }
 
-    logger.diagnostic_lazy(
-        "externalIndex.started",
-        || json!({
+    logger.diagnostic_lazy("externalIndex.started", || {
+        json!({
             "gameDataConfigured": options.game_data_scripts.is_some(),
             "workspaceRoots": options.workspace_scripts.len(),
-        }),
-    );
+        })
+    });
 
     let handle = ExternalIndexHandle {
         state: Arc::new(Mutex::new(ExternalIndexState {
@@ -456,10 +455,8 @@ pub(crate) fn start_external_index(
                 .copied()
                 .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
                 .unwrap_or("<non-string panic>");
-            thread_logger.log_lazy(|| format!(
-                "externalIndex thread panic error={}",
-                panic_message
-            ));
+            thread_logger
+                .log_lazy(|| format!("externalIndex thread panic error={}", panic_message));
             if let Ok(mut state) = panic_state.lock() {
                 state.status = ExternalIndexStatus::Failed;
                 state.error = Some(format!("external-index startup panicked: {panic_message}"));
@@ -484,23 +481,27 @@ fn run_external_index_thread(
     event_sender: Option<ServerEventSender>,
 ) {
     let start = Instant::now();
-    logger.log_lazy(|| format!(
-        "externalIndex start game_data_scripts={} workspace_roots={}",
-        scripts_root
-            .as_ref()
-            .map(|path| path.display().to_string())
-            .unwrap_or_else(|| "<unset>".to_string()),
-        format_paths(&workspace_roots)
-    ));
+    logger.log_lazy(|| {
+        format!(
+            "externalIndex start game_data_scripts={} workspace_roots={}",
+            scripts_root
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "<unset>".to_string()),
+            format_paths(&workspace_roots)
+        )
+    });
 
     let game_data_start = Instant::now();
     let game_data_result = match (scripts_root, cache_path) {
         (Some(scripts_root), Some(cache_path)) => {
-            logger.log_lazy(|| format!(
-                "externalIndex gameData start scripts={} cache={}",
-                scripts_root.display(),
-                cache_path.display()
-            ));
+            logger.log_lazy(|| {
+                format!(
+                    "externalIndex gameData start scripts={} cache={}",
+                    scripts_root.display(),
+                    cache_path.display()
+                )
+            });
             let phase_logger = logger.clone();
             let phase_start = Instant::now();
             Some(load_or_build_game_data_index_with_progress(
@@ -510,11 +511,13 @@ fn run_external_index_thread(
                     metadata_path,
                 },
                 |phase| {
-                    phase_logger.log_lazy(|| format!(
-                        "externalIndex gameData phase={} elapsed_ms={}",
-                        phase,
-                        phase_start.elapsed().as_millis()
-                    ));
+                    phase_logger.log_lazy(|| {
+                        format!(
+                            "externalIndex gameData phase={} elapsed_ms={}",
+                            phase,
+                            phase_start.elapsed().as_millis()
+                        )
+                    });
                     if let Some(sender) = &event_sender {
                         let _ = sender.send(ServerEvent::ExternalIndexProgress {
                             phase: phase.to_string(),
@@ -526,11 +529,13 @@ fn run_external_index_thread(
         _ => None,
     };
     let game_data_ready_ms = game_data_start.elapsed().as_millis();
-    logger.log_lazy(|| format!(
-        "externalIndex gameData load returned has_result={} elapsed_ms={}",
-        game_data_result.is_some(),
-        start.elapsed().as_millis()
-    ));
+    logger.log_lazy(|| {
+        format!(
+            "externalIndex gameData load returned has_result={} elapsed_ms={}",
+            game_data_result.is_some(),
+            start.elapsed().as_millis()
+        )
+    });
 
     let workspace_start = Instant::now();
     if !workspace_roots.is_empty() {
@@ -540,11 +545,13 @@ fn run_external_index_thread(
             });
         }
     }
-    logger.log_lazy(|| format!(
-        "externalIndex workspace start roots={} elapsed_ms={}",
-        format_paths(&workspace_roots),
-        start.elapsed().as_millis()
-    ));
+    logger.log_lazy(|| {
+        format!(
+            "externalIndex workspace start roots={} elapsed_ms={}",
+            format_paths(&workspace_roots),
+            start.elapsed().as_millis()
+        )
+    });
     let workspace_result = build_workspace_indexes(&workspace_roots, &logger, start);
     if !workspace_roots.is_empty() {
         if let Some(sender) = &event_sender {
@@ -554,16 +561,20 @@ fn run_external_index_thread(
         }
     }
     let workspace_ready_ms = workspace_start.elapsed().as_millis();
-    logger.log_lazy(|| format!(
-        "externalIndex workspace load returned success={} elapsed_ms={}",
-        workspace_result.is_ok(),
-        start.elapsed().as_millis()
-    ));
+    logger.log_lazy(|| {
+        format!(
+            "externalIndex workspace load returned success={} elapsed_ms={}",
+            workspace_result.is_ok(),
+            start.elapsed().as_millis()
+        )
+    });
 
-    logger.log_lazy(|| format!(
-        "externalIndex publish start elapsed_ms={}",
-        start.elapsed().as_millis()
-    ));
+    logger.log_lazy(|| {
+        format!(
+            "externalIndex publish start elapsed_ms={}",
+            start.elapsed().as_millis()
+        )
+    });
     let mut error_messages = Vec::new();
     let (game_data_index, game_data_summary, cache_status, cache_detail, fingerprint) =
         match game_data_result {
@@ -595,11 +606,13 @@ fn run_external_index_thread(
                 )
             }
             Some(Err(error)) => {
-                logger.log_lazy(|| format!(
-                    "externalIndex gameData failed error={} elapsed_ms={}",
-                    error,
-                    start.elapsed().as_millis()
-                ));
+                logger.log_lazy(|| {
+                    format!(
+                        "externalIndex gameData failed error={} elapsed_ms={}",
+                        error,
+                        start.elapsed().as_millis()
+                    )
+                });
                 error_messages.push(error);
                 (None, None, None, None, None)
             }
@@ -619,12 +632,14 @@ fn run_external_index_thread(
             workspace_files
         }
         Err(error) => {
-            logger.log_lazy(|| format!(
-                "externalIndex workspace failed roots={} error={} elapsed_ms={}",
-                format_paths(&workspace_roots),
-                error,
-                start.elapsed().as_millis()
-            ));
+            logger.log_lazy(|| {
+                format!(
+                    "externalIndex workspace failed roots={} error={} elapsed_ms={}",
+                    format_paths(&workspace_roots),
+                    error,
+                    start.elapsed().as_millis()
+                )
+            });
             error_messages.push(error);
             BTreeMap::new()
         }
@@ -703,16 +718,15 @@ fn run_external_index_thread(
         start.elapsed().as_millis(),
         start.elapsed().as_millis()
     ));
-    logger.diagnostic_lazy(
-        "externalIndex.completed",
-        || json!({
+    logger.diagnostic_lazy("externalIndex.completed", || {
+        json!({
             "status": status.as_str(),
             "files": summary.as_ref().map(|summary| summary.files).unwrap_or(0),
             "symbols": summary.as_ref().map(|summary| summary.indexed_symbols).unwrap_or(0),
             "workspaceFiles": workspace_summary.files,
             "elapsedMs": start.elapsed().as_millis(),
-        }),
-    );
+        })
+    });
 }
 
 fn build_workspace_indexes(
@@ -727,13 +741,15 @@ fn build_workspace_indexes(
     String,
 > {
     let roots = normalize_workspace_roots(roots);
-    logger.log_lazy(|| format!(
+    logger.log_lazy(|| {
+        format!(
         "externalIndex workspace roots normalized requested={} unique={} roots={} elapsed_ms={}",
         roots.requested_count,
         roots.paths.len(),
         format_paths(&roots.paths),
         external_start.elapsed().as_millis()
-    ));
+    )
+    });
 
     let mut files = Vec::new();
     for root in &roots.paths {
@@ -747,20 +763,24 @@ fn build_workspace_indexes(
     }
     files.sort();
     files.dedup();
-    logger.log_lazy(|| format!(
-        "externalIndex workspace discovered files={} elapsed_ms={}",
-        files.len(),
-        external_start.elapsed().as_millis()
-    ));
+    logger.log_lazy(|| {
+        format!(
+            "externalIndex workspace discovered files={} elapsed_ms={}",
+            files.len(),
+            external_start.elapsed().as_millis()
+        )
+    });
 
     let mut indexed_files = BTreeMap::new();
     for file in files {
         let file_start = Instant::now();
-        logger.log_lazy(|| format!(
-            "externalIndex workspace file start path={} total_elapsed_ms={}",
-            file.display(),
-            external_start.elapsed().as_millis()
-        ));
+        logger.log_lazy(|| {
+            format!(
+                "externalIndex workspace file start path={} total_elapsed_ms={}",
+                file.display(),
+                external_start.elapsed().as_millis()
+            )
+        });
         let bytes = fs::read(&file).map_err(|error| {
             format!("Failed to read workspace file {}: {error}", file.display())
         })?;
@@ -1052,7 +1072,10 @@ mod tests {
                 Err(error) => panic!("external index publication did not wake runtime: {error}"),
             }
         }
-        assert!(saw_progress, "index phases must wake the runtime before publication");
+        assert!(
+            saw_progress,
+            "index phases must wake the runtime before publication"
+        );
     }
 
     #[test]

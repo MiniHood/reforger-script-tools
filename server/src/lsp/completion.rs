@@ -4,8 +4,7 @@ use crate::callable::{
     CallableParameter, CallableSignatureParts, CallableTarget,
 };
 use crate::construction::{
-    compatible_construction_candidates, lexical_construction_context_at_operand,
-    ConstructionQuery,
+    compatible_construction_candidates, lexical_construction_context_at_operand, ConstructionQuery,
 };
 use crate::expression_type::{expression_type_from_index_symbol, strip_all_type_prefixes};
 use crate::index::SymbolIndex;
@@ -256,7 +255,8 @@ pub(crate) fn completion_report_for_cached_analysis_with_external_indexes(
     if completion_cursor_is_in_comment_or_string(&analysis.lexer_tokens, offset) {
         return empty_completion_report(analysis.parse_diagnostics);
     }
-    let mut report = completion_report_for_offset(source, analysis, offset, workspace_index, game_data_index);
+    let mut report =
+        completion_report_for_offset(source, analysis, offset, workspace_index, game_data_index);
     apply_retyped_completion_suffix_replacements(source, offset, &mut report);
     report
 }
@@ -1066,10 +1066,18 @@ fn super_call_completion_report_for_indexes(
     let context = region.current_super_call_context(source, offset)?;
     let mut candidates = completion_candidates_for_owner(local_index, &context.base_type, false);
     if let Some(index) = workspace_index {
-        candidates.extend(completion_candidates_for_owner(index, &context.base_type, false));
+        candidates.extend(completion_candidates_for_owner(
+            index,
+            &context.base_type,
+            false,
+        ));
     }
     if let Some(index) = game_data_index {
-        candidates.extend(completion_candidates_for_owner(index, &context.base_type, false));
+        candidates.extend(completion_candidates_for_owner(
+            index,
+            &context.base_type,
+            false,
+        ));
     }
     let candidates = combine_completion_candidates(
         candidates
@@ -1478,8 +1486,11 @@ impl BoundedCompletionRegion {
         let before_body = &tokens[..body_open];
         (before_body.last()?.kind == TokenKind::RightParen).then_some(())?;
         let mut depth = 0usize;
-        let parameters_open = before_body.iter().enumerate().rev().find_map(|(index, token)| {
-            match token.kind {
+        let parameters_open = before_body
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(index, token)| match token.kind {
                 TokenKind::RightParen => {
                     depth += 1;
                     None
@@ -1490,13 +1501,10 @@ impl BoundedCompletionRegion {
                     None
                 }
                 _ => None,
-            }
-        })?;
+            })?;
         let method = before_body.get(parameters_open.checked_sub(1)?)?;
         (method.kind == TokenKind::Identifier).then_some(())?;
-        let method_name = source
-            .get(method.span.start..method.span.end)?
-            .to_string();
+        let method_name = source.get(method.span.start..method.span.end)?.to_string();
 
         let mut class_bases = BTreeMap::new();
         for window in tokens.windows(5) {
@@ -2459,8 +2467,7 @@ fn top_level_fallback_report_for_prefix_span(
             None,
             workspace_index,
             game_data_index,
-        )
-    {
+        ) {
         EditorTopLevelCompletionMode::Type
     } else {
         EditorTopLevelCompletionMode::Value
@@ -2754,9 +2761,7 @@ fn completion_report_for_offset(
             total_start,
         );
     }
-    if let Some(new_operand) =
-        new_operand_before_offset(source, &analysis.lexer_tokens, offset)
-    {
+    if let Some(new_operand) = new_operand_before_offset(source, &analysis.lexer_tokens, offset) {
         let query = ConstructionQuery::new(
             source,
             &analysis.parse,
@@ -3058,11 +3063,7 @@ struct NewOperand {
     replaces_typed_prefix: bool,
 }
 
-fn new_operand_before_offset(
-    source: &str,
-    tokens: &[Token],
-    offset: usize,
-) -> Option<NewOperand> {
+fn new_operand_before_offset(source: &str, tokens: &[Token], offset: usize) -> Option<NewOperand> {
     let operand = tokens
         .iter()
         .rev()
@@ -4313,9 +4314,9 @@ fn generic_type_argument_closing_span_after_prefix(
         _ => return None,
     };
     if !source
-            .get(prefix_span.end..closing.span.start)?
-            .chars()
-            .all(char::is_whitespace)
+        .get(prefix_span.end..closing.span.start)?
+        .chars()
+        .all(char::is_whitespace)
     {
         return None;
     }
@@ -4425,8 +4426,9 @@ fn generic_type_slot_owner_before_offset(source: &str, offset: usize) -> Option<
     let generic_type = opener_index
         .checked_sub(1)
         .and_then(|index| tokens.get(index))?;
-    (generic_type.kind == TokenKind::Identifier || matches!(generic_type.kind, TokenKind::Keyword(_)))
-        .then(|| &source[generic_type.span.start..generic_type.span.end])
+    (generic_type.kind == TokenKind::Identifier
+        || matches!(generic_type.kind, TokenKind::Keyword(_)))
+    .then(|| &source[generic_type.span.start..generic_type.span.end])
 }
 
 /// Recovers a lone prospective parameter type while a callable declaration is
@@ -4448,18 +4450,24 @@ fn incomplete_callable_parameter_type_before_offset(source: &str, offset: usize)
         return false;
     }
     let mut parenthesis_depth = 0usize;
-    let Some(open_index) = tokens.iter().enumerate().rev().find_map(|(index, token)| match token.kind {
-        TokenKind::RightParen => {
-            parenthesis_depth += 1;
-            None
-        }
-        TokenKind::LeftParen if parenthesis_depth == 0 => Some(index),
-        TokenKind::LeftParen => {
-            parenthesis_depth -= 1;
-            None
-        }
-        _ => None,
-    }) else {
+    let Some(open_index) =
+        tokens
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(index, token)| match token.kind {
+                TokenKind::RightParen => {
+                    parenthesis_depth += 1;
+                    None
+                }
+                TokenKind::LeftParen if parenthesis_depth == 0 => Some(index),
+                TokenKind::LeftParen => {
+                    parenthesis_depth -= 1;
+                    None
+                }
+                _ => None,
+            })
+    else {
         return false;
     };
     let Some(method_name_index) = open_index.checked_sub(1) else {
@@ -4483,10 +4491,12 @@ fn incomplete_callable_parameter_type_before_offset(source: &str, offset: usize)
     let Some((type_token, modifiers)) = parameter.split_last() else {
         return false;
     };
-    matches!(type_token.kind, TokenKind::Identifier | TokenKind::Keyword(_))
-        && modifiers
-            .iter()
-            .all(|token| is_incomplete_parameter_type_modifier(token.kind))
+    matches!(
+        type_token.kind,
+        TokenKind::Identifier | TokenKind::Keyword(_)
+    ) && modifiers
+        .iter()
+        .all(|token| is_incomplete_parameter_type_modifier(token.kind))
 }
 
 fn is_incomplete_parameter_type_modifier(kind: TokenKind) -> bool {
@@ -5108,7 +5118,8 @@ fn type_keyword_snippet(
     CollectionTypeSnippet::for_keyword(keyword, mode, declaration_context)
         .map(TypeKeywordSnippet::Collection)
         .or_else(|| {
-            ((mode == EditorTopLevelCompletionMode::Type || declaration_context) && keyword == "ref")
+            ((mode == EditorTopLevelCompletionMode::Type || declaration_context)
+                && keyword == "ref")
                 .then_some(TypeKeywordSnippet::Ref)
         })
 }
@@ -5655,9 +5666,7 @@ fn completion_item_for_candidate(
     let (new_text, insert_text_format) = callable
         .as_ref()
         .map(|render| (render.insert_text.clone(), Some(2)))
-        .or_else(|| {
-            generic_type_snippet.map(|snippet| (snippet.snippet(&label), Some(2)))
-        })
+        .or_else(|| generic_type_snippet.map(|snippet| (snippet.snippet(&label), Some(2))))
         .unwrap_or_else(|| (label.clone(), None));
     let command = callable
         .as_ref()
@@ -6228,23 +6237,16 @@ mod tests {
             report.list.items[0].filter_text.as_deref(),
             Some("new array<int>()")
         );
-        assert_eq!(
-            report.list.items[0].text_edit.new_text,
-            "new array<int>()"
-        );
+        assert_eq!(report.list.items[0].text_edit.new_text, "new array<int>()");
         assert_eq!(
             report.list.items[0].text_edit.range,
-            range_for_span(
-                source,
-                TextSpan::new(offset - "n".len(), offset),
-            )
+            range_for_span(source, TextSpan::new(offset - "n".len(), offset),)
         );
     }
 
     #[test]
     fn current_snapshot_partial_new_completion_uses_an_indexed_class_constructor() {
-        let source =
-            "class Example\n{\n\tvoid Run()\n\t{\n\t\tManaged value = n\n\t}\n}\n";
+        let source = "class Example\n{\n\tvoid Run()\n\t{\n\t\tManaged value = n\n\t}\n}\n";
         let offset = source.find("value = n").unwrap() + "value = n".len();
         let external =
             file_index_for_source("class Managed\n{\n\tvoid Managed(int id);\n}\n").index;
@@ -6354,10 +6356,8 @@ mod tests {
 	}
 }
 "#;
-        let external = file_index_for_source(
-            "class Base { void OnPostInit(IEntity owner); }",
-        )
-        .index;
+        let external =
+            file_index_for_source("class Base { void OnPostInit(IEntity owner); }").index;
         let offset = source.find("sup\n").unwrap() + 3;
 
         let report = completion_report_for_current_super_at_offset_with_external_indexes(
