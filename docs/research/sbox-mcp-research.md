@@ -29,6 +29,48 @@ This is the most consequential design choice to borrow: a large editor surface
 does not have to occupy the model's initial tool context, and a hotloaded tool
 does not require client/server restart or a stale `tools/list` cache.
 
+## Exact direct command surface
+
+The first-party s&box host intentionally does **not** publish a fixed catalogue
+of scene, asset, or project commands. The official server documentation says a
+client initially receives only a few entry points because project tools appear
+and disappear on code hotload; a static list would become stale
+([MCP Server: How agents find your tools](https://sbox.game/dev/doc/editor/mcp-server)).
+Do not mistake tool lists from community s&box MCP packages for first-party
+s&box commands.
+
+| Command | First-party status | Purpose and boundary |
+| --- | --- | --- |
+| `search_tools` | Documented direct host command | Finds currently live, matching project/editor tools. It is the required discovery step before an agent assumes a specialised capability exists. |
+| `call_tool` | Documented direct host command | Invokes a tool returned by discovery. The live tool's name and schema, not a generic editor RPC, determine the permitted operation. |
+| `list_toolsets` | Documented by the `McpToolsetAttribute` API | Browses named groups of live tools. The API reference names it as the toolset-discovery route, but the tutorial does not document a request shape; do not invent one. |
+| `describe_toolset` | Documented by the `McpToolsetAttribute` API | Describes a selected live toolset. As with `list_toolsets`, use the server-advertised schema rather than assuming parameters. |
+
+The first two are the complete commands explicitly named by the MCP-server
+tutorial. The latter two are named by the first-party API index's toolset
+contract ([all editor APIs](https://sbox.game/api/i/alleditor)); their presence
+does not imply a permanent list of domain actions. Standard MCP protocol
+requests such as initialization and `tools/list` are transport/protocol
+operations, not additional s&box editor commands.
+
+The tutorial's concrete names are examples of *dynamic* project tools, not
+host-built-ins: `find_cars`, `get_car`, `set_patrol`, and
+`viewport_screenshot`. A project adds such a command by putting
+`[McpTool("name")]` or `[McpTool.ReadOnly("name")]` on a static method; it
+groups related commands with `[McpToolset("name", "description")]`. Saving
+and compiling makes the command discoverable, while hotload can remove it.
+These annotations and their agent-facing semantics are owned by the
+[McpToolAttribute API](https://sbox.game/api/Editor.Mcp.McpToolAttribute), not
+by a fixed server-side handler registry.
+
+For Reforger, this reinforces a narrow direct surface: retain named,
+versioned MCP tools and explicit discovery rather than copying s&box's generic
+`call_tool` dispatcher. The Reforger host may offer `search_tools` and
+`describe_toolset`, but it must expose durable typed public operations rather
+than accepting arbitrary Workbench handler names. A running s&box editor is the
+only authority for its current dynamic tool inventory; there is no truthful
+offline list of every s&box scene or asset command.
+
 ## Tool authoring contract
 
 The complete first-party `Editor.Mcp` group is indexed by the
