@@ -55,5 +55,8 @@ implementation slice is progress, not a completed ticket.
   primary-source evidence and safe completion/formatting boundary for `new`.
 - [VS Code auto-indent research](research/vscode-auto-indent.md): editor
   indentation behavior and integration evidence.
+- [Third-party add-on symbol metadata research](research/third-party-addon-symbol-metadata.md):
+  licensing and technical boundary for dependency API assistance without source
+  extraction.
 - [s&box MCP server review](research/sbox-mcp-research.md): first-party MCP-host and
   tool-authoring patterns relevant to the Reforger MCP design.
