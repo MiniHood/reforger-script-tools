@@ -62,3 +62,7 @@ implementation slice is progress, not a completed ticket.
   extraction.
 - [s&box MCP server review](research/sbox-mcp-research.md): first-party MCP-host and
   tool-authoring patterns relevant to the Reforger MCP design.
+- [Official Wiki Corpus report](research/official-wiki-corpus-report.md): validated
+  packaged-corpus coverage, MCP retrieval evidence, and AI-use limits.
+- [Game Data Corpus report](research/game-data-corpus-report-2026-07-25.md): live
+  catalogue coverage, source-evidence workflows, and topic-expansion candidates.
