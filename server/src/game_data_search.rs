@@ -3,6 +3,7 @@ use crate::index_build::IndexBuildControl;
 use crate::model::SymbolKind;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
@@ -10,6 +11,7 @@ pub const DEFAULT_LIMIT: usize = 20;
 pub const MAX_LIMIT: usize = 100;
 pub const MAX_QUERY_CHARS: usize = 256;
 pub const MAX_CURSOR_BYTES: usize = 2048;
+pub const MAX_OWNER_CHARS: usize = 256;
 pub const MAX_SEARCH_RESULT_BYTES: usize = 256 * 1024;
 
 #[derive(Debug, Clone, Default)]
@@ -182,6 +184,9 @@ pub fn search(
         return Err(GameDataSearchError::InvalidRequest(
             "owner must be non-empty",
         ));
+    }
+    if owner.as_ref().is_some_and(|value| value.chars().count() > MAX_OWNER_CHARS) {
+        return Err(GameDataSearchError::InvalidRequest("owner exceeds 256 characters"));
     }
     let limit = request.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
     let cursor = request.cursor.as_deref().map(decode_cursor).transpose()?;
@@ -611,7 +616,13 @@ fn encode_symbol_ref(
     qualified_name: &str,
     selection_start: usize,
 ) -> String {
-    hex(&serde_json::to_vec(&serde_json::json!({"v":1,"r":revision,"p":path,"k":kind,"q":qualified_name,"s":selection_start})).expect("symbol reference serializes"))
+    let mut digest = Sha256::new();
+    digest.update(b"sr1\0");
+    for part in [revision, path, kind, qualified_name, &selection_start.to_string()] {
+        digest.update(part.as_bytes());
+        digest.update([0]);
+    }
+    format!("sr1:{}", hex(&digest.finalize()))
 }
 fn encode_cursor(cursor: &Cursor) -> String {
     hex(&serde_json::to_vec(cursor).expect("cursor serializes"))
