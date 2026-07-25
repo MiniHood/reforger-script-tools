@@ -1,6 +1,6 @@
 use crate::game_data_search::{
-    compact_signature, documentation_summary, encode_symbol_ref, kind_name, logical_path,
-    owner_name, qualify, SourceLineStarts,
+    compact_signature, decode_symbol_ref, documentation_summary, encode_symbol_ref, kind_name,
+    logical_path, owner_name, qualify, SourceLineStarts,
 };
 use crate::index::{SourceFileId, SymbolIndex};
 use crate::index_build::IndexBuildControl;
@@ -43,37 +43,30 @@ pub fn inspect(
     revision: &str,
     symbol_ref: &str,
 ) -> Result<Value, GameDataInspectionError> {
-    if symbol_ref.len() > MAX_SYMBOL_REF_BYTES || !symbol_ref.starts_with("sr1:") {
+    if symbol_ref.len() > MAX_SYMBOL_REF_BYTES {
         return Err(GameDataInspectionError::InvalidSymbolRef);
+    }
+    let reference = decode_symbol_ref(symbol_ref).ok_or(GameDataInspectionError::InvalidSymbolRef)?;
+    if reference.catalogue_revision != revision {
+        return Err(GameDataInspectionError::StaleSymbolRef);
     }
     let mut found = None;
     for symbol in index.symbols() {
-        control
-            .check()
-            .map_err(|_| GameDataInspectionError::Cancelled)?;
-        let Some(file) = index.file(symbol.id.file_id) else {
-            continue;
-        };
-        let Some(name) = symbol.name.as_deref() else {
-            continue;
-        };
+        control.check().map_err(|_| GameDataInspectionError::Cancelled)?;
+        let Some(file) = index.file(symbol.id.file_id) else { continue; };
+        let Some(name) = symbol.name.as_deref() else { continue; };
         let owner = owner_name(index, symbol);
         let qualified = qualify(owner.as_deref(), name);
-        let expected = encode_symbol_ref(
-            revision,
-            &logical_path(file),
-            kind_name(symbol.kind),
-            &qualified,
-            symbol.selection_span.start,
-        );
-        if expected == symbol_ref {
+        if logical_path(file) == reference.path
+            && kind_name(symbol.kind) == reference.kind
+            && qualified == reference.qualified_name
+            && symbol.selection_span.start == reference.selection_start
+        {
             found = Some((symbol.id, qualified));
             break;
         }
     }
-    let Some((id, qualified_name)) = found else {
-        return Err(GameDataInspectionError::StaleSymbolRef);
-    };
+    let Some((id, qualified_name)) = found else { return Err(GameDataInspectionError::StaleSymbolRef); };
     let symbol = index.symbol(id).expect("located symbol");
     let file = index.file(id.file_id).expect("located file");
     let lines = starts.get(&id.file_id).cloned().unwrap_or_default();

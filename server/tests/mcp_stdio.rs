@@ -238,6 +238,58 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
 }
 
 #[test]
+fn mcp_inspection_and_source_read_reject_stale_and_changed_handoffs() {
+    let fixture = TempFixture::new("mcp_inspection_contract");
+    let scripts_root = fixture.path().join("scripts");
+    fs::create_dir_all(scripts_root.join("Game")).expect("create scripts fixture");
+    let source_path = scripts_root.join("Game").join("Inspectable.c");
+    fs::write(
+        &source_path,
+        "//! \\brief Inspectable summary.\nclass Inspectable\n{\n\t/*! \\param[in] value input value.\n\t * \\return true when accepted.\n\t * \\warning requires setup.\n\t * \\note fixture note.\n\t */\n\tbool Run(int value);\n}\n",
+    )
+    .expect("write game-data fixture");
+    let cache_path = fixture.path().join("cache").join("game-data-index.bin");
+    let mut client = McpClient::spawn(&[
+        "mcp",
+        "--game-data-scripts",
+        scripts_root.to_str().expect("utf-8 scripts path"),
+        "--index-cache",
+        cache_path.to_str().expect("utf-8 cache path"),
+    ]);
+    client.initialize(1);
+    client.send(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"search_game_data_symbols","arguments":{"query":"Run"}}}));
+    let search = client.response(2);
+    let result = search.pointer("/result/structuredContent/results/0").expect("search hit");
+    let symbol_ref = result.get("symbolRef").cloned().expect("symbol reference");
+    let revision = search.pointer("/result/structuredContent/catalogueRevision").cloned().expect("revision");
+
+    client.send(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"inspect_game_data_symbol","arguments":{"symbolRef":symbol_ref}}}));
+    let inspected = client.response(3);
+    assert_eq!(inspected.pointer("/result/isError"), Some(&json!(false)));
+    assert_eq!(inspected.pointer("/result/structuredContent/documentation/parameters/0/name"), Some(&json!("value")));
+    assert_eq!(inspected.pointer("/result/structuredContent/documentation/parameters/0/direction"), Some(&json!("in")));
+    assert_eq!(inspected.pointer("/result/structuredContent/documentation/returns"), Some(&json!("true when accepted.")));
+    assert_eq!(inspected.pointer("/result/structuredContent/documentation/warnings/0"), Some(&json!("requires setup.")));
+    assert_eq!(inspected.pointer("/result/structuredContent/documentation/notes/0"), Some(&json!("fixture note.")));
+
+    client.send(json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"inspect_game_data_symbol","arguments":{"symbolRef":"sr1:not-a-reference"}}}));
+    let invalid = client.response(4);
+    assert_eq!(invalid.pointer("/result/isError"), Some(&json!(true)));
+    assert!(invalid.pointer("/result/content/0/text").and_then(Value::as_str).is_some_and(|text| text.starts_with("invalid_symbol_ref:")));
+
+    client.send(json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"read_game_data_source","arguments":{"catalogueRevision":revision,"relativePath":"../Inspectable.c"}}}));
+    let invalid_path = client.response(5);
+    assert_eq!(invalid_path.pointer("/result/isError"), Some(&json!(true)));
+    assert!(invalid_path.pointer("/result/content/0/text").and_then(Value::as_str).is_some_and(|text| text.starts_with("invalid_arguments:")));
+
+    fs::write(&source_path, "class Inspectable { int changed; }\n").expect("change backing data");
+    client.send(json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"read_game_data_source","arguments":{"catalogueRevision":revision,"relativePath":"Game/Inspectable.c"}}}));
+    let changed = client.response(6);
+    assert_eq!(changed.pointer("/result/isError"), Some(&json!(true)));
+    assert!(changed.pointer("/result/content/0/text").and_then(Value::as_str).is_some_and(|text| text.starts_with("game_data_changed:")));
+}
+
+#[test]
 fn game_data_revision_is_immutable_per_process_and_shared_cache_loads_warm() {
     let fixture = TempFixture::new("mcp_immutable_revision");
     let scripts_root = fixture.path().join("scripts");

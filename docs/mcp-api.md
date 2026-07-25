@@ -696,4 +696,204 @@ Search semantic declarations in the immutable Reforger Game Data Catalogue. Resu
 
 ### Result handoff
 
-Copy a hit's `inspectInput` unchanged to `inspect_game_data_symbol`, or its `readSourceInput` to `read_game_data_source`. Both follow-on tools are added by later tickets.
+Copy a hit's `inspectInput` unchanged to `inspect_game_data_symbol`, or its `readSourceInput` to `read_game_data_source`.
+
+## `inspect_game_data_symbol`
+
+Inspect one opaque Game Data symbol reference returned by search. Returns only semantic facts owned by the immutable catalogue.
+
+### Input schema
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "symbolRef": {
+      "maxLength": 2048,
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "symbolRef"
+  ],
+  "type": "object"
+}
+```
+
+### Output schema
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "catalogueRevision": {
+      "type": "string"
+    },
+    "container": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "declarationRange": true,
+    "documentation": true,
+    "kind": {
+      "type": "string"
+    },
+    "members": {
+      "items": true,
+      "type": "array"
+    },
+    "membersReturned": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "membersTotal": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "membersTruncated": {
+      "type": "boolean"
+    },
+    "name": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "qualifiedName": {
+      "type": "string"
+    },
+    "rawDocumentation": {
+      "type": "string"
+    },
+    "rawTruncated": {
+      "type": "boolean"
+    },
+    "relativePath": {
+      "type": "string"
+    },
+    "selectionRange": true,
+    "signature": {
+      "type": "string"
+    },
+    "symbolRef": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "catalogueRevision",
+    "symbolRef",
+    "kind",
+    "qualifiedName",
+    "signature",
+    "documentation",
+    "rawDocumentation",
+    "rawTruncated",
+    "relativePath",
+    "declarationRange",
+    "selectionRange",
+    "members",
+    "membersReturned",
+    "membersTotal",
+    "membersTruncated"
+  ],
+  "type": "object"
+}
+```
+
+`symbolRef` is opaque, revision-bound, copied unchanged from search, and limited to 2 KiB. Invalid or stale references return `invalid_symbol_ref` or `stale_symbol_ref`; repeat search after restarting the MCP process. The result contains only indexed semantic facts, up to 50 direct members, and a copy-ready `readSourceInput`.
+
+## `read_game_data_source`
+
+Read bounded verbatim source from an exact logical Game Data path in the immutable catalogue.
+
+### Input schema
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "catalogueRevision": {
+      "maxLength": 256,
+      "minLength": 1,
+      "type": "string"
+    },
+    "lineCount": {
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "relativePath": {
+      "maxLength": 2048,
+      "minLength": 1,
+      "type": "string"
+    },
+    "startLine": {
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "catalogueRevision",
+    "relativePath"
+  ],
+  "type": "object"
+}
+```
+
+### Output schema
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "catalogueRevision": {
+      "type": "string"
+    },
+    "content": {
+      "type": "string"
+    },
+    "endLine": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "nextStartLine": {
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "relativePath": {
+      "type": "string"
+    },
+    "startLine": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "truncated": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "catalogueRevision",
+    "relativePath",
+    "startLine",
+    "endLine",
+    "content",
+    "truncated"
+  ],
+  "type": "object"
+}
+```
+
+`startLine` is one-based and defaults to 1. `lineCount` defaults to 200 and clamps to 500. Content is capped at 128 KiB on complete-line boundaries; a truncated result contains `nextStartLine`. `game_data_changed` requires an MCP process restart.

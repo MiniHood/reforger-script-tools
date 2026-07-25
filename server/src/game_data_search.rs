@@ -3,7 +3,6 @@ use crate::index_build::IndexBuildControl;
 use crate::model::SymbolKind;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
@@ -164,6 +163,17 @@ struct Cursor {
     owner: Option<String>,
     source_categories: Vec<String>,
     offset: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct SymbolReference {
+    version: u8,
+    pub(crate) catalogue_revision: String,
+    pub(crate) path: String,
+    pub(crate) kind: String,
+    pub(crate) qualified_name: String,
+    pub(crate) selection_start: usize,
 }
 
 pub fn search(
@@ -636,19 +646,33 @@ pub(crate) fn encode_symbol_ref(
     qualified_name: &str,
     selection_start: usize,
 ) -> String {
-    let mut digest = Sha256::new();
-    digest.update(b"sr1\0");
-    for part in [
-        revision,
-        path,
-        kind,
-        qualified_name,
-        &selection_start.to_string(),
-    ] {
-        digest.update(part.as_bytes());
-        digest.update([0]);
+    format!(
+        "sr1:{}",
+        hex(
+            &serde_json::to_vec(&SymbolReference {
+                version: 1,
+                catalogue_revision: revision.to_string(),
+                path: path.to_string(),
+                kind: kind.to_string(),
+                qualified_name: qualified_name.to_string(),
+                selection_start,
+            })
+            .expect("symbol reference serializes"),
+        )
+    )
+}
+pub(crate) fn decode_symbol_ref(value: &str) -> Option<SymbolReference> {
+    let encoded = value.strip_prefix("sr1:")?;
+    if value.len() > MAX_CURSOR_BYTES || encoded.is_empty() {
+        return None;
     }
-    format!("sr1:{}", hex(&digest.finalize()))
+    let reference = serde_json::from_slice::<SymbolReference>(&unhex(encoded)?).ok()?;
+    (reference.version == 1
+        && !reference.catalogue_revision.is_empty()
+        && !reference.path.is_empty()
+        && !reference.kind.is_empty()
+        && !reference.qualified_name.is_empty())
+        .then_some(reference)
 }
 fn encode_cursor(cursor: &Cursor) -> String {
     hex(&serde_json::to_vec(cursor).expect("cursor serializes"))
