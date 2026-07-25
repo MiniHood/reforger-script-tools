@@ -22,6 +22,24 @@ Likewise, it must use Workbench only for facts and operations that are actually
 owned by the running Workbench. This preserves the repository's TypeScript-shell
 / Rust-engine ownership boundary and avoids a second language server.
 
+## Primary product goal: AI-friendly Reforger work
+
+AI-friendly behavior is one of the MCP server's main product goals, not a
+presentation detail to add later. A capable client must be able to discover a
+small relevant capability, ask a bounded question, receive structured and
+citable evidence, and follow a stable identity for more context without being
+given an opaque storage path or an entire corpus. Tool descriptions, schemas,
+result identities, excerpts, ranges, source URLs, limits, cursors, effect
+metadata, and recovery hints are therefore product-facing contracts.
+
+The server must make the authoritative path easy for an AI to use. In
+particular, official wiki Markdown is directly searchable source material, not
+an AI-prepared summary or a hidden retrieval database. Search may rank and
+excerpt it, but it must preserve the title, canonical source URL, logical
+relative path, and exact passage that support the answer. This lets an AI
+distinguish documented workflow guidance from language-engine, filesystem, or
+live Workbench facts.
+
 ## Proposed shape
 
 ```
@@ -162,12 +180,25 @@ documented?" available even when Workbench is closed or its NET API is
 disabled. It is not a replacement for compiler validation, live World Editor
 state, or the resource database.
 
-Build one catalogue at extension packaging/acquisition time from immutable
-documents. Every indexed document/chunk must retain a manifest record containing
-at least its evidence kind (`game-data` or `official-wiki`), Reforger/extension
-version, original logical path or source URL, retrieval/build timestamp, and
-content hash. Search results must return that provenance, a bounded excerpt,
-and a cursor/range sufficient to retrieve more context. This prevents a wiki
+One public result contract must not force one storage strategy. Game-data
+semantic search may use its Rust-owned index, while the extension's packaged
+`resources/official-wiki` Markdown is the authoritative official-wiki corpus
+and is searched directly from those files. The MCP server must not require a
+prebuilt wiki index, copied text store, or per-document manifest to answer a
+wiki query. It extracts the title and canonical source URL from the matched
+Markdown, returns the logical relative path and exact range, and reads the same
+file again when the client follows the result.
+
+Direct wiki search has a hard performance acceptance target: a cold search of
+the complete packaged corpus must finish within five seconds, honor
+cancellation, and return server-capped excerpts and result counts. The optional
+`wiki-index.md` navigation aid is not source evidence and must not participate
+in normal `search_reference` ranking or results. It may remain available as a
+separate AI-oriented discovery resource, but no tool may depend on it.
+
+Every evidence result must identify its evidence kind (`game-data` or
+`official-wiki`), source identity (logical path or source URL), bounded excerpt,
+and cursor/range sufficient to retrieve more context. This prevents a wiki
 claim from being presented as compiler truth, or a result from one game-data
 version being silently applied to another.
 
