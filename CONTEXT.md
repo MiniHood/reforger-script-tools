@@ -3,6 +3,67 @@
 This glossary records the durable language used for the language engine's LSP
 runtime boundaries.
 
+## MCP Evidence
+
+**Official Wiki Corpus**:
+The local packaged copy of official Arma Reforger documentation used as
+documentary evidence by Reforger Script Tools. It is distinct from extracted
+game source and never refers to Wikidata.org.
+_Avoid_: Wikidata, wiki data, live wiki
+
+**MCP Runtime**:
+The independently launched Rust process that serves one MCP client connection
+while reusing the language engine's modules and validated game-data cache. It
+does not depend on or attach to the editor-owned LSP process.
+_Avoid_: LSP proxy, extension-hosted MCP, shared LSP session
+
+**MCP API Reference**:
+The exact human-readable projection of the MCP Runtime's public tool catalogue,
+including schemas, effects, limits, errors, examples, and intended tool
+handoffs.
+_Avoid_: manually maintained tool index, API-index tool, approximate tool list
+
+**Game Data Symbol Search**:
+A semantic query over extracted Reforger game-data declarations and their
+language identities, kinds, signatures, relationships, and source locations.
+_Avoid_: game-data text search, file grep, wiki search
+
+**Game Data Catalogue Revision**:
+The immutable fingerprint identifying the exact extracted game-data source and
+semantic catalogue used by one MCP Runtime. It binds searches, Symbol
+References, inspections, and source reads to the same evidence generation.
+_Avoid_: current index, live game version, mutable catalogue
+
+**Game Data Symbol Inspection**:
+A focused structured view of one Game Data Symbol Search result, exposing the
+semantic facts already owned by the language index without expanding every
+search hit into a full symbol record.
+_Avoid_: full index dump, verbose search result, source-text inference
+
+**Symbol Reference**:
+An opaque, revision-bound logical identity returned by Game Data Symbol Search
+and accepted by Game Data Symbol Inspection. It identifies one declaration
+without exposing a physical path or unstable in-memory symbol ID.
+_Avoid_: global symbol ID, physical symbol path, permanent symbol ID
+
+**Game Data Source Read**:
+A bounded verbatim passage from extracted game source identified by a logical
+path, exact line range, and game-data catalogue revision. It does not require a
+Symbol Reference, allowing an agent to continue through a known source file.
+_Avoid_: arbitrary file read, physical storage path, unbounded source dump
+
+**Official Wiki Search**:
+A lexical query over titles, headings, paths, and passages in the Official Wiki
+Corpus, retaining exact document ranges and canonical source URLs.
+_Avoid_: symbol search, federated search, Wikidata search
+
+**Official Wiki Corpus Revision**:
+The deterministic fingerprint of the packaged Markdown pages used to bind an
+Official Wiki Search cursor or source read to the exact corpus generation that
+produced it. It is derived from the authoritative files, not a manifest or
+index.
+_Avoid_: wiki index version, live wiki revision, mutable corpus
+
 ## Workbench Integration
 
 **Addon Workspace**:
