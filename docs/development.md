@@ -19,6 +19,7 @@ From the repository root:
 | `npm run compile` | Type checking, linting, the bundled Rust server, and the extension bundle. |
 | `npm test` | Extension test setup and test suite; its pretest step compiles tests and runs the full compile path. |
 | `npm run package` | Production Rust server and production extension bundle. |
+| `npm run test:packaged-official-wiki` | Build a VSIX, verify every Official Wiki Markdown byte is packaged, and launch the installed MCP runtime from an unrelated working directory. |
 | `npm run mcp-api:generate` | Regenerate the committed MCP API Reference from the live Rust descriptors. |
 | `npm run mcp-api:check` | Fail when the committed MCP API Reference has drifted. |
 

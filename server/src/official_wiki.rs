@@ -4,6 +4,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 use url::Url;
 
 const MAX_PAGE_BYTES: u64 = 4 * 1024 * 1024;
@@ -14,6 +15,7 @@ const CANONICAL_HOST: &str = "community.bistudio.com";
 #[derive(Debug, Clone)]
 pub struct OfficialWikiCorpus {
     root: Option<PathBuf>,
+    validated: Arc<OnceLock<ValidatedCorpus>>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -52,21 +54,36 @@ struct ValidatedPage {
     logical_path: String,
     bytes: u64,
     hash: [u8; 32],
+    _title: String,
+    _source_url: String,
+}
+
+#[derive(Debug, Clone)]
+struct ValidatedCorpus {
+    status: OfficialWikiStatus,
+    _pages: Vec<ValidatedPage>,
 }
 
 impl OfficialWikiCorpus {
     pub fn new(root: PathBuf) -> Self {
-        Self { root: Some(root) }
+        Self { root: Some(root), validated: Arc::new(OnceLock::new()) }
     }
 
     pub fn packaged() -> Self {
-        Self { root: packaged_root() }
+        Self { root: packaged_root(), validated: Arc::new(OnceLock::new()) }
     }
 
     pub fn status(&self) -> OfficialWikiStatus {
+        self.validated
+            .get_or_init(|| self.validate())
+            .status
+            .clone()
+    }
+
+    fn validate(&self) -> ValidatedCorpus {
         let root = match self.root.as_ref().and_then(|root| fs::canonicalize(root).ok()) {
             Some(root) if root.is_dir() => root,
-            _ => return unavailable_status("official_wiki_unavailable", "The packaged Official Wiki Corpus is unavailable."),
+            _ => return ValidatedCorpus { status: unavailable_status("official_wiki_unavailable", "The packaged Official Wiki Corpus is unavailable."), _pages: Vec::new() },
         };
         let mut candidates = Vec::new();
         let mut invalid = BTreeSet::new();
@@ -115,7 +132,7 @@ impl OfficialWikiCorpus {
                 message: "No valid Official Wiki Markdown pages were found.".to_string(),
             });
         }
-        OfficialWikiStatus {
+        let status = OfficialWikiStatus {
             source: "evidence-catalogue".to_string(),
             available: !pages.is_empty(),
             corpus_revision,
@@ -128,7 +145,8 @@ impl OfficialWikiCorpus {
             cold_search_target_ms: 5_000,
             warnings,
             recovery: vec!["Reinstall or update Reforger Script Tools, then restart the MCP process.".to_string()],
-        }
+        };
+        ValidatedCorpus { status, _pages: pages }
     }
 }
 
@@ -158,10 +176,18 @@ fn unavailable_status(code: &str, message: &str) -> OfficialWikiStatus {
 
 fn collect_markdown(root: &Path, directory: &Path, files: &mut Vec<PathBuf>, invalid: &mut BTreeSet<String>) {
     let entries = match fs::read_dir(directory) { Ok(entries) => entries, Err(_) => { invalid.insert(display_logical(root, directory)); return; } };
-    for entry in entries.flatten() {
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => { invalid.insert(display_logical(root, directory)); continue; }
+        };
         let path = entry.path();
         let metadata = match fs::symlink_metadata(&path) { Ok(metadata) => metadata, Err(_) => { invalid.insert(display_logical(root, &path)); continue; } };
         if metadata.file_type().is_symlink() || is_reparse_point(&metadata) { invalid.insert(display_logical(root, &path)); continue; }
+        if path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("md")) && !metadata.is_file() {
+            invalid.insert(display_logical(root, &path));
+            continue;
+        }
         if metadata.is_dir() { collect_markdown(root, &path, files, invalid); }
         else if path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("md")) { files.push(path); }
     }
@@ -174,7 +200,15 @@ fn logical_path(root: &Path, path: &Path) -> Option<String> {
     for component in relative.components() {
         match component { Component::Normal(part) => parts.push(part.to_str()?.to_string()), _ => return None }
     }
-    (!parts.is_empty()).then(|| parts.join("/"))
+    let path = (!parts.is_empty()).then(|| parts.join("/"))?;
+    validate_logical_path(&path).ok()?;
+    Some(path)
+}
+
+fn validate_logical_path(path: &str) -> Result<(), ()> {
+    if path.is_empty() || path.contains('\0') || path.contains('\\') || path.starts_with('/') || path.starts_with("//") || path.contains(':') || !path.ends_with(".md") { return Err(()); }
+    if path.split('/').any(|part| part.is_empty() || matches!(part, "." | "..")) { return Err(()); }
+    Ok(())
 }
 
 fn display_logical(root: &Path, path: &Path) -> String {
@@ -186,17 +220,18 @@ fn validate_page(path: &Path, logical_path: String) -> Result<ValidatedPage, Str
     if !metadata.is_file() || metadata.len() > MAX_PAGE_BYTES { return Err(logical_path); }
     let contents = fs::read(path).map_err(|_| logical_path.clone())?;
     let text = std::str::from_utf8(&contents).map_err(|_| logical_path.clone())?;
-    let source = text.lines().next().and_then(parse_h1_source).ok_or_else(|| logical_path.clone())?;
+    let (title, source) = text.lines().next().and_then(parse_h1_source).ok_or_else(|| logical_path.clone())?;
     let parsed = Url::parse(source).map_err(|_| logical_path.clone())?;
     if parsed.scheme() != "https" || parsed.host_str() != Some(CANONICAL_HOST) || !parsed.path().starts_with("/wiki/") { return Err(logical_path); }
     let hash: [u8; 32] = Sha256::digest(&contents).into();
-    Ok(ValidatedPage { logical_path, bytes: contents.len() as u64, hash })
+    Ok(ValidatedPage { logical_path, bytes: contents.len() as u64, hash, _title: title.to_string(), _source_url: source.to_string() })
 }
 
-fn parse_h1_source(line: &str) -> Option<&str> {
+fn parse_h1_source(line: &str) -> Option<(&str, &str)> {
     let value = line.strip_prefix("# [")?;
-    let (_, source) = value.rsplit_once("](")?;
-    source.strip_suffix(')')
+    let (title, source) = value.rsplit_once("](")?;
+    let source = source.strip_suffix(')')?;
+    (!title.is_empty() && !source.is_empty()).then_some((title, source))
 }
 
 fn revision(pages: &[ValidatedPage]) -> String {
@@ -223,7 +258,7 @@ fn is_reparse_point(_metadata: &fs::Metadata) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::OfficialWikiCorpus;
+    use super::{validate_logical_path, OfficialWikiCorpus};
     use std::fs;
 
     #[test]
@@ -238,6 +273,28 @@ mod tests {
         assert_eq!(status.file_count, 1);
         assert_eq!(status.excluded_files, ["wiki-index.md"]);
         assert!(status.corpus_revision.is_some());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rejects_non_authoritative_paths_and_malformed_page_metadata() {
+        for path in [
+            "C:/wiki.md", "//server/wiki.md", "/wiki.md", "\\wiki.md", "a\\wiki.md",
+            "a//wiki.md", "./wiki.md", "a/../wiki.md", "wiki.txt", "bad\0wiki.md",
+        ] {
+            assert!(validate_logical_path(path).is_err(), "{path:?} must be rejected");
+        }
+
+        let root = std::env::temp_dir().join(format!("official-wiki-invalid-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("index.md"), "# [](https://community.bistudio.com/wiki/Category:Arma_Reforger)\n").unwrap();
+        fs::write(root.join("valid.md"), "# [Valid](https://community.bistudio.com/wiki/Arma_Reforger:Valid)\n").unwrap();
+        fs::create_dir(root.join("directory.md")).unwrap();
+        let status = OfficialWikiCorpus::new(root.clone()).status();
+        assert!(status.available);
+        assert_eq!(status.file_count, 1);
+        assert_eq!(status.invalid_files, ["directory.md", "index.md"]);
         let _ = fs::remove_dir_all(root);
     }
 }
