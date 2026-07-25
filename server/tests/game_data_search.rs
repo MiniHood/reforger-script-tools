@@ -123,6 +123,42 @@ fn catalogue_search_keeps_source_lines_from_its_initialized_snapshot() {
     assert_eq!(page.results[0].declaration_range.start_line, 2);
 }
 
+#[test]
+fn search_applies_default_api_kinds_canonical_filters_and_cursor_revision_binding() {
+    let fixture = TempFixture::new("search-filters");
+    let game = fixture.path.join("Game");
+    let core = fixture.path.join("Core");
+    fs::create_dir_all(&game).expect("create game scripts");
+    fs::create_dir_all(&core).expect("create core scripts");
+    fs::write(game.join("GameSymbol.c"), "class SearchApi { void Match(int Match) {} }")
+        .expect("write game source");
+    fs::write(core.join("CoreSymbol.c"), "class SearchCore {}")
+        .expect("write core source");
+    let index = build_index(&IndexBuildConfig { roots: vec![IndexSourceRoot::new(&fixture.path, SourceKind::GameData, SOURCE_PRIORITY_GAME_DATA)] }).expect("index").index;
+    let lines = line_starts(&index);
+    let control = IndexBuildControl::default();
+
+    let default_page = search(&index, &lines, &control, "gd1:one", GameDataSearchRequest::new("Match")).expect("default search");
+    let mut filtered = GameDataSearchRequest::new("Search");
+    filtered.kinds = Some(vec!["class".to_string()]);
+    filtered.source_categories = Some(vec!["core".to_string()]);
+    filtered.limit = Some(999);
+    let filtered_page = search(&index, &lines, &control, "gd1:one", filtered).expect("filtered search");
+    let mut paged = GameDataSearchRequest::new("Search");
+    paged.limit = Some(1);
+    let first_page = search(&index, &lines, &control, "gd1:one", paged).expect("first page");
+    let mut stale = GameDataSearchRequest::new("Search");
+    stale.limit = Some(1);
+    stale.cursor = first_page.next_cursor.clone();
+
+    assert!(default_page.results.iter().all(|result| result.kind != "parameter"));
+    assert_eq!(filtered_page.applied_filters.limit, 100);
+    assert_eq!(filtered_page.results.len(), 1);
+    assert_eq!(filtered_page.results[0].source_category, "core");
+    assert!(stale.cursor.is_some());
+    assert!(search(&index, &lines, &control, "gd1:two", stale).is_err());
+}
+
 fn line_starts(
     index: &reforger_language_server::index::SymbolIndex,
 ) -> BTreeMap<reforger_language_server::index::SourceFileId, SourceLineStarts> {
