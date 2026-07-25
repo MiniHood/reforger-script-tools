@@ -40,6 +40,26 @@ semantic facts already owned by the language index without expanding every
 search hit into a full symbol record.
 _Avoid_: full index dump, verbose search result, source-text inference
 
+**Game Data Example Search**:
+A topic-oriented query over bounded extracted Game Data examples. It keeps
+generated declarations and handwritten implementation evidence explicitly
+classified, reports matching symbols and terms, and hands an exact logical
+source range to Game Data Source Read.
+_Avoid_: fuzzy symbol search, unbounded source search, example as runtime proof
+
+**Game Data Member Discovery**:
+The paginated direct-member view of one revision-bound Symbol Reference. It
+completes inspection when the compact preview is truncated and supports
+semantic-kind filters without requiring the caller to know a member name.
+_Avoid_: owner text search, inherited completion list, full type dump
+
+**Game Data Relationship Query**:
+A bounded query for language-engine-proven inheritance, override,
+implementation, declaration-reference, and caller relationships around one
+revision-bound Symbol Reference. Textual coincidences and unresolved calls are
+not relationships.
+_Avoid_: grep references, guessed call graph, generic graph query
+
 **Symbol Reference**:
 An opaque, revision-bound logical identity returned by Game Data Symbol Search
 and accepted by Game Data Symbol Inspection. It identifies one declaration

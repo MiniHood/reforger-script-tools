@@ -130,20 +130,38 @@ fn search_applies_default_api_kinds_canonical_filters_and_cursor_revision_bindin
     let core = fixture.path.join("Core");
     fs::create_dir_all(&game).expect("create game scripts");
     fs::create_dir_all(&core).expect("create core scripts");
-    fs::write(game.join("GameSymbol.c"), "class SearchApi { void Match(int Match) {} }")
-        .expect("write game source");
-    fs::write(core.join("CoreSymbol.c"), "class SearchCore {}")
-        .expect("write core source");
-    let index = build_index(&IndexBuildConfig { roots: vec![IndexSourceRoot::new(&fixture.path, SourceKind::GameData, SOURCE_PRIORITY_GAME_DATA)] }).expect("index").index;
+    fs::write(
+        game.join("GameSymbol.c"),
+        "class SearchApi { void Match(int Match) {} }",
+    )
+    .expect("write game source");
+    fs::write(core.join("CoreSymbol.c"), "class SearchCore {}").expect("write core source");
+    let index = build_index(&IndexBuildConfig {
+        roots: vec![IndexSourceRoot::new(
+            &fixture.path,
+            SourceKind::GameData,
+            SOURCE_PRIORITY_GAME_DATA,
+        )],
+    })
+    .expect("index")
+    .index;
     let lines = line_starts(&index);
     let control = IndexBuildControl::default();
 
-    let default_page = search(&index, &lines, &control, "gd1:one", GameDataSearchRequest::new("Match")).expect("default search");
+    let default_page = search(
+        &index,
+        &lines,
+        &control,
+        "gd1:one",
+        GameDataSearchRequest::new("Match"),
+    )
+    .expect("default search");
     let mut filtered = GameDataSearchRequest::new("Search");
     filtered.kinds = Some(vec!["class".to_string()]);
     filtered.source_categories = Some(vec!["core".to_string()]);
     filtered.limit = Some(999);
-    let filtered_page = search(&index, &lines, &control, "gd1:one", filtered).expect("filtered search");
+    let filtered_page =
+        search(&index, &lines, &control, "gd1:one", filtered).expect("filtered search");
     let mut paged = GameDataSearchRequest::new("Search");
     paged.limit = Some(1);
     let first_page = search(&index, &lines, &control, "gd1:one", paged).expect("first page");
@@ -151,12 +169,63 @@ fn search_applies_default_api_kinds_canonical_filters_and_cursor_revision_bindin
     stale.limit = Some(1);
     stale.cursor = first_page.next_cursor.clone();
 
-    assert!(default_page.results.iter().all(|result| result.kind != "parameter"));
+    assert!(default_page
+        .results
+        .iter()
+        .all(|result| result.kind != "parameter"));
     assert_eq!(filtered_page.applied_filters.limit, 100);
     assert_eq!(filtered_page.results.len(), 1);
     assert_eq!(filtered_page.results[0].source_category, "core");
     assert!(stale.cursor.is_some());
     assert!(search(&index, &lines, &control, "gd1:two", stale).is_err());
+}
+
+#[test]
+fn search_documentation_summaries_use_shared_comment_rendering() {
+    let fixture = TempFixture::new("search-documentation");
+    let scripts = fixture.path.join("Game");
+    fs::create_dir_all(&scripts).expect("create scripts");
+    fs::write(
+        scripts.join("Documentation.c"),
+        "//! \\brief Line summary.\nclass LineDocumented {}\n/*! Block summary. */\nclass BlockDocumented {}\n/*! \\brief Doxygen summary.\n * \\param value ignored in the compact summary.\n */\nclass DoxygenDocumented {}\n//! \nclass EmptyDocumented {}\n",
+    )
+    .expect("write source");
+    let index = build_index(&IndexBuildConfig {
+        roots: vec![IndexSourceRoot::new(
+            &fixture.path,
+            SourceKind::GameData,
+            SOURCE_PRIORITY_GAME_DATA,
+        )],
+    })
+    .expect("index")
+    .index;
+    let lines = line_starts(&index);
+    let control = IndexBuildControl::default();
+
+    let summary = |query: &str| {
+        search(
+            &index,
+            &lines,
+            &control,
+            "gd1:docs",
+            GameDataSearchRequest::new(query),
+        )
+        .expect("search")
+        .results[0]
+            .documentation_summary
+            .clone()
+    };
+
+    assert_eq!(summary("LineDocumented").as_deref(), Some("Line summary."));
+    assert_eq!(
+        summary("BlockDocumented").as_deref(),
+        Some("Block summary.")
+    );
+    assert_eq!(
+        summary("DoxygenDocumented").as_deref(),
+        Some("Doxygen summary.")
+    );
+    assert_eq!(summary("EmptyDocumented"), None);
 }
 
 fn line_starts(

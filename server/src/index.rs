@@ -1302,7 +1302,7 @@ impl SymbolIndex {
         counts
     }
 
-    fn symbols_for_file(&self, file: &IndexedFile) -> &[IndexedSymbol] {
+    pub(crate) fn symbols_for_file(&self, file: &IndexedFile) -> &[IndexedSymbol] {
         &self.symbols[file.symbol_start..file.symbol_start + file.symbol_count]
     }
 

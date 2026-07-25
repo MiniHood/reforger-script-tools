@@ -7,7 +7,8 @@ cross-source ranking, or a generic evidence-provider framework merely to make
 the two operations look uniform; they share only protocol-level conventions
 such as bounded typed results, provenance, cancellation, and errors.
 
-The initial stable inventory is `game_data_status`,
-`search_game_data_symbols`, `inspect_game_data_symbol`, and
-`read_game_data_source`, followed by `official_wiki_status`,
-`search_official_wiki`, and `read_official_wiki`.
+The Game Data inventory is `game_data_status`, `search_game_data_symbols`,
+`search_game_data_examples`, `inspect_game_data_symbol`,
+`list_game_data_symbol_members`, `query_game_data_symbol_relationships`, and
+`read_game_data_source`. Official documentation remains a separate inventory:
+`official_wiki_status`, `search_official_wiki`, and `read_official_wiki`.

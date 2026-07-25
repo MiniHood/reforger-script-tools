@@ -1,11 +1,13 @@
 use crate::game_data_search::{
     compact_signature, decode_symbol_ref, documentation_summary, encode_symbol_ref, kind_name,
-    logical_path, owner_name, qualify, SourceLineStarts,
+    logical_path, owner_name, qualify, ReadSourceInput, SourceLineRange, SourceLineStarts,
 };
-use crate::index::{SourceFileId, SymbolIndex};
+use crate::index::{GlobalSymbolId, SourceFileId, SymbolIndex};
 use crate::index_build::{decode_source, IndexBuildControl};
 use crate::index_cache::source_content_digest;
 use crate::symbol_display::documentation_display;
+use schemars::JsonSchema;
+use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -36,44 +38,93 @@ pub struct GameDataSourceReadRequest {
     pub line_count: Option<usize>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GameDataInspectionOutput {
+    pub catalogue_revision: String,
+    pub symbol_ref: String,
+    pub name: Option<String>,
+    pub kind: String,
+    pub qualified_name: String,
+    pub container: Option<String>,
+    pub signature: String,
+    #[serde(rename = "type")]
+    pub type_text: Option<String>,
+    pub return_type: Option<String>,
+    pub base_type: Option<String>,
+    pub default_value: Option<String>,
+    pub enum_value: Option<String>,
+    pub modifiers: Vec<String>,
+    pub attributes: Vec<String>,
+    pub callable_form: Option<String>,
+    pub documentation: InspectionDocumentation,
+    pub raw_documentation: String,
+    pub raw_truncated: bool,
+    pub conditional_context: Vec<InspectionConditionalContext>,
+    pub source_category: String,
+    pub relative_path: String,
+    pub declaration_range: SourceLineRange,
+    pub selection_range: SourceLineRange,
+    pub parent_symbol_ref: Option<String>,
+    pub read_source_input: ReadSourceInput,
+    pub members: Vec<InspectionMember>,
+    pub members_returned: usize,
+    pub members_total: usize,
+    pub members_truncated: bool,
+    pub members_truncation_guidance: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct InspectionDocumentation {
+    pub summary: Option<String>,
+    pub parameters: Vec<InspectionDocumentationParameter>,
+    pub returns: Option<String>,
+    pub warnings: Vec<String>,
+    pub notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct InspectionDocumentationParameter {
+    pub name: String,
+    pub direction: Option<String>,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct InspectionConditionalContext {
+    pub kind: String,
+    pub condition: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct InspectionMember {
+    pub symbol_ref: String,
+    pub name: String,
+    pub kind: String,
+    pub signature: String,
+    pub documentation_summary: Option<String>,
+    pub selection_range: SourceLineRange,
+}
+
 pub fn inspect(
     index: &SymbolIndex,
     starts: &BTreeMap<SourceFileId, SourceLineStarts>,
     control: &IndexBuildControl,
     revision: &str,
     symbol_ref: &str,
-) -> Result<Value, GameDataInspectionError> {
-    if symbol_ref.len() > MAX_SYMBOL_REF_BYTES {
-        return Err(GameDataInspectionError::InvalidSymbolRef);
-    }
-    let reference = decode_symbol_ref(symbol_ref).ok_or(GameDataInspectionError::InvalidSymbolRef)?;
-    if reference.catalogue_revision != revision {
-        return Err(GameDataInspectionError::StaleSymbolRef);
-    }
-    let mut found = None;
-    for symbol in index.symbols() {
-        control.check().map_err(|_| GameDataInspectionError::Cancelled)?;
-        let Some(file) = index.file(symbol.id.file_id) else { continue; };
-        let Some(name) = symbol.name.as_deref() else { continue; };
-        let owner = owner_name(index, symbol);
-        let qualified = qualify(owner.as_deref(), name);
-        if logical_path(file) == reference.path
-            && kind_name(symbol.kind) == reference.kind
-            && qualified == reference.qualified_name
-            && symbol.selection_span.start == reference.selection_start
-        {
-            found = Some((symbol.id, qualified));
-            break;
-        }
-    }
-    let Some((id, qualified_name)) = found else { return Err(GameDataInspectionError::StaleSymbolRef); };
+) -> Result<GameDataInspectionOutput, GameDataInspectionError> {
+    let id = resolve_symbol_ref(index, control, revision, symbol_ref)?;
     let symbol = index.symbol(id).expect("located symbol");
+    let qualified_name = qualify(
+        owner_name(index, symbol).as_deref(),
+        symbol.name.as_deref().unwrap_or_default(),
+    );
     let file = index.file(id.file_id).expect("located file");
     let lines = starts.get(&id.file_id).cloned().unwrap_or_default();
-    let range = |span: crate::lexer::TextSpan| {
-        let range = lines.range(span.start, span.end);
-        json!({"startLine": range.start_line, "endLine": range.end_line})
-    };
     let raw = symbol
         .doc_comments
         .iter()
@@ -87,10 +138,32 @@ pub fn inspect(
         .filter_map(|child| index.symbol(*child).map(|member| (*child, member)))
         .filter(|(_, member)| member.kind != crate::model::SymbolKind::Parameter)
         .collect::<Vec<_>>();
-    let member_values = members.iter().take(MAX_MEMBERS).map(|(member_id, member)| {
-        let name = member.name.clone().unwrap_or_default(); let owner = owner_name(index, member); let qualified = qualify(owner.as_deref(), &name);
-        json!({"symbolRef": encode_symbol_ref(revision, &logical_path(file), kind_name(member.kind), &qualified, member.selection_span.start), "name": name, "kind": kind_name(member.kind), "signature": index.callable_signature(*member_id).unwrap_or_else(|| compact_signature(member, &qualified)), "documentationSummary": documentation_summary(member), "selectionRange": range(member.selection_span)})
-    }).collect::<Vec<_>>();
+    let member_values = members
+        .iter()
+        .take(MAX_MEMBERS)
+        .map(|(member_id, member)| {
+            let name = member.name.clone().unwrap_or_default();
+            let owner = owner_name(index, member);
+            let qualified = qualify(owner.as_deref(), &name);
+            InspectionMember {
+                symbol_ref: encode_symbol_ref(
+                    revision,
+                    &logical_path(file),
+                    kind_name(member.kind),
+                    &qualified,
+                    member.selection_span.start,
+                ),
+                name,
+                kind: kind_name(member.kind).to_string(),
+                signature: index
+                    .callable_signature(*member_id)
+                    .unwrap_or_else(|| compact_signature(member, &qualified)),
+                documentation_summary: documentation_summary(member),
+                selection_range: lines
+                    .range(member.selection_span.start, member.selection_span.end),
+            }
+        })
+        .collect::<Vec<_>>();
     let parent_ref = symbol
         .parent
         .and_then(|parent| index.symbol(parent))
@@ -109,7 +182,91 @@ pub fn inspect(
         });
     let members_returned = member_values.len();
     let documentation = documentation_display(&symbol.doc_comments);
-    Ok(json!({"catalogueRevision": revision, "symbolRef": symbol_ref, "name": symbol.name, "kind": kind_name(symbol.kind), "qualifiedName": qualified_name, "container": owner_name(index, symbol), "signature": index.callable_signature(id).unwrap_or_else(|| compact_signature(symbol, &qualified_name)), "type": symbol.detail.type_text, "returnType": symbol.detail.return_type_text, "baseType": symbol.detail.base_type, "defaultValue": symbol.detail.default_text, "enumValue": symbol.detail.enum_value_text, "modifiers": symbol.modifiers, "attributes": symbol.attributes.iter().map(|a| &a.text).collect::<Vec<_>>(), "callableForm": symbol.callable_form.map(|f| f.as_str()), "documentation": {"summary": documentation.summary, "parameters": documentation.parameters.into_iter().map(|parameter| json!({"name": parameter.name, "direction": parameter.direction, "description": parameter.description})).collect::<Vec<_>>(), "returns": documentation.returns, "warnings": documentation.warnings, "notes": documentation.notes}, "rawDocumentation": raw, "rawTruncated": raw_truncated, "conditionalContext": symbol.conditional_context.iter().map(|c| json!({"kind": c.kind.as_str(), "condition": c.condition})).collect::<Vec<_>>(), "sourceCategory": file.metadata.category.as_str(), "relativePath": logical_path(file), "declarationRange": range(symbol.span), "selectionRange": range(symbol.selection_span), "parentSymbolRef": parent_ref, "readSourceInput": {"catalogueRevision": revision, "relativePath": logical_path(file), "startLine": lines.range(symbol.span.start, symbol.span.end).start_line}, "members": member_values, "membersReturned": members_returned, "membersTotal": members.len(), "membersTruncated": members.len() > MAX_MEMBERS, "membersTruncationGuidance": if members.len() > MAX_MEMBERS { Some(format!("Call search_game_data_symbols with owner '{qualified_name}'.")) } else { None::<String> }}))
+    Ok(GameDataInspectionOutput {
+        catalogue_revision: revision.to_string(),
+        symbol_ref: symbol_ref.to_string(),
+        name: symbol.name.clone(),
+        kind: kind_name(symbol.kind).to_string(),
+        qualified_name: qualified_name.clone(),
+        container: owner_name(index, symbol),
+        signature: index.callable_signature(id).unwrap_or_else(|| compact_signature(symbol, &qualified_name)),
+        type_text: symbol.detail.type_text.clone(),
+        return_type: symbol.detail.return_type_text.clone(),
+        base_type: symbol.detail.base_type.clone(),
+        default_value: symbol.detail.default_text.clone(),
+        enum_value: symbol.detail.enum_value_text.clone(),
+        modifiers: symbol.modifiers.clone(),
+        attributes: symbol.attributes.iter().map(|attribute| attribute.text.clone()).collect(),
+        callable_form: symbol.callable_form.map(|form| form.as_str().to_string()),
+        documentation: InspectionDocumentation {
+            summary: documentation.summary,
+            parameters: documentation.parameters.into_iter().map(|parameter| InspectionDocumentationParameter {
+                name: parameter.name,
+                direction: parameter.direction,
+                description: parameter.description,
+            }).collect(),
+            returns: documentation.returns,
+            warnings: documentation.warnings,
+            notes: documentation.notes,
+        },
+        raw_documentation: raw,
+        raw_truncated,
+        conditional_context: symbol.conditional_context.iter().map(|context| InspectionConditionalContext {
+            kind: context.kind.as_str().to_string(),
+            condition: context.condition.clone(),
+        }).collect(),
+        source_category: file.metadata.category.as_str().to_string(),
+        relative_path: logical_path(file),
+        declaration_range: lines.range(symbol.span.start, symbol.span.end),
+        selection_range: lines.range(symbol.selection_span.start, symbol.selection_span.end),
+        parent_symbol_ref: parent_ref,
+        read_source_input: ReadSourceInput {
+            catalogue_revision: revision.to_string(),
+            relative_path: logical_path(file),
+            start_line: lines.range(symbol.span.start, symbol.span.end).start_line,
+        },
+        members: member_values,
+        members_returned,
+        members_total: members.len(),
+        members_truncated: members.len() > MAX_MEMBERS,
+        members_truncation_guidance: (members.len() > MAX_MEMBERS).then(|| "Call list_game_data_symbol_members with this symbolRef and an optional kinds filter.".to_string()),
+    })
+}
+
+pub(crate) fn resolve_symbol_ref(
+    index: &SymbolIndex,
+    control: &IndexBuildControl,
+    revision: &str,
+    symbol_ref: &str,
+) -> Result<GlobalSymbolId, GameDataInspectionError> {
+    if symbol_ref.len() > MAX_SYMBOL_REF_BYTES {
+        return Err(GameDataInspectionError::InvalidSymbolRef);
+    }
+    let reference =
+        decode_symbol_ref(symbol_ref).ok_or(GameDataInspectionError::InvalidSymbolRef)?;
+    if reference.catalogue_revision != revision {
+        return Err(GameDataInspectionError::StaleSymbolRef);
+    }
+    for symbol in index.symbols() {
+        control
+            .check()
+            .map_err(|_| GameDataInspectionError::Cancelled)?;
+        let Some(file) = index.file(symbol.id.file_id) else {
+            continue;
+        };
+        let Some(name) = symbol.name.as_deref() else {
+            continue;
+        };
+        let qualified = qualify(owner_name(index, symbol).as_deref(), name);
+        if logical_path(file) == reference.path
+            && kind_name(symbol.kind) == reference.kind
+            && qualified == reference.qualified_name
+            && symbol.selection_span.start == reference.selection_start
+        {
+            return Ok(symbol.id);
+        }
+    }
+    Err(GameDataInspectionError::StaleSymbolRef)
 }
 
 pub fn read_source(
@@ -161,8 +318,8 @@ pub fn read_source(
             "relativePath escapes the Game Data root".to_string(),
         ));
     }
-    let bytes = std::fs::read(canonical_path)
-        .map_err(|_| GameDataInspectionError::GameDataChanged)?;
+    let bytes =
+        std::fs::read(canonical_path).map_err(|_| GameDataInspectionError::GameDataChanged)?;
     let source = decode_source(&bytes);
     let start = request.start_line.unwrap_or(1);
     if start == 0 {

@@ -1,5 +1,11 @@
 use crate::game_data_inspection::{
-    inspect, read_source, GameDataInspectionError, GameDataSourceReadRequest,
+    inspect, read_source, GameDataInspectionError, GameDataInspectionOutput,
+    GameDataSourceReadRequest,
+};
+use crate::game_data_research::{
+    list_members, query_relationships, search_examples, GameDataExamplePage,
+    GameDataExampleSearchRequest, GameDataMemberPage, GameDataMemberRequest,
+    GameDataRelationshipPage, GameDataRelationshipRequest, GameDataResearchError,
 };
 use crate::game_data_search::{
     search, GameDataSearchError, GameDataSearchPage, GameDataSearchRequest, SourceLineStarts,
@@ -47,6 +53,7 @@ struct GameDataCatalogueState {
     // Ticket #17 adds semantic queries over this exact immutable index.
     index: Option<Arc<SymbolIndex>>,
     source_line_starts: Arc<BTreeMap<SourceFileId, SourceLineStarts>>,
+    source_texts: Arc<BTreeMap<SourceFileId, Arc<str>>>,
     source_digest: Option<String>,
 }
 
@@ -124,7 +131,7 @@ impl GameDataCatalogue {
         &self,
         control: &IndexBuildControl,
         symbol_ref: String,
-    ) -> Result<serde_json::Value, GameDataInspectionError> {
+    ) -> Result<GameDataInspectionOutput, GameDataInspectionError> {
         self.before_operation(control)
             .map_err(GameDataInspectionError::Initialization)?;
         let status = self
@@ -145,6 +152,36 @@ impl GameDataCatalogue {
         let starts = snapshot.source_line_starts.clone();
         drop(state);
         inspect(&index, &starts, control, revision, &symbol_ref)
+    }
+
+    pub fn search_examples(
+        &self,
+        control: &IndexBuildControl,
+        request: GameDataExampleSearchRequest,
+    ) -> Result<GameDataExamplePage, GameDataCatalogueResearchError> {
+        let (revision, index, starts, sources) = self.research_snapshot(control)?;
+        search_examples(&index, &sources, &starts, control, &revision, request)
+            .map_err(GameDataCatalogueResearchError::Research)
+    }
+
+    pub fn list_members(
+        &self,
+        control: &IndexBuildControl,
+        request: GameDataMemberRequest,
+    ) -> Result<GameDataMemberPage, GameDataCatalogueResearchError> {
+        let (revision, index, starts, _) = self.research_snapshot(control)?;
+        list_members(&index, &starts, control, &revision, request)
+            .map_err(GameDataCatalogueResearchError::Research)
+    }
+
+    pub fn query_relationships(
+        &self,
+        control: &IndexBuildControl,
+        request: GameDataRelationshipRequest,
+    ) -> Result<GameDataRelationshipPage, GameDataCatalogueResearchError> {
+        let (revision, index, starts, sources) = self.research_snapshot(control)?;
+        query_relationships(&index, &sources, &starts, control, &revision, request)
+            .map_err(GameDataCatalogueResearchError::Research)
     }
 
     pub fn read_source(
@@ -182,6 +219,43 @@ impl GameDataCatalogue {
             &digest,
             request,
         )
+    }
+
+    fn research_snapshot(
+        &self,
+        control: &IndexBuildControl,
+    ) -> Result<
+        (
+            String,
+            Arc<SymbolIndex>,
+            Arc<BTreeMap<SourceFileId, SourceLineStarts>>,
+            Arc<BTreeMap<SourceFileId, Arc<str>>>,
+        ),
+        GameDataCatalogueResearchError,
+    > {
+        self.before_operation(control)
+            .map_err(GameDataCatalogueResearchError::Initialization)?;
+        let status = self
+            .status(control)
+            .map_err(GameDataCatalogueResearchError::Initialization)?;
+        let revision = status
+            .catalogue_revision
+            .ok_or(GameDataCatalogueResearchError::Unavailable)?;
+        let state = self
+            .lock_state(control)
+            .map_err(GameDataCatalogueResearchError::Initialization)?;
+        let snapshot = state
+            .as_ref()
+            .ok_or(GameDataCatalogueResearchError::Unavailable)?;
+        Ok((
+            revision,
+            snapshot
+                .index
+                .clone()
+                .ok_or(GameDataCatalogueResearchError::Unavailable)?,
+            snapshot.source_line_starts.clone(),
+            snapshot.source_texts.clone(),
+        ))
     }
 
     fn lock_state(
@@ -262,6 +336,13 @@ pub enum GameDataCatalogueSearchError {
     Initialization(String),
     Unavailable,
     Search(GameDataSearchError),
+}
+
+#[derive(Debug)]
+pub enum GameDataCatalogueResearchError {
+    Initialization(String),
+    Unavailable,
+    Research(GameDataResearchError),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -472,6 +553,7 @@ fn ready_state(
     };
 
     let mut source_line_starts = BTreeMap::new();
+    let mut source_texts = BTreeMap::new();
     for file in result.index.files() {
         let Some(path) = file.metadata.absolute_path.as_ref() else {
             return unavailable_state(
@@ -493,11 +575,13 @@ fn ready_state(
         };
         let source = decode_source(&bytes);
         source_line_starts.insert(file.id, SourceLineStarts::from_source(&source));
+        source_texts.insert(file.id, Arc::<str>::from(source));
     }
     GameDataCatalogueState {
         status,
         index: Some(Arc::new(result.index)),
         source_line_starts: Arc::new(source_line_starts),
+        source_texts: Arc::new(source_texts),
         source_digest: Some(result.source_digest),
     }
 }
@@ -531,6 +615,7 @@ fn unavailable_state(
         },
         index: None,
         source_line_starts: Arc::new(BTreeMap::new()),
+        source_texts: Arc::new(BTreeMap::new()),
         source_digest: None,
     }
 }

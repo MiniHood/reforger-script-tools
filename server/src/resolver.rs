@@ -1457,7 +1457,7 @@ fn candidate_from_symbol(
     }
 }
 
-fn callable_override_key(index: &SymbolIndex, id: GlobalSymbolId) -> Option<String> {
+pub(crate) fn callable_override_key(index: &SymbolIndex, id: GlobalSymbolId) -> Option<String> {
     let symbol = index.symbol(id)?;
     (symbol.kind == SymbolKind::Method).then_some(())?;
     let return_type = symbol.detail.return_type_text.as_deref().unwrap_or("");

@@ -1,6 +1,7 @@
 use crate::index::{GlobalSymbolId, IndexedSymbol, SourceFileId, SymbolIndex};
 use crate::index_build::IndexBuildControl;
 use crate::model::SymbolKind;
+use crate::symbol_display::documentation_display;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -608,18 +609,9 @@ pub(crate) fn compact_signature(symbol: &IndexedSymbol, qualified_name: &str) ->
     }
 }
 pub(crate) fn documentation_summary(symbol: &IndexedSymbol) -> Option<String> {
-    symbol
-        .doc_comments
-        .iter()
-        .flat_map(|comment| comment.text.lines())
-        .map(|line| {
-            line.trim()
-                .trim_start_matches('/')
-                .trim_start_matches('*')
-                .trim()
-        })
-        .find(|line| !line.is_empty())
-        .map(|line| line.chars().take(512).collect())
+    documentation_display(&symbol.doc_comments)
+        .summary
+        .map(|summary| summary.chars().take(512).collect())
 }
 
 fn bounded_search_text(value: String) -> String {
@@ -646,17 +638,15 @@ pub(crate) fn encode_symbol_ref(
 ) -> String {
     format!(
         "sr1:{}",
-        hex(
-            &serde_json::to_vec(&SymbolReference {
-                version: 1,
-                catalogue_revision: revision.to_string(),
-                path: path.to_string(),
-                kind: kind.to_string(),
-                qualified_name: qualified_name.to_string(),
-                selection_start,
-            })
-            .expect("symbol reference serializes"),
-        )
+        hex(&serde_json::to_vec(&SymbolReference {
+            version: 1,
+            catalogue_revision: revision.to_string(),
+            path: path.to_string(),
+            kind: kind.to_string(),
+            qualified_name: qualified_name.to_string(),
+            selection_start,
+        })
+        .expect("symbol reference serializes"),)
     )
 }
 pub(crate) fn decode_symbol_ref(value: &str) -> Option<SymbolReference> {
@@ -670,7 +660,7 @@ pub(crate) fn decode_symbol_ref(value: &str) -> Option<SymbolReference> {
         && !reference.path.is_empty()
         && !reference.kind.is_empty()
         && !reference.qualified_name.is_empty())
-        .then_some(reference)
+    .then_some(reference)
 }
 fn encode_cursor(cursor: &Cursor) -> String {
     hex(&serde_json::to_vec(cursor).expect("cursor serializes"))
