@@ -180,9 +180,9 @@ pub enum OfficialWikiReadError {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct OfficialWikiSearchControl(Arc<AtomicBool>);
+pub struct OfficialWikiControl(Arc<AtomicBool>);
 
-impl OfficialWikiSearchControl {
+impl OfficialWikiControl {
     pub fn cancel(&self) { self.0.store(true, Ordering::Release); }
     fn is_cancelled(&self) -> bool { self.0.load(Ordering::Acquire) }
 }
@@ -213,13 +213,13 @@ impl OfficialWikiCorpus {
         &self,
         request: OfficialWikiSearchRequest,
     ) -> Result<OfficialWikiSearchPage, OfficialWikiSearchError> {
-        self.search_with_control(request, &OfficialWikiSearchControl::default())
+        self.search_with_control(request, &OfficialWikiControl::default())
     }
 
     pub fn search_with_control(
         &self,
         request: OfficialWikiSearchRequest,
-        control: &OfficialWikiSearchControl,
+        control: &OfficialWikiControl,
     ) -> Result<OfficialWikiSearchPage, OfficialWikiSearchError> {
         let corpus = self.validated.get_or_init(|| self.validate());
         let revision = corpus
@@ -315,7 +315,7 @@ impl OfficialWikiCorpus {
     pub fn read_with_control(
         &self,
         request: OfficialWikiReadRequest,
-        control: &OfficialWikiSearchControl,
+        control: &OfficialWikiControl,
     ) -> Result<OfficialWikiReadPage, OfficialWikiReadError> {
         let corpus = self.validated.get_or_init(|| self.validate());
         let revision = corpus
@@ -335,7 +335,7 @@ impl OfficialWikiCorpus {
         if control.is_cancelled() {
             return Err(OfficialWikiReadError::Cancelled);
         }
-        let contents = self.read_current_page_for_read(page)?;
+        let contents = self.read_current_page_bytes(page)?;
         if control.is_cancelled() {
             return Err(OfficialWikiReadError::Cancelled);
         }
@@ -348,7 +348,7 @@ impl OfficialWikiCorpus {
             .unwrap_or(DEFAULT_READ_LINES)
             .clamp(1, MAX_READ_LINES);
         let lines = contents.split_inclusive('\n').collect::<Vec<_>>();
-        if start_line > lines.len().saturating_add(1) {
+        if start_line > lines.len() {
             return Err(OfficialWikiReadError::InvalidRange);
         }
         let mut content = String::new();
@@ -394,10 +394,6 @@ impl OfficialWikiCorpus {
                 OfficialWikiReadError::Changed => OfficialWikiSearchError::Changed,
                 _ => OfficialWikiSearchError::Changed,
             })
-    }
-
-    fn read_current_page_for_read(&self, page: &ValidatedPage) -> Result<String, OfficialWikiReadError> {
-        self.read_current_page_bytes(page)
     }
 
     fn read_current_page_bytes(&self, page: &ValidatedPage) -> Result<String, OfficialWikiReadError> {
@@ -882,7 +878,7 @@ fn is_reparse_point(_metadata: &fs::Metadata) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{encode_cursor, markdown_heading, OfficialWikiSearchControl, SearchCursor, validate_logical_path, OfficialWikiCorpus, OfficialWikiSearchError, OfficialWikiSearchRequest, MAX_CURSOR_BYTES};
+    use super::{encode_cursor, markdown_heading, OfficialWikiControl, SearchCursor, validate_logical_path, OfficialWikiCorpus, OfficialWikiSearchError, OfficialWikiSearchRequest, MAX_CURSOR_BYTES};
     use std::fs;
 
     #[test]
@@ -1006,7 +1002,7 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("page.md"), "# [Page](https://community.bistudio.com/wiki/Arma_Reforger:Page)\nneedle\n").unwrap();
         let corpus = OfficialWikiCorpus::new(root.clone());
-        let control = OfficialWikiSearchControl::default();
+        let control = OfficialWikiControl::default();
         control.cancel();
         assert!(matches!(corpus.search_with_control(OfficialWikiSearchRequest { query: "needle".to_string(), path_prefix: None, limit: None, cursor: None }, &control), Err(OfficialWikiSearchError::Cancelled)));
         let _ = fs::remove_dir_all(root);

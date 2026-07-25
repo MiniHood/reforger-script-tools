@@ -7,7 +7,7 @@ use crate::game_data_search::{GameDataSearchPage, GameDataSearchRequest};
 use crate::index_build::{IndexBuildControl, INDEX_BUILD_CANCELLED};
 use crate::official_wiki::{
     OfficialWikiCorpus, OfficialWikiReadError, OfficialWikiReadPage, OfficialWikiReadRequest,
-    OfficialWikiSearchControl, OfficialWikiSearchError, OfficialWikiSearchPage, OfficialWikiSearchRequest,
+    OfficialWikiControl, OfficialWikiSearchError, OfficialWikiSearchPage, OfficialWikiSearchRequest,
     OfficialWikiStatus,
 };
 use rmcp::model::{
@@ -211,7 +211,7 @@ impl ReforgerMcpServer {
             permit = permit => permit.map_err(|_| McpError::internal_error("MCP request admission is unavailable", None))?,
         };
         let corpus = self.official_wiki.clone();
-        let control = OfficialWikiSearchControl::default();
+        let control = OfficialWikiControl::default();
         let worker_control = control.clone();
         let mut worker = tokio::task::spawn_blocking(move || corpus.search_with_control(request, &worker_control));
         let deadline = tokio::time::sleep(Duration::from_secs(5));
@@ -238,7 +238,7 @@ impl ReforgerMcpServer {
             permit = permit => permit.map_err(|_| McpError::internal_error("MCP request admission is unavailable", None))?,
         };
         let corpus = self.official_wiki.clone();
-        let control = OfficialWikiSearchControl::default();
+        let control = OfficialWikiControl::default();
         let worker_control = control.clone();
         let mut worker = tokio::task::spawn_blocking(move || corpus.read_with_control(request, &worker_control));
         let deadline = tokio::time::sleep(Duration::from_secs(5));

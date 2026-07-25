@@ -665,17 +665,58 @@ fn read_official_wiki_follows_search_handoffs_with_bounded_continuations() {
         .pointer("/result/content/0/text")
         .and_then(Value::as_str)
         .is_some_and(|text| text.starts_with("invalid_range:")));
+    client.send(json!({"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"read_official_wiki","arguments":{"corpusRevision": input["corpusRevision"], "relativePath":"Guides/Unicode.md", "startLine":7}}}));
+    assert!(client
+        .response(10)
+        .pointer("/result/content/0/text")
+        .and_then(Value::as_str)
+        .is_some_and(|text| text.starts_with("invalid_range:")));
     fs::write(
         wiki_root.join("Guides").join("Unicode.md"),
         "# [Unicode guide](https://community.bistudio.com/wiki/Arma_Reforger:Unicode)\nchanged\n",
     )
     .expect("change validated page");
-    client.send(json!({"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"read_official_wiki","arguments":input}}));
+    client.send(json!({"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"read_official_wiki","arguments":input}}));
     assert!(client
-        .response(10)
+        .response(11)
         .pointer("/result/content/0/text")
         .and_then(Value::as_str)
         .is_some_and(|text| text.starts_with("official_wiki_changed:")));
+    client.close_stdin();
+    assert!(client.wait_for_exit(Duration::from_secs(3)));
+}
+
+#[test]
+fn read_official_wiki_defaults_and_clamps_its_line_window() {
+    let fixture = TempFixture::new("official_wiki_read_bounds");
+    let wiki_root = fixture.path().join("official-wiki");
+    fs::create_dir_all(&wiki_root).expect("create wiki fixture");
+    let page = format!(
+        "# [Bounds](https://community.bistudio.com/wiki/Arma_Reforger:Bounds)\n{}",
+        (1..=600)
+            .map(|line| format!("line {line}\n"))
+            .collect::<String>()
+    );
+    fs::write(wiki_root.join("Bounds.md"), page).expect("write page");
+    let mut client = McpClient::spawn(&[
+        "mcp",
+        "--official-wiki-root",
+        wiki_root.to_str().expect("utf-8 wiki root"),
+    ]);
+    client.initialize(1);
+    client.send(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"official_wiki_status","arguments":{}}}));
+    let revision = client
+        .response(2)
+        .pointer("/result/structuredContent/corpusRevision")
+        .cloned()
+        .expect("corpus revision");
+    client.send(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"read_official_wiki","arguments":{"corpusRevision":revision,"relativePath":"Bounds.md","lineCount":1000}}}));
+    let capped = client.response(3);
+    assert_eq!(capped.pointer("/result/structuredContent/startLine"), Some(&json!(1)));
+    assert_eq!(capped.pointer("/result/structuredContent/endLine"), Some(&json!(500)));
+    assert_eq!(capped.pointer("/result/structuredContent/continuation/startLine"), Some(&json!(501)));
+    client.send(json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"read_official_wiki","arguments":{"corpusRevision":revision,"relativePath":"Bounds.md","startLine":501}}}));
+    assert_eq!(client.response(4).pointer("/result/structuredContent/endLine"), Some(&json!(601)));
     client.close_stdin();
     assert!(client.wait_for_exit(Duration::from_secs(3)));
 }
