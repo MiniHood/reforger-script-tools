@@ -71,7 +71,7 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
         .pointer("/result/tools")
         .and_then(Value::as_array)
         .expect("tools/list result");
-    assert_eq!(listed.len(), 1);
+    assert_eq!(listed.len(), 2);
     assert_eq!(listed[0].get("name"), Some(&json!("game_data_status")));
     assert_eq!(
         listed[0].pointer("/annotations/readOnlyHint"),
@@ -86,6 +86,11 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
         Some(&json!(false))
     );
     assert!(listed[0].get("outputSchema").is_some());
+    assert_eq!(listed[1].get("name"), Some(&json!("search_game_data_symbols")));
+    assert_eq!(listed[1].pointer("/annotations/readOnlyHint"), Some(&json!(true)));
+    assert_eq!(listed[1].pointer("/annotations/openWorldHint"), Some(&json!(false)));
+    assert_eq!(listed[1].pointer("/inputSchema/additionalProperties"), Some(&json!(false)));
+    assert_eq!(listed[1].pointer("/inputSchema/required/0"), Some(&json!("query")));
 
     client.send(json!({
         "jsonrpc": "2.0",
@@ -146,6 +151,21 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
         serde_json::from_str::<Value>(compatibility_text).expect("valid compatibility JSON"),
         structured
     );
+
+    client.send(json!({
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "tools/call",
+        "params": { "name": "search_game_data_symbols", "arguments": { "query": "McpFixture" } }
+    }));
+    let search = client.response(4);
+    assert_eq!(search.pointer("/result/isError"), Some(&json!(false)));
+    let results = search.pointer("/result/structuredContent/results").and_then(Value::as_array).expect("search results");
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0].get("name"), Some(&json!("McpFixture")));
+    assert!(results[0].get("symbolRef").is_some());
+    assert_eq!(results[0].pointer("/inspectInput/symbolRef"), results[0].get("symbolRef"));
+    assert_eq!(results[0].pointer("/readSourceInput/relativePath"), Some(&json!("Game/McpFixture.c")));
 
     client.close_stdin();
     assert!(

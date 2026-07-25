@@ -5,6 +5,7 @@ pub mod construction;
 pub mod expression_type;
 pub mod formatting;
 pub mod game_data_catalogue;
+pub mod game_data_search;
 pub mod index;
 pub mod index_build;
 pub mod index_cache;

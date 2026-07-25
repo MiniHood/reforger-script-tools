@@ -1,4 +1,5 @@
 use crate::index::SymbolIndex;
+use crate::game_data_search::{search, GameDataSearchError, GameDataSearchPage, GameDataSearchRequest};
 use crate::index_build::{IndexBuildControl, INDEX_BUILD_CANCELLED};
 use crate::index_cache::{
     load_or_build_game_data_index_with_control, GameDataIndexCacheConfig, GameDataIndexCacheResult,
@@ -69,6 +70,31 @@ impl GameDataCatalogue {
         Ok(status)
     }
 
+    pub fn search(
+        &self,
+        control: &IndexBuildControl,
+        request: GameDataSearchRequest,
+    ) -> Result<GameDataSearchPage, GameDataCatalogueSearchError> {
+        let status = self.status(control).map_err(GameDataCatalogueSearchError::Initialization)?;
+        if !status.available {
+            return Err(GameDataCatalogueSearchError::Unavailable);
+        }
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let index = state
+            .as_ref()
+            .and_then(|state| state._index.as_deref())
+            .ok_or(GameDataCatalogueSearchError::Unavailable)?;
+        search(
+            index,
+            status.catalogue_revision.as_deref().ok_or(GameDataCatalogueSearchError::Unavailable)?,
+            request,
+        )
+        .map_err(GameDataCatalogueSearchError::Search)
+    }
+
     #[cfg(debug_assertions)]
     fn before_initialization(&self, control: &IndexBuildControl) -> Result<(), String> {
         use std::io::Write;
@@ -108,6 +134,13 @@ impl GameDataCatalogue {
     fn before_initialization(&self, control: &IndexBuildControl) -> Result<(), String> {
         control.check()
     }
+}
+
+#[derive(Debug)]
+pub enum GameDataCatalogueSearchError {
+    Initialization(String),
+    Unavailable,
+    Search(GameDataSearchError),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
