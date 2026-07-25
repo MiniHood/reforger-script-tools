@@ -14,7 +14,7 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::time::{Duration, Instant};
 
 pub const GAME_DATA_INITIALIZATION_DEADLINE_MS: u64 = 120_000;
@@ -58,10 +58,7 @@ impl GameDataCatalogue {
 
     pub fn status(&self, control: &IndexBuildControl) -> Result<GameDataStatus, String> {
         control.check()?;
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self.lock_state(control)?;
         if let Some(state) = state.as_ref() {
             return Ok(state.status.clone());
         }
@@ -85,9 +82,8 @@ impl GameDataCatalogue {
             return Err(GameDataCatalogueSearchError::Unavailable);
         }
         let state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+            .lock_state(control)
+            .map_err(GameDataCatalogueSearchError::Initialization)?;
         let snapshot = state
             .as_ref()
             .ok_or(GameDataCatalogueSearchError::Unavailable)?;
@@ -108,6 +104,17 @@ impl GameDataCatalogue {
             request,
         )
         .map_err(GameDataCatalogueSearchError::Search)
+    }
+
+    fn lock_state(&self, control: &IndexBuildControl) -> Result<MutexGuard<'_, Option<GameDataCatalogueState>>, String> {
+        loop {
+            control.check()?;
+            match self.state.try_lock() {
+                Ok(state) => return Ok(state),
+                Err(TryLockError::Poisoned(error)) => return Ok(error.into_inner()),
+                Err(TryLockError::WouldBlock) => std::thread::sleep(Duration::from_millis(2)),
+            }
+        }
     }
 
     #[cfg(debug_assertions)]
@@ -364,19 +371,28 @@ fn ready_state(
         recovery: vec!["Restart the MCP process after changing or updating Game Data.".to_string()],
     };
 
-    let source_line_starts = result
-        .index
-        .files()
-        .iter()
-        .filter_map(|file| {
-            let source = file
-                .metadata
-                .absolute_path
-                .as_ref()
-                .and_then(|path| fs::read_to_string(path).ok())?;
-            Some((file.id, SourceLineStarts::from_source(&source)))
-        })
-        .collect();
+    let mut source_line_starts = BTreeMap::new();
+    for file in result.index.files() {
+        let Some(path) = file.metadata.absolute_path.as_ref() else {
+            return unavailable_state(
+                source_status(config, Some(&result.fingerprint)),
+                Duration::ZERO,
+                "game_data_source_snapshot_failed",
+                "Game Data source lines could not be captured for the catalogue snapshot.",
+                "Verify the configured Game Data source, then restart the MCP process.",
+            );
+        };
+        let Ok(source) = fs::read_to_string(path) else {
+            return unavailable_state(
+                source_status(config, Some(&result.fingerprint)),
+                Duration::ZERO,
+                "game_data_source_snapshot_failed",
+                "Game Data source lines could not be captured for the catalogue snapshot.",
+                "Verify the configured Game Data source, then restart the MCP process.",
+            );
+        };
+        source_line_starts.insert(file.id, SourceLineStarts::from_source(&source));
+    }
     GameDataCatalogueState {
         status,
         index: Some(Arc::new(result.index)),

@@ -346,8 +346,8 @@ fn cancellation_and_eof_with_in_flight_initialization_shutdown_cleanly() {
         "id": 2,
         "method": "tools/call",
         "params": {
-            "name": "game_data_status",
-            "arguments": {}
+            "name": "search_game_data_symbols",
+            "arguments": {"query": "CancellationFixture"}
         }
     }));
     wait_for_file(&started_marker, Duration::from_secs(2));
