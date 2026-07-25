@@ -1114,6 +1114,56 @@ The lesson from s&box is that MCP adapters stay small when these capabilities
 are implemented by their owning engine/editor modules. Do not put scene,
 resource, compiler, or rendering semantics into MCP handlers.
 
+### Third-party EnfusionMCP handler inventory (source review, not acceptance evidence)
+
+On 2026-07-25, the public `EnfusionMCP/EnfusionMCP` repository was reviewed at
+commit `282393978cbe00c143f0872cf334c8432741c8e4`. Its Workbench bridge is a
+useful capability catalogue, but not an implementation authority for this
+project: it injects 19 `NetApiHandler` scripts into a target mod and drives
+them through Workbench's TCP NET API. It is not a registered
+`WorkbenchPlugin` or `WorkbenchTool`, and its TypeScript tests use a mock TCP
+server rather than a live Workbench session. The handler source is external
+evidence of an attempted surface, not proof of current Workbench behavior or
+of correct Enfusion API use.
+
+Every handler serializes an application-level `status` and `message` in its
+JSON response. Its TypeScript client generally treats only transport failures
+as failures, so a handler response with `status: "error"` can still be
+presented as a successful MCP operation. This is specifically not a contract
+to copy: our Gateway must map typed handler outcomes to typed MCP errors and
+must verify every mutation after it runs.
+
+| Handler | Request fields | Source-implemented feature | Material limit or mismatch |
+| --- | --- | --- | --- |
+| `EMCP_WB_Ping` | none | Reports bridge presence and whether `WorldEditorAPI` is available. | Returns `game`, while its client recognizes `play`; cached mode is unreliable. |
+| `EMCP_WB_GetState` | none | In edit mode, returns entity/selection counts, up to 50 selected names, subscene, prefab-edit flag, and terrain bounds. | In game mode it returns only `game` and optional bounds; no project, resource, runtime-game, or active-layer state. |
+| `EMCP_WB_EditorControl` | `action`, `debugMode`, `fullScreen`, `path` | Starts/stops play mode; saves; runs undo/redo; opens a resource. | `saveAs` ignores its path and calls `Save`; undo/redo are hard-coded menu paths; opening a resource is not opening a `.gproj` project. |
+| `EMCP_WB_ExecuteAction` | `menuPath` | Invokes a comma-separated World Editor menu path. | Arbitrary, UI-label/version-dependent action dispatch; no allowlist, confirmation, or reliable completion fact. |
+| `EMCP_WB_Reload` | `target` | Attempts script compilation and plugin reload through several menu paths. | Best effort only; no compiler diagnostics or proof that a reload/compile completed. |
+| `EMCP_WB_Resources` | `action`, `path`, `buildRuntime` | Registers, rebuilds, or opens one resource. | Rebuild is asynchronous and unverified; no resource graph, metadata, or whole-database operation. |
+| `EMCP_WB_ScriptEditor` | `action`, `line`, `text`, `path` | Reads/edits individual lines of the open Script Editor document and opens a resource. | No whole-file read/save/diagnostics; its response field names do not match its TypeScript wrapper, so reads display incorrectly. |
+| `EMCP_WB_Localization` | `action`, `itemId`, `property`, `value` | Inserts/deletes an item, modifies one property, or counts string-table children. | Insert ignores `property` and `value`; table read returns only a count, not entries. |
+| `EMCP_WB_Terrain` | `action`, `x`, `z` | Reads terrain surface Y or terrain bounds. | Read-only; no terrain editing, material/layer query, water, road, or heightmap workflow. |
+| `EMCP_WB_ListEntities` | `offset`, `limit`, `nameFilter` | Paged entity list with name, class, and runtime position. | Linear scan; no stable identity, prefab, hierarchy, GUID, or actual property values. |
+| `EMCP_WB_GetEntity` | `name` or `index` | Returns basic entity data, components, layer ID/subscene, and up to 50 variables. | Exact-name lookup takes the first duplicate; variable values use `GetDefaultAsString`, so they can be defaults rather than overrides. |
+| `EMCP_WB_CreateEntity` | `prefab`, `position`, `rotation`, `name`, `layerID` | Creates a root entity from a prefab. | Defaults to layer `0`; no parent/subscene/layer-path input; wrapper sends an ignored `layerPath` rather than `layerID`. |
+| `EMCP_WB_DeleteEntity` | `name` | Deletes the first exact-name entity inside an editor action. | No stable-ID targeting, batch behavior, dependency safety, or confirmation. |
+| `EMCP_WB_ModifyEntity` | `name`, `action`, `value`, `propertyPath`, `propertyKey`, `memberIndex` | Moves, rotates, renames, reparents; gets/sets/clears/lists properties; edits object arrays; changes object class. | Stringly typed targeting; transform assumes conventional `coords`/`angleX/Y/Z`; nested/current values are only partially observable. |
+| `EMCP_WB_Components` | `entityName`, `action`, `componentClass`, `componentIndex` | Lists, adds, and removes components. | Exact-name entity targeting; remove-by-class removes first match; wrapper blocks index-only removal despite handler support. |
+| `EMCP_WB_SelectEntity` | `action`, `name` | Deselects, clears, and lists up to 100 selected entities. | Its `select` branch clears current selection but does not select the named entity; wrapper incorrectly says it selected one. |
+| `EMCP_WB_Clipboard` | `action` | Copies/cuts/duplicates selected entities; pastes or checks clipboard state. | Depends on GUI selection/clipboard state; no affected-entity list or deterministic paste target. |
+| `EMCP_WB_Layers` | `action`, `subScene`, `entityName`, `visible` | Lists numeric layer IDs found on entities, gets current subscene, and gets one entity's layer ID. | Cannot create/delete/rename/activate/lock/show/hide layers; wrapper advertises unsupported mutations. |
+| `EMCP_WB_Prefabs` | `action`, `entityName`, `templatePath` | Creates/saves entity templates and gets a direct ancestor resource path. | No prefab search/GUID/override inspection; `getAncestor` is not exposed by its wrapper. |
+
+This review reinforces the existing boundary rather than expanding it. A future
+MCP tool may expose a narrowly proven, versioned capability such as typed
+entity inspection, resource rebuild, or compiler validation only after it has
+stable entity/resource identity, explicit availability semantics, bounded
+inputs and outputs, undo or idempotency policy where relevant, and live
+Workbench acceptance evidence. It must not turn this inventory into a generic
+handler proxy or import its name-based selection, menu-label fallback, and
+unchecked-success patterns.
+
 ## Future mutation contract
 
 The initial surface is read-only. Before any mutating tool is added, it must
