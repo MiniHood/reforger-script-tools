@@ -1164,6 +1164,44 @@ Workbench acceptance evidence. It must not turn this inventory into a generic
 handler proxy or import its name-based selection, menu-label fallback, and
 unchecked-success patterns.
 
+### Strategic direction: NET API for live authority
+
+The MCP design should invest in the private NET API path as its single
+live-editor integration. Workbench is the authoritative owner for active
+project/resource resolution, compiler state and diagnostics, imported-resource
+state, open-editor context, current selection, unsaved world state,
+World-Editor changes and Undo history, and later visual capture. A versioned
+project-side handler package plus the existing host-neutral Gateway is the
+route to those capabilities; MCP must not create a parallel live-editor model
+from files or expose raw handler dispatch.
+
+This is not a decision to replace the Rust language engine or bounded project
+file access. Those remain the authoritative, deterministic path for Enforce
+semantic indexing, source/workspace analysis, offline operation, project
+orientation, and version-checked file changes. Workbench may be closed, on a
+different project, in a non-editable mode, compiling, or missing a compatible
+handler package. Consequently, a live tool reports typed unavailability and
+never substitutes guessed file facts, while an offline semantic/file tool does
+not require Workbench.
+
+The intended division is therefore:
+
+```text
+Rust language engine + bounded project files
+  -> source semantics, workspace/index facts, and offline workflows
+
+private typed NET API Gateway + versioned Workbench handlers
+  -> live project/resource/world/compiler/editor/visual facts and actions
+```
+
+This is one authority per fact, not competing systems. The implementation
+sequence is: retain the proven status/compiler Gateway; add a versioned
+`capabilities` response and project context; add bounded resource resolution
+and inspection; add typed world/selection inspection with stable identities;
+then add only narrowly scoped mutations that meet the mutation contract below.
+Each slice requires live Workbench acceptance on supported versions before it
+is advertised by MCP.
+
 ## Future mutation contract
 
 The initial surface is read-only. Before any mutating tool is added, it must
