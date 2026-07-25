@@ -1,6 +1,6 @@
 use crate::index::{GlobalSymbolId, IndexedSymbol, SourceFileId, SymbolIndex};
 use crate::index_build::IndexBuildControl;
-use crate::model::SymbolKind;
+use crate::model::{SourceCategory, SymbolKind};
 use crate::symbol_display::documentation_display;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -449,17 +449,7 @@ fn all_kinds() -> Vec<&'static str> {
     ]
 }
 fn all_categories() -> Vec<&'static str> {
-    vec![
-        "core",
-        "docs/doxygen",
-        "game",
-        "gamecode",
-        "gamelib",
-        "generated",
-        "test/autotest",
-        "unknown",
-        "workbench",
-    ]
+    SourceCategory::GAME_DATA_FILTER_VALUES.to_vec()
 }
 pub(crate) fn kind_name(kind: SymbolKind) -> &'static str {
     match kind {

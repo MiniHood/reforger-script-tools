@@ -8,7 +8,7 @@ use crate::game_data_search::{
 use crate::index::{GlobalSymbolId, SourceFileId, SymbolIndex};
 use crate::index_build::IndexBuildControl;
 use crate::lexer::{lex, TextSpan, TokenKind};
-use crate::model::{SymbolCatalog, SymbolKind};
+use crate::model::{SourceCategory, SymbolCatalog, SymbolKind};
 use crate::parser::parse_source;
 use crate::resolver::{
     callable_override_key, CandidateSource, ReferenceResolution, ReferenceResolver,
@@ -210,10 +210,9 @@ pub fn search_examples(
         &["generated", "handwritten"],
         "sourceKinds must contain unique generated or handwritten values",
     )?;
-    let categories = game_data_categories();
     let source_categories = canonical_values(
         request.source_categories.as_deref(),
-        &categories.iter().map(String::as_str).collect::<Vec<_>>(),
+        SourceCategory::GAME_DATA_FILTER_VALUES,
         "sourceCategories must contain unique catalogue categories",
     )?;
     let limit = request.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
@@ -237,9 +236,11 @@ pub fn search_examples(
         control
             .check()
             .map_err(|_| GameDataResearchError::Cancelled)?;
-        let source_kind = source_kind(file);
+        let source_kind = example_source_kind(file);
         let category = file.metadata.category.as_str().to_string();
-        if source_kinds.binary_search(&source_kind).is_err()
+        if source_kinds
+            .binary_search_by(|candidate| candidate.as_str().cmp(source_kind))
+            .is_err()
             || source_categories.binary_search(&category).is_err()
         {
             continue;
@@ -268,7 +269,7 @@ pub fn search_examples(
             .collect::<Vec<_>>();
         symbols.sort();
         symbols.dedup();
-        let rank = example_score(&source_kind, &hits, source.lines().count());
+        let rank = example_score(source_kind, &hits, source.lines().count());
         candidates.push((
             rank,
             logical_path(file),
@@ -311,7 +312,10 @@ pub fn search_examples(
                 GameDataExampleHit {
                     topic: topic.clone(),
                     subtopics: subtopic.clone().into_iter().collect(),
-                    source_kind: source_kind(index.file(file_id).expect("candidate file exists")),
+                    source_kind: example_source_kind(
+                        index.file(file_id).expect("candidate file exists"),
+                    )
+                    .to_string(),
                     source_category: index
                         .file(file_id)
                         .expect("candidate file exists")
@@ -435,7 +439,15 @@ pub fn query_relationships(
         &kinds,
     )?;
     let mut results = Vec::new();
-    collect_structural_relationships(index, starts, revision, target, &kinds, &mut results);
+    collect_structural_relationships(
+        index,
+        starts,
+        control,
+        revision,
+        target,
+        &kinds,
+        &mut results,
+    )?;
     if kinds
         .iter()
         .any(|kind| matches!(kind.as_str(), "reference" | "caller"))
@@ -451,26 +463,8 @@ pub fn query_relationships(
             &mut results,
         )?;
     }
-    results.sort_by(|left, right| {
-        (
-            &left.relationship_kind,
-            &left.relative_path,
-            left.range.start_line,
-            &left.qualified_name,
-        )
-            .cmp(&(
-                &right.relationship_kind,
-                &right.relative_path,
-                right.range.start_line,
-                &right.qualified_name,
-            ))
-    });
-    results.dedup_by(|left, right| {
-        left.relationship_kind == right.relationship_kind
-            && left.relative_path == right.relative_path
-            && left.range == right.range
-            && left.symbol_ref == right.symbol_ref
-    });
+    sort_relationship_results(&mut results, control)?;
+    deduplicate_relationship_results(&mut results, control)?;
     let total = results.len();
     let results = results
         .into_iter()
@@ -546,13 +540,15 @@ fn project_member(
 fn collect_structural_relationships(
     index: &SymbolIndex,
     starts: &BTreeMap<SourceFileId, SourceLineStarts>,
+    control: &IndexBuildControl,
     revision: &str,
     target: GlobalSymbolId,
     requested: &[String],
     results: &mut Vec<GameDataRelationshipHit>,
-) {
+) -> Result<(), GameDataResearchError> {
+    check_research_control(control)?;
     let Some(symbol) = index.symbol(target) else {
-        return;
+        return Ok(());
     };
     if symbol.kind == SymbolKind::Class {
         if requested.iter().any(|kind| kind == "directBase") {
@@ -574,13 +570,16 @@ fn collect_structural_relationships(
         }
         if requested.iter().any(|kind| kind == "derivedType") {
             let Some(name) = symbol.name.as_deref() else {
-                return;
+                return Ok(());
             };
-            for candidate in index.symbols().iter().filter(|candidate| {
-                candidate.kind == SymbolKind::Class
-                    && candidate.detail.base_type.as_deref() == Some(name)
-                    && unique_preferred_class(index, name) == Some(target)
-            }) {
+            for candidate in index.symbols() {
+                check_research_control(control)?;
+                if candidate.kind != SymbolKind::Class
+                    || candidate.detail.base_type.as_deref() != Some(name)
+                    || unique_preferred_class(index, name) != Some(target)
+                {
+                    continue;
+                }
                 results.push(project_declaration_relationship(
                     index,
                     starts,
@@ -593,43 +592,55 @@ fn collect_structural_relationships(
         }
     }
     if symbol.kind == SymbolKind::Method {
-        collect_override_relationships(index, starts, revision, target, requested, results);
+        collect_override_relationships(
+            index, starts, control, revision, target, requested, results,
+        )?;
     }
+    Ok(())
 }
 
 fn collect_override_relationships(
     index: &SymbolIndex,
     starts: &BTreeMap<SourceFileId, SourceLineStarts>,
+    control: &IndexBuildControl,
     revision: &str,
     target: GlobalSymbolId,
     requested: &[String],
     results: &mut Vec<GameDataRelationshipHit>,
-) {
+) -> Result<(), GameDataResearchError> {
+    check_research_control(control)?;
     let Some(target_symbol) = index.symbol(target) else {
-        return;
+        return Ok(());
     };
     let Some(target_name) = target_symbol.name.as_deref() else {
-        return;
+        return Ok(());
     };
     let Some(target_owner) = owner_name(index, target_symbol) else {
-        return;
+        return Ok(());
     };
-    let target_key = callable_key(index, target);
+    let target_key = callable_override_key(index, target);
     if requested.iter().any(|kind| kind == "override")
         || (requested.iter().any(|kind| kind == "implementation")
             && target_symbol.callable_form != Some(crate::model::CallableForm::Implementation))
     {
-        for candidate in index.symbols().iter().filter(|candidate| {
-            candidate.kind == SymbolKind::Method
-                && candidate.name.as_deref() == Some(target_name)
-                && candidate
+        for candidate in index.symbols() {
+            check_research_control(control)?;
+            if candidate.kind != SymbolKind::Method
+                || candidate.name.as_deref() != Some(target_name)
+                || !candidate
                     .modifiers
                     .iter()
                     .any(|modifier| modifier == "override")
-                && callable_key(index, candidate.id) == target_key
-                && owner_name(index, candidate)
-                    .is_some_and(|owner| class_derives_from(index, &owner, &target_owner))
-        }) {
+                || callable_override_key(index, candidate.id) != target_key
+            {
+                continue;
+            }
+            let Some(owner) = owner_name(index, candidate) else {
+                continue;
+            };
+            if !class_derives_from(index, control, &owner, &target_owner)? {
+                continue;
+            }
             let mut relationship_kinds = Vec::new();
             if requested.iter().any(|kind| kind == "override") {
                 relationship_kinds.push("override");
@@ -660,6 +671,7 @@ fn collect_override_relationships(
     {
         let mut owner = target_owner;
         while let Some(base) = unique_base_class(index, &owner) {
+            check_research_control(control)?;
             let Some(base_name) = index.symbol(base).and_then(|symbol| symbol.name.as_deref())
             else {
                 break;
@@ -668,7 +680,7 @@ fn collect_override_relationships(
                 .methods_by_owner_name(base_name, target_name)
                 .iter()
                 .copied()
-                .find(|candidate| callable_key(index, *candidate) == target_key)
+                .find(|candidate| callable_override_key(index, *candidate) == target_key)
             {
                 results.push(project_declaration_relationship(
                     index,
@@ -683,6 +695,7 @@ fn collect_override_relationships(
             owner = base_name.to_string();
         }
     }
+    Ok(())
 }
 
 fn collect_resolved_usages(
@@ -938,55 +951,136 @@ fn unique_base_class(index: &SymbolIndex, owner: &str) -> Option<GlobalSymbolId>
     unique_preferred_class(index, base)
 }
 
-fn class_derives_from(index: &SymbolIndex, owner: &str, expected_base: &str) -> bool {
+fn class_derives_from(
+    index: &SymbolIndex,
+    control: &IndexBuildControl,
+    owner: &str,
+    expected_base: &str,
+) -> Result<bool, GameDataResearchError> {
     let mut current = owner.to_string();
     let mut visited = BTreeSet::new();
     while visited.insert(current.clone()) {
+        check_research_control(control)?;
         let Some(base) = unique_base_class(index, &current) else {
-            return false;
+            return Ok(false);
         };
         let Some(name) = index.symbol(base).and_then(|symbol| symbol.name.as_deref()) else {
-            return false;
+            return Ok(false);
         };
         if name == expected_base {
-            return true;
+            return Ok(true);
         }
         current = name.to_string();
     }
-    false
+    Ok(false)
 }
 
-fn callable_key(index: &SymbolIndex, id: GlobalSymbolId) -> Option<String> {
-    callable_override_key(index, id)
+fn check_research_control(control: &IndexBuildControl) -> Result<(), GameDataResearchError> {
+    control
+        .check()
+        .map_err(|_| GameDataResearchError::Cancelled)
 }
 
-fn source_kind(file: &crate::index::IndexedFile) -> String {
-    if file.metadata.category.as_str() == "generated"
-        || logical_path(file)
-            .split('/')
-            .any(|segment| segment.eq_ignore_ascii_case("generated"))
-    {
-        "generated".to_string()
-    } else {
-        "handwritten".to_string()
+fn compare_relationship_hits(
+    left: &GameDataRelationshipHit,
+    right: &GameDataRelationshipHit,
+) -> std::cmp::Ordering {
+    (
+        &left.relationship_kind,
+        &left.relative_path,
+        left.range.start_line,
+        &left.qualified_name,
+    )
+        .cmp(&(
+            &right.relationship_kind,
+            &right.relative_path,
+            right.range.start_line,
+            &right.qualified_name,
+        ))
+}
+
+fn sort_relationship_results(
+    results: &mut [GameDataRelationshipHit],
+    control: &IndexBuildControl,
+) -> Result<(), GameDataResearchError> {
+    const RUN_SIZE: usize = 128;
+    for run in results.chunks_mut(RUN_SIZE) {
+        check_research_control(control)?;
+        run.sort_by(compare_relationship_hits);
     }
+
+    let mut width = RUN_SIZE;
+    let mut merged = Vec::with_capacity(results.len());
+    while width < results.len() {
+        merged.clear();
+        for start in (0..results.len()).step_by(width.saturating_mul(2)) {
+            check_research_control(control)?;
+            let middle = (start + width).min(results.len());
+            let end = (start + width.saturating_mul(2)).min(results.len());
+            let mut left = start;
+            let mut right = middle;
+            while left < middle && right < end {
+                if merged.len() % RUN_SIZE == 0 {
+                    check_research_control(control)?;
+                }
+                if compare_relationship_hits(&results[left], &results[right]).is_gt() {
+                    merged.push(results[right].clone());
+                    right += 1;
+                } else {
+                    merged.push(results[left].clone());
+                    left += 1;
+                }
+            }
+            for index in left..middle {
+                if merged.len() % RUN_SIZE == 0 {
+                    check_research_control(control)?;
+                }
+                merged.push(results[index].clone());
+            }
+            for index in right..end {
+                if merged.len() % RUN_SIZE == 0 {
+                    check_research_control(control)?;
+                }
+                merged.push(results[index].clone());
+            }
+        }
+        results.clone_from_slice(&merged);
+        width = width.saturating_mul(2);
+    }
+    Ok(())
 }
 
-fn game_data_categories() -> Vec<String> {
-    [
-        "core",
-        "docs/doxygen",
-        "game",
-        "gamecode",
-        "gamelib",
-        "generated",
-        "test/autotest",
-        "unknown",
-        "workbench",
-    ]
-    .into_iter()
-    .map(str::to_string)
-    .collect()
+fn deduplicate_relationship_results(
+    results: &mut Vec<GameDataRelationshipHit>,
+    control: &IndexBuildControl,
+) -> Result<(), GameDataResearchError> {
+    let mut deduplicated = Vec::with_capacity(results.len());
+    for result in results.drain(..) {
+        if deduplicated.len() % 128 == 0 {
+            check_research_control(control)?;
+        }
+        let duplicate = deduplicated
+            .last()
+            .is_some_and(|previous: &GameDataRelationshipHit| {
+                previous.relationship_kind == result.relationship_kind
+                    && previous.relative_path == result.relative_path
+                    && previous.range == result.range
+                    && previous.symbol_ref == result.symbol_ref
+            });
+        if !duplicate {
+            deduplicated.push(result);
+        }
+    }
+    *results = deduplicated;
+    Ok(())
+}
+
+fn example_source_kind(file: &crate::index::IndexedFile) -> &'static str {
+    if file.metadata.category.is_generated() {
+        "generated"
+    } else {
+        "handwritten"
+    }
 }
 
 fn evidence_terms(topic: &str, subtopic: Option<&str>) -> Vec<String> {
@@ -1071,40 +1165,35 @@ fn code_tokens<'source>(
 }
 
 fn code_contains_term(tokens: &[CodeToken<'_>], term: &str) -> bool {
+    !matching_term_lines(tokens, term).is_empty()
+}
+
+fn matching_term_lines(tokens: &[CodeToken<'_>], term: &str) -> Vec<usize> {
     let parts = term.split('.').collect::<Vec<_>>();
     if parts.len() == 1 {
         return tokens
             .iter()
-            .any(|token| token.text.eq_ignore_ascii_case(parts[0]));
+            .filter(|token| token.text.eq_ignore_ascii_case(parts[0]))
+            .map(|token| token.line)
+            .collect();
     }
-    tokens.windows(parts.len() * 2 - 1).any(|window| {
-        parts.iter().enumerate().all(|(index, part)| {
-            window[index * 2].text.eq_ignore_ascii_case(part)
-                && (index == parts.len() - 1 || window[index * 2 + 1].text == ".")
+    tokens
+        .windows(parts.len() * 2 - 1)
+        .filter(|window| {
+            parts.iter().enumerate().all(|(index, part)| {
+                window[index * 2].text.eq_ignore_ascii_case(part)
+                    && (index == parts.len() - 1 || window[index * 2 + 1].text == ".")
+            })
         })
-    })
+        .map(|window| window[0].line)
+        .collect()
 }
 
 fn best_code_evidence_line(tokens: &[CodeToken<'_>], terms: &[String]) -> Option<usize> {
     let mut scores = BTreeMap::<usize, i32>::new();
     for term in terms {
-        let parts = term.split('.').collect::<Vec<_>>();
-        if parts.len() == 1 {
-            for token in tokens
-                .iter()
-                .filter(|token| token.text.eq_ignore_ascii_case(parts[0]))
-            {
-                *scores.entry(token.line).or_default() += evidence_weight(term);
-            }
-            continue;
-        }
-        for window in tokens.windows(parts.len() * 2 - 1).filter(|window| {
-            parts.iter().enumerate().all(|(index, part)| {
-                window[index * 2].text.eq_ignore_ascii_case(part)
-                    && (index == parts.len() - 1 || window[index * 2 + 1].text == ".")
-            })
-        }) {
-            *scores.entry(window[0].line).or_default() += evidence_weight(term);
+        for line in matching_term_lines(tokens, term) {
+            *scores.entry(line).or_default() += evidence_weight(term);
         }
     }
     scores
@@ -1285,4 +1374,81 @@ fn unhex(value: &str) -> Option<Vec<u8>> {
         .step_by(2)
         .map(|index| u8::from_str_radix(&value[index..index + 2], 16).ok())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dotted_term_matching_supplies_search_and_evidence() {
+        let tokens = [
+            CodeToken {
+                text: "Resource",
+                line: 12,
+            },
+            CodeToken {
+                text: ".",
+                line: 12,
+            },
+            CodeToken {
+                text: "Load",
+                line: 12,
+            },
+        ];
+        let terms = vec!["Resource.Load".to_string()];
+
+        assert!(code_contains_term(&tokens, "Resource.Load"));
+        assert_eq!(matching_term_lines(&tokens, "Resource.Load"), vec![12]);
+        assert_eq!(best_code_evidence_line(&tokens, &terms), Some(12));
+    }
+
+    #[test]
+    fn cancelled_relationship_postprocessing_stops_before_work() {
+        let control = IndexBuildControl::default();
+        control.cancel();
+        assert!(matches!(
+            collect_structural_relationships(
+                &SymbolIndex::default(),
+                &BTreeMap::new(),
+                &control,
+                "gd1:test",
+                GlobalSymbolId {
+                    file_id: SourceFileId(0),
+                    symbol_id: crate::model::SymbolId(0),
+                },
+                &["derivedType".to_string()],
+                &mut Vec::new(),
+            ),
+            Err(GameDataResearchError::Cancelled)
+        ));
+        let mut results = vec![GameDataRelationshipHit {
+            relationship_kind: "reference".to_string(),
+            symbol_ref: None,
+            name: None,
+            kind: None,
+            qualified_name: None,
+            signature: None,
+            relative_path: "Game/example.c".to_string(),
+            range: SourceLineRange {
+                start_line: 1,
+                end_line: 1,
+            },
+            evidence: "test".to_string(),
+            read_source_input: ReadSourceInput {
+                catalogue_revision: "gd1:test".to_string(),
+                relative_path: "Game/example.c".to_string(),
+                start_line: 1,
+            },
+        }];
+
+        assert!(matches!(
+            sort_relationship_results(&mut results, &control),
+            Err(GameDataResearchError::Cancelled)
+        ));
+        assert!(matches!(
+            deduplicate_relationship_results(&mut results, &control),
+            Err(GameDataResearchError::Cancelled)
+        ));
+    }
 }

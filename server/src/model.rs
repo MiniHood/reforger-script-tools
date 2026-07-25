@@ -45,6 +45,21 @@ pub enum SourceCategory {
 }
 
 impl SourceCategory {
+    /// Categories that can occur in the immutable Game Data Catalogue.
+    /// Workspace is intentionally excluded because it is an overlay, not
+    /// extracted Game Data.
+    pub const GAME_DATA_FILTER_VALUES: &'static [&'static str] = &[
+        "core",
+        "docs/doxygen",
+        "game",
+        "gamecode",
+        "gamelib",
+        "generated",
+        "test/autotest",
+        "unknown",
+        "workbench",
+    ];
+
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Workspace => "workspace",
@@ -70,6 +85,10 @@ impl SourceCategory {
                 | Self::Core
                 | Self::Generated
         )
+    }
+
+    pub const fn is_generated(self) -> bool {
+        matches!(self, Self::Generated)
     }
 }
 
@@ -1096,6 +1115,27 @@ mod tests {
     use super::*;
     use crate::parser::parse_source;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn game_data_filter_categories_are_canonical_and_exclude_workspace() {
+        assert_eq!(
+            SourceCategory::GAME_DATA_FILTER_VALUES,
+            &[
+                "core",
+                "docs/doxygen",
+                "game",
+                "gamecode",
+                "gamelib",
+                "generated",
+                "test/autotest",
+                "unknown",
+                "workbench",
+            ]
+        );
+        assert!(SourceCategory::Generated.is_generated());
+        assert!(!SourceCategory::Game.is_generated());
+        assert!(!SourceCategory::Workspace.is_generated());
+    }
 
     #[test]
     fn catalogs_top_level_declarations() {
