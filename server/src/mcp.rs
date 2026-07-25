@@ -48,7 +48,14 @@ struct McpGameDataSearchInput {
 
 impl From<McpGameDataSearchInput> for GameDataSearchRequest {
     fn from(input: McpGameDataSearchInput) -> Self {
-        Self { query: input.query, kinds: input.kinds, owner: input.owner, source_categories: input.source_categories, limit: input.limit, cursor: input.cursor }
+        Self {
+            query: input.query,
+            kinds: input.kinds,
+            owner: input.owner,
+            source_categories: input.source_categories,
+            limit: input.limit,
+            cursor: input.cursor,
+        }
     }
 }
 
@@ -156,7 +163,8 @@ impl ReforgerMcpServer {
         let catalogue = self.game_data.clone();
         let control = IndexBuildControl::default();
         let worker_control = control.clone();
-        let mut worker = tokio::task::spawn_blocking(move || catalogue.search(&worker_control, request));
+        let mut worker =
+            tokio::task::spawn_blocking(move || catalogue.search(&worker_control, request));
         let page = tokio::select! {
             biased;
             _ = context.ct.cancelled() => { cancel_search_worker(&control, &mut worker).await; return Err(McpError::internal_error("request cancelled", None)); }
@@ -183,7 +191,16 @@ async fn cancel_search_worker(
 }
 
 fn search_error(message: &str) -> CallToolResult {
-    let (code, recovery) = if message == "stale cursor" { ("stale_cursor", "Repeat the search without the cursor.") } else if message == "invalid cursor" { ("invalid_cursor", "Omit the cursor and repeat the search from its first page.") } else { ("invalid_arguments", "Correct the search input and retry.") };
+    let (code, recovery) = if message == "stale cursor" {
+        ("stale_cursor", "Repeat the search without the cursor.")
+    } else if message == "invalid cursor" {
+        (
+            "invalid_cursor",
+            "Omit the cursor and repeat the search from its first page.",
+        )
+    } else {
+        ("invalid_arguments", "Correct the search input and retry.")
+    };
     tool_error(code, message, recovery)
 }
 
@@ -257,11 +274,18 @@ impl ServerHandler for ReforgerMcpServer {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
-        Ok(ListToolsResult::with_all_items(vec![game_data_status_tool(), search_game_data_symbols_tool()]))
+        Ok(ListToolsResult::with_all_items(vec![
+            game_data_status_tool(),
+            search_game_data_symbols_tool(),
+        ]))
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
-        match name { GAME_DATA_STATUS_TOOL_NAME => Some(game_data_status_tool()), SEARCH_GAME_DATA_SYMBOLS_TOOL_NAME => Some(search_game_data_symbols_tool()), _ => None }
+        match name {
+            GAME_DATA_STATUS_TOOL_NAME => Some(game_data_status_tool()),
+            SEARCH_GAME_DATA_SYMBOLS_TOOL_NAME => Some(search_game_data_symbols_tool()),
+            _ => None,
+        }
     }
 
     async fn call_tool(
@@ -270,9 +294,20 @@ impl ServerHandler for ReforgerMcpServer {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         if request.name == SEARCH_GAME_DATA_SYMBOLS_TOOL_NAME {
-            if request.task.is_some() { return Err(McpError::invalid_params("search_game_data_symbols does not support task execution", None)); }
+            if request.task.is_some() {
+                return Err(McpError::invalid_params(
+                    "search_game_data_symbols does not support task execution",
+                    None,
+                ));
+            }
             let arguments = request.arguments.unwrap_or_default();
-            let input = serde_json::from_value::<McpGameDataSearchInput>(Value::Object(arguments)).map_err(|error| McpError::invalid_params(format!("Invalid search_game_data_symbols arguments: {error}"), None))?;
+            let input = serde_json::from_value::<McpGameDataSearchInput>(Value::Object(arguments))
+                .map_err(|error| {
+                    McpError::invalid_params(
+                        format!("Invalid search_game_data_symbols arguments: {error}"),
+                        None,
+                    )
+                })?;
             return self.search_game_data_symbols(input.into(), context).await;
         }
         if request.name != GAME_DATA_STATUS_TOOL_NAME {
@@ -350,11 +385,17 @@ pub fn render_api_reference() -> String {
     let search_input_schema = serde_json::to_string_pretty(search_tool.input_schema.as_ref())
         .expect("search input schema serializes");
     let search_output_schema = serde_json::to_string_pretty(
-        search_tool.output_schema.as_deref().expect("search output schema"),
+        search_tool
+            .output_schema
+            .as_deref()
+            .expect("search output schema"),
     )
     .expect("search output schema serializes");
     let search_annotations = serde_json::to_string_pretty(
-        search_tool.annotations.as_ref().expect("search annotations"),
+        search_tool
+            .annotations
+            .as_ref()
+            .expect("search annotations"),
     )
     .expect("search annotations serialize");
 
@@ -440,12 +481,22 @@ fn game_data_status_tool() -> Tool {
 }
 
 fn search_game_data_symbols_tool() -> Tool {
-    let mut tool = Tool::new(SEARCH_GAME_DATA_SYMBOLS_TOOL_NAME, SEARCH_GAME_DATA_SYMBOLS_DESCRIPTION, empty_object_schema())
-        .with_title("Search Game Data symbols")
-        .with_input_schema::<McpGameDataSearchInput>()
-        .with_output_schema::<GameDataSearchPage>()
-        .with_annotations(ToolAnnotations::with_title("Search Game Data symbols").read_only(true).open_world(false));
-    if let Some(output_schema) = tool.output_schema.as_mut() { strip_rust_numeric_formats(Arc::make_mut(output_schema)); }
+    let mut tool = Tool::new(
+        SEARCH_GAME_DATA_SYMBOLS_TOOL_NAME,
+        SEARCH_GAME_DATA_SYMBOLS_DESCRIPTION,
+        empty_object_schema(),
+    )
+    .with_title("Search Game Data symbols")
+    .with_input_schema::<McpGameDataSearchInput>()
+    .with_output_schema::<GameDataSearchPage>()
+    .with_annotations(
+        ToolAnnotations::with_title("Search Game Data symbols")
+            .read_only(true)
+            .open_world(false),
+    );
+    if let Some(output_schema) = tool.output_schema.as_mut() {
+        strip_rust_numeric_formats(Arc::make_mut(output_schema));
+    }
     strip_rust_numeric_formats(Arc::make_mut(&mut tool.input_schema));
     tool
 }

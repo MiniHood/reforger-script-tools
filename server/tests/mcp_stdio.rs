@@ -86,11 +86,26 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
         Some(&json!(false))
     );
     assert!(listed[0].get("outputSchema").is_some());
-    assert_eq!(listed[1].get("name"), Some(&json!("search_game_data_symbols")));
-    assert_eq!(listed[1].pointer("/annotations/readOnlyHint"), Some(&json!(true)));
-    assert_eq!(listed[1].pointer("/annotations/openWorldHint"), Some(&json!(false)));
-    assert_eq!(listed[1].pointer("/inputSchema/additionalProperties"), Some(&json!(false)));
-    assert_eq!(listed[1].pointer("/inputSchema/required/0"), Some(&json!("query")));
+    assert_eq!(
+        listed[1].get("name"),
+        Some(&json!("search_game_data_symbols"))
+    );
+    assert_eq!(
+        listed[1].pointer("/annotations/readOnlyHint"),
+        Some(&json!(true))
+    );
+    assert_eq!(
+        listed[1].pointer("/annotations/openWorldHint"),
+        Some(&json!(false))
+    );
+    assert_eq!(
+        listed[1].pointer("/inputSchema/additionalProperties"),
+        Some(&json!(false))
+    );
+    assert_eq!(
+        listed[1].pointer("/inputSchema/required/0"),
+        Some(&json!("query"))
+    );
 
     client.send(json!({
         "jsonrpc": "2.0",
@@ -160,12 +175,21 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
     }));
     let search = client.response(4);
     assert_eq!(search.pointer("/result/isError"), Some(&json!(false)));
-    let results = search.pointer("/result/structuredContent/results").and_then(Value::as_array).expect("search results");
+    let results = search
+        .pointer("/result/structuredContent/results")
+        .and_then(Value::as_array)
+        .expect("search results");
     assert_eq!(results.len(), 2);
     assert_eq!(results[0].get("name"), Some(&json!("McpFixture")));
     assert!(results[0].get("symbolRef").is_some());
-    assert_eq!(results[0].pointer("/inspectInput/symbolRef"), results[0].get("symbolRef"));
-    assert_eq!(results[0].pointer("/readSourceInput/relativePath"), Some(&json!("Game/McpFixture.c")));
+    assert_eq!(
+        results[0].pointer("/inspectInput/symbolRef"),
+        results[0].get("symbolRef")
+    );
+    assert_eq!(
+        results[0].pointer("/readSourceInput/relativePath"),
+        Some(&json!("Game/McpFixture.c"))
+    );
 
     client.close_stdin();
     assert!(
@@ -268,10 +292,21 @@ fn unavailable_status_and_malformed_calls_are_sanitized_and_process_isolated() {
     client.send(json!({
         "jsonrpc": "2.0",
         "id": 5,
+        "method": "tools/call",
+        "params": {
+            "name": "search_game_data_symbols",
+            "arguments": {"query": "", "unexpected": true}
+        }
+    }));
+    assert_eq!(client.response(5).pointer("/error/code"), Some(&json!(-32602)));
+
+    client.send(json!({
+        "jsonrpc": "2.0",
+        "id": 6,
         "method": "ping",
         "params": {}
     }));
-    assert_eq!(client.response(5).get("result"), Some(&json!({})));
+    assert_eq!(client.response(6).get("result"), Some(&json!({})));
 
     client.close_stdin();
     assert!(client.wait_for_exit(Duration::from_secs(3)));

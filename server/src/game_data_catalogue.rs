@@ -1,4 +1,6 @@
-use crate::game_data_search::{search, GameDataSearchError, GameDataSearchPage, GameDataSearchRequest, SourceLineStarts};
+use crate::game_data_search::{
+    search, GameDataSearchError, GameDataSearchPage, GameDataSearchRequest, SourceLineStarts,
+};
 use crate::index::{SourceFileId, SymbolIndex};
 use crate::index_build::{IndexBuildControl, INDEX_BUILD_CANCELLED};
 use crate::index_cache::{
@@ -76,7 +78,9 @@ impl GameDataCatalogue {
         control: &IndexBuildControl,
         request: GameDataSearchRequest,
     ) -> Result<GameDataSearchPage, GameDataCatalogueSearchError> {
-        let status = self.status(control).map_err(GameDataCatalogueSearchError::Initialization)?;
+        let status = self
+            .status(control)
+            .map_err(GameDataCatalogueSearchError::Initialization)?;
         if !status.available {
             return Err(GameDataCatalogueSearchError::Unavailable);
         }
@@ -87,14 +91,20 @@ impl GameDataCatalogue {
         let snapshot = state
             .as_ref()
             .ok_or(GameDataCatalogueSearchError::Unavailable)?;
-        let index = snapshot.index.clone().ok_or(GameDataCatalogueSearchError::Unavailable)?;
+        let index = snapshot
+            .index
+            .clone()
+            .ok_or(GameDataCatalogueSearchError::Unavailable)?;
         let source_line_starts = snapshot.source_line_starts.clone();
         drop(state);
         search(
             &index,
             &source_line_starts,
             control,
-            status.catalogue_revision.as_deref().ok_or(GameDataCatalogueSearchError::Unavailable)?,
+            status
+                .catalogue_revision
+                .as_deref()
+                .ok_or(GameDataCatalogueSearchError::Unavailable)?,
             request,
         )
         .map_err(GameDataCatalogueSearchError::Search)
@@ -114,11 +124,10 @@ impl GameDataCatalogue {
                 let _ = writeln!(file, "started");
             }
         }
-        let uninterruptible_delay_ms =
-            std::env::var("REFORGER_MCP_TEST_UNINTERRUPTIBLE_DELAY_MS")
-                .ok()
-                .and_then(|value| value.parse::<u64>().ok())
-                .unwrap_or(0);
+        let uninterruptible_delay_ms = std::env::var("REFORGER_MCP_TEST_UNINTERRUPTIBLE_DELAY_MS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(0);
         std::thread::sleep(Duration::from_millis(uninterruptible_delay_ms));
         if self.panic_once.swap(false, Ordering::AcqRel) {
             panic!("intentional MCP initialization test panic");
@@ -355,10 +364,19 @@ fn ready_state(
         recovery: vec!["Restart the MCP process after changing or updating Game Data.".to_string()],
     };
 
-    let source_line_starts = result.index.files().iter().filter_map(|file| {
-        let source = file.metadata.absolute_path.as_ref().and_then(|path| fs::read_to_string(path).ok())?;
-        Some((file.id, SourceLineStarts::from_source(&source)))
-    }).collect();
+    let source_line_starts = result
+        .index
+        .files()
+        .iter()
+        .filter_map(|file| {
+            let source = file
+                .metadata
+                .absolute_path
+                .as_ref()
+                .and_then(|path| fs::read_to_string(path).ok())?;
+            Some((file.id, SourceLineStarts::from_source(&source)))
+        })
+        .collect();
     GameDataCatalogueState {
         status,
         index: Some(Arc::new(result.index)),
