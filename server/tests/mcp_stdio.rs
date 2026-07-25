@@ -290,6 +290,65 @@ fn mcp_inspection_and_source_read_reject_stale_and_changed_handoffs() {
 }
 
 #[test]
+fn mcp_progressive_retrieval_enforces_member_documentation_and_source_bounds() {
+    let fixture = TempFixture::new("mcp_progressive_bounds");
+    let scripts_root = fixture.path().join("scripts");
+    fs::create_dir_all(scripts_root.join("Game")).expect("create scripts fixture");
+    let source_path = scripts_root.join("Game").join("Bounds.c");
+    let mut source = "/*! \\brief Bounds summary.\n".repeat(1);
+    for _ in 0..3_000 {
+        source.push_str(" * documentation payload keeps the raw comment bounded.\n");
+    }
+    source.push_str(" */\nclass Bounds\n{\n");
+    for index in 0..55 {
+        source.push_str(&format!("\tint Member{index:02};\n"));
+    }
+    source.push_str("}\n");
+    for index in 0..600 {
+        source.push_str(&format!("int TopLevel{index:03};\n"));
+    }
+    fs::write(&source_path, source).expect("write bounds fixture");
+    let cache_path = fixture.path().join("cache").join("game-data-index.bin");
+    let mut client = McpClient::spawn(&[
+        "mcp", "--game-data-scripts", scripts_root.to_str().expect("utf-8 scripts path"),
+        "--index-cache", cache_path.to_str().expect("utf-8 cache path"),
+    ]);
+    client.initialize(1);
+    client.send(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"search_game_data_symbols","arguments":{"query":"Bounds"}}}));
+    let search = client.response(2);
+    let hit = search.pointer("/result/structuredContent/results/0").expect("Bounds hit");
+    let symbol_ref = hit.get("symbolRef").cloned().expect("symbol reference");
+    let revision = search.pointer("/result/structuredContent/catalogueRevision").cloned().expect("catalogue revision");
+
+    client.send(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"inspect_game_data_symbol","arguments":{"symbolRef":symbol_ref}}}));
+    let inspected = client.response(3);
+    assert_eq!(inspected.pointer("/result/isError"), Some(&json!(false)));
+    let inspection = inspected.pointer("/result/structuredContent").expect("inspection");
+    assert_eq!(inspection.pointer("/rawTruncated"), Some(&json!(true)));
+    assert!(inspection.pointer("/rawDocumentation").and_then(Value::as_str).is_some_and(|text| text.len() <= 16 * 1024));
+    assert_eq!(inspection.pointer("/membersReturned"), Some(&json!(50)));
+    assert_eq!(inspection.pointer("/membersTotal"), Some(&json!(55)));
+    assert_eq!(inspection.pointer("/membersTruncated"), Some(&json!(true)));
+    assert_eq!(inspection.pointer("/members/0/name"), Some(&json!("Member00")));
+    assert_eq!(inspection.pointer("/members/49/name"), Some(&json!("Member49")));
+    assert!(inspection.pointer("/membersTruncationGuidance").and_then(Value::as_str).is_some_and(|text| text.contains("search_game_data_symbols")));
+
+    client.send(json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"read_game_data_source","arguments":{"catalogueRevision":revision,"relativePath":"Game/Missing.c"}}}));
+    assert!(client.response(4).pointer("/result/content/0/text").and_then(Value::as_str).is_some_and(|text| text.starts_with("invalid_arguments:")));
+    client.send(json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"read_game_data_source","arguments":{"catalogueRevision":"gd1:stale","relativePath":"Game/Bounds.c"}}}));
+    assert!(client.response(5).pointer("/result/content/0/text").and_then(Value::as_str).is_some_and(|text| text.starts_with("stale_symbol_ref:")));
+    client.send(json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"read_game_data_source","arguments":{"catalogueRevision":revision,"relativePath":"Game/Bounds.c","startLine":0}}}));
+    assert!(client.response(6).pointer("/result/content/0/text").and_then(Value::as_str).is_some_and(|text| text.starts_with("invalid_arguments:")));
+    client.send(json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"read_game_data_source","arguments":{"catalogueRevision":revision,"relativePath":"Game/Bounds.c","startLine":1,"lineCount":999}}}));
+    let read = client.response(7);
+    assert_eq!(read.pointer("/result/isError"), Some(&json!(false)));
+    assert_eq!(read.pointer("/result/structuredContent/startLine"), Some(&json!(1)));
+    assert_eq!(read.pointer("/result/structuredContent/endLine"), Some(&json!(500)));
+    assert_eq!(read.pointer("/result/structuredContent/truncated"), Some(&json!(true)));
+    assert_eq!(read.pointer("/result/structuredContent/nextStartLine"), Some(&json!(501)));
+}
+
+#[test]
 fn game_data_revision_is_immutable_per_process_and_shared_cache_loads_warm() {
     let fixture = TempFixture::new("mcp_immutable_revision");
     let scripts_root = fixture.path().join("scripts");
