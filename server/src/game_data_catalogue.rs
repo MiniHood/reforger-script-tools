@@ -1,5 +1,5 @@
-use crate::index::SymbolIndex;
-use crate::game_data_search::{search, GameDataSearchError, GameDataSearchPage, GameDataSearchRequest};
+use crate::game_data_search::{search, GameDataSearchError, GameDataSearchPage, GameDataSearchRequest, SourceLineStarts};
+use crate::index::{SourceFileId, SymbolIndex};
 use crate::index_build::{IndexBuildControl, INDEX_BUILD_CANCELLED};
 use crate::index_cache::{
     load_or_build_game_data_index_with_control, GameDataIndexCacheConfig, GameDataIndexCacheResult,
@@ -38,7 +38,8 @@ pub struct GameDataCatalogue {
 struct GameDataCatalogueState {
     status: GameDataStatus,
     // Ticket #17 adds semantic queries over this exact immutable index.
-    _index: Option<Arc<SymbolIndex>>,
+    index: Option<Arc<SymbolIndex>>,
+    source_line_starts: Arc<BTreeMap<SourceFileId, SourceLineStarts>>,
 }
 
 impl GameDataCatalogue {
@@ -83,12 +84,16 @@ impl GameDataCatalogue {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let index = state
+        let snapshot = state
             .as_ref()
-            .and_then(|state| state._index.as_deref())
             .ok_or(GameDataCatalogueSearchError::Unavailable)?;
+        let index = snapshot.index.clone().ok_or(GameDataCatalogueSearchError::Unavailable)?;
+        let source_line_starts = snapshot.source_line_starts.clone();
+        drop(state);
         search(
-            index,
+            &index,
+            &source_line_starts,
+            control,
             status.catalogue_revision.as_deref().ok_or(GameDataCatalogueSearchError::Unavailable)?,
             request,
         )
@@ -350,9 +355,14 @@ fn ready_state(
         recovery: vec!["Restart the MCP process after changing or updating Game Data.".to_string()],
     };
 
+    let source_line_starts = result.index.files().iter().filter_map(|file| {
+        let source = file.metadata.absolute_path.as_ref().and_then(|path| fs::read_to_string(path).ok())?;
+        Some((file.id, SourceLineStarts::from_source(&source)))
+    }).collect();
     GameDataCatalogueState {
         status,
-        _index: Some(Arc::new(result.index)),
+        index: Some(Arc::new(result.index)),
+        source_line_starts: Arc::new(source_line_starts),
     }
 }
 
@@ -383,7 +393,8 @@ fn unavailable_state(
             }],
             recovery: vec![recovery.to_string()],
         },
-        _index: None,
+        index: None,
+        source_line_starts: Arc::new(BTreeMap::new()),
     }
 }
 

@@ -164,6 +164,7 @@ impl ReforgerMcpServer {
             result = &mut worker => match result {
                 Ok(Ok(page)) => page,
                 Ok(Err(GameDataCatalogueSearchError::Unavailable)) => return Ok(tool_error("game_data_unavailable", "Game Data is unavailable for this MCP process.", "Call game_data_status, correct its reported configuration, then retry.")),
+                Ok(Err(GameDataCatalogueSearchError::Search(crate::game_data_search::GameDataSearchError::Cancelled))) => return Err(McpError::internal_error("request cancelled", None)),
                 Ok(Err(GameDataCatalogueSearchError::Search(error))) => return Ok(search_error(error.to_string().as_str())),
                 Ok(Err(GameDataCatalogueSearchError::Initialization(error))) if error == INDEX_BUILD_CANCELLED => return Err(McpError::internal_error("request cancelled", None)),
                 Ok(Err(GameDataCatalogueSearchError::Initialization(_))) | Err(_) => return Err(McpError::internal_error("Game Data search worker failed", None)),

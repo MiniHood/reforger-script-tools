@@ -1,15 +1,31 @@
-use crate::index::{GlobalSymbolId, IndexedSymbol, SymbolIndex};
+use crate::index::{GlobalSymbolId, IndexedSymbol, SourceFileId, SymbolIndex};
+use crate::index_build::IndexBuildControl;
 use crate::model::SymbolKind;
 use serde::{Deserialize, Serialize};
 use schemars::JsonSchema;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::fs;
 
 pub const DEFAULT_LIMIT: usize = 20;
 pub const MAX_LIMIT: usize = 100;
 pub const MAX_QUERY_CHARS: usize = 256;
 pub const MAX_CURSOR_BYTES: usize = 2048;
+pub const MAX_SEARCH_RESULT_BYTES: usize = 256 * 1024;
+
+#[derive(Debug, Clone, Default)]
+pub struct SourceLineStarts(Vec<usize>);
+
+impl SourceLineStarts {
+    pub fn from_source(source: &str) -> Self {
+        let mut starts = vec![0];
+        starts.extend(source.bytes().enumerate().filter_map(|(offset, byte)| (byte == b'\n').then_some(offset + 1)));
+        Self(starts)
+    }
+
+    fn range(&self, start: usize, end: usize) -> SourceLineRange {
+        SourceLineRange { start_line: line_for_offset(&self.0, start), end_line: line_for_offset(&self.0, end) }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GameDataSearchRequest {
@@ -82,12 +98,13 @@ pub struct InspectInput { pub symbol_ref: String }
 pub struct ReadSourceInput { pub catalogue_revision: String, pub relative_path: String, pub start_line: usize, pub end_line: usize }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum GameDataSearchError { InvalidRequest(&'static str), InvalidCursor, StaleCursor }
+pub enum GameDataSearchError { InvalidRequest(&'static str), InvalidCursor, StaleCursor, Cancelled }
 impl fmt::Display for GameDataSearchError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { match self {
         Self::InvalidRequest(message) => write!(f, "{message}"),
         Self::InvalidCursor => write!(f, "invalid cursor"),
         Self::StaleCursor => write!(f, "stale cursor"),
+        Self::Cancelled => write!(f, "search cancelled"),
     }}
 }
 
@@ -98,7 +115,7 @@ struct Candidate { id: GlobalSymbolId, rank: u8, match_kind: &'static str, quali
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Cursor { version: u8, catalogue_revision: String, query: String, kinds: Vec<String>, owner: Option<String>, source_categories: Vec<String>, offset: usize }
 
-pub fn search(index: &SymbolIndex, catalogue_revision: &str, request: GameDataSearchRequest) -> Result<GameDataSearchPage, GameDataSearchError> {
+pub fn search(index: &SymbolIndex, source_line_starts: &BTreeMap<SourceFileId, SourceLineStarts>, control: &IndexBuildControl, catalogue_revision: &str, request: GameDataSearchRequest) -> Result<GameDataSearchPage, GameDataSearchError> {
     let query = normalize_query(&request.query)?;
     let kinds = canonical_kinds(request.kinds.as_deref())?;
     let source_categories = canonical_categories(request.source_categories.as_deref())?;
@@ -112,25 +129,37 @@ pub fn search(index: &SymbolIndex, catalogue_revision: &str, request: GameDataSe
     }
     let offset = cursor.map(|cursor| cursor.offset).unwrap_or(0);
     let query_folded = query.to_lowercase();
-    let mut candidates = index.symbols().iter().filter_map(|symbol| {
-        let file = index.file(symbol.id.file_id)?;
-        let name = symbol.name.as_deref()?;
+    let mut candidates = Vec::new();
+    for symbol in index.symbols() {
+        control.check().map_err(|_| GameDataSearchError::Cancelled)?;
+        let Some(file) = index.file(symbol.id.file_id) else { continue; };
+        let Some(name) = symbol.name.as_deref() else { continue; };
         let kind = kind_name(symbol.kind).to_string();
-        if !kinds.binary_search(&kind).is_ok() || !source_categories.binary_search(&file.metadata.category.as_str().to_string()).is_ok() { return None; }
+        if kinds.binary_search(&kind).is_err() || source_categories.binary_search(&file.metadata.category.as_str().to_string()).is_err() { continue; }
         let symbol_owner = owner_name(index, symbol);
-        if owner.as_deref().is_some_and(|expected| symbol_owner.as_deref() != Some(expected)) { return None; }
+        if owner.as_deref().is_some_and(|expected| symbol_owner.as_deref() != Some(expected)) { continue; }
         let qualified_name = qualify(symbol_owner.as_deref(), name);
         let signature = index.callable_signature(symbol.id);
-        let (rank, match_kind) = match_rank(symbol, &qualified_name, signature.as_deref(), &query, &query_folded)?;
-        Some(Candidate { id: symbol.id, rank, match_kind, qualified_name, kind, path: logical_path(file), position: symbol.span.start })
-    }).collect::<Vec<_>>();
+        let Some((rank, match_kind)) = match_rank(symbol, &qualified_name, signature.as_deref(), &query, &query_folded) else { continue; };
+        candidates.push(Candidate { id: symbol.id, rank, match_kind, qualified_name, kind, path: logical_path(file), position: symbol.span.start });
+    }
+    control.check().map_err(|_| GameDataSearchError::Cancelled)?;
     candidates.sort_by(|left, right| (left.rank, &left.qualified_name, &left.kind, &left.path, left.position).cmp(&(right.rank, &right.qualified_name, &right.kind, &right.path, right.position)));
     let total = candidates.len();
     let page_candidates = candidates.into_iter().skip(offset).take(limit).collect::<Vec<_>>();
     let returned = page_candidates.len();
     let next_cursor = (offset + returned < total).then(|| encode_cursor(&Cursor { version: 1, catalogue_revision: catalogue_revision.to_string(), query: query.clone(), kinds: kinds.clone(), owner: owner.clone(), source_categories: source_categories.clone(), offset: offset + returned }));
-    let results = page_candidates.into_iter().map(|candidate| project_hit(index, catalogue_revision, candidate)).collect();
-    Ok(GameDataSearchPage { catalogue_revision: catalogue_revision.to_string(), query, applied_filters: AppliedFilters { kinds, owner, source_categories, limit }, returned, total, next_cursor, results })
+    let results = page_candidates.into_iter().map(|candidate| -> Result<_, GameDataSearchError> {
+        control.check().map_err(|_| GameDataSearchError::Cancelled)?;
+        Ok(project_hit(index, source_line_starts, catalogue_revision, candidate))
+    }).collect::<Result<Vec<_>, _>>()?;
+    let mut page = GameDataSearchPage { catalogue_revision: catalogue_revision.to_string(), query, applied_filters: AppliedFilters { kinds, owner, source_categories, limit }, returned, total, next_cursor, results };
+    while serde_json::to_vec(&page).map_err(|_| GameDataSearchError::InvalidRequest("search result could not serialize"))?.len() > MAX_SEARCH_RESULT_BYTES && page.results.len() > 1 {
+        page.results.pop();
+        page.returned = page.results.len();
+        page.next_cursor = Some(encode_cursor(&Cursor { version: 1, catalogue_revision: page.catalogue_revision.clone(), query: page.query.clone(), kinds: page.applied_filters.kinds.clone(), owner: page.applied_filters.owner.clone(), source_categories: page.applied_filters.source_categories.clone(), offset: offset + page.returned }));
+    }
+    Ok(page)
 }
 
 fn normalize_query(query: &str) -> Result<String, GameDataSearchError> {
@@ -162,10 +191,10 @@ fn match_rank(symbol: &IndexedSymbol, qualified_name: &str, signature: Option<&s
     let name = symbol.name.as_deref()?; let name_folded = name.to_lowercase();
     if name == query { Some((1, "exactName")) } else if name_folded == query_folded { Some((2, "caseInsensitiveName")) } else if name_folded.starts_with(query_folded) { Some((3, "namePrefix")) } else if qualified_name != name && qualified_name.to_lowercase().contains(query_folded) { Some((4, "qualifiedName")) } else if name_folded.contains(query_folded) { Some((5, "nameSubstring")) } else if signature.is_some_and(|value| value.to_lowercase().contains(query_folded)) { Some((6, "signature")) } else if [symbol.detail.type_text.as_deref(), symbol.detail.return_type_text.as_deref(), symbol.detail.base_type.as_deref()].into_iter().flatten().any(|value| value.to_lowercase().contains(query_folded)) { Some((7, "type")) } else { None }
 }
-fn project_hit(index: &SymbolIndex, revision: &str, candidate: Candidate) -> GameDataSearchHit {
+fn project_hit(index: &SymbolIndex, source_line_starts: &BTreeMap<SourceFileId, SourceLineStarts>, revision: &str, candidate: Candidate) -> GameDataSearchHit {
     let symbol = index.symbol(candidate.id).expect("candidate symbol exists"); let file = index.file(candidate.id.file_id).expect("candidate file exists"); let owner = owner_name(index, symbol);
-    let source = file.metadata.absolute_path.as_ref().and_then(|path| fs::read_to_string(path).ok()).unwrap_or_default();
-    let declaration_range = line_range(&source, symbol.span.start, symbol.span.end); let selection_range = line_range(&source, symbol.selection_span.start, symbol.selection_span.end);
+    let line_starts = source_line_starts.get(&candidate.id.file_id).cloned().unwrap_or_default();
+    let declaration_range = line_starts.range(symbol.span.start, symbol.span.end); let selection_range = line_starts.range(symbol.selection_span.start, symbol.selection_span.end);
     let symbol_ref = encode_symbol_ref(revision, &candidate.path, &candidate.kind, &candidate.qualified_name, symbol.selection_span.start);
     let signature = index.callable_signature(candidate.id).unwrap_or_else(|| compact_signature(symbol, &candidate.qualified_name));
     let relative_path = candidate.path;
@@ -173,7 +202,7 @@ fn project_hit(index: &SymbolIndex, revision: &str, candidate: Candidate) -> Gam
 }
 fn compact_signature(symbol: &IndexedSymbol, qualified_name: &str) -> String { match symbol.kind { SymbolKind::Class => symbol.detail.base_type.as_deref().map(|base| format!("class {qualified_name} : {base}")).unwrap_or_else(|| format!("class {qualified_name}")), SymbolKind::Enum => format!("enum {qualified_name}"), _ => symbol.detail.type_text.as_deref().map(|value| format!("{qualified_name}: {value}")).or_else(|| symbol.detail.return_type_text.as_deref().map(|value| format!("{qualified_name} -> {value}"))).unwrap_or_else(|| qualified_name.to_string()) } }
 fn documentation_summary(symbol: &IndexedSymbol) -> Option<String> { symbol.doc_comments.iter().flat_map(|comment| comment.text.lines()).map(|line| line.trim().trim_start_matches('/').trim_start_matches('*').trim()).find(|line| !line.is_empty()).map(|line| line.chars().take(512).collect()) }
-fn line_range(source: &str, start: usize, end: usize) -> SourceLineRange { if source.is_empty() { return SourceLineRange { start_line: 0, end_line: 0 }; } SourceLineRange { start_line: source[..start.min(source.len())].bytes().filter(|byte| *byte == b'\n').count() + 1, end_line: source[..end.min(source.len())].bytes().filter(|byte| *byte == b'\n').count() + 1 } }
+fn line_for_offset(starts: &[usize], offset: usize) -> usize { starts.partition_point(|start| *start <= offset).max(1) }
 fn encode_symbol_ref(revision: &str, path: &str, kind: &str, qualified_name: &str, selection_start: usize) -> String { hex(&serde_json::to_vec(&serde_json::json!({"v":1,"r":revision,"p":path,"k":kind,"q":qualified_name,"s":selection_start})).expect("symbol reference serializes")) }
 fn encode_cursor(cursor: &Cursor) -> String { hex(&serde_json::to_vec(cursor).expect("cursor serializes")) }
 fn decode_cursor(value: &str) -> Result<Cursor, GameDataSearchError> { if value.len() > MAX_CURSOR_BYTES { return Err(GameDataSearchError::InvalidCursor); } let bytes = unhex(value).ok_or(GameDataSearchError::InvalidCursor)?; let cursor = serde_json::from_slice::<Cursor>(&bytes).map_err(|_| GameDataSearchError::InvalidCursor)?; (cursor.version == 1).then_some(cursor).ok_or(GameDataSearchError::InvalidCursor) }

@@ -1,7 +1,9 @@
-use reforger_language_server::game_data_search::{search, GameDataSearchRequest};
-use reforger_language_server::index_build::{build_index, IndexBuildConfig, IndexSourceRoot};
+use reforger_language_server::game_data_search::{search, GameDataSearchRequest, SourceLineStarts};
+use reforger_language_server::game_data_catalogue::{GameDataCatalogue, GameDataCatalogueConfig};
+use reforger_language_server::index_build::{build_index, IndexBuildConfig, IndexBuildControl, IndexSourceRoot};
 use reforger_language_server::model::{SourceKind, SOURCE_PRIORITY_GAME_DATA};
 use std::fs;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 #[test]
@@ -26,6 +28,8 @@ fn search_ranks_exact_names_before_other_semantic_matches() {
 
     let page = search(
         &index,
+        &line_starts(&index),
+        &IndexBuildControl::default(),
         "gd1:test",
         GameDataSearchRequest::new("SearchTarget"),
     )
@@ -59,10 +63,10 @@ fn search_pages_a_canonical_filtered_result_set_with_a_bound_cursor() {
     request.kinds = Some(vec!["method".to_string()]);
     request.source_categories = Some(vec!["game".to_string()]);
     request.limit = Some(1);
-    let first = search(&index, "gd1:test", request.clone()).expect("first page");
+    let first = search(&index, &line_starts(&index), &IndexBuildControl::default(), "gd1:test", request.clone()).expect("first page");
     let cursor = first.next_cursor.clone().expect("next cursor");
     request.cursor = Some(cursor);
-    let second = search(&index, "gd1:test", request).expect("second page");
+    let second = search(&index, &line_starts(&index), &IndexBuildControl::default(), "gd1:test", request).expect("second page");
 
     assert_eq!(first.total, 2);
     assert_eq!(first.results[0].qualified_name, "Alpha.Run");
@@ -70,6 +74,31 @@ fn search_pages_a_canonical_filtered_result_set_with_a_bound_cursor() {
     assert_eq!(first.results[0].declaration_range.start_line, 2);
     assert_eq!(first.results[0].read_source_input.start_line, 2);
     assert_eq!(first.results[0].match_kind, "exactName");
+}
+
+#[test]
+fn catalogue_search_keeps_source_lines_from_its_initialized_snapshot() {
+    let fixture = TempFixture::new("search-snapshot");
+    let scripts = fixture.path.join("Game");
+    fs::create_dir_all(&scripts).expect("create scripts");
+    let source = scripts.join("Snapshot.c");
+    fs::write(&source, "\nclass SnapshotTarget {}\n").expect("write source");
+    let catalogue = GameDataCatalogue::new(GameDataCatalogueConfig {
+        scripts_root: Some(fixture.path.clone()), metadata_path: None, cache_path: Some(fixture.path.join("cache.bin")),
+    });
+    catalogue.status(&IndexBuildControl::default()).expect("initialize catalogue");
+    fs::write(&source, "class SnapshotTarget {}\n").expect("change source after initialization");
+
+    let page = catalogue.search(&IndexBuildControl::default(), GameDataSearchRequest::new("SnapshotTarget")).expect("search");
+
+    assert_eq!(page.results[0].declaration_range.start_line, 2);
+}
+
+fn line_starts(index: &reforger_language_server::index::SymbolIndex) -> BTreeMap<reforger_language_server::index::SourceFileId, SourceLineStarts> {
+    index.files().iter().filter_map(|file| {
+        let source = fs::read_to_string(file.metadata.absolute_path.as_ref()?).ok()?;
+        Some((file.id, SourceLineStarts::from_source(&source)))
+    }).collect()
 }
 
 struct TempFixture {
