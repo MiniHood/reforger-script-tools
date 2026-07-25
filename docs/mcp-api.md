@@ -441,6 +441,7 @@ Search semantic declarations in the immutable Reforger Game Data Catalogue. Resu
       ]
     },
     "owner": {
+      "maxLength": 256,
       "minLength": 1,
       "type": [
         "string",

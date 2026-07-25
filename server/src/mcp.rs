@@ -37,7 +37,7 @@ struct McpGameDataSearchInput {
     query: String,
     #[schemars(length(min = 1))]
     kinds: Option<Vec<String>>,
-    #[schemars(length(min = 1))]
+    #[schemars(length(min = 1, max = 256))]
     owner: Option<String>,
     #[schemars(length(min = 1))]
     source_categories: Option<Vec<String>>,

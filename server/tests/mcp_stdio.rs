@@ -167,6 +167,7 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
         structured
     );
 
+    let search_started = std::time::Instant::now();
     client.send(json!({
         "jsonrpc": "2.0",
         "id": 4,
@@ -174,6 +175,10 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
         "params": { "name": "search_game_data_symbols", "arguments": { "query": "McpFixture" } }
     }));
     let search = client.response(4);
+    assert!(
+        search_started.elapsed() < Duration::from_secs(5),
+        "ready-catalogue search exceeded the five-second ceiling"
+    );
     assert_eq!(search.pointer("/result/isError"), Some(&json!(false)));
     let results = search
         .pointer("/result/structuredContent/results")
