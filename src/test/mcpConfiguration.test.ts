@@ -63,4 +63,23 @@ suite('MCP configuration', () => {
 		assert.match(codex, /startup_timeout_sec = 120\.0/);
 		assert.match(codex, /tool_timeout_sec = 130\.0/);
 	});
+
+	test('regenerates configuration with the current packaged runtime after an extension upgrade', () => {
+		const previous = renderCodexMcpConfiguration(buildMcpLaunchConfiguration({
+			serverPath: 'C:\\Users\\Gray\\.vscode\\extensions\\burn0ut7.reforger-script-tools-1.0.1\\dist\\server\\win32-x64\\reforger_language_server.exe',
+			gameDataScripts: undefined,
+			gameDataMetadata: undefined,
+			indexCache: 'C:\\Storage\\index-cache.bin',
+		}));
+		const current = renderCodexMcpConfiguration(buildMcpLaunchConfiguration({
+			serverPath: 'C:\\Users\\Gray\\.vscode\\extensions\\burn0ut7.reforger-script-tools-1.0.2\\dist\\server\\win32-x64\\reforger_language_server.exe',
+			gameDataScripts: undefined,
+			gameDataMetadata: undefined,
+			indexCache: 'C:\\Storage\\index-cache.bin',
+		}));
+
+		assert.doesNotMatch(current, /1\.0\.1/);
+		assert.match(current, /1\.0\.2/);
+		assert.notStrictEqual(current, previous);
+	});
 });

@@ -49,6 +49,9 @@ In VS Code, run **Reforger Script Tools: Copy MCP Configuration** and choose
 Codex TOML or generic MCP JSON. The copied command contains absolute packaged
 runtime and stable Game Data/cache inputs, so the client does not depend on a
 running VS Code process. Restart that MCP process after Game Data changes.
+After an extension upgrade, rerun the command and replace the client entry:
+the versioned installed runtime path changes deliberately, and the extension
+does not edit third-party client configuration itself.
 The generated [MCP API Reference](mcp-api.md) is the inspectable agent-facing
 contract; standard `tools/list` remains authoritative at runtime.
 

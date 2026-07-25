@@ -121,7 +121,6 @@ pub struct ReadSourceInput {
     pub catalogue_revision: String,
     pub relative_path: String,
     pub start_line: usize,
-    pub end_line: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -569,7 +568,6 @@ fn project_hit(
             catalogue_revision: revision.to_string(),
             relative_path: source_path,
             start_line: declaration_range.start_line,
-            end_line: declaration_range.end_line,
         },
         symbol_ref,
         name: bounded_search_text(symbol.name.clone().unwrap_or_default()),

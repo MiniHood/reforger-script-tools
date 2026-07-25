@@ -591,10 +591,6 @@ Search semantic declarations in the immutable Reforger Game Data Catalogue. Resu
         "catalogueRevision": {
           "type": "string"
         },
-        "endLine": {
-          "minimum": 0,
-          "type": "integer"
-        },
         "relativePath": {
           "type": "string"
         },
@@ -606,8 +602,7 @@ Search semantic declarations in the immutable Reforger Game Data Catalogue. Resu
       "required": [
         "catalogueRevision",
         "relativePath",
-        "startLine",
-        "endLine"
+        "startLine"
       ],
       "type": "object"
     },
@@ -726,6 +721,25 @@ Inspect one opaque Game Data symbol reference returned by search. Returns only s
 
 ```json
 {
+  "$defs": {
+    "McpSourceLineRange": {
+      "properties": {
+        "endLine": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "startLine": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "startLine",
+        "endLine"
+      ],
+      "type": "object"
+    }
+  },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "catalogueRevision": {
@@ -737,13 +751,21 @@ Inspect one opaque Game Data symbol reference returned by search. Returns only s
         "null"
       ]
     },
-    "declarationRange": true,
-    "documentation": true,
+    "declarationRange": {
+      "$ref": "#/$defs/McpSourceLineRange"
+    },
+    "documentation": {
+      "additionalProperties": true,
+      "type": "object"
+    },
     "kind": {
       "type": "string"
     },
     "members": {
-      "items": true,
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
       "type": "array"
     },
     "membersReturned": {
@@ -775,7 +797,9 @@ Inspect one opaque Game Data symbol reference returned by search. Returns only s
     "relativePath": {
       "type": "string"
     },
-    "selectionRange": true,
+    "selectionRange": {
+      "$ref": "#/$defs/McpSourceLineRange"
+    },
     "signature": {
       "type": "string"
     },

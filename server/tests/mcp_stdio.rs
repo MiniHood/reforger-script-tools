@@ -232,7 +232,7 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
 
     client.send(json!({
         "jsonrpc": "2.0", "id": 6, "method": "tools/call",
-        "params": { "name": "read_game_data_source", "arguments": { "catalogueRevision": structured["catalogueRevision"], "relativePath": "Game/McpFixture.c", "startLine": 1, "lineCount": 1 } }
+        "params": { "name": "read_game_data_source", "arguments": results[0]["readSourceInput"] }
     }));
     let source = client.response(6);
     assert_eq!(source.pointer("/result/isError"), Some(&json!(false)));
@@ -698,6 +698,14 @@ fn read_official_wiki_defaults_and_clamps_its_line_window() {
             .collect::<String>()
     );
     fs::write(wiki_root.join("Bounds.md"), page).expect("write page");
+    fs::write(
+        wiki_root.join("Large.md"),
+        format!(
+            "# [Large](https://community.bistudio.com/wiki/Arma_Reforger:Large)\n{}\nfinal line\n",
+            "x".repeat(128 * 1024 + 1),
+        ),
+    )
+    .expect("write bounded page");
     let mut client = McpClient::spawn(&[
         "mcp",
         "--official-wiki-root",
@@ -717,8 +725,83 @@ fn read_official_wiki_defaults_and_clamps_its_line_window() {
     assert_eq!(capped.pointer("/result/structuredContent/continuation/startLine"), Some(&json!(501)));
     client.send(json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"read_official_wiki","arguments":{"corpusRevision":revision,"relativePath":"Bounds.md","startLine":501}}}));
     assert_eq!(client.response(4).pointer("/result/structuredContent/endLine"), Some(&json!(601)));
+    client.send(json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"read_official_wiki","arguments":{"corpusRevision":revision,"relativePath":"Large.md"}}}));
+    let bounded = client.response(5);
+    let bounded_content = bounded
+        .pointer("/result/structuredContent/content")
+        .and_then(Value::as_str)
+        .expect("bounded content");
+    assert!(bounded_content.len() <= 128 * 1024);
+    assert!(bounded_content.ends_with('\n'));
+    assert_eq!(bounded.pointer("/result/structuredContent/endLine"), Some(&json!(1)));
+    assert_eq!(bounded.pointer("/result/structuredContent/continuation/startLine"), Some(&json!(2)));
     client.close_stdin();
     assert!(client.wait_for_exit(Duration::from_secs(3)));
+}
+
+#[test]
+fn read_official_wiki_cancellation_and_deadline_do_not_block_the_next_request() {
+    let fixture = TempFixture::new("official_wiki_read_cancellation");
+    let wiki_root = fixture.path().join("official-wiki");
+    fs::create_dir_all(&wiki_root).expect("create wiki fixture");
+    fs::write(
+        wiki_root.join("Page.md"),
+        "# [Page](https://community.bistudio.com/wiki/Arma_Reforger:Page)\ncontent\n",
+    )
+    .expect("write page");
+    let mut client = McpClient::spawn_with_env(
+        &[
+            "mcp",
+            "--official-wiki-root",
+            wiki_root.to_str().expect("utf-8 wiki root"),
+        ],
+        &[("REFORGER_MCP_TEST_OFFICIAL_WIKI_READ_DELAY_MS", "5000")],
+    );
+    client.initialize(1);
+    client.send(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"official_wiki_status","arguments":{}}}));
+    let revision = client
+        .response(2)
+        .pointer("/result/structuredContent/corpusRevision")
+        .cloned()
+        .expect("corpus revision");
+    client.send(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"read_official_wiki","arguments":{"corpusRevision":revision,"relativePath":"Page.md"}}}));
+    client.send(json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":3,"reason":"test cancellation"}}));
+    client.send(json!({"jsonrpc":"2.0","id":4,"method":"ping","params":{}}));
+    let responses = client.responses_until(4);
+    assert!(responses.iter().all(|response| response.get("id") != Some(&json!(3))));
+    client.close_stdin();
+    assert!(client.wait_for_exit(Duration::from_secs(3)));
+
+    let mut deadline_client = McpClient::spawn_with_env(
+        &[
+            "mcp",
+            "--official-wiki-root",
+            wiki_root.to_str().expect("utf-8 wiki root"),
+        ],
+        &[
+            ("REFORGER_MCP_TEST_OFFICIAL_WIKI_READ_DELAY_MS", "5000"),
+            ("REFORGER_MCP_TEST_OFFICIAL_WIKI_DEADLINE_MS", "50"),
+        ],
+    );
+    deadline_client.initialize(1);
+    deadline_client.send(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"official_wiki_status","arguments":{}}}));
+    let deadline_revision = deadline_client
+        .response(2)
+        .pointer("/result/structuredContent/corpusRevision")
+        .cloned()
+        .expect("corpus revision");
+    let started = std::time::Instant::now();
+    deadline_client.send(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"read_official_wiki","arguments":{"corpusRevision":deadline_revision,"relativePath":"Page.md"}}}));
+    let deadline = deadline_client.response(3);
+    assert!(started.elapsed() < Duration::from_millis(500));
+    assert!(deadline
+        .pointer("/result/content/0/text")
+        .and_then(Value::as_str)
+        .is_some_and(|text| text.starts_with("deadline_exceeded:")));
+    deadline_client.send(json!({"jsonrpc":"2.0","id":4,"method":"ping","params":{}}));
+    assert_eq!(deadline_client.response(4).get("result"), Some(&json!({})));
+    deadline_client.close_stdin();
+    assert!(deadline_client.wait_for_exit(Duration::from_secs(3)));
 }
 
 #[test]

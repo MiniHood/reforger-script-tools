@@ -19,6 +19,7 @@ use rmcp::{ErrorData as McpError, ServerHandler, ServiceExt};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Semaphore;
@@ -114,16 +115,24 @@ struct McpInspectionOutputSchema {
     qualified_name: String,
     container: Option<String>,
     signature: String,
-    documentation: Value,
+    documentation: BTreeMap<String, Value>,
     raw_documentation: String,
     raw_truncated: bool,
     relative_path: String,
-    declaration_range: Value,
-    selection_range: Value,
-    members: Vec<Value>,
+    declaration_range: McpSourceLineRange,
+    selection_range: McpSourceLineRange,
+    members: Vec<BTreeMap<String, Value>>,
     members_returned: usize,
     members_total: usize,
     members_truncated: bool,
+}
+
+#[derive(JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
+struct McpSourceLineRange {
+    start_line: usize,
+    end_line: usize,
 }
 
 #[derive(JsonSchema)]
@@ -190,7 +199,7 @@ impl ReforgerMcpServer {
         };
         let corpus = self.official_wiki.clone();
         let mut worker = tokio::task::spawn_blocking(move || corpus.status());
-        let deadline = tokio::time::sleep(Duration::from_secs(5));
+        let deadline = tokio::time::sleep(Duration::from_millis(official_wiki_deadline_ms()));
         tokio::pin!(deadline);
         let status: OfficialWikiStatus = tokio::select! {
             _ = context.ct.cancelled() => { worker.abort(); return Err(McpError::internal_error("request cancelled", None)); },
@@ -214,7 +223,7 @@ impl ReforgerMcpServer {
         let control = OfficialWikiControl::default();
         let worker_control = control.clone();
         let mut worker = tokio::task::spawn_blocking(move || corpus.search_with_control(request, &worker_control));
-        let deadline = tokio::time::sleep(Duration::from_secs(5));
+        let deadline = tokio::time::sleep(Duration::from_millis(official_wiki_deadline_ms()));
         tokio::pin!(deadline);
         let result = tokio::select! {
             _ = context.ct.cancelled() => { control.cancel(); let _ = tokio::time::timeout(Duration::from_millis(CANCELLATION_JOIN_GRACE_MS), &mut worker).await; return Err(McpError::internal_error("request cancelled", None)); },
@@ -241,7 +250,7 @@ impl ReforgerMcpServer {
         let control = OfficialWikiControl::default();
         let worker_control = control.clone();
         let mut worker = tokio::task::spawn_blocking(move || corpus.read_with_control(request, &worker_control));
-        let deadline = tokio::time::sleep(Duration::from_secs(5));
+        let deadline = tokio::time::sleep(Duration::from_millis(official_wiki_deadline_ms()));
         tokio::pin!(deadline);
         let result = tokio::select! {
             _ = context.ct.cancelled() => { control.cancel(); let _ = tokio::time::timeout(Duration::from_millis(CANCELLATION_JOIN_GRACE_MS), &mut worker).await; return Err(McpError::internal_error("request cancelled", None)); },
@@ -585,6 +594,17 @@ fn initialization_deadline_ms() -> u64 {
         return value;
     }
     GAME_DATA_INITIALIZATION_DEADLINE_MS
+}
+
+fn official_wiki_deadline_ms() -> u64 {
+    #[cfg(debug_assertions)]
+    if let Some(value) = std::env::var("REFORGER_MCP_TEST_OFFICIAL_WIKI_DEADLINE_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        return value;
+    }
+    5_000
 }
 
 #[cfg(debug_assertions)]
@@ -1256,9 +1276,10 @@ fn tool_error(code: &str, cause: &str, recovery: &str) -> CallToolResult {
 #[cfg(test)]
 mod tests {
     use super::{
-        game_data_status_tool, render_api_reference, DEADLINE_EXCEEDED_CODE,
+        game_data_status_tool, inspect_game_data_symbol_tool, render_api_reference, DEADLINE_EXCEEDED_CODE,
         GAME_DATA_STATUS_TOOL_NAME, RESPONSE_TOO_LARGE_CODE,
     };
+    use serde_json::Value;
 
     #[test]
     fn generated_reference_uses_the_live_tool_descriptor() {
@@ -1282,6 +1303,26 @@ mod tests {
         assert!(
             !reference.contains("\"format\": \"uint"),
             "public JSON Schema must not expose Rust-only integer format hints"
+        );
+    }
+
+    #[test]
+    fn inspection_descriptor_uses_object_schemas_for_structured_json_fields() {
+        let schema = Value::Object((*inspect_game_data_symbol_tool()
+            .output_schema
+            .expect("inspection output schema"))
+        .clone());
+        for field in ["documentation", "declarationRange", "selectionRange"] {
+            assert!(
+                schema.pointer(&format!("/properties/{field}")).is_some_and(Value::is_object),
+                "{field} must be an object schema for MCP clients"
+            );
+        }
+        assert!(
+            schema
+                .pointer("/properties/members/items")
+                .is_some_and(Value::is_object),
+            "members must use an object item schema for MCP clients"
         );
     }
 }

@@ -335,6 +335,7 @@ impl OfficialWikiCorpus {
         if control.is_cancelled() {
             return Err(OfficialWikiReadError::Cancelled);
         }
+        wait_for_test_read_delay(control)?;
         let contents = self.read_current_page_bytes(page)?;
         if control.is_cancelled() {
             return Err(OfficialWikiReadError::Cancelled);
@@ -511,6 +512,29 @@ impl OfficialWikiCorpus {
         };
         ValidatedCorpus { status, pages }
     }
+}
+
+#[cfg(debug_assertions)]
+fn wait_for_test_read_delay(control: &OfficialWikiControl) -> Result<(), OfficialWikiReadError> {
+    let Some(delay_ms) = std::env::var("REFORGER_MCP_TEST_OFFICIAL_WIKI_READ_DELAY_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+    else {
+        return Ok(());
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(delay_ms);
+    while std::time::Instant::now() < deadline {
+        if control.is_cancelled() {
+            return Err(OfficialWikiReadError::Cancelled);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    Ok(())
+}
+
+#[cfg(not(debug_assertions))]
+fn wait_for_test_read_delay(_control: &OfficialWikiControl) -> Result<(), OfficialWikiReadError> {
+    Ok(())
 }
 
 fn packaged_root() -> Option<PathBuf> {
