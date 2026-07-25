@@ -672,6 +672,7 @@ Search semantic declarations in the immutable Reforger Game Data Catalogue. Resu
 
 - `query` is required, normalized whitespace, and limited to 256 characters.
 - `limit` defaults to 20 and clamps to 1 through 100; cursors are opaque and limited to 2 KiB.
+- Ready Game Data search, inspection, and source reads have a 5,000 ms ceiling; cold catalogue initialization is separately bounded.
 - Default kinds exclude parameters, local variables, and type parameters.
 - Match kinds are `exactName`, `caseInsensitiveName`, `namePrefix`, `qualifiedName`, `nameSubstring`, `signature`, and `type`, in that fixed order.
 - Results contain opaque revision-bound `symbolRef` values and copy-ready inspection and source-read inputs.
@@ -828,7 +829,7 @@ Inspect one opaque Game Data symbol reference returned by search. Returns only s
 }
 ```
 
-`symbolRef` is opaque, revision-bound, copied unchanged from search, and limited to 2 KiB. Invalid or stale references return `invalid_symbol_ref` or `stale_symbol_ref`; repeat search after restarting the MCP process. The result contains only indexed semantic facts, up to 50 direct members, and a copy-ready `readSourceInput`.
+`symbolRef` is opaque, revision-bound, copied unchanged from search, and limited to 2 KiB. Invalid or stale references return `invalid_symbol_ref` or `stale_symbol_ref`; repeat search after restarting the MCP process. The result contains only indexed semantic facts, up to 50 direct members, and a copy-ready `readSourceInput`. Ready Game Data inspection has a 5,000 ms ceiling.
 
 ## `read_game_data_source`
 
@@ -920,7 +921,7 @@ Read bounded verbatim source from an exact logical Game Data path in the immutab
 }
 ```
 
-`startLine` is one-based and defaults to 1. `lineCount` defaults to 200 and clamps to 500. Content is capped at 128 KiB on complete-line boundaries; a truncated result contains `nextStartLine`. `game_data_changed` requires an MCP process restart.
+`startLine` is one-based and defaults to 1. `lineCount` defaults to 200 and clamps to 500. Content is capped at 128 KiB on complete-line boundaries; a truncated result contains `nextStartLine`. Ready Game Data source reads have a 5,000 ms ceiling. `game_data_changed` requires an MCP process restart.
 
 ## `official_wiki_status`
 

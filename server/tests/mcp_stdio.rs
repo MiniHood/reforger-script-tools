@@ -1098,6 +1098,89 @@ fn initialization_deadline_cancels_work_and_returns_stable_tool_error() {
 }
 
 #[test]
+fn ready_game_data_operations_use_their_own_five_second_deadline() {
+    let fixture = TempFixture::new("mcp_ready_game_data_deadline");
+    let scripts_root = fixture.path().join("scripts");
+    fs::create_dir_all(&scripts_root).expect("create scripts fixture");
+    fs::write(scripts_root.join("Deadline.c"), "class Deadline {}")
+        .expect("write game-data fixture");
+    let cache_path = fixture.path().join("cache").join("game-data-index.bin");
+    let mut client = McpClient::spawn_with_env(
+        &[
+            "mcp",
+            "--game-data-scripts",
+            scripts_root.to_str().expect("utf-8 scripts path"),
+            "--index-cache",
+            cache_path.to_str().expect("utf-8 cache path"),
+        ],
+        &[
+            ("REFORGER_MCP_TEST_GAME_DATA_OPERATION_DELAY_MS", "5000"),
+            ("REFORGER_MCP_TEST_GAME_DATA_OPERATION_DEADLINE_MS", "50"),
+        ],
+    );
+    client.initialize(1);
+    client.send(status_call(2));
+    assert_eq!(
+        client.response(2).pointer("/result/structuredContent/available"),
+        Some(&json!(true)),
+        "status prepares the catalogue before the ready-operation deadline is exercised",
+    );
+
+    let call_started = std::time::Instant::now();
+    client.send(json!({
+        "jsonrpc":"2.0",
+        "id":3,
+        "method":"tools/call",
+        "params":{"name":"search_game_data_symbols","arguments":{"query":"Deadline"}},
+    }));
+    let response = client.response(3);
+    assert!(
+        call_started.elapsed() < Duration::from_millis(500),
+        "a ready Game Data operation must not inherit the cold initialization deadline",
+    );
+    assert!(response
+        .pointer("/result/content/0/text")
+        .and_then(Value::as_str)
+        .is_some_and(|text| text.starts_with("deadline_exceeded:")));
+}
+
+#[test]
+fn first_game_data_search_uses_the_cold_initialization_deadline() {
+    let fixture = TempFixture::new("mcp_first_game_data_search_deadline");
+    let scripts_root = fixture.path().join("scripts");
+    fs::create_dir_all(&scripts_root).expect("create scripts fixture");
+    fs::write(scripts_root.join("Deadline.c"), "class Deadline {}")
+        .expect("write game-data fixture");
+    let cache_path = fixture.path().join("cache").join("game-data-index.bin");
+    let mut client = McpClient::spawn_with_env(
+        &[
+            "mcp",
+            "--game-data-scripts",
+            scripts_root.to_str().expect("utf-8 scripts path"),
+            "--index-cache",
+            cache_path.to_str().expect("utf-8 cache path"),
+        ],
+        &[
+            ("REFORGER_MCP_TEST_INITIALIZATION_DELAY_MS", "5000"),
+            ("REFORGER_MCP_TEST_INITIALIZATION_DEADLINE_MS", "50"),
+            ("REFORGER_MCP_TEST_GAME_DATA_OPERATION_DEADLINE_MS", "50"),
+        ],
+    );
+    client.initialize(1);
+    client.send(json!({
+        "jsonrpc":"2.0",
+        "id":2,
+        "method":"tools/call",
+        "params":{"name":"search_game_data_symbols","arguments":{"query":"Deadline"}},
+    }));
+    let response = client.response(2);
+    assert!(response
+        .pointer("/result/content/0/text")
+        .and_then(Value::as_str)
+        .is_some_and(|text| text.starts_with("deadline_exceeded: Game Data initialization")));
+}
+
+#[test]
 fn request_admission_bounds_in_flight_tool_calls() {
     let fixture = TempFixture::new("mcp_admission");
     let scripts_root = fixture.path().join("scripts");

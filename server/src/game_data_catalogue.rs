@@ -17,6 +17,7 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::time::{Duration, Instant};
 
@@ -35,6 +36,7 @@ pub struct GameDataCatalogueConfig {
 pub struct GameDataCatalogue {
     config: GameDataCatalogueConfig,
     state: Mutex<Option<GameDataCatalogueState>>,
+    initialized: AtomicBool,
     #[cfg(debug_assertions)]
     panic_once: std::sync::atomic::AtomicBool,
 }
@@ -53,6 +55,7 @@ impl GameDataCatalogue {
         Self {
             config,
             state: Mutex::new(None),
+            initialized: AtomicBool::new(false),
             #[cfg(debug_assertions)]
             panic_once: std::sync::atomic::AtomicBool::new(
                 std::env::var("REFORGER_MCP_TEST_PANIC_ONCE").as_deref() == Ok("1"),
@@ -71,7 +74,12 @@ impl GameDataCatalogue {
         let initialized = initialize_catalogue(&self.config, control)?;
         let status = initialized.status.clone();
         *state = Some(initialized);
+        self.initialized.store(true, Ordering::Release);
         Ok(status)
+    }
+
+    pub fn is_initialized(&self) -> bool {
+        self.initialized.load(Ordering::Acquire)
     }
 
     pub fn search(
@@ -79,6 +87,8 @@ impl GameDataCatalogue {
         control: &IndexBuildControl,
         request: GameDataSearchRequest,
     ) -> Result<GameDataSearchPage, GameDataCatalogueSearchError> {
+        self.before_operation(control)
+            .map_err(GameDataCatalogueSearchError::Initialization)?;
         let status = self
             .status(control)
             .map_err(GameDataCatalogueSearchError::Initialization)?;
@@ -115,6 +125,8 @@ impl GameDataCatalogue {
         control: &IndexBuildControl,
         symbol_ref: String,
     ) -> Result<serde_json::Value, GameDataInspectionError> {
+        self.before_operation(control)
+            .map_err(GameDataInspectionError::Initialization)?;
         let status = self
             .status(control)
             .map_err(GameDataInspectionError::Initialization)?;
@@ -140,6 +152,8 @@ impl GameDataCatalogue {
         control: &IndexBuildControl,
         request: GameDataSourceReadRequest,
     ) -> Result<serde_json::Value, GameDataInspectionError> {
+        self.before_operation(control)
+            .map_err(GameDataInspectionError::Initialization)?;
         let status = self
             .status(control)
             .map_err(GameDataInspectionError::Initialization)?;
@@ -220,6 +234,25 @@ impl GameDataCatalogue {
 
     #[cfg(not(debug_assertions))]
     fn before_initialization(&self, control: &IndexBuildControl) -> Result<(), String> {
+        control.check()
+    }
+
+    #[cfg(debug_assertions)]
+    fn before_operation(&self, control: &IndexBuildControl) -> Result<(), String> {
+        let delay_ms = std::env::var("REFORGER_MCP_TEST_GAME_DATA_OPERATION_DELAY_MS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(0);
+        let started = Instant::now();
+        while started.elapsed() < Duration::from_millis(delay_ms) {
+            control.check()?;
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        control.check()
+    }
+
+    #[cfg(not(debug_assertions))]
+    fn before_operation(&self, control: &IndexBuildControl) -> Result<(), String> {
         control.check()
     }
 }

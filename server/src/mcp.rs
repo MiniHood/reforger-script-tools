@@ -32,6 +32,7 @@ pub const OFFICIAL_WIKI_STATUS_TOOL_NAME: &str = "official_wiki_status";
 pub const SEARCH_OFFICIAL_WIKI_TOOL_NAME: &str = "search_official_wiki";
 pub const READ_OFFICIAL_WIKI_TOOL_NAME: &str = "read_official_wiki";
 const DEADLINE_EXCEEDED_CODE: &str = "deadline_exceeded";
+const READY_GAME_DATA_OPERATION_DEADLINE_MS: u64 = 5_000;
 const RESPONSE_TOO_LARGE_CODE: &str = "response_too_large";
 const SERVER_NAME: &str = "reforger-script-tools";
 const SERVER_TITLE: &str = "Reforger Script Tools";
@@ -341,9 +342,14 @@ impl ReforgerMcpServer {
             _ = context.ct.cancelled() => return Err(McpError::internal_error("request cancelled", None)),
             permit = admission => permit.map_err(|_| McpError::internal_error("MCP request admission is unavailable", None))?,
         };
-        let deadline = tokio::time::sleep(Duration::from_millis(initialization_deadline_ms()));
-        tokio::pin!(deadline);
         let catalogue = self.game_data.clone();
+        let cold_initialization = !catalogue.is_initialized();
+        let deadline = tokio::time::sleep(Duration::from_millis(if cold_initialization {
+            initialization_deadline_ms()
+        } else {
+            ready_game_data_operation_deadline_ms()
+        }));
+        tokio::pin!(deadline);
         let control = IndexBuildControl::default();
         let worker_control = control.clone();
         let mut worker =
@@ -351,7 +357,7 @@ impl ReforgerMcpServer {
         let page = tokio::select! {
             biased;
             _ = context.ct.cancelled() => { cancel_search_worker(&control, &mut worker).await; return Err(McpError::internal_error("request cancelled", None)); }
-            _ = &mut deadline => { cancel_search_worker(&control, &mut worker).await; return Ok(deadline_exceeded()); }
+            _ = &mut deadline => { cancel_search_worker(&control, &mut worker).await; return Ok(if cold_initialization { deadline_exceeded() } else { ready_game_data_operation_deadline_exceeded() }); }
             result = &mut worker => match result {
                 Ok(Ok(page)) => page,
                 Ok(Err(GameDataCatalogueSearchError::Unavailable)) => return Ok(tool_error("game_data_unavailable", "Game Data is unavailable for this MCP process.", "Call game_data_status, correct its reported configuration, then retry.")),
@@ -372,16 +378,21 @@ impl ReforgerMcpServer {
         let permit = self.admission.clone().acquire_owned();
         let _permit = tokio::select! { _ = context.ct.cancelled() => return Err(McpError::internal_error("request cancelled", None)), permit = permit => permit.map_err(|_| McpError::internal_error("MCP request admission is unavailable", None))? };
         let catalogue = self.game_data.clone();
+        let cold_initialization = !catalogue.is_initialized();
         let control = IndexBuildControl::default();
         let worker_control = control.clone();
         let mut worker =
             tokio::task::spawn_blocking(move || catalogue.inspect(&worker_control, symbol_ref));
-        let deadline = tokio::time::sleep(Duration::from_millis(initialization_deadline_ms()));
+        let deadline = tokio::time::sleep(Duration::from_millis(if cold_initialization {
+            initialization_deadline_ms()
+        } else {
+            ready_game_data_operation_deadline_ms()
+        }));
         tokio::pin!(deadline);
         let result = tokio::select! {
             biased;
             _ = context.ct.cancelled() => { cancel_inspection_worker(&control, &mut worker).await; return Err(McpError::internal_error("request cancelled", None)); },
-            _ = &mut deadline => { cancel_inspection_worker(&control, &mut worker).await; return Ok(deadline_exceeded()); },
+            _ = &mut deadline => { cancel_inspection_worker(&control, &mut worker).await; return Ok(if cold_initialization { deadline_exceeded() } else { ready_game_data_operation_deadline_exceeded() }); },
             result = &mut worker => result.map_err(|_| McpError::internal_error("Game Data inspection worker failed", None))?,
         };
         match result {
@@ -398,16 +409,21 @@ impl ReforgerMcpServer {
         let permit = self.admission.clone().acquire_owned();
         let _permit = tokio::select! { _ = context.ct.cancelled() => return Err(McpError::internal_error("request cancelled", None)), permit = permit => permit.map_err(|_| McpError::internal_error("MCP request admission is unavailable", None))? };
         let catalogue = self.game_data.clone();
+        let cold_initialization = !catalogue.is_initialized();
         let control = IndexBuildControl::default();
         let worker_control = control.clone();
         let mut worker =
             tokio::task::spawn_blocking(move || catalogue.read_source(&worker_control, request));
-        let deadline = tokio::time::sleep(Duration::from_millis(initialization_deadline_ms()));
+        let deadline = tokio::time::sleep(Duration::from_millis(if cold_initialization {
+            initialization_deadline_ms()
+        } else {
+            ready_game_data_operation_deadline_ms()
+        }));
         tokio::pin!(deadline);
         let result = tokio::select! {
             biased;
             _ = context.ct.cancelled() => { cancel_inspection_worker(&control, &mut worker).await; return Err(McpError::internal_error("request cancelled", None)); },
-            _ = &mut deadline => { cancel_inspection_worker(&control, &mut worker).await; return Ok(deadline_exceeded()); },
+            _ = &mut deadline => { cancel_inspection_worker(&control, &mut worker).await; return Ok(if cold_initialization { deadline_exceeded() } else { ready_game_data_operation_deadline_exceeded() }); },
             result = &mut worker => result.map_err(|_| McpError::internal_error("Game Data source-read worker failed", None))?,
         };
         match result {
@@ -573,6 +589,14 @@ fn deadline_exceeded() -> CallToolResult {
     )
 }
 
+fn ready_game_data_operation_deadline_exceeded() -> CallToolResult {
+    tool_error(
+        DEADLINE_EXCEEDED_CODE,
+        "Ready Game Data operation exceeded its five-second deadline.",
+        "Retry the request after checking game_data_status.",
+    )
+}
+
 async fn cancel_worker(
     control: &IndexBuildControl,
     initialization: &mut tokio::task::JoinHandle<Result<GameDataStatus, String>>,
@@ -594,6 +618,17 @@ fn initialization_deadline_ms() -> u64 {
         return value;
     }
     GAME_DATA_INITIALIZATION_DEADLINE_MS
+}
+
+fn ready_game_data_operation_deadline_ms() -> u64 {
+    #[cfg(debug_assertions)]
+    if let Some(value) = std::env::var("REFORGER_MCP_TEST_GAME_DATA_OPERATION_DEADLINE_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        return value;
+    }
+    READY_GAME_DATA_OPERATION_DEADLINE_MS
 }
 
 fn official_wiki_deadline_ms() -> u64 {
@@ -971,6 +1006,7 @@ Never derive or retain a physical path from the status result.\n\
 ### Limits and matching\n\n\
 - `query` is required, normalized whitespace, and limited to 256 characters.\n\
 - `limit` defaults to 20 and clamps to 1 through 100; cursors are opaque and limited to 2 KiB.\n\
+- Ready Game Data search, inspection, and source reads have a 5,000 ms ceiling; cold catalogue initialization is separately bounded.\n\
 - Default kinds exclude parameters, local variables, and type parameters.\n\
 - Match kinds are `exactName`, `caseInsensitiveName`, `namePrefix`, `qualifiedName`, `nameSubstring`, `signature`, and `type`, in that fixed order.\n\
 - Results contain opaque revision-bound `symbolRef` values and copy-ready inspection and source-read inputs.\n\n\
@@ -988,7 +1024,7 @@ Copy a hit's `inspectInput` unchanged to `inspect_game_data_symbol`, or its `rea
         search_description = search_tool.description.as_deref().unwrap_or_default(),
     );
     reference.push_str(&format!(
-        "\n## `{}`\n\n{}\n\n### Input schema\n\n```json\n{}\n```\n\n### Output schema\n\n```json\n{}\n```\n\n`symbolRef` is opaque, revision-bound, copied unchanged from search, and limited to 2 KiB. Invalid or stale references return `invalid_symbol_ref` or `stale_symbol_ref`; repeat search after restarting the MCP process. The result contains only indexed semantic facts, up to 50 direct members, and a copy-ready `readSourceInput`.\n\n## `{}`\n\n{}\n\n### Input schema\n\n```json\n{}\n```\n\n### Output schema\n\n```json\n{}\n```\n\n`startLine` is one-based and defaults to 1. `lineCount` defaults to 200 and clamps to 500. Content is capped at 128 KiB on complete-line boundaries; a truncated result contains `nextStartLine`. `game_data_changed` requires an MCP process restart.\n",
+        "\n## `{}`\n\n{}\n\n### Input schema\n\n```json\n{}\n```\n\n### Output schema\n\n```json\n{}\n```\n\n`symbolRef` is opaque, revision-bound, copied unchanged from search, and limited to 2 KiB. Invalid or stale references return `invalid_symbol_ref` or `stale_symbol_ref`; repeat search after restarting the MCP process. The result contains only indexed semantic facts, up to 50 direct members, and a copy-ready `readSourceInput`. Ready Game Data inspection has a 5,000 ms ceiling.\n\n## `{}`\n\n{}\n\n### Input schema\n\n```json\n{}\n```\n\n### Output schema\n\n```json\n{}\n```\n\n`startLine` is one-based and defaults to 1. `lineCount` defaults to 200 and clamps to 500. Content is capped at 128 KiB on complete-line boundaries; a truncated result contains `nextStartLine`. Ready Game Data source reads have a 5,000 ms ceiling. `game_data_changed` requires an MCP process restart.\n",
         inspect_tool.name,
         inspect_tool.description.as_deref().unwrap_or_default(),
         inspect_input_schema,
