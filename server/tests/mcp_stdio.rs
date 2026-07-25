@@ -71,7 +71,7 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
         .pointer("/result/tools")
         .and_then(Value::as_array)
         .expect("tools/list result");
-    assert_eq!(listed.len(), 6);
+    assert_eq!(listed.len(), 7);
     assert_eq!(listed[0].get("name"), Some(&json!("game_data_status")));
     assert_eq!(
         listed[0].pointer("/annotations/readOnlyHint"),
@@ -120,6 +120,8 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
         listed[4].pointer("/inputSchema/additionalProperties"),
         Some(&json!(false))
     );
+    assert_eq!(listed[5].get("name"), Some(&json!("search_official_wiki")));
+    assert_eq!(listed[6].get("name"), Some(&json!("read_official_wiki")));
 
     client.send(json!({
         "jsonrpc": "2.0",
@@ -597,6 +599,83 @@ fn search_official_wiki_projects_validated_sections_and_keeps_the_session_health
     );
     client.send(json!({"jsonrpc":"2.0","id":5,"method":"ping","params":{}}));
     assert_eq!(client.response(5).get("result"), Some(&json!({})));
+    client.close_stdin();
+    assert!(client.wait_for_exit(Duration::from_secs(3)));
+}
+
+#[test]
+fn read_official_wiki_follows_search_handoffs_with_bounded_continuations() {
+    let fixture = TempFixture::new("official_wiki_read");
+    let wiki_root = fixture.path().join("official-wiki");
+    fs::create_dir_all(wiki_root.join("Guides")).expect("create wiki fixture");
+    fs::write(
+        wiki_root.join("Guides").join("Unicode.md"),
+        "# [Unicode guide](https://community.bistudio.com/wiki/Arma_Reforger:Unicode)\n\n## Needle\nfirst caf\u{e9}\nsecond line\nthird line\n",
+    )
+    .expect("write page");
+    let mut client = McpClient::spawn(&[
+        "mcp",
+        "--official-wiki-root",
+        wiki_root.to_str().expect("utf-8 wiki root"),
+    ]);
+    client.initialize(1);
+    client.send(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"search_official_wiki","arguments":{"query":"needle"}}}));
+    let input = client
+        .response(2)
+        .pointer("/result/structuredContent/results/0/readInput")
+        .cloned()
+        .expect("copy-ready read input");
+    client.send(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"read_official_wiki","arguments":input}}));
+    let page = client
+        .response(3)
+        .pointer("/result/structuredContent")
+        .cloned()
+        .expect("structured wiki read");
+    assert_eq!(page.get("relativePath"), Some(&json!("Guides/Unicode.md")));
+    assert_eq!(page.get("sourceUrl"), Some(&json!("https://community.bistudio.com/wiki/Arma_Reforger:Unicode")));
+    assert_eq!(page.get("startLine"), Some(&json!(3)));
+    assert_eq!(page.get("endLine"), Some(&json!(6)));
+    assert_eq!(page.get("content"), Some(&json!("## Needle\nfirst caf\u{e9}\nsecond line\nthird line\n")));
+    assert_eq!(page.get("truncated"), Some(&json!(false)));
+    assert_eq!(page.get("continuation"), Some(&Value::Null));
+    client.send(json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"read_official_wiki","arguments":{"corpusRevision": input["corpusRevision"], "relativePath":input["relativePath"], "startLine":3, "lineCount":2}}}));
+    let bounded = client.response(4);
+    assert_eq!(bounded.pointer("/result/structuredContent/content"), Some(&json!("## Needle\nfirst caf\u{e9}\n")));
+    assert_eq!(bounded.pointer("/result/structuredContent/truncated"), Some(&json!(true)));
+    assert_eq!(bounded.pointer("/result/structuredContent/continuation/startLine"), Some(&json!(5)));
+    client.send(json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"read_official_wiki","arguments":{"corpusRevision": input["corpusRevision"], "relativePath":"../Unicode.md"}}}));
+    assert_eq!(client.response(5).pointer("/result/content/0/text"), Some(&Value::String("invalid_path: relativePath must be an exact logical Official Wiki Markdown path. Recovery: Use a relative logical Markdown path returned by Official Wiki search.".to_string())));
+    client.send(json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"read_official_wiki","arguments":{"corpusRevision": input["corpusRevision"], "relativePath":"Guides/Unicode.md", "unexpected":true}}}));
+    assert_eq!(client.response(6).pointer("/error/code"), Some(&json!(-32602)));
+    client.send(json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"read_official_wiki","arguments":{"corpusRevision":"ow1:stale", "relativePath":"Guides/Unicode.md"}}}));
+    assert!(client
+        .response(7)
+        .pointer("/result/content/0/text")
+        .and_then(Value::as_str)
+        .is_some_and(|text| text.starts_with("stale_corpus_revision:")));
+    client.send(json!({"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"read_official_wiki","arguments":{"corpusRevision": input["corpusRevision"], "relativePath":"Guides/Missing.md"}}}));
+    assert!(client
+        .response(8)
+        .pointer("/result/content/0/text")
+        .and_then(Value::as_str)
+        .is_some_and(|text| text.starts_with("invalid_path:")));
+    client.send(json!({"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"read_official_wiki","arguments":{"corpusRevision": input["corpusRevision"], "relativePath":"Guides/Unicode.md", "startLine":0}}}));
+    assert!(client
+        .response(9)
+        .pointer("/result/content/0/text")
+        .and_then(Value::as_str)
+        .is_some_and(|text| text.starts_with("invalid_range:")));
+    fs::write(
+        wiki_root.join("Guides").join("Unicode.md"),
+        "# [Unicode guide](https://community.bistudio.com/wiki/Arma_Reforger:Unicode)\nchanged\n",
+    )
+    .expect("change validated page");
+    client.send(json!({"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"read_official_wiki","arguments":input}}));
+    assert!(client
+        .response(10)
+        .pointer("/result/content/0/text")
+        .and_then(Value::as_str)
+        .is_some_and(|text| text.starts_with("official_wiki_changed:")));
     client.close_stdin();
     assert!(client.wait_for_exit(Duration::from_secs(3)));
 }

@@ -85,6 +85,11 @@ binds its opaque cursor to the normalized query, canonical path prefix, corpus
 revision, and deterministic offset. It never reads `wiki-index.md` as an
 authoritative page; `index.md` remains one. Every Official Wiki search result
 identifies `evidence-catalogue` as its fact source.
+`read_official_wiki` consumes the revision-bound logical input returned by
+search, revalidates the selected file hash, and returns a bounded verbatim
+line range with title, canonical URL, and a copy-ready continuation. It never
+exposes the packaged extension path; stale revisions or changed content require
+a new search or MCP-process restart rather than mixing evidence generations.
 
 The broader flow below remains the expansion boundary. It must preserve the
 same ownership rules: Rust remains the Enfusion language authority, direct

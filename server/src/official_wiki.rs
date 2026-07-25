@@ -17,6 +17,9 @@ const MAX_CURSOR_BYTES: usize = 2 * 1024;
 const MAX_EXCERPT_LINES: usize = 12;
 const MAX_EXCERPT_BYTES: usize = 4 * 1024;
 const MAX_SEARCH_RESULT_BYTES: usize = 256 * 1024;
+const DEFAULT_READ_LINES: usize = 200;
+const MAX_READ_LINES: usize = 500;
+const MAX_READ_BYTES: usize = 128 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct OfficialWikiCorpus {
@@ -132,6 +135,29 @@ pub struct OfficialWikiReadInput {
     pub line_count: usize,
 }
 
+#[derive(Debug, Clone)]
+pub struct OfficialWikiReadRequest {
+    pub corpus_revision: String,
+    pub relative_path: String,
+    pub start_line: Option<usize>,
+    pub line_count: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct OfficialWikiReadPage {
+    pub source: String,
+    pub corpus_revision: String,
+    pub relative_path: String,
+    pub title: String,
+    pub source_url: String,
+    pub start_line: usize,
+    pub end_line: usize,
+    pub content: String,
+    pub truncated: bool,
+    pub continuation: Option<OfficialWikiReadInput>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OfficialWikiSearchError {
     Unavailable,
@@ -139,6 +165,16 @@ pub enum OfficialWikiSearchError {
     InvalidFilter,
     InvalidCursor,
     StaleCursor,
+    Changed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OfficialWikiReadError {
+    Unavailable,
+    InvalidPath,
+    InvalidRange,
+    StaleRevision,
     Changed,
     Cancelled,
 }
@@ -276,22 +312,114 @@ impl OfficialWikiCorpus {
         }
     }
 
+    pub fn read_with_control(
+        &self,
+        request: OfficialWikiReadRequest,
+        control: &OfficialWikiSearchControl,
+    ) -> Result<OfficialWikiReadPage, OfficialWikiReadError> {
+        let corpus = self.validated.get_or_init(|| self.validate());
+        let revision = corpus
+            .status
+            .corpus_revision
+            .clone()
+            .ok_or(OfficialWikiReadError::Unavailable)?;
+        if request.corpus_revision != revision {
+            return Err(OfficialWikiReadError::StaleRevision);
+        }
+        validate_logical_path(&request.relative_path).map_err(|_| OfficialWikiReadError::InvalidPath)?;
+        let page = corpus
+            .pages
+            .iter()
+            .find(|page| page.logical_path == request.relative_path)
+            .ok_or(OfficialWikiReadError::InvalidPath)?;
+        if control.is_cancelled() {
+            return Err(OfficialWikiReadError::Cancelled);
+        }
+        let contents = self.read_current_page_for_read(page)?;
+        if control.is_cancelled() {
+            return Err(OfficialWikiReadError::Cancelled);
+        }
+        let start_line = request.start_line.unwrap_or(1);
+        if start_line == 0 {
+            return Err(OfficialWikiReadError::InvalidRange);
+        }
+        let line_count = request
+            .line_count
+            .unwrap_or(DEFAULT_READ_LINES)
+            .clamp(1, MAX_READ_LINES);
+        let lines = contents.split_inclusive('\n').collect::<Vec<_>>();
+        if start_line > lines.len().saturating_add(1) {
+            return Err(OfficialWikiReadError::InvalidRange);
+        }
+        let mut content = String::new();
+        let mut taken = 0usize;
+        for line in lines.iter().skip(start_line - 1).take(line_count) {
+            if control.is_cancelled() {
+                return Err(OfficialWikiReadError::Cancelled);
+            }
+            if content.len() + line.len() > MAX_READ_BYTES {
+                break;
+            }
+            content.push_str(line);
+            taken += 1;
+        }
+        if taken == 0 && start_line <= lines.len() {
+            return Err(OfficialWikiReadError::InvalidRange);
+        }
+        let end_line = if taken == 0 { start_line - 1 } else { start_line + taken - 1 };
+        let truncated = end_line < lines.len();
+        Ok(OfficialWikiReadPage {
+            source: "evidence-catalogue".to_string(),
+            corpus_revision: revision.clone(),
+            relative_path: page.logical_path.clone(),
+            title: page.title.clone(),
+            source_url: page.source_url.clone(),
+            start_line,
+            end_line,
+            content,
+            truncated,
+            continuation: truncated.then_some(OfficialWikiReadInput {
+                corpus_revision: revision,
+                relative_path: page.logical_path.clone(),
+                start_line: end_line + 1,
+                line_count,
+            }),
+        })
+    }
+
     fn read_current_page(&self, page: &ValidatedPage) -> Result<String, OfficialWikiSearchError> {
+        self.read_current_page_bytes(page)
+            .map_err(|error| match error {
+                OfficialWikiReadError::Unavailable => OfficialWikiSearchError::Unavailable,
+                OfficialWikiReadError::Changed => OfficialWikiSearchError::Changed,
+                _ => OfficialWikiSearchError::Changed,
+            })
+    }
+
+    fn read_current_page_for_read(&self, page: &ValidatedPage) -> Result<String, OfficialWikiReadError> {
+        self.read_current_page_bytes(page)
+    }
+
+    fn read_current_page_bytes(&self, page: &ValidatedPage) -> Result<String, OfficialWikiReadError> {
         let root = self
             .root
             .as_ref()
             .and_then(|root| fs::canonicalize(root).ok())
-            .ok_or(OfficialWikiSearchError::Unavailable)?;
+            .ok_or(OfficialWikiReadError::Unavailable)?;
         let path = root.join(
             page.logical_path
                 .replace('/', std::path::MAIN_SEPARATOR_STR),
         );
-        let bytes = fs::read(path).map_err(|_| OfficialWikiSearchError::Changed)?;
+        let canonical_path = fs::canonicalize(path).map_err(|_| OfficialWikiReadError::Changed)?;
+        if !canonical_path.starts_with(&root) {
+            return Err(OfficialWikiReadError::Changed);
+        }
+        let bytes = fs::read(canonical_path).map_err(|_| OfficialWikiReadError::Changed)?;
         if bytes.len() as u64 != page.bytes || <[u8; 32]>::from(Sha256::digest(&bytes)) != page.hash
         {
-            return Err(OfficialWikiSearchError::Changed);
+            return Err(OfficialWikiReadError::Changed);
         }
-        String::from_utf8(bytes).map_err(|_| OfficialWikiSearchError::Changed)
+        String::from_utf8(bytes).map_err(|_| OfficialWikiReadError::Changed)
     }
 
     fn validate(&self) -> ValidatedCorpus {
