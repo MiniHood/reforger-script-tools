@@ -3,8 +3,9 @@
 ## Scope and method
 
 This report records a direct MCP evaluation of the packaged Official Wiki
-Corpus.  It is evidence about the shipped copy of Reforger documentation, not
-about the current public wiki, Workbench, or compiler behaviour.
+Corpus. It was rerun on 2026-07-25 after the Game Data example-search topic
+expansion. It is evidence about the shipped copy of Reforger documentation,
+not about the current public wiki, Workbench, or compiler behaviour.
 
 The checks used the bundled server with the repository corpus explicitly
 selected:
@@ -20,7 +21,8 @@ binds every reported search and read result.
 
 ## Validated corpus
 
-`official_wiki_status` reported a healthy, usable corpus:
+`official_wiki_status` again reported a healthy, usable corpus with the same
+revision and coverage:
 
 | Fact | Observed value |
 | --- | --- |

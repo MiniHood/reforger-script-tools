@@ -3,8 +3,8 @@
 Research date: 2026-07-25.
 
 This is a live-corpus check for the configured downloaded Reforger Game Data
-catalogue. It records evidence for a focused hardening-and-topic-expansion
-ticket; it does not describe a new search architecture.
+catalogue after the focused hardening-and-topic-expansion ticket. It does not
+describe a new search architecture.
 
 ## Method
 
@@ -87,29 +87,33 @@ declarations (`GameLib/generated/Components/GenericComponent.c:40` and
 signatures, source category, ranges, and inspect/read handoffs instead of
 asking an agent to guess API spelling.
 
-## Best next example topics
+## Public curated example topics
 
-The next expansion should stay small and evidence-defined. These candidates
-have abundant handwritten source and exact declarations, but need deliberately
-chosen co-occurrence terms and a verification warning before becoming public
-topics.
+The focused expansion is now live. Fresh bounded calls returned the following
+handwritten-first results, each with exact source ranges, evidence terms,
+revision-bound pagination, and a copy-ready source-read handoff.
 
-| Candidate topic | Corpus evidence | Suggested evidence boundary |
-| --- | --- | --- |
-| `replication` / `rpc-authority` | `RplRpc` occurs in 168 Game Data files; `RplProp` in 81. A bounded read of `Game/Character/SCR_CharacterControllerComponent.c:445-496` shows `RplRpc` server and broadcast handlers, `Rpc(...)`, `RplId` validation, and `Replication.FindItem`. | Require `RplRpc` plus an `Rpc` call or `RplId`/`Replication` use. Warn that authority, receiver, ownership, and dedicated-server behavior require runtime validation. |
-| `entity-lifecycle` / `event-mask` | `SetEventMask` occurs in 238 source files and `OnPostInit` in 244. Semantic search gives the exact generated declarations above. | Require a lifecycle callback (`EOnInit`/`EOnFrame`/`OnPostInit`) plus `SetEventMask` or an entity event token. Warn that prefab component wiring and runtime event order need Workbench/runtime validation. |
-| `ui` / `widget-creation` | `CreateWidgets` occurs in 212 source files. Semantic search returned seven symbols, including `SCR_GalleryComponent.CreateWidgets(int count)` at `Game/UI/Components/WidgetLibrary/GalleryView/SCR_GalleryComponent.c:167`. The bounded source read at lines 160-194 shows cleanup, widget creation loop, and post-create selection. | Require a workspace/widget creation term and a `Widget`/layout operation. Warn that layout resource availability and UI hierarchy need Workbench validation. |
+| Topic / subtopic | Fresh result count | First result | Evidence boundary and guidance |
+| --- | ---: | --- | --- |
+| `resource-loading` / `spawn-prefab` | 94 | `Game/Editor/Components/Editor/SCR_PlacingEditorComponent.c` | Resource/prefab loading plus spawn evidence. Verify paths, dependencies, world, authority, and server context. |
+| `replication` / `rpc-authority` | 150 | `Game/Editor/Components/Editor/SCR_WorldEntityDelegateEditorComponent.c` | `RplRpc` plus RPC or replication identity/use. Verify authority, receiver targeting, ownership, and dedicated-server behavior. |
+| `entity-lifecycle` / `event-mask` | 207 | `Game/Components/HybridPhysicsComponent.c` | Lifecycle callback plus event-mask/entity-event evidence. Verify component wiring and event order. |
+| `ui` / `widget-creation` | 214 | `Game/Editor/UI/InfoDisplays/SCR_EditorPingInfoDisplay.c` | Widget/layout creation plus `Widget` evidence. Verify layout resources and hierarchy. |
 
-`callqueue` is a credible follow-up rather than part of the first ticket:
-`CallLater` occurs in 414 files. Its breadth makes it especially important to
-define a narrow use case (for example, delayed UI update) rather than expose a
-generic, noisy topic.
+These are useful AI starting points because the terms encode a complete local
+pattern rather than a lone API mention. The public MCP tool still keeps
+generated examples available through its existing filter, while handwritten
+results rank first when evidence quality is comparable.
+
+`callqueue` remains a credible follow-up, not an automatic next topic:
+`CallLater` is broad enough that it needs a narrowly specified use case (for
+example, delayed UI refresh) before a high-signal evidence boundary is clear.
 
 ## Limitations and ticket guardrails
 
-- The public example tool currently accepts only `resource-loading` and its
-  optional `spawn-prefab` subtopic. The candidates above are corpus evidence,
-  not currently supported queries.
+- The public example tool accepts the four topic/subtopic pairs listed above.
+  Unsupported values name the supported choices; this is not a generic source
+  query or semantic/vector search surface.
 - Search results are catalogue evidence, not proof of current Workbench state,
   compiler acceptance, prefab wiring, multiplayer authority, or runtime
   behavior.
@@ -122,8 +126,6 @@ generic, noisy topic.
 
 ## Recommendation
 
-Proceed with one focused ticket: harden the existing example-search topic
-definition/ranking/cancellation tests and add the three evidence-bounded
-topics above, beginning with replication. Do not redesign search or merge
-example search into semantic symbol search. After that slice is verified
-against this corpus and focused fixtures, move to the next product area.
+The focused ticket achieved its goal. Do not redesign or broaden search again
+immediately: move to the next product area, retaining this corpus report as a
+baseline for future evidence-topic proposals.
