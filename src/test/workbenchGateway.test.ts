@@ -1,5 +1,5 @@
 import * as assert from 'node:assert';
-import { WorkbenchGateway } from '../workbenchGateway/workbenchGateway';
+import { WorkbenchGateway } from '../workbenchNetApi/gateway/workbenchGateway';
 import { encodeNetApiString, startNetApiPeer } from './netApiPeer';
 
 suite('Workbench Gateway', () => {

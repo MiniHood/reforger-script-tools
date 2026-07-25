@@ -321,14 +321,14 @@ Workbench facts.
 
 ### Boundary and initial capabilities
 
-`src/workbenchGateway/` is a host-neutral TypeScript module with no `vscode`
+`src/workbenchNetApi/gateway/` is a host-neutral TypeScript module with no `vscode`
 imports. It owns the NET API codec, one-transaction transport, typed outcomes,
 per-capability internal deadlines, Workbench Availability State, and exactly
 two initial named capabilities: `getStatus()` and
 `validateScripts(profile)`. It exposes no generic endpoint or handler
 invocation.
 
-`src/workbenchCompiler/` is the VS Code adapter. It owns settings, the status
+`src/workbenchNetApi/compiler/` is the VS Code adapter. It owns settings, the status
 item, document saves, Continuous Compiler Validation, diagnostic location
 projection, and the Workbench Compiler Diagnostic Collection. A future MCP
 host consumes the Gateway rather than reimplementing NET API.

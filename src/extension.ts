@@ -6,7 +6,7 @@ import {
 	logLanguageClientStartupTiming,
 	registerLanguageClientFeatures,
 } from './languageClient/languageClient';
-import { registerWorkbenchCompilerFeatures } from './workbenchCompiler/workbenchCompiler';
+import { registerWorkbenchCompilerFeatures } from './workbenchNetApi/compiler/workbenchCompiler';
 
 export function activate(context: vscode.ExtensionContext) {
 	initializeDiagnostics(context);

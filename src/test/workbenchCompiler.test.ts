@@ -9,7 +9,7 @@ import {
 	workbenchDiagnostics,
 	workbenchTestCommands,
 } from '../extensionConfig/workbench';
-import type { WorkbenchCompilerObservation } from '../workbenchCompiler/workbenchCompiler';
+import type { WorkbenchCompilerObservation } from '../workbenchNetApi/compiler/workbenchCompiler';
 import { startNetApiPeer } from './netApiPeer';
 
 const workbenchFixtureSource = 'class WorkbenchCompilerFixture\n{\n}\n';

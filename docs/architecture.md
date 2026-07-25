@@ -107,8 +107,8 @@ Workbench state.
 | `src/extensionConfig/` | Extension-facing names, defaults, and limits | Runtime logic |
 | `src/gameData/` | Game-data acquisition and source resolution | Parsing or semantic analysis |
 | `src/languageClient/` | Server lifecycle, transport, file notifications, and thin editor bridges | Syntax, lookup, completion ranking, or type reasoning |
-| `src/workbenchGateway/` | Host-neutral NET API codec, configured-endpoint transactions, typed Workbench capabilities, availability state, deadlines, and sanitized outcomes | VS Code imports, editor scheduling/UI, raw endpoint dispatch, or Enfusion language decisions |
-| `src/workbenchCompiler/` | VS Code settings, save/validation scheduling, compiler diagnostic rendering, and Workbench status UI | NET API framing, endpoint discovery, or language-engine diagnostics |
+| `src/workbenchNetApi/gateway/` | Host-neutral NET API codec, configured-endpoint transactions, typed Workbench capabilities, availability state, deadlines, and sanitized outcomes | VS Code imports, editor scheduling/UI, raw endpoint dispatch, or Enfusion language decisions |
+| `src/workbenchNetApi/compiler/` | VS Code settings, save/validation scheduling, compiler diagnostic rendering, and Workbench status UI | NET API framing, endpoint discovery, or language-engine diagnostics |
 | `server/` | Language analysis, external indexes, formatting, diagnostics, and LSP results | VS Code UI, settings, or game-data acquisition |
 | `tools/` | Development and investigation support | Extension runtime behavior |
 

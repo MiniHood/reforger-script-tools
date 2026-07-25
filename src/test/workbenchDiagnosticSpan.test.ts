@@ -2,7 +2,7 @@ import * as assert from 'node:assert';
 import {
 	workbenchDiagnosticProjection,
 	workbenchDiagnosticSpan,
-} from '../workbenchCompiler/workbenchDiagnosticSpan';
+} from '../workbenchNetApi/compiler/workbenchDiagnosticSpan';
 
 suite('Workbench compiler diagnostic span', () => {
 	test('does not underline indentation or blank lines for broken-expression recovery', () => {

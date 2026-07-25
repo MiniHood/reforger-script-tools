@@ -1,21 +1,21 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { diagnostic } from '../diagnostics/diagnostics';
+import { diagnostic } from '../../diagnostics/diagnostics';
 import {
 	workbenchCommands,
 	workbenchConfig,
 	workbenchDefaults,
 	workbenchDiagnostics,
 	workbenchTestCommands,
-} from '../extensionConfig/workbench';
+} from '../../extensionConfig/workbench';
 import {
 	WorkbenchCompilerDiagnostic,
 	WorkbenchGateway,
 	WorkbenchGatewayFailureCategory,
 	WorkbenchStatus,
 	WorkbenchValidationResult,
-} from '../workbenchGateway/workbenchGateway';
+} from '../gateway/workbenchGateway';
 import {
 	WorkbenchDiagnosticRange,
 	workbenchDiagnosticProjection,
