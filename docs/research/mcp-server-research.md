@@ -100,6 +100,11 @@ fact beyond its declared revision.
 Start with read operations. Add a mutating command only after the corresponding
 read/observe/verify loop is live and accepted in a supported Workbench version.
 
+The complete candidate catalogue, including all handlers reviewed in
+EnfusionMCP and their adoption disposition, belongs in
+[Workbench NET API research](workbench-net-api-research.md). MCP tools are
+selected only from the proven, versioned capabilities recorded there.
+
 ## Mutation and safety contract
 
 Every mutation needs a stable intent-level name and typed DTO. It must target a
