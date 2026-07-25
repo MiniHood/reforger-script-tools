@@ -12,7 +12,6 @@ import {
 	State,
 	TransportKind,
 } from 'vscode-languageclient/node';
-import { gameDataConfig, gameDataStorage } from '../extensionConfig/gameData';
 import {
 	bracketColoringConfig,
 	type BracketColoringMode,
@@ -34,9 +33,8 @@ import {
 	languageClientLogs,
 	languageClientNotifications,
 	languageClientRequests,
-	languageClientServer,
 } from '../extensionConfig/languageClient';
-import { getManualScriptsFolderCandidate } from '../gameData/gameData';
+import { resolveGameDataPaths } from '../gameData/gameData';
 import { registerHtmlHoverBridge } from './hoverBridge';
 import {
 	discoverWorkspaceScriptRoots,
@@ -66,6 +64,7 @@ import {
 	usesCustomScopeDelimiterPresentation,
 } from './bracketColoringBridge';
 import { RestartCoordinator } from './restartCoordinator';
+import { resolveLanguageServerPath } from './serverPath';
 import { registerSemanticTokenTimingBridge } from './semanticTokenTimingBridge';
 import { registerSemanticTokenBoundaryGuardBridge } from './semanticTokenBoundaryGuardBridge';
 
@@ -237,7 +236,7 @@ async function startLanguageClient(
 	externalIndexProgress?: ExternalIndexProgress,
 ): Promise<void> {
 	logLanguageClientStartupTiming(context, 'languageClientStartBegin');
-	const serverPath = await resolveServerPath(context);
+	const serverPath = await resolveLanguageServerPath(context);
 	if (!serverPath) {
 		outputChannel.appendLine('Language server binary was not found. Run npm run build-server during development.');
 		logLanguageClientStartupTiming(context, 'languageClientStartAborted', {
@@ -281,7 +280,7 @@ async function startLanguageClient(
 	if (diagnosticPath) {
 		serverArgs.push('--diagnostic-log', diagnosticPath);
 	}
-	const gameDataPaths = getGameDataPaths(context);
+	const gameDataPaths = resolveGameDataPaths(context);
 	if (gameDataPaths.scripts) {
 		serverArgs.push('--game-data-scripts', gameDataPaths.scripts);
 	}
@@ -574,57 +573,6 @@ function disposeClientDisposables(): void {
 		disposable.dispose();
 	}
 	clientDisposables = [];
-}
-
-async function resolveServerPath(context: vscode.ExtensionContext): Promise<string | undefined> {
-	const devPath = path.join(context.extensionPath, ...languageClientServer.devBinaryRelativePath);
-	if (context.extensionMode === vscode.ExtensionMode.Development && await isFile(devPath)) {
-		return devPath;
-	}
-
-	const packagedPath = path.join(
-		context.extensionPath,
-		'dist',
-		languageClientServer.distFolder,
-		`${process.platform}-${process.arch}`,
-		languageClientServer.binaryName,
-	);
-	if (await isFile(packagedPath)) {
-		return packagedPath;
-	}
-
-	if (await isFile(devPath)) {
-		return devPath;
-	}
-
-	return undefined;
-}
-
-
-function getGameDataPaths(context: vscode.ExtensionContext): { scripts: string | undefined; metadata: string | undefined } {
-	const manualFolder = vscode.workspace
-		.getConfiguration(gameDataConfig.section)
-		.get<string>(gameDataConfig.settings.manualFolder);
-	if (manualFolder?.trim()) {
-		return {
-			scripts: getManualScriptsFolderCandidate(manualFolder),
-			metadata: undefined,
-		};
-	}
-
-	const gameDataRoot = path.join(context.globalStorageUri.fsPath, gameDataStorage.rootFolder);
-	return {
-		scripts: path.join(gameDataRoot, gameDataStorage.scriptsFolder),
-		metadata: path.join(gameDataRoot, gameDataStorage.metadataFile),
-	};
-}
-
-async function isFile(targetPath: string): Promise<boolean> {
-	try {
-		return (await fs.stat(targetPath)).isFile();
-	} catch {
-		return false;
-	}
 }
 
 function extensionModeName(mode: vscode.ExtensionMode): string {

@@ -19,6 +19,8 @@ From the repository root:
 | `npm run compile` | Type checking, linting, the bundled Rust server, and the extension bundle. |
 | `npm test` | Extension test setup and test suite; its pretest step compiles tests and runs the full compile path. |
 | `npm run package` | Production Rust server and production extension bundle. |
+| `npm run mcp-api:generate` | Regenerate the committed MCP API Reference from the live Rust descriptors. |
+| `npm run mcp-api:check` | Fail when the committed MCP API Reference has drifted. |
 
 For Rust-only work, run `cargo test` from `server/` in addition to focused
 tests. For extension-facing TypeScript, language-client, or bundled-server
@@ -28,6 +30,33 @@ The Rust development profile retains debug information and assertions but uses
 optimized code. This keeps the bundled development language server
 representative enough for large-file editor latency while preserving the
 release profile as the packaging authority.
+
+The bundled executable selects a protocol before either protocol starts:
+
+```powershell
+# Existing LSP mode (default)
+dist/server/win32-x64/reforger_language_server.exe
+
+# One MCP stdio session owned by the launching client
+dist/server/win32-x64/reforger_language_server.exe mcp `
+  --game-data-scripts <scripts-path> `
+  --game-data-metadata <optional-metadata-path> `
+  --index-cache <global-storage-cache-path>
+```
+
+In VS Code, run **Reforger Script Tools: Copy MCP Configuration** and choose
+Codex TOML or generic MCP JSON. The copied command contains absolute packaged
+runtime and stable Game Data/cache inputs, so the client does not depend on a
+running VS Code process. Restart that MCP process after Game Data changes.
+The generated [MCP API Reference](mcp-api.md) is the inspectable agent-facing
+contract; standard `tools/list` remains authoritative at runtime.
+
+For a repeatable release-binary LSP initialization measurement, run:
+
+```powershell
+node tools/lsp-startup-baseline.mjs `
+  server/target/release/reforger_language_server.exe 7
+```
 
 For repeatable semantic-token latency checks against an installed game-data
 index, use the dedicated benchmark example:

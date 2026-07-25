@@ -958,7 +958,14 @@ pub fn load_or_build_game_data_index_with_progress(
 
     progress("cache-write-start");
     let cache_write_start = Instant::now();
-    write_cached_index(&config.cache_path, &fingerprint, &summary, &cached_index)?;
+    if let Err(write_error) =
+        write_cached_index(&config.cache_path, &fingerprint, &summary, &cached_index)
+    {
+        progress("cache-write-contended");
+        if !winner_cache_validates(&config.cache_path, &fingerprint, &mut timings) {
+            return Err(write_error);
+        }
+    }
     timings.cache_write = cache_write_start.elapsed();
     progress("cache-write-end");
     timings.total = total_start.elapsed();
@@ -974,6 +981,32 @@ pub fn load_or_build_game_data_index_with_progress(
         timings,
         cache_file_bytes,
     })
+}
+
+fn winner_cache_validates(
+    cache_path: &Path,
+    fingerprint: &SourceFingerprint,
+    timings: &mut IndexCacheTimings,
+) -> bool {
+    const VALIDATION_ATTEMPTS: usize = 8;
+    const VALIDATION_RETRY_DELAY: Duration = Duration::from_millis(5);
+
+    for attempt in 0..VALIDATION_ATTEMPTS {
+        let mut winner_timings = IndexCacheTimings::default();
+        if matches!(
+            load_cached_index(cache_path, fingerprint, &mut winner_timings),
+            Ok(Some(CacheLoad::Current(_) | CacheLoad::Migrated(_)))
+        ) {
+            timings.cache_file_read += winner_timings.cache_file_read;
+            timings.cache_decode += winner_timings.cache_decode;
+            timings.cache_validate += winner_timings.cache_validate;
+            return true;
+        }
+        if attempt + 1 < VALIDATION_ATTEMPTS {
+            std::thread::sleep(VALIDATION_RETRY_DELAY);
+        }
+    }
+    false
 }
 
 fn cache_file_bytes(cache_path: &Path) -> Option<u64> {
@@ -2670,6 +2703,7 @@ impl SourceFingerprint {
 mod tests {
     use super::*;
     use crate::model::SymbolKind;
+    use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -2720,6 +2754,53 @@ mod tests {
         assert_eq!(decoded.index_shape, CACHE_INDEX_SHAPE);
         assert_eq!(decoded.files.len(), 1);
         decoded.validate().unwrap();
+
+        cleanup(&root);
+    }
+
+    #[test]
+    fn concurrent_cold_builders_publish_one_valid_cache_without_failing_losers() {
+        let root = test_root("concurrent_cold_publish");
+        let cache = root.join("cache.bin");
+        let scripts = root.join("scripts");
+        for index in 0..32 {
+            write_file(
+                &scripts.join(format!("Game/Fixture{index}.c")),
+                &format!("class ConcurrentFixture{index} {{ int m_Value; }}"),
+            );
+        }
+        let workers = 12;
+        let barrier = Arc::new(std::sync::Barrier::new(workers));
+        let handles = (0..workers)
+            .map(|_| {
+                let barrier = Arc::clone(&barrier);
+                let config = GameDataIndexCacheConfig {
+                    scripts_root: scripts.clone(),
+                    cache_path: cache.clone(),
+                    metadata_path: None,
+                };
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    load_or_build_game_data_index(&config)
+                })
+            })
+            .collect::<Vec<_>>();
+
+        for handle in handles {
+            let result = handle.join().expect("cache builder did not panic");
+            assert!(
+                result.is_ok(),
+                "a losing cache publisher must keep its valid in-memory index: {result:?}"
+            );
+        }
+        let loaded = load_or_build_game_data_index(&GameDataIndexCacheConfig {
+            scripts_root: scripts,
+            cache_path: cache,
+            metadata_path: None,
+        })
+        .expect("winning cache remains valid");
+        assert_eq!(loaded.cache_status, IndexCacheStatus::Loaded);
+        assert_eq!(loaded.summary.files, 32);
 
         cleanup(&root);
     }

@@ -66,6 +66,24 @@ export function getManualScriptsFolderCandidate(manualFolder: string): string {
 		: path.join(normalized, 'scripts');
 }
 
+export function resolveGameDataPaths(
+	context: vscode.ExtensionContext,
+): { scripts: string | undefined; metadata: string | undefined } {
+	const manualFolder = getManualFolderSetting();
+	if (manualFolder) {
+		return {
+			scripts: getManualScriptsFolderCandidate(manualFolder),
+			metadata: undefined,
+		};
+	}
+
+	const gameDataRoot = getGameDataStorageRoot(context);
+	return {
+		scripts: path.join(gameDataRoot, gameDataStorage.scriptsFolder),
+		metadata: path.join(gameDataRoot, gameDataStorage.metadataFile),
+	};
+}
+
 export function shouldWarnForLowScriptCount(
 	scriptCount: number,
 	manualFolder: string,

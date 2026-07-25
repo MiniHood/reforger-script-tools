@@ -40,13 +40,35 @@ and installation metadata remain writable so the acquisition owner can replace
 the complete scripts tree during a later update. Manual sources retain their
 existing filesystem permissions.
 
-## Workbench Runtime and Proposed MCP Flow
+## MCP Runtime and Workbench Expansion
 
-The local MCP server described here is a future integration boundary, not part
-of the current language-server runtime. It must preserve the same ownership
-rules: Rust remains the Enfusion language authority, direct files remain the
-authority for durable workspace content, and Workbench remains the authority
-for live editor/engine facts.
+The packaged Rust executable has two explicit process modes. With no mode
+argument it retains the synchronous LSP startup path. With `mcp`, an MCP client
+owns a separate process and one newline-delimited JSON-RPC session over
+standard input/output. It does not attach to the running LSP or require VS Code
+after launch; both modes reuse the same Rust language and Game Data modules.
+
+```text
+MCP client
+  -> packaged reforger_language_server mcp process
+  -> static MCP tool adapter
+  -> process-local immutable Game Data Catalogue
+  -> existing validated disk cache or extracted source rebuild
+```
+
+The first shipped tool, `game_data_status`, lazily initializes that catalogue
+and reports its revision, provenance, coverage, counts, cache outcome, limits,
+warnings, and recovery without physical paths. Concurrent calls in one process
+join one initialization. Concurrent LSP and MCP processes publish the same
+atomic derived cache; a losing writer may keep its in-memory index only after
+validating the winner.
+
+The broader flow below remains the expansion boundary. It must preserve the
+same ownership rules: Rust remains the Enfusion language authority, direct
+files remain the authority for durable workspace content, and Workbench
+remains the authority for live editor/engine facts. File, Official Wiki, and
+Workbench adapters shown here are not implied to be implemented by the initial
+status slice.
 
 ```mermaid
 flowchart LR
@@ -107,9 +129,10 @@ Workbench state.
 | `src/extensionConfig/` | Extension-facing names, defaults, and limits | Runtime logic |
 | `src/gameData/` | Game-data acquisition and source resolution | Parsing or semantic analysis |
 | `src/languageClient/` | Server lifecycle, transport, file notifications, and thin editor bridges | Syntax, lookup, completion ranking, or type reasoning |
+| `src/mcp/` | Complete client configuration generated from the packaged runtime and stable source/cache inputs | Protocol serving, indexing, or semantic queries |
 | `src/workbenchNetApi/gateway/` | Host-neutral NET API codec, configured-endpoint transactions, typed Workbench capabilities, availability state, deadlines, and sanitized outcomes | VS Code imports, editor scheduling/UI, raw endpoint dispatch, or Enfusion language decisions |
 | `src/workbenchNetApi/compiler/` | VS Code settings, save/validation scheduling, compiler diagnostic rendering, and Workbench status UI | NET API framing, endpoint discovery, or language-engine diagnostics |
-| `server/` | Language analysis, external indexes, formatting, diagnostics, and LSP results | VS Code UI, settings, or game-data acquisition |
+| `server/` | Language analysis, external indexes, formatting, diagnostics, LSP behavior, and the thin MCP protocol adapter | VS Code UI, settings, or game-data acquisition |
 | `tools/` | Development and investigation support | Extension runtime behavior |
 
 `src/extension.ts` composes these modules; it is not a feature owner.

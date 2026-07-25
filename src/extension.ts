@@ -6,6 +6,7 @@ import {
 	logLanguageClientStartupTiming,
 	registerLanguageClientFeatures,
 } from './languageClient/languageClient';
+import { registerMcpConfigurationCommand } from './mcp/mcpConfiguration';
 import { registerWorkbenchCompilerFeatures } from './workbenchNetApi/compiler/workbenchCompiler';
 
 export function activate(context: vscode.ExtensionContext) {
@@ -17,6 +18,7 @@ export function activate(context: vscode.ExtensionContext) {
 	});
 	const refreshLanguageClientGameData = registerLanguageClientFeatures(context);
 	registerGameDataFeatures(context, refreshLanguageClientGameData);
+	registerMcpConfigurationCommand(context);
 	registerWorkbenchCompilerFeatures(context);
 	logLanguageClientStartupTiming(context, 'activationEnd');
 	diagnostic('activationEnd');

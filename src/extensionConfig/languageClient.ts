@@ -54,7 +54,7 @@ export const languageClientLogs = {
 
 export const languageClientIndexCache = {
 	rootFolder: 'index-cache',
-	gameDataIndexFile: 'game-data-symbol-index.v9.bin',
+	gameDataIndexFile: 'game-data-symbol-index.v11.bin',
 } as const;
 
 export const languageClientLanguage = {

@@ -6,6 +6,7 @@ import * as vscode from 'vscode';
 import { diagnosticsDefaults } from '../extensionConfig/diagnostics';
 import { gameDataCommands } from '../extensionConfig/gameData';
 import { languageClientCommands } from '../extensionConfig/languageClient';
+import { mcpCommands } from '../extensionConfig/mcp';
 import {
 	workbenchCommands,
 	workbenchConfig,
@@ -194,9 +195,12 @@ suite('extension activation', () => {
 		assert.ok(commands.includes(languageClientCommands.triggerSuggestAtSnippetPlaceholder));
 		assert.ok(commands.includes(languageClientCommands.advanceSnippetPlaceholderAfterAccept));
 		assert.ok(commands.includes(gameDataCommands.selectManualFolder));
+		assert.ok(commands.includes(mcpCommands.copyConfiguration));
 		const contributedCommands = extension.packageJSON.contributes.commands as Array<{ command: string }>;
 		assert.ok(contributedCommands.some(command =>
 			command.command === languageClientCommands.triggerSuggestAtSnippetPlaceholder));
+		assert.ok(contributedCommands.some(command =>
+			command.command === mcpCommands.copyConfiguration));
 		assert.ok(commands.includes(workbenchCommands.validateScripts));
 		assert.ok(contributedCommands.some(command =>
 			command.command === workbenchCommands.validateScripts));

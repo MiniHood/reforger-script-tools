@@ -81,6 +81,44 @@ response for the cancelled request
 [cancellation](https://modelcontextprotocol.io/specification/2025-11-25/basic/utilities/cancellation)).
 These are acceptance requirements, not details to leave to client behavior.
 
+### Implemented compatibility record
+
+The first runtime slice rechecked compatibility on 2026-07-25 and targets the
+final `2025-11-25` protocol. It pins the published official Rust SDK at exact
+`rmcp = 2.2.0`, disables its default features, and enables only `server`,
+`macros`, and `transport-io`; `schemars` supplies the declared result schemas.
+The forthcoming `2026-07-28` protocol was still a release candidate and was
+therefore not used as a production target.
+
+Measurements used the same Windows x64 release profile and a seven-process LSP
+initialize run:
+
+| Measurement | Before MCP dependency | After MCP dependency |
+| --- | ---: | ---: |
+| Release executable size | 3,822,592 bytes | 6,035,968 bytes |
+| Warm initialize median | 12.20 ms | 11.21 ms |
+| Minimum initialize | 11.95 ms | 10.86 ms |
+| First cold sample | 112.47 ms | 142.00 ms |
+
+The dependency added 2,213,376 bytes (57.9%) but produced no measured warm LSP
+startup regression. A second executable would duplicate packaging and process
+selection while still sharing the Rust library, so the implementation retains
+one 6.04 MB packaged binary with explicit LSP/MCP modes. The cold sample is
+recorded as context rather than a regression claim because one first-process
+sample is dominated by operating-system loading noise.
+
+Packaged acceptance used the binary extracted from the 1.0.2 VSIX rather than
+the Cargo target directory. MCP Inspector 0.21.2 initialized it, listed the
+closed `game_data_status` schemas without format warnings, and called the tool
+against the installed 6,495-file Game Data corpus. That cold rebuild produced
+143,144 indexed symbols in 36.60 seconds and a valid 19,802,234-byte cache.
+Codex CLI 0.146.0-alpha.3 then discovered the same installed-layout tool,
+called it without shell access, consumed `structuredContent`, and observed a
+warm cache load in 121 ms with the same catalogue revision. The raw wire suite
+separately captures standard `ping`, cancellation, protocol-error isolation,
+and EOF behavior because Inspector's CLI exposes tool/resource/prompt methods
+but does not expose `ping`.
+
 The pinned s&box source demonstrates the product pattern we want:
 
 - a small stable front door;
