@@ -482,6 +482,30 @@ fn mcp_game_data_research_tools_complete_the_progressive_lookup_loop() {
         "class CommentOnly\n{\n\t// SpawnEntityPrefab, EntitySpawnParams, ResourceName, and SpawnConfigured are text only.\n}\n",
     )
     .expect("write comment-only fixture");
+    fs::write(
+        scripts_root
+            .join("Game")
+            .join("Examples")
+            .join("ReplicationPattern.c"),
+        "class ReplicationPattern\n{\n\tvoid ConfigureRpc(RplId ownerId)\n\t{\n\t\tRplRpc();\n\t\tRpc(ownerId);\n\t\tReplication.FindItem(ownerId);\n\t}\n}\n",
+    )
+    .expect("write replication fixture");
+    fs::write(
+        scripts_root
+            .join("Game")
+            .join("Examples")
+            .join("EntityLifecyclePattern.c"),
+        "class EntityLifecyclePattern\n{\n\tvoid OnPostInit(IEntity owner)\n\t{\n\t\tSetEventMask(owner, EntityEvent.INIT);\n\t}\n}\n",
+    )
+    .expect("write lifecycle fixture");
+    fs::write(
+        scripts_root
+            .join("Game")
+            .join("Examples")
+            .join("WidgetPattern.c"),
+        "class WidgetPattern\n{\n\tvoid CreateWidgets(Widget parent)\n\t{\n\t\tCreateWidget(parent);\n\t}\n}\n",
+    )
+    .expect("write widget fixture");
     let cache_path = fixture.path().join("cache").join("game-data-index.bin");
     let mut client = McpClient::spawn(&[
         "mcp",
@@ -511,6 +535,13 @@ fn mcp_game_data_research_tools_complete_the_progressive_lookup_loop() {
         listed[5].get("name"),
         Some(&json!("query_game_data_symbol_relationships"))
     );
+    assert!(listed[2]["description"]
+        .as_str()
+        .is_some_and(|description| {
+            description.contains("replication")
+                && description.contains("entity-lifecycle")
+                && description.contains("widget-creation")
+        }));
     let inspection_schema = &listed[3]["outputSchema"]["properties"];
     for field in [
         "baseType",
@@ -599,6 +630,52 @@ fn mcp_game_data_research_tools_complete_the_progressive_lookup_loop() {
             && results
                 .iter()
                 .all(|result| result["sourceKind"] == "generated")));
+    client.send(json!({"jsonrpc":"2.0","id":26,"method":"tools/call","params":{"name":"search_game_data_examples","arguments":{"topic":"replication","subtopic":"rpc-authority"}}}));
+    let replication_examples = client.response(26);
+    assert_eq!(
+        replication_examples.pointer("/result/structuredContent/results/0/relativePath"),
+        Some(&json!("Game/Examples/ReplicationPattern.c"))
+    );
+    assert!(replication_examples
+        .pointer("/result/structuredContent/results/0/evidenceTerms")
+        .and_then(Value::as_array)
+        .is_some_and(|terms| terms.iter().any(|term| term == "RplRpc")));
+    assert!(replication_examples
+        .pointer("/result/structuredContent/verificationGuidance")
+        .and_then(Value::as_str)
+        .is_some_and(|guidance| guidance.contains("authority")));
+    client.send(json!({"jsonrpc":"2.0","id":27,"method":"tools/call","params":{"name":"read_game_data_source","arguments":replication_examples["result"]["structuredContent"]["results"][0]["readSourceInput"]}}));
+    assert!(client
+        .response(27)
+        .pointer("/result/structuredContent/content")
+        .and_then(Value::as_str)
+        .is_some_and(|content| content.contains("Replication.FindItem")));
+    client.send(json!({"jsonrpc":"2.0","id":28,"method":"tools/call","params":{"name":"search_game_data_examples","arguments":{"topic":"entity-lifecycle","subtopic":"event-mask"}}}));
+    let lifecycle_examples = client.response(28);
+    assert_eq!(
+        lifecycle_examples.pointer("/result/structuredContent/results/0/relativePath"),
+        Some(&json!("Game/Examples/EntityLifecyclePattern.c"))
+    );
+    assert!(lifecycle_examples
+        .pointer("/result/structuredContent/results/0/evidenceTerms")
+        .and_then(Value::as_array)
+        .is_some_and(|terms| terms.iter().any(|term| term == "SetEventMask")));
+    client.send(json!({"jsonrpc":"2.0","id":29,"method":"tools/call","params":{"name":"search_game_data_examples","arguments":{"topic":"ui","subtopic":"widget-creation"}}}));
+    let widget_examples = client.response(29);
+    assert_eq!(
+        widget_examples.pointer("/result/structuredContent/results/0/relativePath"),
+        Some(&json!("Game/Examples/WidgetPattern.c"))
+    );
+    assert!(widget_examples
+        .pointer("/result/structuredContent/results/0/evidenceTerms")
+        .and_then(Value::as_array)
+        .is_some_and(|terms| terms.iter().any(|term| term == "CreateWidgets")));
+    client.send(json!({"jsonrpc":"2.0","id":30,"method":"tools/call","params":{"name":"search_game_data_examples","arguments":{"topic":"replication","subtopic":"event-mask"}}}));
+    assert!(client
+        .response(30)
+        .pointer("/result/content/0/text")
+        .and_then(Value::as_str)
+        .is_some_and(|text| text.starts_with("invalid_arguments:")));
     client.send(json!({"jsonrpc":"2.0","id":23,"method":"tools/call","params":{"name":"search_game_data_examples","arguments":{"topic":"spawn anything"}}}));
     assert!(client
         .response(23)

@@ -25,6 +25,192 @@ const DEFAULT_LIMIT: usize = 20;
 const EXAMPLE_CONTEXT_BEFORE: usize = 4;
 const EXAMPLE_CONTEXT_AFTER: usize = 20;
 
+#[derive(Debug, Clone, Copy)]
+struct ExampleEvidenceTerm {
+    value: &'static str,
+    weight: i32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ExampleTopic {
+    topic: &'static str,
+    subtopic: Option<&'static str>,
+    evidence_terms: &'static [ExampleEvidenceTerm],
+    required_evidence: &'static [&'static [&'static str]],
+    focus_bonus: i32,
+    verification_guidance: &'static str,
+}
+
+type ExampleCandidate = (i32, String, SourceFileId, Vec<String>, Vec<String>, usize);
+
+const RESOURCE_LOADING_TERMS: &[ExampleEvidenceTerm] = &[
+    ExampleEvidenceTerm {
+        value: "Resource.Load",
+        weight: 10,
+    },
+    ExampleEvidenceTerm {
+        value: "ResourceName",
+        weight: 4,
+    },
+    ExampleEvidenceTerm {
+        value: "EntitySpawnParams",
+        weight: 12,
+    },
+    ExampleEvidenceTerm {
+        value: "PrefabResource",
+        weight: 8,
+    },
+    ExampleEvidenceTerm {
+        value: "SpawnEntityPrefab",
+        weight: 20,
+    },
+];
+const RESOURCE_LOADING_REQUIREMENTS: &[&[&str]] = &[&[
+    "Resource.Load",
+    "ResourceName",
+    "EntitySpawnParams",
+    "PrefabResource",
+]];
+const SPAWN_PREFAB_REQUIREMENTS: &[&[&str]] = &[
+    &[
+        "Resource.Load",
+        "ResourceName",
+        "EntitySpawnParams",
+        "PrefabResource",
+    ],
+    &["SpawnEntityPrefab"],
+];
+const REPLICATION_TERMS: &[ExampleEvidenceTerm] = &[
+    ExampleEvidenceTerm {
+        value: "RplRpc",
+        weight: 20,
+    },
+    ExampleEvidenceTerm {
+        value: "Rpc",
+        weight: 12,
+    },
+    ExampleEvidenceTerm {
+        value: "RplId",
+        weight: 8,
+    },
+    ExampleEvidenceTerm {
+        value: "Replication.FindItem",
+        weight: 10,
+    },
+];
+const REPLICATION_REQUIREMENTS: &[&[&str]] = &[&["RplRpc", "RplId", "Replication.FindItem"]];
+const RPC_AUTHORITY_REQUIREMENTS: &[&[&str]] =
+    &[&["RplRpc"], &["Rpc", "RplId", "Replication.FindItem"]];
+const ENTITY_LIFECYCLE_TERMS: &[ExampleEvidenceTerm] = &[
+    ExampleEvidenceTerm {
+        value: "EOnInit",
+        weight: 10,
+    },
+    ExampleEvidenceTerm {
+        value: "EOnFrame",
+        weight: 10,
+    },
+    ExampleEvidenceTerm {
+        value: "OnPostInit",
+        weight: 12,
+    },
+    ExampleEvidenceTerm {
+        value: "SetEventMask",
+        weight: 20,
+    },
+    ExampleEvidenceTerm {
+        value: "EntityEvent",
+        weight: 8,
+    },
+];
+const ENTITY_LIFECYCLE_REQUIREMENTS: &[&[&str]] = &[&["EOnInit", "EOnFrame", "OnPostInit"]];
+const EVENT_MASK_REQUIREMENTS: &[&[&str]] = &[
+    &["EOnInit", "EOnFrame", "OnPostInit"],
+    &["SetEventMask", "EntityEvent"],
+];
+const UI_TERMS: &[ExampleEvidenceTerm] = &[
+    ExampleEvidenceTerm {
+        value: "CreateWidgets",
+        weight: 20,
+    },
+    ExampleEvidenceTerm {
+        value: "CreateWidget",
+        weight: 12,
+    },
+    ExampleEvidenceTerm {
+        value: "Widget",
+        weight: 8,
+    },
+];
+const UI_REQUIREMENTS: &[&[&str]] = &[&["CreateWidgets", "CreateWidget"]];
+const WIDGET_CREATION_REQUIREMENTS: &[&[&str]] = &[&["CreateWidgets", "CreateWidget"], &["Widget"]];
+const EXAMPLE_TOPICS: &[ExampleTopic] = &[
+    ExampleTopic {
+        topic: "resource-loading",
+        subtopic: None,
+        evidence_terms: RESOURCE_LOADING_TERMS,
+        required_evidence: RESOURCE_LOADING_REQUIREMENTS,
+        focus_bonus: 0,
+        verification_guidance: "Examples show source-backed implementation patterns. Verify resources and editor wiring in Workbench, then verify authority-sensitive behavior at runtime.",
+    },
+    ExampleTopic {
+        topic: "resource-loading",
+        subtopic: Some("spawn-prefab"),
+        evidence_terms: RESOURCE_LOADING_TERMS,
+        required_evidence: SPAWN_PREFAB_REQUIREMENTS,
+        focus_bonus: 20,
+        verification_guidance: "Verify resource paths and prefab dependencies in Workbench; spawning behavior can differ by world, authority, and server context.",
+    },
+    ExampleTopic {
+        topic: "replication",
+        subtopic: None,
+        evidence_terms: REPLICATION_TERMS,
+        required_evidence: REPLICATION_REQUIREMENTS,
+        focus_bonus: 0,
+        verification_guidance: "Examples show source-backed replication patterns. Verify authority, receiver targeting, ownership, and dedicated-server behavior at runtime.",
+    },
+    ExampleTopic {
+        topic: "replication",
+        subtopic: Some("rpc-authority"),
+        evidence_terms: REPLICATION_TERMS,
+        required_evidence: RPC_AUTHORITY_REQUIREMENTS,
+        focus_bonus: 20,
+        verification_guidance: "Verify RPC authority, receiver targeting, ownership, and dedicated-server behavior in Workbench and at runtime.",
+    },
+    ExampleTopic {
+        topic: "entity-lifecycle",
+        subtopic: None,
+        evidence_terms: ENTITY_LIFECYCLE_TERMS,
+        required_evidence: ENTITY_LIFECYCLE_REQUIREMENTS,
+        focus_bonus: 0,
+        verification_guidance: "Examples show source-backed entity lifecycle patterns. Verify component wiring and event order in Workbench and at runtime.",
+    },
+    ExampleTopic {
+        topic: "entity-lifecycle",
+        subtopic: Some("event-mask"),
+        evidence_terms: ENTITY_LIFECYCLE_TERMS,
+        required_evidence: EVENT_MASK_REQUIREMENTS,
+        focus_bonus: 20,
+        verification_guidance: "Verify prefab component wiring and runtime event order in Workbench and at runtime.",
+    },
+    ExampleTopic {
+        topic: "ui",
+        subtopic: None,
+        evidence_terms: UI_TERMS,
+        required_evidence: UI_REQUIREMENTS,
+        focus_bonus: 0,
+        verification_guidance: "Examples show source-backed UI creation patterns. Verify layout resources and UI hierarchy in Workbench.",
+    },
+    ExampleTopic {
+        topic: "ui",
+        subtopic: Some("widget-creation"),
+        evidence_terms: UI_TERMS,
+        required_evidence: WIDGET_CREATION_REQUIREMENTS,
+        focus_bonus: 20,
+        verification_guidance: "Verify layout resource availability and UI hierarchy in Workbench.",
+    },
+];
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GameDataExampleSearchRequest {
     pub topic: String,
@@ -224,14 +410,17 @@ pub fn search_examples(
         &topic,
         &filters,
     )?;
-    validate_example_topic(&topic, subtopic.as_deref())?;
-    let terms = evidence_terms(&topic, subtopic.as_deref());
-    let indexed_names = index
-        .symbols()
-        .iter()
-        .filter_map(|symbol| symbol.name.as_deref())
-        .collect::<BTreeSet<_>>();
-    let mut candidates = Vec::<(i32, String, SourceFileId, Vec<String>, Vec<String>, usize)>::new();
+    let example_topic = example_topic(&topic, subtopic.as_deref())?;
+    let mut indexed_names = BTreeSet::new();
+    for (position, symbol) in index.symbols().iter().enumerate() {
+        if position % 128 == 0 {
+            check_research_control(control)?;
+        }
+        if let Some(name) = symbol.name.as_deref() {
+            indexed_names.insert(name);
+        }
+    }
+    let mut candidates = Vec::<ExampleCandidate>::new();
     for file in index.files() {
         control
             .check()
@@ -249,18 +438,20 @@ pub fn search_examples(
             continue;
         };
         let line_starts = starts.get(&file.id).cloned().unwrap_or_default();
-        let code_tokens = code_tokens(source, &line_starts);
-        let mut hits = terms
-            .iter()
-            .filter(|term| code_contains_term(&code_tokens, term))
-            .cloned()
-            .collect::<Vec<_>>();
+        let code_tokens = code_tokens(source, &line_starts, control)?;
+        let mut hits = Vec::new();
+        for term in example_topic.evidence_terms {
+            if code_contains_term(&code_tokens, term.value, control)? {
+                hits.push(term.value.to_string());
+            }
+        }
         hits.sort();
         hits.dedup();
-        if !matches_example_topic(&topic, subtopic.as_deref(), &hits) {
+        if !matches_example_topic(example_topic, &hits) {
             continue;
         }
-        let evidence_line = best_code_evidence_line(&code_tokens, &hits).unwrap_or(1);
+        let evidence_line =
+            best_code_evidence_line(&code_tokens, &hits, example_topic, control)?.unwrap_or(1);
         let mut symbols = hits
             .iter()
             .flat_map(|term| term.split('.'))
@@ -269,7 +460,7 @@ pub fn search_examples(
             .collect::<Vec<_>>();
         symbols.sort();
         symbols.dedup();
-        let rank = example_score(source_kind, &hits, source.lines().count());
+        let rank = example_score(example_topic, source_kind, &hits, source.lines().count());
         candidates.push((
             rank,
             logical_path(file),
@@ -279,9 +470,7 @@ pub fn search_examples(
             evidence_line,
         ));
     }
-    candidates.sort_by(|left, right| {
-        (std::cmp::Reverse(left.0), &left.1).cmp(&(std::cmp::Reverse(right.0), &right.1))
-    });
+    sort_example_candidates(&mut candidates, control)?;
     let total = candidates.len();
     let selected = candidates
         .into_iter()
@@ -352,7 +541,7 @@ pub fn search_examples(
         returned,
         total,
         next_cursor,
-        verification_guidance: verification_guidance(request.subtopic.as_deref()),
+        verification_guidance: example_topic.verification_guidance.to_string(),
         results,
     })
 }
@@ -1003,10 +1192,18 @@ fn sort_relationship_results(
     results: &mut [GameDataRelationshipHit],
     control: &IndexBuildControl,
 ) -> Result<(), GameDataResearchError> {
+    cancellable_sort(results, control, compare_relationship_hits)
+}
+
+fn cancellable_sort<T: Clone>(
+    results: &mut [T],
+    control: &IndexBuildControl,
+    compare: fn(&T, &T) -> std::cmp::Ordering,
+) -> Result<(), GameDataResearchError> {
     const RUN_SIZE: usize = 128;
     for run in results.chunks_mut(RUN_SIZE) {
         check_research_control(control)?;
-        run.sort_by(compare_relationship_hits);
+        run.sort_by(compare);
     }
 
     let mut width = RUN_SIZE;
@@ -1023,7 +1220,7 @@ fn sort_relationship_results(
                 if merged.len() % RUN_SIZE == 0 {
                     check_research_control(control)?;
                 }
-                if compare_relationship_hits(&results[left], &results[right]).is_gt() {
+                if compare(&results[left], &results[right]).is_gt() {
                     merged.push(results[right].clone());
                     right += 1;
                 } else {
@@ -1083,59 +1280,46 @@ fn example_source_kind(file: &crate::index::IndexedFile) -> &'static str {
     }
 }
 
-fn evidence_terms(topic: &str, subtopic: Option<&str>) -> Vec<String> {
-    match (topic, subtopic) {
-        ("resource-loading", Some("spawn-prefab")) => [
-            "Resource.Load",
-            "ResourceName",
-            "SpawnEntityPrefab",
-            "EntitySpawnParams",
-            "PrefabResource",
-        ],
-        ("resource-loading", None) => [
-            "Resource.Load",
-            "ResourceName",
-            "EntitySpawnParams",
-            "PrefabResource",
-            "SpawnEntityPrefab",
-        ],
-        _ => unreachable!("validated example topic"),
-    }
-    .into_iter()
-    .map(str::to_string)
-    .collect()
+fn compare_example_candidates(
+    left: &ExampleCandidate,
+    right: &ExampleCandidate,
+) -> std::cmp::Ordering {
+    (std::cmp::Reverse(left.0), &left.1).cmp(&(std::cmp::Reverse(right.0), &right.1))
 }
 
-fn validate_example_topic(
+fn sort_example_candidates(
+    candidates: &mut [ExampleCandidate],
+    control: &IndexBuildControl,
+) -> Result<(), GameDataResearchError> {
+    cancellable_sort(candidates, control, compare_example_candidates)
+}
+
+fn example_topic(
     topic: &str,
     subtopic: Option<&str>,
-) -> Result<(), GameDataResearchError> {
-    match (topic, subtopic) {
-        ("resource-loading", None | Some("spawn-prefab")) => Ok(()),
-        ("resource-loading", Some(_)) => Err(GameDataResearchError::InvalidRequest(
-            "unsupported subtopic for resource-loading; use spawn-prefab",
-        )),
-        _ => Err(GameDataResearchError::InvalidRequest(
-            "unsupported topic; use resource-loading",
-        )),
+) -> Result<&'static ExampleTopic, GameDataResearchError> {
+    if let Some(definition) = EXAMPLE_TOPICS
+        .iter()
+        .find(|definition| definition.topic == topic && definition.subtopic == subtopic)
+    {
+        return Ok(definition);
     }
+    let message = match topic {
+        "resource-loading" => "unsupported subtopic for resource-loading; use spawn-prefab",
+        "replication" => "unsupported subtopic for replication; use rpc-authority",
+        "entity-lifecycle" => "unsupported subtopic for entity-lifecycle; use event-mask",
+        "ui" => "unsupported subtopic for ui; use widget-creation",
+        _ => "unsupported topic; use resource-loading, replication, entity-lifecycle, or ui",
+    };
+    Err(GameDataResearchError::InvalidRequest(message))
 }
 
-fn matches_example_topic(topic: &str, subtopic: Option<&str>, hits: &[String]) -> bool {
-    let has = |term: &str| hits.iter().any(|hit| hit == term);
-    let resource_evidence = [
-        "Resource.Load",
-        "ResourceName",
-        "EntitySpawnParams",
-        "PrefabResource",
-    ]
-    .into_iter()
-    .any(has);
-    match (topic, subtopic) {
-        ("resource-loading", Some("spawn-prefab")) => resource_evidence && has("SpawnEntityPrefab"),
-        ("resource-loading", None) => resource_evidence,
-        _ => false,
-    }
+fn matches_example_topic(definition: &ExampleTopic, hits: &[String]) -> bool {
+    definition.required_evidence.iter().all(|alternatives| {
+        alternatives
+            .iter()
+            .any(|term| hits.binary_search_by(|hit| hit.as_str().cmp(term)).is_ok())
+    })
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1147,91 +1331,113 @@ struct CodeToken<'source> {
 fn code_tokens<'source>(
     source: &'source str,
     line_starts: &SourceLineStarts,
-) -> Vec<CodeToken<'source>> {
-    lex(source)
-        .into_iter()
-        .filter(|token| !token.kind.is_trivia())
-        .filter_map(|token| {
-            source
-                .get(token.span.start..token.span.end)
-                .map(|text| CodeToken {
-                    text,
-                    line: line_starts
-                        .range(token.span.start, token.span.end)
-                        .start_line,
-                })
-        })
-        .collect()
-}
-
-fn code_contains_term(tokens: &[CodeToken<'_>], term: &str) -> bool {
-    !matching_term_lines(tokens, term).is_empty()
-}
-
-fn matching_term_lines(tokens: &[CodeToken<'_>], term: &str) -> Vec<usize> {
-    let parts = term.split('.').collect::<Vec<_>>();
-    if parts.len() == 1 {
-        return tokens
-            .iter()
-            .filter(|token| token.text.eq_ignore_ascii_case(parts[0]))
-            .map(|token| token.line)
-            .collect();
-    }
-    tokens
-        .windows(parts.len() * 2 - 1)
-        .filter(|window| {
-            parts.iter().enumerate().all(|(index, part)| {
-                window[index * 2].text.eq_ignore_ascii_case(part)
-                    && (index == parts.len() - 1 || window[index * 2 + 1].text == ".")
-            })
-        })
-        .map(|window| window[0].line)
-        .collect()
-}
-
-fn best_code_evidence_line(tokens: &[CodeToken<'_>], terms: &[String]) -> Option<usize> {
-    let mut scores = BTreeMap::<usize, i32>::new();
-    for term in terms {
-        for line in matching_term_lines(tokens, term) {
-            *scores.entry(line).or_default() += evidence_weight(term);
+    control: &IndexBuildControl,
+) -> Result<Vec<CodeToken<'source>>, GameDataResearchError> {
+    check_research_control(control)?;
+    let mut result = Vec::new();
+    for (position, token) in lex(source).into_iter().enumerate() {
+        if position % 128 == 0 {
+            check_research_control(control)?;
+        }
+        if token.kind.is_trivia() {
+            continue;
+        }
+        if let Some(text) = source.get(token.span.start..token.span.end) {
+            result.push(CodeToken {
+                text,
+                line: line_starts
+                    .range(token.span.start, token.span.end)
+                    .start_line,
+            });
         }
     }
-    scores
-        .into_iter()
-        .max_by_key(|(line, score)| (*score, std::cmp::Reverse(*line)))
-        .map(|(line, _)| line)
+    Ok(result)
 }
 
-fn example_score(source_kind: &str, terms: &[String], line_count: usize) -> i32 {
-    let mut score = terms.iter().map(|term| evidence_weight(term)).sum::<i32>();
-    if terms.iter().any(|term| term == "Resource.Load")
-        && terms.iter().any(|term| term == "SpawnEntityPrefab")
-    {
-        score += 20;
+fn code_contains_term(
+    tokens: &[CodeToken<'_>],
+    term: &str,
+    control: &IndexBuildControl,
+) -> Result<bool, GameDataResearchError> {
+    Ok(!matching_term_lines(tokens, term, control)?.is_empty())
+}
+
+fn matching_term_lines(
+    tokens: &[CodeToken<'_>],
+    term: &str,
+    control: &IndexBuildControl,
+) -> Result<Vec<usize>, GameDataResearchError> {
+    let parts = term.split('.').collect::<Vec<_>>();
+    if parts.len() == 1 {
+        let mut lines = Vec::new();
+        for (position, token) in tokens.iter().enumerate() {
+            if position % 128 == 0 {
+                check_research_control(control)?;
+            }
+            if token.text.eq_ignore_ascii_case(parts[0]) {
+                lines.push(token.line);
+            }
+        }
+        return Ok(lines);
     }
+    let mut lines = Vec::new();
+    for (position, window) in tokens.windows(parts.len() * 2 - 1).enumerate() {
+        if position % 128 == 0 {
+            check_research_control(control)?;
+        }
+        if parts.iter().enumerate().all(|(index, part)| {
+            window[index * 2].text.eq_ignore_ascii_case(part)
+                && (index == parts.len() - 1 || window[index * 2 + 1].text == ".")
+        }) {
+            lines.push(window[0].line);
+        }
+    }
+    Ok(lines)
+}
+
+fn best_code_evidence_line(
+    tokens: &[CodeToken<'_>],
+    terms: &[String],
+    topic: &ExampleTopic,
+    control: &IndexBuildControl,
+) -> Result<Option<usize>, GameDataResearchError> {
+    let mut scores = BTreeMap::<usize, i32>::new();
+    for term in terms {
+        check_research_control(control)?;
+        for line in matching_term_lines(tokens, term, control)? {
+            *scores.entry(line).or_default() += evidence_weight(topic, term);
+        }
+    }
+    Ok(scores
+        .into_iter()
+        .max_by_key(|(line, score)| (*score, std::cmp::Reverse(*line)))
+        .map(|(line, _)| line))
+}
+
+fn example_score(
+    topic: &ExampleTopic,
+    source_kind: &str,
+    terms: &[String],
+    line_count: usize,
+) -> i32 {
+    let mut score = terms
+        .iter()
+        .map(|term| evidence_weight(topic, term))
+        .sum::<i32>();
+    score += topic.focus_bonus;
     if source_kind == "handwritten" {
         score += 20;
     }
     score - i32::try_from(line_count / 200).unwrap_or(i32::MAX).min(20)
 }
 
-fn evidence_weight(term: &str) -> i32 {
-    match term {
-        "SpawnEntityPrefab" => 20,
-        "EntitySpawnParams" => 12,
-        "Resource.Load" => 10,
-        "PrefabResource" => 8,
-        "ResourceName" => 4,
-        _ => 1,
-    }
-}
-
-fn verification_guidance(subtopic: Option<&str>) -> String {
-    if subtopic == Some("spawn-prefab") {
-        "Verify resource paths and prefab dependencies in Workbench; spawning behavior can differ by world, authority, and server context.".to_string()
-    } else {
-        "Examples show source-backed implementation patterns. Verify resources and editor wiring in Workbench, then verify authority-sensitive behavior at runtime.".to_string()
-    }
+fn evidence_weight(topic: &ExampleTopic, term: &str) -> i32 {
+    topic
+        .evidence_terms
+        .iter()
+        .find(|candidate| candidate.value == term)
+        .map(|candidate| candidate.weight)
+        .unwrap_or(1)
 }
 
 fn normalized_required(
@@ -1397,10 +1603,19 @@ mod tests {
             },
         ];
         let terms = vec!["Resource.Load".to_string()];
+        let control = IndexBuildControl::default();
+        let topic = example_topic("resource-loading", Some("spawn-prefab"))
+            .expect("supported example topic");
 
-        assert!(code_contains_term(&tokens, "Resource.Load"));
-        assert_eq!(matching_term_lines(&tokens, "Resource.Load"), vec![12]);
-        assert_eq!(best_code_evidence_line(&tokens, &terms), Some(12));
+        assert!(code_contains_term(&tokens, "Resource.Load", &control).expect("search"));
+        assert_eq!(
+            matching_term_lines(&tokens, "Resource.Load", &control).expect("search"),
+            vec![12]
+        );
+        assert_eq!(
+            best_code_evidence_line(&tokens, &terms, topic, &control).expect("search"),
+            Some(12)
+        );
     }
 
     #[test]
@@ -1448,6 +1663,28 @@ mod tests {
         ));
         assert!(matches!(
             deduplicate_relationship_results(&mut results, &control),
+            Err(GameDataResearchError::Cancelled)
+        ));
+    }
+
+    #[test]
+    fn cancelled_example_scanning_and_sorting_stop_before_work() {
+        let control = IndexBuildControl::default();
+        control.cancel();
+        assert!(matches!(
+            code_tokens("class Example {}", &SourceLineStarts::default(), &control),
+            Err(GameDataResearchError::Cancelled)
+        ));
+        let mut candidates = vec![(
+            1,
+            "Game/Example.c".to_string(),
+            SourceFileId(0),
+            Vec::new(),
+            Vec::new(),
+            1,
+        )];
+        assert!(matches!(
+            sort_example_candidates(&mut candidates, &control),
             Err(GameDataResearchError::Cancelled)
         ));
     }
