@@ -4,7 +4,10 @@ use crate::index::{
     GlobalSymbolId, IndexedAttribute, IndexedConditionalBranch, IndexedDocComment, IndexedFile,
     IndexedSymbol, IndexedSymbolDetail, SourceFileId, SymbolIndex,
 };
-use crate::index_build::{build_index, IndexBuildConfig, IndexBuildResult, IndexSourceRoot};
+use crate::index_build::{
+    build_index_with_control, IndexBuildConfig, IndexBuildControl, IndexBuildResult,
+    IndexSourceRoot,
+};
 use crate::lexer::TextSpan;
 use crate::model::{
     CallableForm, PreprocessorBranchKind, SourceCategory, SourceFileMetadata, SourceKind, SymbolId,
@@ -21,17 +24,18 @@ use crate::semantic_file::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
-const CACHE_FORMAT_VERSION: u32 = 11;
+const CACHE_FORMAT_VERSION: u32 = 12;
 const CACHE_SCHEMA: &str = "reforger-symbol-index";
-const CACHE_MAGIC: &[u8; 8] = b"RSTIDX11";
+const CACHE_MAGIC: &[u8; 8] = b"RSTIDX12";
 const CACHE_INDEX_SHAPE: &str =
-    "runtime-pruned:no-local-variables:detail-spans-stripped:layered-external-v1:binary-v4:string-table-v1:canonical-public-facts-v1";
+    "runtime-pruned:no-local-variables:detail-spans-stripped:layered-external-v1:binary-v5:string-table-v1:canonical-public-facts-v1:source-content-digest-v1";
 const LEGACY_CACHE_FORMAT_VERSION: u32 = 9;
 const LEGACY_CACHE_MAGIC: &[u8; 8] = b"RSTIDX09";
 const V10_CACHE_FORMAT_VERSION: u32 = 10;
@@ -45,7 +49,7 @@ const MAX_CACHE_RAW_STRING_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CACHE_FILE_RECORDS: usize = 1_000_000;
 const MAX_CACHE_SYMBOL_RECORDS: usize = 5_000_000;
 const MAX_CACHE_SYMBOL_LIST_ITEMS: usize = 1_000_000;
-/// v10 was intentionally larger than the canonical v11 payload because it
+/// v10 was intentionally larger than the canonical current payload because it
 /// persisted both a query graph and JSON contributions. Read no more than a
 /// plausible legacy game-data artifact before asking the allocator to hold it.
 const MAX_LEGACY_CACHE_BYTES: u64 = 128 * 1024 * 1024;
@@ -63,6 +67,8 @@ pub struct GameDataIndexCacheResult {
     pub summary: RuntimeIndexSummary,
     pub cache_status: IndexCacheStatus,
     pub fingerprint: SourceFingerprint,
+    pub source_digest: String,
+    pub catalogue_digest: String,
     pub timings: IndexCacheTimings,
     pub cache_file_bytes: Option<u64>,
 }
@@ -133,6 +139,7 @@ struct CachedGameDataIndex {
     index_shape: String,
     crate_version: String,
     fingerprint: SourceFingerprint,
+    source_digest: String,
     summary: CachedIndexSummary,
     files: Vec<CachedFileContribution>,
 }
@@ -186,7 +193,7 @@ struct CachedConditionalBranch {
     condition: Option<String>,
 }
 
-/// The former v10 payload. It is decoded only to make a one-way v11 cache
+/// The former v10 payload. It is decoded only to make a one-way current cache
 /// replacement and is never published as a query representation.
 #[derive(Debug)]
 struct V10CachedGameDataIndex {
@@ -538,6 +545,7 @@ impl CachedGameDataIndex {
     fn from_index(
         index: &SymbolIndex,
         fingerprint: SourceFingerprint,
+        source_digest: String,
         summary: CachedIndexSummary,
     ) -> Self {
         Self {
@@ -546,6 +554,7 @@ impl CachedGameDataIndex {
             index_shape: CACHE_INDEX_SHAPE.to_string(),
             crate_version: env!("CARGO_PKG_VERSION").to_string(),
             fingerprint,
+            source_digest,
             summary,
             files: index
                 .files()
@@ -596,9 +605,9 @@ impl LegacyCachedGameDataIndex {
     /// Converts a fully validated v9 snapshot into the current compiler-owned
     /// contribution contract. The v9 `SymbolIndex` records are source-derived
     /// facts; they are not used as a fallback query model after migration.
-    fn into_current(self) -> CachedGameDataIndex {
+    fn into_current(self, source_digest: String) -> CachedGameDataIndex {
         let index = SymbolIndex::from_indexed_parts(self.index.files, self.index.symbols);
-        CachedGameDataIndex::from_index(&index, self.fingerprint, self.summary)
+        CachedGameDataIndex::from_index(&index, self.fingerprint, source_digest, self.summary)
     }
 
     fn validates_for_migration(&self, expected_fingerprint: &SourceFingerprint) -> bool {
@@ -612,7 +621,7 @@ impl LegacyCachedGameDataIndex {
 }
 
 impl V10CachedGameDataIndex {
-    fn into_current(self) -> Result<CachedGameDataIndex, String> {
+    fn into_current(self, source_digest: String) -> Result<CachedGameDataIndex, String> {
         let V10CachedGameDataIndex {
             schema,
             crate_version,
@@ -627,7 +636,7 @@ impl V10CachedGameDataIndex {
             contributions,
         } = index;
         // The indexed graph was used only to validate parity with the
-        // canonical contribution facts. Release it before projecting v11 so a
+        // canonical contribution facts. Release it before projecting the current format so a
         // migration never retains both legacy records and its replacement.
         drop(symbols);
         let files = files
@@ -643,6 +652,7 @@ impl V10CachedGameDataIndex {
             index_shape: CACHE_INDEX_SHAPE.to_string(),
             crate_version,
             fingerprint,
+            source_digest,
             summary,
             files,
         })
@@ -666,7 +676,7 @@ impl V10CachedGameDataIndex {
 
     /// A v10 payload duplicated its query graph and its compiler contribution
     /// facts. Require those two representations to agree before trusting the
-    /// contribution side as the one canonical v11 source of truth.
+    /// contribution side as the one canonical current source of truth.
     fn runtime_facts_match_contributions(&self) -> bool {
         self.index
             .files
@@ -853,15 +863,35 @@ impl From<CachedIndexSummary> for RuntimeIndexSummary {
 pub fn load_or_build_game_data_index(
     config: &GameDataIndexCacheConfig,
 ) -> Result<GameDataIndexCacheResult, String> {
-    load_or_build_game_data_index_with_progress(config, |_| {})
+    load_or_build_game_data_index_with_control(config, &IndexBuildControl::default())
+}
+
+pub fn load_or_build_game_data_index_with_control(
+    config: &GameDataIndexCacheConfig,
+    control: &IndexBuildControl,
+) -> Result<GameDataIndexCacheResult, String> {
+    load_or_build_game_data_index_with_progress_and_control(config, |_| {}, control)
 }
 
 pub fn load_or_build_game_data_index_with_progress(
     config: &GameDataIndexCacheConfig,
+    progress: impl FnMut(&str),
+) -> Result<GameDataIndexCacheResult, String> {
+    load_or_build_game_data_index_with_progress_and_control(
+        config,
+        progress,
+        &IndexBuildControl::default(),
+    )
+}
+
+fn load_or_build_game_data_index_with_progress_and_control(
+    config: &GameDataIndexCacheConfig,
     mut progress: impl FnMut(&str),
+    control: &IndexBuildControl,
 ) -> Result<GameDataIndexCacheResult, String> {
     let total_start = Instant::now();
     let mut timings = IndexCacheTimings::default();
+    control.check()?;
     progress("validate-scripts-root-start");
     if !config.scripts_root.is_dir() {
         return Err(format!(
@@ -871,23 +901,38 @@ pub fn load_or_build_game_data_index_with_progress(
     }
     progress("validate-scripts-root-end");
 
+    control.check()?;
     progress("fingerprint-start");
     let fingerprint_start = Instant::now();
-    let fingerprint = source_fingerprint(&config.scripts_root, config.metadata_path.as_deref())?;
+    let fingerprint = source_fingerprint_with_control(
+        &config.scripts_root,
+        config.metadata_path.as_deref(),
+        control,
+    )?;
+    let source_digest = source_content_digest(&config.scripts_root, control)?;
     timings.fingerprint = fingerprint_start.elapsed();
     progress("fingerprint-end");
     let initial_cache_file_bytes = cache_file_bytes(&config.cache_path);
 
+    control.check()?;
     progress("cache-load-start");
     let cache_read_start = Instant::now();
-    match load_cached_index(&config.cache_path, &fingerprint, &mut timings) {
+    match load_cached_index(
+        &config.cache_path,
+        &fingerprint,
+        &source_digest,
+        &mut timings,
+    ) {
         Ok(Some(CacheLoad::Current(cached))) => {
+            control.check()?;
             timings.cache_read_deserialize_validate = cache_read_start.elapsed();
             progress("cache-load-hit");
             progress("map-rebuild-start");
             let map_rebuild_start = Instant::now();
             let summary: RuntimeIndexSummary = cached.summary.clone().into();
+            let catalogue_digest = catalogue_digest(&cached)?;
             let index = cached.into_index();
+            control.check()?;
             timings.map_rebuild = map_rebuild_start.elapsed();
             progress("map-rebuild-end");
             timings.total = total_start.elapsed();
@@ -896,44 +941,11 @@ pub fn load_or_build_game_data_index_with_progress(
                 summary,
                 cache_status: IndexCacheStatus::Loaded,
                 fingerprint,
+                source_digest,
+                catalogue_digest,
                 timings,
                 cache_file_bytes: initial_cache_file_bytes,
             });
-        }
-        Ok(Some(CacheLoad::Migrated(cached))) => {
-            timings.cache_read_deserialize_validate = cache_read_start.elapsed();
-            progress("cache-load-hit");
-            let summary: RuntimeIndexSummary = cached.summary.clone().into();
-
-            // Legacy bytes have already passed source-identity and structural
-            // validation. Replace them before reconstructing lookup maps so no
-            // legacy graph survives publication (or coexists with the output).
-            progress("cache-write-start");
-            let cache_write_start = Instant::now();
-            let migration_write = write_cached_payload(&config.cache_path, &cached);
-            timings.cache_write = cache_write_start.elapsed();
-            if migration_write.is_ok() {
-                progress("cache-write-end");
-                progress("map-rebuild-start");
-                let map_rebuild_start = Instant::now();
-                let index = cached.into_index();
-                timings.map_rebuild = map_rebuild_start.elapsed();
-                progress("map-rebuild-end");
-                timings.total = total_start.elapsed();
-                return Ok(GameDataIndexCacheResult {
-                    index,
-                    summary,
-                    cache_status: IndexCacheStatus::Loaded,
-                    fingerprint,
-                    timings,
-                    cache_file_bytes: cache_file_bytes(&config.cache_path),
-                });
-            }
-            // A cache migration is never a reason to publish the old graph or
-            // fail the language server. Discard it and take the normal source
-            // rebuild path below; a later write may succeed after a transient
-            // filesystem error is gone.
-            progress("cache-write-failed");
         }
         Ok(None) | Err(_) => {
             timings.cache_read_deserialize_validate = cache_read_start.elapsed();
@@ -941,32 +953,48 @@ pub fn load_or_build_game_data_index_with_progress(
         }
     }
 
+    control.check()?;
     let rebuild_reason = cache_rebuild_reason(&config.cache_path, &fingerprint);
     progress("source-rebuild-start");
     let rebuild_start = Instant::now();
-    let built = build_index(&IndexBuildConfig {
-        roots: vec![IndexSourceRoot::new(
-            &config.scripts_root,
-            SourceKind::GameData,
-            SOURCE_PRIORITY_GAME_DATA,
-        )],
-    })?;
+    let built = build_index_with_control(
+        &IndexBuildConfig {
+            roots: vec![IndexSourceRoot::new(
+                &config.scripts_root,
+                SourceKind::GameData,
+                SOURCE_PRIORITY_GAME_DATA,
+            )],
+        },
+        control,
+    )?;
     timings.rebuild = rebuild_start.elapsed();
     progress("source-rebuild-end");
     let cached_index = built.index.compact_for_runtime_cache();
     let summary = summary_from_build_with_cached_index(&built, &cached_index);
+    let cached_payload = CachedGameDataIndex::from_index(
+        &cached_index,
+        fingerprint.clone(),
+        source_digest.clone(),
+        CachedIndexSummary::from(&summary),
+    );
+    let catalogue_digest = catalogue_digest(&cached_payload)?;
 
+    control.check()?;
     progress("cache-write-start");
     let cache_write_start = Instant::now();
-    if let Err(write_error) =
-        write_cached_index(&config.cache_path, &fingerprint, &summary, &cached_index)
-    {
+    if let Err(write_error) = write_cached_payload(&config.cache_path, &cached_payload) {
         progress("cache-write-contended");
-        if !winner_cache_validates(&config.cache_path, &fingerprint, &mut timings) {
+        if !winner_cache_validates(
+            &config.cache_path,
+            &fingerprint,
+            &source_digest,
+            &mut timings,
+        ) {
             return Err(write_error);
         }
     }
     timings.cache_write = cache_write_start.elapsed();
+    control.check()?;
     progress("cache-write-end");
     timings.total = total_start.elapsed();
     let cache_file_bytes = cache_file_bytes(&config.cache_path);
@@ -978,6 +1006,8 @@ pub fn load_or_build_game_data_index_with_progress(
             reason: rebuild_reason,
         },
         fingerprint,
+        source_digest,
+        catalogue_digest,
         timings,
         cache_file_bytes,
     })
@@ -986,6 +1016,7 @@ pub fn load_or_build_game_data_index_with_progress(
 fn winner_cache_validates(
     cache_path: &Path,
     fingerprint: &SourceFingerprint,
+    source_digest: &str,
     timings: &mut IndexCacheTimings,
 ) -> bool {
     const VALIDATION_ATTEMPTS: usize = 8;
@@ -994,8 +1025,13 @@ fn winner_cache_validates(
     for attempt in 0..VALIDATION_ATTEMPTS {
         let mut winner_timings = IndexCacheTimings::default();
         if matches!(
-            load_cached_index(cache_path, fingerprint, &mut winner_timings),
-            Ok(Some(CacheLoad::Current(_) | CacheLoad::Migrated(_)))
+            load_cached_index(
+                cache_path,
+                fingerprint,
+                source_digest,
+                &mut winner_timings,
+            ),
+            Ok(Some(CacheLoad::Current(_)))
         ) {
             timings.cache_file_read += winner_timings.cache_file_read;
             timings.cache_decode += winner_timings.cache_decode;
@@ -1015,12 +1051,12 @@ fn cache_file_bytes(cache_path: &Path) -> Option<u64> {
 
 enum CacheLoad {
     Current(CachedGameDataIndex),
-    Migrated(CachedGameDataIndex),
 }
 
 fn load_cached_index(
     cache_path: &Path,
     expected_fingerprint: &SourceFingerprint,
+    expected_source_digest: &str,
     timings: &mut IndexCacheTimings,
 ) -> Result<Option<CacheLoad>, String> {
     if !cache_path.is_file() {
@@ -1082,19 +1118,25 @@ fn load_cached_index(
             )
         })?;
         // The binary payload is no longer needed once its owned v10 graph is
-        // decoded. Do not keep it while validating/projecting the v11 facts.
+        // decoded. Do not keep it while validating/projecting the current facts.
         drop(bytes);
         if !v10.validates_for_migration(expected_fingerprint) {
             timings.cache_decode = decode_start.elapsed();
             timings.cache_validate = timings.cache_decode;
             return Ok(None);
         }
-        CacheLoad::Migrated(v10.into_current().map_err(|error| {
+        let projected = v10
+            .into_current(expected_source_digest.to_string())
+            .map_err(|error| {
             format!(
                 "Failed to project v10 index cache {} into canonical facts: {error}",
                 cache_path.display()
             )
-        })?)
+        })?;
+        drop(projected);
+        timings.cache_decode = decode_start.elapsed();
+        timings.cache_validate = timings.cache_decode;
+        return Ok(None);
     } else if magic == *LEGACY_CACHE_MAGIC {
         let legacy = decode_legacy_cached_index(&bytes).map_err(|error| {
             format!(
@@ -1108,7 +1150,10 @@ fn load_cached_index(
             timings.cache_validate = timings.cache_decode;
             return Ok(None);
         }
-        CacheLoad::Migrated(legacy.into_current())
+        drop(legacy.into_current(expected_source_digest.to_string()));
+        timings.cache_decode = decode_start.elapsed();
+        timings.cache_validate = timings.cache_decode;
+        return Ok(None);
     } else {
         return Err(format!(
             "Failed to decode index cache {}: binary cache magic mismatch",
@@ -1118,14 +1163,13 @@ fn load_cached_index(
     timings.cache_decode = decode_start.elapsed();
 
     let validate_start = Instant::now();
-    let cached = match &load {
-        CacheLoad::Current(cached) | CacheLoad::Migrated(cached) => cached,
-    };
+    let CacheLoad::Current(cached) = &load;
     if cached.schema != CACHE_SCHEMA
         || cached.format_version != CACHE_FORMAT_VERSION
         || cached.index_shape != CACHE_INDEX_SHAPE
         || cached.crate_version != env!("CARGO_PKG_VERSION")
         || cached.fingerprint != *expected_fingerprint
+        || cached.source_digest != expected_source_digest
         || cached.validate().is_err()
     {
         timings.cache_validate = validate_start.elapsed();
@@ -1136,18 +1180,40 @@ fn load_cached_index(
     Ok(Some(load))
 }
 
-fn write_cached_index(
-    cache_path: &Path,
-    fingerprint: &SourceFingerprint,
-    summary: &RuntimeIndexSummary,
-    index: &SymbolIndex,
-) -> Result<(), String> {
-    let cached = CachedGameDataIndex::from_index(
-        index,
-        fingerprint.clone(),
-        CachedIndexSummary::from(summary),
-    );
-    write_cached_payload(cache_path, &cached)
+fn catalogue_digest(cached: &CachedGameDataIndex) -> Result<String, String> {
+    let mut logical = cached.clone();
+    let source_digest = std::mem::take(&mut logical.source_digest);
+    // Acquisition metadata describes where the source came from, not the
+    // immutable semantic catalogue. Use one neutral fingerprint so identical
+    // logical facts receive the same identity across installed locations and
+    // acquisition methods.
+    logical.fingerprint = SourceFingerprint::Manual {
+        scripts_root: String::new(),
+        file_count: 0,
+        byte_count: 0,
+        latest_modified_unix_ms: 0,
+    };
+    for file in &mut logical.files {
+        file.metadata.absolute_path = None;
+        file.metadata.root_path = None;
+    }
+    let bytes = encode_cached_index(&logical)?;
+    let mut hasher = Sha256::new();
+    hasher.update(b"reforger-game-data-catalogue-v1\0");
+    hasher.update(source_digest.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(bytes);
+    Ok(hex_digest(hasher.finalize()))
+}
+
+fn hex_digest(digest: impl AsRef<[u8]>) -> String {
+    let digest = digest.as_ref();
+    let mut encoded = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        use std::fmt::Write as _;
+        let _ = write!(encoded, "{byte:02x}");
+    }
+    encoded
 }
 
 fn write_cached_payload(cache_path: &Path, cached: &CachedGameDataIndex) -> Result<(), String> {
@@ -1293,6 +1359,7 @@ fn encode_cached_index(cached: &CachedGameDataIndex) -> Result<Vec<u8>, String> 
     writer.write_string(&cached.index_shape)?;
     writer.write_string(&cached.crate_version)?;
     writer.write_fingerprint(&cached.fingerprint)?;
+    writer.write_string(&cached.source_digest)?;
     writer.write_summary(&cached.summary);
     writer.write_vec_len(cached.files.len())?;
     for file in &cached.files {
@@ -1379,6 +1446,7 @@ fn decode_cached_index(bytes: &[u8]) -> Result<CachedGameDataIndex, String> {
     let index_shape = reader.read_string()?;
     let crate_version = reader.read_string()?;
     let fingerprint = reader.read_fingerprint()?;
+    let source_digest = reader.read_string()?;
     let summary = reader.read_summary()?;
     let file_count = reader.read_bounded_len("file records", MAX_CACHE_FILE_RECORDS)?;
     let mut files = Vec::with_capacity(file_count);
@@ -1392,6 +1460,7 @@ fn decode_cached_index(bytes: &[u8]) -> Result<CachedGameDataIndex, String> {
         index_shape,
         crate_version,
         fingerprint,
+        source_digest,
         summary,
         files,
     })
@@ -1493,6 +1562,7 @@ impl CacheStringTable {
         table.insert(&cached.index_shape)?;
         table.insert(&cached.crate_version)?;
         table.insert_fingerprint(&cached.fingerprint)?;
+        table.insert(&cached.source_digest)?;
         for file in &cached.files {
             table.insert_cached_file(file)?;
         }
@@ -2565,10 +2635,20 @@ fn cache_rebuild_reason(cache_path: &Path, fingerprint: &SourceFingerprint) -> S
     )
 }
 
+#[cfg(test)]
 fn source_fingerprint(
     scripts_root: &Path,
     metadata_path: Option<&Path>,
 ) -> Result<SourceFingerprint, String> {
+    source_fingerprint_with_control(scripts_root, metadata_path, &IndexBuildControl::default())
+}
+
+fn source_fingerprint_with_control(
+    scripts_root: &Path,
+    metadata_path: Option<&Path>,
+    control: &IndexBuildControl,
+) -> Result<SourceFingerprint, String> {
+    control.check()?;
     let scripts_root = scripts_root
         .canonicalize()
         .unwrap_or_else(|_| scripts_root.to_path_buf())
@@ -2584,13 +2664,62 @@ fn source_fingerprint(
         }
     }
 
-    let manual = manual_folder_fingerprint(Path::new(&scripts_root))?;
+    let manual = manual_folder_fingerprint_with_control(Path::new(&scripts_root), control)?;
     Ok(SourceFingerprint::Manual {
         scripts_root,
         file_count: manual.file_count,
         byte_count: manual.byte_count,
         latest_modified_unix_ms: manual.latest_modified_unix_ms,
     })
+}
+
+fn source_content_digest(root: &Path, control: &IndexBuildControl) -> Result<String, String> {
+    let mut files = Vec::new();
+    collect_source_digest_files(root, &mut files, control)?;
+    files.sort();
+
+    let mut hasher = Sha256::new();
+    hasher.update(b"reforger-game-data-source-v1\0");
+    for file in files {
+        control.check()?;
+        let relative = file.strip_prefix(root).unwrap_or(&file);
+        let logical_path = relative.to_string_lossy().replace('\\', "/");
+        hasher.update((logical_path.len() as u64).to_le_bytes());
+        hasher.update(logical_path.as_bytes());
+        let bytes = fs::read(&file)
+            .map_err(|error| format!("Failed to read {}: {error}", file.display()))?;
+        hasher.update((bytes.len() as u64).to_le_bytes());
+        for chunk in bytes.chunks(64 * 1024) {
+            control.check()?;
+            hasher.update(chunk);
+        }
+    }
+    Ok(hex_digest(hasher.finalize()))
+}
+
+fn collect_source_digest_files(
+    folder: &Path,
+    files: &mut Vec<PathBuf>,
+    control: &IndexBuildControl,
+) -> Result<(), String> {
+    control.check()?;
+    for entry in fs::read_dir(folder)
+        .map_err(|error| format!("Failed to read folder {}: {error}", folder.display()))?
+    {
+        let entry = entry
+            .map_err(|error| format!("Failed to read entry in {}: {error}", folder.display()))?;
+        let path = entry.path();
+        let metadata = entry
+            .metadata()
+            .map_err(|error| format!("Failed to read metadata for {}: {error}", path.display()))?;
+        if metadata.is_dir() {
+            collect_source_digest_files(&path, files, control)?;
+        } else if metadata.is_file() && path.extension().is_some_and(|extension| extension == "c") {
+            files.push(path);
+        }
+        control.check()?;
+    }
+    Ok(())
 }
 
 fn read_commit_sha(metadata_path: &Path) -> Result<Option<String>, String> {
@@ -2623,20 +2752,25 @@ struct ManualFolderFingerprint {
     latest_modified_unix_ms: u128,
 }
 
-fn manual_folder_fingerprint(root: &Path) -> Result<ManualFolderFingerprint, String> {
+fn manual_folder_fingerprint_with_control(
+    root: &Path,
+    control: &IndexBuildControl,
+) -> Result<ManualFolderFingerprint, String> {
     let mut fingerprint = ManualFolderFingerprint {
         file_count: 0,
         byte_count: 0,
         latest_modified_unix_ms: 0,
     };
-    collect_manual_fingerprint(root, &mut fingerprint)?;
+    collect_manual_fingerprint(root, &mut fingerprint, control)?;
     Ok(fingerprint)
 }
 
 fn collect_manual_fingerprint(
     folder: &Path,
     fingerprint: &mut ManualFolderFingerprint,
+    control: &IndexBuildControl,
 ) -> Result<(), String> {
+    control.check()?;
     for entry in fs::read_dir(folder)
         .map_err(|error| format!("Failed to read folder {}: {error}", folder.display()))?
     {
@@ -2647,7 +2781,7 @@ fn collect_manual_fingerprint(
             .metadata()
             .map_err(|error| format!("Failed to read metadata for {}: {error}", path.display()))?;
         if metadata.is_dir() {
-            collect_manual_fingerprint(&path, fingerprint)?;
+            collect_manual_fingerprint(&path, fingerprint, control)?;
         } else if metadata.is_file() && path.extension().is_some_and(|extension| extension == "c") {
             fingerprint.file_count += 1;
             fingerprint.byte_count += metadata.len();
@@ -2659,6 +2793,7 @@ fn collect_manual_fingerprint(
                 .unwrap_or(0);
             fingerprint.latest_modified_unix_ms = fingerprint.latest_modified_unix_ms.max(modified);
         }
+        control.check()?;
     }
     Ok(())
 }
@@ -2832,8 +2967,8 @@ mod tests {
             metadata_path: Some(metadata),
         })
         .unwrap();
-        let v11_bytes = fs::read(&cache).unwrap();
-        let current = decode_cached_index(&v11_bytes).unwrap();
+        let current_bytes = fs::read(&cache).unwrap();
+        let current = decode_cached_index(&current_bytes).unwrap();
         let runtime = current.clone().into_index();
         let v10 = V10CachedGameDataIndex {
             schema: CACHE_SCHEMA.to_string(),
@@ -2855,13 +2990,13 @@ mod tests {
         let v10_bytes = encode_v10_cached_index(&v10).unwrap();
 
         assert!(
-            v11_bytes.len() * 4 <= v10_bytes.len() * 3,
-            "canonical v11 cache ({}) must be at least 25% smaller than equivalent v10 ({})",
-            v11_bytes.len(),
+            current_bytes.len() * 4 <= v10_bytes.len() * 3,
+            "canonical current cache ({}) must be at least 25% smaller than equivalent v10 ({})",
+            current_bytes.len(),
             v10_bytes.len()
         );
-        assert_eq!(count_subslice(&v11_bytes, repeated_type.as_bytes()), 1);
-        assert_eq!(count_subslice(&v11_bytes, b"\"schema_version\""), 0);
+        assert_eq!(count_subslice(&current_bytes, repeated_type.as_bytes()), 1);
+        assert_eq!(count_subslice(&current_bytes, b"\"schema_version\""), 0);
         assert!(count_subslice(&v10_bytes, b"\"schema_version\"") > 0);
 
         cleanup(&root);
@@ -3072,8 +3207,8 @@ mod tests {
     }
 
     #[test]
-    fn v9_cache_migrates_to_validated_v11_contributions() {
-        let root = test_root("v9_migration");
+    fn v9_cache_rebuilds_to_current_source_validated_contributions() {
+        let root = test_root("v9_rebuild");
         let cache = root.join("cache.bin");
         let scripts = root.join("scripts");
         let metadata = root.join("metadata.json");
@@ -3091,31 +3226,34 @@ mod tests {
         rewrite_cache_as_v9(&cache, |legacy| legacy).unwrap();
         assert!(fs::read(&cache).unwrap().starts_with(LEGACY_CACHE_MAGIC));
 
-        let migrated = load_or_build_game_data_index(&config).unwrap();
-        assert_eq!(migrated.cache_status, IndexCacheStatus::Loaded);
-        assert_eq!(migrated.index.classes_by_name("Example").len(), 1);
+        let rebuilt = load_or_build_game_data_index(&config).unwrap();
+        assert!(matches!(
+            rebuilt.cache_status,
+            IndexCacheStatus::Rebuilt { .. }
+        ));
+        assert_eq!(rebuilt.index.classes_by_name("Example").len(), 1);
         assert_eq!(
-            migrated.index.methods_by_owner_name("Example", "Run").len(),
+            rebuilt.index.methods_by_owner_name("Example", "Run").len(),
             1
         );
-        let migrated_bytes = fs::read(&cache).unwrap();
-        assert!(migrated_bytes.starts_with(CACHE_MAGIC));
-        let migrated_cache = decode_cached_index(&migrated_bytes).unwrap();
-        migrated_cache.validate().unwrap();
+        let rebuilt_bytes = fs::read(&cache).unwrap();
+        assert!(rebuilt_bytes.starts_with(CACHE_MAGIC));
+        let rebuilt_cache = decode_cached_index(&rebuilt_bytes).unwrap();
+        rebuilt_cache.validate().unwrap();
 
         cleanup(&root);
     }
 
     #[test]
-    fn v10_cache_migrates_at_the_same_path_without_source_parsing() {
-        let root = test_root("v10_migration");
+    fn v10_cache_rebuilds_when_same_size_source_bytes_change() {
+        let root = test_root("v10_rebuild");
         let cache = root.join("game-data-symbol-index.v9.bin");
         let scripts = root.join("scripts");
         let source = scripts.join("Game/Example.c");
         let metadata = root.join("metadata.json");
         write_file(
             &source,
-            "class Example { int m_Value; void Run(int value); }",
+            "class Example { void Run() { int value = 1; } }",
         );
         write_file(&metadata, r#"{"commitSha":"v10-migration"}"#);
         let config = GameDataIndexCacheConfig {
@@ -3124,26 +3262,22 @@ mod tests {
             metadata_path: Some(metadata),
         };
         let cold = load_or_build_game_data_index(&config).unwrap();
-        let expected_signature = cold
-            .index
-            .callable_signature(cold.index.methods_by_owner_name("Example", "Run")[0]);
+        let original_revision = cold.catalogue_digest;
         rewrite_cache_as_v10(&cache, |cached| cached).unwrap();
         assert!(fs::read(&cache).unwrap().starts_with(V10_CACHE_MAGIC));
 
-        // A downloaded fingerprint is metadata-backed. Removing the source
-        // proves this result came from the v10 migration, not source parsing.
-        fs::remove_file(source).unwrap();
-        let migrated = load_or_build_game_data_index(&config).unwrap();
-        assert_eq!(migrated.cache_status, IndexCacheStatus::Loaded);
-        assert_eq!(migrated.index.classes_by_name("Example").len(), 1);
-        assert_eq!(
-            migrated
-                .index
-                .callable_signature(migrated.index.methods_by_owner_name("Example", "Run")[0]),
-            expected_signature
+        write_file(
+            &source,
+            "class Example { void Run() { int value = 2; } }",
         );
-        let migrated_bytes = fs::read(&cache).unwrap();
-        assert!(migrated_bytes.starts_with(CACHE_MAGIC));
+        let rebuilt = load_or_build_game_data_index(&config).unwrap();
+        assert!(matches!(
+            rebuilt.cache_status,
+            IndexCacheStatus::Rebuilt { .. }
+        ));
+        assert_ne!(rebuilt.catalogue_digest, original_revision);
+        assert_eq!(rebuilt.index.classes_by_name("Example").len(), 1);
+        assert!(fs::read(&cache).unwrap().starts_with(CACHE_MAGIC));
         assert!(fs::read_dir(&root).unwrap().all(|entry| !entry
             .unwrap()
             .file_name()
@@ -3617,6 +3751,54 @@ class BaseGameModeClass : GenericEntityClass
 
         assert_ne!(first, second);
 
+        cleanup(&root);
+    }
+
+    #[test]
+    fn catalogue_digest_tracks_semantic_facts_not_commit_or_physical_root_alone() {
+        let root = test_root("catalogue_digest");
+        let left_scripts = root.join("left/scripts");
+        let right_scripts = root.join("right/scripts");
+        for scripts in [&left_scripts, &right_scripts] {
+            write_file(
+                &scripts.join("Game/Same.c"),
+                "class SameAA { void Run() { int value = 1; } }",
+            );
+        }
+        let metadata = root.join("download.json");
+        write_file(&metadata, r#"{"commitSha":"same-commit"}"#);
+
+        let build = |scripts: &Path, cache_name: &str| {
+            load_or_build_game_data_index(&GameDataIndexCacheConfig {
+                scripts_root: scripts.to_path_buf(),
+                cache_path: root.join(cache_name),
+                metadata_path: Some(metadata.clone()),
+            })
+            .unwrap()
+            .catalogue_digest
+        };
+        let left = build(&left_scripts, "left.bin");
+        let right = build(&right_scripts, "right.bin");
+        assert_eq!(left, right, "installed location is not catalogue identity");
+
+        write_file(
+            &left_scripts.join("Game/Same.c"),
+            "class SameAA { void Run() { int value = 2; } }",
+        );
+        let changed_result = load_or_build_game_data_index(&GameDataIndexCacheConfig {
+            scripts_root: left_scripts,
+            cache_path: root.join("left.bin"),
+            metadata_path: Some(metadata),
+        })
+        .unwrap();
+        assert!(matches!(
+            changed_result.cache_status,
+            IndexCacheStatus::Rebuilt { .. }
+        ));
+        assert_ne!(
+            left, changed_result.catalogue_digest,
+            "same-size body-only changes under one commit identity must change the catalogue"
+        );
         cleanup(&root);
     }
 

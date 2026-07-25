@@ -59,9 +59,19 @@ MCP client
 The first shipped tool, `game_data_status`, lazily initializes that catalogue
 and reports its revision, provenance, coverage, counts, cache outcome, limits,
 warnings, and recovery without physical paths. Concurrent calls in one process
-join one initialization. Concurrent LSP and MCP processes publish the same
-atomic derived cache; a losing writer may keep its in-memory index only after
-validating the winner.
+join one initialization. The catalogue revision hashes the canonical logical
+source and semantic facts plus the cache/schema shape; acquisition metadata and
+physical installation paths are not catalogue identity. Request cancellation
+and the initialization deadline propagate through traversal, parsing,
+aggregation, and cache-publication boundaries. The request gives a blocking
+worker a bounded cancellation grace rather than allowing an uninterruptible
+filesystem/parser stage to delay the protocol response or EOF indefinitely.
+A one-worker process-local gate remains held by a detached blocking
+initialization, so retries join or time out without multiplying blocking-pool
+work. Concurrent LSP and MCP processes publish the same atomic derived cache;
+a losing writer may keep its in-memory index only after validating the winner.
+Legacy cache formats that cannot prove the current source-byte digest rebuild
+from source instead of being relabelled as current.
 
 The broader flow below remains the expansion boundary. It must preserve the
 same ownership rules: Rust remains the Enfusion language authority, direct

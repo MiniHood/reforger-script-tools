@@ -108,6 +108,18 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
         Some(&json!("manual"))
     );
     assert_eq!(
+        structured.pointer("/authorities/sourceEvidence"),
+        Some(&json!("evidence-catalogue"))
+    );
+    assert_eq!(
+        structured.pointer("/authorities/sourceMetadata"),
+        Some(&json!("filesystem"))
+    );
+    assert_eq!(
+        structured.pointer("/authorities/semanticCatalogue"),
+        Some(&json!("language-engine"))
+    );
+    assert_eq!(
         structured.pointer("/cache/outcome"),
         Some(&json!("rebuilt"))
     );
@@ -250,21 +262,29 @@ fn cancellation_and_eof_with_in_flight_initialization_shutdown_cleanly() {
     let fixture = TempFixture::new("mcp_cancel");
     let scripts_root = fixture.path().join("scripts");
     fs::create_dir_all(&scripts_root).expect("create scripts fixture");
-    for index in 0..512 {
-        fs::write(
-            scripts_root.join(format!("CancellationFixture{index}.c")),
-            format!("class CancellationFixture{index} {{ int m_Value; }}"),
-        )
-        .expect("write cancellation fixture");
-    }
+    fs::write(
+        scripts_root.join("CancellationFixture.c"),
+        "class CancellationFixture { int m_Value; }",
+    )
+    .expect("write cancellation fixture");
     let cache_path = fixture.path().join("cache").join("game-data-index.bin");
-    let mut client = McpClient::spawn(&[
-        "mcp",
-        "--game-data-scripts",
-        scripts_root.to_str().expect("utf-8 scripts path"),
-        "--index-cache",
-        cache_path.to_str().expect("utf-8 cache path"),
-    ]);
+    let started_marker = fixture.path().join("initialization-started");
+    let mut client = McpClient::spawn_with_env(
+        &[
+            "mcp",
+            "--game-data-scripts",
+            scripts_root.to_str().expect("utf-8 scripts path"),
+            "--index-cache",
+            cache_path.to_str().expect("utf-8 cache path"),
+        ],
+        &[
+            ("REFORGER_MCP_TEST_INITIALIZATION_DELAY_MS", "5000"),
+            (
+                "REFORGER_MCP_TEST_INITIALIZATION_STARTED_MARKER",
+                started_marker.to_str().expect("utf-8 marker path"),
+            ),
+        ],
+    );
     client.initialize(1);
     client.send(json!({
         "jsonrpc": "2.0",
@@ -275,6 +295,7 @@ fn cancellation_and_eof_with_in_flight_initialization_shutdown_cleanly() {
             "arguments": {}
         }
     }));
+    wait_for_file(&started_marker, Duration::from_secs(2));
     client.send(json!({
         "jsonrpc": "2.0",
         "method": "notifications/cancelled",
@@ -302,6 +323,150 @@ fn cancellation_and_eof_with_in_flight_initialization_shutdown_cleanly() {
         client.wait_for_exit(Duration::from_secs(5)),
         "EOF must shut down even while blocking initialization unwinds"
     );
+    assert!(
+        !cache_path.exists(),
+        "cancelled initialization must not continue into cache publication"
+    );
+}
+
+#[test]
+fn initialization_deadline_cancels_work_and_returns_stable_tool_error() {
+    let fixture = TempFixture::new("mcp_deadline");
+    let scripts_root = fixture.path().join("scripts");
+    fs::create_dir_all(&scripts_root).expect("create scripts fixture");
+    fs::write(scripts_root.join("Deadline.c"), "class Deadline {}")
+        .expect("write game-data fixture");
+    let cache_path = fixture.path().join("cache").join("game-data-index.bin");
+    let started_marker = fixture.path().join("initialization-started");
+    let mut client = McpClient::spawn_with_env(
+        &[
+            "mcp",
+            "--game-data-scripts",
+            scripts_root.to_str().expect("utf-8 scripts path"),
+            "--index-cache",
+            cache_path.to_str().expect("utf-8 cache path"),
+        ],
+        &[
+            ("REFORGER_MCP_TEST_UNINTERRUPTIBLE_DELAY_MS", "5000"),
+            ("REFORGER_MCP_TEST_INITIALIZATION_DEADLINE_MS", "50"),
+            (
+                "REFORGER_MCP_TEST_INITIALIZATION_STARTED_MARKER",
+                started_marker.to_str().expect("utf-8 marker path"),
+            ),
+        ],
+    );
+    client.initialize(1);
+    let call_started = std::time::Instant::now();
+    client.send(status_call(2));
+    let response = client.response(2);
+    assert!(
+        call_started.elapsed() < Duration::from_millis(500),
+        "deadline response must not await a stalled blocking worker"
+    );
+    assert_eq!(response.pointer("/result/isError"), Some(&json!(true)));
+    assert!(response
+        .pointer("/result/content/0/text")
+        .and_then(Value::as_str)
+        .is_some_and(|text| text.starts_with("deadline_exceeded:")));
+    assert!(started_marker.exists());
+    for id in 3..6 {
+        client.send(status_call(id));
+        assert!(client
+            .response(id)
+            .pointer("/result/content/0/text")
+            .and_then(Value::as_str)
+            .is_some_and(|text| text.starts_with("deadline_exceeded:")));
+    }
+    assert_eq!(
+        file_line_count(&started_marker),
+        1,
+        "post-timeout retries must not spawn more blocking initialization workers"
+    );
+
+    client.close_stdin();
+    assert!(
+        client.wait_for_exit(Duration::from_secs(1)),
+        "runtime shutdown must not wait for a stalled blocking worker"
+    );
+    assert!(
+        !cache_path.exists(),
+        "deadline cancellation must stop before cache publication"
+    );
+}
+
+#[test]
+fn request_admission_bounds_in_flight_tool_calls() {
+    let fixture = TempFixture::new("mcp_admission");
+    let scripts_root = fixture.path().join("scripts");
+    fs::create_dir_all(&scripts_root).expect("create scripts fixture");
+    fs::write(scripts_root.join("Admission.c"), "class Admission {}")
+        .expect("write game-data fixture");
+    let cache_path = fixture.path().join("cache").join("game-data-index.bin");
+    let admission_marker = fixture.path().join("admitted-requests");
+    let mut client = McpClient::spawn_with_env(
+        &[
+            "mcp",
+            "--game-data-scripts",
+            scripts_root.to_str().expect("utf-8 scripts path"),
+            "--index-cache",
+            cache_path.to_str().expect("utf-8 cache path"),
+        ],
+        &[
+            ("REFORGER_MCP_TEST_INITIALIZATION_DELAY_MS", "750"),
+            (
+                "REFORGER_MCP_TEST_ADMISSION_MARKER",
+                admission_marker.to_str().expect("utf-8 marker path"),
+            ),
+        ],
+    );
+    client.initialize(1);
+    for id in 10..19 {
+        client.send(status_call(id));
+    }
+
+    wait_for_lines(&admission_marker, 8, Duration::from_secs(2));
+    thread::sleep(Duration::from_millis(100));
+    assert_eq!(
+        file_line_count(&admission_marker),
+        8,
+        "the ninth call must wait outside the eight-request admission bound"
+    );
+
+    let responses = client.take_responses(9);
+    assert_eq!(
+        responses
+            .iter()
+            .filter(|response| response.pointer("/result/isError") == Some(&json!(false)))
+            .count(),
+        9
+    );
+    client.close_stdin();
+    assert!(client.wait_for_exit(Duration::from_secs(3)));
+}
+
+#[test]
+fn panicking_initialization_worker_is_isolated_from_the_mcp_process() {
+    let mut client = McpClient::spawn_with_env(&["mcp"], &[("REFORGER_MCP_TEST_PANIC_ONCE", "1")]);
+    client.initialize(1);
+    client.send(status_call(2));
+    let failed = client.response(2);
+    assert_eq!(failed.pointer("/error/code"), Some(&json!(-32603)));
+    assert!(failed
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .is_some_and(|message| message.contains("initialization worker failed")));
+
+    let recovered = client.call_status(3);
+    assert_eq!(recovered.get("available"), Some(&json!(false)));
+    client.send(json!({
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "ping",
+        "params": {}
+    }));
+    assert_eq!(client.response(4).get("result"), Some(&json!({})));
+    client.close_stdin();
+    assert!(client.wait_for_exit(Duration::from_secs(3)));
 }
 
 struct McpClient {
@@ -312,8 +477,16 @@ struct McpClient {
 
 impl McpClient {
     fn spawn(args: &[&str]) -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_reforger_language_server"))
-            .args(args)
+        Self::spawn_with_env(args, &[])
+    }
+
+    fn spawn_with_env(args: &[&str], environment: &[(&str, &str)]) -> Self {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_reforger_language_server"));
+        command.args(args);
+        for (name, value) in environment {
+            command.env(name, value);
+        }
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -417,6 +590,18 @@ impl McpClient {
         panic!("timed out waiting for MCP response {id}");
     }
 
+    fn take_responses(&self, count: usize) -> Vec<Value> {
+        (0..count)
+            .map(|_| {
+                let line = self
+                    .stdout
+                    .recv_timeout(RESPONSE_TIMEOUT)
+                    .expect("timed out waiting for MCP response");
+                serde_json::from_str(&line).expect("stdout was not MCP JSON")
+            })
+            .collect()
+    }
+
     fn close_stdin(&mut self) {
         self.stdin.take();
     }
@@ -431,6 +616,46 @@ impl McpClient {
         }
         false
     }
+}
+
+fn status_call(id: u64) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": "tools/call",
+        "params": {
+            "name": "game_data_status",
+            "arguments": {}
+        }
+    })
+}
+
+fn wait_for_file(path: &Path, timeout: Duration) {
+    let started = std::time::Instant::now();
+    while started.elapsed() < timeout {
+        if path.exists() {
+            return;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    panic!("timed out waiting for {}", path.display());
+}
+
+fn wait_for_lines(path: &Path, count: usize, timeout: Duration) {
+    let started = std::time::Instant::now();
+    while started.elapsed() < timeout {
+        if file_line_count(path) >= count {
+            return;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    panic!("timed out waiting for {count} lines in {}", path.display());
+}
+
+fn file_line_count(path: &Path) -> usize {
+    fs::read_to_string(path)
+        .map(|contents| contents.lines().count())
+        .unwrap_or(0)
 }
 
 impl Drop for McpClient {

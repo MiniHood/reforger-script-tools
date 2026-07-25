@@ -8,8 +8,13 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::time::{Duration, Instant};
 
+pub const INDEX_BUILD_CANCELLED: &str = "index build cancelled";
 const MAX_RECORDED_LOSSY_FILES: usize = 50;
 const MAX_RECORDED_DIAGNOSTIC_FILES: usize = 100;
 const MAX_RECORDED_DIAGNOSTICS_PER_FILE: usize = 3;
@@ -27,6 +32,11 @@ pub struct IndexSourceRoot {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexBuildConfig {
     pub roots: Vec<IndexSourceRoot>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct IndexBuildControl {
+    cancelled: Arc<AtomicBool>,
 }
 
 #[derive(Debug)]
@@ -102,7 +112,32 @@ impl IndexSourceRoot {
     }
 }
 
+impl IndexBuildControl {
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+
+    pub fn check(&self) -> Result<(), String> {
+        if self.is_cancelled() {
+            Err(INDEX_BUILD_CANCELLED.to_string())
+        } else {
+            Ok(())
+        }
+    }
+}
+
 pub fn build_index(config: &IndexBuildConfig) -> Result<IndexBuildResult, String> {
+    build_index_with_control(config, &IndexBuildControl::default())
+}
+
+pub fn build_index_with_control(
+    config: &IndexBuildConfig,
+    control: &IndexBuildControl,
+) -> Result<IndexBuildResult, String> {
     let total_start = Instant::now();
     let mut summary = IndexBuildSummary {
         totals: IndexBuildCounts::default(),
@@ -112,6 +147,7 @@ pub fn build_index(config: &IndexBuildConfig) -> Result<IndexBuildResult, String
     let mut pending_contributions = Vec::new();
 
     for root in &config.roots {
+        control.check()?;
         if !root.root_path.is_dir() {
             return Err(format!(
                 "Index source root does not exist or is not a folder: {}",
@@ -121,15 +157,17 @@ pub fn build_index(config: &IndexBuildConfig) -> Result<IndexBuildResult, String
 
         let file_discovery_start = Instant::now();
         let mut files = Vec::new();
-        collect_script_files(&root.root_path, &mut files)?;
+        collect_script_files(&root.root_path, &mut files, control)?;
         files.sort();
         summary.timings.file_discovery += file_discovery_start.elapsed();
 
         for file in files {
-            pending_contributions.push(build_file(root, &file, &mut summary)?);
+            control.check()?;
+            pending_contributions.push(build_file(root, &file, &mut summary, control)?);
         }
     }
 
+    control.check()?;
     let index_build_start = Instant::now();
     let mut index = SymbolIndex::default();
     index
@@ -141,6 +179,7 @@ pub fn build_index(config: &IndexBuildConfig) -> Result<IndexBuildResult, String
         .map_err(|error| {
             format!("Invalid semantic contribution during index aggregation: {error:?}")
         })?;
+    control.check()?;
     summary.timings.index_build += index_build_start.elapsed();
 
     summary.timings.total = total_start.elapsed();
@@ -151,7 +190,9 @@ fn build_file(
     root: &IndexSourceRoot,
     file: &Path,
     summary: &mut IndexBuildSummary,
+    control: &IndexBuildControl,
 ) -> Result<PendingFileContribution, String> {
+    control.check()?;
     let semantic_file_build_start = Instant::now();
     let read_decode_start = Instant::now();
     let bytes =
@@ -162,11 +203,13 @@ fn build_file(
     let source = source.into_owned();
     summary.timings.read_decode += read_decode_start.elapsed();
 
+    control.check()?;
     let parse_start = Instant::now();
     let parse = parse_source(&source);
     let parse_diagnostics = parse.diagnostics.len();
     summary.timings.parse += parse_start.elapsed();
 
+    control.check()?;
     let ast_model_catalog_start = Instant::now();
     let semantic_file = SemanticFile::build(&source, &parse);
     semantic_file.contribution().validate().map_err(|error| {
@@ -180,6 +223,7 @@ fn build_file(
     summary.timings.ast_model_catalog += ast_model_catalog_start.elapsed();
     summary.timings.catalog_build += semantic_file_build_start.elapsed();
 
+    control.check()?;
     record_file_counts(
         summary,
         root.kind,
@@ -385,7 +429,12 @@ fn source_metadata(
     }
 }
 
-fn collect_script_files(folder: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
+fn collect_script_files(
+    folder: &Path,
+    files: &mut Vec<PathBuf>,
+    control: &IndexBuildControl,
+) -> Result<(), String> {
+    control.check()?;
     for entry in fs::read_dir(folder)
         .map_err(|error| format!("Failed to read folder {}: {error}", folder.display()))?
     {
@@ -393,10 +442,11 @@ fn collect_script_files(folder: &Path, files: &mut Vec<PathBuf>) -> Result<(), S
             .map_err(|error| format!("Failed to read entry in {}: {error}", folder.display()))?;
         let path = entry.path();
         if path.is_dir() {
-            collect_script_files(&path, files)?;
+            collect_script_files(&path, files, control)?;
         } else if path.extension().is_some_and(|extension| extension == "c") {
             files.push(path);
         }
+        control.check()?;
     }
 
     Ok(())

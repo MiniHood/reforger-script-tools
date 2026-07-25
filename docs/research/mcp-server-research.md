@@ -95,29 +95,35 @@ initialize run:
 
 | Measurement | Before MCP dependency | After MCP dependency |
 | --- | ---: | ---: |
-| Release executable size | 3,822,592 bytes | 6,035,968 bytes |
-| Warm initialize median | 12.20 ms | 11.21 ms |
-| Minimum initialize | 11.95 ms | 10.86 ms |
+| Release executable size | 3,822,592 bytes | 6,087,168 bytes |
+| Warm initialize median | 12.20 ms | 9.56 ms |
+| Minimum initialize | 11.95 ms | 9.09 ms |
 | First cold sample | 112.47 ms | 142.00 ms |
 
-The dependency added 2,213,376 bytes (57.9%) but produced no measured warm LSP
+The dependency and final runtime added 2,264,576 bytes (59.2%) but produced no measured warm LSP
 startup regression. A second executable would duplicate packaging and process
 selection while still sharing the Rust library, so the implementation retains
-one 6.04 MB packaged binary with explicit LSP/MCP modes. The cold sample is
+one 6.09 MB packaged binary with explicit LSP/MCP modes. The cold sample is
 recorded as context rather than a regression claim because one first-process
 sample is dominated by operating-system loading noise.
 
 Packaged acceptance used the binary extracted from the 1.0.2 VSIX rather than
-the Cargo target directory. MCP Inspector 0.21.2 initialized it, listed the
-closed `game_data_status` schemas without format warnings, and called the tool
-against the installed 6,495-file Game Data corpus. That cold rebuild produced
-143,144 indexed symbols in 36.60 seconds and a valid 19,802,234-byte cache.
-Codex CLI 0.146.0-alpha.3 then discovered the same installed-layout tool,
-called it without shell access, consumed `structuredContent`, and observed a
-warm cache load in 121 ms with the same catalogue revision. The raw wire suite
-separately captures standard `ping`, cancellation, protocol-error isolation,
-and EOF behavior because Inspector's CLI exposes tool/resource/prompt methods
-but does not expose `ping`.
+the Cargo target directory. Through MCP Inspector 0.21.2's authenticated stdio
+proxy, the installed binary negotiated `2025-11-25`, answered standard `ping`,
+listed the closed `game_data_status` schemas and annotations without format
+warnings, and called the tool against the real 6,495-file Game Data corpus.
+That cold rebuild produced 143,144 indexed symbols in 2.01 seconds and a valid
+19,802,335-byte v12 cache; a second call in the same process completed in
+10.68 ms with the same catalogue revision and byte-identical structured/text
+content. Codex CLI 0.146.0-alpha.3 then independently discovered the same
+installed-layout tool, called it without shell access, consumed
+`structuredContent`, and observed a new-process warm cache load in 634 ms with
+the same `gd1:6f5e8485b33db55032a643c21edec743ead288e7d0a9a4cbd848616c04920c55`
+catalogue revision. The raw wire suite additionally captures cancellation
+after initialization has actually started, cooperative worker shutdown, the
+120-second deadline through a deterministic shortened test budget,
+eight-request admission, worker-panic isolation and recovery, protocol-error
+isolation, and EOF behavior.
 
 The pinned s&box source demonstrates the product pattern we want:
 
@@ -417,8 +423,22 @@ The result contains `available`, `catalogueRevision`, source acquisition kind
 (`downloaded` or `manual`), available version/commit identity, file and symbol
 counts by kind/category, parse coverage, cache outcome (`loaded` or `rebuilt`),
 bounded initialization timings, active limits, bounded warnings, and recovery
-guidance. Optional source metadata remains absent when it is not known; the
-server does not fabricate it. No physical source or cache path is returned.
+guidance. Its `authorities` object labels source evidence as
+`evidence-catalogue`, acquisition metadata and cache facts as `filesystem`, and
+semantic counts/coverage as `language-engine`. Optional source metadata remains
+absent when it is not known; the server does not fabricate it. No physical
+source or cache path is returned.
+
+The revision combines a deterministic digest of every logical `.c` path and
+source byte with the canonical logical file/contribution payload, runtime
+summary, and cache/schema shape. The source digest also participates in cache
+validation. Before catalogue hashing, physical roots and acquisition
+fingerprints are replaced with neutral values. Consequently a body/comment
+edit, engine/schema change, or same-size timestamp-preserving edit produces a
+new revision, while moving identical Game Data to another installed path does
+not. Cache formats predating the source digest always rebuild; structural
+migration alone cannot prove that their semantic payload matches current
+source bytes.
 
 ### `search_game_data_symbols`
 
@@ -849,19 +869,28 @@ cancellation. Official-wiki search and ready-catalogue operations have a
 five-second ceiling. The first game-data initialization has a separate
 120-second ceiling because a valid cache miss may require parsing all extracted
 source; its timing is reported by status and is not misrepresented as search
-latency. A blocked filesystem read cannot always be interrupted, so a ceiling
-prevents a result from being accepted after its budget while the blocking
-worker unwinds safely. A timed-out/cancelled worker never writes to stdout on
-its own.
+latency. Cancellation is propagated through source traversal, content hashing,
+fingerprinting, per-file parsing, catalogue aggregation, and cache publication
+boundaries. The request boundary signals cancellation and gives the worker a
+100 ms join grace. After that grace, the protocol returns its deadline result
+or suppresses a client-cancelled response; runtime shutdown likewise has a
+bounded 250 ms grace. A single operating-system file read or parser call cannot
+be preempted safely, but its result is discarded at the next cooperative
+boundary and the worker cannot make the protocol response or EOF wait
+indefinitely. The detached task retains a separate one-worker initialization
+permit until it exits. Calls made after a timeout can consume ordinary request
+admission while they wait, but they cannot spawn additional blocking workers
+behind the stalled initializer.
 
 Diagnostics must not log document contents, excerpts, complete queries, or
 MCP payloads by default. A compact stderr record may contain tool name,
 duration, applied limits, result count, cancellation/timeout state, and stable
 error code. The MCP adapter maps ordinary domain/SDK errors at the request
 boundary and returns only sanitized recovery information where a response is
-still valid. An unexpected panic may terminate the MCP child process; process
-isolation is the recovery boundary, and the client can restart it. Physical
-paths stay in local diagnostics.
+still valid. A panic in a blocking catalogue worker is converted to a
+sanitized protocol error without terminating the MCP process; a panic in the
+protocol runtime itself may still terminate the child process, which the
+client can restart. Physical paths stay in local diagnostics.
 
 ### Path and corpus security invariants
 

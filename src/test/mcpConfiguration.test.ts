@@ -11,7 +11,7 @@ suite('MCP configuration', () => {
 			serverPath: 'C:\\Extensions\\reforger_language_server.exe',
 			gameDataScripts: 'D:\\Reforger\\scripts',
 			gameDataMetadata: 'C:\\Storage\\metadata.json',
-			indexCache: 'C:\\Storage\\index-cache\\game-data-symbol-index.v11.bin',
+			indexCache: 'C:\\Storage\\index-cache\\game-data-symbol-index.v12.bin',
 		});
 
 		assert.deepStrictEqual(launch, {
@@ -23,7 +23,7 @@ suite('MCP configuration', () => {
 				'--game-data-metadata',
 				'C:\\Storage\\metadata.json',
 				'--index-cache',
-				'C:\\Storage\\index-cache\\game-data-symbol-index.v11.bin',
+				'C:\\Storage\\index-cache\\game-data-symbol-index.v12.bin',
 			],
 		});
 	});
@@ -33,13 +33,13 @@ suite('MCP configuration', () => {
 			serverPath: '/extension/reforger_language_server',
 			gameDataScripts: undefined,
 			gameDataMetadata: undefined,
-			indexCache: '/storage/index-cache/game-data-symbol-index.v11.bin',
+			indexCache: '/storage/index-cache/game-data-symbol-index.v12.bin',
 		});
 
 		assert.deepStrictEqual(launch.args, [
 			'mcp',
 			'--index-cache',
-			'/storage/index-cache/game-data-symbol-index.v11.bin',
+			'/storage/index-cache/game-data-symbol-index.v12.bin',
 		]);
 	});
 

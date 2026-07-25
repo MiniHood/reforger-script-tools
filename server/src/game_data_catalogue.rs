@@ -1,17 +1,17 @@
 use crate::index::SymbolIndex;
+use crate::index_build::{IndexBuildControl, INDEX_BUILD_CANCELLED};
 use crate::index_cache::{
-    load_or_build_game_data_index, GameDataIndexCacheConfig, GameDataIndexCacheResult,
+    load_or_build_game_data_index_with_control, GameDataIndexCacheConfig, GameDataIndexCacheResult,
     IndexCacheStatus, IndexCacheTimings, RuntimeIndexSummary, SourceFingerprint,
 };
 use crate::model::SymbolKind;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 pub const GAME_DATA_INITIALIZATION_DEADLINE_MS: u64 = 120_000;
@@ -28,10 +28,12 @@ pub struct GameDataCatalogueConfig {
 #[derive(Debug)]
 pub struct GameDataCatalogue {
     config: GameDataCatalogueConfig,
-    state: OnceLock<GameDataCatalogueState>,
+    state: Mutex<Option<GameDataCatalogueState>>,
+    #[cfg(debug_assertions)]
+    panic_once: std::sync::atomic::AtomicBool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct GameDataCatalogueState {
     status: GameDataStatus,
     // Ticket #17 adds semantic queries over this exact immutable index.
@@ -42,15 +44,69 @@ impl GameDataCatalogue {
     pub fn new(config: GameDataCatalogueConfig) -> Self {
         Self {
             config,
-            state: OnceLock::new(),
+            state: Mutex::new(None),
+            #[cfg(debug_assertions)]
+            panic_once: std::sync::atomic::AtomicBool::new(
+                std::env::var("REFORGER_MCP_TEST_PANIC_ONCE").as_deref() == Ok("1"),
+            ),
         }
     }
 
-    pub fn status(&self) -> GameDataStatus {
-        self.state
-            .get_or_init(|| initialize_catalogue(&self.config))
-            .status
-            .clone()
+    pub fn status(&self, control: &IndexBuildControl) -> Result<GameDataStatus, String> {
+        control.check()?;
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(state) = state.as_ref() {
+            return Ok(state.status.clone());
+        }
+
+        self.before_initialization(control)?;
+        let initialized = initialize_catalogue(&self.config, control)?;
+        let status = initialized.status.clone();
+        *state = Some(initialized);
+        Ok(status)
+    }
+
+    #[cfg(debug_assertions)]
+    fn before_initialization(&self, control: &IndexBuildControl) -> Result<(), String> {
+        use std::io::Write;
+        use std::sync::atomic::Ordering;
+
+        if let Ok(marker) = std::env::var("REFORGER_MCP_TEST_INITIALIZATION_STARTED_MARKER") {
+            if let Ok(mut file) = fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(marker)
+            {
+                let _ = writeln!(file, "started");
+            }
+        }
+        let uninterruptible_delay_ms =
+            std::env::var("REFORGER_MCP_TEST_UNINTERRUPTIBLE_DELAY_MS")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(0);
+        std::thread::sleep(Duration::from_millis(uninterruptible_delay_ms));
+        if self.panic_once.swap(false, Ordering::AcqRel) {
+            panic!("intentional MCP initialization test panic");
+        }
+        let delay_ms = std::env::var("REFORGER_MCP_TEST_INITIALIZATION_DELAY_MS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(0);
+        let started = Instant::now();
+        while started.elapsed() < Duration::from_millis(delay_ms) {
+            control.check()?;
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        control.check()
+    }
+
+    #[cfg(not(debug_assertions))]
+    fn before_initialization(&self, control: &IndexBuildControl) -> Result<(), String> {
+        control.check()
     }
 }
 
@@ -60,6 +116,7 @@ pub struct GameDataStatus {
     pub available: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub catalogue_revision: Option<String>,
+    pub authorities: GameDataAuthorities,
     pub source: GameDataSourceStatus,
     pub coverage: GameDataCoverage,
     pub counts: GameDataCounts,
@@ -69,6 +126,24 @@ pub struct GameDataStatus {
     pub limits: GameDataLimits,
     pub warnings: Vec<GameDataNotice>,
     pub recovery: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GameDataAuthorities {
+    pub source_evidence: FactAuthority,
+    pub source_metadata: FactAuthority,
+    pub semantic_catalogue: FactAuthority,
+    pub cache: FactAuthority,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum FactAuthority {
+    Filesystem,
+    LanguageEngine,
+    EvidenceCatalogue,
+    Workbench,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -155,43 +230,51 @@ pub struct GameDataNotice {
     pub message: String,
 }
 
-fn initialize_catalogue(config: &GameDataCatalogueConfig) -> GameDataCatalogueState {
+fn initialize_catalogue(
+    config: &GameDataCatalogueConfig,
+    control: &IndexBuildControl,
+) -> Result<GameDataCatalogueState, String> {
+    control.check()?;
     let started = Instant::now();
     let source = source_status(config, None);
     let Some(scripts_root) = config.scripts_root.clone() else {
-        return unavailable_state(
+        return Ok(unavailable_state(
             source,
             started.elapsed(),
             "game_data_not_configured",
             "Game Data is not configured for this MCP process.",
             "Regenerate the MCP configuration from the extension after configuring Game Data.",
-        );
+        ));
     };
     let Some(cache_path) = config.cache_path.clone() else {
-        return unavailable_state(
+        return Ok(unavailable_state(
             source,
             started.elapsed(),
             "cache_not_configured",
             "The validated Game Data cache location is not configured.",
             "Regenerate the MCP configuration from the extension.",
-        );
+        ));
     };
 
-    let result = load_or_build_game_data_index(&GameDataIndexCacheConfig {
-        scripts_root,
-        metadata_path: config.metadata_path.clone(),
-        cache_path,
-    });
+    let result = load_or_build_game_data_index_with_control(
+        &GameDataIndexCacheConfig {
+            scripts_root,
+            metadata_path: config.metadata_path.clone(),
+            cache_path,
+        },
+        control,
+    );
 
     match result {
-        Ok(result) => ready_state(config, result),
-        Err(_) => unavailable_state(
+        Ok(result) => Ok(ready_state(config, result)),
+        Err(error) if error == INDEX_BUILD_CANCELLED => Err(error),
+        Err(_) => Ok(unavailable_state(
             source,
             started.elapsed(),
             "game_data_initialization_failed",
             "Game Data could not be validated, loaded, or rebuilt.",
             "Verify the configured Game Data source, then restart the MCP process.",
-        ),
+        )),
     }
 }
 
@@ -222,7 +305,8 @@ fn ready_state(
     let source = source_status(config, Some(&result.fingerprint));
     let status = GameDataStatus {
         available: true,
-        catalogue_revision: Some(catalogue_revision(&result.fingerprint)),
+        catalogue_revision: Some(format!("gd1:{}", result.catalogue_digest)),
+        authorities: authorities(),
         source,
         coverage: coverage(&result.summary),
         counts: counts(&result.index),
@@ -250,6 +334,7 @@ fn unavailable_state(
         status: GameDataStatus {
             available: false,
             catalogue_revision: None,
+            authorities: authorities(),
             source,
             coverage: GameDataCoverage::default(),
             counts: GameDataCounts::default(),
@@ -417,51 +502,11 @@ fn limits() -> GameDataLimits {
     }
 }
 
-fn catalogue_revision(fingerprint: &SourceFingerprint) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(b"reforger-game-data-catalogue-v1\0");
-    match fingerprint {
-        SourceFingerprint::Downloaded { commit_sha, .. } => {
-            hasher.update(b"downloaded\0");
-            hasher.update(commit_sha.as_bytes());
-        }
-        SourceFingerprint::Manual {
-            file_count,
-            byte_count,
-            latest_modified_unix_ms,
-            ..
-        } => {
-            hasher.update(b"manual\0");
-            hasher.update(file_count.to_le_bytes());
-            hasher.update(byte_count.to_le_bytes());
-            hasher.update(latest_modified_unix_ms.to_le_bytes());
-        }
-    }
-    let digest = hasher.finalize();
-    let mut encoded = String::with_capacity(4 + digest.len() * 2);
-    encoded.push_str("gd1:");
-    for byte in digest {
-        use std::fmt::Write as _;
-        let _ = write!(encoded, "{byte:02x}");
-    }
-    encoded
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{catalogue_revision, SourceFingerprint};
-
-    #[test]
-    fn catalogue_revision_does_not_depend_on_physical_root() {
-        let left = SourceFingerprint::Downloaded {
-            scripts_root: "C:/Users/one/scripts".to_string(),
-            commit_sha: "abc123".to_string(),
-        };
-        let right = SourceFingerprint::Downloaded {
-            scripts_root: "D:/another/location/scripts".to_string(),
-            commit_sha: "abc123".to_string(),
-        };
-
-        assert_eq!(catalogue_revision(&left), catalogue_revision(&right));
+fn authorities() -> GameDataAuthorities {
+    GameDataAuthorities {
+        source_evidence: FactAuthority::EvidenceCatalogue,
+        source_metadata: FactAuthority::Filesystem,
+        semantic_catalogue: FactAuthority::LanguageEngine,
+        cache: FactAuthority::Filesystem,
     }
 }

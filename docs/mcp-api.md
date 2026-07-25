@@ -17,7 +17,17 @@ Use Game Data tools for semantic Enfusion declarations and extracted source evid
 
 Initialize and report the packaged Reforger Game Data Catalogue. Use this first when Game Data availability or coverage is uncertain. Returns the immutable catalogue revision, source acquisition/version facts, semantic coverage and counts, cache outcome, bounded timings, limits, warnings, and recovery guidance without physical paths; it does not search symbols.
 
-Effects: read-only, closed-world. The first call may write the existing derived Game Data cache; it never changes source data or reaches the live web.
+### Annotations
+
+```json
+{
+  "title": "Game Data status",
+  "readOnlyHint": true,
+  "openWorldHint": false
+}
+```
+
+The first call may write the existing derived Game Data cache; it never changes source data or reaches the live web.
 
 ### Input schema
 
@@ -34,12 +44,45 @@ Effects: read-only, closed-world. The first call may write the existing derived 
 ```json
 {
   "$defs": {
+    "FactAuthority": {
+      "enum": [
+        "filesystem",
+        "language-engine",
+        "evidence-catalogue",
+        "workbench"
+      ],
+      "type": "string"
+    },
     "GameDataAcquisition": {
       "enum": [
         "downloaded",
         "manual"
       ],
       "type": "string"
+    },
+    "GameDataAuthorities": {
+      "additionalProperties": false,
+      "properties": {
+        "cache": {
+          "$ref": "#/$defs/FactAuthority"
+        },
+        "semanticCatalogue": {
+          "$ref": "#/$defs/FactAuthority"
+        },
+        "sourceEvidence": {
+          "$ref": "#/$defs/FactAuthority"
+        },
+        "sourceMetadata": {
+          "$ref": "#/$defs/FactAuthority"
+        }
+      },
+      "required": [
+        "sourceEvidence",
+        "sourceMetadata",
+        "semanticCatalogue",
+        "cache"
+      ],
+      "type": "object"
     },
     "GameDataCacheOutcome": {
       "enum": [
@@ -265,6 +308,9 @@ Effects: read-only, closed-world. The first call may write the existing derived 
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "properties": {
+    "authorities": {
+      "$ref": "#/$defs/GameDataAuthorities"
+    },
     "available": {
       "type": "boolean"
     },
@@ -314,6 +360,7 @@ Effects: read-only, closed-world. The first call may write the existing derived 
   },
   "required": [
     "available",
+    "authorities",
     "source",
     "coverage",
     "counts",
@@ -335,6 +382,7 @@ Effects: read-only, closed-world. The first call may write the existing derived 
 ### Stable failures
 
 - `deadline_exceeded`: restart after verifying the configured Game Data source.
+- `response_too_large`: report the bounded-result overflow as a Reforger Script Tools defect.
 - Invalid arguments and unknown tool names are MCP protocol errors.
 - Missing or invalid Game Data is a successful status result with `available: false`, bounded warnings, and recovery guidance.
 
