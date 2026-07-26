@@ -107,7 +107,10 @@ Compiler validation is captured once per invocation and exposed as bounded,
 opaque-cursor pages so an MCP client can retrieve every finding without
 recompiling between pages. Process shutdown is bound to a process identity that
 includes both PID and observed start time; only graceful main-window close is
-supported.
+supported. A restart first resolves exactly one visible Enfusion Workbench
+project window to exactly one matching local `.gproj` descriptor, then relaunches
+with Workbench's `-gproj` argument. It refuses before closure if that project
+identity cannot be resolved.
 
 Every failed public Workbench operation returns a unique support reference.
 The same reference is written to the default-on rotating integration log with

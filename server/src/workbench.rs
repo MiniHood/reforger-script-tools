@@ -795,6 +795,13 @@ impl WorkbenchController {
     }
 
     pub fn launch(&self) -> Result<WorkbenchProcessResult, WorkbenchFailure> {
+        self.launch_project(None)
+    }
+
+    fn launch_project(
+        &self,
+        project: Option<&std::path::Path>,
+    ) -> Result<WorkbenchProcessResult, WorkbenchFailure> {
         let started = Instant::now();
         let existing = workbench_processes();
         self.observe_processes(&existing);
@@ -845,6 +852,9 @@ impl WorkbenchController {
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
+        if let Some(project) = project {
+            command.arg("-gproj").arg(project);
+        }
         if let Some(working_directory) = working_directory {
             command.current_dir(working_directory);
         }
@@ -995,11 +1005,37 @@ impl WorkbenchController {
     }
 
     pub fn restart(&self, process_id: u32) -> Result<WorkbenchProcessResult, WorkbenchFailure> {
+        let observed = self.observed_processes.lock().ok().and_then(|processes| {
+            processes
+                .iter()
+                .find(|process| process.id == process_id)
+                .copied()
+        });
+        let Some(observed) = observed.filter(|process| workbench_processes().contains(process))
+        else {
+            return Err(self.correlate_failure_details(
+                "restart",
+                "stale-or-unobserved-process",
+                failure(WorkbenchFailureCode::Unavailable),
+                json!({"processId": process_id}),
+            ));
+        };
+        let paths = self.paths();
+        let project = workbench_project_title(observed)
+            .and_then(|title| resolve_project_gproj(&paths.workbench_root, &title))
+            .ok_or_else(|| {
+                self.correlate_failure_details(
+                    "restart",
+                    "project-not-resolved",
+                    failure(WorkbenchFailureCode::Unavailable),
+                    json!({"processId": process_id}),
+                )
+            })?;
         let stopped = self.stop(process_id)?;
         if !stopped.exited {
             return Ok(stopped);
         }
-        self.launch()
+        self.launch_project(Some(&project))
     }
 
     fn active_bridge_status(
@@ -2013,6 +2049,92 @@ fn workbench_process_ids() -> Vec<u32> {
         .collect()
 }
 
+fn workbench_project_title(process: ProcessIdentity) -> Option<String> {
+    let script = format!(
+        r#"
+Add-Type @'
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+public static class RSTRestartProject {{
+ public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+ [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
+ [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+ [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+ [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int maxCount);
+}}
+'@
+$p = Get-Process -Id {process_id} -ErrorAction Stop
+if ($p.ProcessName -ne 'ArmaReforgerWorkbenchSteamDiag' -or [uint64]$p.StartTime.ToUniversalTime().Ticks -ne [uint64]{start_ticks}) {{ exit 2 }}
+$titles = [System.Collections.Generic.List[string]]::new()
+$callback = [RSTRestartProject+EnumWindowsProc] {{ param([IntPtr]$hWnd, [IntPtr]$unused)
+ [uint32]$owner = 0; [void][RSTRestartProject]::GetWindowThreadProcessId($hWnd, [ref]$owner)
+ if ($owner -eq $p.Id -and [RSTRestartProject]::IsWindowVisible($hWnd)) {{
+  $title = [System.Text.StringBuilder]::new(512); [void][RSTRestartProject]::GetWindowText($hWnd, $title, $title.Capacity)
+  $value = $title.ToString(); if ($value.StartsWith('Enfusion Workbench - ', [System.StringComparison]::Ordinal)) {{ $titles.Add($value.Substring('Enfusion Workbench - '.Length)) }}
+ }}
+ return $true
+}}
+[void][RSTRestartProject]::EnumWindows($callback, [IntPtr]::Zero)
+if ($titles.Count -ne 1) {{ exit 3 }}
+$titles[0]
+"#,
+        process_id = process.id,
+        start_ticks = process.start_ticks,
+    );
+    let output = std::process::Command::new("powershell.exe")
+        .args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            &script,
+        ])
+        .output()
+        .ok()?;
+    output.status.success().then_some(())?;
+    let title = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    (!title.is_empty()).then_some(title)
+}
+
+fn resolve_project_gproj(workbench_root: &std::path::Path, title: &str) -> Option<PathBuf> {
+    let mut directories = vec![workbench_root.join("addons")];
+    let mut matches = Vec::new();
+    while let Some(directory) = directories.pop() {
+        for entry in fs::read_dir(directory).ok()?.flatten() {
+            let path = entry.path();
+            let kind = entry.file_type().ok()?;
+            if kind.is_symlink() {
+                continue;
+            }
+            if kind.is_dir() {
+                directories.push(path);
+            } else if kind.is_file()
+                && path
+                    .extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("gproj"))
+                && fs::read_to_string(&path)
+                    .ok()
+                    .is_some_and(|text| project_title(&text) == Some(title))
+            {
+                matches.push(path);
+            }
+        }
+        if matches.len() > 1 || directories.len() > 1_024 {
+            return None;
+        }
+    }
+    (matches.len() == 1).then(|| matches.remove(0))
+}
+
+fn project_title(content: &str) -> Option<&str> {
+    content.lines().find_map(|line| {
+        let line = line.trim();
+        let value = line.strip_prefix("TITLE ")?.trim();
+        value.strip_prefix('"')?.strip_suffix('"')
+    })
+}
+
 fn discover_steam_app(app_id: &str, default_folder: &str) -> Option<PathBuf> {
     let steam_root = std::env::var_os("ProgramFiles(x86)")
         .map(PathBuf::from)
@@ -2851,6 +2973,27 @@ mod tests {
         assert_eq!(lines.len(), 500);
         assert_eq!(lines.first().map(String::as_str), Some("line 101"));
         assert_eq!(lines.last().map(String::as_str), Some("line 600"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn restart_project_resolution_requires_one_exact_gproj_title() {
+        let root = test_root("restart-project");
+        let addons = root.join("addons");
+        let matching = addons.join("Test Bullshit").join("addon.gproj");
+        fs::create_dir_all(matching.parent().unwrap()).unwrap();
+        fs::write(&matching, "ID \"TestBullshit\"\nTITLE \"Test Bullshit\"\n").unwrap();
+
+        assert_eq!(
+            super::resolve_project_gproj(&root, "Test Bullshit"),
+            Some(matching.clone())
+        );
+        fs::write(
+            addons.join("duplicate.gproj"),
+            "ID \"Duplicate\"\nTITLE \"Test Bullshit\"\n",
+        )
+        .unwrap();
+        assert_eq!(super::resolve_project_gproj(&root, "Test Bullshit"), None);
         fs::remove_dir_all(root).unwrap();
     }
 
