@@ -53,9 +53,10 @@ Workbench instance with your addon project open.
 
 The extension reconnects automatically. The Workbench status item shows
 availability, and **Reforger Script Tools: Validate Scripts in Workbench** runs
-validation manually. Workbench validation is also requested at session start,
-after an eligible save, and after the active dirty script has been idle for
-three seconds.
+validation manually. Workbench validation is also requested at session start
+and after an eligible save. By default, it also saves the active dirty script
+and validates after three seconds without typing; disable **Workbench NET API:
+Save and Validate On Idle** to use only explicit saves and manual validation.
 
 These steps follow Bohemia Interactive's official
 [Resource Manager options documentation](https://community.bistudio.com/wiki/Arma_Reforger%3AResource_Manager%3A_Options#Enable_net_API).
@@ -79,6 +80,7 @@ Tools`, or add the keys to `settings.json`.
 | `reforgerScriptTools.workbench.enabled` | `true` | Enable Workbench NET API status checks and compiler validation. |
 | `reforgerScriptTools.workbench.host` | `"127.0.0.1"` | Workbench NET API loopback host. IPv4 loopback addresses and `::1` are accepted. |
 | `reforgerScriptTools.workbench.port` | `5775` | Workbench NET API port, from `1` through `65535`. The extension does not scan other ports. |
+| `reforgerScriptTools.workbench.saveOnIdle` | `true` | After three seconds without typing, save the active Enforce Script and validate in Workbench. Disable to validate only on explicit save or command. |
 
 ## Customize Semantic Colors
 

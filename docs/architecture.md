@@ -204,12 +204,15 @@ This one operation is independent of the fixed idle interval and never saves a
 dirty document.
 
 Continuous validation is single-flight. An eligible save cancels any pending
-idle timer and validates immediately. Unsaved typing uses a fixed three-second
-idle interval: after the active dirty Enfusion Script has been idle for that
-period, the adapter saves only that document and validates through Workbench.
-The adapter suppresses the save event it initiated so one idle trigger cannot
-produce a duplicate validation. Triggers during a validation collapse into one
-follow-up operation. A failed save does not call
+idle timer and validates immediately. The enabled-by-default
+`reforgerScriptTools.workbench.saveOnIdle` setting controls saved-idle
+validation. When enabled, unsaved typing uses a fixed three-second idle
+interval: after the active dirty Enfusion Script has been idle for that period,
+the adapter saves only that document and validates through Workbench. When
+disabled, dirty typing only marks existing compiler findings stale; explicit
+saves and manual validation remain available. The adapter suppresses the save
+event it initiated so one idle trigger cannot produce a duplicate validation.
+Triggers during a validation collapse into one follow-up operation. A failed save does not call
 Workbench and does not retry compilation until another user or editor trigger
 occurs. When another edit arrives during an in-flight validation, it supersedes
 earlier queued triggers so the single follow-up cannot begin before the newest

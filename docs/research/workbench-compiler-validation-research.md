@@ -351,10 +351,14 @@ verified.
 
 ### Validation controls and scheduling
 
-The compiler-validation schedule and profile are fixed internal policy: idle
-typing waits three seconds, saves validate immediately, and every request uses
-the verified `WORKBENCH` profile. They are deliberately not user settings
-because no supported alternative behavior exists.
+The compiler-validation profile is fixed to the verified `WORKBENCH` profile.
+Saves validate immediately. Saved-idle validation waits three seconds and is
+controlled by the enabled-by-default
+`reforgerScriptTools.workbench.saveOnIdle` setting: when enabled, the active
+dirty script is saved and then validated; when disabled, typing leaves the
+document dirty and validation is requested only by an explicit save or command.
+The setting makes the persistence side effect an intentional editor workflow
+without inventing an unverified compiler configuration.
 
 An explicit **Reforger: Validate Scripts in Workbench** command remains
 available when the Gateway is ready. The first successful status probe in an

@@ -4,6 +4,7 @@ export const workbenchConfig = {
 		enabled: 'enabled',
 		host: 'host',
 		port: 'port',
+		saveOnIdle: 'saveOnIdle',
 	},
 } as const;
 
@@ -11,6 +12,7 @@ export const workbenchDefaults = {
 	enabled: true,
 	host: '127.0.0.1',
 	port: 5775,
+	saveOnIdle: true,
 } as const;
 
 export const workbenchCommands = {

@@ -6,6 +6,7 @@ import * as vscode from 'vscode';
 import {
 	workbenchCommands,
 	workbenchConfig,
+	workbenchDefaults,
 	workbenchDiagnostics,
 	workbenchTestCommands,
 } from '../extensionConfig/workbench';
@@ -353,6 +354,39 @@ suite('Workbench compiler validation', () => {
 			await waitFor(async () =>
 				(await observeWorkbenchCompiler()).phase === 'ready' ? true : undefined);
 			assert.ok(Date.now() - editedAt >= 2_500);
+		} finally {
+			await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
+			await source.remove();
+			await peer.close();
+		}
+	});
+
+	test('does not save or validate idle edits when saved-idle validation is disabled', async function () {
+		this.timeout(5_000);
+		const workspace = onlyWorkspaceFolder();
+		const source = await createTemporaryScript(workspace, 'SavedIdleDisabled');
+		const peer = await startNetApiPeer(request => {
+			const payload = request.payload as { APIFunc?: string };
+			return payload.APIFunc === 'IsWorkbenchRunning'
+				? { errorCode: 'Ok', payload: { IsRunning: true, ScriptsCompiled: true } }
+				: { errorCode: 'Ok', payload: { Errors: [], Warnings: [], Success: true } };
+		});
+		try {
+			await configurePeer(peer.port);
+			const configuration = vscode.workspace.getConfiguration(workbenchConfig.section);
+			await configuration.update(
+				workbenchConfig.settings.saveOnIdle,
+				false,
+				vscode.ConfigurationTarget.Global,
+			);
+			const document = await vscode.workspace.openTextDocument(source.filePath);
+			await vscode.window.showTextDocument(document);
+			await applyAppend(document, '// keep dirty when saved-idle validation is disabled');
+
+			await new Promise(resolve => setTimeout(resolve, 3_300));
+
+			assert.strictEqual(document.isDirty, true);
+			assert.strictEqual(validationRequests(peer).length, 0);
 		} finally {
 			await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
 			await source.remove();
@@ -993,6 +1027,11 @@ async function configurePeer(port: number): Promise<void> {
 	await configuration.update(workbenchConfig.settings.enabled, false, vscode.ConfigurationTarget.Global);
 	await configuration.update(workbenchConfig.settings.host, '127.0.0.1', vscode.ConfigurationTarget.Global);
 	await configuration.update(workbenchConfig.settings.port, port, vscode.ConfigurationTarget.Global);
+	await configuration.update(
+		workbenchConfig.settings.saveOnIdle,
+		workbenchDefaults.saveOnIdle,
+		vscode.ConfigurationTarget.Global,
+	);
 	await configuration.update(workbenchConfig.settings.enabled, true, vscode.ConfigurationTarget.Global);
 }
 

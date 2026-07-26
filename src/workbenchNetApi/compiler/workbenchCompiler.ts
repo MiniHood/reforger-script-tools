@@ -54,6 +54,7 @@ interface WorkbenchConfiguration {
 	enabled: boolean;
 	host: string;
 	port: number;
+	saveOnIdle: boolean;
 }
 
 interface RenderedDiagnosticSet {
@@ -268,7 +269,8 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		}
 		this.scriptEditGeneration += 1;
 		this.markDiagnosticsStale('the script has newer edits');
-		if (vscode.window.activeTextEditor?.document.uri.toString() === document.uri.toString()) {
+		if (this.configuration.saveOnIdle
+			&& vscode.window.activeTextEditor?.document.uri.toString() === document.uri.toString()) {
 			this.scheduleValidation({
 				generation: this.configurationGeneration,
 				trigger: 'edit',
@@ -845,6 +847,10 @@ function readConfiguration(): WorkbenchConfiguration {
 		enabled: configuration.get(workbenchConfig.settings.enabled, workbenchDefaults.enabled),
 		host: configuration.get(workbenchConfig.settings.host, workbenchDefaults.host),
 		port: configuration.get(workbenchConfig.settings.port, workbenchDefaults.port),
+		saveOnIdle: configuration.get(
+			workbenchConfig.settings.saveOnIdle,
+			workbenchDefaults.saveOnIdle,
+		),
 	};
 }
 
