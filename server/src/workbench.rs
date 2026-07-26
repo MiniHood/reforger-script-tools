@@ -103,7 +103,7 @@ pub struct WorkbenchGateway {
     request_lock: Arc<Mutex<()>>,
 }
 
-pub const WORKBENCH_BRIDGE_VERSION: &str = "1.2.0";
+pub const WORKBENCH_BRIDGE_VERSION: &str = "1.3.0";
 pub const WORKBENCH_BRIDGE_PROTOCOL_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -223,6 +223,15 @@ pub struct WorkbenchOpenWorldResult {
 pub struct WorkbenchPlaySessionResult {
     pub accepted: bool,
     pub status: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkbenchProjectContext {
+    pub bridge_version: String,
+    pub protocol_version: u32,
+    pub loaded_addons: Vec<String>,
+    pub loaded_addons_truncated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
@@ -710,6 +719,48 @@ impl WorkbenchController {
             started,
             json!({"opened": result.opened}),
         );
+        Ok(result)
+    }
+
+    pub fn project_context(&self) -> Result<WorkbenchProjectContext, WorkbenchFailure> {
+        let started = Instant::now();
+        let value = self
+            .gateway
+            .request(
+                json!({"APIFunc": "RST_WorkbenchProjectContext"}),
+                self.options.gateway.status_deadline,
+            )
+            .map_err(|failure| {
+                self.correlate_failure_details(
+                    "project_context",
+                    failure_code(failure.code),
+                    failure,
+                    json!({"handler": "RST_WorkbenchProjectContext"}),
+                )
+            })?;
+        let raw: RawBridgeProjectContext = serde_json::from_value(value).map_err(|_| {
+            self.correlate_failure_details(
+                "project_context",
+                "workbench_protocol_error",
+                failure(WorkbenchFailureCode::Protocol),
+                json!({"handler": "RST_WorkbenchProjectContext"}),
+            )
+        })?;
+        if raw.protocol_version != WORKBENCH_BRIDGE_PROTOCOL_VERSION {
+            return Err(self.correlate_failure_details(
+                "project_context", "incompatible-handler", failure(WorkbenchFailureCode::Protocol),
+                json!({"handler": "RST_WorkbenchProjectContext", "activeBridgeVersion": raw.bridge_version, "activeProtocolVersion": raw.protocol_version}),
+            ));
+        }
+        let (loaded_addons, loaded_addons_truncated) =
+            split_bounded_list(&raw.loaded_addons, 256, 256);
+        let result = WorkbenchProjectContext {
+            bridge_version: raw.bridge_version,
+            protocol_version: raw.protocol_version,
+            loaded_addons,
+            loaded_addons_truncated,
+        };
+        self.log_event_timed("project-context", "success", started, json!({"loadedAddonCount": result.loaded_addons.len(), "loadedAddonsTruncated": result.loaded_addons_truncated}));
         Ok(result)
     }
 
@@ -1816,6 +1867,16 @@ struct RawBridgeState {
     loaded_addons: String,
 }
 
+#[derive(Deserialize)]
+struct RawBridgeProjectContext {
+    #[serde(rename = "bridgeVersion")]
+    bridge_version: String,
+    #[serde(rename = "protocolVersion")]
+    protocol_version: u32,
+    #[serde(rename = "loadedAddons", default)]
+    loaded_addons: String,
+}
+
 fn workbench_bool(value: &Value) -> bool {
     matches!(value, Value::Bool(true)) || value.as_i64().is_some_and(|integer| integer != 0)
 }
@@ -2335,6 +2396,10 @@ fn bridge_payload() -> &'static [(&'static str, &'static str)] {
         ("RST_WorkbenchState.c", BRIDGE_STATE_SOURCE),
         ("RST_WorkbenchOpenWorld.c", BRIDGE_OPEN_WORLD_SOURCE),
         ("RST_WorkbenchPlaySession.c", BRIDGE_PLAY_SESSION_SOURCE),
+        (
+            "RST_WorkbenchProjectContext.c",
+            BRIDGE_PROJECT_CONTEXT_SOURCE,
+        ),
     ]
 }
 
@@ -2369,9 +2434,9 @@ class RST_WorkbenchCapabilities : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchCapabilitiesResponse response = new RST_WorkbenchCapabilitiesResponse();
-		response.bridgeVersion = "1.2.0";
+		response.bridgeVersion = "1.3.0";
 	response.protocolVersion = 1;
-	response.capabilities = "state;open-world;play-session";
+	response.capabilities = "state;open-world;play-session;project-context";
 		return response;
 	}
 }
@@ -2414,7 +2479,7 @@ class RST_WorkbenchState : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchStateResponse response = new RST_WorkbenchStateResponse();
-		response.bridgeVersion = "1.2.0";
+	response.bridgeVersion = "1.3.0";
 		response.protocolVersion = 1;
 		response.mode = "workbench";
 		response.playSession = "unavailable";
@@ -2565,6 +2630,57 @@ class RST_WorkbenchPlaySession : NetApiHandler
 			response.status = "play-stopped";
 		}
 		response.accepted = true;
+		return response;
+	}
+}
+#endif
+"#;
+
+const BRIDGE_PROJECT_CONTEXT_SOURCE: &str = r#"#ifdef WORKBENCH
+class RST_WorkbenchProjectContextRequest : JsonApiStruct
+{
+	void RST_WorkbenchProjectContextRequest()
+	{
+		RegAll();
+	}
+}
+
+class RST_WorkbenchProjectContextResponse : JsonApiStruct
+{
+	string bridgeVersion;
+	int protocolVersion;
+	string loadedAddons;
+
+	void RST_WorkbenchProjectContextResponse()
+	{
+		RegAll();
+	}
+}
+
+class RST_WorkbenchProjectContext : NetApiHandler
+{
+	override JsonApiStruct GetRequest()
+	{
+		return new RST_WorkbenchProjectContextRequest();
+	}
+
+	override JsonApiStruct GetResponse(JsonApiStruct request)
+	{
+		RST_WorkbenchProjectContextResponse response = new RST_WorkbenchProjectContextResponse();
+		response.bridgeVersion = "1.3.0";
+		response.protocolVersion = 1;
+		array<string> addonGuids = new array<string>();
+		GameProject.GetLoadedAddons(addonGuids);
+		foreach (string addonGuid : addonGuids)
+		{
+			string addonId = GameProject.GetAddonID(addonGuid);
+			if (addonId != string.Empty)
+			{
+				if (response.loadedAddons != string.Empty)
+					response.loadedAddons += ";";
+				response.loadedAddons += addonId;
+			}
+		}
 		return response;
 	}
 }

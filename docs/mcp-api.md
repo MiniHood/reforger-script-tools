@@ -2862,6 +2862,67 @@ Read bounded live editor state from the compatible managed Workbench handler pac
 
 Workbench tools return structured tool errors with a stable code, operation phase, retryability, and a unique log reference matching a rotating integration-log record. Raw transport and Workbench payload details are not exposed.
 
+## `workbench_project_context`
+
+Read the loaded Workbench addon identities from the compatible managed handler package. This is live editor context, not a filesystem project scan.
+
+### Annotations
+
+```json
+{
+  "title": "Read Workbench project context",
+  "readOnlyHint": true,
+  "openWorldHint": false
+}
+```
+
+### Input schema
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {},
+  "type": "object"
+}
+```
+
+### Output schema
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "bridgeVersion": {
+      "type": "string"
+    },
+    "loadedAddons": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "loadedAddonsTruncated": {
+      "type": "boolean"
+    },
+    "protocolVersion": {
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "bridgeVersion",
+    "protocolVersion",
+    "loadedAddons",
+    "loadedAddonsTruncated"
+  ],
+  "type": "object"
+}
+```
+
+### Stable failures
+
+Workbench tools return structured tool errors with a stable code, operation phase, retryability, and a unique log reference matching a rotating integration-log record. Raw transport and Workbench payload details are not exposed.
+
 ## `workbench_open_world`
 
 Open one typed World Editor world through the compatible managed Workbench handler package without restarting Workbench.

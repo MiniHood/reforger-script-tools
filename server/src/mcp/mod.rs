@@ -26,7 +26,8 @@ use crate::workbench::{
     WorkbenchBridgeInstallResult, WorkbenchController, WorkbenchControllerOptions,
     WorkbenchFailure, WorkbenchFailureCode, WorkbenchInstallAuthorization, WorkbenchLiveState,
     WorkbenchLogRead, WorkbenchOpenWorldResult, WorkbenchOverview, WorkbenchPlaySessionResult,
-    WorkbenchProcessResult, WorkbenchScriptActivationResult, WorkbenchValidationPage,
+    WorkbenchProcessResult, WorkbenchProjectContext, WorkbenchScriptActivationResult,
+    WorkbenchValidationPage,
 };
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, ContentBlock, Implementation, ListToolsResult,
@@ -56,6 +57,7 @@ pub const WORKBENCH_STATUS_TOOL_NAME: &str = "workbench_status";
 pub const WORKBENCH_VALIDATE_SCRIPTS_TOOL_NAME: &str = "workbench_validate_scripts";
 pub const WORKBENCH_INSTALL_BRIDGE_TOOL_NAME: &str = "workbench_install_bridge";
 pub const WORKBENCH_STATE_TOOL_NAME: &str = "workbench_state";
+pub const WORKBENCH_PROJECT_CONTEXT_TOOL_NAME: &str = "workbench_project_context";
 pub const WORKBENCH_OPEN_WORLD_TOOL_NAME: &str = "workbench_open_world";
 pub const WORKBENCH_START_PLAY_SESSION_TOOL_NAME: &str = "workbench_start_play_session";
 pub const WORKBENCH_STOP_PLAY_SESSION_TOOL_NAME: &str = "workbench_stop_play_session";
@@ -88,6 +90,7 @@ const WORKBENCH_VALIDATE_SCRIPTS_DESCRIPTION: &str = "Validate the currently loa
 const WORKBENCH_INSTALL_BRIDGE_DESCRIPTION: &str = "Maintain the versioned Reforger Script Tools handler package after the VS Code extension has recorded first-install consent and compile it through the connected native NET API. A newly written profile handler package becomes available after the user refreshes Workbench; the installer deliberately does not probe the handler before that refresh. If no managed manifest exists, this tool returns workbench_installation_consent_required without writing profile files.";
 const WORKBENCH_STATE_DESCRIPTION: &str =
     "Read bounded live editor state from the compatible managed Workbench handler package.";
+const WORKBENCH_PROJECT_CONTEXT_DESCRIPTION: &str = "Read the loaded Workbench addon identities from the compatible managed handler package. This is live editor context, not a filesystem project scan.";
 const WORKBENCH_OPEN_WORLD_DESCRIPTION: &str = "Open one typed World Editor world through the compatible managed Workbench handler package without restarting Workbench.";
 const WORKBENCH_START_PLAY_SESSION_DESCRIPTION: &str = "Explicitly request that World Editor starts a play session. Acceptance confirms the command was issued, not that a world has finished loading.";
 const WORKBENCH_STOP_PLAY_SESSION_DESCRIPTION: &str = "Explicitly request that World Editor returns to edit mode. This is distinct from stopping the Workbench process.";
@@ -983,6 +986,7 @@ impl ServerHandler for ReforgerMcpServer {
             workbench_validate_scripts_tool(),
             workbench_install_bridge_tool(),
             workbench_state_tool(),
+            workbench_project_context_tool(),
             workbench_open_world_tool(),
             workbench_start_play_session_tool(),
             workbench_stop_play_session_tool(),
@@ -1012,6 +1016,7 @@ impl ServerHandler for ReforgerMcpServer {
             WORKBENCH_VALIDATE_SCRIPTS_TOOL_NAME => Some(workbench_validate_scripts_tool()),
             WORKBENCH_INSTALL_BRIDGE_TOOL_NAME => Some(workbench_install_bridge_tool()),
             WORKBENCH_STATE_TOOL_NAME => Some(workbench_state_tool()),
+            WORKBENCH_PROJECT_CONTEXT_TOOL_NAME => Some(workbench_project_context_tool()),
             WORKBENCH_OPEN_WORLD_TOOL_NAME => Some(workbench_open_world_tool()),
             WORKBENCH_START_PLAY_SESSION_TOOL_NAME => Some(workbench_start_play_session_tool()),
             WORKBENCH_STOP_PLAY_SESSION_TOOL_NAME => Some(workbench_stop_play_session_tool()),
@@ -1052,6 +1057,21 @@ impl ServerHandler for ReforgerMcpServer {
                     .state()
                     .map_err(|failure| workbench.correlate_failure("state", failure))
             })
+            .await;
+        }
+        if request.name == WORKBENCH_PROJECT_CONTEXT_TOOL_NAME {
+            require_empty_tool_request(&request, WORKBENCH_PROJECT_CONTEXT_TOOL_NAME)?;
+            let workbench = self.workbench.clone();
+            return blocking_workbench_call(
+                self.admission.clone(),
+                context,
+                "project_context",
+                move || {
+                    workbench
+                        .project_context()
+                        .map_err(|failure| workbench.correlate_failure("project_context", failure))
+                },
+            )
             .await;
         }
         if request.name == WORKBENCH_OPEN_WORLD_TOOL_NAME {
@@ -1815,6 +1835,7 @@ Copy a hit's `inspectInput` unchanged to `inspect_game_data_symbol`, or its `rea
     for tool in [
         workbench_install_bridge_tool(),
         workbench_state_tool(),
+        workbench_project_context_tool(),
         workbench_open_world_tool(),
         workbench_start_play_session_tool(),
         workbench_stop_play_session_tool(),
@@ -2123,6 +2144,17 @@ fn workbench_state_tool() -> Tool {
     )
 }
 
+fn workbench_project_context_tool() -> Tool {
+    workbench_empty_tool::<WorkbenchProjectContext>(
+        WORKBENCH_PROJECT_CONTEXT_TOOL_NAME,
+        WORKBENCH_PROJECT_CONTEXT_DESCRIPTION,
+        "Read Workbench project context",
+        ToolAnnotations::with_title("Read Workbench project context")
+            .read_only(true)
+            .open_world(false),
+    )
+}
+
 fn workbench_open_world_tool() -> Tool {
     workbench_input_tool::<McpWorkbenchOpenWorldInput, WorkbenchOpenWorldResult>(
         WORKBENCH_OPEN_WORLD_TOOL_NAME,
@@ -2319,10 +2351,11 @@ fn tool_error(code: &str, cause: &str, recovery: &str) -> CallToolResult {
 mod tests {
     use super::{
         game_data_status_tool, inspect_game_data_symbol_tool, render_api_reference,
-        workbench_install_bridge_tool, workbench_open_world_tool, workbench_reload_tool,
-        workbench_start_play_session_tool, workbench_status_tool, workbench_stop_play_session_tool,
-        workbench_validate_scripts_tool, DEADLINE_EXCEEDED_CODE, GAME_DATA_STATUS_TOOL_NAME,
-        RESPONSE_TOO_LARGE_CODE, WORKBENCH_OPEN_WORLD_TOOL_NAME, WORKBENCH_RELOAD_TOOL_NAME,
+        workbench_install_bridge_tool, workbench_open_world_tool, workbench_project_context_tool,
+        workbench_reload_tool, workbench_start_play_session_tool, workbench_status_tool,
+        workbench_stop_play_session_tool, workbench_validate_scripts_tool, DEADLINE_EXCEEDED_CODE,
+        GAME_DATA_STATUS_TOOL_NAME, RESPONSE_TOO_LARGE_CODE, WORKBENCH_OPEN_WORLD_TOOL_NAME,
+        WORKBENCH_PROJECT_CONTEXT_TOOL_NAME, WORKBENCH_RELOAD_TOOL_NAME,
         WORKBENCH_START_PLAY_SESSION_TOOL_NAME, WORKBENCH_STATUS_TOOL_NAME,
         WORKBENCH_STOP_PLAY_SESSION_TOOL_NAME, WORKBENCH_VALIDATE_SCRIPTS_TOOL_NAME,
     };
@@ -2384,12 +2417,14 @@ mod tests {
         let install = workbench_install_bridge_tool();
         let reload = workbench_reload_tool();
         let open_world = workbench_open_world_tool();
+        let project_context = workbench_project_context_tool();
         let start_play = workbench_start_play_session_tool();
         let stop_play = workbench_stop_play_session_tool();
         assert_eq!(status.name, WORKBENCH_STATUS_TOOL_NAME);
         assert_eq!(validation.name, WORKBENCH_VALIDATE_SCRIPTS_TOOL_NAME);
         assert_eq!(reload.name, WORKBENCH_RELOAD_TOOL_NAME);
         assert_eq!(open_world.name, WORKBENCH_OPEN_WORLD_TOOL_NAME);
+        assert_eq!(project_context.name, WORKBENCH_PROJECT_CONTEXT_TOOL_NAME);
         assert_eq!(start_play.name, WORKBENCH_START_PLAY_SESSION_TOOL_NAME);
         assert_eq!(stop_play.name, WORKBENCH_STOP_PLAY_SESSION_TOOL_NAME);
         assert_ne!(stop_play.name, "workbench_stop");
