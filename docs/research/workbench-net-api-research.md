@@ -259,6 +259,53 @@ Only the final row intersects the Workbench boundary. The typed Gateway may
 contact the configured endpoint, but it must not install handlers, start
 Workbench, or manage arbitrary process lifecycle.
 
+#### External handler registration review (2026-07-26)
+
+The same external branch was re-read at commit
+[`3eecd8f8a35e44d8c8ff055fae0b1f6c8ee31739`](https://github.com/steffenbk/enfusion-mcp-BK/tree/3eecd8f8a35e44d8c8ff055fae0b1f6c8ee31739).
+This is comparative source evidence, not proof of behaviour in the target
+Workbench version.
+
+Its decisive difference is placement: it copies the handler sources into the
+*opened add-on's* `Scripts/WorkbenchGame/EnfusionMCP/` directory, not into a
+Workbench-profile scripts directory. The branch's
+[`installHandlerScripts`](https://github.com/steffenbk/enfusion-mcp-BK/blob/3eecd8f8a35e44d8c8ff055fae0b1f6c8ee31739/src/workbench/client.ts#L628-L681)
+uses that target for a supplied mod root. Its
+[`launchWorkbench`](https://github.com/steffenbk/enfusion-mcp-BK/blob/3eecd8f8a35e44d8c8ff055fae0b1f6c8ee31739/src/workbench/client.ts#L432-L493)
+documents the reason: Workbench compiles the active project and declared
+dependencies rather than every neighbouring add-on folder, then it starts
+Workbench with `-gproj` for that project. The handler classes themselves are
+ordinary `NetApiHandler` subclasses under the module-recognised
+`Scripts/WorkbenchGame` root; for example,
+[`EMCP_WB_Ping`](https://github.com/steffenbk/enfusion-mcp-BK/blob/3eecd8f8a35e44d8c8ff055fae0b1f6c8ee31739/mod/Scripts/WorkbenchGame/EnfusionMCP/EMCP_WB_Ping.c#L7-L53).
+
+The branch has two contradictory layers of evidence about a handler added to
+an already-running Workbench. Its runtime recovery implementation copies the
+sources and polls its custom ping handler for 30 seconds, asserting that
+Workbench will detect and compile them
+([`recoverMissingHandlers`](https://github.com/steffenbk/enfusion-mcp-BK/blob/3eecd8f8a35e44d8c8ff055fae0b1f6c8ee31739/src/workbench/client.ts#L383-L416)).
+But the repository's own handler guidance says the inverse: handlers must be
+present at startup and a full Workbench restart, not hot reload, is required
+to pick up `NetApiHandler` subclasses
+([`mcp-net-api.md`](https://github.com/steffenbk/enfusion-mcp-BK/blob/3eecd8f8a35e44d8c8ff055fae0b1f6c8ee31739/data/kb/patterns/Tools_And_Workbench/mcp-net-api.md#L7-L12)).
+The branch's `EMCP_WB_Reload` also cannot bootstrap registration: it is itself
+a custom handler, so its calls to Script Editor/World Editor menu actions are
+only reachable after a handler is already registered
+([`EMCP_WB_Reload.c`](https://github.com/steffenbk/enfusion-mcp-BK/blob/3eecd8f8a35e44d8c8ff055fae0b1f6c8ee31739/mod/Scripts/WorkbenchGame/EnfusionMCP/EMCP_WB_Reload.c#L30-L119)).
+
+**Implication for this project:** successful `ValidateScripts` only proves the
+current validation configuration compiled; it does not prove that an arbitrary
+profile path participates in the active Workbench project's
+`WorkbenchGame` module or that its derived handlers were registered. The
+external implementation supports testing an alternative packaging model: a
+small managed add-on with `Scripts/WorkbenchGame/reforger-script-tools/`, a
+valid `.gproj`, and either an explicit project/dependency load or a Workbench
+launch that opens that add-on/project. Do not adopt its auto-launch, forced
+termination history, source injection into user add-ons, or optimistic polling
+as product behaviour. First prove active-project compilation and handler
+registration in a controlled live fixture, then decide whether a profile
+package can supply the same load semantics.
+
 The same review found 19 `EMCP_WB_*` injected handlers. Their source-backed
 ideas are potential NET API capability candidates only after a versioned DTO,
 canonical identities, bounded responses, and live acceptance. The stated
