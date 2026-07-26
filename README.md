@@ -4,22 +4,6 @@ Reforger Script Tools brings Enfusion Script language support and Arma Reforger
 Workbench compiler feedback to Visual Studio Code. Everything needed by the
 extension is included; no additional tools or runtimes are required.
 
-## Repository Map
-
-```text
-Runtime source:  src/  server/
-Packaged data:   data/  images/
-Developer tools: tools/  docs/
-Generated local: node_modules/  out/  dist/  server/target/  .vscode-test/
-```
-
-`src/` is the TypeScript VS Code shell and `server/` is the Rust language
-engine, including its LSP and MCP adapters. `data/` and `images/` are packaged
-with the extension. `tools/` contains developer-only scripts, reports, and
-benchmarks; `docs/` records architecture and research. The generated-local
-directories are ignored: restore dependencies with `npm ci` and regenerate
-build outputs with the documented development commands.
-
 ## Unofficial Project and Product Terms
 
 Reforger Script Tools is an independent, unofficial project. It is not
