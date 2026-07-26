@@ -1,3 +1,4 @@
+use reforger_language_server::workbench::WORKBENCH_BRIDGE_VERSION;
 use serde_json::{json, Value};
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
@@ -71,7 +72,7 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
         .pointer("/result/tools")
         .and_then(Value::as_array)
         .expect("tools/list result");
-    assert_eq!(listed.len(), 19);
+    assert_eq!(listed.len(), 27);
     assert_eq!(listed[0].get("name"), Some(&json!("game_data_status")));
     assert_eq!(
         listed[0].pointer("/annotations/readOnlyHint"),
@@ -139,6 +140,14 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
         "workbench_validate_scripts",
         "workbench_install_bridge",
         "workbench_state",
+        "workbench_project_context",
+        "workbench_inspect_resource",
+        "workbench_list_resources",
+        "workbench_world_selection_summary",
+        "workbench_selected_entity_hierarchy",
+        "workbench_open_world",
+        "workbench_start_play_session",
+        "workbench_stop_play_session",
         "workbench_reload",
         "workbench_read_logs",
         "workbench_launch",
@@ -151,7 +160,7 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
         assert_eq!(listed[index + 10].get("name"), Some(&json!(name)));
     }
     assert_eq!(
-        listed[17].pointer("/annotations/destructiveHint"),
+        listed[12].pointer("/annotations/destructiveHint"),
         Some(&json!(true))
     );
 
@@ -550,7 +559,7 @@ fn mcp_game_data_research_tools_complete_the_progressive_lookup_loop() {
         .pointer("/result/tools")
         .and_then(Value::as_array)
         .expect("tool catalogue");
-    assert_eq!(listed.len(), 19);
+    assert_eq!(listed.len(), 27);
     assert_eq!(
         listed[2].get("name"),
         Some(&json!("search_game_data_examples"))
@@ -2191,6 +2200,7 @@ fn workbench_install_bridge_uses_the_public_mcp_seam_and_preserves_unknown_files
         .join("ArmaReforgerWorkbench")
         .join("profile")
         .join("scripts")
+        .join("WorkbenchGame")
         .join("reforger-script-tools");
     fs::create_dir_all(&bridge).unwrap();
     fs::write(bridge.join("user-script.c"), "preserve").unwrap();
@@ -2205,7 +2215,6 @@ fn workbench_install_bridge_uses_the_public_mcp_seam_and_preserves_unknown_files
         for expected in [
             json!({"APIFunc":"IsWorkbenchRunning"}),
             json!({"APIFunc":"ValidateScripts","Configuration":"WORKBENCH"}),
-            json!({"APIFunc":"RST_WorkbenchCapabilities"}),
         ] {
             let (mut stream, _) = listener.accept().expect("accept Workbench request");
             let mut version = [0_u8; 4];
@@ -2219,9 +2228,7 @@ fn workbench_install_bridge_uses_the_public_mcp_seam_and_preserves_unknown_files
             let response = match expected["APIFunc"].as_str().unwrap() {
                 "IsWorkbenchRunning" => r#"{"IsRunning":true,"ScriptsCompiled":true}"#,
                 "ValidateScripts" => r#"{"Success":true,"Errors":[],"Warnings":[]}"#,
-                _ => {
-                    r#"{"bridgeVersion":"1.0.0","protocolVersion":1,"capabilities":"state;reload"}"#
-                }
+                _ => unreachable!(),
             };
             write_net_api_string(&mut stream, "Ok");
             write_net_api_string(&mut stream, response);
@@ -2247,7 +2254,7 @@ fn workbench_install_bridge_uses_the_public_mcp_seam_and_preserves_unknown_files
 
     assert_eq!(
         response.pointer("/result/structuredContent/activated"),
-        Some(&json!(true))
+        Some(&json!(false))
     );
     assert!(bridge.join("RST_WorkbenchCapabilities.c").is_file());
     assert!(bridge.join("RST_WorkbenchState.c").is_file());
@@ -2272,7 +2279,10 @@ fn workbench_failed_activation_keeps_the_managed_installation_for_diagnosis() {
         .join("My Games")
         .join("ArmaReforgerWorkbench")
         .join("profile");
-    let bridge = profile.join("scripts").join("reforger-script-tools");
+    let bridge = profile
+        .join("scripts")
+        .join("WorkbenchGame")
+        .join("reforger-script-tools");
     fs::create_dir_all(&bridge).unwrap();
     fs::write(
         bridge.join("reforger-script-tools.manifest.json"),
@@ -2285,7 +2295,6 @@ fn workbench_failed_activation_keeps_the_managed_installation_for_diagnosis() {
         for expected in [
             json!({"APIFunc":"IsWorkbenchRunning"}),
             json!({"APIFunc":"ValidateScripts","Configuration":"WORKBENCH"}),
-            json!({"APIFunc":"RST_WorkbenchCapabilities"}),
         ] {
             let (mut stream, _) = listener.accept().expect("accept Workbench request");
             let mut version = [0_u8; 4];
@@ -2301,9 +2310,7 @@ fn workbench_failed_activation_keeps_the_managed_installation_for_diagnosis() {
                 "ValidateScripts" => {
                     r#"{"Success":false,"Errors":[{"error":"broken","file":"RST_WorkbenchState.c","line":1}],"Warnings":[]}"#
                 }
-                _ => {
-                    r#"{"bridgeVersion":"0.9.0","protocolVersion":1,"capabilities":"state;reload"}"#
-                }
+                _ => unreachable!(),
             };
             write_net_api_string(&mut stream, "Ok");
             write_net_api_string(&mut stream, response);
@@ -2331,7 +2338,7 @@ fn workbench_failed_activation_keeps_the_managed_installation_for_diagnosis() {
     );
     assert_eq!(
         response.pointer("/result/structuredContent/installedVersion"),
-        Some(&json!("1.0.0"))
+        Some(&json!(WORKBENCH_BRIDGE_VERSION))
     );
     assert!(bridge.join("RST_WorkbenchCapabilities.c").is_file());
     assert!(bridge.join("RST_WorkbenchState.c").is_file());
