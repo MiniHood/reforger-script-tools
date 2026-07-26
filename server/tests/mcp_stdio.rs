@@ -2158,41 +2158,10 @@ fn workbench_status_is_served_through_the_public_mcp_seam() {
 }
 
 #[test]
-fn workbench_script_reload_remains_native_when_the_managed_handler_is_absent() {
-    use std::io::Read;
-    use std::net::TcpListener;
-
-    let fixture = TempFixture::new("mcp_workbench_native_reload");
-    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind fake Workbench");
-    let port = listener.local_addr().unwrap().port();
-    let peer = thread::spawn(move || {
-        for expected in [
-            json!({"APIFunc":"IsWorkbenchRunning"}),
-            json!({"APIFunc":"ValidateScripts","Configuration":"WORKBENCH"}),
-        ] {
-            let (mut stream, _) = listener.accept().expect("accept Workbench request");
-            let mut version = [0_u8; 4];
-            stream.read_exact(&mut version).unwrap();
-            assert_eq!(i32::from_le_bytes(version), 1);
-            assert_eq!(read_net_api_string(&mut stream), "ReforgerScriptTools");
-            assert_eq!(read_net_api_string(&mut stream), "JsonRPC");
-            let payload: Value =
-                serde_json::from_str(&read_net_api_string(&mut stream)).expect("request JSON");
-            assert_eq!(payload, expected);
-            let response = if expected["APIFunc"] == "IsWorkbenchRunning" {
-                r#"{"IsRunning":true,"ScriptsCompiled":true}"#
-            } else {
-                r#"{"Success":true,"Errors":[],"Warnings":[]}"#
-            };
-            write_net_api_string(&mut stream, "Ok");
-            write_net_api_string(&mut stream, response);
-        }
-    });
-    let port_string = port.to_string();
+fn workbench_reload_rejects_the_obsolete_compile_target_input() {
+    let fixture = TempFixture::new("mcp_workbench_reload_input");
     let mut client = McpClient::spawn(&[
         "mcp",
-        "--workbench-port",
-        &port_string,
         "--workbench-user-directory",
         fixture.path().to_str().unwrap(),
     ]);
@@ -2204,23 +2173,7 @@ fn workbench_script_reload_remains_native_when_the_managed_handler_is_absent() {
         "params":{"name":"workbench_reload","arguments":{"target":"scripts"}}
     }));
     let response = client.response(2);
-    assert_eq!(
-        response.pointer("/result/structuredContent/target"),
-        Some(&json!("scripts"))
-    );
-    assert_eq!(
-        response.pointer("/result/structuredContent/completed"),
-        Some(&json!(true))
-    );
-    assert_eq!(
-        response.pointer("/result/structuredContent/scriptsCompiled"),
-        Some(&json!(true))
-    );
-    assert_eq!(
-        response.pointer("/result/structuredContent/activeBridgeVersion"),
-        Some(&Value::Null)
-    );
-    peer.join().unwrap();
+    assert_eq!(response.pointer("/error/code"), Some(&json!(-32602)));
     client.close_stdin();
     assert!(client.wait_for_exit(Duration::from_secs(3)));
 }
@@ -2298,7 +2251,7 @@ fn workbench_install_bridge_uses_the_public_mcp_seam_and_preserves_unknown_files
     );
     assert!(bridge.join("RST_WorkbenchCapabilities.c").is_file());
     assert!(bridge.join("RST_WorkbenchState.c").is_file());
-    assert!(bridge.join("RST_WorkbenchReload.c").is_file());
+    assert!(!bridge.join("RST_WorkbenchReload.c").exists());
     assert!(bridge.join("reforger-script-tools.manifest.json").is_file());
     assert_eq!(
         fs::read_to_string(bridge.join("user-script.c")).unwrap(),
@@ -2382,7 +2335,7 @@ fn workbench_failed_activation_keeps_the_managed_installation_for_diagnosis() {
     );
     assert!(bridge.join("RST_WorkbenchCapabilities.c").is_file());
     assert!(bridge.join("RST_WorkbenchState.c").is_file());
-    assert!(bridge.join("RST_WorkbenchReload.c").is_file());
+    assert!(!bridge.join("RST_WorkbenchReload.c").exists());
     assert!(bridge.join("reforger-script-tools.manifest.json").is_file());
     peer.join().unwrap();
     client.close_stdin();

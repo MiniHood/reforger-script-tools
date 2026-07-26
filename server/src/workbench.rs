@@ -204,15 +204,6 @@ pub enum WorkbenchPlaySession {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct WorkbenchReloadResult {
-    pub target: String,
-    pub completed: bool,
-    pub scripts_compiled: bool,
-    pub active_bridge_version: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
 pub struct WorkbenchScriptActivationResult {
     pub process_id: u32,
     pub reload_verified: bool,
@@ -664,78 +655,6 @@ impl WorkbenchController {
         Ok(state)
     }
 
-    pub fn reload(&self, target: &str) -> Result<WorkbenchReloadResult, WorkbenchFailure> {
-        let started = Instant::now();
-        if !matches!(target, "scripts" | "plugins" | "all") {
-            return Err(failure(WorkbenchFailureCode::Protocol));
-        }
-        let paths = self.paths();
-        if self.gateway.status().is_ok()
-            && self.bridge_disk_status(&paths.bridge_directory).installed
-        {
-            let _ = self.maintain_existing_bridge(&paths.bridge_directory);
-        }
-        let validation = self.gateway.validate_scripts().map_err(|failure| {
-            self.log_event("reload", failure_code(failure.code));
-            failure
-        })?;
-        let bridge_directory = self.paths().bridge_directory;
-        let disk = self.bridge_disk_status(&bridge_directory);
-        let active = if disk.installed {
-            self.active_bridge_status(&bridge_directory, false)
-        } else {
-            disk
-        };
-        let bridge_reload = if active.compatible
-            && active
-                .capabilities
-                .iter()
-                .any(|capability| capability == "reload")
-        {
-            self.gateway
-                .request(
-                    json!({"APIFunc": "RST_WorkbenchReload", "target": target}),
-                    self.options.gateway.validation_deadline,
-                )
-                .ok()
-                .and_then(|value| serde_json::from_value::<RawBridgeReload>(value).ok())
-        } else {
-            None
-        };
-        let expected_active_version = active.active_version.as_deref();
-        let bridge_verified = bridge_reload.as_ref().is_some_and(|result| {
-            result.completed
-                && result.target == target
-                && result.protocol_version == WORKBENCH_BRIDGE_PROTOCOL_VERSION
-                && expected_active_version == Some(result.bridge_version.as_str())
-        });
-        let requires_bridge = target != "scripts";
-        let result = WorkbenchReloadResult {
-            target: target.to_string(),
-            completed: validation.success && (!requires_bridge || bridge_verified),
-            scripts_compiled: validation.success,
-            active_bridge_version: bridge_reload
-                .map(|result| result.bridge_version)
-                .or(active.active_version),
-        };
-        self.log_event_timed(
-            "reload",
-            if result.completed {
-                "success"
-            } else {
-                "compiler-findings"
-            },
-            started,
-            json!({
-                "target": result.target.clone(),
-                "completed": result.completed,
-                "scriptsCompiled": result.scripts_compiled,
-                "activeBridgeVersion": result.active_bridge_version.clone(),
-            }),
-        );
-        Ok(result)
-    }
-
     /// Perform the one intentional keyboard automation supported by the Workbench bridge.
     ///
     /// This is deliberately not a general input facility: it requires exactly one current
@@ -779,6 +698,14 @@ impl WorkbenchController {
                 .and_then(|path| reload_verification_since(&path, Some(&log_before)).ok())
                 .flatten()
             {
+                if !workbench_processes().contains(process) {
+                    return Err(self.correlate_failure_details(
+                        "activate-scripts",
+                        "workbench-process-changed",
+                        failure(WorkbenchFailureCode::Unavailable),
+                        json!({"processId": process.id}),
+                    ));
+                }
                 let result = WorkbenchScriptActivationResult {
                     process_id: process.id,
                     reload_verified: true,
@@ -1375,10 +1302,6 @@ impl WorkbenchController {
             .join("workbench.log")
     }
 
-    fn log_event(&self, operation: &str, outcome: &str) -> String {
-        self.log_event_timed(operation, outcome, Instant::now(), json!({}))
-    }
-
     fn log_event_timed(
         &self,
         operation: &str,
@@ -1758,16 +1681,6 @@ fn play_session(
     }
 }
 
-#[derive(Deserialize)]
-struct RawBridgeReload {
-    #[serde(rename = "bridgeVersion")]
-    bridge_version: String,
-    #[serde(rename = "protocolVersion")]
-    protocol_version: u32,
-    target: String,
-    completed: bool,
-}
-
 struct ResolvedWorkbenchPaths {
     workbench_root: PathBuf,
     profile: PathBuf,
@@ -1911,13 +1824,13 @@ fn reload_verification_since(
     path: &std::path::Path,
     before: Option<&WorkbenchLogCursor>,
 ) -> std::io::Result<Option<ReloadLogVerification>> {
-    let offset = before
-        .filter(|cursor| cursor.path == path)
-        .map(|cursor| cursor.length)
-        .unwrap_or(0);
+    let Some(before) = before.filter(|cursor| cursor.path == path) else {
+        return Ok(None);
+    };
+    let offset = before.length;
     let mut file = fs::File::open(path)?;
     let length = file.metadata()?.len();
-    if length <= offset {
+    if length <= offset || length - offset > MAX_LOG_READ_BYTES {
         return Ok(None);
     }
     file.seek(SeekFrom::Start(offset))?;
@@ -1928,7 +1841,7 @@ fn reload_verification_since(
         "SCRIPT        : Reloading game scripts",
         "Compiling GameLib scripts",
         "Compiling Game scripts",
-        "WorkbenchGame module loaded",
+        "Module: WorkbenchGame; loaded",
         "PROFILING: Reloading game scripts took",
     ];
     let mut next_marker = 0;
@@ -2135,7 +2048,6 @@ fn bridge_payload() -> &'static [(&'static str, &'static str)] {
     &[
         ("RST_WorkbenchCapabilities.c", BRIDGE_CAPABILITIES_SOURCE),
         ("RST_WorkbenchState.c", BRIDGE_STATE_SOURCE),
-        ("RST_WorkbenchReload.c", BRIDGE_RELOAD_SOURCE),
     ]
 }
 
@@ -2172,7 +2084,7 @@ class RST_WorkbenchCapabilities : NetApiHandler
 		RST_WorkbenchCapabilitiesResponse response = new RST_WorkbenchCapabilitiesResponse();
 		response.bridgeVersion = "1.0.0";
 		response.protocolVersion = 1;
-		response.capabilities = "state;reload";
+		response.capabilities = "state";
 		return response;
 	}
 }
@@ -2244,53 +2156,6 @@ class RST_WorkbenchState : NetApiHandler
 				response.loadedAddons += ";";
 			response.loadedAddons += GameProject.GetAddonID(addonGuids[index]);
 		}
-		return response;
-	}
-}
-#endif
-"#;
-
-const BRIDGE_RELOAD_SOURCE: &str = r#"#ifdef WORKBENCH
-class RST_WorkbenchReloadRequest : JsonApiStruct
-{
-	string target;
-
-	void RST_WorkbenchReloadRequest()
-	{
-		RegV("target");
-	}
-}
-
-class RST_WorkbenchReloadResponse : JsonApiStruct
-{
-	string bridgeVersion;
-	int protocolVersion;
-	string target;
-	bool completed;
-
-	void RST_WorkbenchReloadResponse()
-	{
-		RegAll();
-	}
-}
-
-class RST_WorkbenchReload : NetApiHandler
-{
-	override JsonApiStruct GetRequest()
-	{
-		return new RST_WorkbenchReloadRequest();
-	}
-
-	override JsonApiStruct GetResponse(JsonApiStruct request)
-	{
-		RST_WorkbenchReloadRequest reloadRequest = RST_WorkbenchReloadRequest.Cast(request);
-		RST_WorkbenchReloadResponse response = new RST_WorkbenchReloadResponse();
-		response.bridgeVersion = "1.0.0";
-		response.protocolVersion = 1;
-		response.target = reloadRequest.target;
-		response.completed = reloadRequest.target == "scripts"
-			|| reloadRequest.target == "plugins"
-			|| reloadRequest.target == "all";
 		return response;
 	}
 }
@@ -2961,7 +2826,7 @@ mod tests {
         let path = root.join("console.log");
         fs::write(
             &path,
-            "SCRIPT        : Reloading game scripts\nCompiling GameLib scripts\nCompiling Game scripts\nWorkbenchGame module loaded\nPROFILING: Reloading game scripts took: 12 ms\n",
+            "SCRIPT        : Reloading game scripts\nCompiling GameLib scripts\nCompiling Game scripts\nModule: WorkbenchGame; loaded 171x files\nPROFILING: Reloading game scripts took: 12 ms\n",
         )
         .unwrap();
         let cursor = super::log_cursor(&path).unwrap();
@@ -2969,7 +2834,7 @@ mod tests {
         fs::write(
             &path,
             format!(
-                "{}Game destroyed.\nSCRIPT        : Reloading game scripts\nCompiling GameLib scripts\nCompiling Game scripts\nWorkbenchGame module loaded\nPROFILING: Reloading game scripts took: 12000 ms\n",
+                "{}Game destroyed.\nSCRIPT        : Reloading game scripts\nCompiling GameLib scripts\nCompiling Game scripts\nModule: WorkbenchGame; loaded 171x files\nPROFILING: Reloading game scripts took: 12000 ms\n",
                 fs::read_to_string(&path).unwrap()
             ),
         )
@@ -2992,7 +2857,7 @@ mod tests {
         let path = root.join("console.log");
         fs::write(
             &path,
-            "SCRIPT        : Reloading game scripts\nCompiling GameLib scripts\nCompiling Game scripts\nWorkbenchGame module loaded\nPROFILING: Reloading game scripts took: 12 ms\n",
+            "SCRIPT        : Reloading game scripts\nCompiling GameLib scripts\nCompiling Game scripts\nModule: WorkbenchGame; loaded 171x files\nPROFILING: Reloading game scripts took: 12 ms\n",
         )
         .unwrap();
         let cursor = super::log_cursor(&path).unwrap();
@@ -3005,6 +2870,16 @@ mod tests {
         )
         .unwrap();
 
+        assert!(super::reload_verification_since(&path, Some(&cursor))
+            .unwrap()
+            .is_none());
+        let rotated = root.join("rotated-console.log");
+        fs::rename(&path, &rotated).unwrap();
+        fs::write(
+            &path,
+            "SCRIPT        : Reloading game scripts\nCompiling GameLib scripts\nCompiling Game scripts\nModule: WorkbenchGame; loaded 171x files\nPROFILING: Reloading game scripts took: 12 ms\n",
+        )
+        .unwrap();
         assert!(super::reload_verification_since(&path, Some(&cursor))
             .unwrap()
             .is_none());
