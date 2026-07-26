@@ -122,8 +122,8 @@ _Avoid_: reload-only setting, deferred reconfiguration, mixed configuration
 
 **Workbench Gateway**:
 The host-neutral, authoritative boundary for the private Workbench NET API. It
-offers only named, typed Workbench operations and is initially hosted by the
-extension while remaining reusable by a future MCP host.
+offers only named, typed Workbench operations and is hosted by the extension
+while remaining reusable by an MCP Workbench adapter.
 _Avoid_: NET API client, Workbench bridge, MCP transport
 
 **Workbench Capability**:

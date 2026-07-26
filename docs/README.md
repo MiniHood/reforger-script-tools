@@ -42,8 +42,9 @@ implementation slice is progress, not a completed ticket.
 
 - [Architecture review journal](research/architecture-review-journal.md):
   module-boundary review notes and follow-up opportunities.
-- [MCP server exploration journal](research/mcp-server-research.md): proposed capability
-  boundary and feature catalogue for a local Reforger MCP server.
+- [MCP server exploration journal](research/mcp-server-research.md): current
+  capability boundary and future Workbench expansion for the local Reforger
+  MCP runtime.
 - [Base-game source search research](research/base-game-search-research.md): language
   index ownership, VS Code search surfaces, and MCP adapter guidance.
 - [Workbench NET API exploration journal](research/workbench-net-api-research.md):

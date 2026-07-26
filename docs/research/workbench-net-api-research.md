@@ -403,7 +403,7 @@ The first delivered consumer is the VS Code extension, not an MCP host. It
 hosts a reusable, host-neutral Workbench Gateway for exactly the built-in
 `IsWorkbenchRunning` and `ValidateScripts` capabilities; it does not add a
 custom handler, capability manifest, MCP server, or generic handler dispatch.
-A future MCP host must consume this same Gateway boundary.
+Any MCP Workbench adapter must consume this same Gateway boundary.
 
 For this initial extension contract, endpoint selection is explicitly owned by
 VS Code settings rather than automatic discovery: NET API enablement defaults

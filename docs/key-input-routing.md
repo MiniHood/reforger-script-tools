@@ -65,89 +65,22 @@ cannot request an arbitrary VS Code command name. VS Code keybinding
 precedence remains authoritative: user remappings, platform-reserved input,
 and IME composition may bypass an operation command by design.
 
-## Performance and Correctness Contract
+## Correctness Contract
 
-1. Do not bind every printable key or maintain a semantic `when` context on
-   every cursor/edit event. The one narrow printable-key exception is
-   `insertSpace`: it routes only outside snippets and visible suggestion UI,
-   and Rust immediately falls back to native Space unless it proves the
-   collection-declaration shape. Leave all other non-candidates to VS Code's
-   default bindings.
-2. A TypeScript candidate gate may reject impossible cases using editor state
-   and local shape, but must not duplicate Enfusion parsing or ownership
-   decisions. Rust selects the one Input Feature Owner through explicit,
-   tested priority; features never compose.
-3. The initial eligibility boundary is one empty caret. The request represents
-   all selections, but non-empty selections and multiple cursors fall through
-   natively until a feature defines correct semantics for them.
-4. A plausible candidate sends one versioned request and waits for its Rust
-   decision without an arbitrary timeout. On request failure or server
-   unavailability it immediately uses Native Fallback and ignores a late
-   result.
-5. Apply a handled result as one source edit and final selection state. A
-   Rust-authored snippet replacement may be the one operation when it is
-   needed to preserve a blank structural line and its caret. It may
-   declaratively request that suggestion UI opens afterwards, but it cannot
-   run arbitrary VS Code commands or perform a second source mutation.
-6. A decision is valid only for the exact document version and selection it
-   inspected. A stale response is discarded and Native Fallback runs at the
-   editor's then-current state.
-7. Enter with a visible completion list first hides that list without accepting
-   its selected item, then uses the normal route or fallback. Active snippet
-   placeholders, IME/composition input, and read-only editors retain native
-   behavior unless a future feature explicitly defines compatible semantics.
-8. Once a behavior is migrated, no `onDidChangeTextDocument` listener may
-   mutate the document to reproduce it. Observers may only trace or clean up
-   state.
+- Do not bind every printable key or maintain semantic state for ordinary
+  typing. Native VS Code input remains the default.
+- TypeScript may reject impossible editor states, but Rust alone decides
+  eligibility and the resulting structural edit.
+- A handled operation is one versioned edit with its final selections. Stale,
+  failed, unsupported, composition, snippet, read-only, or ambiguous cases
+  use the operation's Native Fallback.
+- A migrated behaviour must be pre-native and atomic. Do not recreate it from
+  a post-edit document-change listener.
+- New operations need Rust decision tests, TypeScript fallback/application
+  tests, and an extension-host check that native input has not visibly been
+  corrected after the fact.
 
-Optional centralized route traces record operation kind, eligibility or
-decline reason, selected feature, version match, result, and elapsed time. They
-never record source text or identifiers and are disabled in ordinary use. They
-are available in extension development diagnostics.
-
-## Implication for Reforger Script Tools
-
-The first Input Feature Owners are class-declaration, protected-method, and
-control-header `insertNewline`. A completed single-line class declaration,
-including `modded class` and an optional `:` or `extends` inheritance clause,
-receives an empty braced body before native Enter. A completed protected method
-signature likewise receives an empty braced body. `for`, `foreach`, `while`,
-and `switch` do the same only when the caret is on the completed header's
-physical line. A caret on a later line always falls through to native Enter.
-
-A completed `if` or `else if` condition entered from inside its paired
-parentheses instead preserves that header and creates one indented, unbraced
-body line. The `switch` result embeds `default:` in its one primary edit,
-selects `default`, and may request suggestion UI; it must not insert a second
-snippet. Plain `else` retains native body behavior.
-
-The prior post-native Enter typing assist is removed with this migration,
-including its duplicate control-block logic and incomplete-`if` repair. Its
-narrow automatic-semicolon behavior is preserved as a pre-native owner: when
-the physical line is an unambiguous complete call, typed declaration, or
-`return` statement, the owner atomically inserts the semicolon and newline.
-Block-comment expansion is a future `insertText` feature: it must become
-pre-native before it is migrated. Existing completion and snippet transactions
-and language configuration remain outside this module.
-
-`indent` remains native except on an otherwise blank line following a proven
-complete one-line unbraced `if` or `else if` body. The owner may cross at most
-eight blank physical lines to find that body, then replaces the blank line's
-whitespace with the header indentation. This closes the completed statement's
-scope without claiming general Tab or snippet-tab behavior.
-
-`insertSpace` remains native except immediately after one complete,
-uninitialized `array<T>`, `set<T>`, or `map<K, V>` field or local declaration.
-When proven, Rust returns the one native Space edit and requests suggestion UI;
-the resulting declaration-tail list owns all subsequent insertion. Its
-source-faithful defaults are `= {};` then `= new array<T>;` for arrays, and
-`= new set<T>;` or `= new map<K, V>;` for sets and maps. The list also offers
-declare-only and custom-expression paths. Parameters, returns, initializers,
-multi-declarators, comments/strings, snippets, nonempty selections, and
-multiple carets remain native.
-
-Required evidence for a delivery is Rust decision tests for supported and
-declined source shapes; TypeScript tests for fallback, failure, stale state,
-special modes, selections, and presentation; an extension-host test that the
-legacy post-edit path does not run; and a manual VS Code check for no visible
-correction or cursor flash.
+The implemented operations are intentionally narrow examples of this policy;
+their eligible source shapes, edits, and limits are maintained in code and
+tests. Add another operation only when it has a distinct semantic owner and a
+known native fallback.
