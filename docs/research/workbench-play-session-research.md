@@ -45,16 +45,18 @@ game-session truth:
 ```json
 {
   "worldEditorActive": true,
-  "worldEditorApiAvailable": false,
-  "playSession": "likely-running"
+  "worldEditorApiAvailable": true,
+  "playSession": "unknown"
 }
 ```
 
 `"likely-running"` is appropriate only when the World Editor module exists
-but its API is unavailable. The bridge should report `"editing"` when the API
-is available, and `"unavailable"` when the module is absent. It should not
-silently turn this into `isPlaying: false`: absence of a World Editor module
-does not prove that no scenario/game process is running.
+but its API is unavailable. API availability alone cannot prove editing: live
+testing on 2026-07-26 found it remained available after a world was loaded into
+the game. The bridge therefore reports `"unknown"` when the API is available,
+and `"unavailable"` when the module is absent. It should not silently turn
+this into `isPlaying: false`: absence of a World Editor module does not prove
+that no scenario/game process is running.
 
 The same rule makes the signal safe for AI use: operations requiring editing
 must require `worldEditorApiAvailable == true`; any operation that stops or
@@ -64,9 +66,9 @@ state refresh. It must never cause automatic stop/restart/close behaviour.
 ## Recommended next implementation
 
 Extend `RST_WorkbenchState` with the two direct observations
-`worldEditorActive` and `worldEditorApiAvailable`, then derive the small enum
-`playSession` as above in the same handler. Retain `mode: "workbench"` as the
-existing broad editor-context label: it should not be overloaded to claim a
+`worldEditorModulePresent` and `worldEditorApiAvailable`, then derive the small
+enum `playSession` as above in the same handler. Retain `mode: "workbench"` as
+the existing broad editor-context label: it should not be overloaded to claim a
 play session. Test all three branches live:
 
 1. no World Editor module;

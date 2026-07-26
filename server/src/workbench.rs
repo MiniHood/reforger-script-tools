@@ -198,7 +198,7 @@ pub struct WorkbenchLiveState {
 #[serde(rename_all = "kebab-case")]
 pub enum WorkbenchPlaySession {
     Unavailable,
-    Editing,
+    Unknown,
     LikelyRunning,
 }
 
@@ -209,6 +209,15 @@ pub struct WorkbenchReloadResult {
     pub completed: bool,
     pub scripts_compiled: bool,
     pub active_bridge_version: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkbenchScriptActivationResult {
+    pub process_id: u32,
+    pub reload_verified: bool,
+    pub log_path: PathBuf,
+    pub verification_lines: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
@@ -725,6 +734,80 @@ impl WorkbenchController {
             }),
         );
         Ok(result)
+    }
+
+    /// Perform the one intentional keyboard automation supported by the Workbench bridge.
+    ///
+    /// This is deliberately not a general input facility: it requires exactly one current
+    /// Workbench process, verifies that its main window owns foreground focus, and sends only
+    /// Ctrl+Shift+R. The operation succeeds only after Workbench writes its full reload marker.
+    pub fn activate_scripts(&self) -> Result<WorkbenchScriptActivationResult, WorkbenchFailure> {
+        const RELOAD_VERIFICATION_DEADLINE: Duration = Duration::from_secs(60);
+        const RELOAD_VERIFICATION_POLL: Duration = Duration::from_millis(500);
+
+        let started = Instant::now();
+        let processes = workbench_processes();
+        let [process] = processes.as_slice() else {
+            return Err(self.correlate_failure_details(
+                "activate-scripts",
+                "ambiguous-workbench-process",
+                failure(WorkbenchFailureCode::Unavailable),
+                json!({"processCount": processes.len()}),
+            ));
+        };
+        let log_before = latest_workbench_log(&self.paths().workbench_root)
+            .and_then(|path| log_cursor(&path).ok())
+            .ok_or_else(|| {
+                self.correlate_failure_details(
+                    "activate-scripts",
+                    "workbench-log-unavailable",
+                    failure(WorkbenchFailureCode::Unavailable),
+                    json!({"processId": process.id}),
+                )
+            })?;
+        focus_workbench_and_send_reload(*process).map_err(|outcome| {
+            self.correlate_failure_details(
+                "activate-scripts",
+                outcome,
+                failure(WorkbenchFailureCode::Unavailable),
+                json!({"processId": process.id}),
+            )
+        })?;
+
+        while started.elapsed() < RELOAD_VERIFICATION_DEADLINE {
+            if let Some(verification) = latest_workbench_log(&self.paths().workbench_root)
+                .and_then(|path| reload_verification_since(&path, Some(&log_before)).ok())
+                .flatten()
+            {
+                let result = WorkbenchScriptActivationResult {
+                    process_id: process.id,
+                    reload_verified: true,
+                    log_path: verification.path,
+                    verification_lines: verification.lines,
+                };
+                self.log_event_timed(
+                    "activate-scripts",
+                    "verified",
+                    started,
+                    json!({
+                        "processId": result.process_id,
+                        "logPath": result.log_path,
+                        "verificationLineCount": result.verification_lines.len(),
+                    }),
+                );
+                return Ok(result);
+            }
+            std::thread::sleep(RELOAD_VERIFICATION_POLL);
+        }
+        Err(self.correlate_failure_details(
+            "activate-scripts",
+            "reload-not-verified",
+            failure(WorkbenchFailureCode::Timeout),
+            json!({
+                "processId": process.id,
+                "verificationDeadlineMs": RELOAD_VERIFICATION_DEADLINE.as_millis(),
+            }),
+        ))
     }
 
     pub fn read_logs(
@@ -1666,10 +1749,10 @@ fn play_session(
 ) -> Option<WorkbenchPlaySession> {
     match reported.as_deref() {
         Some("unavailable") => Some(WorkbenchPlaySession::Unavailable),
-        Some("editing") => Some(WorkbenchPlaySession::Editing),
+        Some("editing") | Some("unknown") => Some(WorkbenchPlaySession::Unknown),
         Some("likely-running") => Some(WorkbenchPlaySession::LikelyRunning),
         Some(_) => None,
-        None if world_editor_api_available => Some(WorkbenchPlaySession::Editing),
+        None if world_editor_api_available => Some(WorkbenchPlaySession::Unknown),
         None if world_editor_module_present => Some(WorkbenchPlaySession::LikelyRunning),
         None => Some(WorkbenchPlaySession::Unavailable),
     }
@@ -1803,6 +1886,114 @@ fn latest_workbench_log(workbench_root: &std::path::Path) -> Option<PathBuf> {
         .rev()
         .map(|entry| entry.path().join("console.log"))
         .find(|path| path.is_file())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WorkbenchLogCursor {
+    path: PathBuf,
+    length: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReloadLogVerification {
+    path: PathBuf,
+    lines: Vec<String>,
+}
+
+fn log_cursor(path: &std::path::Path) -> std::io::Result<WorkbenchLogCursor> {
+    Ok(WorkbenchLogCursor {
+        path: path.to_path_buf(),
+        length: fs::metadata(path)?.len(),
+    })
+}
+
+fn reload_verification_since(
+    path: &std::path::Path,
+    before: Option<&WorkbenchLogCursor>,
+) -> std::io::Result<Option<ReloadLogVerification>> {
+    let offset = before
+        .filter(|cursor| cursor.path == path)
+        .map(|cursor| cursor.length)
+        .unwrap_or(0);
+    let mut file = fs::File::open(path)?;
+    let length = file.metadata()?.len();
+    if length <= offset {
+        return Ok(None);
+    }
+    file.seek(SeekFrom::Start(offset))?;
+    let mut text = String::new();
+    file.read_to_string(&mut text)?;
+    let lines = text.lines().map(str::to_string).collect::<Vec<_>>();
+    let required_markers = [
+        "SCRIPT        : Reloading game scripts",
+        "Compiling GameLib scripts",
+        "Compiling Game scripts",
+        "WorkbenchGame module loaded",
+        "PROFILING: Reloading game scripts took",
+    ];
+    let mut next_marker = 0;
+    let mut matched = Vec::new();
+    for line in &lines {
+        if line.contains(required_markers[next_marker]) {
+            matched.push(line.clone());
+            next_marker += 1;
+            if next_marker == required_markers.len() {
+                return Ok(Some(ReloadLogVerification {
+                    path: path.to_path_buf(),
+                    lines: matched,
+                }));
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn focus_workbench_and_send_reload(process: ProcessIdentity) -> Result<(), &'static str> {
+    let script = format!(
+        r#"
+Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public static class RSTWorkbenchWindow {{
+    [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
+    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+}}
+'@
+$p = Get-Process -Id {process_id} -ErrorAction Stop
+if ($p.ProcessName -ne 'ArmaReforgerWorkbenchSteamDiag' -or [uint64]$p.StartTime.ToUniversalTime().Ticks -ne [uint64]{start_ticks} -or $p.MainWindowHandle -eq 0) {{ exit 2 }}
+[void][RSTWorkbenchWindow]::ShowWindowAsync($p.MainWindowHandle, 9)
+if (-not [RSTWorkbenchWindow]::SetForegroundWindow($p.MainWindowHandle)) {{ exit 3 }}
+Start-Sleep -Milliseconds 150
+if ([RSTWorkbenchWindow]::GetForegroundWindow() -ne $p.MainWindowHandle) {{ exit 4 }}
+$shell = New-Object -ComObject WScript.Shell
+if (-not $shell.AppActivate($p.Id)) {{ exit 5 }}
+Start-Sleep -Milliseconds 100
+if ([RSTWorkbenchWindow]::GetForegroundWindow() -ne $p.MainWindowHandle) {{ exit 6 }}
+$shell.SendKeys('^+r')
+"#,
+        process_id = process.id,
+        start_ticks = process.start_ticks,
+    );
+    let status = std::process::Command::new("powershell.exe")
+        .args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            &script,
+        ])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map_err(|_| "focus-reload-request-failed")?;
+    match status.code() {
+        Some(2) => Err("workbench-window-unavailable"),
+        Some(3 | 4 | 5 | 6) => Err("workbench-focus-not-confirmed"),
+        Some(0) => Ok(()),
+        _ => Err("focus-reload-request-failed"),
+    }
 }
 
 const MAX_LOG_READ_BYTES: u64 = 512 * 1024;
@@ -2038,7 +2229,7 @@ class RST_WorkbenchState : NetApiHandler
 				response.mode = "world-editor";
 				response.worldEditorActive = true;
 				response.worldEditorApiAvailable = true;
-				response.playSession = "editing";
+				response.playSession = "unknown";
 			}
 			else
 			{
@@ -2132,7 +2323,11 @@ mod tests {
     fn play_session_preserves_direct_observations_without_claiming_runtime_certainty() {
         assert_eq!(
             super::play_session(&Some("editing".to_string()), true, true),
-            Some(super::WorkbenchPlaySession::Editing)
+            Some(super::WorkbenchPlaySession::Unknown)
+        );
+        assert_eq!(
+            super::play_session(&None, true, true),
+            Some(super::WorkbenchPlaySession::Unknown)
         );
         assert_eq!(
             super::play_session(&Some("likely-running".to_string()), true, false),
@@ -2756,6 +2951,63 @@ mod tests {
         assert_eq!(lines.len(), 500);
         assert_eq!(lines.first().map(String::as_str), Some("line 101"));
         assert_eq!(lines.last().map(String::as_str), Some("line 600"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reload_verification_requires_the_complete_ordered_reload_sequence_after_baseline() {
+        let root = test_root("reload-log-verification");
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("console.log");
+        fs::write(
+            &path,
+            "SCRIPT        : Reloading game scripts\nCompiling GameLib scripts\nCompiling Game scripts\nWorkbenchGame module loaded\nPROFILING: Reloading game scripts took: 12 ms\n",
+        )
+        .unwrap();
+        let cursor = super::log_cursor(&path).unwrap();
+
+        fs::write(
+            &path,
+            format!(
+                "{}Game destroyed.\nSCRIPT        : Reloading game scripts\nCompiling GameLib scripts\nCompiling Game scripts\nWorkbenchGame module loaded\nPROFILING: Reloading game scripts took: 12000 ms\n",
+                fs::read_to_string(&path).unwrap()
+            ),
+        )
+        .unwrap();
+        let verification = super::reload_verification_since(&path, Some(&cursor))
+            .unwrap()
+            .expect("complete new reload sequence");
+
+        assert_eq!(verification.path, path);
+        assert_eq!(verification.lines.len(), 5);
+        assert!(verification.lines[0].contains("Reloading game scripts"));
+        assert!(verification.lines[4].contains("took: 12000 ms"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reload_verification_rejects_incomplete_or_preexisting_reload_lines() {
+        let root = test_root("reload-log-incomplete");
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("console.log");
+        fs::write(
+            &path,
+            "SCRIPT        : Reloading game scripts\nCompiling GameLib scripts\nCompiling Game scripts\nWorkbenchGame module loaded\nPROFILING: Reloading game scripts took: 12 ms\n",
+        )
+        .unwrap();
+        let cursor = super::log_cursor(&path).unwrap();
+        fs::write(
+            &path,
+            format!(
+                "{}SCRIPT        : Reloading game scripts\nCompiling GameLib scripts\n",
+                fs::read_to_string(&path).unwrap()
+            ),
+        )
+        .unwrap();
+
+        assert!(super::reload_verification_since(&path, Some(&cursor))
+            .unwrap()
+            .is_none());
         fs::remove_dir_all(root).unwrap();
     }
 

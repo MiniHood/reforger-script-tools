@@ -84,13 +84,22 @@ rolled back. Version precedence follows semantic-version ordering; an
 unrecognized installed version is preserved because automatic downgrade safety
 cannot be proven.
 
+The explicit MCP `workbench_reload` operation is the only supported
+keyboard automation. It requires exactly one current Workbench process, checks
+that process identity and foreground focus, sends only `Ctrl+Shift+R`, then
+waits up to 60 seconds for the newly appended console-log reload sequence to
+finish. It never exposes arbitrary key input. Failure to focus the exact window
+or observe the terminal Workbench reload marker is a failed operation, not a
+claimed reload.
+
 The managed state capability reports `mode: "workbench"` as its honest
 baseline. It reports `mode: "world-editor"` and `worldEditorActive: true` only
 when the live `WorldEditor` module exposes its API. It also exposes the direct
 `worldEditorModulePresent` and `worldEditorApiAvailable` observations. Its
-`playSession` value is `unavailable`, `editing`, or `likely-running`; the last
-is a bounded inference from a present module with no editor API, not a claim of
-an engine-proven runtime session. It does not infer another foreground editor
+`playSession` value is `unavailable`, `unknown`, or `likely-running`; `unknown`
+means the editor API is available but does not distinguish editing from a loaded
+game. `likely-running` is a bounded inference from a present module with no
+editor API, not a claim of an engine-proven runtime session. It does not infer another foreground editor
 mode from process state, window titles, or log text.
 
 Compiler validation is captured once per invocation and exposed as bounded,

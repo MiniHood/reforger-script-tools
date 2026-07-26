@@ -2803,7 +2803,7 @@ Read bounded live editor state from the compatible managed Workbench handler pac
     "WorkbenchPlaySession": {
       "enum": [
         "unavailable",
-        "editing",
+        "unknown",
         "likely-running"
       ],
       "type": "string"
@@ -2864,7 +2864,7 @@ Workbench tools return structured tool errors with a stable code, operation phas
 
 ## `workbench_reload`
 
-Compile and reload Workbench scripts for a typed scripts, plugins, or all target, then verify compiler and handler readiness.
+Explicitly focus the one confirmed Workbench window, send only Ctrl+Shift+R, and wait up to 60 seconds for its console log to confirm the full script reload. This fails closed if Workbench focus or the reload evidence cannot be confirmed; it never sends arbitrary keys.
 
 ### Annotations
 
@@ -2873,7 +2873,7 @@ Compile and reload Workbench scripts for a typed scripts, plugins, or all target
   "title": "Reload Workbench scripts",
   "readOnlyHint": false,
   "destructiveHint": false,
-  "idempotentHint": true,
+  "idempotentHint": false,
   "openWorldHint": false
 }
 ```
@@ -2882,26 +2882,8 @@ Compile and reload Workbench scripts for a typed scripts, plugins, or all target
 
 ```json
 {
-  "$defs": {
-    "McpWorkbenchReloadTarget": {
-      "enum": [
-        "scripts",
-        "plugins",
-        "all"
-      ],
-      "type": "string"
-    }
-  },
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "properties": {
-    "target": {
-      "$ref": "#/$defs/McpWorkbenchReloadTarget"
-    }
-  },
-  "required": [
-    "target"
-  ],
+  "properties": {},
   "type": "object"
 }
 ```
@@ -2912,26 +2894,28 @@ Compile and reload Workbench scripts for a typed scripts, plugins, or all target
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
-    "activeBridgeVersion": {
-      "type": [
-        "string",
-        "null"
-      ]
-    },
-    "completed": {
-      "type": "boolean"
-    },
-    "scriptsCompiled": {
-      "type": "boolean"
-    },
-    "target": {
+    "logPath": {
       "type": "string"
+    },
+    "processId": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "reloadVerified": {
+      "type": "boolean"
+    },
+    "verificationLines": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
     }
   },
   "required": [
-    "target",
-    "completed",
-    "scriptsCompiled"
+    "processId",
+    "reloadVerified",
+    "logPath",
+    "verificationLines"
   ],
   "type": "object"
 }

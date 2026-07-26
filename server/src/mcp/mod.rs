@@ -25,7 +25,7 @@ use crate::official_wiki::{
 use crate::workbench::{
     WorkbenchBridgeInstallResult, WorkbenchController, WorkbenchControllerOptions,
     WorkbenchFailure, WorkbenchFailureCode, WorkbenchInstallAuthorization, WorkbenchLiveState,
-    WorkbenchLogRead, WorkbenchOverview, WorkbenchProcessResult, WorkbenchReloadResult,
+    WorkbenchLogRead, WorkbenchOverview, WorkbenchProcessResult, WorkbenchScriptActivationResult,
     WorkbenchValidationPage,
 };
 use rmcp::model::{
@@ -85,17 +85,11 @@ const WORKBENCH_VALIDATE_SCRIPTS_DESCRIPTION: &str = "Validate the currently loa
 const WORKBENCH_INSTALL_BRIDGE_DESCRIPTION: &str = "Maintain the versioned Reforger Script Tools handler package after the VS Code extension has recorded first-install consent and compile it through the connected native NET API. A newly written profile handler package becomes available after the user refreshes Workbench; the installer deliberately does not probe the handler before that refresh. If no managed manifest exists, this tool returns workbench_installation_consent_required without writing profile files.";
 const WORKBENCH_STATE_DESCRIPTION: &str =
     "Read bounded live editor state from the compatible managed Workbench handler package.";
-const WORKBENCH_RELOAD_DESCRIPTION: &str = "Compile and reload Workbench scripts for a typed scripts, plugins, or all target, then verify compiler and handler readiness.";
+const WORKBENCH_RELOAD_DESCRIPTION: &str = "Explicitly focus the one confirmed Workbench window, send only Ctrl+Shift+R, and wait up to 60 seconds for its console log to confirm the full script reload. This fails closed if Workbench focus or the reload evidence cannot be confirmed; it never sends arbitrary keys.";
 const WORKBENCH_READ_LOGS_DESCRIPTION: &str = "Read a bounded tail from either the integration support log or the latest known Workbench console log. Arbitrary paths are not accepted.";
 const WORKBENCH_LAUNCH_DESCRIPTION: &str = "Explicitly launch the discovered Workbench executable from its normal Steam working directory, or reuse the exact existing Workbench process. Returns success only after bounded native NET API readiness and never chooses a project.";
 const WORKBENCH_STOP_DESCRIPTION: &str = "Request graceful closure of one exact observed Workbench process. This never force-kills Workbench and may require user interaction.";
 const WORKBENCH_RESTART_DESCRIPTION: &str = "Gracefully close one exact observed Workbench process and launch a replacement only after the original exits.";
-
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct McpWorkbenchReloadInput {
-    target: McpWorkbenchReloadTarget,
-}
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -104,24 +98,6 @@ struct McpWorkbenchValidationInput {
     limit: Option<usize>,
     #[schemars(length(min = 1, max = 256))]
     cursor: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
-#[serde(rename_all = "lowercase")]
-enum McpWorkbenchReloadTarget {
-    Scripts,
-    Plugins,
-    All,
-}
-
-impl McpWorkbenchReloadTarget {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Scripts => "scripts",
-            Self::Plugins => "plugins",
-            Self::All => "all",
-        }
-    }
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1053,11 +1029,11 @@ impl ServerHandler for ReforgerMcpServer {
             .await;
         }
         if request.name == WORKBENCH_RELOAD_TOOL_NAME {
-            let input = parse_workbench_input::<McpWorkbenchReloadInput>(&request)?;
+            require_empty_tool_request(&request, WORKBENCH_RELOAD_TOOL_NAME)?;
             let workbench = self.workbench.clone();
             return blocking_workbench_call(self.admission.clone(), context, "reload", move || {
                 workbench
-                    .reload(input.target.as_str())
+                    .activate_scripts()
                     .map_err(|failure| workbench.correlate_failure("reload", failure))
             })
             .await;
@@ -2066,14 +2042,14 @@ fn workbench_state_tool() -> Tool {
 }
 
 fn workbench_reload_tool() -> Tool {
-    workbench_input_tool::<McpWorkbenchReloadInput, WorkbenchReloadResult>(
+    workbench_empty_tool::<WorkbenchScriptActivationResult>(
         WORKBENCH_RELOAD_TOOL_NAME,
         WORKBENCH_RELOAD_DESCRIPTION,
         "Reload Workbench scripts",
         ToolAnnotations::with_title("Reload Workbench scripts")
             .read_only(false)
             .destructive(false)
-            .idempotent(true)
+            .idempotent(false)
             .open_world(false),
     )
 }
@@ -2222,9 +2198,10 @@ fn tool_error(code: &str, cause: &str, recovery: &str) -> CallToolResult {
 mod tests {
     use super::{
         game_data_status_tool, inspect_game_data_symbol_tool, render_api_reference,
-        workbench_install_bridge_tool, workbench_status_tool, workbench_validate_scripts_tool,
-        DEADLINE_EXCEEDED_CODE, GAME_DATA_STATUS_TOOL_NAME, RESPONSE_TOO_LARGE_CODE,
-        WORKBENCH_STATUS_TOOL_NAME, WORKBENCH_VALIDATE_SCRIPTS_TOOL_NAME,
+        workbench_install_bridge_tool, workbench_reload_tool, workbench_status_tool,
+        workbench_validate_scripts_tool, DEADLINE_EXCEEDED_CODE, GAME_DATA_STATUS_TOOL_NAME,
+        RESPONSE_TOO_LARGE_CODE, WORKBENCH_RELOAD_TOOL_NAME, WORKBENCH_STATUS_TOOL_NAME,
+        WORKBENCH_VALIDATE_SCRIPTS_TOOL_NAME,
     };
     use serde_json::Value;
 
@@ -2282,8 +2259,10 @@ mod tests {
         let status = workbench_status_tool();
         let validation = workbench_validate_scripts_tool();
         let install = workbench_install_bridge_tool();
+        let reload = workbench_reload_tool();
         assert_eq!(status.name, WORKBENCH_STATUS_TOOL_NAME);
         assert_eq!(validation.name, WORKBENCH_VALIDATE_SCRIPTS_TOOL_NAME);
+        assert_eq!(reload.name, WORKBENCH_RELOAD_TOOL_NAME);
         assert_eq!(
             status
                 .annotations
