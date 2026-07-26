@@ -63,27 +63,27 @@ candidate capability groups for the typed Gateway and handler package.
 
 ## Workbench-handler inventory
 
-| Handler | Request fields | Source-implemented feature | Material limit or mismatch |
-| --- | --- | --- | --- |
-| `EMCP_WB_Ping` | none | Reports bridge presence and `WorldEditorAPI` availability. | Returns `game`, while its client recognizes `play`; cached mode is unreliable. |
-| `EMCP_WB_GetState` | none | Edit-mode entity/selection counts, up to 50 selected names, subscene, prefab-edit flag, and terrain bounds. | Game mode returns only `game` and optional bounds; no project, resource, runtime-game, or active-layer state. |
-| `EMCP_WB_EditorControl` | `action`, `debugMode`, `fullScreen`, `path` | Starts/stops play mode; saves; runs undo/redo; opens a resource. | `saveAs` ignores path and calls `Save`; Undo/redo use hard-coded menu paths; resource opening is not project loading. |
-| `EMCP_WB_ExecuteAction` | `menuPath` | Invokes a comma-separated World Editor menu path. | UI-label/version-dependent dispatch; no allowlist, confirmation, or reliable completion fact. |
-| `EMCP_WB_Reload` | `target` | Attempts script compilation and plugin reload through menu paths. | Best effort only; no compiler diagnostics or proof that reload/compile completed. |
-| `EMCP_WB_Resources` | `action`, `path`, `buildRuntime` | Registers, rebuilds, or opens one resource. | Rebuild is asynchronous and unverified; no resource graph, metadata, or whole-database operation. |
-| `EMCP_WB_ScriptEditor` | `action`, `line`, `text`, `path` | Reads/edits individual open-document lines and opens a resource. | No whole-file read/save/diagnostics; response names differ from wrapper expectations. |
-| `EMCP_WB_Localization` | `action`, `itemId`, `property`, `value` | Inserts/deletes an item, modifies one property, or counts table children. | Insert ignores `property` and `value`; table read returns a count, not entries. |
-| `EMCP_WB_Terrain` | `action`, `x`, `z` | Reads surface Y or terrain bounds. | Read-only; no terrain edit, material/layer query, water, road, or heightmap workflow. |
-| `EMCP_WB_ListEntities` | `offset`, `limit`, `nameFilter` | Paged entity list with name, class, and runtime position. | Linear scan; no stable identity, prefab, hierarchy, GUID, or actual property values. |
-| `EMCP_WB_GetEntity` | `name` or `index` | Basic entity data, components, layer/subscene, and up to 50 variables. | First duplicate exact-name match; `GetDefaultAsString` can return defaults rather than overrides. |
-| `EMCP_WB_CreateEntity` | `prefab`, `position`, `rotation`, `name`, `layerID` | Creates a root entity from a prefab. | Defaults to layer `0`; no parent/subscene/layer path; wrapper sends ignored `layerPath`. |
-| `EMCP_WB_DeleteEntity` | `name` | Deletes the first exact-name entity in an editor action. | No stable-ID targeting, batch behavior, dependency safety, or confirmation. |
-| `EMCP_WB_ModifyEntity` | `name`, `action`, `value`, `propertyPath`, `propertyKey`, `memberIndex` | Transforms, renames, reparents, edits properties/object arrays, and changes object class. | Stringly typed targeting; assumes `coords`/`angleX/Y/Z`; nested/current values are partly observable. |
-| `EMCP_WB_Components` | `entityName`, `action`, `componentClass`, `componentIndex` | Lists, adds, and removes components. | Name targeting; remove-by-class removes first match; wrapper blocks index-only removal. |
-| `EMCP_WB_SelectEntity` | `action`, `name` | Deselects, clears, and lists up to 100 selected entities. | `select` clears selection but does not select the target; wrapper claims it did. |
-| `EMCP_WB_Clipboard` | `action` | Copies/cuts/duplicates selected entities; pastes or checks clipboard. | Depends on GUI state; no affected-entity list or deterministic paste target. |
-| `EMCP_WB_Layers` | `action`, `subScene`, `entityName`, `visible` | Lists numeric layer IDs, current subscene, and an entity layer ID. | Cannot mutate layers; wrapper advertises unsupported operations. |
-| `EMCP_WB_Prefabs` | `action`, `entityName`, `templatePath` | Creates/saves templates and gets a direct ancestor resource path. | No prefab search/GUID/override inspection; wrapper does not expose `getAncestor`. |
+| Handler | Request fields | Source-implemented feature | Material limit or mismatch | Reforger disposition |
+| --- | --- | --- | --- | --- |
+| `EMCP_WB_Ping` | none | Reports bridge presence and `WorldEditorAPI` availability. | Returns `game`, while its client recognizes `play`; cached mode is unreliable. | Candidate for `capabilities` and typed availability only. |
+| `EMCP_WB_GetState` | none | Edit-mode entity/selection counts, up to 50 selected names, subscene, prefab-edit flag, and terrain bounds. | Game mode returns only `game` and optional bounds; no project, resource, runtime-game, or active-layer state. | Candidate after defining bounded authoritative fields. |
+| `EMCP_WB_EditorControl` | `action`, `debugMode`, `fullScreen`, `path` | Starts/stops play mode; saves; runs undo/redo; opens a resource. | `saveAs` ignores path and calls `Save`; Undo/redo use hard-coded menu paths; resource opening is not project loading. | Split into explicit editor commands; never menu-path fallbacks. |
+| `EMCP_WB_ExecuteAction` | `menuPath` | Invokes a comma-separated World Editor menu path. | UI-label/version-dependent dispatch; no allowlist, confirmation, or reliable completion fact. | Do not adopt. |
+| `EMCP_WB_Reload` | `target` | Attempts script compilation and plugin reload through menu paths. | Best effort only; no compiler diagnostics or proof that reload/compile completed. | Candidate only with a proven named operation and result. |
+| `EMCP_WB_Resources` | `action`, `path`, `buildRuntime` | Registers, rebuilds, or opens one resource. | Rebuild is asynchronous and unverified; no resource graph, metadata, or whole-database operation. | Candidate for typed resource lifecycle operations. |
+| `EMCP_WB_ScriptEditor` | `action`, `line`, `text`, `path` | Reads/edits individual open-document lines and opens a resource. | No whole-file read/save/diagnostics; response names differ from wrapper expectations. | Prefer bounded project-file tools and compiler validation; do not mirror editor lines by default. |
+| `EMCP_WB_Localization` | `action`, `itemId`, `property`, `value` | Inserts/deletes an item, modifies one property, or counts table children. | Insert ignores `property` and `value`; table read returns a count, not entries. | Future typed localization/resource capability. |
+| `EMCP_WB_Terrain` | `action`, `x`, `z` | Reads surface Y or terrain bounds. | Read-only; no terrain edit, material/layer query, water, road, or heightmap workflow. | Future read-only world query when a real workflow needs it. |
+| `EMCP_WB_ListEntities` | `offset`, `limit`, `nameFilter` | Paged entity list with name, class, and runtime position. | Linear scan; no stable identity, prefab, hierarchy, GUID, or actual property values. | High-value candidate with stable entity IDs and filters. |
+| `EMCP_WB_GetEntity` | `name` or `index` | Basic entity data, components, layer/subscene, and up to 50 variables. | First duplicate exact-name match; `GetDefaultAsString` can return defaults rather than overrides. | High-value candidate with actual override values and hierarchy IDs. |
+| `EMCP_WB_CreateEntity` | `prefab`, `position`, `rotation`, `name`, `layerID` | Creates a root entity from a prefab. | Defaults to layer `0`; no parent/subscene/layer path; wrapper sends ignored `layerPath`. | Future typed mutation with preview, Undo, and verification. |
+| `EMCP_WB_DeleteEntity` | `name` | Deletes the first exact-name entity in an editor action. | No stable-ID targeting, batch behavior, dependency safety, or confirmation. | Future typed mutation with stable identity, Undo, and verification. |
+| `EMCP_WB_ModifyEntity` | `name`, `action`, `value`, `propertyPath`, `propertyKey`, `memberIndex` | Transforms, renames, reparents, edits properties/object arrays, and changes object class. | Stringly typed targeting; assumes `coords`/`angleX/Y/Z`; nested/current values are partly observable. | Split into narrow domain commands; do not adopt a generic stringly editor. |
+| `EMCP_WB_Components` | `entityName`, `action`, `componentClass`, `componentIndex` | Lists, adds, and removes components. | Name targeting; remove-by-class removes first match; wrapper blocks index-only removal. | Future typed entity capability with component/resource validation. |
+| `EMCP_WB_SelectEntity` | `action`, `name` | Deselects, clears, and lists up to 100 selected entities. | `select` clears selection but does not select the target; wrapper claims it did. | Read summary first; mutate only through a proven stable selection API. |
+| `EMCP_WB_Clipboard` | `action` | Copies/cuts/duplicates selected entities; pastes or checks clipboard. | Depends on GUI state; no affected-entity list or deterministic paste target. | Do not expose clipboard state; prefer explicit composition/duplication commands. |
+| `EMCP_WB_Layers` | `action`, `subScene`, `entityName`, `visible` | Lists numeric layer IDs, current subscene, and an entity layer ID. | Cannot mutate layers; wrapper advertises unsupported operations. | Future capability only after Workbench proves stable layer identity and operations. |
+| `EMCP_WB_Prefabs` | `action`, `entityName`, `templatePath` | Creates/saves templates and gets a direct ancestor resource path. | No prefab search/GUID/override inspection; wrapper does not expose `getAncestor`. | Candidate for typed prefab/resource inspection and lifecycle operations. |
 
 ## Reforger implications
 

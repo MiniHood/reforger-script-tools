@@ -100,10 +100,11 @@ fact beyond its declared revision.
 Start with read operations. Add a mutating command only after the corresponding
 read/observe/verify loop is live and accepted in a supported Workbench version.
 
-The complete candidate catalogue, including all handlers reviewed in
-EnfusionMCP and their adoption disposition, belongs in
-[Workbench NET API research](workbench-net-api-research.md). MCP tools are
-selected only from the proven, versioned capabilities recorded there.
+The complete external MCP-host and Workbench-handler catalogue, including
+each handler's adoption disposition, belongs in
+[EnfusionMCP Workbench handler review](enfusionmcp-workbench-handler-review.md).
+MCP tools are selected only from the proven, versioned capabilities recorded
+in this plan and the NET API evidence journal.
 
 ## Mutation and safety contract
 

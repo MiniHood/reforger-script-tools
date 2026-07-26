@@ -172,38 +172,13 @@ unimplemented endpoint exists. A `capabilities` response must distinguish
 lets clients discover the full design vocabulary without treating a missing
 plugin version as permission to guess or emulate editor behavior.
 
-### Candidate feature catalogue from EnfusionMCP source review
+### External feature discovery
 
-The following table records every handler found in the external
-`EnfusionMCP/EnfusionMCP` implementation reviewed at commit
-`282393978cbe00c143f0872cf334c8432741c8e4`. It is feature discovery, not
-authority or an adoption list. Every candidate still requires primary evidence,
-a versioned DTO, canonical identity, bounds, and live acceptance.
-
-| External handler | Potential Workbench capability | Reforger disposition |
-| --- | --- | --- |
-| `EMCP_WB_Ping` | Bridge/editor availability and mode probe. | Candidate for `capabilities` and typed availability only. |
-| `EMCP_WB_GetState` | World/editor state snapshot. | Candidate after defining bounded authoritative fields. |
-| `EMCP_WB_EditorControl` | Play/edit transition, save, Undo/redo, resource opening. | Split into explicit editor commands; never menu-path fallbacks. |
-| `EMCP_WB_ExecuteAction` | Arbitrary Workbench menu action. | Do not adopt. |
-| `EMCP_WB_Reload` | Script/plugin reload or compilation trigger. | Candidate only with a proven named operation and result. |
-| `EMCP_WB_Resources` | Resource registration, rebuild, and opening. | Candidate for typed resource lifecycle operations. |
-| `EMCP_WB_ScriptEditor` | Open-document line inspection and editing. | Prefer bounded project-file tools and compiler validation; do not mirror editor lines by default. |
-| `EMCP_WB_Localization` | String-table entry inspection and mutation. | Future typed localization/resource capability. |
-| `EMCP_WB_Terrain` | Terrain height and bounds query. | Future read-only world query when a real workflow needs it. |
-| `EMCP_WB_ListEntities` | Paged live entity search. | High-value candidate with stable entity IDs and filters. |
-| `EMCP_WB_GetEntity` | Entity, component, transform, and property inspection. | High-value candidate with actual override values and hierarchy IDs. |
-| `EMCP_WB_CreateEntity` | Prefab-based entity placement. | Future typed mutation with preview, Undo, and verification. |
-| `EMCP_WB_DeleteEntity` | Entity removal. | Future typed mutation with stable identity, Undo, and verification. |
-| `EMCP_WB_ModifyEntity` | Transform, hierarchy, property, and object-array edits. | Split into narrow domain commands; do not adopt a generic stringly editor. |
-| `EMCP_WB_Components` | Component listing, addition, and removal. | Future typed entity capability with component/resource validation. |
-| `EMCP_WB_SelectEntity` | Read or change World Editor selection. | Read summary first; mutate only through a proven stable selection API. |
-| `EMCP_WB_Clipboard` | Copy, cut, paste, and duplicate entities. | Do not expose clipboard state; prefer explicit composition/duplication commands. |
-| `EMCP_WB_Layers` | Layer/subscene inspection and layer operations. | Future capability only after Workbench proves stable layer identity and operations. |
-| `EMCP_WB_Prefabs` | Template creation/save and ancestor inspection. | Candidate for typed prefab/resource inspection and lifecycle operations. |
-
-The full source-level behavior and failure analysis remains in
+The external MCP-host and injected-handler inventories, including the
+per-handler Reforger disposition, live in
 [EnfusionMCP Workbench handler review](enfusionmcp-workbench-handler-review.md).
+They are feature discovery only: every candidate still requires primary
+evidence, a versioned DTO, canonical identity, bounds, and live acceptance.
 
 Each future operation should also carry the parts of the contract that make an
 editor MCP usable by an agent: stable name and description; effect
