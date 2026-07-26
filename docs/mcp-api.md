@@ -3155,7 +3155,7 @@ Workbench tools return structured tool errors with a stable code, operation phas
 
 ## `workbench_restart`
 
-Gracefully close one exact observed Workbench process and launch a replacement only after the original exits.
+Gracefully close one exact observed Workbench process and relaunch its one resolved Enfusion Workbench project with -gproj plus the installed base-game addons directory only after the original exits. It refuses to close Workbench if the visible project window, exact local project descriptor, or installed base-game project cannot be resolved.
 
 ### Annotations
 

@@ -108,9 +108,10 @@ opaque-cursor pages so an MCP client can retrieve every finding without
 recompiling between pages. Process shutdown is bound to a process identity that
 includes both PID and observed start time; only graceful main-window close is
 supported. A restart first resolves exactly one visible Enfusion Workbench
-project window to exactly one matching local `.gproj` descriptor, then relaunches
-with Workbench's `-gproj` argument. It refuses before closure if that project
-identity cannot be resolved.
+project window to exactly one matching local `.gproj` descriptor, verifies the
+installed base-game `addons/data/ArmaReforger.gproj`, then relaunches with
+Workbench's `-gproj` and `-addonsDir <game>/addons` arguments. It refuses before
+closure if either project identity or the base-game addon source cannot be resolved.
 
 Every failed public Workbench operation returns a unique support reference.
 The same reference is written to the default-on rotating integration log with

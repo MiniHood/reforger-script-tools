@@ -837,7 +837,9 @@ impl WorkbenchController {
         let paths = self.paths();
         let executable = paths
             .executable
+            .as_ref()
             .filter(|path| is_workbench_executable(path))
+            .cloned()
             .ok_or_else(|| {
                 self.correlate_failure_details(
                     "launch",
@@ -854,6 +856,19 @@ impl WorkbenchController {
             .stderr(std::process::Stdio::null());
         if let Some(project) = project {
             command.arg("-gproj").arg(project);
+            let game_addons =
+                base_game_addons_directory(paths.game.as_deref()).ok_or_else(|| {
+                    self.correlate_failure_details(
+                        "launch",
+                        "base-game-addon-directory-unavailable",
+                        failure(WorkbenchFailureCode::Unavailable),
+                        json!({
+                            "project": project,
+                            "gameDirectoryDiscovered": paths.game.is_some(),
+                        }),
+                    )
+                })?;
+            command.arg("-addonsDir").arg(game_addons);
         }
         if let Some(working_directory) = working_directory {
             command.current_dir(working_directory);
@@ -1031,6 +1046,17 @@ impl WorkbenchController {
                     json!({"processId": process_id}),
                 )
             })?;
+        if base_game_addons_directory(paths.game.as_deref()).is_none() {
+            return Err(self.correlate_failure_details(
+                "restart",
+                "base-game-addon-directory-unavailable",
+                failure(WorkbenchFailureCode::Unavailable),
+                json!({
+                    "processId": process_id,
+                    "gameDirectoryDiscovered": paths.game.is_some(),
+                }),
+            ));
+        }
         let stopped = self.stop(process_id)?;
         if !stopped.exited {
             return Ok(stopped);
@@ -2135,6 +2161,15 @@ fn project_title(content: &str) -> Option<&str> {
     })
 }
 
+fn base_game_addons_directory(game_directory: Option<&std::path::Path>) -> Option<PathBuf> {
+    let addons = game_directory?.join("addons");
+    addons
+        .join("data")
+        .join("ArmaReforger.gproj")
+        .is_file()
+        .then_some(addons)
+}
+
 fn discover_steam_app(app_id: &str, default_folder: &str) -> Option<PathBuf> {
     let steam_root = std::env::var_os("ProgramFiles(x86)")
         .map(PathBuf::from)
@@ -2994,6 +3029,23 @@ mod tests {
         )
         .unwrap();
         assert_eq!(super::resolve_project_gproj(&root, "Test Bullshit"), None);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn base_game_addon_directory_requires_the_reforger_project_descriptor() {
+        let root = test_root("base-game-addons");
+        let addons = root.join("addons");
+        fs::create_dir_all(addons.join("data")).unwrap();
+
+        assert_eq!(super::base_game_addons_directory(Some(&root)), None);
+
+        fs::write(
+            addons.join("data").join("ArmaReforger.gproj"),
+            "GameProject {}",
+        )
+        .unwrap();
+        assert_eq!(super::base_game_addons_directory(Some(&root)), Some(addons));
         fs::remove_dir_all(root).unwrap();
     }
 
