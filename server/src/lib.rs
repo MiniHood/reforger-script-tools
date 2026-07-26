@@ -29,3 +29,4 @@ pub mod semantic_file;
 pub mod symbol_display;
 pub mod syntax;
 pub mod type_facts;
+pub mod workbench;

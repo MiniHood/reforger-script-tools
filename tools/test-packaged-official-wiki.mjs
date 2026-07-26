@@ -36,8 +36,16 @@ try {
     toolCallRequest(3, 'official_wiki_status', {}),
   ]);
   const listed = response(wikiSession, 2).result.tools;
-  if (listed.length !== 7 || listed.some(tool => tool.annotations?.readOnlyHint !== true || tool.annotations?.openWorldHint !== false)) {
-    throw new Error(`Installed runtime did not advertise seven closed-world read-only tools: ${wikiSession.stdout}`);
+  const evidenceTools = listed.slice(0, 10);
+  const installTool = listed.find(tool => tool.name === 'workbench_install_bridge');
+  const stopTool = listed.find(tool => tool.name === 'workbench_stop');
+  const restartTool = listed.find(tool => tool.name === 'workbench_restart');
+  if (listed.length !== 19
+    || evidenceTools.some(tool => tool.annotations?.readOnlyHint !== true || tool.annotations?.openWorldHint !== false)
+    || installTool?.annotations?.destructiveHint !== true
+    || stopTool?.annotations?.destructiveHint !== true
+    || restartTool?.annotations?.destructiveHint !== true) {
+    throw new Error(`Installed runtime did not advertise the expected evidence and guarded Workbench tools: ${wikiSession.stdout}`);
   }
   const status = response(wikiSession, 3);
   if (status?.result?.structuredContent?.available !== true) throw new Error(`Installed corpus was unavailable: ${wikiSession.stdout}`);
@@ -102,7 +110,7 @@ try {
       throw new Error(`Installed MCP output leaked a physical path: ${session.stdout}`);
     }
   }
-  console.log(`Verified ${Object.keys(sourcePages).length} byte-identical packaged Markdown files, seven installed tools, and independent Game Data and Official Wiki workflows.`);
+  console.log(`Verified ${Object.keys(sourcePages).length} byte-identical packaged Markdown files, 19 installed tools, and independent Game Data and Official Wiki workflows.`);
 } finally {
   rmSync(sandbox, { recursive: true, force: true });
 }

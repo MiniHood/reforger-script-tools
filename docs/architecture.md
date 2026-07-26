@@ -46,16 +46,49 @@ flowchart LR
     Client[MCP client] --> Host[Local MCP runtime]
     Host --> Rust[Rust language and evidence modules]
     Host --> Files[Bounded project-file access]
-    Host --> Gateway[Typed Workbench Gateway]
+    Host --> Gateway[Rust typed Workbench Gateway]
     Gateway --> Workbench[Running Reforger Workbench]
-    Workbench --> Plugin[Versioned project handler]
+    Workbench --> Plugin[Versioned profile handler package]
 ```
 
-The Workbench Gateway exposes named, typed capabilities. It owns the private
-NET API boundary; hosts own their own presentation and scheduling. An MCP
-Workbench adapter must consume this boundary rather than reimplementing the
-codec or exposing arbitrary handler dispatch. Detailed protocol evidence and
-compiler-validation acceptance remain in the relevant research journals.
+The Rust Workbench Gateway exposes named, typed capabilities and is the only
+owner of NET API framing. MCP calls it directly. The existing TypeScript
+compiler integration invokes the packaged Rust executable through its private
+`workbench-api` process mode, so it remains a thin editor-facing bridge rather
+than a second codec. Detailed protocol evidence and compiler-validation
+acceptance remain in the relevant research journals.
+
+The optional managed handler package lives under the current Windows user's
+`Documents\My Games\ArmaReforgerWorkbench\profile\scripts\reforger-script-tools`
+directory. Its manifest is both file ownership and continuing-maintenance
+consent: after a successful native connection, the VS Code extension owns the
+one-time first-install prompt and invokes a private Rust installer only when the
+user accepts. Public MCP cannot create that first manifest; it may maintain an
+existing consented installation. A successful later connection may likewise
+repair or upgrade only manifest-owned files. Writing that profile package and
+running native compiler validation does not register its `NetApiHandler`s in
+the already-running Workbench; the extension reports successful installation
+and asks the user to refresh Workbench with `Ctrl+Shift+R`. It deliberately
+does not probe the just-written capability handler before that refresh.
+When no consent manifest exists, status reports installation as available only
+if the existing profile and native connection make the approval-bearing
+operation usable; status itself creates nothing.
+Unknown profile files are preserved, newer package versions are never
+downgraded, and failed activation is left installed for diagnosis rather than
+rolled back. Version precedence follows semantic-version ordering; an
+unrecognized installed version is preserved because automatic downgrade safety
+cannot be proven.
+
+Compiler validation is captured once per invocation and exposed as bounded,
+opaque-cursor pages so an MCP client can retrieve every finding without
+recompiling between pages. Process shutdown is bound to a process identity that
+includes both PID and observed start time; only graceful main-window close is
+supported.
+
+Every failed public Workbench operation returns a unique support reference.
+The same reference is written to the default-on rotating integration log with
+the operation, stable outcome, timing, versions, and logical managed filenames
+needed for diagnosis. Raw NET API payloads and source text are not logged.
 
 ## Module Boundaries
 
@@ -66,11 +99,13 @@ compiler-validation acceptance remain in the relevant research journals.
 | `src/gameData/` | Game-data acquisition and source resolution | Parsing or semantic analysis |
 | `src/languageClient/` | Server lifecycle, transport, file notifications, and thin editor bridges | Syntax, lookup, completion ranking, or type reasoning |
 | `src/mcp/` | MCP client configuration from the packaged runtime and stable source/cache inputs | Protocol serving, indexing, or semantic queries |
-| `src/workbenchNetApi/gateway/` | Host-neutral NET API codec and typed Workbench capabilities | VS Code UI, raw endpoint dispatch, or Enfusion language decisions |
+| `src/workbenchNetApi/gateway/` | Thin TypeScript process bridge from editor compiler features to the bundled Rust Workbench Gateway | NET API framing, VS Code UI, raw endpoint dispatch, or Enfusion language decisions |
 | `src/workbenchNetApi/compiler/` | VS Code scheduling, compiler diagnostic rendering, and Workbench status UI | NET API framing, endpoint discovery, or language-engine diagnostics |
+| `src/workbenchNetApi/integration/` | One-session first-install prompt and progress/notification presentation after a confirmed connection | Profile writes, consent persistence outside the manifest, NET API framing, or automatic process lifecycle |
 | `server/src/bin/reforger_language_server.rs` | Process-mode parsing and dispatch to one protocol adapter | Protocol behaviour, language analysis, or tool definitions |
 | `server/src/lsp/` | LSP transport, document lifecycle, and language-feature projection | MCP serving or a second Enfusion analysis implementation |
 | `server/src/mcp/` | MCP schemas, protocol serving, and bounded result mapping | LSP lifecycle or a second Game Data/Official Wiki authority |
+| `server/src/workbench.rs` | Workbench discovery, process lifecycle, NET API framing, native capabilities, managed handler lifecycle, and bounded support logs | VS Code UI, arbitrary handler dispatch, force termination, or Enfusion language analysis |
 | `server/src/*.rs` (except protocol adapters) | Shared Enfusion analysis, evidence catalogues, indexes, formatting, and diagnostics | VS Code UI, settings, or client-protocol ownership |
 | `tools/` | Development and investigation support | Extension runtime behaviour |
 

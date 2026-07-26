@@ -165,6 +165,7 @@ path = "../tools/server-reports/symbol_report.rs"
 [dependencies]
 rmcp = { version = "=2.2.0", default-features = false, features = ["server", "macros", "transport-io"] }
 schemars = "1.0"
+semver = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"

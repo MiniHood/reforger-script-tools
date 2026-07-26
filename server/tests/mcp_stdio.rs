@@ -71,7 +71,7 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
         .pointer("/result/tools")
         .and_then(Value::as_array)
         .expect("tools/list result");
-    assert_eq!(listed.len(), 10);
+    assert_eq!(listed.len(), 19);
     assert_eq!(listed[0].get("name"), Some(&json!("game_data_status")));
     assert_eq!(
         listed[0].pointer("/annotations/readOnlyHint"),
@@ -134,6 +134,26 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
     );
     assert_eq!(listed[8].get("name"), Some(&json!("search_official_wiki")));
     assert_eq!(listed[9].get("name"), Some(&json!("read_official_wiki")));
+    for (index, name) in [
+        "workbench_status",
+        "workbench_validate_scripts",
+        "workbench_install_bridge",
+        "workbench_state",
+        "workbench_reload",
+        "workbench_read_logs",
+        "workbench_launch",
+        "workbench_stop",
+        "workbench_restart",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert_eq!(listed[index + 10].get("name"), Some(&json!(name)));
+    }
+    assert_eq!(
+        listed[17].pointer("/annotations/destructiveHint"),
+        Some(&json!(true))
+    );
 
     client.send(json!({
         "jsonrpc": "2.0",
@@ -530,7 +550,7 @@ fn mcp_game_data_research_tools_complete_the_progressive_lookup_loop() {
         .pointer("/result/tools")
         .and_then(Value::as_array)
         .expect("tool catalogue");
-    assert_eq!(listed.len(), 10);
+    assert_eq!(listed.len(), 19);
     assert_eq!(
         listed[2].get("name"),
         Some(&json!("search_game_data_examples"))
@@ -2057,6 +2077,483 @@ fn panicking_initialization_worker_is_isolated_from_the_mcp_process() {
     assert_eq!(client.response(4).get("result"), Some(&json!({})));
     client.close_stdin();
     assert!(client.wait_for_exit(Duration::from_secs(3)));
+}
+
+#[test]
+fn workbench_status_is_served_through_the_public_mcp_seam() {
+    use std::io::Read;
+    use std::net::TcpListener;
+
+    let fixture = TempFixture::new("mcp_workbench_status");
+    let profile = fixture
+        .path()
+        .join("Documents")
+        .join("My Games")
+        .join("ArmaReforgerWorkbench")
+        .join("profile");
+    let bridge = profile.join("scripts").join("reforger-script-tools");
+    fs::create_dir_all(&profile).unwrap();
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind fake Workbench");
+    let port = listener.local_addr().unwrap().port();
+    let peer = thread::spawn(move || {
+        for expected in [
+            json!({"APIFunc":"IsWorkbenchRunning"}),
+            json!({"APIFunc":"RST_WorkbenchCapabilities"}),
+        ] {
+            let (mut stream, _) = listener.accept().expect("accept Workbench request");
+            let mut version = [0_u8; 4];
+            stream.read_exact(&mut version).unwrap();
+            assert_eq!(i32::from_le_bytes(version), 1);
+            assert_eq!(read_net_api_string(&mut stream), "ReforgerScriptTools");
+            assert_eq!(read_net_api_string(&mut stream), "JsonRPC");
+            let payload: Value =
+                serde_json::from_str(&read_net_api_string(&mut stream)).expect("request JSON");
+            assert_eq!(payload, expected);
+            if expected["APIFunc"] == "IsWorkbenchRunning" {
+                write_net_api_string(&mut stream, "Ok");
+                write_net_api_string(&mut stream, r#"{"IsRunning":true,"ScriptsCompiled":true}"#);
+            } else {
+                write_net_api_string(&mut stream, "HandlerUnavailable");
+                write_net_api_string(&mut stream, "{}");
+            }
+        }
+    });
+    let port_string = port.to_string();
+    let mut client = McpClient::spawn(&[
+        "mcp",
+        "--workbench-port",
+        &port_string,
+        "--workbench-user-directory",
+        fixture.path().to_str().unwrap(),
+    ]);
+    client.initialize(1);
+    client.send(json!({
+        "jsonrpc":"2.0",
+        "id":2,
+        "method":"tools/call",
+        "params":{"name":"workbench_status","arguments":{}}
+    }));
+    let response = client.response(2);
+    assert_eq!(
+        response.pointer("/result/structuredContent/native/isRunning"),
+        Some(&json!(true))
+    );
+    assert_eq!(
+        response.pointer("/result/structuredContent/native/scriptsCompiled"),
+        Some(&json!(true))
+    );
+    assert_eq!(
+        response.pointer("/result/structuredContent/bridge/installed"),
+        Some(&json!(false))
+    );
+    assert_eq!(
+        response.pointer("/result/structuredContent/bridge/installationAvailable"),
+        Some(&json!(true))
+    );
+    assert!(
+        !bridge.exists(),
+        "status must not create the managed installation"
+    );
+    peer.join().unwrap();
+}
+
+#[test]
+fn workbench_script_reload_remains_native_when_the_managed_handler_is_absent() {
+    use std::io::Read;
+    use std::net::TcpListener;
+
+    let fixture = TempFixture::new("mcp_workbench_native_reload");
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind fake Workbench");
+    let port = listener.local_addr().unwrap().port();
+    let peer = thread::spawn(move || {
+        for expected in [
+            json!({"APIFunc":"IsWorkbenchRunning"}),
+            json!({"APIFunc":"ValidateScripts","Configuration":"WORKBENCH"}),
+        ] {
+            let (mut stream, _) = listener.accept().expect("accept Workbench request");
+            let mut version = [0_u8; 4];
+            stream.read_exact(&mut version).unwrap();
+            assert_eq!(i32::from_le_bytes(version), 1);
+            assert_eq!(read_net_api_string(&mut stream), "ReforgerScriptTools");
+            assert_eq!(read_net_api_string(&mut stream), "JsonRPC");
+            let payload: Value =
+                serde_json::from_str(&read_net_api_string(&mut stream)).expect("request JSON");
+            assert_eq!(payload, expected);
+            let response = if expected["APIFunc"] == "IsWorkbenchRunning" {
+                r#"{"IsRunning":true,"ScriptsCompiled":true}"#
+            } else {
+                r#"{"Success":true,"Errors":[],"Warnings":[]}"#
+            };
+            write_net_api_string(&mut stream, "Ok");
+            write_net_api_string(&mut stream, response);
+        }
+    });
+    let port_string = port.to_string();
+    let mut client = McpClient::spawn(&[
+        "mcp",
+        "--workbench-port",
+        &port_string,
+        "--workbench-user-directory",
+        fixture.path().to_str().unwrap(),
+    ]);
+    client.initialize(1);
+    client.send(json!({
+        "jsonrpc":"2.0",
+        "id":2,
+        "method":"tools/call",
+        "params":{"name":"workbench_reload","arguments":{"target":"scripts"}}
+    }));
+    let response = client.response(2);
+    assert_eq!(
+        response.pointer("/result/structuredContent/target"),
+        Some(&json!("scripts"))
+    );
+    assert_eq!(
+        response.pointer("/result/structuredContent/completed"),
+        Some(&json!(true))
+    );
+    assert_eq!(
+        response.pointer("/result/structuredContent/scriptsCompiled"),
+        Some(&json!(true))
+    );
+    assert_eq!(
+        response.pointer("/result/structuredContent/activeBridgeVersion"),
+        Some(&Value::Null)
+    );
+    peer.join().unwrap();
+    client.close_stdin();
+    assert!(client.wait_for_exit(Duration::from_secs(3)));
+}
+
+#[test]
+fn workbench_install_bridge_uses_the_public_mcp_seam_and_preserves_unknown_files() {
+    use std::io::Read;
+    use std::net::TcpListener;
+
+    let fixture = TempFixture::new("mcp_workbench_install");
+    let bridge = fixture
+        .path()
+        .join("Documents")
+        .join("My Games")
+        .join("ArmaReforgerWorkbench")
+        .join("profile")
+        .join("scripts")
+        .join("reforger-script-tools");
+    fs::create_dir_all(&bridge).unwrap();
+    fs::write(bridge.join("user-script.c"), "preserve").unwrap();
+    fs::write(
+        bridge.join("reforger-script-tools.manifest.json"),
+        r#"{"bridgeVersion":"0.9.0","protocolVersion":1,"files":[]}"#,
+    )
+    .unwrap();
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind fake Workbench");
+    let port = listener.local_addr().unwrap().port();
+    let peer = thread::spawn(move || {
+        for expected in [
+            json!({"APIFunc":"IsWorkbenchRunning"}),
+            json!({"APIFunc":"ValidateScripts","Configuration":"WORKBENCH"}),
+            json!({"APIFunc":"RST_WorkbenchCapabilities"}),
+        ] {
+            let (mut stream, _) = listener.accept().expect("accept Workbench request");
+            let mut version = [0_u8; 4];
+            stream.read_exact(&mut version).unwrap();
+            assert_eq!(i32::from_le_bytes(version), 1);
+            assert_eq!(read_net_api_string(&mut stream), "ReforgerScriptTools");
+            assert_eq!(read_net_api_string(&mut stream), "JsonRPC");
+            let payload: Value =
+                serde_json::from_str(&read_net_api_string(&mut stream)).expect("request JSON");
+            assert_eq!(payload, expected);
+            let response = match expected["APIFunc"].as_str().unwrap() {
+                "IsWorkbenchRunning" => r#"{"IsRunning":true,"ScriptsCompiled":true}"#,
+                "ValidateScripts" => r#"{"Success":true,"Errors":[],"Warnings":[]}"#,
+                _ => {
+                    r#"{"bridgeVersion":"1.0.0","protocolVersion":1,"capabilities":"state;reload"}"#
+                }
+            };
+            write_net_api_string(&mut stream, "Ok");
+            write_net_api_string(&mut stream, response);
+        }
+    });
+    let port_string = port.to_string();
+    let mut client = McpClient::spawn(&[
+        "mcp",
+        "--workbench-port",
+        &port_string,
+        "--workbench-user-directory",
+        fixture.path().to_str().unwrap(),
+    ]);
+    client.initialize(1);
+    client.send(json!({
+        "jsonrpc":"2.0",
+        "id":2,
+        "method":"tools/call",
+        "params":{"name":"workbench_install_bridge","arguments":{}}
+    }));
+
+    let response = client.response(2);
+
+    assert_eq!(
+        response.pointer("/result/structuredContent/activated"),
+        Some(&json!(true))
+    );
+    assert!(bridge.join("RST_WorkbenchCapabilities.c").is_file());
+    assert!(bridge.join("RST_WorkbenchState.c").is_file());
+    assert!(bridge.join("RST_WorkbenchReload.c").is_file());
+    assert!(bridge.join("reforger-script-tools.manifest.json").is_file());
+    assert_eq!(
+        fs::read_to_string(bridge.join("user-script.c")).unwrap(),
+        "preserve"
+    );
+    peer.join().unwrap();
+}
+
+#[test]
+fn workbench_failed_activation_keeps_the_managed_installation_for_diagnosis() {
+    use std::io::Read;
+    use std::net::TcpListener;
+
+    let fixture = TempFixture::new("mcp_workbench_install_failed_activation");
+    let profile = fixture
+        .path()
+        .join("Documents")
+        .join("My Games")
+        .join("ArmaReforgerWorkbench")
+        .join("profile");
+    let bridge = profile.join("scripts").join("reforger-script-tools");
+    fs::create_dir_all(&bridge).unwrap();
+    fs::write(
+        bridge.join("reforger-script-tools.manifest.json"),
+        r#"{"bridgeVersion":"0.9.0","protocolVersion":1,"files":[]}"#,
+    )
+    .unwrap();
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind fake Workbench");
+    let port = listener.local_addr().unwrap().port();
+    let peer = thread::spawn(move || {
+        for expected in [
+            json!({"APIFunc":"IsWorkbenchRunning"}),
+            json!({"APIFunc":"ValidateScripts","Configuration":"WORKBENCH"}),
+            json!({"APIFunc":"RST_WorkbenchCapabilities"}),
+        ] {
+            let (mut stream, _) = listener.accept().expect("accept Workbench request");
+            let mut version = [0_u8; 4];
+            stream.read_exact(&mut version).unwrap();
+            assert_eq!(i32::from_le_bytes(version), 1);
+            assert_eq!(read_net_api_string(&mut stream), "ReforgerScriptTools");
+            assert_eq!(read_net_api_string(&mut stream), "JsonRPC");
+            let payload: Value =
+                serde_json::from_str(&read_net_api_string(&mut stream)).expect("request JSON");
+            assert_eq!(payload, expected);
+            let response = match expected["APIFunc"].as_str().unwrap() {
+                "IsWorkbenchRunning" => r#"{"IsRunning":true,"ScriptsCompiled":true}"#,
+                "ValidateScripts" => {
+                    r#"{"Success":false,"Errors":[{"error":"broken","file":"RST_WorkbenchState.c","line":1}],"Warnings":[]}"#
+                }
+                _ => {
+                    r#"{"bridgeVersion":"0.9.0","protocolVersion":1,"capabilities":"state;reload"}"#
+                }
+            };
+            write_net_api_string(&mut stream, "Ok");
+            write_net_api_string(&mut stream, response);
+        }
+    });
+    let port_string = port.to_string();
+    let mut client = McpClient::spawn(&[
+        "mcp",
+        "--workbench-port",
+        &port_string,
+        "--workbench-user-directory",
+        fixture.path().to_str().unwrap(),
+    ]);
+    client.initialize(1);
+    client.send(json!({
+        "jsonrpc":"2.0",
+        "id":2,
+        "method":"tools/call",
+        "params":{"name":"workbench_install_bridge","arguments":{}}
+    }));
+    let response = client.response(2);
+    assert_eq!(
+        response.pointer("/result/structuredContent/activated"),
+        Some(&json!(false))
+    );
+    assert_eq!(
+        response.pointer("/result/structuredContent/installedVersion"),
+        Some(&json!("1.0.0"))
+    );
+    assert!(bridge.join("RST_WorkbenchCapabilities.c").is_file());
+    assert!(bridge.join("RST_WorkbenchState.c").is_file());
+    assert!(bridge.join("RST_WorkbenchReload.c").is_file());
+    assert!(bridge.join("reforger-script-tools.manifest.json").is_file());
+    peer.join().unwrap();
+    client.close_stdin();
+    assert!(client.wait_for_exit(Duration::from_secs(3)));
+}
+
+#[test]
+fn workbench_install_bridge_requires_extension_consent_before_first_install() {
+    use std::io::Read;
+    use std::net::TcpListener;
+
+    let fixture = TempFixture::new("mcp_workbench_install_consent_required");
+    let profile = fixture
+        .path()
+        .join("Documents")
+        .join("My Games")
+        .join("ArmaReforgerWorkbench")
+        .join("profile");
+    let bridge = profile.join("scripts").join("reforger-script-tools");
+    fs::create_dir_all(&profile).unwrap();
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind fake Workbench");
+    let port = listener.local_addr().unwrap().port();
+    let peer = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept Workbench request");
+        let mut version = [0_u8; 4];
+        stream.read_exact(&mut version).unwrap();
+        assert_eq!(i32::from_le_bytes(version), 1);
+        assert_eq!(read_net_api_string(&mut stream), "ReforgerScriptTools");
+        assert_eq!(read_net_api_string(&mut stream), "JsonRPC");
+        let payload: Value =
+            serde_json::from_str(&read_net_api_string(&mut stream)).expect("request JSON");
+        assert_eq!(payload, json!({"APIFunc":"IsWorkbenchRunning"}));
+        write_net_api_string(&mut stream, "Ok");
+        write_net_api_string(&mut stream, r#"{"IsRunning":true,"ScriptsCompiled":true}"#);
+    });
+    let port_string = port.to_string();
+    let mut client = McpClient::spawn(&[
+        "mcp",
+        "--workbench-port",
+        &port_string,
+        "--workbench-user-directory",
+        fixture.path().to_str().unwrap(),
+    ]);
+    client.initialize(1);
+    client.send(json!({
+        "jsonrpc":"2.0",
+        "id":2,
+        "method":"tools/call",
+        "params":{"name":"workbench_install_bridge","arguments":{}}
+    }));
+
+    let response = client.response(2);
+
+    assert_eq!(
+        response.pointer("/result/structuredContent/code"),
+        Some(&json!("workbench_installation_consent_required"))
+    );
+    assert_eq!(
+        response.pointer("/result/structuredContent/retryable"),
+        Some(&json!(false))
+    );
+    assert!(!bridge.exists());
+    peer.join().unwrap();
+    client.close_stdin();
+    assert!(client.wait_for_exit(Duration::from_secs(3)));
+}
+
+#[test]
+fn workbench_install_failure_returns_a_correlated_support_log_reference() {
+    use std::io::Read;
+    use std::net::TcpListener;
+
+    let fixture = TempFixture::new("mcp_workbench_install_missing_profile");
+    let profile = fixture
+        .path()
+        .join("Documents")
+        .join("My Games")
+        .join("ArmaReforgerWorkbench")
+        .join("profile");
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind fake Workbench");
+    let port = listener.local_addr().unwrap().port();
+    let peer = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept Workbench request");
+        let mut version = [0_u8; 4];
+        stream.read_exact(&mut version).unwrap();
+        assert_eq!(i32::from_le_bytes(version), 1);
+        assert_eq!(read_net_api_string(&mut stream), "ReforgerScriptTools");
+        assert_eq!(read_net_api_string(&mut stream), "JsonRPC");
+        let payload: Value =
+            serde_json::from_str(&read_net_api_string(&mut stream)).expect("request JSON");
+        assert_eq!(payload, json!({"APIFunc":"IsWorkbenchRunning"}));
+        write_net_api_string(&mut stream, "Ok");
+        write_net_api_string(&mut stream, r#"{"IsRunning":true,"ScriptsCompiled":true}"#);
+    });
+    let port_string = port.to_string();
+    let mut client = McpClient::spawn(&[
+        "mcp",
+        "--workbench-port",
+        &port_string,
+        "--workbench-user-directory",
+        fixture.path().to_str().unwrap(),
+    ]);
+    client.initialize(1);
+    client.send(json!({
+        "jsonrpc":"2.0",
+        "id":2,
+        "method":"tools/call",
+        "params":{"name":"workbench_install_bridge","arguments":{}}
+    }));
+    let failed = client.response(2);
+    assert_eq!(
+        failed.pointer("/result/structuredContent/code"),
+        Some(&json!("workbench_unavailable"))
+    );
+    assert_eq!(
+        failed.pointer("/result/structuredContent/phase"),
+        Some(&json!("install"))
+    );
+    let reference = failed
+        .pointer("/result/structuredContent/logReference")
+        .and_then(Value::as_str)
+        .expect("correlated log reference")
+        .to_string();
+    assert!(reference.starts_with("wb-"));
+    assert!(
+        !profile.exists(),
+        "the Workbench profile must not be created"
+    );
+
+    client.send(json!({
+        "jsonrpc":"2.0",
+        "id":3,
+        "method":"tools/call",
+        "params":{"name":"workbench_read_logs","arguments":{"source":"integration","lineCount":20}}
+    }));
+    let logs = client.response(3);
+    let record = logs
+        .pointer("/result/structuredContent/lines")
+        .and_then(Value::as_array)
+        .and_then(|lines| {
+            lines.iter().find_map(|line| {
+                let record: Value = serde_json::from_str(line.as_str()?).ok()?;
+                (record.get("reference") == Some(&json!(reference))).then_some(record)
+            })
+        })
+        .expect("matching support log record");
+    assert_eq!(record.get("operation"), Some(&json!("install")));
+    assert_eq!(record.get("outcome"), Some(&json!("profile-missing")));
+    assert_eq!(record.pointer("/details/profileFound"), Some(&json!(false)));
+    assert_eq!(
+        record.pointer("/details/managedDirectoryCreated"),
+        Some(&json!(false))
+    );
+    peer.join().unwrap();
+    client.close_stdin();
+    assert!(client.wait_for_exit(Duration::from_secs(3)));
+}
+
+fn read_net_api_string(stream: &mut impl std::io::Read) -> String {
+    let mut length = [0_u8; 4];
+    stream.read_exact(&mut length).unwrap();
+    let mut bytes = vec![0_u8; i32::from_le_bytes(length) as usize];
+    stream.read_exact(&mut bytes).unwrap();
+    String::from_utf8(bytes).unwrap()
+}
+
+fn write_net_api_string(stream: &mut impl std::io::Write, value: &str) {
+    stream
+        .write_all(&(value.len() as i32).to_le_bytes())
+        .unwrap();
+    stream.write_all(value.as_bytes()).unwrap();
 }
 
 struct McpClient {

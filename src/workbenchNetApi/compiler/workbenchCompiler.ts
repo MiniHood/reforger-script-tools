@@ -20,6 +20,11 @@ import {
 	WorkbenchDiagnosticRange,
 	workbenchDiagnosticProjection,
 } from './workbenchDiagnosticSpan';
+import { resolveLanguageServerPath } from '../../languageClient/serverPath';
+import {
+	createWorkbenchIntegration,
+	WorkbenchIntegrationCoordinator,
+} from '../integration/workbenchIntegration';
 
 const unavailableRetryMs = 1_000;
 const readyHeartbeatMs = 5_000;
@@ -95,7 +100,15 @@ interface WorkbenchCompilerFailure {
 
 export function registerWorkbenchCompilerFeatures(context: vscode.ExtensionContext): void {
 	const startupValidationEnabled = context.extensionMode !== vscode.ExtensionMode.Test;
-	let controller = new WorkbenchCompilerController(startupValidationEnabled);
+	const serverPath = resolveLanguageServerPath(context);
+	const integration = context.extensionMode === vscode.ExtensionMode.Test
+		? undefined
+		: createWorkbenchIntegration(serverPath);
+	let controller = new WorkbenchCompilerController(
+		startupValidationEnabled,
+		serverPath,
+		integration,
+	);
 	controller.start(context.extensionMode);
 	context.subscriptions.push(controller);
 	if (context.extensionMode === vscode.ExtensionMode.Test) {
@@ -105,7 +118,7 @@ export function registerWorkbenchCompilerFeatures(context: vscode.ExtensionConte
 			}),
 			vscode.commands.registerCommand(workbenchTestCommands.restartCompiler, () => {
 				controller.dispose();
-				controller = new WorkbenchCompilerController(false);
+				controller = new WorkbenchCompilerController(false, serverPath);
 				controller.start(context.extensionMode);
 				context.subscriptions.push(controller);
 			}),
@@ -118,7 +131,7 @@ export function registerWorkbenchCompilerFeatures(context: vscode.ExtensionConte
 
 class WorkbenchCompilerController implements vscode.Disposable {
 	private configuration = readConfiguration();
-	private gateway = createGateway(this.configuration);
+	private gateway: WorkbenchGateway;
 	private readonly compilerDiagnostics = vscode.languages.createDiagnosticCollection(
 		workbenchDiagnostics.collectionName,
 	);
@@ -154,7 +167,13 @@ class WorkbenchCompilerController implements vscode.Disposable {
 	private staleReason: string | undefined;
 	private disposed = false;
 
-	public constructor(private startupValidationEnabled: boolean) {}
+	public constructor(
+		private startupValidationEnabled: boolean,
+		private readonly serverPath: Promise<string | undefined>,
+		private readonly integration?: WorkbenchIntegrationCoordinator,
+	) {
+		this.gateway = createGateway(this.configuration, this.serverPath);
+	}
 
 	public start(extensionMode: vscode.ExtensionMode): void {
 		this.statusItem.name = 'Reforger Workbench';
@@ -216,6 +235,7 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		for (const disposable of this.disposables.splice(0)) {
 			disposable.dispose();
 		}
+		this.integration?.dispose();
 	}
 
 	private applyConfiguration(): void {
@@ -224,7 +244,7 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		}
 		this.configurationGeneration += 1;
 		this.configuration = readConfiguration();
-		this.gateway = createGateway(this.configuration);
+		this.gateway = createGateway(this.configuration, this.serverPath);
 		this.clearProbeTimer();
 		this.clearValidationTimer();
 		this.pendingValidation = undefined;
@@ -694,6 +714,7 @@ class WorkbenchCompilerController implements vscode.Disposable {
 			return;
 		}
 		if (!result.ok) {
+			this.integration?.onWorkbenchDisconnected();
 			this.lastStatus = undefined;
 			this.noteFailure(result.failure);
 			this.scheduleProbe(unavailableRetryMs, generation);
@@ -716,6 +737,10 @@ class WorkbenchCompilerController implements vscode.Disposable {
 			void this.queueValidation(request);
 			return;
 		}
+		void this.integration?.onWorkbenchConnected({
+			host: this.configuration.host,
+			port: this.configuration.port,
+		});
 		this.scheduleProbe(readyHeartbeatMs, generation);
 	}
 
@@ -854,9 +879,13 @@ function readConfiguration(): WorkbenchConfiguration {
 	};
 }
 
-function createGateway(configuration: WorkbenchConfiguration): WorkbenchGateway {
+function createGateway(
+	configuration: WorkbenchConfiguration,
+	serverPath: Promise<string | undefined>,
+): WorkbenchGateway {
 	return new WorkbenchGateway({
 		enabled: configuration.enabled,
+		serverPath,
 		endpoint: {
 			host: configuration.host,
 			port: configuration.port,

@@ -261,8 +261,16 @@ suite('Workbench compiler validation', () => {
 			assert.match(await fs.readFile(active.filePath, 'utf8'), /\/\/ active edit/);
 			assert.strictEqual(await fs.readFile(other.filePath, 'utf8'), workbenchFixtureSource);
 			assert.strictEqual(otherDocument.isDirty, true);
+			const completed = await waitFor(async () => {
+				const observation = await observeWorkbenchCompiler();
+				return observation.tooltip.includes(
+					'may be out of date because other scripts still have unsaved edits',
+				)
+					? observation
+					: undefined;
+			});
 			assert.match(
-				(await observeWorkbenchCompiler()).tooltip,
+				completed.tooltip,
 				/may be out of date because other scripts still have unsaved edits/,
 			);
 		} finally {

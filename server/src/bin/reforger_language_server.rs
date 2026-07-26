@@ -5,6 +5,10 @@ use reforger_language_server::lsp::{
 use reforger_language_server::mcp::{
     render_api_reference, run_stdio as run_mcp_stdio, McpServerOptions,
 };
+use reforger_language_server::workbench::{
+    WorkbenchControllerOptions, WorkbenchFailureCode, WorkbenchGatewayOptions,
+    WorkbenchInstallAuthorization,
+};
 use std::env;
 use std::path::PathBuf;
 
@@ -12,7 +16,16 @@ enum ServerMode {
     Lsp(LspServerOptions),
     Mcp(McpServerOptions),
     McpApi,
+    WorkbenchApi(WorkbenchApiCommand, WorkbenchGatewayOptions),
     Help,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkbenchApiCommand {
+    Status,
+    Validate,
+    IntegrationStatus,
+    InstallBridge,
 }
 
 fn main() {
@@ -31,6 +44,7 @@ fn main() {
             print!("{}", render_api_reference());
             Ok(())
         }
+        ServerMode::WorkbenchApi(command, options) => run_workbench_api(command, options),
         ServerMode::Help => {
             print_help();
             Ok(())
@@ -61,6 +75,10 @@ fn parse_args_from(args: impl Iterator<Item = String>) -> Result<ServerMode, Str
                 Ok(ServerMode::McpApi)
             }
         }
+        Some("workbench-api") => {
+            args.next();
+            parse_workbench_api_args(args)
+        }
         Some("--help" | "-h") => {
             args.next();
             if let Some(argument) = args.next() {
@@ -72,6 +90,85 @@ fn parse_args_from(args: impl Iterator<Item = String>) -> Result<ServerMode, Str
         Some(argument) if !argument.starts_with('-') => Err(format!("unknown mode '{argument}'")),
         _ => parse_lsp_args(args).map(ServerMode::Lsp),
     }
+}
+
+fn parse_workbench_api_args(mut args: impl Iterator<Item = String>) -> Result<ServerMode, String> {
+    let command = match args.next().as_deref() {
+        Some("status") => WorkbenchApiCommand::Status,
+        Some("validate") => WorkbenchApiCommand::Validate,
+        Some("integration-status") => WorkbenchApiCommand::IntegrationStatus,
+        Some("install-bridge") => WorkbenchApiCommand::InstallBridge,
+        Some(value) => return Err(format!("unknown workbench-api command '{value}'")),
+        None => return Err("missing workbench-api command".to_string()),
+    };
+    let mut options = WorkbenchGatewayOptions::default();
+    while let Some(argument) = args.next() {
+        match argument.as_str() {
+            "--host" => options.host = string_value(&mut args, "--host")?,
+            "--port" => {
+                let value = string_value(&mut args, "--port")?;
+                options.port = value
+                    .parse::<u16>()
+                    .map_err(|_| format!("invalid value for --port: {value}"))?;
+            }
+            "--deadline-ms" => {
+                let value = string_value(&mut args, "--deadline-ms")?;
+                let deadline = std::time::Duration::from_millis(
+                    value
+                        .parse::<u64>()
+                        .map_err(|_| format!("invalid value for --deadline-ms: {value}"))?,
+                );
+                options.status_deadline = deadline;
+                options.validation_deadline = deadline;
+            }
+            _ => return Err(format!("unknown workbench-api argument '{argument}'")),
+        }
+    }
+    Ok(ServerMode::WorkbenchApi(command, options))
+}
+
+fn run_workbench_api(
+    command: WorkbenchApiCommand,
+    options: WorkbenchGatewayOptions,
+) -> Result<(), String> {
+    let controller =
+        reforger_language_server::workbench::WorkbenchController::new(WorkbenchControllerOptions {
+            gateway: options,
+            ..WorkbenchControllerOptions::default()
+        });
+    let result = match command {
+        WorkbenchApiCommand::Status => controller
+            .native_status()
+            .and_then(|value| serde_json::to_value(value).map_err(|_| unreachable!())),
+        WorkbenchApiCommand::Validate => controller
+            .native_validate_scripts()
+            .and_then(|value| serde_json::to_value(value).map_err(|_| unreachable!())),
+        WorkbenchApiCommand::IntegrationStatus => {
+            Ok(serde_json::to_value(controller.overview()).unwrap_or_else(|_| unreachable!()))
+        }
+        WorkbenchApiCommand::InstallBridge => controller
+            .install_bridge(WorkbenchInstallAuthorization::UserApprovedFirstInstall)
+            .and_then(|value| serde_json::to_value(value).map_err(|_| unreachable!())),
+    };
+    match result {
+        Ok(value) => {
+            println!("{}", serde_json::json!({"ok": true, "value": value}));
+        }
+        Err(failure) => {
+            let category = match failure.code {
+                WorkbenchFailureCode::ConsentRequired => "consent-required",
+                WorkbenchFailureCode::Unavailable => "unavailable",
+                WorkbenchFailureCode::Timeout => "timeout",
+                WorkbenchFailureCode::Protocol => "protocol",
+                WorkbenchFailureCode::WorkbenchError => "workbench-error",
+            };
+            println!(
+                "{}",
+                serde_json::json!({"ok": false, "failure": {"category": category}})
+            );
+        }
+    }
+    Ok(())
 }
 
 fn parse_lsp_args(mut args: impl Iterator<Item = String>) -> Result<LspServerOptions, String> {
@@ -124,6 +221,7 @@ fn parse_mcp_args(mut args: impl Iterator<Item = String>) -> Result<McpServerOpt
         cache_path: None,
     };
     let mut official_wiki_root = None;
+    let mut workbench = WorkbenchControllerOptions::default();
 
     while let Some(argument) = args.next() {
         match argument.as_str() {
@@ -134,12 +232,41 @@ fn parse_mcp_args(mut args: impl Iterator<Item = String>) -> Result<McpServerOpt
                 game_data.metadata_path = Some(path_value(&mut args, "--game-data-metadata")?)
             }
             "--index-cache" => game_data.cache_path = Some(path_value(&mut args, "--index-cache")?),
-            "--official-wiki-root" => official_wiki_root = Some(path_value(&mut args, "--official-wiki-root")?),
+            "--official-wiki-root" => {
+                official_wiki_root = Some(path_value(&mut args, "--official-wiki-root")?)
+            }
+            "--workbench-host" => {
+                workbench.gateway.host = string_value(&mut args, "--workbench-host")?
+            }
+            "--workbench-port" => {
+                let value = string_value(&mut args, "--workbench-port")?;
+                workbench.gateway.port = value
+                    .parse::<u16>()
+                    .map_err(|_| format!("invalid value for --workbench-port: {value}"))?;
+            }
+            "--workbench-executable" => {
+                workbench.executable = Some(path_value(&mut args, "--workbench-executable")?)
+            }
+            "--reforger-game-directory" => {
+                workbench.game_directory = Some(path_value(&mut args, "--reforger-game-directory")?)
+            }
+            "--reforger-tools-directory" => {
+                workbench.tools_directory =
+                    Some(path_value(&mut args, "--reforger-tools-directory")?)
+            }
+            "--workbench-user-directory" => {
+                workbench.user_directory =
+                    Some(path_value(&mut args, "--workbench-user-directory")?)
+            }
             _ => return Err(format!("unknown MCP argument '{argument}'")),
         }
     }
 
-    Ok(McpServerOptions { game_data, official_wiki_root })
+    Ok(McpServerOptions {
+        game_data,
+        official_wiki_root,
+        workbench,
+    })
 }
 
 fn path_value(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<PathBuf, String> {
@@ -158,13 +285,13 @@ fn string_value(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<S
 
 fn print_help() {
     println!(
-        "Usage:\n  reforger_language_server [LSP options]\n  reforger_language_server mcp [MCP options]\n  reforger_language_server mcp-api\n\nLSP options:\n  --log <path>\n  --diagnostic-log <path>\n  --game-data-scripts <path>\n  --game-data-metadata <path>\n  --index-cache <path>\n  --workspace-scripts <path> (repeatable)\n  --bracket-coloring <semantic|punctuation|vscode>\n\nMCP options:\n  --game-data-scripts <path>\n  --game-data-metadata <path>\n  --index-cache <path>\n  --official-wiki-root <development/test path>"
+        "Usage:\n  reforger_language_server [LSP options]\n  reforger_language_server mcp [MCP options]\n  reforger_language_server mcp-api\n  reforger_language_server workbench-api <status|validate|integration-status|install-bridge> [--host <loopback>] [--port <port>]\n\nLSP options:\n  --log <path>\n  --diagnostic-log <path>\n  --game-data-scripts <path>\n  --game-data-metadata <path>\n  --index-cache <path>\n  --workspace-scripts <path> (repeatable)\n  --bracket-coloring <semantic|punctuation|vscode>\n\nMCP options:\n  --game-data-scripts <path>\n  --game-data-metadata <path>\n  --index-cache <path>\n  --official-wiki-root <development/test path>\n  --workbench-host <loopback host>\n  --workbench-port <port>\n  --workbench-executable <path>\n  --reforger-game-directory <path>\n  --reforger-tools-directory <path>\n  --workbench-user-directory <test/development override>"
     );
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_args_from, ServerMode};
+    use super::{parse_args_from, ServerMode, WorkbenchApiCommand};
     use reforger_language_server::lsp::BracketColoringMode;
     use std::path::PathBuf;
 
@@ -229,5 +356,20 @@ mod tests {
         let mode = parse_args_from(["--stdio".to_string()].into_iter())
             .expect("known language-client transport marker");
         assert!(matches!(mode, ServerMode::Lsp(_)));
+    }
+
+    #[test]
+    fn workbench_api_exposes_extension_owned_integration_operations() {
+        for (name, expected) in [
+            ("integration-status", WorkbenchApiCommand::IntegrationStatus),
+            ("install-bridge", WorkbenchApiCommand::InstallBridge),
+        ] {
+            let mode = parse_args_from(["workbench-api".to_string(), name.to_string()].into_iter())
+                .expect("valid private Workbench API operation");
+            let ServerMode::WorkbenchApi(actual, _) = mode else {
+                panic!("expected Workbench API mode");
+            };
+            assert_eq!(actual, expected);
+        }
     }
 }

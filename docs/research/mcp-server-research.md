@@ -9,12 +9,15 @@ schemas belong in [MCP API Reference](../mcp-api.md).
 ## Status and decisions
 
 The current MCP runtime is a packaged Rust process running over `stdio`. Its
-initial public surface is static and read-only: Game Data and Official Wiki
-retrieval. See `mcp-api.md` for the generated descriptors and exact limits.
+public surface includes static Game Data and Official Wiki retrieval plus a
+bounded Workbench lifecycle. See `mcp-api.md` for the generated descriptors,
+exact limits, and effect annotations.
 
-The next feature direction is live Workbench integration. NET API is the one
-live-editor integration path. It is private between the local MCP host and a
-running Workbench; it is never exposed as an MCP endpoint or generic proxy.
+NET API is the one live-editor integration path. It is private between the
+local MCP host and a running Workbench; it is never exposed as an MCP endpoint
+or generic proxy. Rust now owns the codec. The TypeScript compiler integration
+uses the bundled executable's private `workbench-api` mode and does not retain
+a parallel implementation.
 
 | Decision | Keep |
 | --- | --- |
@@ -54,13 +57,18 @@ process boundary to that Gateway. Do not implement a second codec.
 
 ## Current baseline
 
-The first shipped slices are intentionally narrow:
+The shipped slices are intentionally narrow:
 
 - Game Data: status, symbol search, symbol inspection, and bounded extracted
   source reads.
 - Official Wiki: status, deterministic search, and bounded Markdown reads.
 - Runtime: `stdio`, typed request/result models, structured content, bounded
   work, cancellation, sanitized errors, and packaged-layout acceptance.
+- Workbench: path/process/status diagnosis, consented managed-handler
+  maintenance after the extension-owned first-install prompt, native compiler
+  validation, verified hot
+  activation, handler state, bounded support-log reads, and approval-bearing
+  graceful stop/restart.
 
 The exact tool names, schemas, annotations, stable error codes, limits, and
 recovery guidance are generated into [MCP API Reference](../mcp-api.md). Do
@@ -122,8 +130,11 @@ Gateway converts that outcome into an MCP success or `isError` result. A TCP
 success never proves the requested operation succeeded.
 
 The endpoint remains user-configured loopback only. Do not scan ports, start a
-second listener, invoke OS processes, accept arbitrary script text, or allow
-paths outside the selected project.
+second listener, accept arbitrary script text, or allow arbitrary filesystem
+paths. The lifecycle tools may resolve known Reforger installations, launch the
+known Workbench executable, and gracefully close an exact reported Workbench
+PID. They never force-kill a process, close an unreported PID, or infer consent
+to install the handler package.
 
 ## Evidence and compatibility rules
 

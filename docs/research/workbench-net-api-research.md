@@ -56,7 +56,8 @@ Workbench and is reached through NET API handler dispatch.
 
 | Component | Runs where | Owns |
 | --- | --- | --- |
-| MCP client | Agent/editor client process | Tool selection and final consent UI. |
+| VS Code extension | Editor extension host | One-time first-install consent prompt and installation progress/notification UI. |
+| MCP client | Agent/editor client process | Tool selection within the already-consented managed lifecycle. |
 | Local MCP host | Extension-owned local process | Public MCP schemas/resources, file and language-engine adapters, tool policy, Workbench discovery, NET API transport/retries, capability cache, and MCP result mapping. |
 | NET API adapter | Inside the local MCP host | Dedicated NET API codec and calls to the typed allowlist; never arbitrary endpoint proxying. |
 | Reforger Workbench | Separate external editor process | Running editor, compiler, resource database, current world/editor state, and Undo history. |
@@ -67,6 +68,61 @@ through the NET API adapter to a named plugin handler, and returns as a typed
 DTO that the host maps into a structured MCP result. Workbench closure or a
 missing/incompatible plugin disables only this route; it must not disable or
 be emulated by the direct-file, language-engine, or evidence-catalogue routes.
+
+## Accepted MCP lifecycle contract (2026-07-26)
+
+The first MCP lifecycle slice has one authoritative Rust implementation. It
+resolves Steam-aware game, tools, Workbench executable, and Windows-user
+profile paths; reports process and native connection state; exposes native
+`IsWorkbenchRunning` and fixed-configuration `ValidateScripts`; and owns the
+NET API framing used by both MCP and the existing TypeScript compiler feature.
+
+The optional handler package is first installed only after the VS Code
+extension observes a successful native connection and the user accepts its
+one-time prompt. The extension invokes the bundled Rust runtime through a
+private operation; public `workbench_install_bridge` cannot create the first
+manifest and returns `workbench_installation_consent_required` without writing
+files. The installer creates only
+`profile\scripts\reforger-script-tools` after the parent Workbench profile
+exists. Its manifest lists owned files, package semver, protocol version, and
+hashes. Before that consent exists, status reports `installationAvailable`
+only when the profile already exists and the native API is connected, without
+creating any directory or file. Once that manifest exists, successful NET API
+status checks may repair or upgrade owned files and invoke native script
+validation. Live acceptance established that these actions do not register a
+new profile `NetApiHandler` in an already-running Workbench: the installer
+reports the package as installed and asks the user to refresh Workbench with
+`Ctrl+Shift+R`, rather than probing the handler and emitting a false NET API
+failure before that refresh.
+Unknown files are preserved, newer package versions are not downgraded, and
+activation failure does not roll back the installed files.
+
+Installed package precedence is compared as semantic versions. A version that
+cannot be parsed is conservatively preserved rather than overwritten. An
+installed-versus-active version or protocol mismatch remains pending and gets
+one validation-and-handshake retry on a later successful connection.
+
+Lifecycle process actions are deliberately narrow. Launch is an explicit,
+idempotent tool, starts the executable from Steam's documented `Workbench\`
+working directory, and waits for bounded NET API readiness; no connection
+attempt launches Workbench. Stop and restart require a PID and start-time
+identity observed by the same MCP session, request only a graceful main-window
+close, and return
+`userInteractionRequired` rather than forcing termination. Direct project
+opening and VS Code lifecycle commands remain outside this slice.
+
+The integration support log is always available under the user's local
+application-data directory, size-rotated, and contains operation/outcome
+records rather than NET API payloads or source. MCP can read a bounded tail of
+that log or the latest known Workbench `console.log`. Failed public operations
+return a unique reference matching the detailed support record, including
+stable phase, timing, version, managed-file, and bounded outcome facts.
+
+Native validation retains the verified `WORKBENCH` configuration internally.
+One immutable result is normalized once by Rust and paged with an opaque cursor,
+with a maximum of 200 diagnostics per page. The TypeScript compiler bridge
+receives that same Rust-normalized result rather than reimplementing duplicate
+handling.
 
 ## Built-in endpoints with direct MCP value
 

@@ -122,9 +122,24 @@ _Avoid_: reload-only setting, deferred reconfiguration, mixed configuration
 
 **Workbench Gateway**:
 The host-neutral, authoritative boundary for the private Workbench NET API. It
-offers only named, typed Workbench operations and is hosted by the extension
-while remaining reusable by an MCP Workbench adapter.
+offers only named, typed Workbench operations. Rust owns its codec; MCP calls it
+directly and the TypeScript compiler integration reaches it through the
+packaged executable's private process mode.
 _Avoid_: NET API client, Workbench bridge, MCP transport
+
+**Managed Workbench Handler Package**:
+The versioned Reforger Script Tools scripts and ownership manifest under the
+current user's Workbench profile. First installation requires the one-time
+VS Code extension prompt after a successful Workbench connection. The manifest
+authorizes later MCP or connection-time repair or upgrade of only its listed
+files; unknown files and newer package versions are preserved.
+_Avoid_: project plugin, arbitrary profile scripts, silent first install
+
+**Workbench Lifecycle Support Log**:
+The bounded, always-on local integration log containing sanitized Workbench
+operation and outcome records. It excludes source and NET API payloads and is
+read through the bounded Workbench log tool when diagnosing a report.
+_Avoid_: payload trace, compiler output, console dump
 
 **Workbench Capability**:
 A named, versioned Workbench operation with a typed request and result,

@@ -1,9 +1,6 @@
-import * as net from 'node:net';
+import { execFile } from 'node:child_process';
+import * as path from 'node:path';
 
-const protocolVersion = 1;
-const clientId = 'ReforgerScriptTools';
-const contentType = 'JsonRPC';
-const successfulErrorCode = 'Ok';
 const defaultGetStatusDeadlineMs = 1_500;
 const defaultValidateScriptsDeadlineMs = 120_000;
 const maximumResponseBytes = 4 * 1024 * 1024;
@@ -16,6 +13,7 @@ export interface WorkbenchEndpoint {
 export interface WorkbenchGatewayOptions {
 	enabled: boolean;
 	endpoint: WorkbenchEndpoint;
+	serverPath?: Promise<string | undefined>;
 	deadlines?: Partial<WorkbenchGatewayDeadlines>;
 	record?: (record: WorkbenchGatewayDiagnosticRecord) => void;
 }
@@ -63,6 +61,7 @@ export type WorkbenchAvailability =
 	| { kind: 'ready' };
 
 export type WorkbenchGatewayFailureCategory =
+	| 'consent-required'
 	| 'unavailable'
 	| 'timeout'
 	| 'protocol'
@@ -77,6 +76,12 @@ export interface WorkbenchGatewayFailure {
 export type WorkbenchGatewayResult<T> =
 	| { ok: true; value: T }
 	| { ok: false; failure: WorkbenchGatewayFailure };
+
+export type WorkbenchPrivateApiCommand =
+	| 'status'
+	| 'validate'
+	| 'integration-status'
+	| 'install-bridge';
 
 export class WorkbenchGateway {
 	private readonly options: WorkbenchGatewayOptions;
@@ -184,9 +189,10 @@ export class WorkbenchGateway {
 		if (endpointFailure) {
 			return Promise.resolve({ ok: false, failure: endpointFailure });
 		}
-		return transact(
+	return invokeWorkbenchPrivateApi(
+			this.options.serverPath ?? defaultDevelopmentServerPath(),
 			this.options.endpoint,
-			payload,
+			payload.APIFunc === 'ValidateScripts' ? 'validate' : 'status',
 			deadlineMs,
 		);
 	}
@@ -216,15 +222,15 @@ export class WorkbenchGateway {
 
 function decodeStatus(value: unknown): WorkbenchGatewayResult<WorkbenchStatus> {
 	if (!isRecord(value)
-		|| typeof value.IsRunning !== 'boolean'
-		|| typeof value.ScriptsCompiled !== 'boolean') {
+		|| typeof value.isRunning !== 'boolean'
+		|| typeof value.scriptsCompiled !== 'boolean') {
 		return failure('protocol', 'Restart Workbench and verify that its NET API is compatible.');
 	}
 	return {
 		ok: true,
 		value: {
-			isRunning: value.IsRunning,
-			scriptsCompiled: value.ScriptsCompiled,
+			isRunning: value.isRunning,
+			scriptsCompiled: value.scriptsCompiled,
 		},
 	};
 }
@@ -234,199 +240,113 @@ function decodeValidation(
 	value: unknown,
 ): WorkbenchGatewayResult<WorkbenchValidationResult> {
 	if (!isRecord(value)
-		|| typeof value.Success !== 'boolean'
-		|| !Array.isArray(value.Errors)
-		|| !Array.isArray(value.Warnings)) {
+		|| value.profile !== profile
+		|| typeof value.success !== 'boolean'
+		|| !Array.isArray(value.diagnostics)
+		|| !value.diagnostics.every(isCompilerDiagnostic)) {
 		return failure('protocol', 'Restart Workbench and verify that its NET API is compatible.');
 	}
-	const errors = decodeDiagnostics(value.Errors, 'error');
-	const warnings = decodeDiagnostics(value.Warnings, 'warning');
-	if (!errors || !warnings) {
-		return failure('protocol', 'Restart Workbench and verify that its NET API is compatible.');
-	}
-	const diagnostics = uniqueDiagnostics([...errors, ...warnings]);
 	return {
 		ok: true,
 		value: {
 			profile,
-			success: value.Success,
-			diagnostics,
+			success: value.success,
+			diagnostics: value.diagnostics,
 		},
 	};
 }
 
-function decodeDiagnostics(
-	values: unknown[],
-	severity: WorkbenchCompilerDiagnostic['severity'],
-): WorkbenchCompilerDiagnostic[] | undefined {
-	const diagnostics: WorkbenchCompilerDiagnostic[] = [];
-	for (const value of values) {
-		if (!isRecord(value)
-			|| typeof value.error !== 'string'
-			|| typeof value.file !== 'string'
-			|| !Number.isInteger(value.line)
-			|| (value.fileAbs !== undefined && typeof value.fileAbs !== 'string')
-			|| (value.addon !== undefined && typeof value.addon !== 'string')) {
-			return undefined;
-		}
-		diagnostics.push({
-			severity,
-			message: value.error,
-			location: {
-				file: value.file,
-				...(value.fileAbs === undefined ? {} : { fileAbs: value.fileAbs }),
-				...(value.addon === undefined ? {} : { addon: value.addon }),
-				line: value.line as number,
-			},
-		});
+function isCompilerDiagnostic(value: unknown): value is WorkbenchCompilerDiagnostic {
+	if (!isRecord(value)
+		|| (value.severity !== 'error' && value.severity !== 'warning')
+		|| typeof value.message !== 'string'
+		|| !isRecord(value.location)) {
+		return false;
 	}
-	return diagnostics;
+	const location = value.location;
+	return typeof location.file === 'string'
+		&& Number.isInteger(location.line)
+		&& (location.fileAbs === undefined || typeof location.fileAbs === 'string')
+		&& (location.addon === undefined || typeof location.addon === 'string');
 }
 
-function uniqueDiagnostics(
-	diagnostics: WorkbenchCompilerDiagnostic[],
-): WorkbenchCompilerDiagnostic[] {
-	const unique: WorkbenchCompilerDiagnostic[] = [];
-	const indexByIdentity = new Map<string, number>();
-	for (const diagnostic of diagnostics) {
-		const identity = JSON.stringify([
-			diagnostic.message,
-			diagnostic.location.file,
-			diagnostic.location.fileAbs ?? '',
-			diagnostic.location.addon ?? '',
-			diagnostic.location.line,
-		]);
-		const existingIndex = indexByIdentity.get(identity);
-		if (existingIndex === undefined) {
-			indexByIdentity.set(identity, unique.length);
-			unique.push(diagnostic);
-		} else if (unique[existingIndex].severity === 'warning'
-			&& diagnostic.severity === 'error') {
-			unique[existingIndex] = diagnostic;
-		}
-	}
-	return unique;
-}
-
-function transact(
+export async function invokeWorkbenchPrivateApi(
+	serverPath: Promise<string | undefined>,
 	endpoint: WorkbenchEndpoint,
-	payload: Record<string, unknown>,
+	action: WorkbenchPrivateApiCommand,
 	deadlineMs: number,
 ): Promise<WorkbenchGatewayResult<unknown>> {
+	const endpointFailure = validateEndpoint(endpoint);
+	if (endpointFailure) {
+		return { ok: false, failure: endpointFailure };
+	}
+	const executable = await serverPath;
+	if (!executable) {
+		return failure('unavailable', 'Restart the extension and retry.');
+	}
 	return new Promise(resolve => {
-		const socket = net.createConnection(endpoint);
-		const chunks: Buffer[] = [];
-		let receivedBytes = 0;
-		let settled = false;
-		const finish = (result: WorkbenchGatewayResult<unknown>) => {
-			if (settled) {
-				return;
-			}
-			settled = true;
-			clearTimeout(deadlineTimer);
-			socket.destroy();
-			resolve(result);
-		};
-		const deadlineTimer = setTimeout(() => {
-			finish(failure('timeout', 'Ensure Workbench is responsive and retry the operation.'));
-		}, deadlineMs);
-		socket.once('connect', () => {
-			socket.end(encodeRequest(payload));
-		});
-		socket.on('data', (chunk: Buffer) => {
-			receivedBytes += chunk.length;
-			if (receivedBytes > maximumResponseBytes) {
-				finish(failure('protocol', 'Restart Workbench and retry the request.'));
-				return;
-			}
-			chunks.push(chunk);
-			const decoded = decodeResponse(Buffer.concat(chunks));
-			if (decoded.kind === 'incomplete') {
-				return;
-			}
-			if (decoded.kind === 'invalid') {
-				finish(failure('protocol', 'Restart Workbench and verify that its NET API is compatible.'));
-				return;
-			}
-			if (decoded.errorCode !== successfulErrorCode) {
-				finish(failure('workbench-error', 'Review Workbench state and retry the operation.'));
-				return;
-			}
-			try {
-				finish({ ok: true, value: JSON.parse(decoded.payload) as unknown });
-			} catch {
-				finish(failure('protocol', 'Restart Workbench and verify that its NET API is compatible.'));
-			}
-		});
-		socket.once('error', () => {
-			finish(failure('unavailable', 'Start Workbench with NET API enabled, then retry.'));
-		});
-		socket.once('close', () => {
-			if (!settled) {
-				finish(failure('protocol', 'Restart Workbench and retry the request.'));
-			}
-		});
+		execFile(
+			executable,
+			[
+				'workbench-api',
+				action,
+				'--host',
+				endpoint.host,
+				'--port',
+				String(endpoint.port),
+				'--deadline-ms',
+				String(deadlineMs),
+			],
+			{
+				timeout: deadlineMs + 500,
+				maxBuffer: maximumResponseBytes,
+				windowsHide: true,
+			},
+			(error, stdout) => {
+				if (error) {
+					resolve(failure(
+						error.killed || error.code === 'ETIMEDOUT'
+							? 'timeout'
+							: 'unavailable',
+						'Restart Workbench and retry the request.',
+					));
+					return;
+				}
+				try {
+					const result = JSON.parse(stdout) as {
+						ok: boolean;
+						value?: unknown;
+						failure?: { category?: WorkbenchGatewayFailureCategory };
+					};
+					if (result.ok) {
+						resolve({ ok: true, value: result.value });
+						return;
+					}
+					resolve(failure(
+						result.failure?.category ?? 'protocol',
+						'Review Workbench state and retry the operation.',
+					));
+				} catch {
+					resolve(failure('protocol', 'Restart Workbench and retry the request.'));
+				}
+			},
+		);
 	});
 }
 
-function encodeRequest(payload: Record<string, unknown>): Buffer {
-	const version = Buffer.allocUnsafe(4);
-	version.writeInt32LE(protocolVersion);
-	return Buffer.concat([
-		version,
-		encodeString(clientId),
-		encodeString(contentType),
-		encodeString(JSON.stringify(payload)),
-	]);
-}
-
-type DecodedResponse =
-	| { kind: 'incomplete' }
-	| { kind: 'invalid' }
-	| { kind: 'complete'; errorCode: string; payload: string };
-
-function decodeResponse(buffer: Buffer): DecodedResponse {
-	const errorCode = decodeString(buffer, 0);
-	if (errorCode.kind !== 'complete') {
-		return errorCode;
-	}
-	const payload = decodeString(buffer, errorCode.offset);
-	if (payload.kind !== 'complete') {
-		return payload;
-	}
-	return {
-		kind: 'complete',
-		errorCode: errorCode.value,
-		payload: payload.value,
-	};
-}
-
-type DecodedString =
-	| { kind: 'incomplete' }
-	| { kind: 'invalid' }
-	| { kind: 'complete'; value: string; offset: number };
-
-function decodeString(buffer: Buffer, offset: number): DecodedString {
-	if (buffer.length - offset < 4) {
-		return { kind: 'incomplete' };
-	}
-	const length = buffer.readInt32LE(offset);
-	if (length < 0 || length > maximumResponseBytes) {
-		return { kind: 'invalid' };
-	}
-	const start = offset + 4;
-	const end = start + length;
-	if (buffer.length < end) {
-		return { kind: 'incomplete' };
-	}
-	return { kind: 'complete', value: buffer.toString('utf8', start, end), offset: end };
-}
-
-function encodeString(value: string): Buffer {
-	const encoded = Buffer.from(value, 'utf8');
-	const length = Buffer.allocUnsafe(4);
-	length.writeInt32LE(encoded.length);
-	return Buffer.concat([length, encoded]);
+function defaultDevelopmentServerPath(): Promise<string | undefined> {
+	return Promise.resolve(path.resolve(
+		__dirname,
+		'..',
+		'..',
+		'..',
+		'server',
+		'target',
+		'debug',
+		process.platform === 'win32'
+			? 'reforger_language_server.exe'
+			: 'reforger_language_server',
+	));
 }
 
 function validateEndpoint(endpoint: WorkbenchEndpoint): WorkbenchGatewayFailure | undefined {
