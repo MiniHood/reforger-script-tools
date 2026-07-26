@@ -111,13 +111,10 @@ export class WorkbenchGateway {
 
 	public async getStatus(): Promise<WorkbenchGatewayResult<WorkbenchStatus>> {
 		const startedAt = Date.now();
-		const result = await this.request(
-			{ APIFunc: 'IsWorkbenchRunning' },
-			deadline(
-				this.options.deadlines?.getStatusMs,
-				defaultGetStatusDeadlineMs,
-			),
-		);
+		const result = await this.invokeStatus(deadline(
+			this.options.deadlines?.getStatusMs,
+			defaultGetStatusDeadlineMs,
+		));
 		if (!result.ok) {
 			this.currentAvailability = this.options.enabled
 				? { kind: 'unavailable', failure: result.failure }
@@ -148,10 +145,7 @@ export class WorkbenchGateway {
 			this.record('validateScripts', 'unsupported', startedAt);
 			return result;
 		}
-		const result = await this.request({
-			APIFunc: 'ValidateScripts',
-			Configuration: profile,
-		}, deadline(
+		const result = await this.invokeValidation(deadline(
 			this.options.deadlines?.validateScriptsMs,
 			defaultValidateScriptsDeadlineMs,
 		));
@@ -175,10 +169,7 @@ export class WorkbenchGateway {
 		return validation;
 	}
 
-	private request(
-		payload: Record<string, unknown>,
-		deadlineMs: number,
-	): Promise<WorkbenchGatewayResult<unknown>> {
+	private invokeStatus(deadlineMs: number): Promise<WorkbenchGatewayResult<unknown>> {
 		if (!this.options.enabled) {
 			return Promise.resolve(failure(
 				'unsupported',
@@ -189,10 +180,29 @@ export class WorkbenchGateway {
 		if (endpointFailure) {
 			return Promise.resolve({ ok: false, failure: endpointFailure });
 		}
-	return invokeWorkbenchPrivateApi(
+		return invokeWorkbenchPrivateApi(
 			this.options.serverPath ?? defaultDevelopmentServerPath(),
 			this.options.endpoint,
-			payload.APIFunc === 'ValidateScripts' ? 'validate' : 'status',
+			'status',
+			deadlineMs,
+		);
+	}
+
+	private invokeValidation(deadlineMs: number): Promise<WorkbenchGatewayResult<unknown>> {
+		if (!this.options.enabled) {
+			return Promise.resolve(failure(
+				'unsupported',
+				'Enable Workbench NET API integration in extension settings.',
+			));
+		}
+		const endpointFailure = validateEndpoint(this.options.endpoint);
+		if (endpointFailure) {
+			return Promise.resolve({ ok: false, failure: endpointFailure });
+		}
+		return invokeWorkbenchPrivateApi(
+			this.options.serverPath ?? defaultDevelopmentServerPath(),
+			this.options.endpoint,
+			'validate',
 			deadlineMs,
 		);
 	}

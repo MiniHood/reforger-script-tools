@@ -45,8 +45,6 @@ implementation slice is progress, not a completed ticket.
 - [MCP server exploration journal](research/mcp-server-research.md): current
   capability boundary and future Workbench expansion for the local Reforger
   MCP runtime.
-- [Base-game source search research](research/base-game-search-research.md): language
-  index ownership, VS Code search surfaces, and MCP adapter guidance.
 - [Workbench NET API exploration journal](research/workbench-net-api-research.md):
   extracted protocol evidence, adapter boundary, and validation backlog.
 - [Workbench compiler-validation research](research/workbench-compiler-validation-research.md):
@@ -56,14 +54,7 @@ implementation slice is progress, not a completed ticket.
   evidence and design notes for automated editing behavior.
 - [Enfusion `new` editing research](research/enfusion-new-formatting-research.md):
   primary-source evidence and safe completion/formatting boundary for `new`.
-- [VS Code auto-indent research](research/vscode-auto-indent.md): editor
-  indentation behavior and integration evidence.
-- [Third-party add-on symbol metadata research](research/third-party-addon-symbol-metadata.md):
-  licensing and technical boundary for dependency API assistance without source
-  extraction.
 - [s&box MCP server review](research/sbox-mcp-research.md): comparative source
   examples for future evaluation; it does not define Reforger MCP architecture.
 - [Official Wiki Corpus report](research/official-wiki-corpus-report.md): validated
   packaged-corpus coverage, MCP retrieval evidence, and AI-use limits.
-- [Game Data Corpus report](research/game-data-corpus-report-2026-07-25.md): live
-  catalogue coverage, source-evidence workflows, and topic-expansion candidates.

@@ -103,7 +103,7 @@ pub struct WorkbenchGateway {
     request_lock: Arc<Mutex<()>>,
 }
 
-pub const WORKBENCH_BRIDGE_VERSION: &str = "1.7.0";
+pub const WORKBENCH_BRIDGE_VERSION: &str = "1.8.0";
 pub const WORKBENCH_BRIDGE_PROTOCOL_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -241,6 +241,10 @@ pub struct WorkbenchResourceInspection {
     pub status: String,
     pub resource_name: Option<String>,
     pub class_name: Option<String>,
+    #[serde(default)]
+    pub source_addons: Vec<String>,
+    #[serde(default)]
+    pub source_addons_truncated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -287,6 +291,7 @@ pub struct WorkbenchSelectedEntityHierarchy {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub entity: Option<WorkbenchSelectedEntity>,
     pub ancestors: Vec<WorkbenchSelectedEntity>,
+    pub ancestors_truncated: bool,
     pub children: Vec<WorkbenchSelectedEntity>,
     pub children_truncated: bool,
 }
@@ -856,7 +861,7 @@ impl WorkbenchController {
                     json!({"handler": "RST_WorkbenchInspectResource"}),
                 )
             })?;
-        let result: WorkbenchResourceInspection = serde_json::from_value(value).map_err(|_| {
+        let raw: RawBridgeResourceInspection = serde_json::from_value(value).map_err(|_| {
             self.correlate_failure_details(
                 "inspect_resource",
                 "workbench_protocol_error",
@@ -864,6 +869,16 @@ impl WorkbenchController {
                 json!({"handler": "RST_WorkbenchInspectResource"}),
             )
         })?;
+        let (source_addons, source_addons_truncated) =
+            split_bounded_list(&raw.source_addons, 64, 4 * 1024);
+        let result = WorkbenchResourceInspection {
+            found: raw.found,
+            status: raw.status,
+            resource_name: raw.resource_name,
+            class_name: raw.class_name,
+            source_addons,
+            source_addons_truncated: raw.source_addons_truncated || source_addons_truncated,
+        };
         self.log_event_timed(
             "inspect-resource",
             &result.status,
@@ -1108,12 +1123,13 @@ impl WorkbenchController {
             selection_index,
             entity,
             ancestors,
+            ancestors_truncated: raw.ancestors_truncated,
             children,
             children_truncated: raw.children_truncated,
         };
         self.log_event_timed(
             "selected-entity-hierarchy", &result.status, started,
-            json!({"selectionIndex": selection_index, "ancestorCount": result.ancestors.len(), "childCount": result.children.len(), "childrenTruncated": result.children_truncated}),
+            json!({"selectionIndex": selection_index, "ancestorCount": result.ancestors.len(), "ancestorsTruncated": result.ancestors_truncated, "childCount": result.children.len(), "childrenTruncated": result.children_truncated}),
         );
         Ok(result)
     }
@@ -2232,6 +2248,20 @@ struct RawBridgeResourceList {
 }
 
 #[derive(Deserialize)]
+struct RawBridgeResourceInspection {
+    found: bool,
+    status: String,
+    #[serde(rename = "resourceName")]
+    resource_name: Option<String>,
+    #[serde(rename = "className")]
+    class_name: Option<String>,
+    #[serde(rename = "sourceAddons", default)]
+    source_addons: String,
+    #[serde(rename = "sourceAddonsTruncated", default)]
+    source_addons_truncated: bool,
+}
+
+#[derive(Deserialize)]
 struct RawBridgeSelectedEntityHierarchy {
     #[serde(rename = "bridgeVersion")]
     bridge_version: String,
@@ -2244,6 +2274,8 @@ struct RawBridgeSelectedEntityHierarchy {
     entity: String,
     #[serde(default)]
     ancestors: String,
+    #[serde(rename = "ancestorsTruncated", default)]
+    ancestors_truncated: bool,
     #[serde(default)]
     children: String,
     #[serde(rename = "childrenTruncated", default)]
@@ -2912,7 +2944,7 @@ class RST_WorkbenchCapabilities : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchCapabilitiesResponse response = new RST_WorkbenchCapabilitiesResponse();
-		response.bridgeVersion = "1.7.0";
+		response.bridgeVersion = "1.8.0";
 	response.protocolVersion = 1;
 	response.capabilities = "state;open-world;play-session;project-context;inspect-resource;world-selection;entity-hierarchy;list-resources";
 		return response;
@@ -2957,7 +2989,7 @@ class RST_WorkbenchState : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchStateResponse response = new RST_WorkbenchStateResponse();
-	response.bridgeVersion = "1.7.0";
+	response.bridgeVersion = "1.8.0";
 		response.protocolVersion = 1;
 		response.mode = "workbench";
 		response.playSession = "unavailable";
@@ -3145,7 +3177,7 @@ class RST_WorkbenchProjectContext : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchProjectContextResponse response = new RST_WorkbenchProjectContextResponse();
-		response.bridgeVersion = "1.7.0";
+		response.bridgeVersion = "1.8.0";
 		response.protocolVersion = 1;
 		array<string> addonGuids = new array<string>();
 		GameProject.GetLoadedAddons(addonGuids);
@@ -3177,6 +3209,8 @@ class RST_WorkbenchInspectResourceResponse : JsonApiStruct
 	string status;
 	string resourceName;
 	string className;
+	string sourceAddons;
+	bool sourceAddonsTruncated;
 	void RST_WorkbenchInspectResourceResponse() { RegAll(); }
 }
 class RST_WorkbenchInspectResource : NetApiHandler
@@ -3197,6 +3231,26 @@ class RST_WorkbenchInspectResource : NetApiHandler
 		response.status = "found";
 		response.resourceName = meta.GetResourceID();
 		response.className = configuration.GetClassName();
+		array<string> sourceAddons = new array<string>();
+		meta.GetSourceAddons(sourceAddons);
+		int sourceAddonCount = 0;
+		foreach (string sourceAddon : sourceAddons)
+		{
+			if (sourceAddonCount >= 64)
+			{
+				response.sourceAddonsTruncated = true;
+				break;
+			}
+			if (response.sourceAddons != string.Empty)
+				response.sourceAddons += ";";
+			response.sourceAddons += sourceAddon;
+			sourceAddonCount++;
+			if (response.sourceAddons.Length() >= 4096)
+			{
+				response.sourceAddonsTruncated = true;
+				break;
+			}
+		}
 		return response;
 	}
 }
@@ -3229,7 +3283,7 @@ class RST_WorkbenchWorldSelection : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchWorldSelectionResponse response = new RST_WorkbenchWorldSelectionResponse();
-		response.bridgeVersion = "1.7.0";
+		response.bridgeVersion = "1.8.0";
 		response.protocolVersion = 1;
 		WorldEditor worldEditor = Workbench.GetModule(WorldEditor);
 		if (!worldEditor)
@@ -3281,6 +3335,7 @@ class RST_WorkbenchSelectedEntityHierarchyResponse : JsonApiStruct
 	string status;
 	string entity;
 	string ancestors;
+	bool ancestorsTruncated;
 	string children;
 	bool childrenTruncated;
 	void RST_WorkbenchSelectedEntityHierarchyResponse() { RegAll(); }
@@ -3302,7 +3357,7 @@ class RST_WorkbenchSelectedEntityHierarchy : NetApiHandler
 	{
 		RST_WorkbenchSelectedEntityHierarchyRequest typedRequest = RST_WorkbenchSelectedEntityHierarchyRequest.Cast(request);
 		RST_WorkbenchSelectedEntityHierarchyResponse response = new RST_WorkbenchSelectedEntityHierarchyResponse();
-		response.bridgeVersion = "1.7.0";
+		response.bridgeVersion = "1.8.0";
 		response.protocolVersion = 1;
 		WorldEditor worldEditor = Workbench.GetModule(WorldEditor);
 		if (!worldEditor)
@@ -3338,6 +3393,7 @@ class RST_WorkbenchSelectedEntityHierarchy : NetApiHandler
 				AppendEntity(response.ancestors, parentEntity);
 			parent = parent.GetParent();
 		}
+		response.ancestorsTruncated = parent != null;
 		int childCount = entity.GetNumChildren();
 		int returnedCount = 0;
 		for (int index = 0; index < childCount; index++)

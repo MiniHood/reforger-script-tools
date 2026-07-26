@@ -118,7 +118,7 @@ name as an identity, and reports unavailable editor/API states explicitly.
 The read-only `workbench_selected_entity_hierarchy` capability is scoped to one
 current selection index (0 through 31). It returns that entity plus at most 32
 ancestor and 64 direct-child entity identities. Its parent/child traversal is
-bounded, never uses display-name lookup, and never changes the editor
+bounded with explicit truncation facts, never uses display-name lookup, and never changes the editor
 selection.
 
 The read-only `workbench_list_resources` capability accepts only fixed resource

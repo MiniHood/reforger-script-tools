@@ -2978,6 +2978,17 @@ Inspect one canonical Workbench resource identity through the compatible managed
         "null"
       ]
     },
+    "sourceAddons": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "sourceAddonsTruncated": {
+      "default": false,
+      "type": "boolean"
+    },
     "status": {
       "type": "string"
     }
@@ -3295,6 +3306,9 @@ Inspect the bounded parent and direct-child hierarchy for one current World Edit
       },
       "type": "array"
     },
+    "ancestorsTruncated": {
+      "type": "boolean"
+    },
     "bridgeVersion": {
       "type": "string"
     },
@@ -3339,6 +3353,7 @@ Inspect the bounded parent and direct-child hierarchy for one current World Edit
     "status",
     "selectionIndex",
     "ancestors",
+    "ancestorsTruncated",
     "children",
     "childrenTruncated"
   ],
