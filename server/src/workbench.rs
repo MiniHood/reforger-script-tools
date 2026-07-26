@@ -103,7 +103,7 @@ pub struct WorkbenchGateway {
     request_lock: Arc<Mutex<()>>,
 }
 
-pub const WORKBENCH_BRIDGE_VERSION: &str = "1.0.0";
+pub const WORKBENCH_BRIDGE_VERSION: &str = "1.1.0";
 pub const WORKBENCH_BRIDGE_PROTOCOL_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2240,6 +2240,7 @@ fn bridge_payload() -> &'static [(&'static str, &'static str)] {
     &[
         ("RST_WorkbenchCapabilities.c", BRIDGE_CAPABILITIES_SOURCE),
         ("RST_WorkbenchState.c", BRIDGE_STATE_SOURCE),
+        ("RST_WorkbenchOpenWorld.c", BRIDGE_OPEN_WORLD_SOURCE),
     ]
 }
 
@@ -2274,9 +2275,9 @@ class RST_WorkbenchCapabilities : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchCapabilitiesResponse response = new RST_WorkbenchCapabilitiesResponse();
-		response.bridgeVersion = "1.0.0";
-		response.protocolVersion = 1;
-		response.capabilities = "state";
+		response.bridgeVersion = "1.1.0";
+	response.protocolVersion = 1;
+	response.capabilities = "state;open-world";
 		return response;
 	}
 }
@@ -2319,7 +2320,7 @@ class RST_WorkbenchState : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchStateResponse response = new RST_WorkbenchStateResponse();
-		response.bridgeVersion = "1.0.0";
+	response.bridgeVersion = "1.1.0";
 		response.protocolVersion = 1;
 		response.mode = "workbench";
 		response.playSession = "unavailable";
@@ -2348,6 +2349,64 @@ class RST_WorkbenchState : NetApiHandler
 				response.loadedAddons += ";";
 			response.loadedAddons += GameProject.GetAddonID(addonGuids[index]);
 		}
+		return response;
+	}
+}
+#endif
+"#;
+
+const BRIDGE_OPEN_WORLD_SOURCE: &str = r#"#ifdef WORKBENCH
+class RST_WorkbenchOpenWorldRequest : JsonApiStruct
+{
+	string worldPath;
+
+	void RST_WorkbenchOpenWorldRequest()
+	{
+		RegAll();
+	}
+}
+
+class RST_WorkbenchOpenWorldResponse : JsonApiStruct
+{
+	bool opened;
+	string status;
+
+	void RST_WorkbenchOpenWorldResponse()
+	{
+		RegAll();
+	}
+}
+
+class RST_WorkbenchOpenWorld : NetApiHandler
+{
+	override JsonApiStruct GetRequest()
+	{
+		return new RST_WorkbenchOpenWorldRequest();
+	}
+
+	override JsonApiStruct GetResponse(JsonApiStruct request)
+	{
+		RST_WorkbenchOpenWorldRequest typedRequest = RST_WorkbenchOpenWorldRequest.Cast(request);
+		RST_WorkbenchOpenWorldResponse response = new RST_WorkbenchOpenWorldResponse();
+		if (typedRequest.worldPath == string.Empty)
+		{
+			response.status = "world-path-required";
+			return response;
+		}
+
+		Workbench.OpenModule(WorldEditor);
+		WorldEditor worldEditor = Workbench.GetModule(WorldEditor);
+		if (!worldEditor)
+		{
+			response.status = "world-editor-unavailable";
+			return response;
+		}
+
+		response.opened = worldEditor.SetOpenedResource(typedRequest.worldPath);
+		if (response.opened)
+			response.status = "opened";
+		else
+			response.status = "open-failed";
 		return response;
 	}
 }
