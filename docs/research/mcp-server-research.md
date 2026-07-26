@@ -100,11 +100,11 @@ fact beyond its declared revision.
 Start with read operations. Add a mutating command only after the corresponding
 read/observe/verify loop is live and accepted in a supported Workbench version.
 
-The complete external MCP-host and Workbench-handler catalogue, including
-each handler's adoption disposition, belongs in
-[EnfusionMCP Workbench handler review](enfusionmcp-workbench-handler-review.md).
-MCP tools are selected only from the proven, versioned capabilities recorded
-in this plan and the NET API evidence journal.
+The consolidated external MCP-host and Workbench-handler catalogue, including
+each handler's conservative disposition, is in
+[Workbench NET API research](workbench-net-api-research.md). MCP tools are
+selected only from the proven, versioned capabilities recorded in this plan and
+the NET API evidence journal.
 
 ## Mutation and safety contract
 
@@ -138,9 +138,10 @@ An operation becomes MCP-visible only after its handler, DTO version behavior,
 unavailable states, size/paging bounds, and live acceptance have been proven.
 Plugin absence or version mismatch disables only the affected group.
 
-The [EnfusionMCP source review](enfusionmcp-workbench-handler-review.md)
-records an external handler inventory and failure patterns. It is a design
-warning and capability catalogue, not a contract to implement.
+The external handler review in
+[Workbench NET API research](workbench-net-api-research.md) records failure
+patterns and candidate groups. It is a design warning and catalogue, not a
+contract to implement.
 
 The [s&box source review](sbox-mcp-research.md) is an optional example bank for
 AI-facing tool design. It does not define Reforger architecture, transport,
@@ -180,5 +181,4 @@ proven capability requires it.
 - [Workbench compiler-validation research](workbench-compiler-validation-research.md): compiler outcomes and diagnostic projection.
 - [Base-game source search research](base-game-search-research.md): shared
   language-index ownership and MCP adapter guidance.
-- [EnfusionMCP Workbench handler review](enfusionmcp-workbench-handler-review.md): external source review and full handler inventory.
 - [s&box MCP source review](sbox-mcp-research.md): optional external examples.

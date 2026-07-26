@@ -52,9 +52,6 @@ implementation slice is progress, not a completed ticket.
 - [Workbench compiler-validation research](research/workbench-compiler-validation-research.md):
   `ValidateScripts` contract, continuous-validation design, diagnostics, and
   live-session acceptance experiments.
-- [EnfusionMCP Workbench handler review](research/enfusionmcp-workbench-handler-review.md):
-  external handler inventory, capability ideas, and non-adoption warnings for
-  the typed NET API plugin boundary.
 - [Enfusion structural-formatting research](research/enfusion-structural-formatting-research.md):
   evidence and design notes for automated editing behavior.
 - [Enfusion `new` editing research](research/enfusion-new-formatting-research.md):

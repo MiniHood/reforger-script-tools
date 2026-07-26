@@ -174,11 +174,61 @@ plugin version as permission to guess or emulate editor behavior.
 
 ### External feature discovery
 
-The external MCP-host and injected-handler inventories, including the
-per-handler Reforger disposition, live in
-[EnfusionMCP Workbench handler review](enfusionmcp-workbench-handler-review.md).
-They are feature discovery only: every candidate still requires primary
-evidence, a versioned DTO, canonical identity, bounds, and live acceptance.
+The following non-authoritative review consolidates two external projects:
+`EnfusionMCP/EnfusionMCP` at `282393978cbe00c143f0872cf334c8432741c8e4`, and
+[`steffenbk/enfusion-mcp-BK`](https://github.com/steffenbk/enfusion-mcp-BK) at
+[`3eecd8f8a35e44d8c8ff055fae0b1f6c8ee31739`](https://github.com/steffenbk/enfusion-mcp-BK/commit/3eecd8f8a35e44d8c8ff055fae0b1f6c8ee31739),
+reviewed 2026-07-25 and 2026-07-26 respectively. They discover possible
+capability groups; they do not establish Reforger behaviour, implementation
+quality, or an adoption decision.
+
+`enfusion-mcp-BK` separates a local Node MCP host from Enforce Script handlers
+injected into a mod. Its host features are useful scope comparisons, but only
+the last row belongs at the Workbench NET API boundary:
+
+| External local-host feature group | Potential use here | NET API disposition |
+| --- | --- | --- |
+| API/wiki/knowledge and base-game inspection | Evidence retrieval and Game Data browsing | Existing local evidence authority; not a Workbench handler. |
+| Project browse/read/write | Bounded workspace orientation or staged edits | Separate project-file boundary; never a handler proxy. |
+| Addon, script, prefab, layout, config, scenario, animation, and server-config generation | Intent-level authoring workflows | Separate previewable file-creation workflow; not a NET API capability by itself. |
+| Local validation/build and Workshop metadata | Explicit local development actions | Keep process invocation and metadata outside the Workbench handler surface. |
+| Guided prompts and MCP resources | Client-facing guidance | MCP-host concern, not Workbench state. |
+| Workbench launch/connect/diagnose/reload/cleanup | Optional live-editor integration | The typed Gateway may contact the configured endpoint; it must not install handlers, start Workbench, or manage arbitrary process lifecycle. |
+
+The same review found 19 `EMCP_WB_*` injected handlers. Their source-backed
+ideas are potential NET API capability candidates only after a versioned DTO,
+canonical identities, bounded responses, and live acceptance. The stated
+dispositions are deliberately conservative:
+
+| External handler | Source-implemented feature | Potential typed capability / disposition |
+| --- | --- | --- |
+| `EMCP_WB_Ping` | Bridge presence and `WorldEditorAPI` availability. | Feed `capabilities`/availability only; its cached mode is unreliable. |
+| `EMCP_WB_GetState` | Edit-mode entity/selection counts, subscene, prefab-edit state, terrain bounds. | Candidate for a bounded state summary after authoritative fields are defined. |
+| `EMCP_WB_EditorControl` | Play mode, save, undo/redo, and resource opening. | Split into named editor commands; never use its hard-coded menu paths. |
+| `EMCP_WB_ExecuteAction` | World Editor menu-path invocation. | Exclude: UI-label dispatch has no allowlist, confirmation, or completion proof. |
+| `EMCP_WB_Reload` | Script compilation and plugin reload through menus. | Consider only a proven named operation with a verified result. |
+| `EMCP_WB_Resources` | Register, rebuild, or open one resource. | Candidate for typed resource-lifecycle operations. |
+| `EMCP_WB_ScriptEditor` | Individual open-document line reads/edits. | Prefer bounded project-file tools plus compiler validation; do not mirror editor lines by default. |
+| `EMCP_WB_Localization` | Table-item/property edits and counts. | Future typed localization/resource capability. |
+| `EMCP_WB_Terrain` | Surface height and terrain bounds. | Future read-only world query when a real workflow requires it. |
+| `EMCP_WB_ListEntities` | Paged entities with name, class, and position. | High-value read candidate, but require stable entity IDs and filters. |
+| `EMCP_WB_GetEntity` | Entity components, layer/subscene, and variables. | High-value read candidate, but use hierarchy IDs and actual override values. |
+| `EMCP_WB_CreateEntity` | Root entity creation from a prefab. | Future mutation with preview, one Undo transaction, and verification. |
+| `EMCP_WB_DeleteEntity` | Deletes the first exact-name entity. | Future mutation only with stable identity, confirmation, Undo, and verification. |
+| `EMCP_WB_ModifyEntity` | Transform, rename, reparent, and generic property edits. | Split into narrow domain commands; exclude generic stringly typed editing. |
+| `EMCP_WB_Components` | List, add, and remove components. | Future typed entity capability with component/resource validation. |
+| `EMCP_WB_SelectEntity` | Selection list and mutations. | Start with a read summary; mutate only through a proven stable selection API. |
+| `EMCP_WB_Clipboard` | Copy, cut, duplicate, and paste selected entities. | Exclude clipboard-state tools; prefer explicit composition/duplication commands. |
+| `EMCP_WB_Layers` | Numeric layers, current subscene, and entity layer ID. | Future only after stable layer identities and operations are proven. |
+| `EMCP_WB_Prefabs` | Template creation/save and ancestor resource path. | Candidate for typed prefab/resource inspection and lifecycle operations. |
+
+The reviewed clients sometimes treated a successful TCP transaction as success
+despite a handler-level error. They also show schema mismatches, name-based
+entity targeting, guessed menu paths, and unsupported wrapper claims. Do not
+copy their generic handler dispatch, menu fallbacks, unchecked success mapping,
+or process/handler installation behaviour. Every candidate above still requires
+primary evidence, a versioned DTO, canonical identity, bounds, and live
+acceptance.
 
 Each future operation should also carry the parts of the contract that make an
 editor MCP usable by an agent: stable name and description; effect
