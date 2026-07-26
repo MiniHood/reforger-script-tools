@@ -103,7 +103,7 @@ pub struct WorkbenchGateway {
     request_lock: Arc<Mutex<()>>,
 }
 
-pub const WORKBENCH_BRIDGE_VERSION: &str = "1.5.0";
+pub const WORKBENCH_BRIDGE_VERSION: &str = "1.6.0";
 pub const WORKBENCH_BRIDGE_PROTOCOL_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -241,6 +241,16 @@ pub struct WorkbenchResourceInspection {
     pub status: String,
     pub resource_name: Option<String>,
     pub class_name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkbenchResourceListPage {
+    pub bridge_version: String,
+    pub protocol_version: u32,
+    pub project_revision: String,
+    pub resources: Vec<String>,
+    pub next_cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -834,6 +844,71 @@ impl WorkbenchController {
             &result.status,
             started,
             json!({"found": result.found}),
+        );
+        Ok(result)
+    }
+
+    pub fn list_resources(
+        &self,
+        kinds: &[&str],
+        query: Option<&str>,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<WorkbenchResourceListPage, WorkbenchFailure> {
+        let limit = limit.clamp(1, 200);
+        let query = query.unwrap_or("").trim();
+        let kinds = kinds.join(";");
+        let signature = sha256(format!("{kinds}\n{query}").as_bytes());
+        let offset = if let Some(cursor) = cursor {
+            let (cursor_signature, offset) = parse_resource_list_cursor(cursor)
+                .ok_or_else(|| failure(WorkbenchFailureCode::Protocol))?;
+            if cursor_signature != signature {
+                return Err(failure(WorkbenchFailureCode::Protocol));
+            }
+            offset
+        } else {
+            0
+        };
+        let started = Instant::now();
+        let value = self.gateway.request(
+            json!({"APIFunc": "RST_WorkbenchListResources", "extensions": kinds, "query": query, "offset": offset, "limit": limit}),
+            self.options.gateway.status_deadline,
+        ).map_err(|failure| self.correlate_failure_details(
+            "list_resources", failure_code(failure.code), failure, json!({"handler": "RST_WorkbenchListResources"}),
+        ))?;
+        let raw: RawBridgeResourceList = serde_json::from_value(value).map_err(|_| {
+            self.correlate_failure_details(
+                "list_resources",
+                "workbench_protocol_error",
+                failure(WorkbenchFailureCode::Protocol),
+                json!({"handler": "RST_WorkbenchListResources"}),
+            )
+        })?;
+        if raw.protocol_version != WORKBENCH_BRIDGE_PROTOCOL_VERSION || raw.resources.len() > limit
+        {
+            return Err(self.correlate_failure_details(
+                "list_resources",
+                "workbench_protocol_error",
+                failure(WorkbenchFailureCode::Protocol),
+                json!({"handler": "RST_WorkbenchListResources"}),
+            ));
+        }
+        let project_revision = sha256(raw.loaded_addons.as_bytes());
+        let next_cursor = raw
+            .has_more
+            .then(|| format!("wrl1:{signature}:{}", offset + raw.resources.len()));
+        let result = WorkbenchResourceListPage {
+            bridge_version: raw.bridge_version,
+            protocol_version: raw.protocol_version,
+            project_revision,
+            resources: raw.resources,
+            next_cursor,
+        };
+        self.log_event_timed(
+            "list-resources",
+            "success",
+            started,
+            json!({"returned": result.resources.len(), "hasMore": result.next_cursor.is_some()}),
         );
         Ok(result)
     }
@@ -2038,6 +2113,20 @@ struct RawBridgeWorldSelection {
     selected_entities_truncated: bool,
 }
 
+#[derive(Deserialize)]
+struct RawBridgeResourceList {
+    #[serde(rename = "bridgeVersion")]
+    bridge_version: String,
+    #[serde(rename = "protocolVersion")]
+    protocol_version: u32,
+    #[serde(rename = "loadedAddons", default)]
+    loaded_addons: String,
+    #[serde(rename = "resources", default)]
+    resources: Vec<String>,
+    #[serde(rename = "hasMore", default)]
+    has_more: bool,
+}
+
 fn workbench_bool(value: &Value) -> bool {
     matches!(value, Value::Bool(true)) || value.as_i64().is_some_and(|integer| integer != 0)
 }
@@ -2206,6 +2295,14 @@ fn parse_validation_cursor(cursor: &str) -> Option<(String, usize)> {
     let token = parts.next()?.to_string();
     let offset = parts.next()?.parse().ok()?;
     parts.next().is_none().then_some((token, offset))
+}
+
+fn parse_resource_list_cursor(cursor: &str) -> Option<(String, usize)> {
+    let mut parts = cursor.split(':');
+    (parts.next()? == "wrl1").then_some(())?;
+    let signature = parts.next()?.to_string();
+    let offset = parts.next()?.parse().ok()?;
+    parts.next().is_none().then_some((signature, offset))
 }
 
 fn latest_workbench_log(workbench_root: &std::path::Path) -> Option<PathBuf> {
@@ -2614,6 +2711,7 @@ fn bridge_payload() -> &'static [(&'static str, &'static str)] {
             "RST_WorkbenchWorldSelection.c",
             BRIDGE_WORLD_SELECTION_SOURCE,
         ),
+        ("RST_WorkbenchListResources.c", BRIDGE_LIST_RESOURCES_SOURCE),
     ]
 }
 
@@ -2648,9 +2746,9 @@ class RST_WorkbenchCapabilities : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchCapabilitiesResponse response = new RST_WorkbenchCapabilitiesResponse();
-		response.bridgeVersion = "1.5.0";
+		response.bridgeVersion = "1.6.0";
 	response.protocolVersion = 1;
-	response.capabilities = "state;open-world;play-session;project-context;inspect-resource;world-selection";
+	response.capabilities = "state;open-world;play-session;project-context;inspect-resource;world-selection;list-resources";
 		return response;
 	}
 }
@@ -2693,7 +2791,7 @@ class RST_WorkbenchState : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchStateResponse response = new RST_WorkbenchStateResponse();
-	response.bridgeVersion = "1.5.0";
+	response.bridgeVersion = "1.6.0";
 		response.protocolVersion = 1;
 		response.mode = "workbench";
 		response.playSession = "unavailable";
@@ -2881,7 +2979,7 @@ class RST_WorkbenchProjectContext : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchProjectContextResponse response = new RST_WorkbenchProjectContextResponse();
-		response.bridgeVersion = "1.5.0";
+		response.bridgeVersion = "1.6.0";
 		response.protocolVersion = 1;
 		array<string> addonGuids = new array<string>();
 		GameProject.GetLoadedAddons(addonGuids);
@@ -2965,7 +3063,7 @@ class RST_WorkbenchWorldSelection : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchWorldSelectionResponse response = new RST_WorkbenchWorldSelectionResponse();
-		response.bridgeVersion = "1.5.0";
+		response.bridgeVersion = "1.6.0";
 		response.protocolVersion = 1;
 		WorldEditor worldEditor = Workbench.GetModule(WorldEditor);
 		if (!worldEditor)
@@ -2997,6 +3095,73 @@ class RST_WorkbenchWorldSelection : NetApiHandler
 				response.selectedEntities += ";";
 			response.selectedEntities += string.Format("%1|%2|%3|%4", entity.GetID().ToString(), entity.GetClassName(), entity.GetSubScene(), entity.GetLayerID());
 		}
+		return response;
+	}
+}
+#endif
+"#;
+
+const BRIDGE_LIST_RESOURCES_SOURCE: &str = r#"#ifdef WORKBENCH
+class RST_WorkbenchListResourcesRequest : JsonApiStruct
+{
+	string extensions;
+	string query;
+	int offset;
+	int limit;
+	void RST_WorkbenchListResourcesRequest() { RegAll(); }
+}
+class RST_WorkbenchListResourcesResponse : JsonApiStruct
+{
+	string bridgeVersion;
+	int protocolVersion;
+	string loadedAddons;
+	ref array<ResourceName> resources = new array<ResourceName>();
+	bool hasMore;
+	void RST_WorkbenchListResourcesResponse() { RegAll(); }
+}
+class RST_WorkbenchListResources : NetApiHandler
+{
+	override JsonApiStruct GetRequest() { return new RST_WorkbenchListResourcesRequest(); }
+	override JsonApiStruct GetResponse(JsonApiStruct request)
+	{
+		RST_WorkbenchListResourcesRequest typedRequest = RST_WorkbenchListResourcesRequest.Cast(request);
+		RST_WorkbenchListResourcesResponse response = new RST_WorkbenchListResourcesResponse();
+		response.bridgeVersion = "1.6.0";
+		response.protocolVersion = 1;
+		array<string> addonGuids = new array<string>();
+		GameProject.GetLoadedAddons(addonGuids);
+		foreach (string addonGuid : addonGuids)
+		{
+			string addonId = GameProject.GetAddonID(addonGuid);
+			if (addonId == string.Empty)
+				continue;
+			if (response.loadedAddons != string.Empty)
+				response.loadedAddons += ";";
+			response.loadedAddons += addonId;
+		}
+		array<string> extensions = new array<string>();
+		if (typedRequest.extensions != string.Empty)
+			typedRequest.extensions.Split(";", extensions, true);
+		array<string> searchStrings = new array<string>();
+		if (typedRequest.query != string.Empty)
+			searchStrings.Insert(typedRequest.query);
+		SearchResourcesFilter filter = new SearchResourcesFilter();
+		filter.fileExtensions = extensions;
+		filter.searchStr = searchStrings;
+		array<ResourceName> allResources = new array<ResourceName>();
+		ResourceDatabase.SearchResources(filter, allResources.Insert);
+		allResources.Sort();
+		int start = typedRequest.offset;
+		if (start < 0)
+			start = 0;
+		int limit = typedRequest.limit;
+		if (limit < 1)
+			limit = 1;
+		if (limit > 200)
+			limit = 200;
+		for (int index = start; index < allResources.Count() && response.resources.Count() < limit; index++)
+			response.resources.Insert(allResources[index]);
+		response.hasMore = start + response.resources.Count() < allResources.Count();
 		return response;
 	}
 }
@@ -3072,6 +3237,45 @@ mod tests {
         assert_eq!(result.selected_count, 2);
         assert_eq!(result.selected_entities.len(), 2);
         assert!(!result.selected_entities_truncated);
+        peer.join().unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn resource_listing_binds_opaque_cursors_to_the_same_filter() {
+        let (port, peer) = start_peer(|request| {
+            assert_eq!(request["APIFunc"], "RST_WorkbenchListResources");
+            assert_eq!(request["extensions"], "ent");
+            assert_eq!(request["query"], "test");
+            assert_eq!(request["offset"], 0);
+            assert_eq!(request["limit"], 2);
+            json!({
+                "bridgeVersion": "1.6.0",
+                "protocolVersion": 1,
+                "loadedAddons": "ArmaReforger;TestBullshit",
+                "resources": ["{DD49A6CE18710A05}worlds/test/empty_test.ent"],
+                "hasMore": true
+            })
+        });
+        let root = test_root("resource-listing");
+        let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
+            gateway: super::WorkbenchGatewayOptions {
+                port,
+                status_deadline: Duration::from_secs(1),
+                ..super::WorkbenchGatewayOptions::default()
+            },
+            user_directory: Some(root.clone()),
+            ..super::WorkbenchControllerOptions::default()
+        });
+
+        let page = controller
+            .list_resources(&["ent"], Some("test"), None, 2)
+            .unwrap();
+
+        assert_eq!(page.resources.len(), 1);
+        assert!(page.next_cursor.is_some());
+        assert!(super::parse_resource_list_cursor(page.next_cursor.as_deref().unwrap()).is_some());
+        assert_ne!(page.project_revision, "ArmaReforger;TestBullshit");
         peer.join().unwrap();
         fs::remove_dir_all(root).unwrap();
     }

@@ -2994,6 +2994,124 @@ Inspect one canonical Workbench resource identity through the compatible managed
 
 Workbench tools return structured tool errors with a stable code, operation phase, retryability, and a unique log reference matching a rotating integration-log record. Raw transport and Workbench payload details are not exposed.
 
+## `workbench_list_resources`
+
+List a bounded page of Workbench resources by fixed resource kinds and an optional text query. Continue with the opaque cursor while preserving the same kinds and query; filesystem paths and arbitrary extensions are not accepted.
+
+### Annotations
+
+```json
+{
+  "title": "List Workbench resources",
+  "readOnlyHint": true,
+  "openWorldHint": false
+}
+```
+
+### Input schema
+
+```json
+{
+  "$defs": {
+    "McpWorkbenchResourceKind": {
+      "enum": [
+        "world",
+        "prefab",
+        "config",
+        "material",
+        "layout",
+        "texture",
+        "imageset",
+        "audio",
+        "animation",
+        "ai"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "cursor": {
+      "maxLength": 256,
+      "minLength": 1,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "kinds": {
+      "items": {
+        "$ref": "#/$defs/McpWorkbenchResourceKind"
+      },
+      "type": "array"
+    },
+    "limit": {
+      "maximum": 200,
+      "minimum": 1,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "query": {
+      "maxLength": 256,
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "kinds"
+  ],
+  "type": "object"
+}
+```
+
+### Output schema
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "bridgeVersion": {
+      "type": "string"
+    },
+    "nextCursor": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "projectRevision": {
+      "type": "string"
+    },
+    "protocolVersion": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "resources": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "bridgeVersion",
+    "protocolVersion",
+    "projectRevision",
+    "resources"
+  ],
+  "type": "object"
+}
+```
+
+### Stable failures
+
+Workbench tools return structured tool errors with a stable code, operation phase, retryability, and a unique log reference matching a rotating integration-log record. Raw transport and Workbench payload details are not exposed.
+
 ## `workbench_world_selection_summary`
 
 Read a bounded live World Editor selection summary through the compatible managed handler package. It returns stable entity IDs, classes, subscenes, and layers; it never changes the editor selection.

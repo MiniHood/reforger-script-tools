@@ -27,7 +27,8 @@ use crate::workbench::{
     WorkbenchFailure, WorkbenchFailureCode, WorkbenchInstallAuthorization, WorkbenchLiveState,
     WorkbenchLogRead, WorkbenchOpenWorldResult, WorkbenchOverview, WorkbenchPlaySessionResult,
     WorkbenchProcessResult, WorkbenchProjectContext, WorkbenchResourceInspection,
-    WorkbenchScriptActivationResult, WorkbenchValidationPage, WorkbenchWorldSelectionSummary,
+    WorkbenchResourceListPage, WorkbenchScriptActivationResult, WorkbenchValidationPage,
+    WorkbenchWorldSelectionSummary,
 };
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, ContentBlock, Implementation, ListToolsResult,
@@ -59,6 +60,7 @@ pub const WORKBENCH_INSTALL_BRIDGE_TOOL_NAME: &str = "workbench_install_bridge";
 pub const WORKBENCH_STATE_TOOL_NAME: &str = "workbench_state";
 pub const WORKBENCH_PROJECT_CONTEXT_TOOL_NAME: &str = "workbench_project_context";
 pub const WORKBENCH_INSPECT_RESOURCE_TOOL_NAME: &str = "workbench_inspect_resource";
+pub const WORKBENCH_LIST_RESOURCES_TOOL_NAME: &str = "workbench_list_resources";
 pub const WORKBENCH_WORLD_SELECTION_SUMMARY_TOOL_NAME: &str = "workbench_world_selection_summary";
 pub const WORKBENCH_OPEN_WORLD_TOOL_NAME: &str = "workbench_open_world";
 pub const WORKBENCH_START_PLAY_SESSION_TOOL_NAME: &str = "workbench_start_play_session";
@@ -94,6 +96,7 @@ const WORKBENCH_STATE_DESCRIPTION: &str =
     "Read bounded live editor state from the compatible managed Workbench handler package.";
 const WORKBENCH_PROJECT_CONTEXT_DESCRIPTION: &str = "Read the loaded Workbench addon identities from the compatible managed handler package. This is live editor context, not a filesystem project scan.";
 const WORKBENCH_INSPECT_RESOURCE_DESCRIPTION: &str = "Inspect one canonical Workbench resource identity through the compatible managed handler package. It returns compact resource metadata only and never accepts filesystem paths.";
+const WORKBENCH_LIST_RESOURCES_DESCRIPTION: &str = "List a bounded page of Workbench resources by fixed resource kinds and an optional text query. Continue with the opaque cursor while preserving the same kinds and query; filesystem paths and arbitrary extensions are not accepted.";
 const WORKBENCH_WORLD_SELECTION_SUMMARY_DESCRIPTION: &str = "Read a bounded live World Editor selection summary through the compatible managed handler package. It returns stable entity IDs, classes, subscenes, and layers; it never changes the editor selection.";
 const WORKBENCH_OPEN_WORLD_DESCRIPTION: &str = "Open one typed World Editor world through the compatible managed Workbench handler package without restarting Workbench.";
 const WORKBENCH_START_PLAY_SESSION_DESCRIPTION: &str = "Explicitly request that World Editor starts a play session. Acceptance confirms the command was issued, not that a world has finished loading.";
@@ -161,6 +164,50 @@ struct McpWorkbenchStartPlaySessionInput {
 struct McpWorkbenchResourceInput {
     #[schemars(length(min = 19, max = 1024))]
     resource_name: String,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+enum McpWorkbenchResourceKind {
+    World,
+    Prefab,
+    Config,
+    Material,
+    Layout,
+    Texture,
+    Imageset,
+    Audio,
+    Animation,
+    Ai,
+}
+
+impl McpWorkbenchResourceKind {
+    fn extensions(self) -> &'static [&'static str] {
+        match self {
+            Self::World => &["ent"],
+            Self::Prefab => &["et"],
+            Self::Config => &["conf", "ct"],
+            Self::Material => &["emat", "gamemat", "physmat"],
+            Self::Layout => &["layout"],
+            Self::Texture => &["edds", "dds", "txa", "txo"],
+            Self::Imageset => &["imageset"],
+            Self::Audio => &["wav", "acp", "snd", "smap"],
+            Self::Animation => &["anm", "agr", "ast", "asi", "asy", "afm"],
+            Self::Ai => &["bt"],
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct McpWorkbenchResourceListInput {
+    kinds: Vec<McpWorkbenchResourceKind>,
+    #[schemars(length(max = 256))]
+    query: Option<String>,
+    #[schemars(range(min = 1, max = 200))]
+    limit: Option<usize>,
+    #[schemars(length(min = 1, max = 256))]
+    cursor: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -999,6 +1046,7 @@ impl ServerHandler for ReforgerMcpServer {
             workbench_state_tool(),
             workbench_project_context_tool(),
             workbench_inspect_resource_tool(),
+            workbench_list_resources_tool(),
             workbench_world_selection_summary_tool(),
             workbench_open_world_tool(),
             workbench_start_play_session_tool(),
@@ -1031,6 +1079,7 @@ impl ServerHandler for ReforgerMcpServer {
             WORKBENCH_STATE_TOOL_NAME => Some(workbench_state_tool()),
             WORKBENCH_PROJECT_CONTEXT_TOOL_NAME => Some(workbench_project_context_tool()),
             WORKBENCH_INSPECT_RESOURCE_TOOL_NAME => Some(workbench_inspect_resource_tool()),
+            WORKBENCH_LIST_RESOURCES_TOOL_NAME => Some(workbench_list_resources_tool()),
             WORKBENCH_WORLD_SELECTION_SUMMARY_TOOL_NAME => {
                 Some(workbench_world_selection_summary_tool())
             }
@@ -1102,6 +1151,40 @@ impl ServerHandler for ReforgerMcpServer {
                     workbench
                         .inspect_resource(&input.resource_name)
                         .map_err(|failure| workbench.correlate_failure("inspect_resource", failure))
+                },
+            )
+            .await;
+        }
+        if request.name == WORKBENCH_LIST_RESOURCES_TOOL_NAME {
+            let input = parse_workbench_input::<McpWorkbenchResourceListInput>(&request)?;
+            if input.kinds.is_empty() {
+                return Ok(tool_error(
+                    "invalid_input",
+                    "At least one resource kind is required.",
+                    "Provide one or more fixed resource kinds.",
+                ));
+            }
+            let extensions = input
+                .kinds
+                .iter()
+                .flat_map(|kind| kind.extensions().iter().copied())
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>();
+            let workbench = self.workbench.clone();
+            return blocking_workbench_call(
+                self.admission.clone(),
+                context,
+                "list_resources",
+                move || {
+                    workbench
+                        .list_resources(
+                            &extensions,
+                            input.query.as_deref(),
+                            input.cursor.as_deref(),
+                            input.limit.unwrap_or(100),
+                        )
+                        .map_err(|failure| workbench.correlate_failure("list_resources", failure))
                 },
             )
             .await;
@@ -1884,6 +1967,7 @@ Copy a hit's `inspectInput` unchanged to `inspect_game_data_symbol`, or its `rea
         workbench_state_tool(),
         workbench_project_context_tool(),
         workbench_inspect_resource_tool(),
+        workbench_list_resources_tool(),
         workbench_world_selection_summary_tool(),
         workbench_open_world_tool(),
         workbench_start_play_session_tool(),
@@ -2215,6 +2299,17 @@ fn workbench_inspect_resource_tool() -> Tool {
     )
 }
 
+fn workbench_list_resources_tool() -> Tool {
+    workbench_input_tool::<McpWorkbenchResourceListInput, WorkbenchResourceListPage>(
+        WORKBENCH_LIST_RESOURCES_TOOL_NAME,
+        WORKBENCH_LIST_RESOURCES_DESCRIPTION,
+        "List Workbench resources",
+        ToolAnnotations::with_title("List Workbench resources")
+            .read_only(true)
+            .open_world(false),
+    )
+}
+
 fn workbench_world_selection_summary_tool() -> Tool {
     workbench_empty_tool::<WorkbenchWorldSelectionSummary>(
         WORKBENCH_WORLD_SELECTION_SUMMARY_TOOL_NAME,
@@ -2422,15 +2517,15 @@ fn tool_error(code: &str, cause: &str, recovery: &str) -> CallToolResult {
 mod tests {
     use super::{
         game_data_status_tool, inspect_game_data_symbol_tool, render_api_reference,
-        workbench_install_bridge_tool, workbench_open_world_tool, workbench_project_context_tool,
-        workbench_reload_tool, workbench_start_play_session_tool, workbench_status_tool,
-        workbench_stop_play_session_tool, workbench_validate_scripts_tool,
+        workbench_install_bridge_tool, workbench_list_resources_tool, workbench_open_world_tool,
+        workbench_project_context_tool, workbench_reload_tool, workbench_start_play_session_tool,
+        workbench_status_tool, workbench_stop_play_session_tool, workbench_validate_scripts_tool,
         workbench_world_selection_summary_tool, DEADLINE_EXCEEDED_CODE, GAME_DATA_STATUS_TOOL_NAME,
-        RESPONSE_TOO_LARGE_CODE, WORKBENCH_OPEN_WORLD_TOOL_NAME,
-        WORKBENCH_PROJECT_CONTEXT_TOOL_NAME, WORKBENCH_RELOAD_TOOL_NAME,
-        WORKBENCH_START_PLAY_SESSION_TOOL_NAME, WORKBENCH_STATUS_TOOL_NAME,
-        WORKBENCH_STOP_PLAY_SESSION_TOOL_NAME, WORKBENCH_VALIDATE_SCRIPTS_TOOL_NAME,
-        WORKBENCH_WORLD_SELECTION_SUMMARY_TOOL_NAME,
+        RESPONSE_TOO_LARGE_CODE, WORKBENCH_LIST_RESOURCES_TOOL_NAME,
+        WORKBENCH_OPEN_WORLD_TOOL_NAME, WORKBENCH_PROJECT_CONTEXT_TOOL_NAME,
+        WORKBENCH_RELOAD_TOOL_NAME, WORKBENCH_START_PLAY_SESSION_TOOL_NAME,
+        WORKBENCH_STATUS_TOOL_NAME, WORKBENCH_STOP_PLAY_SESSION_TOOL_NAME,
+        WORKBENCH_VALIDATE_SCRIPTS_TOOL_NAME, WORKBENCH_WORLD_SELECTION_SUMMARY_TOOL_NAME,
     };
     use serde_json::Value;
 
@@ -2491,6 +2586,7 @@ mod tests {
         let reload = workbench_reload_tool();
         let open_world = workbench_open_world_tool();
         let project_context = workbench_project_context_tool();
+        let list_resources = workbench_list_resources_tool();
         let world_selection = workbench_world_selection_summary_tool();
         let start_play = workbench_start_play_session_tool();
         let stop_play = workbench_stop_play_session_tool();
@@ -2499,6 +2595,7 @@ mod tests {
         assert_eq!(reload.name, WORKBENCH_RELOAD_TOOL_NAME);
         assert_eq!(open_world.name, WORKBENCH_OPEN_WORLD_TOOL_NAME);
         assert_eq!(project_context.name, WORKBENCH_PROJECT_CONTEXT_TOOL_NAME);
+        assert_eq!(list_resources.name, WORKBENCH_LIST_RESOURCES_TOOL_NAME);
         assert_eq!(
             world_selection.name,
             WORKBENCH_WORLD_SELECTION_SUMMARY_TOOL_NAME

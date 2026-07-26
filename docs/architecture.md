@@ -109,6 +109,13 @@ selection count and at most 32 selected entities, each by stable editor ID,
 class, subscene, and layer. It never changes selection, relies on no display
 name as an identity, and reports unavailable editor/API states explicitly.
 
+The read-only `workbench_list_resources` capability accepts only fixed resource
+kinds and an optional bounded text query. Workbench's resource database applies
+the filter and pagination before the response crosses the NET API. Continuation
+cursors are opaque and bound to the same kind/query set; results include a
+logical project revision derived from loaded addon identities, never a local
+filesystem path.
+
 Compiler validation is captured once per invocation and exposed as bounded,
 opaque-cursor pages so an MCP client can retrieve every finding without
 recompiling between pages. Process shutdown is bound to a process identity that
