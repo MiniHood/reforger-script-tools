@@ -601,7 +601,8 @@ impl WorkbenchController {
         let state = WorkbenchLiveState {
             bridge_version: raw.bridge_version,
             protocol_version: raw.protocol_version,
-            world_editor_active: raw.world_editor_active || raw.mode == "world-editor",
+            world_editor_active: workbench_bool(&raw.world_editor_active)
+                || raw.mode == "world-editor",
             mode: raw.mode,
             loaded_addons,
             loaded_addons_truncated,
@@ -1611,9 +1612,13 @@ struct RawBridgeState {
     protocol_version: u32,
     mode: String,
     #[serde(rename = "worldEditorActive", default)]
-    world_editor_active: bool,
+    world_editor_active: Value,
     #[serde(rename = "loadedAddons")]
     loaded_addons: String,
+}
+
+fn workbench_bool(value: &Value) -> bool {
+    matches!(value, Value::Bool(true)) || value.as_i64().is_some_and(|integer| integer != 0)
 }
 
 #[derive(Deserialize)]
@@ -2044,6 +2049,15 @@ mod tests {
     use std::net::TcpListener;
     use std::thread;
     use std::time::Duration;
+
+    #[test]
+    fn workbench_bool_accepts_json_and_enfusion_representations() {
+        assert!(super::workbench_bool(&json!(true)));
+        assert!(super::workbench_bool(&json!(1)));
+        assert!(!super::workbench_bool(&json!(false)));
+        assert!(!super::workbench_bool(&json!(0)));
+        assert!(!super::workbench_bool(&Value::Null));
+    }
 
     #[test]
     fn native_status_uses_the_documented_net_api_transaction() {
