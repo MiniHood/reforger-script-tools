@@ -76,3 +76,13 @@ play session. Test all three branches live:
 Only promote `playSession: "likely-running"` to a definitive `"running"` or
 add a bare `isPlaying` boolean if an official/generated API provides a direct
 play-session fact and it is verified against the running Workbench version.
+
+## Live activation boundary
+
+On 2026-07-26, writing the extended handler package followed by native
+`ValidateScripts` and the current bridge `reload` acknowledgement left the
+running `RST_WorkbenchState` response on its previous JSON shape. This confirms
+that this NET API compilation path does not hot-reload newly registered handler
+classes. Live acceptance of the new fields therefore requires a real Workbench
+script-host reload or restart; no MCP operation should close or restart it as a
+side effect.

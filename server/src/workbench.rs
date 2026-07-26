@@ -187,8 +187,19 @@ pub struct WorkbenchLiveState {
     pub protocol_version: u32,
     pub mode: String,
     pub world_editor_active: bool,
+    pub world_editor_module_present: bool,
+    pub world_editor_api_available: bool,
+    pub play_session: WorkbenchPlaySession,
     pub loaded_addons: Vec<String>,
     pub loaded_addons_truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum WorkbenchPlaySession {
+    Unavailable,
+    Editing,
+    LikelyRunning,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
@@ -598,11 +609,29 @@ impl WorkbenchController {
         }
         let (loaded_addons, loaded_addons_truncated) =
             split_bounded_list(&raw.loaded_addons, 256, 256);
+        let world_editor_module_present = workbench_bool(&raw.world_editor_module_present);
+        let world_editor_api_available = workbench_bool(&raw.world_editor_api_available)
+            || workbench_bool(&raw.world_editor_active)
+            || raw.mode == "world-editor";
         let state = WorkbenchLiveState {
             bridge_version: raw.bridge_version,
             protocol_version: raw.protocol_version,
-            world_editor_active: workbench_bool(&raw.world_editor_active)
-                || raw.mode == "world-editor",
+            world_editor_active: world_editor_api_available,
+            world_editor_module_present,
+            world_editor_api_available,
+            play_session: play_session(
+                &raw.play_session,
+                world_editor_module_present,
+                world_editor_api_available,
+            )
+            .ok_or_else(|| {
+                self.correlate_failure_details(
+                    "state",
+                    "workbench_protocol_error",
+                    failure(WorkbenchFailureCode::Protocol),
+                    json!({"handler": "RST_WorkbenchState"}),
+                )
+            })?,
             mode: raw.mode,
             loaded_addons,
             loaded_addons_truncated,
@@ -616,6 +645,9 @@ impl WorkbenchController {
                 "protocolVersion": state.protocol_version,
                 "mode": state.mode.clone(),
                 "worldEditorActive": state.world_editor_active,
+                "worldEditorModulePresent": state.world_editor_module_present,
+                "worldEditorApiAvailable": state.world_editor_api_available,
+                "playSession": state.play_session,
                 "loadedAddonCount": state.loaded_addons.len(),
                 "loadedAddonsTruncated": state.loaded_addons_truncated,
             }),
@@ -1613,12 +1645,34 @@ struct RawBridgeState {
     mode: String,
     #[serde(rename = "worldEditorActive", default)]
     world_editor_active: Value,
+    #[serde(rename = "worldEditorModulePresent", default)]
+    world_editor_module_present: Value,
+    #[serde(rename = "worldEditorApiAvailable", default)]
+    world_editor_api_available: Value,
+    #[serde(rename = "playSession")]
+    play_session: Option<String>,
     #[serde(rename = "loadedAddons")]
     loaded_addons: String,
 }
 
 fn workbench_bool(value: &Value) -> bool {
     matches!(value, Value::Bool(true)) || value.as_i64().is_some_and(|integer| integer != 0)
+}
+
+fn play_session(
+    reported: &Option<String>,
+    world_editor_module_present: bool,
+    world_editor_api_available: bool,
+) -> Option<WorkbenchPlaySession> {
+    match reported.as_deref() {
+        Some("unavailable") => Some(WorkbenchPlaySession::Unavailable),
+        Some("editing") => Some(WorkbenchPlaySession::Editing),
+        Some("likely-running") => Some(WorkbenchPlaySession::LikelyRunning),
+        Some(_) => None,
+        None if world_editor_api_available => Some(WorkbenchPlaySession::Editing),
+        None if world_editor_module_present => Some(WorkbenchPlaySession::LikelyRunning),
+        None => Some(WorkbenchPlaySession::Unavailable),
+    }
 }
 
 #[derive(Deserialize)]
@@ -1949,6 +2003,9 @@ class RST_WorkbenchStateResponse : JsonApiStruct
 	int protocolVersion;
 	string mode;
 	bool worldEditorActive;
+	bool worldEditorModulePresent;
+	bool worldEditorApiAvailable;
+	string playSession;
 	string loadedAddons;
 
 	void RST_WorkbenchStateResponse()
@@ -1970,11 +2027,23 @@ class RST_WorkbenchState : NetApiHandler
 		response.bridgeVersion = "1.0.0";
 		response.protocolVersion = 1;
 		response.mode = "workbench";
+		response.playSession = "unavailable";
 		WorldEditor worldEditor = Workbench.GetModule(WorldEditor);
-		if (worldEditor && worldEditor.GetApi())
+		if (worldEditor)
 		{
-			response.mode = "world-editor";
-			response.worldEditorActive = true;
+			response.worldEditorModulePresent = true;
+			WorldEditorAPI worldEditorApi = worldEditor.GetApi();
+			if (worldEditorApi)
+			{
+				response.mode = "world-editor";
+				response.worldEditorActive = true;
+				response.worldEditorApiAvailable = true;
+				response.playSession = "editing";
+			}
+			else
+			{
+				response.playSession = "likely-running";
+			}
 		}
 		array<string> addonGuids = {};
 		GameProject.GetLoadedAddons(addonGuids);
@@ -2057,6 +2126,26 @@ mod tests {
         assert!(!super::workbench_bool(&json!(false)));
         assert!(!super::workbench_bool(&json!(0)));
         assert!(!super::workbench_bool(&Value::Null));
+    }
+
+    #[test]
+    fn play_session_preserves_direct_observations_without_claiming_runtime_certainty() {
+        assert_eq!(
+            super::play_session(&Some("editing".to_string()), true, true),
+            Some(super::WorkbenchPlaySession::Editing)
+        );
+        assert_eq!(
+            super::play_session(&Some("likely-running".to_string()), true, false),
+            Some(super::WorkbenchPlaySession::LikelyRunning)
+        );
+        assert_eq!(
+            super::play_session(&None, false, false),
+            Some(super::WorkbenchPlaySession::Unavailable)
+        );
+        assert_eq!(
+            super::play_session(&Some("running".to_string()), true, false),
+            None
+        );
     }
 
     #[test]

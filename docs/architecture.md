@@ -68,8 +68,10 @@ existing consented installation. A prior manifest-owned flat-profile package is
 migrated to this `WorkbenchGame` module path without touching unknown files. A successful later connection may likewise
 repair or upgrade only manifest-owned files. Writing that profile package and
 running native compiler validation does not register its `NetApiHandler`s in
-the already-running Workbench; the extension reports successful installation
-and asks the user to refresh Workbench with `Ctrl+Shift+R`. It deliberately
+the already-running Workbench. Native `ValidateScripts` proves compilation; it
+does not hot-reload a newly registered handler class. The extension reports
+successful installation and asks the user to refresh Workbench with
+`Ctrl+Shift+R` or restart it. It deliberately
 does not probe a capability handler during installation, maintenance, or
 status diagnosis: Workbench logs a missing handler as an error. Only an
 explicit custom operation may test its own handler availability.
@@ -84,8 +86,12 @@ cannot be proven.
 
 The managed state capability reports `mode: "workbench"` as its honest
 baseline. It reports `mode: "world-editor"` and `worldEditorActive: true` only
-when the live `WorldEditor` module exposes its API. It does not infer another
-foreground editor mode from process state, window titles, or log text.
+when the live `WorldEditor` module exposes its API. It also exposes the direct
+`worldEditorModulePresent` and `worldEditorApiAvailable` observations. Its
+`playSession` value is `unavailable`, `editing`, or `likely-running`; the last
+is a bounded inference from a present module with no editor API, not a claim of
+an engine-proven runtime session. It does not infer another foreground editor
+mode from process state, window titles, or log text.
 
 Compiler validation is captured once per invocation and exposed as bounded,
 opaque-cursor pages so an MCP client can retrieve every finding without

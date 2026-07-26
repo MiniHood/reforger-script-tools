@@ -2799,6 +2799,16 @@ Read bounded live editor state from the compatible managed Workbench handler pac
 
 ```json
 {
+  "$defs": {
+    "WorkbenchPlaySession": {
+      "enum": [
+        "unavailable",
+        "editing",
+        "likely-running"
+      ],
+      "type": "string"
+    }
+  },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "bridgeVersion": {
@@ -2816,11 +2826,20 @@ Read bounded live editor state from the compatible managed Workbench handler pac
     "mode": {
       "type": "string"
     },
+    "playSession": {
+      "$ref": "#/$defs/WorkbenchPlaySession"
+    },
     "protocolVersion": {
       "minimum": 0,
       "type": "integer"
     },
     "worldEditorActive": {
+      "type": "boolean"
+    },
+    "worldEditorApiAvailable": {
+      "type": "boolean"
+    },
+    "worldEditorModulePresent": {
       "type": "boolean"
     }
   },
@@ -2829,6 +2848,9 @@ Read bounded live editor state from the compatible managed Workbench handler pac
     "protocolVersion",
     "mode",
     "worldEditorActive",
+    "worldEditorModulePresent",
+    "worldEditorApiAvailable",
+    "playSession",
     "loadedAddons",
     "loadedAddonsTruncated"
   ],
