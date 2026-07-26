@@ -183,17 +183,24 @@ capability groups; they do not establish Reforger behaviour, implementation
 quality, or an adoption decision.
 
 `enfusion-mcp-BK` separates a local Node MCP host from Enforce Script handlers
-injected into a mod. Its host features are useful scope comparisons, but only
-the last row belongs at the Workbench NET API boundary:
+injected into a mod. Keep these as distinct external MCP-host features; they
+are scope comparisons, not Workbench NET API capability claims.
 
-| External local-host feature group | Potential use here | NET API disposition |
+#### External MCP-host feature inventory
+
+| Host feature group | Exposed tools or behaviour | Effect boundary |
 | --- | --- | --- |
-| API/wiki/knowledge and base-game inspection | Evidence retrieval and Game Data browsing | Existing local evidence authority; not a Workbench handler. |
-| Project browse/read/write | Bounded workspace orientation or staged edits | Separate project-file boundary; never a handler proxy. |
-| Addon, script, prefab, layout, config, scenario, animation, and server-config generation | Intent-level authoring workflows | Separate previewable file-creation workflow; not a NET API capability by itself. |
-| Local validation/build and Workshop metadata | Explicit local development actions | Keep process invocation and metadata outside the Workbench handler surface. |
-| Guided prompts and MCP resources | Client-facing guidance | MCP-host concern, not Workbench state. |
-| Workbench launch/connect/diagnose/reload/cleanup | Optional live-editor integration | The typed Gateway may contact the configured endpoint; it must not install handlers, start Workbench, or manage arbitrary process lifecycle. |
+| API and documentation research | `api_search`, `component_search`, `wiki_search`, `wiki_read`, and `wb_knowledge` search packaged indexes, a wiki corpus, and a knowledge base. | Read-only local packaged data; source freshness and authority are external-project concerns. |
+| Base-game inspection | `game_browse`, `game_read`, `asset_search`, and `prefab_inspect` inspect loose game files and `.pak` archives. | Read-only game-data access. |
+| Project-file access | `project_browse`, `project_read`, and `project_write` read and write the configured project directory. | Direct filesystem mutation is possible through the write tool. |
+| Addon and artifact generation | `mod_create`, `script_create`, `prefab_create`, `layout_create`, `config_create`, `scenario_create`, `animation_graph`, and `server_config` generate or scaffold mod content. | Creates or overwrites project files. |
+| Local project checks and build | `mod_validate`, `mod_build`, and `workshop_info` validate project content, invoke the Workbench build executable, or read `.gproj` metadata. | Build starts an external local process; validation and metadata reading are local. |
+| Guided workflows and MCP resources | `/create-mod`, `/modify-mod`, and `enfusion://class`, `enfusion://pattern`, and `enfusion://group` provide workflow prompts and read-only resources. | No Workbench connection required. |
+| Workbench bridge lifecycle | `wb_launch`, `wb_connect`, `wb_diagnose`, `wb_reload`, and `wb_cleanup` install/remove handlers, start Workbench, and manage its NET API connection. | Writes/removes handler scripts in the target mod and starts or contacts a separate Workbench process. |
+
+Only the final row intersects the Workbench boundary. The typed Gateway may
+contact the configured endpoint, but it must not install handlers, start
+Workbench, or manage arbitrary process lifecycle.
 
 The same review found 19 `EMCP_WB_*` injected handlers. Their source-backed
 ideas are potential NET API capability candidates only after a versioned DTO,
