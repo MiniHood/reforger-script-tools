@@ -85,12 +85,13 @@ unrecognized installed version is preserved because automatic downgrade safety
 cannot be proven.
 
 The explicit MCP `workbench_reload` operation is the only supported
-keyboard automation. It requires exactly one current Workbench process, checks
-that process identity and foreground focus, sends only `Ctrl+Shift+R`, then
-waits up to 60 seconds for the newly appended console-log reload sequence to
-finish. It never exposes arbitrary key input. Failure to focus the exact window
-or observe the terminal Workbench reload marker is a failed operation, not a
-claimed reload.
+keyboard automation. It requires exactly one current Workbench process and one
+visible `Enfusion Workbench - <project>` top-level window; World Editor and
+other module windows are never valid targets. It checks process identity and
+foreground focus, sends only `Ctrl+Shift+R`, then waits up to 60 seconds for the
+newly appended console-log reload sequence to finish. It never exposes arbitrary
+key input. Failure to focus the exact project window or observe the terminal
+Workbench reload marker is a failed operation, not a claimed reload.
 
 The managed state capability reports `mode: "workbench"` as its honest
 baseline. It reports `mode: "world-editor"` and `worldEditorActive: true` only

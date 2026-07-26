@@ -1868,22 +1868,56 @@ Add-Type @'
 using System;
 using System.Runtime.InteropServices;
 public static class RSTWorkbenchWindow {{
+    public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
     [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+    [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
+    [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder text, int maxCount);
+    [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool attach);
+    [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr hWnd);
+    [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
 }}
 '@
 $p = Get-Process -Id {process_id} -ErrorAction Stop
-if ($p.ProcessName -ne 'ArmaReforgerWorkbenchSteamDiag' -or [uint64]$p.StartTime.ToUniversalTime().Ticks -ne [uint64]{start_ticks} -or $p.MainWindowHandle -eq 0) {{ exit 2 }}
-[void][RSTWorkbenchWindow]::ShowWindowAsync($p.MainWindowHandle, 9)
-if (-not [RSTWorkbenchWindow]::SetForegroundWindow($p.MainWindowHandle)) {{ exit 3 }}
-Start-Sleep -Milliseconds 150
-if ([RSTWorkbenchWindow]::GetForegroundWindow() -ne $p.MainWindowHandle) {{ exit 4 }}
-$shell = New-Object -ComObject WScript.Shell
-if (-not $shell.AppActivate($p.Id)) {{ exit 5 }}
-Start-Sleep -Milliseconds 100
-if ([RSTWorkbenchWindow]::GetForegroundWindow() -ne $p.MainWindowHandle) {{ exit 6 }}
-$shell.SendKeys('^+r')
+if ($p.ProcessName -ne 'ArmaReforgerWorkbenchSteamDiag' -or [uint64]$p.StartTime.ToUniversalTime().Ticks -ne [uint64]{start_ticks}) {{ exit 2 }}
+$projectWindows = [System.Collections.Generic.List[System.IntPtr]]::new()
+$callback = [RSTWorkbenchWindow+EnumWindowsProc] {{ param([IntPtr]$hWnd, [IntPtr]$unused)
+	[uint32]$ownerProcess = 0
+	[void][RSTWorkbenchWindow]::GetWindowThreadProcessId($hWnd, [ref]$ownerProcess)
+	if ($ownerProcess -eq $p.Id -and [RSTWorkbenchWindow]::IsWindowVisible($hWnd)) {{
+		$title = [System.Text.StringBuilder]::new(512)
+		[void][RSTWorkbenchWindow]::GetWindowText($hWnd, $title, $title.Capacity)
+		if ($title.ToString().StartsWith('Enfusion Workbench - ', [System.StringComparison]::Ordinal)) {{ $projectWindows.Add($hWnd) }}
+	}}
+	return $true
+}}
+[void][RSTWorkbenchWindow]::EnumWindows($callback, [IntPtr]::Zero)
+if ($projectWindows.Count -ne 1) {{ exit 7 }}
+$window = $projectWindows[0]
+$foreground = [RSTWorkbenchWindow]::GetForegroundWindow()
+[uint32]$ownerProcess = 0
+$foregroundThread = [RSTWorkbenchWindow]::GetWindowThreadProcessId($foreground, [ref]$ownerProcess)
+$targetThread = [RSTWorkbenchWindow]::GetWindowThreadProcessId($window, [ref]$ownerProcess)
+$currentThread = [RSTWorkbenchWindow]::GetCurrentThreadId()
+$attachedForeground = $false
+$attachedTarget = $false
+try {{
+	if ($foregroundThread -ne $currentThread) {{ $attachedForeground = [RSTWorkbenchWindow]::AttachThreadInput($currentThread, $foregroundThread, $true) }}
+	if ($targetThread -ne $currentThread) {{ $attachedTarget = [RSTWorkbenchWindow]::AttachThreadInput($currentThread, $targetThread, $true) }}
+	[void][RSTWorkbenchWindow]::ShowWindowAsync($window, 9)
+	[void][RSTWorkbenchWindow]::BringWindowToTop($window)
+	[void][RSTWorkbenchWindow]::SetForegroundWindow($window)
+	Start-Sleep -Milliseconds 300
+	if ([RSTWorkbenchWindow]::GetForegroundWindow() -ne $window) {{ exit 3 }}
+	$shell = New-Object -ComObject WScript.Shell
+	$shell.SendKeys('^+r')
+}} finally {{
+	if ($attachedTarget) {{ [void][RSTWorkbenchWindow]::AttachThreadInput($currentThread, $targetThread, $false) }}
+	if ($attachedForeground) {{ [void][RSTWorkbenchWindow]::AttachThreadInput($currentThread, $foregroundThread, $false) }}
+}}
 "#,
         process_id = process.id,
         start_ticks = process.start_ticks,
@@ -1903,7 +1937,8 @@ $shell.SendKeys('^+r')
         .map_err(|_| "focus-reload-request-failed")?;
     match status.code() {
         Some(2) => Err("workbench-window-unavailable"),
-        Some(3 | 4 | 5 | 6) => Err("workbench-focus-not-confirmed"),
+        Some(3) => Err("workbench-focus-not-confirmed"),
+        Some(7) => Err("workbench-project-window-ambiguous"),
         Some(0) => Ok(()),
         _ => Err("focus-reload-request-failed"),
     }

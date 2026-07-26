@@ -4,7 +4,10 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
-use std::sync::{atomic::{AtomicBool, Ordering}, Arc, OnceLock};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, OnceLock,
+};
 use url::Url;
 
 const MAX_PAGE_BYTES: u64 = 4 * 1024 * 1024;
@@ -183,8 +186,12 @@ pub enum OfficialWikiReadError {
 pub struct OfficialWikiControl(Arc<AtomicBool>);
 
 impl OfficialWikiControl {
-    pub fn cancel(&self) { self.0.store(true, Ordering::Release); }
-    fn is_cancelled(&self) -> bool { self.0.load(Ordering::Acquire) }
+    pub fn cancel(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+    fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
 }
 
 impl OfficialWikiCorpus {
@@ -240,7 +247,8 @@ impl OfficialWikiCorpus {
                 }
                 let cursor = decode_cursor(cursor).ok_or(OfficialWikiSearchError::InvalidCursor)?;
                 if cursor.query_hash != cursor_hash(&query)
-                    || cursor.prefix_hash != cursor_hash(prefix.as_deref().unwrap_or("")) {
+                    || cursor.prefix_hash != cursor_hash(prefix.as_deref().unwrap_or(""))
+                {
                     return Err(OfficialWikiSearchError::InvalidCursor);
                 }
                 if cursor.revision != revision {
@@ -252,7 +260,9 @@ impl OfficialWikiCorpus {
         };
         let mut hits = Vec::new();
         for page in &corpus.pages {
-            if control.is_cancelled() { return Err(OfficialWikiSearchError::Cancelled); }
+            if control.is_cancelled() {
+                return Err(OfficialWikiSearchError::Cancelled);
+            }
             if prefix
                 .as_ref()
                 .is_some_and(|prefix| !page.logical_path.starts_with(prefix))
@@ -326,7 +336,8 @@ impl OfficialWikiCorpus {
         if request.corpus_revision != revision {
             return Err(OfficialWikiReadError::StaleRevision);
         }
-        validate_logical_path(&request.relative_path).map_err(|_| OfficialWikiReadError::InvalidPath)?;
+        validate_logical_path(&request.relative_path)
+            .map_err(|_| OfficialWikiReadError::InvalidPath)?;
         let page = corpus
             .pages
             .iter()
@@ -367,7 +378,11 @@ impl OfficialWikiCorpus {
         if taken == 0 && start_line <= lines.len() {
             return Err(OfficialWikiReadError::InvalidRange);
         }
-        let end_line = if taken == 0 { start_line - 1 } else { start_line + taken - 1 };
+        let end_line = if taken == 0 {
+            start_line - 1
+        } else {
+            start_line + taken - 1
+        };
         let truncated = end_line < lines.len();
         Ok(OfficialWikiReadPage {
             source: "evidence-catalogue".to_string(),
@@ -397,7 +412,10 @@ impl OfficialWikiCorpus {
             })
     }
 
-    fn read_current_page_bytes(&self, page: &ValidatedPage) -> Result<String, OfficialWikiReadError> {
+    fn read_current_page_bytes(
+        &self,
+        page: &ValidatedPage,
+    ) -> Result<String, OfficialWikiReadError> {
         let root = self
             .root
             .as_ref()
@@ -772,16 +790,16 @@ fn search_page(
             if terms.iter().any(|term| body_lower.contains(term)) {
                 fields.push("body".to_string());
             }
-        let (rank, kind) = if title == query {
-            (0, OfficialWikiMatchKind::ExactTitle)
-        } else if title.contains(query) {
-            (1, OfficialWikiMatchKind::TitlePhrase)
-        } else if path.contains(query) {
-            (2, OfficialWikiMatchKind::Path)
-        } else if heading_lower.contains(query) {
-            (3, OfficialWikiMatchKind::Heading)
-        } else {
-            (4, OfficialWikiMatchKind::Body)
+            let (rank, kind) = if title == query {
+                (0, OfficialWikiMatchKind::ExactTitle)
+            } else if title.contains(query) {
+                (1, OfficialWikiMatchKind::TitlePhrase)
+            } else if path.contains(query) {
+                (2, OfficialWikiMatchKind::Path)
+            } else if heading_lower.contains(query) {
+                (3, OfficialWikiMatchKind::Heading)
+            } else {
+                (4, OfficialWikiMatchKind::Body)
             };
             let line_count = end
                 .saturating_sub(start)
@@ -800,7 +818,7 @@ fn search_page(
                     excerpt,
                     source_url: page.source_url.clone(),
                     matched_fields: fields,
-                match_kind: kind,
+                    match_kind: kind,
                     read_input: OfficialWikiReadInput {
                         corpus_revision: revision.to_string(),
                         relative_path: page.logical_path.clone(),
@@ -816,7 +834,12 @@ fn search_page(
 fn markdown_heading(line: &str) -> Option<&str> {
     let line = line.trim_start();
     let marker_length = line.bytes().take_while(|byte| *byte == b'#').count();
-    if !(1..=6).contains(&marker_length) || !line.as_bytes().get(marker_length).is_some_and(u8::is_ascii_whitespace) {
+    if !(1..=6).contains(&marker_length)
+        || !line
+            .as_bytes()
+            .get(marker_length)
+            .is_some_and(u8::is_ascii_whitespace)
+    {
         return None;
     }
     let value = line[marker_length..].trim();
@@ -902,7 +925,11 @@ fn is_reparse_point(_metadata: &fs::Metadata) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{encode_cursor, markdown_heading, OfficialWikiControl, SearchCursor, validate_logical_path, OfficialWikiCorpus, OfficialWikiSearchError, OfficialWikiSearchRequest, MAX_CURSOR_BYTES};
+    use super::{
+        encode_cursor, markdown_heading, validate_logical_path, OfficialWikiControl,
+        OfficialWikiCorpus, OfficialWikiSearchError, OfficialWikiSearchRequest, SearchCursor,
+        MAX_CURSOR_BYTES,
+    };
     use std::fs;
 
     #[test]
@@ -1015,20 +1042,41 @@ mod tests {
         assert_eq!(markdown_heading("### Details"), Some("Details"));
         assert_eq!(markdown_heading("###### Deep"), Some("Deep"));
         assert_eq!(markdown_heading("#not a heading"), None);
-        let cursor = encode_cursor(&SearchCursor { revision: "ow1:revision".to_string(), query_hash: "q".repeat(64), prefix_hash: "p".repeat(64), offset: usize::MAX });
+        let cursor = encode_cursor(&SearchCursor {
+            revision: "ow1:revision".to_string(),
+            query_hash: "q".repeat(64),
+            prefix_hash: "p".repeat(64),
+            offset: usize::MAX,
+        });
         assert!(cursor.len() <= MAX_CURSOR_BYTES);
     }
 
     #[test]
     fn cancellation_is_observed_before_the_direct_corpus_scan() {
-        let root = std::env::temp_dir().join(format!("official-wiki-cancel-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("official-wiki-cancel-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
-        fs::write(root.join("page.md"), "# [Page](https://community.bistudio.com/wiki/Arma_Reforger:Page)\nneedle\n").unwrap();
+        fs::write(
+            root.join("page.md"),
+            "# [Page](https://community.bistudio.com/wiki/Arma_Reforger:Page)\nneedle\n",
+        )
+        .unwrap();
         let corpus = OfficialWikiCorpus::new(root.clone());
         let control = OfficialWikiControl::default();
         control.cancel();
-        assert!(matches!(corpus.search_with_control(OfficialWikiSearchRequest { query: "needle".to_string(), path_prefix: None, limit: None, cursor: None }, &control), Err(OfficialWikiSearchError::Cancelled)));
+        assert!(matches!(
+            corpus.search_with_control(
+                OfficialWikiSearchRequest {
+                    query: "needle".to_string(),
+                    path_prefix: None,
+                    limit: None,
+                    cursor: None
+                },
+                &control
+            ),
+            Err(OfficialWikiSearchError::Cancelled)
+        ));
         let _ = fs::remove_dir_all(root);
     }
 }
