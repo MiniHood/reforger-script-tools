@@ -103,7 +103,7 @@ pub struct WorkbenchGateway {
     request_lock: Arc<Mutex<()>>,
 }
 
-pub const WORKBENCH_BRIDGE_VERSION: &str = "1.8.0";
+pub const WORKBENCH_BRIDGE_VERSION: &str = "1.9.0";
 pub const WORKBENCH_BRIDGE_PROTOCOL_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2944,7 +2944,7 @@ class RST_WorkbenchCapabilities : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchCapabilitiesResponse response = new RST_WorkbenchCapabilitiesResponse();
-		response.bridgeVersion = "1.8.0";
+		response.bridgeVersion = "1.9.0";
 	response.protocolVersion = 1;
 	response.capabilities = "state;open-world;play-session;project-context;inspect-resource;world-selection;entity-hierarchy;list-resources";
 		return response;
@@ -2989,7 +2989,7 @@ class RST_WorkbenchState : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchStateResponse response = new RST_WorkbenchStateResponse();
-	response.bridgeVersion = "1.8.0";
+	response.bridgeVersion = "1.9.0";
 		response.protocolVersion = 1;
 		response.mode = "workbench";
 		response.playSession = "unavailable";
@@ -3177,7 +3177,7 @@ class RST_WorkbenchProjectContext : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchProjectContextResponse response = new RST_WorkbenchProjectContextResponse();
-		response.bridgeVersion = "1.8.0";
+		response.bridgeVersion = "1.9.0";
 		response.protocolVersion = 1;
 		array<string> addonGuids = new array<string>();
 		GameProject.GetLoadedAddons(addonGuids);
@@ -3283,7 +3283,7 @@ class RST_WorkbenchWorldSelection : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchWorldSelectionResponse response = new RST_WorkbenchWorldSelectionResponse();
-		response.bridgeVersion = "1.8.0";
+		response.bridgeVersion = "1.9.0";
 		response.protocolVersion = 1;
 		WorldEditor worldEditor = Workbench.GetModule(WorldEditor);
 		if (!worldEditor)
@@ -3357,7 +3357,7 @@ class RST_WorkbenchSelectedEntityHierarchy : NetApiHandler
 	{
 		RST_WorkbenchSelectedEntityHierarchyRequest typedRequest = RST_WorkbenchSelectedEntityHierarchyRequest.Cast(request);
 		RST_WorkbenchSelectedEntityHierarchyResponse response = new RST_WorkbenchSelectedEntityHierarchyResponse();
-		response.bridgeVersion = "1.8.0";
+		response.bridgeVersion = "1.9.0";
 		response.protocolVersion = 1;
 		WorldEditor worldEditor = Workbench.GetModule(WorldEditor);
 		if (!worldEditor)
@@ -3440,7 +3440,7 @@ class RST_WorkbenchListResources : NetApiHandler
 	{
 		RST_WorkbenchListResourcesRequest typedRequest = RST_WorkbenchListResourcesRequest.Cast(request);
 		RST_WorkbenchListResourcesResponse response = new RST_WorkbenchListResourcesResponse();
-		response.bridgeVersion = "1.7.0";
+		response.bridgeVersion = "1.9.0";
 		response.protocolVersion = 1;
 		array<string> addonGuids = new array<string>();
 		GameProject.GetLoadedAddons(addonGuids);
@@ -3534,6 +3534,22 @@ mod tests {
             "0x0000000000000001|One|0|1;0x0000000000000002|Two|0|2"
         )
         .is_err());
+    }
+
+    #[test]
+    fn versioned_bridge_handlers_report_the_manifest_version() {
+        let expected = format!(
+            "response.bridgeVersion = \"{}\"",
+            super::WORKBENCH_BRIDGE_VERSION
+        );
+        for (name, source) in super::bridge_payload() {
+            if source.contains("bridgeVersion") {
+                assert!(
+                    source.contains(&expected),
+                    "{name} must report the manifest version"
+                );
+            }
+        }
     }
 
     #[test]
