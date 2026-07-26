@@ -2357,11 +2357,11 @@ fn reload_verification_since(
     file.read_to_string(&mut text)?;
     let lines = text.lines().map(str::to_string).collect::<Vec<_>>();
     let required_markers = [
-        "SCRIPT        : Reloading game scripts",
+        "Reloading game scripts",
+        "Script validation",
         "Compiling GameLib scripts",
         "Compiling Game scripts",
-        "Module: WorkbenchGame; loaded",
-        "PROFILING: Reloading game scripts took",
+        "Module: Game; loaded",
     ];
     let mut next_marker = 0;
     let mut matched = Vec::new();
@@ -3960,7 +3960,7 @@ mod tests {
         let path = root.join("console.log");
         fs::write(
             &path,
-            "SCRIPT        : Reloading game scripts\nCompiling GameLib scripts\nCompiling Game scripts\nModule: WorkbenchGame; loaded 171x files\nPROFILING: Reloading game scripts took: 12 ms\n",
+            "SCRIPT        : Reloading game scripts\nSCRIPT        : Script validation\nSCRIPT        : Compiling GameLib scripts\nSCRIPT        : Compiling Game scripts\nModule: Game; loaded 171x files\n",
         )
         .unwrap();
         let cursor = super::log_cursor(&path).unwrap();
@@ -3968,7 +3968,7 @@ mod tests {
         fs::write(
             &path,
             format!(
-                "{}Game destroyed.\nSCRIPT        : Reloading game scripts\nCompiling GameLib scripts\nCompiling Game scripts\nModule: WorkbenchGame; loaded 171x files\nPROFILING: Reloading game scripts took: 12000 ms\n",
+                "{}Game destroyed.\nSCRIPT        : Reloading game scripts\nSCRIPT        : Script validation\nSCRIPT        : Compiling GameLib scripts\nSCRIPT        : Compiling Game scripts\nModule: Game; loaded 171x files\n",
                 fs::read_to_string(&path).unwrap()
             ),
         )
@@ -3980,7 +3980,7 @@ mod tests {
         assert_eq!(verification.path, path);
         assert_eq!(verification.lines.len(), 5);
         assert!(verification.lines[0].contains("Reloading game scripts"));
-        assert!(verification.lines[4].contains("took: 12000 ms"));
+        assert!(verification.lines[4].contains("Module: Game; loaded"));
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -3991,14 +3991,14 @@ mod tests {
         let path = root.join("console.log");
         fs::write(
             &path,
-            "SCRIPT        : Reloading game scripts\nCompiling GameLib scripts\nCompiling Game scripts\nModule: WorkbenchGame; loaded 171x files\nPROFILING: Reloading game scripts took: 12 ms\n",
+            "SCRIPT        : Reloading game scripts\nSCRIPT        : Script validation\nSCRIPT        : Compiling GameLib scripts\nSCRIPT        : Compiling Game scripts\nModule: Game; loaded 171x files\n",
         )
         .unwrap();
         let cursor = super::log_cursor(&path).unwrap();
         fs::write(
             &path,
             format!(
-                "{}SCRIPT        : Reloading game scripts\nCompiling GameLib scripts\n",
+                "{}SCRIPT        : Reloading game scripts\nSCRIPT        : Script validation\n",
                 fs::read_to_string(&path).unwrap()
             ),
         )
@@ -4011,7 +4011,7 @@ mod tests {
         fs::rename(&path, &rotated).unwrap();
         fs::write(
             &path,
-            "SCRIPT        : Reloading game scripts\nCompiling GameLib scripts\nCompiling Game scripts\nModule: WorkbenchGame; loaded 171x files\nPROFILING: Reloading game scripts took: 12 ms\n",
+            "SCRIPT        : Reloading game scripts\nSCRIPT        : Script validation\nSCRIPT        : Compiling GameLib scripts\nSCRIPT        : Compiling Game scripts\nModule: Game; loaded 171x files\n",
         )
         .unwrap();
         assert!(super::reload_verification_since(&path, Some(&cursor))
