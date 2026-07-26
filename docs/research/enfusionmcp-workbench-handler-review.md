@@ -9,6 +9,44 @@ them through Workbench's TCP NET API. It is not a registered
 `WorkbenchPlugin` or `WorkbenchTool`. Its TypeScript tests mock TCP; they do
 not prove the scripts compile or work in a live Workbench session.
 
+## enfusion-mcp-BK feature inventory
+
+This separate snapshot records the public `main` branch of
+[`steffenbk/enfusion-mcp-BK`](https://github.com/steffenbk/enfusion-mcp-BK)
+at commit
+[`3eecd8f8a35e44d8c8ff055fae0b1f6c8ee31739`](https://github.com/steffenbk/enfusion-mcp-BK/commit/3eecd8f8a35e44d8c8ff055fae0b1f6c8ee31739),
+reviewed on 2026-07-26. It distinguishes the local Node MCP host from the
+Enforce Script handlers it injects into a mod. This is feature discovery from
+external source, not Reforger implementation authority or an adoption list.
+
+### Local MCP host features
+
+The host is a separate Node process using MCP stdio. It owns tool registration,
+local data/file access, generated artifacts, and Workbench process/TCP
+orchestration. The entries below are host capabilities; they do not by
+themselves run inside Workbench.
+
+| Host feature group | Exposed tools or behavior | Effect boundary |
+| --- | --- | --- |
+| API and documentation research | `api_search`, `component_search`, `wiki_search`, `wiki_read`, and `wb_knowledge` search its packaged indexes, wiki corpus, and knowledge base. | Read-only local packaged data; source freshness and authority are external-project concerns. |
+| Base-game inspection | `game_browse`, `game_read`, `asset_search`, and `prefab_inspect` inspect loose game files and `.pak` archives. | Read-only game-data access. |
+| Project-file access | `project_browse`/`project_read` and `project_write` read and write the configured project directory. | Direct filesystem mutation is possible through the write tool. |
+| Addon and artifact generation | `mod_create`, `script_create`, `prefab_create`, `layout_create`, `config_create`, `scenario_create`, `animation_graph`, and `server_config` generate or scaffold mod content. | Creates or overwrites project files. |
+| Local project checks and build | `mod_validate`, `mod_build`, and `workshop_info` validate project content, invoke the Workbench build executable, or read `.gproj` metadata. | Build starts an external local process; validation/metadata reading are local. |
+| Guided workflows and MCP resources | `/create-mod`, `/modify-mod`, and `enfusion://class`, `enfusion://pattern`, and `enfusion://group` provide workflow prompts and read-only resources. | No Workbench connection required. |
+| Workbench bridge lifecycle | `wb_launch`, `wb_connect`, `wb_diagnose`, `wb_reload`, and `wb_cleanup` install/remove handlers, start Workbench, and manage its NET API connection. | Writes/removes handler scripts in the target mod and starts or contacts a separate Workbench process. |
+
+The package configuration defaults its Workbench connection to
+`127.0.0.1:5775`, while allowing the host and port to be configured. Its
+optional remote scraper fetches API documentation from a third-party Doxygen
+mirror during index generation; ordinary MCP stdio serving is local.
+
+### Injected Workbench-handler features
+
+The following is the separate feature set implemented by the `EMCP_WB_*`
+Enforce Script handlers. The local MCP host wraps these handlers as `wb_*`
+tools, but Workbench owns their execution and live-editor facts.
+
 ## Design lessons
 
 The source demonstrates that custom handlers can cover useful project,
@@ -23,7 +61,7 @@ Do not copy its generic capability claims, raw handler dispatch, menu-label
 fallbacks, or unchecked success mapping. Use this record only to discover
 candidate capability groups for the typed Gateway and handler package.
 
-## Handler inventory
+## Workbench-handler inventory
 
 | Handler | Request fields | Source-implemented feature | Material limit or mismatch |
 | --- | --- | --- | --- |
