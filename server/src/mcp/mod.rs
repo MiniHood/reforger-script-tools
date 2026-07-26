@@ -25,8 +25,8 @@ use crate::official_wiki::{
 use crate::workbench::{
     WorkbenchBridgeInstallResult, WorkbenchController, WorkbenchControllerOptions,
     WorkbenchFailure, WorkbenchFailureCode, WorkbenchInstallAuthorization, WorkbenchLiveState,
-    WorkbenchLogRead, WorkbenchOverview, WorkbenchProcessResult, WorkbenchScriptActivationResult,
-    WorkbenchValidationPage,
+    WorkbenchLogRead, WorkbenchOpenWorldResult, WorkbenchOverview, WorkbenchPlaySessionResult,
+    WorkbenchProcessResult, WorkbenchScriptActivationResult, WorkbenchValidationPage,
 };
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, ContentBlock, Implementation, ListToolsResult,
@@ -56,6 +56,9 @@ pub const WORKBENCH_STATUS_TOOL_NAME: &str = "workbench_status";
 pub const WORKBENCH_VALIDATE_SCRIPTS_TOOL_NAME: &str = "workbench_validate_scripts";
 pub const WORKBENCH_INSTALL_BRIDGE_TOOL_NAME: &str = "workbench_install_bridge";
 pub const WORKBENCH_STATE_TOOL_NAME: &str = "workbench_state";
+pub const WORKBENCH_OPEN_WORLD_TOOL_NAME: &str = "workbench_open_world";
+pub const WORKBENCH_START_PLAY_SESSION_TOOL_NAME: &str = "workbench_start_play_session";
+pub const WORKBENCH_STOP_PLAY_SESSION_TOOL_NAME: &str = "workbench_stop_play_session";
 pub const WORKBENCH_RELOAD_TOOL_NAME: &str = "workbench_reload";
 pub const WORKBENCH_READ_LOGS_TOOL_NAME: &str = "workbench_read_logs";
 pub const WORKBENCH_LAUNCH_TOOL_NAME: &str = "workbench_launch";
@@ -85,6 +88,9 @@ const WORKBENCH_VALIDATE_SCRIPTS_DESCRIPTION: &str = "Validate the currently loa
 const WORKBENCH_INSTALL_BRIDGE_DESCRIPTION: &str = "Maintain the versioned Reforger Script Tools handler package after the VS Code extension has recorded first-install consent and compile it through the connected native NET API. A newly written profile handler package becomes available after the user refreshes Workbench; the installer deliberately does not probe the handler before that refresh. If no managed manifest exists, this tool returns workbench_installation_consent_required without writing profile files.";
 const WORKBENCH_STATE_DESCRIPTION: &str =
     "Read bounded live editor state from the compatible managed Workbench handler package.";
+const WORKBENCH_OPEN_WORLD_DESCRIPTION: &str = "Open one typed World Editor world through the compatible managed Workbench handler package without restarting Workbench.";
+const WORKBENCH_START_PLAY_SESSION_DESCRIPTION: &str = "Explicitly request that World Editor starts a play session. Acceptance confirms the command was issued, not that a world has finished loading.";
+const WORKBENCH_STOP_PLAY_SESSION_DESCRIPTION: &str = "Explicitly request that World Editor returns to edit mode. This is distinct from stopping the Workbench process.";
 const WORKBENCH_RELOAD_DESCRIPTION: &str = "Explicitly focus the one confirmed Workbench window, send only Ctrl+Shift+R, and wait up to 60 seconds for its console log to confirm the full script reload. This fails closed if Workbench focus or the reload evidence cannot be confirmed; it never sends arbitrary keys.";
 const WORKBENCH_READ_LOGS_DESCRIPTION: &str = "Read a bounded tail from either the integration support log or the latest known Workbench console log. Arbitrary paths are not accepted.";
 const WORKBENCH_LAUNCH_DESCRIPTION: &str = "Explicitly launch the discovered Workbench executable from its normal Steam working directory, or reuse the exact existing Workbench process. Returns success only after bounded native NET API readiness and never chooses a project.";
@@ -127,6 +133,20 @@ impl McpWorkbenchLogSource {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct McpWorkbenchProcessInput {
     process_id: u32,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct McpWorkbenchOpenWorldInput {
+    #[schemars(length(min = 1, max = 1024))]
+    world_path: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct McpWorkbenchStartPlaySessionInput {
+    debug_mode: Option<bool>,
+    full_screen: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -963,6 +983,9 @@ impl ServerHandler for ReforgerMcpServer {
             workbench_validate_scripts_tool(),
             workbench_install_bridge_tool(),
             workbench_state_tool(),
+            workbench_open_world_tool(),
+            workbench_start_play_session_tool(),
+            workbench_stop_play_session_tool(),
             workbench_reload_tool(),
             workbench_read_logs_tool(),
             workbench_launch_tool(),
@@ -989,6 +1012,9 @@ impl ServerHandler for ReforgerMcpServer {
             WORKBENCH_VALIDATE_SCRIPTS_TOOL_NAME => Some(workbench_validate_scripts_tool()),
             WORKBENCH_INSTALL_BRIDGE_TOOL_NAME => Some(workbench_install_bridge_tool()),
             WORKBENCH_STATE_TOOL_NAME => Some(workbench_state_tool()),
+            WORKBENCH_OPEN_WORLD_TOOL_NAME => Some(workbench_open_world_tool()),
+            WORKBENCH_START_PLAY_SESSION_TOOL_NAME => Some(workbench_start_play_session_tool()),
+            WORKBENCH_STOP_PLAY_SESSION_TOOL_NAME => Some(workbench_stop_play_session_tool()),
             WORKBENCH_RELOAD_TOOL_NAME => Some(workbench_reload_tool()),
             WORKBENCH_READ_LOGS_TOOL_NAME => Some(workbench_read_logs_tool()),
             WORKBENCH_LAUNCH_TOOL_NAME => Some(workbench_launch_tool()),
@@ -1026,6 +1052,59 @@ impl ServerHandler for ReforgerMcpServer {
                     .state()
                     .map_err(|failure| workbench.correlate_failure("state", failure))
             })
+            .await;
+        }
+        if request.name == WORKBENCH_OPEN_WORLD_TOOL_NAME {
+            let input = parse_workbench_input::<McpWorkbenchOpenWorldInput>(&request)?;
+            let workbench = self.workbench.clone();
+            return blocking_workbench_call(
+                self.admission.clone(),
+                context,
+                "open_world",
+                move || {
+                    workbench
+                        .open_world(&input.world_path)
+                        .map_err(|failure| workbench.correlate_failure("open_world", failure))
+                },
+            )
+            .await;
+        }
+        if request.name == WORKBENCH_START_PLAY_SESSION_TOOL_NAME {
+            let input = parse_workbench_input::<McpWorkbenchStartPlaySessionInput>(&request)?;
+            let workbench = self.workbench.clone();
+            return blocking_workbench_call(
+                self.admission.clone(),
+                context,
+                "start_play_session",
+                move || {
+                    workbench
+                        .set_play_session(
+                            true,
+                            input.debug_mode.unwrap_or(false),
+                            input.full_screen.unwrap_or(false),
+                        )
+                        .map_err(|failure| {
+                            workbench.correlate_failure("start_play_session", failure)
+                        })
+                },
+            )
+            .await;
+        }
+        if request.name == WORKBENCH_STOP_PLAY_SESSION_TOOL_NAME {
+            require_empty_tool_request(&request, WORKBENCH_STOP_PLAY_SESSION_TOOL_NAME)?;
+            let workbench = self.workbench.clone();
+            return blocking_workbench_call(
+                self.admission.clone(),
+                context,
+                "stop_play_session",
+                move || {
+                    workbench
+                        .set_play_session(false, false, false)
+                        .map_err(|failure| {
+                            workbench.correlate_failure("stop_play_session", failure)
+                        })
+                },
+            )
             .await;
         }
         if request.name == WORKBENCH_RELOAD_TOOL_NAME {
@@ -1736,6 +1815,9 @@ Copy a hit's `inspectInput` unchanged to `inspect_game_data_symbol`, or its `rea
     for tool in [
         workbench_install_bridge_tool(),
         workbench_state_tool(),
+        workbench_open_world_tool(),
+        workbench_start_play_session_tool(),
+        workbench_stop_play_session_tool(),
         workbench_reload_tool(),
         workbench_read_logs_tool(),
         workbench_launch_tool(),
@@ -2041,6 +2123,45 @@ fn workbench_state_tool() -> Tool {
     )
 }
 
+fn workbench_open_world_tool() -> Tool {
+    workbench_input_tool::<McpWorkbenchOpenWorldInput, WorkbenchOpenWorldResult>(
+        WORKBENCH_OPEN_WORLD_TOOL_NAME,
+        WORKBENCH_OPEN_WORLD_DESCRIPTION,
+        "Open Workbench world",
+        ToolAnnotations::with_title("Open Workbench world")
+            .read_only(false)
+            .destructive(false)
+            .idempotent(true)
+            .open_world(false),
+    )
+}
+
+fn workbench_start_play_session_tool() -> Tool {
+    workbench_input_tool::<McpWorkbenchStartPlaySessionInput, WorkbenchPlaySessionResult>(
+        WORKBENCH_START_PLAY_SESSION_TOOL_NAME,
+        WORKBENCH_START_PLAY_SESSION_DESCRIPTION,
+        "Start Workbench play session",
+        ToolAnnotations::with_title("Start Workbench play session")
+            .read_only(false)
+            .destructive(false)
+            .idempotent(false)
+            .open_world(false),
+    )
+}
+
+fn workbench_stop_play_session_tool() -> Tool {
+    workbench_empty_tool::<WorkbenchPlaySessionResult>(
+        WORKBENCH_STOP_PLAY_SESSION_TOOL_NAME,
+        WORKBENCH_STOP_PLAY_SESSION_DESCRIPTION,
+        "Stop Workbench play session",
+        ToolAnnotations::with_title("Stop Workbench play session")
+            .read_only(false)
+            .destructive(false)
+            .idempotent(false)
+            .open_world(false),
+    )
+}
+
 fn workbench_reload_tool() -> Tool {
     workbench_empty_tool::<WorkbenchScriptActivationResult>(
         WORKBENCH_RELOAD_TOOL_NAME,
@@ -2198,10 +2319,12 @@ fn tool_error(code: &str, cause: &str, recovery: &str) -> CallToolResult {
 mod tests {
     use super::{
         game_data_status_tool, inspect_game_data_symbol_tool, render_api_reference,
-        workbench_install_bridge_tool, workbench_reload_tool, workbench_status_tool,
+        workbench_install_bridge_tool, workbench_open_world_tool, workbench_reload_tool,
+        workbench_start_play_session_tool, workbench_status_tool, workbench_stop_play_session_tool,
         workbench_validate_scripts_tool, DEADLINE_EXCEEDED_CODE, GAME_DATA_STATUS_TOOL_NAME,
-        RESPONSE_TOO_LARGE_CODE, WORKBENCH_RELOAD_TOOL_NAME, WORKBENCH_STATUS_TOOL_NAME,
-        WORKBENCH_VALIDATE_SCRIPTS_TOOL_NAME,
+        RESPONSE_TOO_LARGE_CODE, WORKBENCH_OPEN_WORLD_TOOL_NAME, WORKBENCH_RELOAD_TOOL_NAME,
+        WORKBENCH_START_PLAY_SESSION_TOOL_NAME, WORKBENCH_STATUS_TOOL_NAME,
+        WORKBENCH_STOP_PLAY_SESSION_TOOL_NAME, WORKBENCH_VALIDATE_SCRIPTS_TOOL_NAME,
     };
     use serde_json::Value;
 
@@ -2260,9 +2383,16 @@ mod tests {
         let validation = workbench_validate_scripts_tool();
         let install = workbench_install_bridge_tool();
         let reload = workbench_reload_tool();
+        let open_world = workbench_open_world_tool();
+        let start_play = workbench_start_play_session_tool();
+        let stop_play = workbench_stop_play_session_tool();
         assert_eq!(status.name, WORKBENCH_STATUS_TOOL_NAME);
         assert_eq!(validation.name, WORKBENCH_VALIDATE_SCRIPTS_TOOL_NAME);
         assert_eq!(reload.name, WORKBENCH_RELOAD_TOOL_NAME);
+        assert_eq!(open_world.name, WORKBENCH_OPEN_WORLD_TOOL_NAME);
+        assert_eq!(start_play.name, WORKBENCH_START_PLAY_SESSION_TOOL_NAME);
+        assert_eq!(stop_play.name, WORKBENCH_STOP_PLAY_SESSION_TOOL_NAME);
+        assert_ne!(stop_play.name, "workbench_stop");
         assert_eq!(
             status
                 .annotations

@@ -103,7 +103,7 @@ pub struct WorkbenchGateway {
     request_lock: Arc<Mutex<()>>,
 }
 
-pub const WORKBENCH_BRIDGE_VERSION: &str = "1.1.0";
+pub const WORKBENCH_BRIDGE_VERSION: &str = "1.2.0";
 pub const WORKBENCH_BRIDGE_PROTOCOL_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -209,6 +209,20 @@ pub struct WorkbenchScriptActivationResult {
     pub reload_verified: bool,
     pub log_path: PathBuf,
     pub verification_lines: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkbenchOpenWorldResult {
+    pub opened: bool,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkbenchPlaySessionResult {
+    pub accepted: bool,
+    pub status: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
@@ -653,6 +667,85 @@ impl WorkbenchController {
             }),
         );
         Ok(state)
+    }
+
+    pub fn open_world(
+        &self,
+        world_path: &str,
+    ) -> Result<WorkbenchOpenWorldResult, WorkbenchFailure> {
+        let started = Instant::now();
+        if world_path.trim().is_empty() {
+            return Err(self.correlate_failure_details(
+                "open_world",
+                "world-path-required",
+                failure(WorkbenchFailureCode::Protocol),
+                json!({}),
+            ));
+        }
+        let value = self
+            .gateway
+            .request(
+                json!({"APIFunc": "RST_WorkbenchOpenWorld", "worldPath": world_path}),
+                self.options.gateway.status_deadline,
+            )
+            .map_err(|failure| {
+                self.correlate_failure_details(
+                    "open_world",
+                    failure_code(failure.code),
+                    failure,
+                    json!({"handler": "RST_WorkbenchOpenWorld"}),
+                )
+            })?;
+        let result: WorkbenchOpenWorldResult = serde_json::from_value(value).map_err(|_| {
+            self.correlate_failure_details(
+                "open_world",
+                "workbench_protocol_error",
+                failure(WorkbenchFailureCode::Protocol),
+                json!({"handler": "RST_WorkbenchOpenWorld"}),
+            )
+        })?;
+        self.log_event_timed(
+            "open-world",
+            &result.status,
+            started,
+            json!({"opened": result.opened}),
+        );
+        Ok(result)
+    }
+
+    pub fn set_play_session(
+        &self,
+        start: bool,
+        debug_mode: bool,
+        full_screen: bool,
+    ) -> Result<WorkbenchPlaySessionResult, WorkbenchFailure> {
+        let started = Instant::now();
+        let operation = if start {
+            "start_play_session"
+        } else {
+            "stop_play_session"
+        };
+        let value = self.gateway.request(
+            json!({"APIFunc": "RST_WorkbenchPlaySession", "start": start, "debugMode": debug_mode, "fullScreen": full_screen}),
+            self.options.gateway.status_deadline,
+        ).map_err(|failure| self.correlate_failure_details(
+            operation, failure_code(failure.code), failure, json!({"handler": "RST_WorkbenchPlaySession"}),
+        ))?;
+        let result: WorkbenchPlaySessionResult = serde_json::from_value(value).map_err(|_| {
+            self.correlate_failure_details(
+                operation,
+                "workbench_protocol_error",
+                failure(WorkbenchFailureCode::Protocol),
+                json!({"handler": "RST_WorkbenchPlaySession"}),
+            )
+        })?;
+        self.log_event_timed(
+            operation,
+            &result.status,
+            started,
+            json!({"accepted": result.accepted}),
+        );
+        Ok(result)
     }
 
     /// Perform the one intentional keyboard automation supported by the Workbench bridge.
@@ -2241,6 +2334,7 @@ fn bridge_payload() -> &'static [(&'static str, &'static str)] {
         ("RST_WorkbenchCapabilities.c", BRIDGE_CAPABILITIES_SOURCE),
         ("RST_WorkbenchState.c", BRIDGE_STATE_SOURCE),
         ("RST_WorkbenchOpenWorld.c", BRIDGE_OPEN_WORLD_SOURCE),
+        ("RST_WorkbenchPlaySession.c", BRIDGE_PLAY_SESSION_SOURCE),
     ]
 }
 
@@ -2275,9 +2369,9 @@ class RST_WorkbenchCapabilities : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchCapabilitiesResponse response = new RST_WorkbenchCapabilitiesResponse();
-		response.bridgeVersion = "1.1.0";
+		response.bridgeVersion = "1.2.0";
 	response.protocolVersion = 1;
-	response.capabilities = "state;open-world";
+	response.capabilities = "state;open-world;play-session";
 		return response;
 	}
 }
@@ -2320,7 +2414,7 @@ class RST_WorkbenchState : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchStateResponse response = new RST_WorkbenchStateResponse();
-	response.bridgeVersion = "1.1.0";
+		response.bridgeVersion = "1.2.0";
 		response.protocolVersion = 1;
 		response.mode = "workbench";
 		response.playSession = "unavailable";
@@ -2407,6 +2501,70 @@ class RST_WorkbenchOpenWorld : NetApiHandler
 			response.status = "opened";
 		else
 			response.status = "open-failed";
+		return response;
+	}
+}
+#endif
+"#;
+
+const BRIDGE_PLAY_SESSION_SOURCE: &str = r#"#ifdef WORKBENCH
+class RST_WorkbenchPlaySessionRequest : JsonApiStruct
+{
+	bool start;
+	bool debugMode;
+	bool fullScreen;
+
+	void RST_WorkbenchPlaySessionRequest()
+	{
+		RegAll();
+	}
+}
+
+class RST_WorkbenchPlaySessionResponse : JsonApiStruct
+{
+	bool accepted;
+	string status;
+
+	void RST_WorkbenchPlaySessionResponse()
+	{
+		RegAll();
+	}
+}
+
+class RST_WorkbenchPlaySession : NetApiHandler
+{
+	override JsonApiStruct GetRequest()
+	{
+		return new RST_WorkbenchPlaySessionRequest();
+	}
+
+	override JsonApiStruct GetResponse(JsonApiStruct request)
+	{
+		RST_WorkbenchPlaySessionRequest typedRequest = RST_WorkbenchPlaySessionRequest.Cast(request);
+		RST_WorkbenchPlaySessionResponse response = new RST_WorkbenchPlaySessionResponse();
+		WorldEditor worldEditor = Workbench.GetModule(WorldEditor);
+		if (!worldEditor)
+		{
+			response.status = "world-editor-unavailable";
+			return response;
+		}
+
+		if (typedRequest.start)
+		{
+			if (!worldEditor.GetApi())
+			{
+				response.status = "play-session-already-running";
+				return response;
+			}
+			worldEditor.SwitchToGameMode(typedRequest.debugMode, typedRequest.fullScreen);
+			response.status = "play-started";
+		}
+		else
+		{
+			worldEditor.SwitchToEditMode();
+			response.status = "play-stopped";
+		}
+		response.accepted = true;
 		return response;
 	}
 }
