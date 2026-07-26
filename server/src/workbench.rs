@@ -272,7 +272,6 @@ impl WorkbenchController {
             if bridge.installed {
                 bridge = self.maintain_existing_bridge(&paths.bridge_directory);
             } else {
-                bridge = self.active_bridge_status(&paths.bridge_directory, false);
                 bridge.installation_available = paths.profile.is_dir();
             }
         }
@@ -1048,19 +1047,17 @@ impl WorkbenchController {
         if repaired {
             let _ = self.gateway.validate_scripts();
         }
-        let status = self.active_bridge_status(bridge_directory, true);
+        // A missing custom NET API function is logged by Workbench as an error.
+        // Maintenance and diagnosis must therefore never probe an unregistered
+        // handler. Explicit custom operations remain responsible for their own
+        // availability result.
+        let status = self.bridge_disk_status(bridge_directory);
         self.log_event_timed(
             "maintenance",
-            if status.activation_required {
-                "activation-pending"
-            } else if status.compatible {
-                if repaired {
-                    "updated"
-                } else {
-                    "current"
-                }
+            if repaired {
+                "updated-reload-required"
             } else {
-                "incompatible"
+                "activation-pending"
             },
             started,
             json!({
@@ -2658,57 +2655,20 @@ mod tests {
     }
 
     #[test]
-    fn later_connection_retries_one_pending_activation_and_verifies_the_handshake() {
+    fn maintenance_does_not_probe_an_unregistered_handler() {
         let root = test_root("activation-retry");
         let bridge = root.join("bridge");
-        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let peer = thread::spawn(move || {
-            for (expected, response) in [
-                (
-                    json!({"APIFunc":"RST_WorkbenchCapabilities"}),
-                    json!({"bridgeVersion":"0.9.0","protocolVersion":1,"capabilities":"state;reload"}),
-                ),
-                (
-                    json!({"APIFunc":"ValidateScripts","Configuration":"WORKBENCH"}),
-                    json!({"Success":true,"Errors":[],"Warnings":[]}),
-                ),
-                (
-                    json!({"APIFunc":"RST_WorkbenchCapabilities"}),
-                    json!({"bridgeVersion":"1.0.0","protocolVersion":1,"capabilities":"state;reload"}),
-                ),
-            ] {
-                let (mut stream, _) = listener.accept().unwrap();
-                let mut version = [0_u8; 4];
-                stream.read_exact(&mut version).unwrap();
-                assert_eq!(i32::from_le_bytes(version), 1);
-                assert_eq!(read_string(&mut stream), "ReforgerScriptTools");
-                assert_eq!(read_string(&mut stream), "JsonRPC");
-                let request: Value = serde_json::from_str(&read_string(&mut stream)).unwrap();
-                assert_eq!(request, expected);
-                write_string(&mut stream, "Ok");
-                write_string(&mut stream, &response.to_string());
-            }
-        });
-        let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
-            gateway: super::WorkbenchGatewayOptions {
-                port,
-                status_deadline: Duration::from_secs(1),
-                validation_deadline: Duration::from_secs(1),
-                ..super::WorkbenchGatewayOptions::default()
-            },
-            ..super::WorkbenchControllerOptions::default()
-        });
+        let controller =
+            super::WorkbenchController::new(super::WorkbenchControllerOptions::default());
         controller.write_managed_files(&bridge).unwrap();
 
         let status = controller.maintain_existing_bridge(&bridge);
 
-        assert_eq!(status.active_version.as_deref(), Some("1.0.0"));
-        assert_eq!(status.protocol_version, Some(1));
-        assert!(status.compatible);
-        assert!(!status.activation_required);
-        assert_eq!(status.capabilities, ["state", "reload"]);
-        peer.join().unwrap();
+        assert_eq!(status.active_version, None);
+        assert_eq!(status.protocol_version, None);
+        assert!(!status.compatible);
+        assert!(status.activation_required);
+        assert!(status.capabilities.is_empty());
         fs::remove_dir_all(root).unwrap();
     }
 

@@ -99,8 +99,9 @@ activation failure does not roll back the installed files.
 
 Installed package precedence is compared as semantic versions. A version that
 cannot be parsed is conservatively preserved rather than overwritten. An
-installed-versus-active version or protocol mismatch remains pending and gets
-one validation-and-handshake retry on a later successful connection.
+installed package remains activation-pending until an explicit custom operation
+can establish handler availability; ordinary connection/status maintenance does
+not retry the handshake because Workbench logs a missing handler as an error.
 
 Lifecycle process actions are deliberately narrow. Launch is an explicit,
 idempotent tool, starts the executable from Steam's documented `Workbench\`

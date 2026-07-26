@@ -69,7 +69,9 @@ repair or upgrade only manifest-owned files. Writing that profile package and
 running native compiler validation does not register its `NetApiHandler`s in
 the already-running Workbench; the extension reports successful installation
 and asks the user to refresh Workbench with `Ctrl+Shift+R`. It deliberately
-does not probe the just-written capability handler before that refresh.
+does not probe a capability handler during installation, maintenance, or
+status diagnosis: Workbench logs a missing handler as an error. Only an
+explicit custom operation may test its own handler availability.
 When no consent manifest exists, status reports installation as available only
 if the existing profile and native connection make the approval-bearing
 operation usable; status itself creates nothing.
