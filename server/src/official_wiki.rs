@@ -546,7 +546,7 @@ fn packaged_root() -> Option<PathBuf> {
                 .parent()?
                 .parent()?
                 .parent()
-                .map(|root| root.join("resources").join("official-wiki"))
+                .map(|root| root.join("data").join("official-wiki"))
         })
 }
 

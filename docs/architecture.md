@@ -73,7 +73,7 @@ a losing writer may keep its in-memory index only after validating the winner.
 Legacy cache formats that cannot prove the current source-byte digest rebuild
 from source instead of being relabelled as current.
 
-`official_wiki_status` independently locates `resources/official-wiki` from
+`official_wiki_status` independently locates `data/official-wiki` from
 the packaged executable rather than the process working directory. The
 Official Wiki corpus directly validates its Markdown source of truth, retains
 bounded integrity and navigation facts, derives an immutable corpus revision,

@@ -81,7 +81,7 @@ contract; standard `tools/list` remains authoritative at runtime.
 
 ## Official Wiki Corpus
 
-`resources/official-wiki/` contains copied Markdown from the official Arma
+`data/official-wiki/` contains copied Markdown from the official Arma
 Reforger pages on `community.bistudio.com`. It remains the packaged source of
 truth for the MCP Official Wiki authority; preserve each page's canonical
 source URL in its H1 when updating it. Before redistributing an updated corpus,

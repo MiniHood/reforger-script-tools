@@ -23,8 +23,8 @@ try {
   mkdirSync(gameDataScripts, { recursive: true });
   writeFileSync(join(gameDataScripts, 'PackagedFixture.c'), 'class PackagedFixture {}\n');
 
-  const sourcePages = markdownFiles(join(root, 'resources', 'official-wiki'));
-  const installedPages = markdownFiles(join(installed, 'extension', 'resources', 'official-wiki'));
+  const sourcePages = markdownFiles(join(root, 'data', 'official-wiki'));
+  const installedPages = markdownFiles(join(installed, 'extension', 'data', 'official-wiki'));
   if (JSON.stringify(Object.keys(sourcePages)) !== JSON.stringify(Object.keys(installedPages)) || Object.keys(sourcePages).some(path => !sourcePages[path].equals(installedPages[path]))) {
     throw new Error('The VSIX Official Wiki Corpus differs from the authoritative source tree.');
   }

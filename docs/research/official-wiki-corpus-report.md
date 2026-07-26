@@ -12,7 +12,7 @@ selected:
 
 ```powershell
 server/target/release/reforger_language_server.exe mcp `
-  --official-wiki-root resources/official-wiki
+  --official-wiki-root data/official-wiki
 ```
 
 The MCP client initialized the server, then called `official_wiki_status`,
@@ -42,7 +42,7 @@ Workbench workflows, but it is not a complete game-data or API reference.
 
 The logical paths are copied Markdown whose headings retain a canonical source
 URL.  For example, the multiplayer guide is
-[`Modding/Scripting/Tutorials/Multiplayer Scripting.md`](../../resources/official-wiki/Modding/Scripting/Tutorials/Multiplayer%20Scripting.md),
+[`Modding/Scripting/Tutorials/Multiplayer Scripting.md`](../../data/official-wiki/Modding/Scripting/Tutorials/Multiplayer%20Scripting.md),
 whose canonical source is
 [Arma Reforger: Multiplayer Scripting](https://community.bistudio.com/wiki/Arma_Reforger:Multiplayer_Scripting).
 
@@ -53,7 +53,7 @@ read handoffs rather than only titles or unbounded pages.
 
 | Query | Result | Why it is useful |
 | --- | --- | --- |
-| `script profiling` | 6 matching sections; the first is the exact-title page [`Modding/Script Profiling.md`](../../resources/official-wiki/Modding/Script%20Profiling.md) at lines 1-4 | Finds a focused operational guide and separates its profiler and allocation sections. |
+| `script profiling` | 6 matching sections; the first is the exact-title page [`Modding/Script Profiling.md`](../../data/official-wiki/Modding/Script%20Profiling.md) at lines 1-4 | Finds a focused operational guide and separates its profiler and allocation sections. |
 | `Game Master` with `pathPrefix: "Modding/"` | 134 matching sections; the leading result is the Game Master composition tutorial | Constrains a broad topic to the modding subtree and returns actionable prefab/configuration passages. |
 | `replication` | 31 matching sections; first hit is **Replication**, lines 53-62 of the multiplayer guide | Finds networking concepts at the relevant heading, plus the exact source range. |
 

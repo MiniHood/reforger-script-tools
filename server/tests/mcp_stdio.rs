@@ -1598,7 +1598,7 @@ fn official_wiki_status_resolves_resources_from_an_installed_extension_layout() 
         .join("server")
         .join("test-platform")
         .join("reforger_language_server.exe");
-    let wiki_root = extension.join("resources").join("official-wiki");
+    let wiki_root = extension.join("data").join("official-wiki");
     fs::create_dir_all(runtime.parent().expect("runtime parent"))
         .expect("create runtime directory");
     fs::create_dir_all(&wiki_root).expect("create installed corpus");
