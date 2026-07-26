@@ -37,7 +37,7 @@ suite('Workbench Integration', () => {
 		assert.strictEqual(installs, 0);
 	});
 
-	test('installs after extension UI consent and reports activation', async () => {
+	test('reports successful installation and explains the compile step', async () => {
 		let installs = 0;
 		const messages: string[] = [];
 		const coordinator = new WorkbenchIntegrationCoordinator(
@@ -60,7 +60,7 @@ suite('Workbench Integration', () => {
 		await coordinator.onWorkbenchConnected(endpoint);
 
 		assert.strictEqual(installs, 1);
-		assert.deepStrictEqual(messages, ['Reforger Workbench script tools installed.']);
+		assert.deepStrictEqual(messages, ['Reforger Workbench script tools were installed. Press Ctrl+Shift+R or restart Workbench to compile and activate them.']);
 	});
 
 	test('does not prompt when a consent manifest is already installed', async () => {
@@ -108,9 +108,9 @@ suite('Workbench Integration', () => {
 		assert.strictEqual(statusCalls, 2);
 	});
 
-	test('informs the user that a Workbench refresh activates a successful installation', async () => {
+	test('reports installation success even when activation is not yet known', async () => {
 		let statusCalls = 0;
-		const activationWarnings: string[] = [];
+		const installationMessages: string[] = [];
 		const coordinator = new WorkbenchIntegrationCoordinator(
 			runtimeWith({
 				status: async () => {
@@ -126,7 +126,7 @@ suite('Workbench Integration', () => {
 			}),
 			uiWith({
 				confirmInstall: async () => true,
-				showActivationPending: message => activationWarnings.push(message),
+				showInstalled: message => installationMessages.push(message),
 			}),
 		);
 
@@ -135,8 +135,8 @@ suite('Workbench Integration', () => {
 
 		assert.strictEqual(statusCalls, 2);
 		assert.deepStrictEqual(
-			activationWarnings,
-			['Reforger Workbench script tools were installed in your Workbench profile. Refresh Workbench with Ctrl+Shift+R to activate them.'],
+			installationMessages,
+			['Reforger Workbench script tools were installed. Press Ctrl+Shift+R or restart Workbench to compile and activate them.'],
 		);
 	});
 
@@ -189,7 +189,6 @@ function uiWith(overrides: Partial<WorkbenchIntegrationUi>): WorkbenchIntegratio
 		confirmInstall: async () => false,
 		runInstall: task => task(),
 		showInstalled: () => undefined,
-		showActivationPending: () => undefined,
 		showInstallFailed: () => undefined,
 		...overrides,
 	};

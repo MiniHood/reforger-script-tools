@@ -186,6 +186,7 @@ pub struct WorkbenchLiveState {
     pub bridge_version: String,
     pub protocol_version: u32,
     pub mode: String,
+    pub world_editor_active: bool,
     pub loaded_addons: Vec<String>,
     pub loaded_addons_truncated: bool,
 }
@@ -448,20 +449,7 @@ impl WorkbenchController {
                 }),
             ));
         }
-        if let Err(failure) = self.gateway.validate_scripts() {
-            return Err(self.correlate_failure_details(
-                "install",
-                "validation-failed",
-                failure,
-                json!({
-                    "managedFileCount": bridge_payload().len(),
-                    "managedFiles": bridge_payload()
-                        .iter()
-                        .map(|(name, _)| *name)
-                        .collect::<Vec<_>>(),
-                }),
-            ));
-        }
+        let validation = self.gateway.validate_scripts();
         let result = WorkbenchBridgeInstallResult {
             installed_version: WORKBENCH_BRIDGE_VERSION.to_string(),
             // Profile NetApiHandler discovery happens when Workbench reloads its
@@ -475,7 +463,7 @@ impl WorkbenchController {
         };
         self.log_event_timed(
             "install",
-            "reload-required",
+            "installed",
             started,
             json!({
                 "bridgeVersion": result.installed_version.clone(),
@@ -487,6 +475,7 @@ impl WorkbenchController {
                     .map(|(name, _)| *name)
                     .collect::<Vec<_>>(),
                 "activated": result.activated,
+                "validationSuccess": validation.as_ref().ok().map(|value| value.success),
             }),
         );
         Ok(result)
@@ -612,6 +601,7 @@ impl WorkbenchController {
         let state = WorkbenchLiveState {
             bridge_version: raw.bridge_version,
             protocol_version: raw.protocol_version,
+            world_editor_active: raw.world_editor_active || raw.mode == "world-editor",
             mode: raw.mode,
             loaded_addons,
             loaded_addons_truncated,
@@ -624,6 +614,7 @@ impl WorkbenchController {
                 "activeBridgeVersion": state.bridge_version.clone(),
                 "protocolVersion": state.protocol_version,
                 "mode": state.mode.clone(),
+                "worldEditorActive": state.world_editor_active,
                 "loadedAddonCount": state.loaded_addons.len(),
                 "loadedAddonsTruncated": state.loaded_addons_truncated,
             }),
@@ -1619,6 +1610,8 @@ struct RawBridgeState {
     #[serde(rename = "protocolVersion")]
     protocol_version: u32,
     mode: String,
+    #[serde(rename = "worldEditorActive", default)]
+    world_editor_active: bool,
     #[serde(rename = "loadedAddons")]
     loaded_addons: String,
 }
@@ -1950,6 +1943,7 @@ class RST_WorkbenchStateResponse : JsonApiStruct
 	string bridgeVersion;
 	int protocolVersion;
 	string mode;
+	bool worldEditorActive;
 	string loadedAddons;
 
 	void RST_WorkbenchStateResponse()
@@ -1970,10 +1964,13 @@ class RST_WorkbenchState : NetApiHandler
 		RST_WorkbenchStateResponse response = new RST_WorkbenchStateResponse();
 		response.bridgeVersion = "1.0.0";
 		response.protocolVersion = 1;
-		response.mode = "unknown";
+		response.mode = "workbench";
 		WorldEditor worldEditor = Workbench.GetModule(WorldEditor);
 		if (worldEditor && worldEditor.GetApi())
+		{
 			response.mode = "world-editor";
+			response.worldEditorActive = true;
+		}
 		array<string> addonGuids = {};
 		GameProject.GetLoadedAddons(addonGuids);
 		for (int index = 0; index < addonGuids.Count(); index++)
@@ -2260,7 +2257,10 @@ mod tests {
             .join("My Games")
             .join("ArmaReforgerWorkbench")
             .join("profile");
-        let bridge = profile.join("scripts").join("reforger-script-tools");
+        let bridge = profile
+            .join("scripts")
+            .join("WorkbenchGame")
+            .join("reforger-script-tools");
         fs::create_dir_all(&bridge).unwrap();
         fs::write(bridge.join("user-script.c"), "keep me").unwrap();
         let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
@@ -2516,7 +2516,10 @@ mod tests {
             .join("My Games")
             .join("ArmaReforgerWorkbench")
             .join("profile");
-        let bridge = profile.join("scripts").join("reforger-script-tools");
+        let bridge = profile
+            .join("scripts")
+            .join("WorkbenchGame")
+            .join("reforger-script-tools");
         fs::create_dir_all(&bridge).unwrap();
         fs::write(bridge.join("future.c"), "future package").unwrap();
         fs::write(

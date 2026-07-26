@@ -8,16 +8,14 @@ import {
 
 const installChoice = 'Install Workbench Integration';
 const installFailureMessage = 'Reforger Workbench script tools could not be installed.';
-const activationPendingMessage = 'Reforger Workbench script tools were installed in your Workbench profile. Refresh Workbench with Ctrl+Shift+R to activate them.';
+const installSuccessMessage = 'Reforger Workbench script tools were installed. Press Ctrl+Shift+R or restart Workbench to compile and activate them.';
 
 export interface WorkbenchIntegrationStatus {
 	installed: boolean;
 	installationAvailable: boolean;
 }
 
-export interface WorkbenchIntegrationInstallResult {
-	activated: boolean;
-}
+export interface WorkbenchIntegrationInstallResult {}
 
 export interface WorkbenchIntegrationRuntime {
 	status(
@@ -32,7 +30,6 @@ export interface WorkbenchIntegrationUi {
 	confirmInstall(): Promise<boolean>;
 	runInstall<T>(task: () => Promise<T>): Promise<T>;
 	showInstalled(message: string): void;
-	showActivationPending(message: string): void;
 	showInstallFailed(message: string): void;
 }
 
@@ -78,13 +75,8 @@ export class WorkbenchIntegrationCoordinator implements vscode.Disposable {
 				return;
 			}
 			if (installed.ok) {
-				if (installed.value.activated) {
-					this.ui.showInstalled('Reforger Workbench script tools installed.');
-					diagnostic('workbenchIntegrationInstall', { outcome: 'activated' });
-				} else {
-					this.ui.showActivationPending(activationPendingMessage);
-					diagnostic('workbenchIntegrationInstall', { outcome: 'reload-required' });
-				}
+				this.ui.showInstalled(installSuccessMessage);
+				diagnostic('workbenchIntegrationInstall', { outcome: 'installed' });
 				return;
 			}
 			this.ui.showInstallFailed(installFailureMessage);
@@ -146,9 +138,6 @@ export function createWorkbenchIntegration(
 		showInstalled: message => {
 			void vscode.window.showInformationMessage(message);
 		},
-		showActivationPending: message => {
-			void vscode.window.showWarningMessage(message);
-		},
 		showInstallFailed: message => {
 			void vscode.window.showWarningMessage(message);
 		},
@@ -184,10 +173,10 @@ function decodeInstall(
 	if (!result.ok) {
 		return result;
 	}
-	if (!isRecord(result.value) || typeof result.value.activated !== 'boolean') {
+	if (!isRecord(result.value)) {
 		return protocolFailure();
 	}
-	return { ok: true, value: { activated: result.value.activated } };
+	return { ok: true, value: {} };
 }
 
 function protocolFailure(): WorkbenchGatewayResult<never> {

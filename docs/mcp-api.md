@@ -2819,12 +2819,16 @@ Read bounded live editor state from the compatible managed Workbench handler pac
     "protocolVersion": {
       "minimum": 0,
       "type": "integer"
+    },
+    "worldEditorActive": {
+      "type": "boolean"
     }
   },
   "required": [
     "bridgeVersion",
     "protocolVersion",
     "mode",
+    "worldEditorActive",
     "loadedAddons",
     "loadedAddonsTruncated"
   ],

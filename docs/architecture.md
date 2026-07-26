@@ -82,6 +82,11 @@ rolled back. Version precedence follows semantic-version ordering; an
 unrecognized installed version is preserved because automatic downgrade safety
 cannot be proven.
 
+The managed state capability reports `mode: "workbench"` as its honest
+baseline. It reports `mode: "world-editor"` and `worldEditorActive: true` only
+when the live `WorldEditor` module exposes its API. It does not infer another
+foreground editor mode from process state, window titles, or log text.
+
 Compiler validation is captured once per invocation and exposed as bounded,
 opaque-cursor pages so an MCP client can retrieve every finding without
 recompiling between pages. Process shutdown is bound to a process identity that
