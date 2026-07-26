@@ -16,9 +16,15 @@ use, and content licenses, including but not limited to the
 [Arma Reforger EULA](https://reforger.armaplatform.com/eula) and
 [Arma Reforger Workshop Terms of Use](https://reforger.armaplatform.com/workshop-terms). This extension is not designed or intended to circumvent
 those agreements, violate license restrictions, or enable others to do so.
-Users are responsible for ensuring that their use complies with the agreements
-and licenses applicable to the Bohemia Interactive products and content they
-use.
+Content created or generated with this extension must be made and used only
+for Arma purposes, in accordance with the [Arma Public License
+(APL)](https://www.bohemia.net/community/licenses/arma-public-license) and its
+ArmaOnly condition where applicable. A mod that incorporates, adapts, or is
+distributed with another mod's content must preserve and comply with that
+content's applicable license terms, including any requirements for derivative
+works. Users are responsible for ensuring that their use and all resulting
+content comply with the agreements and licenses applicable to the Bohemia
+Interactive products and content they use.
 
 Bohemia Interactive, Arma, Arma Reforger, and associated logos and designs are
 trademarks or registered trademarks of Bohemia Interactive a.s.
