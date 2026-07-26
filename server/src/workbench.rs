@@ -269,6 +269,13 @@ impl WorkbenchController {
         let native = native_result.ok();
         let mut bridge = self.bridge_disk_status(&paths.bridge_directory);
         if native.is_some() {
+            if !bridge.installed
+                && self
+                    .migrate_legacy_bridge(&paths.legacy_bridge_directory, &paths.bridge_directory)
+                    .unwrap_or(false)
+            {
+                bridge = self.bridge_disk_status(&paths.bridge_directory);
+            }
             if bridge.installed {
                 bridge = self.maintain_existing_bridge(&paths.bridge_directory);
             } else {
@@ -363,13 +370,26 @@ impl WorkbenchController {
                 }),
             ));
         }
-        let existing_manifest = fs::read(
+        let mut existing_manifest = fs::read(
             paths
                 .bridge_directory
                 .join("reforger-script-tools.manifest.json"),
         )
         .ok()
         .and_then(|bytes| serde_json::from_slice::<BridgeManifest>(&bytes).ok());
+        if existing_manifest.is_none()
+            && self
+                .migrate_legacy_bridge(&paths.legacy_bridge_directory, &paths.bridge_directory)
+                .unwrap_or(false)
+        {
+            existing_manifest = fs::read(
+                paths
+                    .bridge_directory
+                    .join("reforger-script-tools.manifest.json"),
+            )
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<BridgeManifest>(&bytes).ok());
+        }
         if existing_manifest.is_none()
             && authorization != WorkbenchInstallAuthorization::UserApprovedFirstInstall
         {
@@ -1097,6 +1117,40 @@ impl WorkbenchController {
         Ok(needs_repair)
     }
 
+    fn migrate_legacy_bridge(
+        &self,
+        legacy_directory: &std::path::Path,
+        bridge_directory: &std::path::Path,
+    ) -> std::io::Result<bool> {
+        let legacy_manifest_path = legacy_directory.join("reforger-script-tools.manifest.json");
+        let Some(manifest) = fs::read(&legacy_manifest_path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<BridgeManifest>(&bytes).ok())
+        else {
+            return Ok(false);
+        };
+        if !manifest_matches_payload(&manifest) {
+            return Ok(false);
+        }
+        fs::create_dir_all(bridge_directory)?;
+        for file in &manifest.files {
+            let source = legacy_directory.join(&file.name);
+            let destination = bridge_directory.join(&file.name);
+            if destination.exists() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    "managed bridge migration destination already exists",
+                ));
+            }
+            fs::rename(source, destination)?;
+        }
+        fs::rename(
+            legacy_manifest_path,
+            bridge_directory.join("reforger-script-tools.manifest.json"),
+        )?;
+        Ok(true)
+    }
+
     fn write_managed_files(&self, bridge_directory: &std::path::Path) -> std::io::Result<()> {
         if fs::symlink_metadata(bridge_directory)
             .is_ok_and(|metadata| metadata.file_type().is_symlink())
@@ -1152,7 +1206,11 @@ impl WorkbenchController {
             .join("My Games")
             .join("ArmaReforgerWorkbench");
         let profile = workbench_root.join("profile");
-        let bridge_directory = profile.join("scripts").join("reforger-script-tools");
+        let scripts_directory = profile.join("scripts");
+        let bridge_directory = scripts_directory
+            .join("WorkbenchGame")
+            .join("reforger-script-tools");
+        let legacy_bridge_directory = scripts_directory.join("reforger-script-tools");
         let (game, game_source) = if let Some(game) = self.options.game_directory.clone() {
             (Some(game), "explicit".to_string())
         } else {
@@ -1186,6 +1244,7 @@ impl WorkbenchController {
             workbench_root,
             profile,
             bridge_directory,
+            legacy_bridge_directory,
             game,
             game_source,
             tools,
@@ -1578,6 +1637,7 @@ struct ResolvedWorkbenchPaths {
     workbench_root: PathBuf,
     profile: PathBuf,
     bridge_directory: PathBuf,
+    legacy_bridge_directory: PathBuf,
     game: Option<PathBuf>,
     game_source: String,
     tools: Option<PathBuf>,
@@ -2220,6 +2280,34 @@ mod tests {
     }
 
     #[test]
+    fn migrates_the_known_flat_profile_package_into_workbench_game() {
+        let root = test_root("migrate-flat-profile-package");
+        let scripts = root.join("scripts");
+        let legacy = scripts.join("reforger-script-tools");
+        let destination = scripts.join("WorkbenchGame").join("reforger-script-tools");
+        let controller =
+            super::WorkbenchController::new(super::WorkbenchControllerOptions::default());
+        controller.write_managed_files(&legacy).unwrap();
+        fs::write(legacy.join("user-script.c"), "preserve me").unwrap();
+
+        assert!(controller
+            .migrate_legacy_bridge(&legacy, &destination)
+            .unwrap());
+        assert!(destination
+            .join("reforger-script-tools.manifest.json")
+            .is_file());
+        for (name, _) in super::bridge_payload() {
+            assert!(destination.join(name).is_file());
+            assert!(!legacy.join(name).exists());
+        }
+        assert_eq!(
+            fs::read_to_string(legacy.join("user-script.c")).unwrap(),
+            "preserve me"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn first_install_validates_scripts_without_probing_the_new_handler() {
         let root = test_root("first-install-reload-required");
         let profile = root
@@ -2781,6 +2869,14 @@ mod tests {
                 .join("My Games")
                 .join("ArmaReforgerWorkbench")
                 .join("profile")
+        );
+        assert_eq!(
+            paths.bridge_directory,
+            paths
+                .profile
+                .join("scripts")
+                .join("WorkbenchGame")
+                .join("reforger-script-tools")
         );
         fs::remove_dir_all(root).unwrap();
     }

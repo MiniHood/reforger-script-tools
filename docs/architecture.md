@@ -59,12 +59,13 @@ than a second codec. Detailed protocol evidence and compiler-validation
 acceptance remain in the relevant research journals.
 
 The optional managed handler package lives under the current Windows user's
-`Documents\My Games\ArmaReforgerWorkbench\profile\scripts\reforger-script-tools`
+`Documents\My Games\ArmaReforgerWorkbench\profile\scripts\WorkbenchGame\reforger-script-tools`
 directory. Its manifest is both file ownership and continuing-maintenance
 consent: after a successful native connection, the VS Code extension owns the
 one-time first-install prompt and invokes a private Rust installer only when the
 user accepts. Public MCP cannot create that first manifest; it may maintain an
-existing consented installation. A successful later connection may likewise
+existing consented installation. A prior manifest-owned flat-profile package is
+migrated to this `WorkbenchGame` module path without touching unknown files. A successful later connection may likewise
 repair or upgrade only manifest-owned files. Writing that profile package and
 running native compiler validation does not register its `NetApiHandler`s in
 the already-running Workbench; the extension reports successful installation

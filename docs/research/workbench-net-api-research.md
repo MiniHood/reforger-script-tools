@@ -83,7 +83,7 @@ one-time prompt. The extension invokes the bundled Rust runtime through a
 private operation; public `workbench_install_bridge` cannot create the first
 manifest and returns `workbench_installation_consent_required` without writing
 files. The installer creates only
-`profile\scripts\reforger-script-tools` after the parent Workbench profile
+`profile\scripts\WorkbenchGame\reforger-script-tools` after the parent Workbench profile
 exists. Its manifest lists owned files, package semver, protocol version, and
 hashes. Before that consent exists, status reports `installationAvailable`
 only when the profile already exists and the native API is connected, without
