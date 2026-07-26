@@ -3213,6 +3213,134 @@ Read a bounded live World Editor selection summary through the compatible manage
 
 Workbench tools return structured tool errors with a stable code, operation phase, retryability, and a unique log reference matching a rotating integration-log record. Raw transport and Workbench payload details are not exposed.
 
+## `workbench_selected_entity_hierarchy`
+
+Inspect the bounded parent and direct-child hierarchy for one current World Editor selection index. It uses only stable entity identities, never display-name matching, and never changes the editor selection.
+
+### Annotations
+
+```json
+{
+  "title": "Inspect selected Workbench entity hierarchy",
+  "readOnlyHint": true,
+  "openWorldHint": false
+}
+```
+
+### Input schema
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "selectionIndex": {
+      "maximum": 31,
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "selectionIndex"
+  ],
+  "type": "object"
+}
+```
+
+### Output schema
+
+```json
+{
+  "$defs": {
+    "WorkbenchSelectedEntity": {
+      "properties": {
+        "className": {
+          "type": "string"
+        },
+        "entityId": {
+          "type": "string"
+        },
+        "layerId": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "subScene": {
+          "format": "int32",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "entityId",
+        "className",
+        "subScene",
+        "layerId"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "ancestors": {
+      "items": {
+        "$ref": "#/$defs/WorkbenchSelectedEntity"
+      },
+      "type": "array"
+    },
+    "bridgeVersion": {
+      "type": "string"
+    },
+    "children": {
+      "items": {
+        "$ref": "#/$defs/WorkbenchSelectedEntity"
+      },
+      "type": "array"
+    },
+    "childrenTruncated": {
+      "type": "boolean"
+    },
+    "editorAvailable": {
+      "type": "boolean"
+    },
+    "entity": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkbenchSelectedEntity"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "protocolVersion": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "selectionIndex": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "status": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "bridgeVersion",
+    "protocolVersion",
+    "editorAvailable",
+    "status",
+    "selectionIndex",
+    "ancestors",
+    "children",
+    "childrenTruncated"
+  ],
+  "type": "object"
+}
+```
+
+### Stable failures
+
+Workbench tools return structured tool errors with a stable code, operation phase, retryability, and a unique log reference matching a rotating integration-log record. Raw transport and Workbench payload details are not exposed.
+
 ## `workbench_open_world`
 
 Open one typed World Editor world through the compatible managed Workbench handler package without restarting Workbench.
@@ -3506,11 +3634,35 @@ Read a bounded tail from either the integration support log or the latest known 
 
 ```json
 {
+  "$defs": {
+    "WorkbenchLogMarker": {
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "lineIndex": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "lineIndex"
+      ],
+      "type": "object"
+    }
+  },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "lines": {
       "items": {
         "type": "string"
+      },
+      "type": "array"
+    },
+    "markers": {
+      "items": {
+        "$ref": "#/$defs/WorkbenchLogMarker"
       },
       "type": "array"
     },
@@ -3530,6 +3682,7 @@ Read a bounded tail from either the integration support log or the latest known 
   "required": [
     "source",
     "lines",
+    "markers",
     "truncated"
   ],
   "type": "object"

@@ -94,6 +94,11 @@ GameLib compile, Game compile, then the loaded Game module. It never exposes
 arbitrary key input. Failure to focus the exact project window or observe that
 terminal sequence is a failed operation, not a claimed reload.
 
+Bounded Workbench-log reads retain their raw tail and additionally classify only
+the observed reload milestones: reload start, script validation, GameLib
+compilation, Game compilation, and loaded Game module. They do not infer play
+session state or elevate a log marker into a stronger editor fact.
+
 The managed state capability reports `mode: "workbench"` as its honest
 baseline. It reports `mode: "world-editor"` and `worldEditorActive: true` only
 when the live `WorldEditor` module exposes its API. It also exposes the direct
@@ -109,6 +114,12 @@ when the World Editor module exposes its live API. It returns the observed
 selection count and at most 32 selected entities, each by stable editor ID,
 class, subscene, and layer. It never changes selection, relies on no display
 name as an identity, and reports unavailable editor/API states explicitly.
+
+The read-only `workbench_selected_entity_hierarchy` capability is scoped to one
+current selection index (0 through 31). It returns that entity plus at most 32
+ancestor and 64 direct-child entity identities. Its parent/child traversal is
+bounded, never uses display-name lookup, and never changes the editor
+selection.
 
 The read-only `workbench_list_resources` capability accepts only fixed resource
 kinds and an optional bounded text query. Workbench's resource database applies

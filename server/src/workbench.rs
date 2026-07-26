@@ -103,7 +103,7 @@ pub struct WorkbenchGateway {
     request_lock: Arc<Mutex<()>>,
 }
 
-pub const WORKBENCH_BRIDGE_VERSION: &str = "1.6.0";
+pub const WORKBENCH_BRIDGE_VERSION: &str = "1.7.0";
 pub const WORKBENCH_BRIDGE_PROTOCOL_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -274,13 +274,36 @@ pub struct WorkbenchWorldSelectionSummary {
     pub selected_entities_truncated: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkbenchSelectedEntityHierarchy {
+    pub bridge_version: String,
+    pub protocol_version: u32,
+    pub editor_available: bool,
+    pub status: String,
+    pub selection_index: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entity: Option<WorkbenchSelectedEntity>,
+    pub ancestors: Vec<WorkbenchSelectedEntity>,
+    pub children: Vec<WorkbenchSelectedEntity>,
+    pub children_truncated: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkbenchLogRead {
     pub source: String,
     pub path: Option<PathBuf>,
     pub lines: Vec<String>,
+    pub markers: Vec<WorkbenchLogMarker>,
     pub truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkbenchLogMarker {
+    pub kind: String,
+    pub line_index: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
@@ -1018,6 +1041,79 @@ impl WorkbenchController {
         Ok(result)
     }
 
+    pub fn selected_entity_hierarchy(
+        &self,
+        selection_index: u32,
+    ) -> Result<WorkbenchSelectedEntityHierarchy, WorkbenchFailure> {
+        if selection_index > 31 {
+            return Err(self.correlate_failure_details(
+                "selected_entity_hierarchy",
+                "selection-index-out-of-range",
+                failure(WorkbenchFailureCode::Protocol),
+                json!({"selectionIndex": selection_index}),
+            ));
+        }
+        let started = Instant::now();
+        let value = self.gateway.request(
+            json!({"APIFunc": "RST_WorkbenchSelectedEntityHierarchy", "selectionIndex": selection_index}),
+            self.options.gateway.status_deadline,
+        ).map_err(|failure| self.correlate_failure_details(
+            "selected_entity_hierarchy", failure_code(failure.code), failure,
+            json!({"handler": "RST_WorkbenchSelectedEntityHierarchy"}),
+        ))?;
+        let raw: RawBridgeSelectedEntityHierarchy =
+            serde_json::from_value(value).map_err(|_| {
+                self.correlate_failure_details(
+                    "selected_entity_hierarchy",
+                    "workbench_protocol_error",
+                    failure(WorkbenchFailureCode::Protocol),
+                    json!({"handler": "RST_WorkbenchSelectedEntityHierarchy"}),
+                )
+            })?;
+        if raw.protocol_version != WORKBENCH_BRIDGE_PROTOCOL_VERSION {
+            return Err(self.correlate_failure_details(
+                "selected_entity_hierarchy", "incompatible-handler", failure(WorkbenchFailureCode::Protocol),
+                json!({"handler": "RST_WorkbenchSelectedEntityHierarchy", "activeBridgeVersion": raw.bridge_version, "activeProtocolVersion": raw.protocol_version}),
+            ));
+        }
+        let parse_error = || {
+            self.correlate_failure_details(
+                "selected_entity_hierarchy",
+                "workbench_protocol_error",
+                failure(WorkbenchFailureCode::Protocol),
+                json!({"handler": "RST_WorkbenchSelectedEntityHierarchy"}),
+            )
+        };
+        let entity =
+            parse_optional_world_selection_record(&raw.entity).map_err(|_| parse_error())?;
+        let ancestors = parse_world_selection_records(&raw.ancestors).map_err(|_| parse_error())?;
+        let children = parse_world_selection_records(&raw.children).map_err(|_| parse_error())?;
+        if ancestors.len() > 32 || children.len() > 64 {
+            return Err(self.correlate_failure_details(
+                "selected_entity_hierarchy",
+                "workbench_protocol_error",
+                failure(WorkbenchFailureCode::Protocol),
+                json!({"handler": "RST_WorkbenchSelectedEntityHierarchy"}),
+            ));
+        }
+        let result = WorkbenchSelectedEntityHierarchy {
+            bridge_version: raw.bridge_version,
+            protocol_version: raw.protocol_version,
+            editor_available: raw.editor_available,
+            status: raw.status,
+            selection_index,
+            entity,
+            ancestors,
+            children,
+            children_truncated: raw.children_truncated,
+        };
+        self.log_event_timed(
+            "selected-entity-hierarchy", &result.status, started,
+            json!({"selectionIndex": selection_index, "ancestorCount": result.ancestors.len(), "childCount": result.children.len(), "childrenTruncated": result.children_truncated}),
+        );
+        Ok(result)
+    }
+
     /// Perform the one intentional keyboard automation supported by the Workbench bridge.
     ///
     /// This is deliberately not a general input facility: it requires exactly one current
@@ -1116,6 +1212,7 @@ impl WorkbenchController {
                 source: source.to_string(),
                 path: None,
                 lines: Vec::new(),
+                markers: Vec::new(),
                 truncated: false,
             });
         };
@@ -1124,6 +1221,7 @@ impl WorkbenchController {
                 source: source.to_string(),
                 path: Some(path),
                 lines: Vec::new(),
+                markers: Vec::new(),
                 truncated: false,
             });
         }
@@ -1141,6 +1239,7 @@ impl WorkbenchController {
         let result = WorkbenchLogRead {
             source: source.to_string(),
             path: Some(path),
+            markers: workbench_log_markers(source, &lines),
             lines,
             truncated,
         };
@@ -1151,6 +1250,7 @@ impl WorkbenchController {
             json!({
                 "source": result.source.clone(),
                 "lineCount": result.lines.len(),
+                "markerCount": result.markers.len(),
                 "truncated": result.truncated,
             }),
         );
@@ -2127,6 +2227,25 @@ struct RawBridgeResourceList {
     has_more: bool,
 }
 
+#[derive(Deserialize)]
+struct RawBridgeSelectedEntityHierarchy {
+    #[serde(rename = "bridgeVersion")]
+    bridge_version: String,
+    #[serde(rename = "protocolVersion")]
+    protocol_version: u32,
+    #[serde(rename = "editorAvailable")]
+    editor_available: bool,
+    status: String,
+    #[serde(default)]
+    entity: String,
+    #[serde(default)]
+    ancestors: String,
+    #[serde(default)]
+    children: String,
+    #[serde(rename = "childrenTruncated", default)]
+    children_truncated: bool,
+}
+
 fn workbench_bool(value: &Value) -> bool {
     matches!(value, Value::Bool(true)) || value.as_i64().is_some_and(|integer| integer != 0)
 }
@@ -2190,6 +2309,19 @@ fn parse_world_selection_records(value: &str) -> Result<Vec<WorkbenchSelectedEnt
             })
         })
         .collect()
+}
+
+fn parse_optional_world_selection_record(
+    value: &str,
+) -> Result<Option<WorkbenchSelectedEntity>, ()> {
+    if value.is_empty() {
+        return Ok(None);
+    }
+    let mut records = parse_world_selection_records(value)?;
+    if records.len() != 1 {
+        return Err(());
+    }
+    Ok(records.pop())
 }
 
 struct ResolvedWorkbenchPaths {
@@ -2318,6 +2450,32 @@ fn latest_workbench_log(workbench_root: &std::path::Path) -> Option<PathBuf> {
         .rev()
         .map(|entry| entry.path().join("console.log"))
         .find(|path| path.is_file())
+}
+
+fn workbench_log_markers(source: &str, lines: &[String]) -> Vec<WorkbenchLogMarker> {
+    if source != "workbench" {
+        return Vec::new();
+    }
+    const MARKERS: [(&str, &str); 5] = [
+        ("reload-started", "Reloading game scripts"),
+        ("script-validation", "Script validation"),
+        ("gamelib-compilation", "Compiling GameLib scripts"),
+        ("game-compilation", "Compiling Game scripts"),
+        ("game-module-loaded", "Module: Game; loaded"),
+    ];
+    lines
+        .iter()
+        .enumerate()
+        .flat_map(|(line_index, line)| {
+            MARKERS
+                .iter()
+                .filter(move |(_, marker)| line.contains(marker))
+                .map(move |(kind, _)| WorkbenchLogMarker {
+                    kind: (*kind).to_string(),
+                    line_index,
+                })
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2711,6 +2869,10 @@ fn bridge_payload() -> &'static [(&'static str, &'static str)] {
             "RST_WorkbenchWorldSelection.c",
             BRIDGE_WORLD_SELECTION_SOURCE,
         ),
+        (
+            "RST_WorkbenchSelectedEntityHierarchy.c",
+            BRIDGE_SELECTED_ENTITY_HIERARCHY_SOURCE,
+        ),
         ("RST_WorkbenchListResources.c", BRIDGE_LIST_RESOURCES_SOURCE),
     ]
 }
@@ -2746,9 +2908,9 @@ class RST_WorkbenchCapabilities : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchCapabilitiesResponse response = new RST_WorkbenchCapabilitiesResponse();
-		response.bridgeVersion = "1.6.0";
+		response.bridgeVersion = "1.7.0";
 	response.protocolVersion = 1;
-	response.capabilities = "state;open-world;play-session;project-context;inspect-resource;world-selection;list-resources";
+	response.capabilities = "state;open-world;play-session;project-context;inspect-resource;world-selection;entity-hierarchy;list-resources";
 		return response;
 	}
 }
@@ -2791,7 +2953,7 @@ class RST_WorkbenchState : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchStateResponse response = new RST_WorkbenchStateResponse();
-	response.bridgeVersion = "1.6.0";
+	response.bridgeVersion = "1.7.0";
 		response.protocolVersion = 1;
 		response.mode = "workbench";
 		response.playSession = "unavailable";
@@ -2979,7 +3141,7 @@ class RST_WorkbenchProjectContext : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchProjectContextResponse response = new RST_WorkbenchProjectContextResponse();
-		response.bridgeVersion = "1.6.0";
+		response.bridgeVersion = "1.7.0";
 		response.protocolVersion = 1;
 		array<string> addonGuids = new array<string>();
 		GameProject.GetLoadedAddons(addonGuids);
@@ -3063,7 +3225,7 @@ class RST_WorkbenchWorldSelection : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchWorldSelectionResponse response = new RST_WorkbenchWorldSelectionResponse();
-		response.bridgeVersion = "1.6.0";
+		response.bridgeVersion = "1.7.0";
 		response.protocolVersion = 1;
 		WorldEditor worldEditor = Workbench.GetModule(WorldEditor);
 		if (!worldEditor)
@@ -3101,6 +3263,98 @@ class RST_WorkbenchWorldSelection : NetApiHandler
 #endif
 "#;
 
+const BRIDGE_SELECTED_ENTITY_HIERARCHY_SOURCE: &str = r#"#ifdef WORKBENCH
+class RST_WorkbenchSelectedEntityHierarchyRequest : JsonApiStruct
+{
+	int selectionIndex;
+	void RST_WorkbenchSelectedEntityHierarchyRequest() { RegAll(); }
+}
+class RST_WorkbenchSelectedEntityHierarchyResponse : JsonApiStruct
+{
+	string bridgeVersion;
+	int protocolVersion;
+	bool editorAvailable;
+	string status;
+	string entity;
+	string ancestors;
+	string children;
+	bool childrenTruncated;
+	void RST_WorkbenchSelectedEntityHierarchyResponse() { RegAll(); }
+}
+class RST_WorkbenchSelectedEntityHierarchy : NetApiHandler
+{
+	override JsonApiStruct GetRequest() { return new RST_WorkbenchSelectedEntityHierarchyRequest(); }
+
+	protected void AppendEntity(out string records, IEntitySource entity)
+	{
+		if (!entity)
+			return;
+		if (records != string.Empty)
+			records += ";";
+		records += string.Format("%1|%2|%3|%4", entity.GetID().ToString(), entity.GetClassName(), entity.GetSubScene(), entity.GetLayerID());
+	}
+
+	override JsonApiStruct GetResponse(JsonApiStruct request)
+	{
+		RST_WorkbenchSelectedEntityHierarchyRequest typedRequest = RST_WorkbenchSelectedEntityHierarchyRequest.Cast(request);
+		RST_WorkbenchSelectedEntityHierarchyResponse response = new RST_WorkbenchSelectedEntityHierarchyResponse();
+		response.bridgeVersion = "1.7.0";
+		response.protocolVersion = 1;
+		WorldEditor worldEditor = Workbench.GetModule(WorldEditor);
+		if (!worldEditor)
+		{
+			response.status = "world-editor-unavailable";
+			return response;
+		}
+		WorldEditorAPI worldEditorApi = worldEditor.GetApi();
+		if (!worldEditorApi)
+		{
+			response.status = "world-editor-api-unavailable";
+			return response;
+		}
+		response.editorAvailable = true;
+		if (typedRequest.selectionIndex < 0 || typedRequest.selectionIndex >= worldEditorApi.GetSelectedEntitiesCount())
+		{
+			response.status = "selection-index-out-of-range";
+			return response;
+		}
+		IEntitySource entity = worldEditorApi.GetSelectedEntity(typedRequest.selectionIndex);
+		if (!entity)
+		{
+			response.status = "selected-entity-unavailable";
+			return response;
+		}
+		response.status = "available";
+		AppendEntity(response.entity, entity);
+		BaseContainer parent = entity.GetParent();
+		for (int index = 0; parent && index < 32; index++)
+		{
+			IEntitySource parentEntity = IEntitySource.Cast(parent);
+			if (parentEntity)
+				AppendEntity(response.ancestors, parentEntity);
+			parent = parent.GetParent();
+		}
+		int childCount = entity.GetNumChildren();
+		int returnedCount = 0;
+		for (int index = 0; index < childCount; index++)
+		{
+			IEntitySource childEntity = IEntitySource.Cast(entity.GetChild(index));
+			if (!childEntity)
+				continue;
+			if (returnedCount >= 64)
+			{
+				response.childrenTruncated = true;
+				break;
+			}
+			AppendEntity(response.children, childEntity);
+			returnedCount++;
+		}
+		return response;
+	}
+}
+#endif
+"#;
+
 const BRIDGE_LIST_RESOURCES_SOURCE: &str = r#"#ifdef WORKBENCH
 class RST_WorkbenchListResourcesRequest : JsonApiStruct
 {
@@ -3126,7 +3380,7 @@ class RST_WorkbenchListResources : NetApiHandler
 	{
 		RST_WorkbenchListResourcesRequest typedRequest = RST_WorkbenchListResourcesRequest.Cast(request);
 		RST_WorkbenchListResourcesResponse response = new RST_WorkbenchListResourcesResponse();
-		response.bridgeVersion = "1.6.0";
+		response.bridgeVersion = "1.7.0";
 		response.protocolVersion = 1;
 		array<string> addonGuids = new array<string>();
 		GameProject.GetLoadedAddons(addonGuids);
@@ -3204,6 +3458,48 @@ mod tests {
         assert_eq!(records[0].layer_id, 12);
         assert!(super::parse_world_selection_records("missing-fields").is_err());
         assert!(super::parse_world_selection_records("id|class|nope|0").is_err());
+    }
+
+    #[test]
+    fn selected_entity_hierarchy_records_require_one_stable_target() {
+        let entity =
+            super::parse_optional_world_selection_record("0x0000000000000001|TestEntity|0|12")
+                .unwrap()
+                .expect("entity");
+        assert_eq!(entity.entity_id, "0x0000000000000001");
+        assert!(super::parse_optional_world_selection_record("")
+            .unwrap()
+            .is_none());
+        assert!(super::parse_optional_world_selection_record(
+            "0x0000000000000001|One|0|1;0x0000000000000002|Two|0|2"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn workbench_log_markers_classify_only_observed_reload_milestones() {
+        let lines = vec![
+            "SCRIPT: Reloading game scripts".to_string(),
+            "SCRIPT: Script validation".to_string(),
+            "SCRIPT: Compiling GameLib scripts".to_string(),
+            "SCRIPT: Compiling Game scripts".to_string(),
+            "SCRIPT: Module: Game; loaded".to_string(),
+        ];
+        let markers = super::workbench_log_markers("workbench", &lines);
+        assert_eq!(
+            markers
+                .iter()
+                .map(|marker| marker.kind.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "reload-started",
+                "script-validation",
+                "gamelib-compilation",
+                "game-compilation",
+                "game-module-loaded",
+            ]
+        );
+        assert!(super::workbench_log_markers("integration", &lines).is_empty());
     }
 
     #[test]

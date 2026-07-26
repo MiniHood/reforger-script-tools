@@ -27,8 +27,8 @@ use crate::workbench::{
     WorkbenchFailure, WorkbenchFailureCode, WorkbenchInstallAuthorization, WorkbenchLiveState,
     WorkbenchLogRead, WorkbenchOpenWorldResult, WorkbenchOverview, WorkbenchPlaySessionResult,
     WorkbenchProcessResult, WorkbenchProjectContext, WorkbenchResourceInspection,
-    WorkbenchResourceListPage, WorkbenchScriptActivationResult, WorkbenchValidationPage,
-    WorkbenchWorldSelectionSummary,
+    WorkbenchResourceListPage, WorkbenchScriptActivationResult, WorkbenchSelectedEntityHierarchy,
+    WorkbenchValidationPage, WorkbenchWorldSelectionSummary,
 };
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, ContentBlock, Implementation, ListToolsResult,
@@ -62,6 +62,8 @@ pub const WORKBENCH_PROJECT_CONTEXT_TOOL_NAME: &str = "workbench_project_context
 pub const WORKBENCH_INSPECT_RESOURCE_TOOL_NAME: &str = "workbench_inspect_resource";
 pub const WORKBENCH_LIST_RESOURCES_TOOL_NAME: &str = "workbench_list_resources";
 pub const WORKBENCH_WORLD_SELECTION_SUMMARY_TOOL_NAME: &str = "workbench_world_selection_summary";
+pub const WORKBENCH_SELECTED_ENTITY_HIERARCHY_TOOL_NAME: &str =
+    "workbench_selected_entity_hierarchy";
 pub const WORKBENCH_OPEN_WORLD_TOOL_NAME: &str = "workbench_open_world";
 pub const WORKBENCH_START_PLAY_SESSION_TOOL_NAME: &str = "workbench_start_play_session";
 pub const WORKBENCH_STOP_PLAY_SESSION_TOOL_NAME: &str = "workbench_stop_play_session";
@@ -98,6 +100,7 @@ const WORKBENCH_PROJECT_CONTEXT_DESCRIPTION: &str = "Read the loaded Workbench a
 const WORKBENCH_INSPECT_RESOURCE_DESCRIPTION: &str = "Inspect one canonical Workbench resource identity through the compatible managed handler package. It returns compact resource metadata only and never accepts filesystem paths.";
 const WORKBENCH_LIST_RESOURCES_DESCRIPTION: &str = "List a bounded page of Workbench resources by fixed resource kinds and an optional text query. Continue with the opaque cursor while preserving the same kinds and query; filesystem paths and arbitrary extensions are not accepted.";
 const WORKBENCH_WORLD_SELECTION_SUMMARY_DESCRIPTION: &str = "Read a bounded live World Editor selection summary through the compatible managed handler package. It returns stable entity IDs, classes, subscenes, and layers; it never changes the editor selection.";
+const WORKBENCH_SELECTED_ENTITY_HIERARCHY_DESCRIPTION: &str = "Inspect the bounded parent and direct-child hierarchy for one current World Editor selection index. It uses only stable entity identities, never display-name matching, and never changes the editor selection.";
 const WORKBENCH_OPEN_WORLD_DESCRIPTION: &str = "Open one typed World Editor world through the compatible managed Workbench handler package without restarting Workbench.";
 const WORKBENCH_START_PLAY_SESSION_DESCRIPTION: &str = "Explicitly request that World Editor starts a play session. Acceptance confirms the command was issued, not that a world has finished loading.";
 const WORKBENCH_STOP_PLAY_SESSION_DESCRIPTION: &str = "Explicitly request that World Editor returns to edit mode. This is distinct from stopping the Workbench process.";
@@ -164,6 +167,13 @@ struct McpWorkbenchStartPlaySessionInput {
 struct McpWorkbenchResourceInput {
     #[schemars(length(min = 19, max = 1024))]
     resource_name: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct McpWorkbenchSelectedEntityHierarchyInput {
+    #[schemars(range(min = 0, max = 31))]
+    selection_index: u32,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
@@ -1048,6 +1058,7 @@ impl ServerHandler for ReforgerMcpServer {
             workbench_inspect_resource_tool(),
             workbench_list_resources_tool(),
             workbench_world_selection_summary_tool(),
+            workbench_selected_entity_hierarchy_tool(),
             workbench_open_world_tool(),
             workbench_start_play_session_tool(),
             workbench_stop_play_session_tool(),
@@ -1082,6 +1093,9 @@ impl ServerHandler for ReforgerMcpServer {
             WORKBENCH_LIST_RESOURCES_TOOL_NAME => Some(workbench_list_resources_tool()),
             WORKBENCH_WORLD_SELECTION_SUMMARY_TOOL_NAME => {
                 Some(workbench_world_selection_summary_tool())
+            }
+            WORKBENCH_SELECTED_ENTITY_HIERARCHY_TOOL_NAME => {
+                Some(workbench_selected_entity_hierarchy_tool())
             }
             WORKBENCH_OPEN_WORLD_TOOL_NAME => Some(workbench_open_world_tool()),
             WORKBENCH_START_PLAY_SESSION_TOOL_NAME => Some(workbench_start_play_session_tool()),
@@ -1200,6 +1214,24 @@ impl ServerHandler for ReforgerMcpServer {
                     workbench.world_selection_summary().map_err(|failure| {
                         workbench.correlate_failure("world_selection_summary", failure)
                     })
+                },
+            )
+            .await;
+        }
+        if request.name == WORKBENCH_SELECTED_ENTITY_HIERARCHY_TOOL_NAME {
+            let input =
+                parse_workbench_input::<McpWorkbenchSelectedEntityHierarchyInput>(&request)?;
+            let workbench = self.workbench.clone();
+            return blocking_workbench_call(
+                self.admission.clone(),
+                context,
+                "selected_entity_hierarchy",
+                move || {
+                    workbench
+                        .selected_entity_hierarchy(input.selection_index)
+                        .map_err(|failure| {
+                            workbench.correlate_failure("selected_entity_hierarchy", failure)
+                        })
                 },
             )
             .await;
@@ -1969,6 +2001,7 @@ Copy a hit's `inspectInput` unchanged to `inspect_game_data_symbol`, or its `rea
         workbench_inspect_resource_tool(),
         workbench_list_resources_tool(),
         workbench_world_selection_summary_tool(),
+        workbench_selected_entity_hierarchy_tool(),
         workbench_open_world_tool(),
         workbench_start_play_session_tool(),
         workbench_stop_play_session_tool(),
@@ -2321,6 +2354,17 @@ fn workbench_world_selection_summary_tool() -> Tool {
     )
 }
 
+fn workbench_selected_entity_hierarchy_tool() -> Tool {
+    workbench_input_tool::<McpWorkbenchSelectedEntityHierarchyInput, WorkbenchSelectedEntityHierarchy>(
+        WORKBENCH_SELECTED_ENTITY_HIERARCHY_TOOL_NAME,
+        WORKBENCH_SELECTED_ENTITY_HIERARCHY_DESCRIPTION,
+        "Inspect selected Workbench entity hierarchy",
+        ToolAnnotations::with_title("Inspect selected Workbench entity hierarchy")
+            .read_only(true)
+            .open_world(false),
+    )
+}
+
 fn workbench_open_world_tool() -> Tool {
     workbench_input_tool::<McpWorkbenchOpenWorldInput, WorkbenchOpenWorldResult>(
         WORKBENCH_OPEN_WORLD_TOOL_NAME,
@@ -2518,14 +2562,16 @@ mod tests {
     use super::{
         game_data_status_tool, inspect_game_data_symbol_tool, render_api_reference,
         workbench_install_bridge_tool, workbench_list_resources_tool, workbench_open_world_tool,
-        workbench_project_context_tool, workbench_reload_tool, workbench_start_play_session_tool,
+        workbench_project_context_tool, workbench_reload_tool,
+        workbench_selected_entity_hierarchy_tool, workbench_start_play_session_tool,
         workbench_status_tool, workbench_stop_play_session_tool, workbench_validate_scripts_tool,
         workbench_world_selection_summary_tool, DEADLINE_EXCEEDED_CODE, GAME_DATA_STATUS_TOOL_NAME,
         RESPONSE_TOO_LARGE_CODE, WORKBENCH_LIST_RESOURCES_TOOL_NAME,
         WORKBENCH_OPEN_WORLD_TOOL_NAME, WORKBENCH_PROJECT_CONTEXT_TOOL_NAME,
-        WORKBENCH_RELOAD_TOOL_NAME, WORKBENCH_START_PLAY_SESSION_TOOL_NAME,
-        WORKBENCH_STATUS_TOOL_NAME, WORKBENCH_STOP_PLAY_SESSION_TOOL_NAME,
-        WORKBENCH_VALIDATE_SCRIPTS_TOOL_NAME, WORKBENCH_WORLD_SELECTION_SUMMARY_TOOL_NAME,
+        WORKBENCH_RELOAD_TOOL_NAME, WORKBENCH_SELECTED_ENTITY_HIERARCHY_TOOL_NAME,
+        WORKBENCH_START_PLAY_SESSION_TOOL_NAME, WORKBENCH_STATUS_TOOL_NAME,
+        WORKBENCH_STOP_PLAY_SESSION_TOOL_NAME, WORKBENCH_VALIDATE_SCRIPTS_TOOL_NAME,
+        WORKBENCH_WORLD_SELECTION_SUMMARY_TOOL_NAME,
     };
     use serde_json::Value;
 
@@ -2588,6 +2634,7 @@ mod tests {
         let project_context = workbench_project_context_tool();
         let list_resources = workbench_list_resources_tool();
         let world_selection = workbench_world_selection_summary_tool();
+        let hierarchy = workbench_selected_entity_hierarchy_tool();
         let start_play = workbench_start_play_session_tool();
         let stop_play = workbench_stop_play_session_tool();
         assert_eq!(status.name, WORKBENCH_STATUS_TOOL_NAME);
@@ -2599,6 +2646,10 @@ mod tests {
         assert_eq!(
             world_selection.name,
             WORKBENCH_WORLD_SELECTION_SUMMARY_TOOL_NAME
+        );
+        assert_eq!(
+            hierarchy.name,
+            WORKBENCH_SELECTED_ENTITY_HIERARCHY_TOOL_NAME
         );
         assert_eq!(start_play.name, WORKBENCH_START_PLAY_SESSION_TOOL_NAME);
         assert_eq!(stop_play.name, WORKBENCH_STOP_PLAY_SESSION_TOOL_NAME);
@@ -2625,6 +2676,13 @@ mod tests {
             Some(true)
         );
         assert_eq!(
+            hierarchy
+                .annotations
+                .as_ref()
+                .and_then(|annotations| annotations.read_only_hint),
+            Some(true)
+        );
+        assert_eq!(
             install
                 .annotations
                 .as_ref()
@@ -2636,5 +2694,6 @@ mod tests {
         assert!(reference.contains("## `workbench_status`"));
         assert!(reference.contains("## `workbench_validate_scripts`"));
         assert!(reference.contains("## `workbench_world_selection_summary`"));
+        assert!(reference.contains("## `workbench_selected_entity_hierarchy`"));
     }
 }
