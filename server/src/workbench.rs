@@ -249,7 +249,9 @@ pub struct WorkbenchResourceListPage {
     pub bridge_version: String,
     pub protocol_version: u32,
     pub project_revision: String,
+    pub limit: usize,
     pub resources: Vec<String>,
+    pub truncated: bool,
     pub next_cursor: Option<String>,
 }
 
@@ -924,7 +926,9 @@ impl WorkbenchController {
             bridge_version: raw.bridge_version,
             protocol_version: raw.protocol_version,
             project_revision,
+            limit,
             resources: raw.resources,
+            truncated: raw.has_more,
             next_cursor,
         };
         self.log_event_timed(
@@ -3569,6 +3573,8 @@ mod tests {
             .unwrap();
 
         assert_eq!(page.resources.len(), 1);
+        assert_eq!(page.limit, 2);
+        assert!(page.truncated);
         assert!(page.next_cursor.is_some());
         assert!(super::parse_resource_list_cursor(page.next_cursor.as_deref().unwrap()).is_some());
         assert_ne!(page.project_revision, "ArmaReforger;TestBullshit");

@@ -3078,6 +3078,10 @@ List a bounded page of Workbench resources by fixed resource kinds and an option
     "bridgeVersion": {
       "type": "string"
     },
+    "limit": {
+      "minimum": 0,
+      "type": "integer"
+    },
     "nextCursor": {
       "type": [
         "string",
@@ -3096,13 +3100,18 @@ List a bounded page of Workbench resources by fixed resource kinds and an option
         "type": "string"
       },
       "type": "array"
+    },
+    "truncated": {
+      "type": "boolean"
     }
   },
   "required": [
     "bridgeVersion",
     "protocolVersion",
     "projectRevision",
-    "resources"
+    "limit",
+    "resources",
+    "truncated"
   ],
   "type": "object"
 }
