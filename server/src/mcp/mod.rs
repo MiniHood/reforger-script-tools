@@ -27,7 +27,7 @@ use crate::workbench::{
     WorkbenchFailure, WorkbenchFailureCode, WorkbenchInstallAuthorization, WorkbenchLiveState,
     WorkbenchLogRead, WorkbenchOpenWorldResult, WorkbenchOverview, WorkbenchPlaySessionResult,
     WorkbenchProcessResult, WorkbenchProjectContext, WorkbenchResourceInspection,
-    WorkbenchScriptActivationResult, WorkbenchValidationPage,
+    WorkbenchScriptActivationResult, WorkbenchValidationPage, WorkbenchWorldSelectionSummary,
 };
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, ContentBlock, Implementation, ListToolsResult,
@@ -59,6 +59,7 @@ pub const WORKBENCH_INSTALL_BRIDGE_TOOL_NAME: &str = "workbench_install_bridge";
 pub const WORKBENCH_STATE_TOOL_NAME: &str = "workbench_state";
 pub const WORKBENCH_PROJECT_CONTEXT_TOOL_NAME: &str = "workbench_project_context";
 pub const WORKBENCH_INSPECT_RESOURCE_TOOL_NAME: &str = "workbench_inspect_resource";
+pub const WORKBENCH_WORLD_SELECTION_SUMMARY_TOOL_NAME: &str = "workbench_world_selection_summary";
 pub const WORKBENCH_OPEN_WORLD_TOOL_NAME: &str = "workbench_open_world";
 pub const WORKBENCH_START_PLAY_SESSION_TOOL_NAME: &str = "workbench_start_play_session";
 pub const WORKBENCH_STOP_PLAY_SESSION_TOOL_NAME: &str = "workbench_stop_play_session";
@@ -93,6 +94,7 @@ const WORKBENCH_STATE_DESCRIPTION: &str =
     "Read bounded live editor state from the compatible managed Workbench handler package.";
 const WORKBENCH_PROJECT_CONTEXT_DESCRIPTION: &str = "Read the loaded Workbench addon identities from the compatible managed handler package. This is live editor context, not a filesystem project scan.";
 const WORKBENCH_INSPECT_RESOURCE_DESCRIPTION: &str = "Inspect one canonical Workbench resource identity through the compatible managed handler package. It returns compact resource metadata only and never accepts filesystem paths.";
+const WORKBENCH_WORLD_SELECTION_SUMMARY_DESCRIPTION: &str = "Read a bounded live World Editor selection summary through the compatible managed handler package. It returns stable entity IDs, classes, subscenes, and layers; it never changes the editor selection.";
 const WORKBENCH_OPEN_WORLD_DESCRIPTION: &str = "Open one typed World Editor world through the compatible managed Workbench handler package without restarting Workbench.";
 const WORKBENCH_START_PLAY_SESSION_DESCRIPTION: &str = "Explicitly request that World Editor starts a play session. Acceptance confirms the command was issued, not that a world has finished loading.";
 const WORKBENCH_STOP_PLAY_SESSION_DESCRIPTION: &str = "Explicitly request that World Editor returns to edit mode. This is distinct from stopping the Workbench process.";
@@ -997,6 +999,7 @@ impl ServerHandler for ReforgerMcpServer {
             workbench_state_tool(),
             workbench_project_context_tool(),
             workbench_inspect_resource_tool(),
+            workbench_world_selection_summary_tool(),
             workbench_open_world_tool(),
             workbench_start_play_session_tool(),
             workbench_stop_play_session_tool(),
@@ -1028,6 +1031,9 @@ impl ServerHandler for ReforgerMcpServer {
             WORKBENCH_STATE_TOOL_NAME => Some(workbench_state_tool()),
             WORKBENCH_PROJECT_CONTEXT_TOOL_NAME => Some(workbench_project_context_tool()),
             WORKBENCH_INSPECT_RESOURCE_TOOL_NAME => Some(workbench_inspect_resource_tool()),
+            WORKBENCH_WORLD_SELECTION_SUMMARY_TOOL_NAME => {
+                Some(workbench_world_selection_summary_tool())
+            }
             WORKBENCH_OPEN_WORLD_TOOL_NAME => Some(workbench_open_world_tool()),
             WORKBENCH_START_PLAY_SESSION_TOOL_NAME => Some(workbench_start_play_session_tool()),
             WORKBENCH_STOP_PLAY_SESSION_TOOL_NAME => Some(workbench_stop_play_session_tool()),
@@ -1096,6 +1102,21 @@ impl ServerHandler for ReforgerMcpServer {
                     workbench
                         .inspect_resource(&input.resource_name)
                         .map_err(|failure| workbench.correlate_failure("inspect_resource", failure))
+                },
+            )
+            .await;
+        }
+        if request.name == WORKBENCH_WORLD_SELECTION_SUMMARY_TOOL_NAME {
+            require_empty_tool_request(&request, WORKBENCH_WORLD_SELECTION_SUMMARY_TOOL_NAME)?;
+            let workbench = self.workbench.clone();
+            return blocking_workbench_call(
+                self.admission.clone(),
+                context,
+                "world_selection_summary",
+                move || {
+                    workbench.world_selection_summary().map_err(|failure| {
+                        workbench.correlate_failure("world_selection_summary", failure)
+                    })
                 },
             )
             .await;
@@ -1863,6 +1884,7 @@ Copy a hit's `inspectInput` unchanged to `inspect_game_data_symbol`, or its `rea
         workbench_state_tool(),
         workbench_project_context_tool(),
         workbench_inspect_resource_tool(),
+        workbench_world_selection_summary_tool(),
         workbench_open_world_tool(),
         workbench_start_play_session_tool(),
         workbench_stop_play_session_tool(),
@@ -2193,6 +2215,17 @@ fn workbench_inspect_resource_tool() -> Tool {
     )
 }
 
+fn workbench_world_selection_summary_tool() -> Tool {
+    workbench_empty_tool::<WorkbenchWorldSelectionSummary>(
+        WORKBENCH_WORLD_SELECTION_SUMMARY_TOOL_NAME,
+        WORKBENCH_WORLD_SELECTION_SUMMARY_DESCRIPTION,
+        "Read Workbench World Editor selection",
+        ToolAnnotations::with_title("Read Workbench World Editor selection")
+            .read_only(true)
+            .open_world(false),
+    )
+}
+
 fn workbench_open_world_tool() -> Tool {
     workbench_input_tool::<McpWorkbenchOpenWorldInput, WorkbenchOpenWorldResult>(
         WORKBENCH_OPEN_WORLD_TOOL_NAME,
@@ -2391,11 +2424,13 @@ mod tests {
         game_data_status_tool, inspect_game_data_symbol_tool, render_api_reference,
         workbench_install_bridge_tool, workbench_open_world_tool, workbench_project_context_tool,
         workbench_reload_tool, workbench_start_play_session_tool, workbench_status_tool,
-        workbench_stop_play_session_tool, workbench_validate_scripts_tool, DEADLINE_EXCEEDED_CODE,
-        GAME_DATA_STATUS_TOOL_NAME, RESPONSE_TOO_LARGE_CODE, WORKBENCH_OPEN_WORLD_TOOL_NAME,
+        workbench_stop_play_session_tool, workbench_validate_scripts_tool,
+        workbench_world_selection_summary_tool, DEADLINE_EXCEEDED_CODE, GAME_DATA_STATUS_TOOL_NAME,
+        RESPONSE_TOO_LARGE_CODE, WORKBENCH_OPEN_WORLD_TOOL_NAME,
         WORKBENCH_PROJECT_CONTEXT_TOOL_NAME, WORKBENCH_RELOAD_TOOL_NAME,
         WORKBENCH_START_PLAY_SESSION_TOOL_NAME, WORKBENCH_STATUS_TOOL_NAME,
         WORKBENCH_STOP_PLAY_SESSION_TOOL_NAME, WORKBENCH_VALIDATE_SCRIPTS_TOOL_NAME,
+        WORKBENCH_WORLD_SELECTION_SUMMARY_TOOL_NAME,
     };
     use serde_json::Value;
 
@@ -2456,6 +2491,7 @@ mod tests {
         let reload = workbench_reload_tool();
         let open_world = workbench_open_world_tool();
         let project_context = workbench_project_context_tool();
+        let world_selection = workbench_world_selection_summary_tool();
         let start_play = workbench_start_play_session_tool();
         let stop_play = workbench_stop_play_session_tool();
         assert_eq!(status.name, WORKBENCH_STATUS_TOOL_NAME);
@@ -2463,6 +2499,10 @@ mod tests {
         assert_eq!(reload.name, WORKBENCH_RELOAD_TOOL_NAME);
         assert_eq!(open_world.name, WORKBENCH_OPEN_WORLD_TOOL_NAME);
         assert_eq!(project_context.name, WORKBENCH_PROJECT_CONTEXT_TOOL_NAME);
+        assert_eq!(
+            world_selection.name,
+            WORKBENCH_WORLD_SELECTION_SUMMARY_TOOL_NAME
+        );
         assert_eq!(start_play.name, WORKBENCH_START_PLAY_SESSION_TOOL_NAME);
         assert_eq!(stop_play.name, WORKBENCH_STOP_PLAY_SESSION_TOOL_NAME);
         assert_ne!(stop_play.name, "workbench_stop");
@@ -2481,6 +2521,13 @@ mod tests {
             Some(false)
         );
         assert_eq!(
+            world_selection
+                .annotations
+                .as_ref()
+                .and_then(|annotations| annotations.read_only_hint),
+            Some(true)
+        );
+        assert_eq!(
             install
                 .annotations
                 .as_ref()
@@ -2491,5 +2538,6 @@ mod tests {
         let reference = render_api_reference();
         assert!(reference.contains("## `workbench_status`"));
         assert!(reference.contains("## `workbench_validate_scripts`"));
+        assert!(reference.contains("## `workbench_world_selection_summary`"));
     }
 }

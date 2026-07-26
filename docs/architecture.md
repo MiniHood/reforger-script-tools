@@ -103,6 +103,12 @@ game. `likely-running` is a bounded inference from a present module with no
 editor API, not a claim of an engine-proven runtime session. It does not infer another foreground editor
 mode from process state, window titles, or log text.
 
+The read-only `workbench_world_selection_summary` capability is available only
+when the World Editor module exposes its live API. It returns the observed
+selection count and at most 32 selected entities, each by stable editor ID,
+class, subscene, and layer. It never changes selection, relies on no display
+name as an identity, and reports unavailable editor/API states explicitly.
+
 Compiler validation is captured once per invocation and exposed as bounded,
 opaque-cursor pages so an MCP client can retrieve every finding without
 recompiling between pages. Process shutdown is bound to a process identity that

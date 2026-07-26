@@ -2994,6 +2994,107 @@ Inspect one canonical Workbench resource identity through the compatible managed
 
 Workbench tools return structured tool errors with a stable code, operation phase, retryability, and a unique log reference matching a rotating integration-log record. Raw transport and Workbench payload details are not exposed.
 
+## `workbench_world_selection_summary`
+
+Read a bounded live World Editor selection summary through the compatible managed handler package. It returns stable entity IDs, classes, subscenes, and layers; it never changes the editor selection.
+
+### Annotations
+
+```json
+{
+  "title": "Read Workbench World Editor selection",
+  "readOnlyHint": true,
+  "openWorldHint": false
+}
+```
+
+### Input schema
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {},
+  "type": "object"
+}
+```
+
+### Output schema
+
+```json
+{
+  "$defs": {
+    "WorkbenchSelectedEntity": {
+      "properties": {
+        "className": {
+          "type": "string"
+        },
+        "entityId": {
+          "type": "string"
+        },
+        "layerId": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "subScene": {
+          "format": "int32",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "entityId",
+        "className",
+        "subScene",
+        "layerId"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "bridgeVersion": {
+      "type": "string"
+    },
+    "editorAvailable": {
+      "type": "boolean"
+    },
+    "protocolVersion": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "selectedCount": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "selectedEntities": {
+      "items": {
+        "$ref": "#/$defs/WorkbenchSelectedEntity"
+      },
+      "type": "array"
+    },
+    "selectedEntitiesTruncated": {
+      "type": "boolean"
+    },
+    "status": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "bridgeVersion",
+    "protocolVersion",
+    "editorAvailable",
+    "status",
+    "selectedCount",
+    "selectedEntities",
+    "selectedEntitiesTruncated"
+  ],
+  "type": "object"
+}
+```
+
+### Stable failures
+
+Workbench tools return structured tool errors with a stable code, operation phase, retryability, and a unique log reference matching a rotating integration-log record. Raw transport and Workbench payload details are not exposed.
+
 ## `workbench_open_world`
 
 Open one typed World Editor world through the compatible managed Workbench handler package without restarting Workbench.

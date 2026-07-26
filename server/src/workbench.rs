@@ -103,7 +103,7 @@ pub struct WorkbenchGateway {
     request_lock: Arc<Mutex<()>>,
 }
 
-pub const WORKBENCH_BRIDGE_VERSION: &str = "1.4.0";
+pub const WORKBENCH_BRIDGE_VERSION: &str = "1.5.0";
 pub const WORKBENCH_BRIDGE_PROTOCOL_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -241,6 +241,27 @@ pub struct WorkbenchResourceInspection {
     pub status: String,
     pub resource_name: Option<String>,
     pub class_name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkbenchSelectedEntity {
+    pub entity_id: String,
+    pub class_name: String,
+    pub sub_scene: i32,
+    pub layer_id: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkbenchWorldSelectionSummary {
+    pub bridge_version: String,
+    pub protocol_version: u32,
+    pub editor_available: bool,
+    pub status: String,
+    pub selected_count: u32,
+    pub selected_entities: Vec<WorkbenchSelectedEntity>,
+    pub selected_entities_truncated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
@@ -813,6 +834,76 @@ impl WorkbenchController {
             &result.status,
             started,
             json!({"found": result.found}),
+        );
+        Ok(result)
+    }
+
+    pub fn world_selection_summary(
+        &self,
+    ) -> Result<WorkbenchWorldSelectionSummary, WorkbenchFailure> {
+        let started = Instant::now();
+        let value = self
+            .gateway
+            .request(
+                json!({"APIFunc": "RST_WorkbenchWorldSelection"}),
+                self.options.gateway.status_deadline,
+            )
+            .map_err(|failure| {
+                self.correlate_failure_details(
+                    "world_selection_summary",
+                    failure_code(failure.code),
+                    failure,
+                    json!({"handler": "RST_WorkbenchWorldSelection"}),
+                )
+            })?;
+        let raw: RawBridgeWorldSelection = serde_json::from_value(value).map_err(|_| {
+            self.correlate_failure_details(
+                "world_selection_summary",
+                "workbench_protocol_error",
+                failure(WorkbenchFailureCode::Protocol),
+                json!({"handler": "RST_WorkbenchWorldSelection"}),
+            )
+        })?;
+        if raw.protocol_version != WORKBENCH_BRIDGE_PROTOCOL_VERSION {
+            return Err(self.correlate_failure_details(
+                "world_selection_summary",
+                "incompatible-handler",
+                failure(WorkbenchFailureCode::Protocol),
+                json!({"handler": "RST_WorkbenchWorldSelection", "activeBridgeVersion": raw.bridge_version, "activeProtocolVersion": raw.protocol_version}),
+            ));
+        }
+        let selected_entities =
+            parse_world_selection_records(&raw.selected_entities).map_err(|_| {
+                self.correlate_failure_details(
+                    "world_selection_summary",
+                    "workbench_protocol_error",
+                    failure(WorkbenchFailureCode::Protocol),
+                    json!({"handler": "RST_WorkbenchWorldSelection"}),
+                )
+            })?;
+        if selected_entities.len() > 32 || selected_entities.len() > raw.selected_count as usize {
+            return Err(self.correlate_failure_details(
+                "world_selection_summary",
+                "workbench_protocol_error",
+                failure(WorkbenchFailureCode::Protocol),
+                json!({"handler": "RST_WorkbenchWorldSelection"}),
+            ));
+        }
+        let result = WorkbenchWorldSelectionSummary {
+            bridge_version: raw.bridge_version,
+            protocol_version: raw.protocol_version,
+            editor_available: raw.editor_available,
+            status: raw.status,
+            selected_count: raw.selected_count,
+            selected_entities_truncated: raw.selected_entities_truncated
+                || selected_entities.len() < raw.selected_count as usize,
+            selected_entities,
+        };
+        self.log_event_timed(
+            "world-selection-summary",
+            &result.status,
+            started,
+            json!({"editorAvailable": result.editor_available, "selectedCount": result.selected_count, "selectedEntitiesReturned": result.selected_entities.len(), "selectedEntitiesTruncated": result.selected_entities_truncated}),
         );
         Ok(result)
     }
@@ -1930,6 +2021,23 @@ struct RawBridgeProjectContext {
     loaded_addons: String,
 }
 
+#[derive(Deserialize)]
+struct RawBridgeWorldSelection {
+    #[serde(rename = "bridgeVersion")]
+    bridge_version: String,
+    #[serde(rename = "protocolVersion")]
+    protocol_version: u32,
+    #[serde(rename = "editorAvailable")]
+    editor_available: bool,
+    status: String,
+    #[serde(rename = "selectedCount")]
+    selected_count: u32,
+    #[serde(rename = "selectedEntities", default)]
+    selected_entities: String,
+    #[serde(rename = "selectedEntitiesTruncated", default)]
+    selected_entities_truncated: bool,
+}
+
 fn workbench_bool(value: &Value) -> bool {
     matches!(value, Value::Bool(true)) || value.as_i64().is_some_and(|integer| integer != 0)
 }
@@ -1963,6 +2071,36 @@ fn canonical_resource_name(value: &str) -> bool {
         && !path.contains("..")
         && !path.contains('\\')
         && !path.contains(':')
+}
+
+fn parse_world_selection_records(value: &str) -> Result<Vec<WorkbenchSelectedEntity>, ()> {
+    if value.is_empty() {
+        return Ok(Vec::new());
+    }
+    value
+        .split(';')
+        .map(|record| {
+            let mut fields = record.split('|');
+            let entity_id = fields.next().filter(|value| !value.is_empty()).ok_or(())?;
+            let class_name = fields.next().filter(|value| !value.is_empty()).ok_or(())?;
+            let sub_scene = fields.next().ok_or(())?.parse::<i32>().map_err(|_| ())?;
+            let layer_id = fields.next().ok_or(())?.parse::<i32>().map_err(|_| ())?;
+            if fields.next().is_some()
+                || entity_id.len() > 128
+                || class_name.len() > 256
+                || entity_id.contains(|character: char| character.is_control())
+                || class_name.contains(|character: char| character.is_control())
+            {
+                return Err(());
+            }
+            Ok(WorkbenchSelectedEntity {
+                entity_id: entity_id.to_string(),
+                class_name: class_name.to_string(),
+                sub_scene,
+                layer_id,
+            })
+        })
+        .collect()
 }
 
 struct ResolvedWorkbenchPaths {
@@ -2472,6 +2610,10 @@ fn bridge_payload() -> &'static [(&'static str, &'static str)] {
             "RST_WorkbenchInspectResource.c",
             BRIDGE_INSPECT_RESOURCE_SOURCE,
         ),
+        (
+            "RST_WorkbenchWorldSelection.c",
+            BRIDGE_WORLD_SELECTION_SOURCE,
+        ),
     ]
 }
 
@@ -2506,9 +2648,9 @@ class RST_WorkbenchCapabilities : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchCapabilitiesResponse response = new RST_WorkbenchCapabilitiesResponse();
-		response.bridgeVersion = "1.4.0";
+		response.bridgeVersion = "1.5.0";
 	response.protocolVersion = 1;
-	response.capabilities = "state;open-world;play-session;project-context;inspect-resource";
+	response.capabilities = "state;open-world;play-session;project-context;inspect-resource;world-selection";
 		return response;
 	}
 }
@@ -2551,7 +2693,7 @@ class RST_WorkbenchState : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchStateResponse response = new RST_WorkbenchStateResponse();
-	response.bridgeVersion = "1.4.0";
+	response.bridgeVersion = "1.5.0";
 		response.protocolVersion = 1;
 		response.mode = "workbench";
 		response.playSession = "unavailable";
@@ -2739,7 +2881,7 @@ class RST_WorkbenchProjectContext : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchProjectContextResponse response = new RST_WorkbenchProjectContextResponse();
-		response.bridgeVersion = "1.4.0";
+		response.bridgeVersion = "1.5.0";
 		response.protocolVersion = 1;
 		array<string> addonGuids = new array<string>();
 		GameProject.GetLoadedAddons(addonGuids);
@@ -2797,6 +2939,70 @@ class RST_WorkbenchInspectResource : NetApiHandler
 #endif
 "#;
 
+const BRIDGE_WORLD_SELECTION_SOURCE: &str = r#"#ifdef WORKBENCH
+class RST_WorkbenchWorldSelectionRequest : JsonApiStruct
+{
+	void RST_WorkbenchWorldSelectionRequest() { RegAll(); }
+}
+
+class RST_WorkbenchWorldSelectionResponse : JsonApiStruct
+{
+	string bridgeVersion;
+	int protocolVersion;
+	bool editorAvailable;
+	string status;
+	int selectedCount;
+	string selectedEntities;
+	bool selectedEntitiesTruncated;
+
+	void RST_WorkbenchWorldSelectionResponse() { RegAll(); }
+}
+
+class RST_WorkbenchWorldSelection : NetApiHandler
+{
+	override JsonApiStruct GetRequest() { return new RST_WorkbenchWorldSelectionRequest(); }
+
+	override JsonApiStruct GetResponse(JsonApiStruct request)
+	{
+		RST_WorkbenchWorldSelectionResponse response = new RST_WorkbenchWorldSelectionResponse();
+		response.bridgeVersion = "1.5.0";
+		response.protocolVersion = 1;
+		WorldEditor worldEditor = Workbench.GetModule(WorldEditor);
+		if (!worldEditor)
+		{
+			response.status = "world-editor-unavailable";
+			return response;
+		}
+		WorldEditorAPI worldEditorApi = worldEditor.GetApi();
+		if (!worldEditorApi)
+		{
+			response.status = "world-editor-api-unavailable";
+			return response;
+		}
+		response.editorAvailable = true;
+		response.status = "available";
+		response.selectedCount = worldEditorApi.GetSelectedEntitiesCount();
+		int boundedCount = response.selectedCount;
+		if (boundedCount > 32)
+		{
+			boundedCount = 32;
+			response.selectedEntitiesTruncated = true;
+		}
+		for (int index = 0; index < boundedCount; index++)
+		{
+			IEntitySource entity = worldEditorApi.GetSelectedEntity(index);
+			if (!entity)
+				continue;
+			if (response.selectedEntities != string.Empty)
+				response.selectedEntities += ";";
+			response.selectedEntities += string.Format("%1|%2|%3|%4", entity.GetID().ToString(), entity.GetClassName(), entity.GetSubScene(), entity.GetLayerID());
+		}
+		return response;
+	}
+}
+#endif
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -2817,6 +3023,57 @@ mod tests {
         assert!(!super::workbench_bool(&json!(false)));
         assert!(!super::workbench_bool(&json!(0)));
         assert!(!super::workbench_bool(&Value::Null));
+    }
+
+    #[test]
+    fn world_selection_records_are_bounded_and_require_stable_identity_fields() {
+        let records = super::parse_world_selection_records(
+            "0x0000000000000001|TestEntity|0|12;0x0000000000000002|LightEntity|2|4",
+        )
+        .unwrap();
+
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].entity_id, "0x0000000000000001");
+        assert_eq!(records[0].class_name, "TestEntity");
+        assert_eq!(records[0].sub_scene, 0);
+        assert_eq!(records[0].layer_id, 12);
+        assert!(super::parse_world_selection_records("missing-fields").is_err());
+        assert!(super::parse_world_selection_records("id|class|nope|0").is_err());
+    }
+
+    #[test]
+    fn world_selection_summary_returns_bounded_stable_editor_facts() {
+        let (port, peer) = start_peer(|request| {
+            assert_eq!(request, json!({"APIFunc": "RST_WorkbenchWorldSelection"}));
+            json!({
+                "bridgeVersion": "1.5.0",
+                "protocolVersion": 1,
+                "editorAvailable": true,
+                "status": "available",
+                "selectedCount": 2,
+                "selectedEntities": "0x0000000000000001|TestEntity|0|12;0x0000000000000002|LightEntity|2|4",
+                "selectedEntitiesTruncated": false
+            })
+        });
+        let root = test_root("world-selection-summary");
+        let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
+            gateway: super::WorkbenchGatewayOptions {
+                port,
+                status_deadline: Duration::from_secs(1),
+                ..super::WorkbenchGatewayOptions::default()
+            },
+            user_directory: Some(root.clone()),
+            ..super::WorkbenchControllerOptions::default()
+        });
+
+        let result = controller.world_selection_summary().unwrap();
+
+        assert!(result.editor_available);
+        assert_eq!(result.selected_count, 2);
+        assert_eq!(result.selected_entities.len(), 2);
+        assert!(!result.selected_entities_truncated);
+        peer.join().unwrap();
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
