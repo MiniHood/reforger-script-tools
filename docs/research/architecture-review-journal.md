@@ -37,7 +37,7 @@ belong to a later design discussion.
 | Editor/LSP bridges and extension tests | 15 | completed | 14 language-client modules and `src/test/extensionActivation.test.ts` |
 | Rust language foundations | 21 | completed | Non-LSP `server/src/` language foundations and composition root |
 | Rust LSP runtime and features | 31 | completed | `server/src/lsp/` runtime, transport, features, and tests |
-| Rust binary and examples | 38 | completed | `server/src/bin/` plus all `server/examples/` report programs |
+| Rust binary and examples | 38 | completed | `server/src/bin/` plus all `tools/server-reports/` report programs |
 | Developer tools and tool tests | 74 | completed | 40 JavaScript tools/tests and 34 Enfusion fixtures |
 | Cross-cutting synthesis | 192 | completed | Coverage audit, prioritized findings, performance, and ownership synthesis |
 
@@ -166,7 +166,7 @@ for lifecycle tests.
 ### AR-007 — Two declaration-extraction pipelines duplicate language facts
 
 **Strength:** Strong
-**Files:** `server/src/model.rs:303-1090`; `server/src/semantic_file.rs:146-971`; `server/src/index.rs:229-376, 381-709`; `server/examples/{symbol*,resolver_report,lsp_completion_report,lsp_signature_help_report,reference_finder*,scope_corpus_report,expression_type_corpus_report}.rs`
+**Files:** `server/src/model.rs:303-1090`; `server/src/semantic_file.rs:146-971`; `server/src/index.rs:229-376, 381-709`; `tools/server-reports/{symbol*,resolver_report,lsp_completion_report,lsp_signature_help_report,reference_finder*,scope_corpus_report,expression_type_corpus_report}.rs`
 
 Production document and external-index paths build `SemanticFile` from the
 parser and project it into `SymbolIndex`. The retained `SymbolCatalog` path
@@ -271,7 +271,7 @@ avoidable foreground I/O.
 ### AR-012 — Hover rendering owns an unindexed hard-coded `Attribute` language contract
 
 **Strength:** Strong
-**Files:** `server/src/lsp/hover_render.rs:11-21, 966-1080`; `server/src/lsp/completion.rs:7271`; `server/examples/lsp_completion_report.rs:99`
+**Files:** `server/src/lsp/hover_render.rs:11-21, 966-1080`; `server/src/lsp/completion.rs:7271`; `tools/server-reports/lsp_completion_report.rs:99`
 
 The presentation module embeds the full `Attribute` constructor signature and
 duplicates its parameter names/types again as `attribute_param_specs`. It then
@@ -447,7 +447,7 @@ index and makes rendering a one-way operation.
 ### AR-020 — Rust corpus reports repeat their source-discovery and invocation policy
 
 **Strength:** Strong
-**Files:** `server/examples/{lexer,parser,ast,expression,index}_corpus_report.rs` and analogous corpus/report examples
+**Files:** `tools/server-reports/{lexer,parser,ast,expression,index}_corpus_report.rs` and analogous corpus/report examples
 
 The Rust report programs independently implement the same `--scripts`/`--out`
 parser, default VS Code storage location, repository-root resolution, recursive
@@ -467,7 +467,7 @@ adding an extension runtime dependency.
 ### AR-021 — Parser corpus reporting embeds a path-and-text-specific recovery exception
 
 **Strength:** Worth exploring
-**Files:** `server/examples/parser_corpus_report.rs:160-169`
+**Files:** `tools/server-reports/parser_corpus_report.rs:160-169`
 
 `expected_recovery_node_count` recognizes exactly a relative path ending in
 `Game\\game.c` and source text containing `#ifdef BREAK_COMPILATION`, then

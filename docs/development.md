@@ -47,6 +47,15 @@ optimized code. This keeps the bundled development language server
 representative enough for large-file editor latency while preserving the
 release profile as the packaging authority.
 
+### Developer report programs
+
+Developer-only Rust reports and benchmarks live in `tools/server-reports/`,
+outside the packaged server source tree. `server/Cargo.toml` declares them as
+explicit example targets, so existing commands such as
+`cargo run --manifest-path server/Cargo.toml --example <name> -- ...` remain
+the supported way to run them. They are developer tooling and never a runtime
+dependency of the extension.
+
 The bundled executable selects a protocol before either protocol starts:
 
 ```powershell
