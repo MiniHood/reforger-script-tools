@@ -1,3 +1,8 @@
+//! Language Server Protocol adapter.
+//!
+//! This module owns LSP transport, document lifecycle, and LSP feature
+//! projection. Shared Enfusion analysis remains in the sibling root modules.
+
 use crate::analysis_runtime::{
     AdmissionDisposition, AnalysisTask, PositionIndex, QueryQuality, TaskClass,
 };

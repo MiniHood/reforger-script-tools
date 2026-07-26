@@ -1,3 +1,9 @@
+//! Model Context Protocol adapter.
+//!
+//! This module owns MCP tool schemas, protocol serving, and bounded result
+//! mapping. Shared Game Data and Official Wiki authorities remain in the
+//! sibling root modules.
+
 use crate::game_data_catalogue::{
     GameDataCatalogue, GameDataCatalogueConfig, GameDataCatalogueResearchError,
     GameDataCatalogueSearchError, GameDataStatus, GAME_DATA_INITIALIZATION_DEADLINE_MS,

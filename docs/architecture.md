@@ -160,7 +160,10 @@ Workbench state.
 | `src/mcp/` | Complete client configuration generated from the packaged runtime and stable source/cache inputs | Protocol serving, indexing, or semantic queries |
 | `src/workbenchNetApi/gateway/` | Host-neutral NET API codec, configured-endpoint transactions, typed Workbench capabilities, availability state, deadlines, and sanitized outcomes | VS Code imports, editor scheduling/UI, raw endpoint dispatch, or Enfusion language decisions |
 | `src/workbenchNetApi/compiler/` | VS Code settings, save/validation scheduling, compiler diagnostic rendering, and Workbench status UI | NET API framing, endpoint discovery, or language-engine diagnostics |
-| `server/` | Language analysis, external indexes, formatting, diagnostics, LSP behavior, and the thin MCP protocol adapter | VS Code UI, settings, or game-data acquisition |
+| `server/src/bin/reforger_language_server.rs` | Process-mode parsing and dispatch to exactly one protocol adapter | LSP or MCP behavior, language analysis, or tool definitions |
+| `server/src/lsp/` | LSP transport, document lifecycle, and language-feature projection | MCP schemas/tool serving or a second Enfusion analysis implementation |
+| `server/src/mcp/` | MCP tool schemas, protocol serving, and bounded result mapping | LSP transport/lifecycle or a second Game Data/Official Wiki authority |
+| `server/src/*.rs` (except protocol adapters) | Shared Enfusion language analysis, evidence catalogues, indexes, formatting, and diagnostics | VS Code UI, settings, or client-protocol ownership |
 | `tools/` | Development and investigation support | Extension runtime behavior |
 
 `src/extension.ts` composes these modules; it is not a feature owner.

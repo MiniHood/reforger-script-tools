@@ -1,3 +1,5 @@
+// Shared Enfusion language and evidence modules. These do not own a client
+// protocol and may be used by either adapter.
 pub mod analysis_runtime;
 pub mod ast;
 pub mod callable;
@@ -13,6 +15,7 @@ pub mod index_build;
 pub mod index_cache;
 pub mod index_query;
 pub mod lexer;
+// Protocol adapters. The executable composition root selects exactly one mode.
 pub mod lsp;
 pub mod mcp;
 pub mod model;

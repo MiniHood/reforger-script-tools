@@ -24,7 +24,7 @@ a competing normal path. That conclusion matches the existing repository
 boundary: `server/` is the language authority, and its external-index snapshot
 already carries distinct immutable `workspace` and `game_data` layers
 (`server/src/lsp/external_overlay.rs`). The current server advertises document
-symbols but not `workspaceSymbolProvider` (`server/src/lsp.rs`), while
+symbols but not `workspaceSymbolProvider` (`server/src/lsp/mod.rs`), while
 `SymbolIndex` already owns symbols, source metadata, by-name maps, and a folded
 top-level prefix map (`server/src/index.rs`).
 

@@ -293,7 +293,7 @@ lets parser, completion, signature help, and hover verify the same fact.
 ### AR-013 — Cached LSP requests bypass the runtime-owned position index
 
 **Strength:** Strong
-**Files:** `server/src/analysis_runtime.rs:22-97`; `server/src/lsp/open_documents.rs:104-127`; `server/src/lsp.rs:1049-1103`; `server/src/lsp/completion.rs:241-251`; `server/src/lsp/hover.rs:221-245`; `server/src/lsp/definition.rs:139-157`
+**Files:** `server/src/analysis_runtime.rs:22-97`; `server/src/lsp/open_documents.rs:104-127`; `server/src/lsp/mod.rs:1049-1103`; `server/src/lsp/completion.rs:241-251`; `server/src/lsp/hover.rs:221-245`; `server/src/lsp/definition.rs:139-157`
 
 The foreground runtime builds and retains a `PositionIndex` for every current
 document revision before semantic analysis becomes available. Yet cached
