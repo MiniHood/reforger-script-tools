@@ -26,8 +26,8 @@ use crate::workbench::{
     WorkbenchBridgeInstallResult, WorkbenchController, WorkbenchControllerOptions,
     WorkbenchFailure, WorkbenchFailureCode, WorkbenchInstallAuthorization, WorkbenchLiveState,
     WorkbenchLogRead, WorkbenchOpenWorldResult, WorkbenchOverview, WorkbenchPlaySessionResult,
-    WorkbenchProcessResult, WorkbenchProjectContext, WorkbenchScriptActivationResult,
-    WorkbenchValidationPage,
+    WorkbenchProcessResult, WorkbenchProjectContext, WorkbenchResourceInspection,
+    WorkbenchScriptActivationResult, WorkbenchValidationPage,
 };
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, ContentBlock, Implementation, ListToolsResult,
@@ -58,6 +58,7 @@ pub const WORKBENCH_VALIDATE_SCRIPTS_TOOL_NAME: &str = "workbench_validate_scrip
 pub const WORKBENCH_INSTALL_BRIDGE_TOOL_NAME: &str = "workbench_install_bridge";
 pub const WORKBENCH_STATE_TOOL_NAME: &str = "workbench_state";
 pub const WORKBENCH_PROJECT_CONTEXT_TOOL_NAME: &str = "workbench_project_context";
+pub const WORKBENCH_INSPECT_RESOURCE_TOOL_NAME: &str = "workbench_inspect_resource";
 pub const WORKBENCH_OPEN_WORLD_TOOL_NAME: &str = "workbench_open_world";
 pub const WORKBENCH_START_PLAY_SESSION_TOOL_NAME: &str = "workbench_start_play_session";
 pub const WORKBENCH_STOP_PLAY_SESSION_TOOL_NAME: &str = "workbench_stop_play_session";
@@ -91,6 +92,7 @@ const WORKBENCH_INSTALL_BRIDGE_DESCRIPTION: &str = "Maintain the versioned Refor
 const WORKBENCH_STATE_DESCRIPTION: &str =
     "Read bounded live editor state from the compatible managed Workbench handler package.";
 const WORKBENCH_PROJECT_CONTEXT_DESCRIPTION: &str = "Read the loaded Workbench addon identities from the compatible managed handler package. This is live editor context, not a filesystem project scan.";
+const WORKBENCH_INSPECT_RESOURCE_DESCRIPTION: &str = "Inspect one canonical Workbench resource identity through the compatible managed handler package. It returns compact resource metadata only and never accepts filesystem paths.";
 const WORKBENCH_OPEN_WORLD_DESCRIPTION: &str = "Open one typed World Editor world through the compatible managed Workbench handler package without restarting Workbench.";
 const WORKBENCH_START_PLAY_SESSION_DESCRIPTION: &str = "Explicitly request that World Editor starts a play session. Acceptance confirms the command was issued, not that a world has finished loading.";
 const WORKBENCH_STOP_PLAY_SESSION_DESCRIPTION: &str = "Explicitly request that World Editor returns to edit mode. This is distinct from stopping the Workbench process.";
@@ -150,6 +152,13 @@ struct McpWorkbenchOpenWorldInput {
 struct McpWorkbenchStartPlaySessionInput {
     debug_mode: Option<bool>,
     full_screen: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct McpWorkbenchResourceInput {
+    #[schemars(length(min = 19, max = 1024))]
+    resource_name: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -987,6 +996,7 @@ impl ServerHandler for ReforgerMcpServer {
             workbench_install_bridge_tool(),
             workbench_state_tool(),
             workbench_project_context_tool(),
+            workbench_inspect_resource_tool(),
             workbench_open_world_tool(),
             workbench_start_play_session_tool(),
             workbench_stop_play_session_tool(),
@@ -1017,6 +1027,7 @@ impl ServerHandler for ReforgerMcpServer {
             WORKBENCH_INSTALL_BRIDGE_TOOL_NAME => Some(workbench_install_bridge_tool()),
             WORKBENCH_STATE_TOOL_NAME => Some(workbench_state_tool()),
             WORKBENCH_PROJECT_CONTEXT_TOOL_NAME => Some(workbench_project_context_tool()),
+            WORKBENCH_INSPECT_RESOURCE_TOOL_NAME => Some(workbench_inspect_resource_tool()),
             WORKBENCH_OPEN_WORLD_TOOL_NAME => Some(workbench_open_world_tool()),
             WORKBENCH_START_PLAY_SESSION_TOOL_NAME => Some(workbench_start_play_session_tool()),
             WORKBENCH_STOP_PLAY_SESSION_TOOL_NAME => Some(workbench_stop_play_session_tool()),
@@ -1070,6 +1081,21 @@ impl ServerHandler for ReforgerMcpServer {
                     workbench
                         .project_context()
                         .map_err(|failure| workbench.correlate_failure("project_context", failure))
+                },
+            )
+            .await;
+        }
+        if request.name == WORKBENCH_INSPECT_RESOURCE_TOOL_NAME {
+            let input = parse_workbench_input::<McpWorkbenchResourceInput>(&request)?;
+            let workbench = self.workbench.clone();
+            return blocking_workbench_call(
+                self.admission.clone(),
+                context,
+                "inspect_resource",
+                move || {
+                    workbench
+                        .inspect_resource(&input.resource_name)
+                        .map_err(|failure| workbench.correlate_failure("inspect_resource", failure))
                 },
             )
             .await;
@@ -1836,6 +1862,7 @@ Copy a hit's `inspectInput` unchanged to `inspect_game_data_symbol`, or its `rea
         workbench_install_bridge_tool(),
         workbench_state_tool(),
         workbench_project_context_tool(),
+        workbench_inspect_resource_tool(),
         workbench_open_world_tool(),
         workbench_start_play_session_tool(),
         workbench_stop_play_session_tool(),
@@ -2150,6 +2177,17 @@ fn workbench_project_context_tool() -> Tool {
         WORKBENCH_PROJECT_CONTEXT_DESCRIPTION,
         "Read Workbench project context",
         ToolAnnotations::with_title("Read Workbench project context")
+            .read_only(true)
+            .open_world(false),
+    )
+}
+
+fn workbench_inspect_resource_tool() -> Tool {
+    workbench_input_tool::<McpWorkbenchResourceInput, WorkbenchResourceInspection>(
+        WORKBENCH_INSPECT_RESOURCE_TOOL_NAME,
+        WORKBENCH_INSPECT_RESOURCE_DESCRIPTION,
+        "Inspect Workbench resource",
+        ToolAnnotations::with_title("Inspect Workbench resource")
             .read_only(true)
             .open_world(false),
     )

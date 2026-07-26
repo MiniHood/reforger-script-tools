@@ -103,7 +103,7 @@ pub struct WorkbenchGateway {
     request_lock: Arc<Mutex<()>>,
 }
 
-pub const WORKBENCH_BRIDGE_VERSION: &str = "1.3.0";
+pub const WORKBENCH_BRIDGE_VERSION: &str = "1.4.0";
 pub const WORKBENCH_BRIDGE_PROTOCOL_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -232,6 +232,15 @@ pub struct WorkbenchProjectContext {
     pub protocol_version: u32,
     pub loaded_addons: Vec<String>,
     pub loaded_addons_truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkbenchResourceInspection {
+    pub found: bool,
+    pub status: String,
+    pub resource_name: Option<String>,
+    pub class_name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
@@ -761,6 +770,50 @@ impl WorkbenchController {
             loaded_addons_truncated,
         };
         self.log_event_timed("project-context", "success", started, json!({"loadedAddonCount": result.loaded_addons.len(), "loadedAddonsTruncated": result.loaded_addons_truncated}));
+        Ok(result)
+    }
+
+    pub fn inspect_resource(
+        &self,
+        resource_name: &str,
+    ) -> Result<WorkbenchResourceInspection, WorkbenchFailure> {
+        let started = Instant::now();
+        if !canonical_resource_name(resource_name) {
+            return Err(self.correlate_failure_details(
+                "inspect_resource",
+                "invalid-resource-name",
+                failure(WorkbenchFailureCode::Protocol),
+                json!({}),
+            ));
+        }
+        let value = self
+            .gateway
+            .request(
+                json!({"APIFunc": "RST_WorkbenchInspectResource", "resourceName": resource_name}),
+                self.options.gateway.status_deadline,
+            )
+            .map_err(|failure| {
+                self.correlate_failure_details(
+                    "inspect_resource",
+                    failure_code(failure.code),
+                    failure,
+                    json!({"handler": "RST_WorkbenchInspectResource"}),
+                )
+            })?;
+        let result: WorkbenchResourceInspection = serde_json::from_value(value).map_err(|_| {
+            self.correlate_failure_details(
+                "inspect_resource",
+                "workbench_protocol_error",
+                failure(WorkbenchFailureCode::Protocol),
+                json!({"handler": "RST_WorkbenchInspectResource"}),
+            )
+        })?;
+        self.log_event_timed(
+            "inspect-resource",
+            &result.status,
+            started,
+            json!({"found": result.found}),
+        );
         Ok(result)
     }
 
@@ -1897,6 +1950,21 @@ fn play_session(
     }
 }
 
+fn canonical_resource_name(value: &str) -> bool {
+    let Some((guid, path)) = value
+        .strip_prefix('{')
+        .and_then(|value| value.split_once('}'))
+    else {
+        return false;
+    };
+    guid.len() == 16
+        && guid.bytes().all(|byte| byte.is_ascii_hexdigit())
+        && !path.is_empty()
+        && !path.contains("..")
+        && !path.contains('\\')
+        && !path.contains(':')
+}
+
 struct ResolvedWorkbenchPaths {
     workbench_root: PathBuf,
     profile: PathBuf,
@@ -2400,6 +2468,10 @@ fn bridge_payload() -> &'static [(&'static str, &'static str)] {
             "RST_WorkbenchProjectContext.c",
             BRIDGE_PROJECT_CONTEXT_SOURCE,
         ),
+        (
+            "RST_WorkbenchInspectResource.c",
+            BRIDGE_INSPECT_RESOURCE_SOURCE,
+        ),
     ]
 }
 
@@ -2434,9 +2506,9 @@ class RST_WorkbenchCapabilities : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchCapabilitiesResponse response = new RST_WorkbenchCapabilitiesResponse();
-		response.bridgeVersion = "1.3.0";
+		response.bridgeVersion = "1.4.0";
 	response.protocolVersion = 1;
-	response.capabilities = "state;open-world;play-session;project-context";
+	response.capabilities = "state;open-world;play-session;project-context;inspect-resource";
 		return response;
 	}
 }
@@ -2479,7 +2551,7 @@ class RST_WorkbenchState : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchStateResponse response = new RST_WorkbenchStateResponse();
-	response.bridgeVersion = "1.3.0";
+	response.bridgeVersion = "1.4.0";
 		response.protocolVersion = 1;
 		response.mode = "workbench";
 		response.playSession = "unavailable";
@@ -2667,7 +2739,7 @@ class RST_WorkbenchProjectContext : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchProjectContextResponse response = new RST_WorkbenchProjectContextResponse();
-		response.bridgeVersion = "1.3.0";
+		response.bridgeVersion = "1.4.0";
 		response.protocolVersion = 1;
 		array<string> addonGuids = new array<string>();
 		GameProject.GetLoadedAddons(addonGuids);
@@ -2681,6 +2753,44 @@ class RST_WorkbenchProjectContext : NetApiHandler
 				response.loadedAddons += addonId;
 			}
 		}
+		return response;
+	}
+}
+#endif
+"#;
+
+const BRIDGE_INSPECT_RESOURCE_SOURCE: &str = r#"#ifdef WORKBENCH
+class RST_WorkbenchInspectResourceRequest : JsonApiStruct
+{
+	string resourceName;
+	void RST_WorkbenchInspectResourceRequest() { RegAll(); }
+}
+class RST_WorkbenchInspectResourceResponse : JsonApiStruct
+{
+	bool found;
+	string status;
+	string resourceName;
+	string className;
+	void RST_WorkbenchInspectResourceResponse() { RegAll(); }
+}
+class RST_WorkbenchInspectResource : NetApiHandler
+{
+	override JsonApiStruct GetRequest() { return new RST_WorkbenchInspectResourceRequest(); }
+	override JsonApiStruct GetResponse(JsonApiStruct request)
+	{
+		RST_WorkbenchInspectResourceRequest typedRequest = RST_WorkbenchInspectResourceRequest.Cast(request);
+		RST_WorkbenchInspectResourceResponse response = new RST_WorkbenchInspectResourceResponse();
+		ResourceManager resourceManager = Workbench.GetModule(ResourceManager);
+		if (!resourceManager) { response.status = "resource-manager-unavailable"; return response; }
+		ResourceName resourceName = typedRequest.resourceName;
+		MetaFile meta = resourceManager.GetMetaFile(resourceName.GetPath());
+		if (!meta) { response.status = "resource-not-found"; return response; }
+		BaseContainer configuration = meta.GetObjectArray("Configurations")[0];
+		if (!configuration) { response.status = "resource-configuration-unavailable"; return response; }
+		response.found = true;
+		response.status = "found";
+		response.resourceName = meta.GetResourceID();
+		response.className = configuration.GetClassName();
 		return response;
 	}
 }

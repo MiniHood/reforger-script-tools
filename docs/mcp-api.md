@@ -2923,6 +2923,77 @@ Read the loaded Workbench addon identities from the compatible managed handler p
 
 Workbench tools return structured tool errors with a stable code, operation phase, retryability, and a unique log reference matching a rotating integration-log record. Raw transport and Workbench payload details are not exposed.
 
+## `workbench_inspect_resource`
+
+Inspect one canonical Workbench resource identity through the compatible managed handler package. It returns compact resource metadata only and never accepts filesystem paths.
+
+### Annotations
+
+```json
+{
+  "title": "Inspect Workbench resource",
+  "readOnlyHint": true,
+  "openWorldHint": false
+}
+```
+
+### Input schema
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "resourceName": {
+      "maxLength": 1024,
+      "minLength": 19,
+      "type": "string"
+    }
+  },
+  "required": [
+    "resourceName"
+  ],
+  "type": "object"
+}
+```
+
+### Output schema
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "className": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "found": {
+      "type": "boolean"
+    },
+    "resourceName": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "status": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "found",
+    "status"
+  ],
+  "type": "object"
+}
+```
+
+### Stable failures
+
+Workbench tools return structured tool errors with a stable code, operation phase, retryability, and a unique log reference matching a rotating integration-log record. Raw transport and Workbench payload details are not exposed.
+
 ## `workbench_open_world`
 
 Open one typed World Editor world through the compatible managed Workbench handler package without restarting Workbench.
