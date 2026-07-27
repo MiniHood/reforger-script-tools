@@ -1369,12 +1369,15 @@ impl WorkbenchController {
             }
             None => 0,
         };
-        let value = self.gateway.request(json!({"APIFunc":"RST_WorkbenchListEntities","query":query.unwrap_or_default(),"className":class_name.unwrap_or_default(),"subScene":sub_scene,"layerId":layer_id,"offset":offset,"limit":limit}), self.options.gateway.status_deadline)?;
+        let value = self.gateway.request(json!({"APIFunc":"RST_WorkbenchListEntities","query":query.unwrap_or_default(),"className":class_name.unwrap_or_default(),"subScene":sub_scene.unwrap_or(-1),"layerId":layer_id.unwrap_or(-1),"offset":offset,"limit":limit}), self.options.gateway.status_deadline)?;
         let raw: RawBridgeEntityList =
             serde_json::from_value(value).map_err(|_| failure(WorkbenchFailureCode::Protocol))?;
         let entities = parse_world_selection_records(&raw.entities)
             .map_err(|_| failure(WorkbenchFailureCode::Protocol))?;
-        if raw.protocol_version != WORKBENCH_BRIDGE_PROTOCOL_VERSION || entities.len() > limit {
+        if raw.bridge_version != WORKBENCH_BRIDGE_VERSION
+            || raw.protocol_version != WORKBENCH_BRIDGE_PROTOCOL_VERSION
+            || entities.len() > limit
+        {
             return Err(failure(WorkbenchFailureCode::Protocol));
         }
         Ok(WorkbenchEntityListPage {
@@ -1400,7 +1403,8 @@ impl WorkbenchController {
         )?;
         let raw: RawBridgeLayerState =
             serde_json::from_value(value).map_err(|_| failure(WorkbenchFailureCode::Protocol))?;
-        if raw.protocol_version != WORKBENCH_BRIDGE_PROTOCOL_VERSION
+        if raw.bridge_version != WORKBENCH_BRIDGE_VERSION
+            || raw.protocol_version != WORKBENCH_BRIDGE_PROTOCOL_VERSION
             || raw.sub_scene != sub_scene
             || raw.layer_id != layer_id
         {
@@ -6447,7 +6451,7 @@ mod tests {
             assert_eq!(request["subScene"], 2);
             assert_eq!(request["layerId"], 7);
             json!({
-                "bridgeVersion": "1.10.0",
+                "bridgeVersion": "1.19.0",
                 "protocolVersion": 1,
                 "worldPath": "$TestBullshit:worlds/test/arland_test.ent",
                 "entities": "0x0000000000000001 {}|GenericWorldEntity|0|0",
@@ -6514,6 +6518,36 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(failure.code, super::WorkbenchFailureCode::Protocol);
+        peer.join().unwrap();
+    }
+
+    #[test]
+    fn entity_listing_sends_the_handler_sentinel_for_omitted_layer_filters() {
+        let (port, peer) = start_peer(|request| {
+            assert_eq!(request["subScene"], -1);
+            assert_eq!(request["layerId"], -1);
+            json!({
+                "bridgeVersion": "1.19.0",
+                "protocolVersion": 1,
+                "worldPath": "$Test:worlds/test.ent",
+                "entities": "",
+                "hasMore": false
+            })
+        });
+        let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
+            gateway: super::WorkbenchGatewayOptions {
+                port,
+                status_deadline: Duration::from_secs(1),
+                ..super::WorkbenchGatewayOptions::default()
+            },
+            ..super::WorkbenchControllerOptions::default()
+        });
+
+        let page = controller
+            .list_entities(None, None, None, None, None, 1)
+            .unwrap();
+
+        assert!(page.entities.is_empty());
         peer.join().unwrap();
     }
 
