@@ -103,7 +103,7 @@ pub struct WorkbenchGateway {
     request_lock: Arc<Mutex<()>>,
 }
 
-pub const WORKBENCH_BRIDGE_VERSION: &str = "1.31.0";
+pub const WORKBENCH_BRIDGE_VERSION: &str = "1.33.0";
 pub const WORKBENCH_BRIDGE_PROTOCOL_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -521,6 +521,97 @@ pub struct WorkbenchTerrainSample {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub water_summary: Option<WorkbenchTerrainWaterSummary>,
 }
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkbenchViewportContext {
+    pub bridge_version: String,
+    pub protocol_version: u32,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub width: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub height: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mouse_x: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mouse_y: Option<i32>,
+    pub mouse_inside: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub camera_position: Option<WorkbenchEntityPosition>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub camera_direction: Option<WorkbenchEntityPosition>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mouse_world_position: Option<WorkbenchEntityPosition>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ray_start: Option<WorkbenchEntityPosition>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ray_end: Option<WorkbenchEntityPosition>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ray_direction: Option<WorkbenchEntityPosition>,
+}
+
+#[derive(Debug, Clone)]
+pub struct WorkbenchViewportContextOptions {
+    pub include_ray: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum WorkbenchTraceShape {
+    Line,
+    Sphere,
+    Box,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum WorkbenchTraceHitKind {
+    Entity,
+    Terrain,
+    Ocean,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkbenchTraceOptions {
+    pub start: WorkbenchEntityPosition,
+    pub end: WorkbenchEntityPosition,
+    pub shape: WorkbenchTraceShape,
+    pub radius: Option<f32>,
+    pub box_mins: Option<WorkbenchEntityPosition>,
+    pub box_maxs: Option<WorkbenchEntityPosition>,
+    pub entities: bool,
+    pub terrain: bool,
+    pub ocean: bool,
+    pub target_layers: Option<i32>,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkbenchTraceResult {
+    pub bridge_version: String,
+    pub protocol_version: u32,
+    pub status: String,
+    pub hit: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fraction: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub distance: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub position: Option<WorkbenchEntityPosition>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub normal: Option<WorkbenchEntityPosition>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<WorkbenchTraceHitKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entity: Option<WorkbenchSelectedEntity>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub collider_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub material: Option<String>,
+}
+
+const MAX_WORKBENCH_TRACE_LENGTH_METERS: f32 = 10_000.0;
+const MAX_WORKBENCH_TRACE_DIMENSION_METERS: f32 = 1_000.0;
+const MAX_WORKBENCH_TARGET_LAYER_MASK: i32 = 0x7fff_ffff;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -1685,6 +1776,173 @@ impl WorkbenchController {
             summary: Some(summary),
             water,
             water_summary,
+        })
+    }
+
+    pub fn viewport_context(
+        &self,
+        options: WorkbenchViewportContextOptions,
+    ) -> Result<WorkbenchViewportContext, WorkbenchFailure> {
+        let value = self.gateway.request(
+            json!({"APIFunc":"RST_WorkbenchViewportContext"}),
+            self.options.gateway.status_deadline,
+        )?;
+        let raw: RawBridgeViewportContext =
+            serde_json::from_value(value).map_err(|_| failure(WorkbenchFailureCode::Protocol))?;
+        if raw.bridge_version != WORKBENCH_BRIDGE_VERSION
+            || raw.protocol_version != WORKBENCH_BRIDGE_PROTOCOL_VERSION
+        {
+            return Err(failure(WorkbenchFailureCode::Protocol));
+        }
+        if raw.status != "available" {
+            return Ok(WorkbenchViewportContext {
+                bridge_version: raw.bridge_version,
+                protocol_version: raw.protocol_version,
+                status: raw.status,
+                width: options.include_ray.then_some(raw.width),
+                height: options.include_ray.then_some(raw.height),
+                mouse_x: options.include_ray.then_some(raw.mouse_x),
+                mouse_y: options.include_ray.then_some(raw.mouse_y),
+                mouse_inside: workbench_bool(&raw.mouse_inside),
+                camera_position: None,
+                camera_direction: None,
+                mouse_world_position: None,
+                ray_start: None,
+                ray_end: None,
+                ray_direction: None,
+            });
+        }
+        let position =
+            |x: f32, y: f32, z: f32| {
+                (x.is_finite() && y.is_finite() && z.is_finite())
+                    .then_some(WorkbenchEntityPosition { x, y, z })
+            };
+        let ray_start = position(raw.start_x, raw.start_y, raw.start_z);
+        Ok(WorkbenchViewportContext {
+            bridge_version: raw.bridge_version,
+            protocol_version: raw.protocol_version,
+            status: raw.status,
+            width: options.include_ray.then_some(raw.width),
+            height: options.include_ray.then_some(raw.height),
+            mouse_x: options.include_ray.then_some(raw.mouse_x),
+            mouse_y: options.include_ray.then_some(raw.mouse_y),
+            mouse_inside: workbench_bool(&raw.mouse_inside),
+            camera_position: position(raw.camera_x, raw.camera_y, raw.camera_z),
+            camera_direction: options
+                .include_ray
+                .then(|| {
+                    position(
+                        raw.camera_direction_x,
+                        raw.camera_direction_y,
+                        raw.camera_direction_z,
+                    )
+                })
+                .flatten(),
+            mouse_world_position: position(raw.end_x, raw.end_y, raw.end_z),
+            ray_start: options.include_ray.then_some(ray_start).flatten(),
+            ray_end: options
+                .include_ray
+                .then(|| position(raw.end_x, raw.end_y, raw.end_z))
+                .flatten(),
+            ray_direction: options
+                .include_ray
+                .then(|| position(raw.direction_x, raw.direction_y, raw.direction_z))
+                .flatten(),
+        })
+    }
+
+    pub fn trace(
+        &self,
+        options: WorkbenchTraceOptions,
+    ) -> Result<WorkbenchTraceResult, WorkbenchFailure> {
+        let valid =
+            |p: &WorkbenchEntityPosition| p.x.is_finite() && p.y.is_finite() && p.z.is_finite();
+        let trace_length = ((options.end.x - options.start.x).powi(2)
+            + (options.end.y - options.start.y).powi(2)
+            + (options.end.z - options.start.z).powi(2))
+        .sqrt();
+        if !valid(&options.start)
+            || !valid(&options.end)
+            || !trace_length.is_finite()
+            || !(0.0..=MAX_WORKBENCH_TRACE_LENGTH_METERS).contains(&trace_length)
+            || (!options.entities && !options.terrain && !options.ocean)
+            || options
+                .radius
+                .is_some_and(|v| !v.is_finite() || !(0.001..=1000.0).contains(&v))
+            || options.box_mins.as_ref().is_some_and(|p| !valid(p))
+            || options.box_maxs.as_ref().is_some_and(|p| !valid(p))
+            || options.target_layers.is_some_and(|layers| {
+                !(1..=MAX_WORKBENCH_TARGET_LAYER_MASK).contains(&layers) || !options.entities
+            })
+        {
+            return Err(failure(WorkbenchFailureCode::Protocol));
+        }
+        if let (Some(mins), Some(maxs)) = (&options.box_mins, &options.box_maxs) {
+            if mins.x < 0.0
+                || mins.y < 0.0
+                || mins.z < 0.0
+                || maxs.x < mins.x
+                || maxs.y < mins.y
+                || maxs.z < mins.z
+                || maxs.x - mins.x > MAX_WORKBENCH_TRACE_DIMENSION_METERS
+                || maxs.y - mins.y > MAX_WORKBENCH_TRACE_DIMENSION_METERS
+                || maxs.z - mins.z > MAX_WORKBENCH_TRACE_DIMENSION_METERS
+                || (maxs.x == mins.x && maxs.y == mins.y && maxs.z == mins.z)
+            {
+                return Err(failure(WorkbenchFailureCode::Protocol));
+            }
+        }
+        let shape = match options.shape {
+            WorkbenchTraceShape::Line => "line",
+            WorkbenchTraceShape::Sphere => "sphere",
+            WorkbenchTraceShape::Box => "box",
+        };
+        if matches!(options.shape, WorkbenchTraceShape::Sphere) && options.radius.is_none()
+            || matches!(options.shape, WorkbenchTraceShape::Box)
+                && (options.box_mins.is_none() || options.box_maxs.is_none())
+        {
+            return Err(failure(WorkbenchFailureCode::Protocol));
+        }
+        let value = self.gateway.request(json!({"APIFunc":"RST_WorkbenchTrace","startX":options.start.x,"startY":options.start.y,"startZ":options.start.z,"endX":options.end.x,"endY":options.end.y,"endZ":options.end.z,"shape":shape,"radius":options.radius.unwrap_or(0.0),"minsX":options.box_mins.as_ref().map_or(0.0,|p|p.x),"minsY":options.box_mins.as_ref().map_or(0.0,|p|p.y),"minsZ":options.box_mins.as_ref().map_or(0.0,|p|p.z),"maxsX":options.box_maxs.as_ref().map_or(0.0,|p|p.x),"maxsY":options.box_maxs.as_ref().map_or(0.0,|p|p.y),"maxsZ":options.box_maxs.as_ref().map_or(0.0,|p|p.z),"entities":options.entities,"terrain":options.terrain,"ocean":options.ocean,"targetLayers":options.target_layers.unwrap_or(0)}), self.options.gateway.status_deadline)?;
+        let raw: RawBridgeTrace =
+            serde_json::from_value(value).map_err(|_| failure(WorkbenchFailureCode::Protocol))?;
+        if raw.bridge_version != WORKBENCH_BRIDGE_VERSION
+            || raw.protocol_version != WORKBENCH_BRIDGE_PROTOCOL_VERSION
+        {
+            return Err(failure(WorkbenchFailureCode::Protocol));
+        }
+        let hit = workbench_bool(&raw.hit);
+        let position = hit.then_some(WorkbenchEntityPosition {
+            x: raw.hit_x,
+            y: raw.hit_y,
+            z: raw.hit_z,
+        });
+        let normal = hit.then_some(WorkbenchEntityPosition {
+            x: raw.normal_x,
+            y: raw.normal_y,
+            z: raw.normal_z,
+        });
+        Ok(WorkbenchTraceResult {
+            bridge_version: raw.bridge_version,
+            protocol_version: raw.protocol_version,
+            status: (!raw.status.is_empty())
+                .then_some(raw.status)
+                .unwrap_or_else(|| "available".to_string()),
+            hit,
+            fraction: hit.then_some(raw.fraction),
+            distance: hit.then_some(raw.distance),
+            position,
+            normal,
+            kind: match raw.kind.as_str() {
+                "entity" => Some(WorkbenchTraceHitKind::Entity),
+                "terrain" => Some(WorkbenchTraceHitKind::Terrain),
+                "ocean" => Some(WorkbenchTraceHitKind::Ocean),
+                _ => None,
+            },
+            entity: parse_optional_world_selection_record(&raw.entity)
+                .map_err(|_| failure(WorkbenchFailureCode::Protocol))?,
+            collider_name: (!raw.collider_name.is_empty()).then_some(raw.collider_name),
+            material: (!raw.material.is_empty()).then_some(raw.material),
         })
     }
 
@@ -3592,6 +3850,89 @@ struct RawBridgeTerrainSample {
 }
 
 #[derive(Deserialize)]
+struct RawBridgeViewportContext {
+    #[serde(rename = "bridgeVersion")]
+    bridge_version: String,
+    #[serde(rename = "protocolVersion")]
+    protocol_version: u32,
+    status: String,
+    #[serde(default)]
+    width: i32,
+    #[serde(default)]
+    height: i32,
+    #[serde(rename = "mouseX", default)]
+    mouse_x: i32,
+    #[serde(rename = "mouseY", default)]
+    mouse_y: i32,
+    #[serde(rename = "mouseInside", default)]
+    mouse_inside: Value,
+    #[serde(rename = "cameraX", default)]
+    camera_x: f32,
+    #[serde(rename = "cameraY", default)]
+    camera_y: f32,
+    #[serde(rename = "cameraZ", default)]
+    camera_z: f32,
+    #[serde(rename = "cameraDirectionX", default)]
+    camera_direction_x: f32,
+    #[serde(rename = "cameraDirectionY", default)]
+    camera_direction_y: f32,
+    #[serde(rename = "cameraDirectionZ", default)]
+    camera_direction_z: f32,
+    #[serde(rename = "startX", default)]
+    start_x: f32,
+    #[serde(rename = "startY", default)]
+    start_y: f32,
+    #[serde(rename = "startZ", default)]
+    start_z: f32,
+    #[serde(rename = "endX", default)]
+    end_x: f32,
+    #[serde(rename = "endY", default)]
+    end_y: f32,
+    #[serde(rename = "endZ", default)]
+    end_z: f32,
+    #[serde(rename = "directionX", default)]
+    direction_x: f32,
+    #[serde(rename = "directionY", default)]
+    direction_y: f32,
+    #[serde(rename = "directionZ", default)]
+    direction_z: f32,
+}
+#[derive(Deserialize)]
+struct RawBridgeTrace {
+    #[serde(rename = "bridgeVersion")]
+    bridge_version: String,
+    #[serde(rename = "protocolVersion")]
+    protocol_version: u32,
+    status: String,
+    #[serde(default)]
+    hit: Value,
+    #[serde(default)]
+    fraction: f32,
+    #[serde(default)]
+    distance: f32,
+    #[serde(rename = "hitX", default)]
+    hit_x: f32,
+    #[serde(rename = "hitY", default)]
+    hit_y: f32,
+    #[serde(rename = "hitZ", default)]
+    hit_z: f32,
+    #[serde(rename = "normalX", default)]
+    normal_x: f32,
+    #[serde(rename = "normalY", default)]
+    normal_y: f32,
+    #[serde(rename = "normalZ", default)]
+    normal_z: f32,
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    entity: String,
+    #[serde(rename = "colliderName", default)]
+    collider_name: String,
+    #[serde(default)]
+    material: String,
+}
+
+#[derive(Deserialize)]
 struct RawBridgeComponentResult {
     #[serde(rename = "bridgeVersion")]
     bridge_version: String,
@@ -4766,6 +5107,11 @@ fn bridge_payload() -> &'static [(&'static str, &'static str)] {
         ),
         ("RST_WorkbenchSampleTerrain.c", BRIDGE_TERRAIN_SAMPLE_SOURCE),
         (
+            "RST_WorkbenchViewportContext.c",
+            BRIDGE_VIEWPORT_CONTEXT_SOURCE,
+        ),
+        ("RST_WorkbenchTrace.c", BRIDGE_TRACE_SOURCE),
+        (
             "RST_WorkbenchClearSelection.c",
             BRIDGE_CLEAR_SELECTION_SOURCE,
         ),
@@ -4810,7 +5156,7 @@ class RST_WorkbenchCapabilities : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchCapabilitiesResponse response = new RST_WorkbenchCapabilitiesResponse();
-		response.bridgeVersion = "1.31.0";
+        response.bridgeVersion = "1.33.0";
 	response.protocolVersion = 1;
 	response.capabilities = "state;open-world;play-session;project-context;inspect-resource;world-selection;entity-hierarchy;list-resources;list-entities;layer-state;inspect-entity;set-selection;clear-selection;entity-position;entity-details;create-entity;rename-entity;delete-entity;move-entity;rotate-entity;reparent-entity;duplicate-entity;entity-properties;components;component-properties";
 		return response;
@@ -4858,7 +5204,7 @@ class RST_WorkbenchState : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchStateResponse response = new RST_WorkbenchStateResponse();
-	response.bridgeVersion = "1.31.0";
+	response.bridgeVersion = "1.33.0";
 		response.protocolVersion = 1;
 		response.mode = "workbench";
 		response.playSession = "unavailable";
@@ -5049,7 +5395,7 @@ class RST_WorkbenchProjectContext : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchProjectContextResponse response = new RST_WorkbenchProjectContextResponse();
-		response.bridgeVersion = "1.31.0";
+		response.bridgeVersion = "1.33.0";
 		response.protocolVersion = 1;
 		array<string> addonGuids = new array<string>();
 		GameProject.GetLoadedAddons(addonGuids);
@@ -5167,7 +5513,7 @@ class RST_WorkbenchWorldSelection : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchWorldSelectionResponse response = new RST_WorkbenchWorldSelectionResponse();
-		response.bridgeVersion = "1.31.0";
+		response.bridgeVersion = "1.33.0";
 		response.protocolVersion = 1;
 		WorldEditor worldEditor = Workbench.GetModule(WorldEditor);
 		if (!worldEditor)
@@ -5245,7 +5591,7 @@ class RST_WorkbenchSelectedEntityHierarchy : NetApiHandler
 	{
 		RST_WorkbenchSelectedEntityHierarchyRequest typedRequest = RST_WorkbenchSelectedEntityHierarchyRequest.Cast(request);
 		RST_WorkbenchSelectedEntityHierarchyResponse response = new RST_WorkbenchSelectedEntityHierarchyResponse();
-		response.bridgeVersion = "1.31.0";
+		response.bridgeVersion = "1.33.0";
 		response.protocolVersion = 1;
 		WorldEditor worldEditor = Workbench.GetModule(WorldEditor);
 		if (!worldEditor)
@@ -5330,7 +5676,7 @@ class RST_WorkbenchListEntities : NetApiHandler
 	{
 		RST_WorkbenchListEntitiesRequest typedRequest = RST_WorkbenchListEntitiesRequest.Cast(request);
 		RST_WorkbenchListEntitiesResponse response = new RST_WorkbenchListEntitiesResponse();
-		response.bridgeVersion = "1.31.0";
+		response.bridgeVersion = "1.33.0";
 		response.protocolVersion = 1;
 		WorldEditor worldEditor = Workbench.GetModule(WorldEditor);
 		if (!worldEditor) return response;
@@ -5389,7 +5735,7 @@ class RST_WorkbenchLayerState : NetApiHandler
 	{
 		RST_WorkbenchLayerStateRequest typedRequest = RST_WorkbenchLayerStateRequest.Cast(request);
 		RST_WorkbenchLayerStateResponse response = new RST_WorkbenchLayerStateResponse();
-		response.bridgeVersion = "1.31.0";
+		response.bridgeVersion = "1.33.0";
 		response.protocolVersion = 1;
 		response.subScene = typedRequest.subScene;
 		response.layerId = typedRequest.layerId;
@@ -5499,7 +5845,7 @@ class RST_WorkbenchInspectEntity : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchInspectEntityRequest typedRequest = RST_WorkbenchInspectEntityRequest.Cast(request);
-		RST_WorkbenchInspectEntityResponse response = new RST_WorkbenchInspectEntityResponse(); response.bridgeVersion = "1.31.0"; response.protocolVersion = 1;
+		RST_WorkbenchInspectEntityResponse response = new RST_WorkbenchInspectEntityResponse(); response.bridgeVersion = "1.33.0"; response.protocolVersion = 1;
 		WorldEditor worldEditor = Workbench.GetModule(WorldEditor); if (!worldEditor) { response.status = "world-editor-unavailable"; return response; }
 		WorldEditorAPI api = worldEditor.GetApi(); if (!api) { response.status = "world-editor-api-unavailable"; return response; }
 		response.editorAvailable = true;
@@ -5544,7 +5890,7 @@ class RST_WorkbenchSetSelection : NetApiHandler
 	{
 		RST_WorkbenchSetSelectionRequest typedRequest = RST_WorkbenchSetSelectionRequest.Cast(request);
 		RST_WorkbenchSetSelectionResponse response = new RST_WorkbenchSetSelectionResponse();
-		response.bridgeVersion = "1.31.0";
+		response.bridgeVersion = "1.33.0";
 		response.protocolVersion = 1;
 		WorldEditor editor = Workbench.GetModule(WorldEditor);
 		if (!editor) { response.status = "world-editor-unavailable"; return response; }
@@ -5603,7 +5949,7 @@ class RST_WorkbenchFindEntitiesByRadius : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchFindEntitiesByRadiusRequest typedRequest = RST_WorkbenchFindEntitiesByRadiusRequest.Cast(request);
-		RST_WorkbenchFindEntitiesByRadiusResponse response = new RST_WorkbenchFindEntitiesByRadiusResponse(); response.bridgeVersion = "1.31.0"; response.protocolVersion = 1;
+		RST_WorkbenchFindEntitiesByRadiusResponse response = new RST_WorkbenchFindEntitiesByRadiusResponse(); response.bridgeVersion = "1.33.0"; response.protocolVersion = 1;
 		response.centerX = typedRequest.centerX; response.centerY = typedRequest.centerY; response.centerZ = typedRequest.centerZ; response.radiusMeters = typedRequest.radiusMeters; response.queryScope = typedRequest.queryScope; response.requireObject = typedRequest.requireObject; response.excludeProxies = typedRequest.excludeProxies;
 		if (typedRequest.radiusMeters < 0.01 || typedRequest.radiusMeters > 50000 || typedRequest.limit < 1 || typedRequest.limit > 100) { response.status = "invalid-query"; return response; }
 		WorldEditor editor = Workbench.GetModule(WorldEditor); if (!editor) { response.status = "world-editor-unavailable"; return response; }
@@ -5647,7 +5993,7 @@ class RST_WorkbenchSampleTerrain : NetApiHandler
 	{
 		RST_WorkbenchSampleTerrainRequest typedRequest = RST_WorkbenchSampleTerrainRequest.Cast(request);
 		RST_WorkbenchSampleTerrainResponse response = new RST_WorkbenchSampleTerrainResponse();
-		response.bridgeVersion = "1.31.0"; response.protocolVersion = 1;
+		response.bridgeVersion = "1.33.0"; response.protocolVersion = 1;
 		response.centerX = typedRequest.centerX; response.centerZ = typedRequest.centerZ; response.halfExtentMeters = typedRequest.halfExtentMeters; response.requestedSpacingMeters = typedRequest.spacingMeters;
 		if (typedRequest.halfExtentMeters < 0.01 || typedRequest.halfExtentMeters > 500 || typedRequest.spacingMeters < 0 || typedRequest.spacingMeters > 500) { response.status = "invalid-query"; return response; }
 		WorldEditor editor = Workbench.GetModule(WorldEditor); if (!editor) { response.status = "world-editor-unavailable"; return response; }
@@ -5720,6 +6066,97 @@ class RST_WorkbenchSampleTerrain : NetApiHandler
 #endif
 "#;
 
+const BRIDGE_VIEWPORT_CONTEXT_SOURCE: &str = r#"#ifdef WORKBENCH
+class RST_WorkbenchViewportContextRequest : JsonApiStruct
+{
+	void RST_WorkbenchViewportContextRequest() { RegAll(); }
+}
+class RST_WorkbenchViewportContextResponse : JsonApiStruct
+{
+	string bridgeVersion; int protocolVersion; string status;
+	int width; int height; int mouseX; int mouseY; bool mouseInside;
+	float cameraX; float cameraY; float cameraZ;
+	float cameraDirectionX; float cameraDirectionY; float cameraDirectionZ;
+	float startX; float startY; float startZ; float endX; float endY; float endZ;
+	float directionX; float directionY; float directionZ;
+	void RST_WorkbenchViewportContextResponse() { RegAll(); }
+}
+class RST_WorkbenchViewportContext : NetApiHandler
+{
+	override JsonApiStruct GetRequest() { return new RST_WorkbenchViewportContextRequest(); }
+	override JsonApiStruct GetResponse(JsonApiStruct request)
+	{
+		RST_WorkbenchViewportContextResponse response = new RST_WorkbenchViewportContextResponse();
+		response.bridgeVersion = "1.33.0"; response.protocolVersion = 1;
+		WorldEditor e = Workbench.GetModule(WorldEditor);
+		if (!e || !e.GetApi() || !e.GetApi().GetWorld()) { response.status = "world-editor-unavailable"; return response; }
+		WorldEditorAPI a = e.GetApi(); BaseWorld world = a.GetWorld(); vector cameraTransform[4];
+		world.GetCurrentCamera(cameraTransform);
+		response.cameraX = cameraTransform[3][0]; response.cameraY = cameraTransform[3][1]; response.cameraZ = cameraTransform[3][2];
+		response.cameraDirectionX = cameraTransform[2][0]; response.cameraDirectionY = cameraTransform[2][1]; response.cameraDirectionZ = cameraTransform[2][2];
+		response.width = a.GetScreenWidth(); response.height = a.GetScreenHeight(); response.mouseX = a.GetMousePosX(false); response.mouseY = a.GetMousePosY(false);
+		response.mouseInside = response.mouseX >= 0 && response.mouseY >= 0 && response.mouseX < response.width && response.mouseY < response.height;
+		if (!response.mouseInside) { response.status = "mouse-outside-viewport"; return response; }
+		vector start, end, direction;
+		if (!a.TraceWorldPos(response.mouseX, response.mouseY, TraceFlags.WORLD, start, end, direction)) { response.status = "mouse-world-position-unavailable"; return response; }
+		response.startX = start[0]; response.startY = start[1]; response.startZ = start[2]; response.endX = end[0]; response.endY = end[1]; response.endZ = end[2];
+		response.directionX = direction[0]; response.directionY = direction[1]; response.directionZ = direction[2]; response.status = "available"; return response;
+	}
+}
+#endif
+"#;
+
+const BRIDGE_TRACE_SOURCE: &str = r#"#ifdef WORKBENCH
+class RST_WorkbenchTraceRequest : JsonApiStruct
+{
+	float startX; float startY; float startZ; float endX; float endY; float endZ; string shape; float radius;
+	float minsX; float minsY; float minsZ; float maxsX; float maxsY; float maxsZ;
+	bool entities; bool terrain; bool ocean; int targetLayers;
+	void RST_WorkbenchTraceRequest() { RegAll(); }
+}
+class RST_WorkbenchTraceResponse : JsonApiStruct
+{
+	string bridgeVersion; int protocolVersion; string status; bool hit; float fraction; float distance;
+	float hitX; float hitY; float hitZ; float normalX; float normalY; float normalZ;
+	string kind; string entity; string colliderName; string material;
+	void RST_WorkbenchTraceResponse() { RegAll(); }
+}
+class RST_WorkbenchTrace : NetApiHandler
+{
+	override JsonApiStruct GetRequest() { return new RST_WorkbenchTraceRequest(); }
+	override JsonApiStruct GetResponse(JsonApiStruct request)
+	{
+		RST_WorkbenchTraceRequest q = RST_WorkbenchTraceRequest.Cast(request); RST_WorkbenchTraceResponse response = new RST_WorkbenchTraceResponse();
+		response.bridgeVersion = "1.33.0"; response.protocolVersion = 1;
+		WorldEditor e = Workbench.GetModule(WorldEditor);
+		if (!e || !e.GetApi() || !e.GetApi().GetWorld()) { response.status = "world-editor-unavailable"; return response; }
+		TraceParam p;
+		if (q.shape == "sphere") { TraceSphere s = new TraceSphere(); s.Radius = q.radius; p = s; }
+		else if (q.shape == "box") { TraceBox b = new TraceBox(); b.Mins = Vector(q.minsX, q.minsY, q.minsZ); b.Maxs = Vector(q.maxsX, q.maxsY, q.maxsZ); p = b; }
+		else if (q.shape == "line") p = new TraceParam();
+		else { response.status = "invalid-query"; return response; }
+		p.Start = Vector(q.startX, q.startY, q.startZ); p.End = Vector(q.endX, q.endY, q.endZ);
+		if (q.entities) p.Flags |= TraceFlags.ENTS; if (q.terrain) p.Flags |= TraceFlags.WORLD; if (q.ocean) p.Flags |= TraceFlags.OCEAN;
+		if (q.targetLayers != 0) p.TargetLayers = q.targetLayers;
+		response.fraction = e.GetApi().GetWorld().TraceMove(p);
+		if (response.fraction >= 1) { response.status = "available"; return response; }
+		vector h = p.Start + (p.End - p.Start) * response.fraction; vector travelled = h - p.Start;
+		response.hit = true; response.hitX = h[0]; response.hitY = h[1]; response.hitZ = h[2]; response.distance = Math.Sqrt(travelled[0] * travelled[0] + travelled[1] * travelled[1] + travelled[2] * travelled[2]);
+		response.normalX = p.TraceNorm[0]; response.normalY = p.TraceNorm[1]; response.normalZ = p.TraceNorm[2]; response.colliderName = p.ColliderName; response.material = p.TraceMaterial;
+		if (p.TraceEnt && !p.TraceEnt.Type().IsInherited(GenericTerrainEntity))
+		{
+			response.kind = "entity"; IEntitySource source = e.GetApi().EntityToSource(p.TraceEnt);
+			if (source) response.entity = string.Format("%1|%2|%3|%4", source.GetID().ToString(), source.GetClassName(), source.GetSubScene(), source.GetLayerID());
+		}
+		else if (p.TraceEnt) response.kind = "terrain";
+		else if (q.ocean) response.kind = "ocean";
+		else response.kind = "terrain";
+		response.status = "available"; return response;
+	}
+}
+#endif
+"#;
+
 const BRIDGE_CLEAR_SELECTION_SOURCE: &str = r#"#ifdef WORKBENCH
 class RST_WorkbenchClearSelectionRequest : JsonApiStruct
 {
@@ -5742,7 +6179,7 @@ class RST_WorkbenchClearSelection : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchClearSelectionResponse response = new RST_WorkbenchClearSelectionResponse();
-		response.bridgeVersion = "1.31.0";
+		response.bridgeVersion = "1.33.0";
 		response.protocolVersion = 1;
 		WorldEditor editor = Workbench.GetModule(WorldEditor);
 		if (!editor)
@@ -5986,7 +6423,7 @@ class RST_WorkbenchEntityMutationBase : NetApiHandler
 	RST_WorkbenchEntityMutationResponse Response()
 	{
 		RST_WorkbenchEntityMutationResponse response = new RST_WorkbenchEntityMutationResponse();
-		response.bridgeVersion = "1.31.0";
+		response.bridgeVersion = "1.33.0";
 		response.protocolVersion = 1;
 		response.activeLayerId = -1;
 		return response;
@@ -6386,7 +6823,7 @@ class RST_WorkbenchComponentsResponse : JsonApiStruct { string bridgeVersion; in
 class RST_WorkbenchComponentsBase : NetApiHandler
 {
 	IEntitySource Find(WorldEditorAPI api, string id) { for (int i = 0, count = api.GetEditorEntityCount(); i < count; i++) { IEntitySource candidate = api.GetEditorEntity(i); if (candidate && candidate.GetID().ToString() == id) return candidate; } return null; }
-	RST_WorkbenchComponentsResponse Response() { RST_WorkbenchComponentsResponse response = new RST_WorkbenchComponentsResponse(); response.bridgeVersion = "1.31.0"; response.protocolVersion = 1; return response; }
+	RST_WorkbenchComponentsResponse Response() { RST_WorkbenchComponentsResponse response = new RST_WorkbenchComponentsResponse(); response.bridgeVersion = "1.33.0"; response.protocolVersion = 1; return response; }
 	// Workbench exposes authored direct components through the `components` container in
 	// some editor contexts, even when IEntitySource.GetComponentCount() is zero.
 	int ComponentCount(IEntitySource entity) { int count = entity.GetComponentCount(); if (count == 0) { ref BaseContainerList components = entity.GetObjectArray("components"); if (components) count = components.Count(); else count = entity.GetNumChildren(); } return count; }
@@ -6631,7 +7068,7 @@ class RST_WorkbenchListEntityProperties : RST_WorkbenchEntityMutationBase
 	{
 		RST_WorkbenchPropertiesRequest r = RST_WorkbenchPropertiesRequest.Cast(request);
 		RST_WorkbenchPropertiesResponse response = new RST_WorkbenchPropertiesResponse();
-		response.bridgeVersion = "1.31.0";
+		response.bridgeVersion = "1.33.0";
 		response.protocolVersion = 1;
 
 		WorldEditor editor = Workbench.GetModule(WorldEditor);
@@ -6757,7 +7194,7 @@ class RST_WorkbenchListResources : NetApiHandler
 	{
 		RST_WorkbenchListResourcesRequest typedRequest = RST_WorkbenchListResourcesRequest.Cast(request);
 		RST_WorkbenchListResourcesResponse response = new RST_WorkbenchListResourcesResponse();
-		response.bridgeVersion = "1.31.0";
+		response.bridgeVersion = "1.33.0";
 		response.protocolVersion = 1;
 		array<string> addonGuids = new array<string>();
 		GameProject.GetLoadedAddons(addonGuids);
@@ -7001,7 +7438,7 @@ mod tests {
             assert_eq!(request["subScene"], 2);
             assert_eq!(request["layerId"], 7);
             json!({
-                "bridgeVersion": "1.31.0",
+                "bridgeVersion": "1.33.0",
                 "protocolVersion": 1,
                 "worldPath": "$TestBullshit:worlds/test/arland_test.ent",
                 "entities": "0x0000000000000001 {}|GenericWorldEntity|0|0",
@@ -7037,7 +7474,7 @@ mod tests {
         let (port, peer) = start_peer(|request| {
             assert_eq!(request["APIFunc"], "RST_WorkbenchListEntities");
             json!({
-                "bridgeVersion": "1.31.0",
+                "bridgeVersion": "1.33.0",
                 "protocolVersion": 1,
                 "worldPath": "$Test:worlds/test.ent",
                 "entities": "0x0000000000000001 {}|TestEntity|2|7",
@@ -7077,7 +7514,7 @@ mod tests {
             assert_eq!(request["subScene"], -1);
             assert_eq!(request["layerId"], -1);
             json!({
-                "bridgeVersion": "1.31.0",
+                "bridgeVersion": "1.33.0",
                 "protocolVersion": 1,
                 "worldPath": "$Test:worlds/test.ent",
                 "entities": "",
@@ -7109,7 +7546,7 @@ mod tests {
                 json!({"APIFunc":"RST_WorkbenchLayerState","subScene":2,"layerId":7})
             );
             json!({
-                "bridgeVersion":"1.31.0",
+                "bridgeVersion":"1.33.0",
                 "protocolVersion":1,
                 "status":"available",
                 "subScene":2,
@@ -7140,6 +7577,167 @@ mod tests {
     }
 
     #[test]
+    fn viewport_context_keeps_compact_cursor_result_separate_from_optional_ray_diagnostics() {
+        let response = || {
+            json!({
+                "bridgeVersion":"1.33.0", "protocolVersion":1, "status":"available",
+                "width":1920, "height":1080, "mouseX":960, "mouseY":540, "mouseInside":true,
+                "cameraX":10.0, "cameraY":20.0, "cameraZ":30.0,
+                "cameraDirectionX":0.0, "cameraDirectionY":0.0, "cameraDirectionZ":1.0,
+                "startX":10.0, "startY":20.0, "startZ":30.0,
+                "endX":100.0, "endY":40.0, "endZ":300.0,
+                "directionX":0.3, "directionY":-0.1, "directionZ":0.9
+            })
+        };
+        let (port, peer) = start_peer(move |request| {
+            assert_eq!(request, json!({"APIFunc":"RST_WorkbenchViewportContext"}));
+            response()
+        });
+        let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
+            gateway: super::WorkbenchGatewayOptions {
+                port,
+                status_deadline: Duration::from_secs(1),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let compact = controller
+            .viewport_context(super::WorkbenchViewportContextOptions { include_ray: false })
+            .unwrap();
+        assert_eq!(compact.mouse_world_position.unwrap().x, 100.0);
+        assert!(compact.width.is_none());
+        assert!(compact.ray_start.is_none());
+        peer.join().unwrap();
+
+        let (port, peer) = start_peer(move |_| response());
+        let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
+            gateway: super::WorkbenchGatewayOptions {
+                port,
+                status_deadline: Duration::from_secs(1),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let detailed = controller
+            .viewport_context(super::WorkbenchViewportContextOptions { include_ray: true })
+            .unwrap();
+        assert_eq!(detailed.width, Some(1920));
+        assert_eq!(detailed.camera_direction.unwrap().z, 1.0);
+        assert_eq!(detailed.ray_end.unwrap().z, 300.0);
+        peer.join().unwrap();
+    }
+
+    #[test]
+    fn trace_serializes_bounded_policy_and_normalizes_distance_and_ocean_hit() {
+        let (port, peer) = start_peer(|request| {
+            assert_eq!(
+                request,
+                json!({
+                    "APIFunc":"RST_WorkbenchTrace", "startX":0.0, "startY":10.0, "startZ":0.0,
+                    "endX":0.0, "endY":-10.0, "endZ":0.0, "shape":"sphere", "radius":2.0,
+                    "minsX":0.0, "minsY":0.0, "minsZ":0.0, "maxsX":0.0, "maxsY":0.0, "maxsZ":0.0,
+                    "entities":false, "terrain":false, "ocean":true, "targetLayers":0
+                })
+            );
+            json!({
+                "bridgeVersion":"1.33.0", "protocolVersion":1, "status":"available", "hit":true,
+                "fraction":0.5, "distance":10.0, "hitX":0.0, "hitY":0.0, "hitZ":0.0,
+                "normalX":0.0, "normalY":1.0, "normalZ":0.0, "kind":"ocean"
+            })
+        });
+        let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
+            gateway: super::WorkbenchGatewayOptions {
+                port,
+                status_deadline: Duration::from_secs(1),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let hit = controller
+            .trace(super::WorkbenchTraceOptions {
+                start: super::WorkbenchEntityPosition {
+                    x: 0.0,
+                    y: 10.0,
+                    z: 0.0,
+                },
+                end: super::WorkbenchEntityPosition {
+                    x: 0.0,
+                    y: -10.0,
+                    z: 0.0,
+                },
+                shape: super::WorkbenchTraceShape::Sphere,
+                radius: Some(2.0),
+                box_mins: None,
+                box_maxs: None,
+                entities: false,
+                terrain: false,
+                ocean: true,
+                target_layers: None,
+            })
+            .unwrap();
+        assert_eq!(hit.distance, Some(10.0));
+        assert_eq!(hit.kind, Some(super::WorkbenchTraceHitKind::Ocean));
+        peer.join().unwrap();
+    }
+
+    #[test]
+    fn trace_rejects_unbounded_or_invalid_sweep_requests_before_gateway_dispatch() {
+        let controller = super::WorkbenchController::new(Default::default());
+        let valid_position = super::WorkbenchEntityPosition {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        for options in [
+            super::WorkbenchTraceOptions {
+                start: valid_position.clone(),
+                end: super::WorkbenchEntityPosition {
+                    x: 10_001.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                shape: super::WorkbenchTraceShape::Line,
+                radius: None,
+                box_mins: None,
+                box_maxs: None,
+                entities: true,
+                terrain: false,
+                ocean: false,
+                target_layers: None,
+            },
+            super::WorkbenchTraceOptions {
+                start: valid_position.clone(),
+                end: valid_position.clone(),
+                shape: super::WorkbenchTraceShape::Box,
+                radius: None,
+                box_mins: Some(valid_position.clone()),
+                box_maxs: Some(valid_position.clone()),
+                entities: true,
+                terrain: false,
+                ocean: false,
+                target_layers: None,
+            },
+            super::WorkbenchTraceOptions {
+                start: valid_position.clone(),
+                end: valid_position.clone(),
+                shape: super::WorkbenchTraceShape::Line,
+                radius: None,
+                box_mins: None,
+                box_maxs: None,
+                entities: false,
+                terrain: true,
+                ocean: false,
+                target_layers: Some(1),
+            },
+        ] {
+            assert_eq!(
+                controller.trace(options).unwrap_err().code,
+                super::WorkbenchFailureCode::Protocol
+            );
+        }
+    }
+
+    #[test]
     fn terrain_sampling_returns_bounded_grid_metadata_and_derived_summary() {
         let (port, peer) = start_peer(|request| {
             assert_eq!(
@@ -7154,7 +7752,7 @@ mod tests {
                 })
             );
             json!({
-                "bridgeVersion": "1.31.0",
+                "bridgeVersion": "1.33.0",
                 "protocolVersion": 1,
                 "status": "available",
                 "centerX": 100.0,
@@ -7464,7 +8062,7 @@ mod tests {
                 request,
                 json!({"APIFunc":"RST_WorkbenchMoveEntity","entityId":"0x01 {}","x":10.0,"y":20.0,"z":30.0})
             );
-            json!({"bridgeVersion":"1.31.0","protocolVersion":1,"status":"moved","entity":"0x01 {}|TestEntity|0|7|10|20|30"})
+            json!({"bridgeVersion":"1.33.0","protocolVersion":1,"status":"moved","entity":"0x01 {}|TestEntity|0|7|10|20|30"})
         });
         let root = test_root("move-entity");
         fs::create_dir_all(&root).unwrap();
@@ -7500,7 +8098,7 @@ mod tests {
                 request,
                 json!({"APIFunc":"RST_WorkbenchDuplicateEntity","entityId":"0x01 {}","x":11.0,"y":22.0,"z":33.0,"name":"Copy"})
             );
-            json!({"bridgeVersion":"1.31.0","protocolVersion":1,"status":"duplicated","entity":"0x02 {}|TestEntity|0|7|11|22|33"})
+            json!({"bridgeVersion":"1.33.0","protocolVersion":1,"status":"duplicated","entity":"0x02 {}|TestEntity|0|7|11|22|33"})
         });
         let root = test_root("duplicate-entity");
         fs::create_dir_all(&root).unwrap();
@@ -8242,7 +8840,7 @@ mod tests {
     #[test]
     fn mutation_audit_records_identify_the_action_without_recording_values() {
         let entity_result = super::WorkbenchEntityMutationResult {
-            bridge_version: "1.31.0".to_string(),
+            bridge_version: "1.33.0".to_string(),
             protocol_version: 1,
             status: "available".to_string(),
             active_layer_id: Some(3),
@@ -8277,7 +8875,7 @@ mod tests {
                 "value": 40,
             }),
             &super::WorkbenchComponentResult {
-                bridge_version: "1.31.0".to_string(),
+                bridge_version: "1.33.0".to_string(),
                 protocol_version: 1,
                 status: "available".to_string(),
                 entity: None,
@@ -8925,7 +9523,7 @@ mod tests {
                     "value": "3.75",
                 })
             );
-            json!({"bridgeVersion":"1.31.0","protocolVersion":1,"status":"property-set","activeLayerId":7,"entity":""})
+            json!({"bridgeVersion":"1.33.0","protocolVersion":1,"status":"property-set","activeLayerId":7,"entity":""})
         });
         let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
             gateway: super::WorkbenchGatewayOptions {
@@ -8964,7 +9562,7 @@ mod tests {
                 request,
                 json!({"APIFunc":"RST_WorkbenchInspectComponent","entityId":"0x01 {}","componentId":"cmp1:0:TestComponent"})
             );
-            json!({"bridgeVersion":"1.31.0","protocolVersion":1,"status":"available","entity":"","components":"0|TestComponent","properties":"m_fRadius|float|2.5|1"})
+            json!({"bridgeVersion":"1.33.0","protocolVersion":1,"status":"available","entity":"","components":"0|TestComponent","properties":"m_fRadius|float|2.5|1"})
         });
         let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
             gateway: super::WorkbenchGatewayOptions {

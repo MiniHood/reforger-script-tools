@@ -4483,6 +4483,501 @@ Sample a bounded square of loaded World Editor terrain heights around a world X/
 
 Workbench tools return structured tool errors with a stable code, operation phase, retryability, and a unique log reference matching a rotating integration-log record. Raw transport and Workbench payload details are not exposed.
 
+## `workbench_get_viewport_context`
+
+Read the active World Editor camera position and terrain cursor world position. Set includeRay to add screen coordinates, viewport dimensions, and native cursor-ray diagnostics.
+
+### Annotations
+
+```json
+{
+  "title": "Read Workbench viewport context",
+  "readOnlyHint": true,
+  "openWorldHint": false
+}
+```
+
+### Input schema
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "includeRay": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    }
+  },
+  "type": "object"
+}
+```
+
+### Output schema
+
+```json
+{
+  "$defs": {
+    "WorkbenchEntityPosition": {
+      "properties": {
+        "x": {
+          "format": "float",
+          "type": "number"
+        },
+        "y": {
+          "format": "float",
+          "type": "number"
+        },
+        "z": {
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "z"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "bridgeVersion": {
+      "type": "string"
+    },
+    "cameraDirection": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkbenchEntityPosition"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "cameraPosition": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkbenchEntityPosition"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "height": {
+      "format": "int32",
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "mouseInside": {
+      "type": "boolean"
+    },
+    "mouseWorldPosition": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkbenchEntityPosition"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "mouseX": {
+      "format": "int32",
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "mouseY": {
+      "format": "int32",
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "protocolVersion": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "rayDirection": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkbenchEntityPosition"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "rayEnd": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkbenchEntityPosition"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "rayStart": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkbenchEntityPosition"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "status": {
+      "type": "string"
+    },
+    "width": {
+      "format": "int32",
+      "type": [
+        "integer",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "bridgeVersion",
+    "protocolVersion",
+    "status",
+    "mouseInside"
+  ],
+  "type": "object"
+}
+```
+
+### Stable failures
+
+Workbench tools return structured tool errors with a stable code, operation phase, retryability, and a unique log reference matching a rotating integration-log record. Raw transport and Workbench payload details are not exposed.
+
+## `workbench_trace`
+
+Perform one bounded, read-only World Editor collision sweep between explicit world positions. Supports line, sphere, and box shapes with explicit entity, terrain, and ocean target selection; returns the nearest hit or a successful miss. Start/end separation is limited to 10,000 m; sphere radius and each box dimension are limited to 1,000 m. A targetLayers mask is accepted only for entity traces.
+
+### Annotations
+
+```json
+{
+  "title": "Trace the Workbench world",
+  "readOnlyHint": true,
+  "openWorldHint": false
+}
+```
+
+### Input schema
+
+```json
+{
+  "$defs": {
+    "WorkbenchEntityPosition": {
+      "properties": {
+        "x": {
+          "format": "float",
+          "type": "number"
+        },
+        "y": {
+          "format": "float",
+          "type": "number"
+        },
+        "z": {
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "z"
+      ],
+      "type": "object"
+    },
+    "WorkbenchTraceShape": {
+      "enum": [
+        "line",
+        "sphere",
+        "box"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "boxMaxs": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkbenchEntityPosition"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "boxMins": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkbenchEntityPosition"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "end": {
+      "$ref": "#/$defs/WorkbenchEntityPosition"
+    },
+    "entities": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "ocean": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "radius": {
+      "format": "float",
+      "maximum": 1000.0,
+      "minimum": 0.001,
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "shape": {
+      "$ref": "#/$defs/WorkbenchTraceShape"
+    },
+    "start": {
+      "$ref": "#/$defs/WorkbenchEntityPosition"
+    },
+    "targetLayers": {
+      "format": "int32",
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "terrain": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "start",
+    "end",
+    "shape"
+  ],
+  "type": "object"
+}
+```
+
+### Output schema
+
+```json
+{
+  "$defs": {
+    "WorkbenchEntityPosition": {
+      "properties": {
+        "x": {
+          "format": "float",
+          "type": "number"
+        },
+        "y": {
+          "format": "float",
+          "type": "number"
+        },
+        "z": {
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "z"
+      ],
+      "type": "object"
+    },
+    "WorkbenchSelectedEntity": {
+      "properties": {
+        "className": {
+          "type": "string"
+        },
+        "entityId": {
+          "type": "string"
+        },
+        "layerId": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "layerName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "position": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchEntityPosition"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "resourceName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "subScene": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "subSceneName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "entityId",
+        "className",
+        "subScene",
+        "layerId"
+      ],
+      "type": "object"
+    },
+    "WorkbenchTraceHitKind": {
+      "enum": [
+        "entity",
+        "terrain",
+        "ocean"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "bridgeVersion": {
+      "type": "string"
+    },
+    "colliderName": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "distance": {
+      "format": "float",
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "entity": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkbenchSelectedEntity"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "fraction": {
+      "format": "float",
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "hit": {
+      "type": "boolean"
+    },
+    "kind": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkbenchTraceHitKind"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "material": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "normal": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkbenchEntityPosition"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "position": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkbenchEntityPosition"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "protocolVersion": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "status": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "bridgeVersion",
+    "protocolVersion",
+    "status",
+    "hit"
+  ],
+  "type": "object"
+}
+```
+
+### Stable failures
+
+Workbench tools return structured tool errors with a stable code, operation phase, retryability, and a unique log reference matching a rotating integration-log record. Raw transport and Workbench payload details are not exposed.
+
 ## `workbench_inspect_entity`
 
 Inspect one exact stable World Editor entity identity through the compatible managed handler package. It never changes editor selection or world content.

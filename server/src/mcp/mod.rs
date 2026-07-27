@@ -32,7 +32,9 @@ use crate::workbench::{
     WorkbenchPlaySessionResult, WorkbenchProcessResult, WorkbenchProjectContext,
     WorkbenchPropertyList, WorkbenchResourceInspection, WorkbenchResourceListPage,
     WorkbenchScriptActivationResult, WorkbenchSelectedEntityHierarchy, WorkbenchTerrainSample,
-    WorkbenchTerrainSampleOptions, WorkbenchValidationPage, WorkbenchWorldSelectionSummary,
+    WorkbenchTerrainSampleOptions, WorkbenchTraceOptions, WorkbenchTraceResult,
+    WorkbenchTraceShape, WorkbenchValidationPage, WorkbenchViewportContext,
+    WorkbenchViewportContextOptions, WorkbenchWorldSelectionSummary,
 };
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, ContentBlock, Implementation, ListToolsResult,
@@ -72,6 +74,8 @@ pub const WORKBENCH_LIST_ENTITIES_TOOL_NAME: &str = "workbench_list_entities";
 pub const WORKBENCH_LAYER_STATE_TOOL_NAME: &str = "workbench_layer_state";
 pub const WORKBENCH_FIND_ENTITIES_BY_RADIUS_TOOL_NAME: &str = "workbench_find_entities_by_radius";
 pub const WORKBENCH_SAMPLE_TERRAIN_TOOL_NAME: &str = "workbench_sample_terrain";
+pub const WORKBENCH_VIEWPORT_CONTEXT_TOOL_NAME: &str = "workbench_get_viewport_context";
+pub const WORKBENCH_TRACE_TOOL_NAME: &str = "workbench_trace";
 pub const WORKBENCH_INSPECT_ENTITY_TOOL_NAME: &str = "workbench_inspect_entity";
 pub const WORKBENCH_SET_SELECTION_TOOL_NAME: &str = "workbench_set_selection";
 pub const WORKBENCH_CLEAR_SELECTION_TOOL_NAME: &str = "workbench_clear_selection";
@@ -130,6 +134,8 @@ const WORKBENCH_LIST_ENTITIES_DESCRIPTION: &str = "List one bounded page of live
 const WORKBENCH_LAYER_STATE_DESCRIPTION: &str = "Read one exact World Editor layer's canonical path, visibility, explicit lock state, and effective hierarchical lock state without changing the world or editor.";
 const WORKBENCH_FIND_ENTITIES_BY_RADIUS_DESCRIPTION: &str = "Find a bounded set of live World Editor entities whose bounds touch a world-space sphere. The engine query stops after one additional match, so truncated means more matches exist; returned order is not nearest-first.";
 const WORKBENCH_SAMPLE_TERRAIN_DESCRIPTION: &str = "Sample a bounded square of loaded World Editor terrain heights around a world X/Z coordinate. The result includes native terrain resolution and planar spacing, plus a row-major grid and derived elevation/slope summary. At most 4,096 cells are returned; heights[z * width + x] is at origin.x + x * effectiveSpacingMeters, origin.z + z * effectiveSpacingMeters, so X changes fastest. Set includeWater to add same-lattice water facts: the engine point-water API first, then a water-targeted physics trace for generated lakes and rivers. It does not inspect authored geometry, inspect materials/entities, or edit the world.";
+const WORKBENCH_VIEWPORT_CONTEXT_DESCRIPTION: &str = "Read the active World Editor camera position and terrain cursor world position. Set includeRay to add screen coordinates, viewport dimensions, and native cursor-ray diagnostics.";
+const WORKBENCH_TRACE_DESCRIPTION: &str = "Perform one bounded, read-only World Editor collision sweep between explicit world positions. Supports line, sphere, and box shapes with explicit entity, terrain, and ocean target selection; returns the nearest hit or a successful miss. Start/end separation is limited to 10,000 m; sphere radius and each box dimension are limited to 1,000 m. A targetLayers mask is accepted only for entity traces.";
 const WORKBENCH_INSPECT_ENTITY_DESCRIPTION: &str = "Inspect one exact stable World Editor entity identity through the compatible managed handler package. It never changes editor selection or world content.";
 const WORKBENCH_SET_SELECTION_DESCRIPTION: &str = "Explicitly replace the visible World Editor selection with one exact stable entity identity. This experimental command changes only editor selection, never world content.";
 const WORKBENCH_CLEAR_SELECTION_DESCRIPTION: &str = "Explicitly clear the visible World Editor selection and return the observed empty selection summary.";
@@ -386,6 +392,26 @@ struct McpWorkbenchTerrainSampleInput {
     #[schemars(range(min = 0.01, max = 500.0))]
     spacing_meters: Option<f32>,
     include_water: Option<bool>,
+}
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct McpWorkbenchViewportContextInput {
+    include_ray: Option<bool>,
+}
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct McpWorkbenchTraceInput {
+    start: WorkbenchEntityPosition,
+    end: WorkbenchEntityPosition,
+    shape: WorkbenchTraceShape,
+    #[schemars(range(min = 0.001, max = 1000.0))]
+    radius: Option<f32>,
+    box_mins: Option<WorkbenchEntityPosition>,
+    box_maxs: Option<WorkbenchEntityPosition>,
+    entities: Option<bool>,
+    terrain: Option<bool>,
+    ocean: Option<bool>,
+    target_layers: Option<i32>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
@@ -1295,6 +1321,8 @@ impl ServerHandler for ReforgerMcpServer {
             workbench_layer_state_tool(),
             workbench_find_entities_by_radius_tool(),
             workbench_sample_terrain_tool(),
+            workbench_viewport_context_tool(),
+            workbench_trace_tool(),
             workbench_inspect_entity_tool(),
             workbench_set_selection_tool(),
             workbench_clear_selection_tool(),
@@ -1356,6 +1384,8 @@ impl ServerHandler for ReforgerMcpServer {
                 Some(workbench_find_entities_by_radius_tool())
             }
             WORKBENCH_SAMPLE_TERRAIN_TOOL_NAME => Some(workbench_sample_terrain_tool()),
+            WORKBENCH_VIEWPORT_CONTEXT_TOOL_NAME => Some(workbench_viewport_context_tool()),
+            WORKBENCH_TRACE_TOOL_NAME => Some(workbench_trace_tool()),
             WORKBENCH_INSPECT_ENTITY_TOOL_NAME => Some(workbench_inspect_entity_tool()),
             WORKBENCH_SET_SELECTION_TOOL_NAME => Some(workbench_set_selection_tool()),
             WORKBENCH_CLEAR_SELECTION_TOOL_NAME => Some(workbench_clear_selection_tool()),
@@ -1601,6 +1631,44 @@ impl ServerHandler for ReforgerMcpServer {
                         .map_err(|failure| workbench.correlate_failure("sample_terrain", failure))
                 },
             )
+            .await;
+        }
+        if request.name == WORKBENCH_VIEWPORT_CONTEXT_TOOL_NAME {
+            let input = parse_workbench_input::<McpWorkbenchViewportContextInput>(&request)?;
+            let workbench = self.workbench.clone();
+            return blocking_workbench_call(
+                self.admission.clone(),
+                context,
+                "viewport_context",
+                move || {
+                    workbench
+                        .viewport_context(WorkbenchViewportContextOptions {
+                            include_ray: input.include_ray.unwrap_or(false),
+                        })
+                        .map_err(|failure| workbench.correlate_failure("viewport_context", failure))
+                },
+            )
+            .await;
+        }
+        if request.name == WORKBENCH_TRACE_TOOL_NAME {
+            let input = parse_workbench_input::<McpWorkbenchTraceInput>(&request)?;
+            let workbench = self.workbench.clone();
+            return blocking_workbench_call(self.admission.clone(), context, "trace", move || {
+                workbench
+                    .trace(WorkbenchTraceOptions {
+                        start: input.start,
+                        end: input.end,
+                        shape: input.shape,
+                        radius: input.radius,
+                        box_mins: input.box_mins,
+                        box_maxs: input.box_maxs,
+                        entities: input.entities.unwrap_or(true),
+                        terrain: input.terrain.unwrap_or(true),
+                        ocean: input.ocean.unwrap_or(false),
+                        target_layers: input.target_layers,
+                    })
+                    .map_err(|failure| workbench.correlate_failure("trace", failure))
+            })
             .await;
         }
         if request.name == WORKBENCH_INSPECT_ENTITY_TOOL_NAME {
@@ -2667,6 +2735,8 @@ Copy a hit's `inspectInput` unchanged to `inspect_game_data_symbol`, or its `rea
         workbench_layer_state_tool(),
         workbench_find_entities_by_radius_tool(),
         workbench_sample_terrain_tool(),
+        workbench_viewport_context_tool(),
+        workbench_trace_tool(),
         workbench_inspect_entity_tool(),
         workbench_set_selection_tool(),
         workbench_clear_selection_tool(),
@@ -3090,6 +3160,26 @@ fn workbench_sample_terrain_tool() -> Tool {
             .open_world(false),
     )
 }
+fn workbench_viewport_context_tool() -> Tool {
+    workbench_input_tool::<McpWorkbenchViewportContextInput, WorkbenchViewportContext>(
+        WORKBENCH_VIEWPORT_CONTEXT_TOOL_NAME,
+        WORKBENCH_VIEWPORT_CONTEXT_DESCRIPTION,
+        "Read Workbench viewport context",
+        ToolAnnotations::with_title("Read Workbench viewport context")
+            .read_only(true)
+            .open_world(false),
+    )
+}
+fn workbench_trace_tool() -> Tool {
+    workbench_input_tool::<McpWorkbenchTraceInput, WorkbenchTraceResult>(
+        WORKBENCH_TRACE_TOOL_NAME,
+        WORKBENCH_TRACE_DESCRIPTION,
+        "Trace the Workbench world",
+        ToolAnnotations::with_title("Trace the Workbench world")
+            .read_only(true)
+            .open_world(false),
+    )
+}
 
 fn workbench_inspect_entity_tool() -> Tool {
     workbench_input_tool::<McpWorkbenchEntityInput, WorkbenchEntityInspection>(
@@ -3499,7 +3589,8 @@ mod tests {
         workbench_rotate_entity_tool, workbench_sample_terrain_tool,
         workbench_selected_entity_hierarchy_tool, workbench_set_component_properties_tool,
         workbench_set_entity_property_tool, workbench_start_play_session_tool,
-        workbench_status_tool, workbench_stop_play_session_tool, workbench_validate_scripts_tool,
+        workbench_status_tool, workbench_stop_play_session_tool, workbench_trace_tool,
+        workbench_validate_scripts_tool, workbench_viewport_context_tool,
         workbench_world_selection_summary_tool, DEADLINE_EXCEEDED_CODE, GAME_DATA_STATUS_TOOL_NAME,
         RESPONSE_TOO_LARGE_CODE, WORKBENCH_ADD_COMPONENT_TOOL_NAME,
         WORKBENCH_DUPLICATE_ENTITY_TOOL_NAME, WORKBENCH_INSPECT_COMPONENT_TOOL_NAME,
@@ -3512,7 +3603,8 @@ mod tests {
         WORKBENCH_SAMPLE_TERRAIN_TOOL_NAME, WORKBENCH_SELECTED_ENTITY_HIERARCHY_TOOL_NAME,
         WORKBENCH_SET_COMPONENT_PROPERTIES_TOOL_NAME, WORKBENCH_SET_ENTITY_PROPERTY_TOOL_NAME,
         WORKBENCH_START_PLAY_SESSION_TOOL_NAME, WORKBENCH_STATUS_TOOL_NAME,
-        WORKBENCH_STOP_PLAY_SESSION_TOOL_NAME, WORKBENCH_VALIDATE_SCRIPTS_TOOL_NAME,
+        WORKBENCH_STOP_PLAY_SESSION_TOOL_NAME, WORKBENCH_TRACE_TOOL_NAME,
+        WORKBENCH_VALIDATE_SCRIPTS_TOOL_NAME, WORKBENCH_VIEWPORT_CONTEXT_TOOL_NAME,
         WORKBENCH_WORLD_SELECTION_SUMMARY_TOOL_NAME,
     };
     use serde_json::Value;
@@ -3580,6 +3672,8 @@ mod tests {
         let entities = workbench_list_entities_tool();
         let layer_state = workbench_layer_state_tool();
         let terrain = workbench_sample_terrain_tool();
+        let viewport_context = workbench_viewport_context_tool();
+        let trace = workbench_trace_tool();
         let start_play = workbench_start_play_session_tool();
         let stop_play = workbench_stop_play_session_tool();
         let move_entity = workbench_move_entity_tool();
@@ -3610,6 +3704,22 @@ mod tests {
         assert_eq!(entities.name, WORKBENCH_LIST_ENTITIES_TOOL_NAME);
         assert_eq!(layer_state.name, WORKBENCH_LAYER_STATE_TOOL_NAME);
         assert_eq!(terrain.name, WORKBENCH_SAMPLE_TERRAIN_TOOL_NAME);
+        assert_eq!(viewport_context.name, WORKBENCH_VIEWPORT_CONTEXT_TOOL_NAME);
+        assert_eq!(trace.name, WORKBENCH_TRACE_TOOL_NAME);
+        assert_eq!(
+            viewport_context
+                .annotations
+                .as_ref()
+                .and_then(|annotations| annotations.read_only_hint),
+            Some(true)
+        );
+        assert_eq!(
+            trace
+                .annotations
+                .as_ref()
+                .and_then(|annotations| annotations.read_only_hint),
+            Some(true)
+        );
         assert_eq!(
             terrain
                 .annotations
