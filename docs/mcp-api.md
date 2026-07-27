@@ -4056,7 +4056,7 @@ Workbench tools return structured tool errors with a stable code, operation phas
 
 ## `workbench_sample_terrain`
 
-Sample a bounded square of loaded World Editor terrain heights around a world X/Z coordinate. The result includes native terrain resolution and planar spacing, plus a row-major grid and derived elevation/slope summary. At most 4,096 cells are returned; heights[z * width + x] is at origin.x + x * effectiveSpacingMeters, origin.z + z * effectiveSpacingMeters, so X changes fastest. Set includeWater to add same-lattice water facts reported by the engine point-water API (ocean, pond, or river when registered by the engine); it does not trace geometry, inspect materials/entities, or edit the world.
+Sample a bounded square of loaded World Editor terrain heights around a world X/Z coordinate. The result includes native terrain resolution and planar spacing, plus a row-major grid and derived elevation/slope summary. At most 4,096 cells are returned; heights[z * width + x] is at origin.x + x * effectiveSpacingMeters, origin.z + z * effectiveSpacingMeters, so X changes fastest. Set includeWater to add same-lattice water facts: the engine point-water API first, then a water-targeted physics trace for generated lakes and rivers. It does not inspect authored geometry, inspect materials/entities, or edit the world.
 
 ### Annotations
 
