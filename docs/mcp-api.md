@@ -4054,6 +4054,322 @@ Find a bounded set of live World Editor entities whose bounds touch a world-spac
 
 Workbench tools return structured tool errors with a stable code, operation phase, retryability, and a unique log reference matching a rotating integration-log record. Raw transport and Workbench payload details are not exposed.
 
+## `workbench_sample_terrain`
+
+Sample a bounded square of loaded World Editor terrain heights around a world X/Z coordinate. The result includes native terrain resolution and planar spacing, plus a row-major grid and derived elevation/slope summary. At most 4,096 cells are returned; heights[z * width + x] is at origin.x + x * effectiveSpacingMeters, origin.z + z * effectiveSpacingMeters, so X changes fastest. It samples terrain only: it does not trace geometry, inspect water/materials/entities, or edit the world.
+
+### Annotations
+
+```json
+{
+  "title": "Sample Workbench terrain",
+  "readOnlyHint": true,
+  "openWorldHint": false
+}
+```
+
+### Input schema
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "halfExtentMeters": {
+      "format": "float",
+      "maximum": 500.0,
+      "minimum": 0.01,
+      "type": "number"
+    },
+    "spacingMeters": {
+      "format": "float",
+      "maximum": 500.0,
+      "minimum": 0.01,
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "x": {
+      "format": "float",
+      "type": "number"
+    },
+    "z": {
+      "format": "float",
+      "type": "number"
+    }
+  },
+  "required": [
+    "x",
+    "z",
+    "halfExtentMeters"
+  ],
+  "type": "object"
+}
+```
+
+### Output schema
+
+```json
+{
+  "$defs": {
+    "WorkbenchEntityPosition": {
+      "properties": {
+        "x": {
+          "format": "float",
+          "type": "number"
+        },
+        "y": {
+          "format": "float",
+          "type": "number"
+        },
+        "z": {
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "z"
+      ],
+      "type": "object"
+    },
+    "WorkbenchTerrainBounds": {
+      "properties": {
+        "max": {
+          "$ref": "#/$defs/WorkbenchEntityPosition"
+        },
+        "min": {
+          "$ref": "#/$defs/WorkbenchEntityPosition"
+        }
+      },
+      "required": [
+        "min",
+        "max"
+      ],
+      "type": "object"
+    },
+    "WorkbenchTerrainCoordinate": {
+      "properties": {
+        "x": {
+          "format": "float",
+          "type": "number"
+        },
+        "z": {
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "z"
+      ],
+      "type": "object"
+    },
+    "WorkbenchTerrainGrid": {
+      "properties": {
+        "effectiveSpacingMeters": {
+          "format": "float",
+          "type": "number"
+        },
+        "height": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "heights": {
+          "items": {
+            "format": "float",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "type": "array"
+        },
+        "origin": {
+          "$ref": "#/$defs/WorkbenchTerrainCoordinate"
+        },
+        "requestedHalfExtentMeters": {
+          "format": "float",
+          "type": "number"
+        },
+        "requestedSpacingMeters": {
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "spacingClamped": {
+          "type": "boolean"
+        },
+        "width": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "origin",
+        "requestedHalfExtentMeters",
+        "effectiveSpacingMeters",
+        "spacingClamped",
+        "width",
+        "height",
+        "heights"
+      ],
+      "type": "object"
+    },
+    "WorkbenchTerrainMetadata": {
+      "properties": {
+        "bounds": {
+          "$ref": "#/$defs/WorkbenchTerrainBounds"
+        },
+        "heightmapResolutionX": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "heightmapResolutionZ": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "nativeSpacingMeters": {
+          "format": "float",
+          "type": "number"
+        },
+        "tileCountX": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tileCountZ": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "bounds",
+        "heightmapResolutionX",
+        "heightmapResolutionZ",
+        "nativeSpacingMeters",
+        "tileCountX",
+        "tileCountZ"
+      ],
+      "type": "object"
+    },
+    "WorkbenchTerrainSummary": {
+      "properties": {
+        "elevationRange": {
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "maximumHeight": {
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "meanHeight": {
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "minimumHeight": {
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "steepestAdjacentSlopeDegrees": {
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "steepestAdjacentSlopePosition": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchTerrainCoordinate"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "validSampleCount": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "validSampleCount"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "bridgeVersion": {
+      "type": "string"
+    },
+    "grid": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkbenchTerrainGrid"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "protocolVersion": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "status": {
+      "type": "string"
+    },
+    "summary": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkbenchTerrainSummary"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "terrain": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkbenchTerrainMetadata"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "bridgeVersion",
+    "protocolVersion",
+    "status"
+  ],
+  "type": "object"
+}
+```
+
+### Stable failures
+
+Workbench tools return structured tool errors with a stable code, operation phase, retryability, and a unique log reference matching a rotating integration-log record. Raw transport and Workbench payload details are not exposed.
+
 ## `workbench_inspect_entity`
 
 Inspect one exact stable World Editor entity identity through the compatible managed handler package. It never changes editor selection or world content.

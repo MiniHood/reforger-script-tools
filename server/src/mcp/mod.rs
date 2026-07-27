@@ -31,8 +31,8 @@ use crate::workbench::{
     WorkbenchLiveState, WorkbenchLogRead, WorkbenchOpenWorldResult, WorkbenchOverview,
     WorkbenchPlaySessionResult, WorkbenchProcessResult, WorkbenchProjectContext,
     WorkbenchPropertyList, WorkbenchResourceInspection, WorkbenchResourceListPage,
-    WorkbenchScriptActivationResult, WorkbenchSelectedEntityHierarchy, WorkbenchValidationPage,
-    WorkbenchWorldSelectionSummary,
+    WorkbenchScriptActivationResult, WorkbenchSelectedEntityHierarchy, WorkbenchTerrainSample,
+    WorkbenchTerrainSampleOptions, WorkbenchValidationPage, WorkbenchWorldSelectionSummary,
 };
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, ContentBlock, Implementation, ListToolsResult,
@@ -71,6 +71,7 @@ pub const WORKBENCH_SELECTED_ENTITY_HIERARCHY_TOOL_NAME: &str =
 pub const WORKBENCH_LIST_ENTITIES_TOOL_NAME: &str = "workbench_list_entities";
 pub const WORKBENCH_LAYER_STATE_TOOL_NAME: &str = "workbench_layer_state";
 pub const WORKBENCH_FIND_ENTITIES_BY_RADIUS_TOOL_NAME: &str = "workbench_find_entities_by_radius";
+pub const WORKBENCH_SAMPLE_TERRAIN_TOOL_NAME: &str = "workbench_sample_terrain";
 pub const WORKBENCH_INSPECT_ENTITY_TOOL_NAME: &str = "workbench_inspect_entity";
 pub const WORKBENCH_SET_SELECTION_TOOL_NAME: &str = "workbench_set_selection";
 pub const WORKBENCH_CLEAR_SELECTION_TOOL_NAME: &str = "workbench_clear_selection";
@@ -128,6 +129,7 @@ const WORKBENCH_SELECTED_ENTITY_HIERARCHY_DESCRIPTION: &str = "Inspect the bound
 const WORKBENCH_LIST_ENTITIES_DESCRIPTION: &str = "List one bounded page of live World Editor entities, optionally constrained to an exact subscene and layer. Entity IDs are stable only for the observed editor context; filters are discovery metadata, never target identities.";
 const WORKBENCH_LAYER_STATE_DESCRIPTION: &str = "Read one exact World Editor layer's canonical path, visibility, explicit lock state, and effective hierarchical lock state without changing the world or editor.";
 const WORKBENCH_FIND_ENTITIES_BY_RADIUS_DESCRIPTION: &str = "Find a bounded set of live World Editor entities whose bounds touch a world-space sphere. The engine query stops after one additional match, so truncated means more matches exist; returned order is not nearest-first.";
+const WORKBENCH_SAMPLE_TERRAIN_DESCRIPTION: &str = "Sample a bounded square of loaded World Editor terrain heights around a world X/Z coordinate. The result includes native terrain resolution and planar spacing, plus a row-major grid and derived elevation/slope summary. At most 4,096 cells are returned; heights[z * width + x] is at origin.x + x * effectiveSpacingMeters, origin.z + z * effectiveSpacingMeters, so X changes fastest. It samples terrain only: it does not trace geometry, inspect water/materials/entities, or edit the world.";
 const WORKBENCH_INSPECT_ENTITY_DESCRIPTION: &str = "Inspect one exact stable World Editor entity identity through the compatible managed handler package. It never changes editor selection or world content.";
 const WORKBENCH_SET_SELECTION_DESCRIPTION: &str = "Explicitly replace the visible World Editor selection with one exact stable entity identity. This experimental command changes only editor selection, never world content.";
 const WORKBENCH_CLEAR_SELECTION_DESCRIPTION: &str = "Explicitly clear the visible World Editor selection and return the observed empty selection summary.";
@@ -372,6 +374,17 @@ struct McpWorkbenchEntityRadiusInput {
     exclude_proxies: Option<bool>,
     #[schemars(length(max = 128))]
     class_name: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct McpWorkbenchTerrainSampleInput {
+    x: f32,
+    z: f32,
+    #[schemars(range(min = 0.01, max = 500.0))]
+    half_extent_meters: f32,
+    #[schemars(range(min = 0.01, max = 500.0))]
+    spacing_meters: Option<f32>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
@@ -1280,6 +1293,7 @@ impl ServerHandler for ReforgerMcpServer {
             workbench_list_entities_tool(),
             workbench_layer_state_tool(),
             workbench_find_entities_by_radius_tool(),
+            workbench_sample_terrain_tool(),
             workbench_inspect_entity_tool(),
             workbench_set_selection_tool(),
             workbench_clear_selection_tool(),
@@ -1340,6 +1354,7 @@ impl ServerHandler for ReforgerMcpServer {
             WORKBENCH_FIND_ENTITIES_BY_RADIUS_TOOL_NAME => {
                 Some(workbench_find_entities_by_radius_tool())
             }
+            WORKBENCH_SAMPLE_TERRAIN_TOOL_NAME => Some(workbench_sample_terrain_tool()),
             WORKBENCH_INSPECT_ENTITY_TOOL_NAME => Some(workbench_inspect_entity_tool()),
             WORKBENCH_SET_SELECTION_TOOL_NAME => Some(workbench_set_selection_tool()),
             WORKBENCH_CLEAR_SELECTION_TOOL_NAME => Some(workbench_clear_selection_tool()),
@@ -1562,6 +1577,26 @@ impl ServerHandler for ReforgerMcpServer {
                         .map_err(|failure| {
                             workbench.correlate_failure("find_entities_by_radius", failure)
                         })
+                },
+            )
+            .await;
+        }
+        if request.name == WORKBENCH_SAMPLE_TERRAIN_TOOL_NAME {
+            let input = parse_workbench_input::<McpWorkbenchTerrainSampleInput>(&request)?;
+            let workbench = self.workbench.clone();
+            return blocking_workbench_call(
+                self.admission.clone(),
+                context,
+                "sample_terrain",
+                move || {
+                    workbench
+                        .sample_terrain(WorkbenchTerrainSampleOptions {
+                            center_x: input.x,
+                            center_z: input.z,
+                            half_extent_meters: input.half_extent_meters,
+                            spacing_meters: input.spacing_meters,
+                        })
+                        .map_err(|failure| workbench.correlate_failure("sample_terrain", failure))
                 },
             )
             .await;
@@ -2629,6 +2664,7 @@ Copy a hit's `inspectInput` unchanged to `inspect_game_data_symbol`, or its `rea
         workbench_list_entities_tool(),
         workbench_layer_state_tool(),
         workbench_find_entities_by_radius_tool(),
+        workbench_sample_terrain_tool(),
         workbench_inspect_entity_tool(),
         workbench_set_selection_tool(),
         workbench_clear_selection_tool(),
@@ -3042,6 +3078,17 @@ fn workbench_find_entities_by_radius_tool() -> Tool {
     )
 }
 
+fn workbench_sample_terrain_tool() -> Tool {
+    workbench_input_tool::<McpWorkbenchTerrainSampleInput, WorkbenchTerrainSample>(
+        WORKBENCH_SAMPLE_TERRAIN_TOOL_NAME,
+        WORKBENCH_SAMPLE_TERRAIN_DESCRIPTION,
+        "Sample Workbench terrain",
+        ToolAnnotations::with_title("Sample Workbench terrain")
+            .read_only(true)
+            .open_world(false),
+    )
+}
+
 fn workbench_inspect_entity_tool() -> Tool {
     workbench_input_tool::<McpWorkbenchEntityInput, WorkbenchEntityInspection>(
         WORKBENCH_INSPECT_ENTITY_TOOL_NAME,
@@ -3447,19 +3494,20 @@ mod tests {
         workbench_list_entity_properties_tool, workbench_list_resources_tool,
         workbench_move_entity_tool, workbench_open_world_tool, workbench_project_context_tool,
         workbench_reload_tool, workbench_remove_component_tool, workbench_reparent_entity_tool,
-        workbench_rotate_entity_tool, workbench_selected_entity_hierarchy_tool,
-        workbench_set_component_properties_tool, workbench_set_entity_property_tool,
-        workbench_start_play_session_tool, workbench_status_tool, workbench_stop_play_session_tool,
-        workbench_validate_scripts_tool, workbench_world_selection_summary_tool,
-        DEADLINE_EXCEEDED_CODE, GAME_DATA_STATUS_TOOL_NAME, RESPONSE_TOO_LARGE_CODE,
-        WORKBENCH_ADD_COMPONENT_TOOL_NAME, WORKBENCH_DUPLICATE_ENTITY_TOOL_NAME,
-        WORKBENCH_INSPECT_COMPONENT_TOOL_NAME, WORKBENCH_LAYER_STATE_TOOL_NAME,
-        WORKBENCH_LIST_COMPONENTS_TOOL_NAME, WORKBENCH_LIST_ENTITIES_TOOL_NAME,
-        WORKBENCH_LIST_ENTITY_PROPERTIES_TOOL_NAME, WORKBENCH_LIST_RESOURCES_TOOL_NAME,
-        WORKBENCH_MOVE_ENTITY_TOOL_NAME, WORKBENCH_OPEN_WORLD_TOOL_NAME,
-        WORKBENCH_PROJECT_CONTEXT_TOOL_NAME, WORKBENCH_RELOAD_TOOL_NAME,
-        WORKBENCH_REMOVE_COMPONENT_TOOL_NAME, WORKBENCH_REPARENT_ENTITY_TOOL_NAME,
-        WORKBENCH_ROTATE_ENTITY_TOOL_NAME, WORKBENCH_SELECTED_ENTITY_HIERARCHY_TOOL_NAME,
+        workbench_rotate_entity_tool, workbench_sample_terrain_tool,
+        workbench_selected_entity_hierarchy_tool, workbench_set_component_properties_tool,
+        workbench_set_entity_property_tool, workbench_start_play_session_tool,
+        workbench_status_tool, workbench_stop_play_session_tool, workbench_validate_scripts_tool,
+        workbench_world_selection_summary_tool, DEADLINE_EXCEEDED_CODE, GAME_DATA_STATUS_TOOL_NAME,
+        RESPONSE_TOO_LARGE_CODE, WORKBENCH_ADD_COMPONENT_TOOL_NAME,
+        WORKBENCH_DUPLICATE_ENTITY_TOOL_NAME, WORKBENCH_INSPECT_COMPONENT_TOOL_NAME,
+        WORKBENCH_LAYER_STATE_TOOL_NAME, WORKBENCH_LIST_COMPONENTS_TOOL_NAME,
+        WORKBENCH_LIST_ENTITIES_TOOL_NAME, WORKBENCH_LIST_ENTITY_PROPERTIES_TOOL_NAME,
+        WORKBENCH_LIST_RESOURCES_TOOL_NAME, WORKBENCH_MOVE_ENTITY_TOOL_NAME,
+        WORKBENCH_OPEN_WORLD_TOOL_NAME, WORKBENCH_PROJECT_CONTEXT_TOOL_NAME,
+        WORKBENCH_RELOAD_TOOL_NAME, WORKBENCH_REMOVE_COMPONENT_TOOL_NAME,
+        WORKBENCH_REPARENT_ENTITY_TOOL_NAME, WORKBENCH_ROTATE_ENTITY_TOOL_NAME,
+        WORKBENCH_SAMPLE_TERRAIN_TOOL_NAME, WORKBENCH_SELECTED_ENTITY_HIERARCHY_TOOL_NAME,
         WORKBENCH_SET_COMPONENT_PROPERTIES_TOOL_NAME, WORKBENCH_SET_ENTITY_PROPERTY_TOOL_NAME,
         WORKBENCH_START_PLAY_SESSION_TOOL_NAME, WORKBENCH_STATUS_TOOL_NAME,
         WORKBENCH_STOP_PLAY_SESSION_TOOL_NAME, WORKBENCH_VALIDATE_SCRIPTS_TOOL_NAME,
@@ -3529,6 +3577,7 @@ mod tests {
         let hierarchy = workbench_selected_entity_hierarchy_tool();
         let entities = workbench_list_entities_tool();
         let layer_state = workbench_layer_state_tool();
+        let terrain = workbench_sample_terrain_tool();
         let start_play = workbench_start_play_session_tool();
         let stop_play = workbench_stop_play_session_tool();
         let move_entity = workbench_move_entity_tool();
@@ -3558,6 +3607,14 @@ mod tests {
         );
         assert_eq!(entities.name, WORKBENCH_LIST_ENTITIES_TOOL_NAME);
         assert_eq!(layer_state.name, WORKBENCH_LAYER_STATE_TOOL_NAME);
+        assert_eq!(terrain.name, WORKBENCH_SAMPLE_TERRAIN_TOOL_NAME);
+        assert_eq!(
+            terrain
+                .annotations
+                .as_ref()
+                .and_then(|annotations| annotations.read_only_hint),
+            Some(true)
+        );
         assert_eq!(
             layer_state
                 .annotations

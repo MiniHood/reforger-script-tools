@@ -103,7 +103,7 @@ pub struct WorkbenchGateway {
     request_lock: Arc<Mutex<()>>,
 }
 
-pub const WORKBENCH_BRIDGE_VERSION: &str = "1.19.0";
+pub const WORKBENCH_BRIDGE_VERSION: &str = "1.20.0";
 pub const WORKBENCH_BRIDGE_PROTOCOL_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -408,6 +408,84 @@ pub struct WorkbenchEntityRadiusQueryOptions {
     pub exclude_proxies: bool,
     pub class_name: Option<String>,
     pub limit: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct WorkbenchTerrainSampleOptions {
+    pub center_x: f32,
+    pub center_z: f32,
+    pub half_extent_meters: f32,
+    pub spacing_meters: Option<f32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkbenchTerrainCoordinate {
+    pub x: f32,
+    pub z: f32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkbenchTerrainBounds {
+    pub min: WorkbenchEntityPosition,
+    pub max: WorkbenchEntityPosition,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkbenchTerrainMetadata {
+    pub bounds: WorkbenchTerrainBounds,
+    pub heightmap_resolution_x: u32,
+    pub heightmap_resolution_z: u32,
+    pub native_spacing_meters: f32,
+    pub tile_count_x: u32,
+    pub tile_count_z: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkbenchTerrainGrid {
+    pub origin: WorkbenchTerrainCoordinate,
+    pub requested_half_extent_meters: f32,
+    pub requested_spacing_meters: Option<f32>,
+    pub effective_spacing_meters: f32,
+    pub spacing_clamped: bool,
+    pub width: u32,
+    pub height: u32,
+    pub heights: Vec<Option<f32>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkbenchTerrainSummary {
+    pub valid_sample_count: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub minimum_height: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub maximum_height: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mean_height: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub elevation_range: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub steepest_adjacent_slope_degrees: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub steepest_adjacent_slope_position: Option<WorkbenchTerrainCoordinate>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkbenchTerrainSample {
+    pub bridge_version: String,
+    pub protocol_version: u32,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terrain: Option<WorkbenchTerrainMetadata>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grid: Option<WorkbenchTerrainGrid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<WorkbenchTerrainSummary>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -1510,6 +1588,59 @@ impl WorkbenchController {
             exclude_proxies: workbench_bool(&raw.exclude_proxies),
             entities,
             truncated: workbench_bool(&raw.truncated),
+        })
+    }
+
+    pub fn sample_terrain(
+        &self,
+        options: WorkbenchTerrainSampleOptions,
+    ) -> Result<WorkbenchTerrainSample, WorkbenchFailure> {
+        const MAX_HALF_EXTENT_METERS: f32 = 500.0;
+        const MAX_SPACING_METERS: f32 = 500.0;
+        const MAX_SAMPLES: usize = 4_096;
+        if !options.center_x.is_finite()
+            || !options.center_z.is_finite()
+            || !(0.01..=MAX_HALF_EXTENT_METERS).contains(&options.half_extent_meters)
+            || options.spacing_meters.is_some_and(|spacing| {
+                !spacing.is_finite() || !(0.01..=MAX_SPACING_METERS).contains(&spacing)
+            })
+        {
+            return Err(failure(WorkbenchFailureCode::Protocol));
+        }
+        let requested_spacing = options.spacing_meters.unwrap_or(0.0);
+        let value = self.gateway.request(
+            json!({"APIFunc":"RST_WorkbenchSampleTerrain","centerX":options.center_x,"centerZ":options.center_z,"halfExtentMeters":options.half_extent_meters,"spacingMeters":requested_spacing}),
+            self.options.gateway.status_deadline,
+        )?;
+        let raw: RawBridgeTerrainSample =
+            serde_json::from_value(value).map_err(|_| failure(WorkbenchFailureCode::Protocol))?;
+        if raw.bridge_version != WORKBENCH_BRIDGE_VERSION
+            || raw.protocol_version != WORKBENCH_BRIDGE_PROTOCOL_VERSION
+        {
+            return Err(failure(WorkbenchFailureCode::Protocol));
+        }
+        if raw.status != "available" {
+            return Ok(WorkbenchTerrainSample {
+                bridge_version: raw.bridge_version,
+                protocol_version: raw.protocol_version,
+                status: raw.status,
+                terrain: None,
+                grid: None,
+                summary: None,
+            });
+        }
+        let terrain =
+            parse_terrain_metadata(&raw).map_err(|_| failure(WorkbenchFailureCode::Protocol))?;
+        let grid = parse_terrain_grid(&raw, options.spacing_meters, MAX_SAMPLES)
+            .map_err(|_| failure(WorkbenchFailureCode::Protocol))?;
+        let summary = summarize_terrain_grid(&grid);
+        Ok(WorkbenchTerrainSample {
+            bridge_version: raw.bridge_version,
+            protocol_version: raw.protocol_version,
+            status: raw.status,
+            terrain: Some(terrain),
+            grid: Some(grid),
+            summary: Some(summary),
         })
     }
 
@@ -3362,6 +3493,55 @@ struct RawBridgeEntityRadiusQuery {
 }
 
 #[derive(Deserialize)]
+struct RawBridgeTerrainSample {
+    #[serde(rename = "bridgeVersion")]
+    bridge_version: String,
+    #[serde(rename = "protocolVersion")]
+    protocol_version: u32,
+    status: String,
+    #[serde(rename = "halfExtentMeters", default)]
+    half_extent_meters: f32,
+    #[serde(rename = "requestedSpacingMeters", default)]
+    requested_spacing_meters: f32,
+    #[serde(rename = "effectiveSpacingMeters", default)]
+    effective_spacing_meters: f32,
+    #[serde(rename = "spacingClamped", default)]
+    spacing_clamped: Value,
+    #[serde(rename = "gridOriginX", default)]
+    grid_origin_x: f32,
+    #[serde(rename = "gridOriginZ", default)]
+    grid_origin_z: f32,
+    #[serde(rename = "gridWidth", default)]
+    grid_width: u32,
+    #[serde(rename = "gridHeight", default)]
+    grid_height: u32,
+    #[serde(default)]
+    heights: String,
+    #[serde(rename = "boundsMinX", default)]
+    bounds_min_x: f32,
+    #[serde(rename = "boundsMinY", default)]
+    bounds_min_y: f32,
+    #[serde(rename = "boundsMinZ", default)]
+    bounds_min_z: f32,
+    #[serde(rename = "boundsMaxX", default)]
+    bounds_max_x: f32,
+    #[serde(rename = "boundsMaxY", default)]
+    bounds_max_y: f32,
+    #[serde(rename = "boundsMaxZ", default)]
+    bounds_max_z: f32,
+    #[serde(rename = "heightmapResolutionX", default)]
+    heightmap_resolution_x: u32,
+    #[serde(rename = "heightmapResolutionZ", default)]
+    heightmap_resolution_z: u32,
+    #[serde(rename = "nativeSpacingMeters", default)]
+    native_spacing_meters: f32,
+    #[serde(rename = "tileCountX", default)]
+    tile_count_x: u32,
+    #[serde(rename = "tileCountZ", default)]
+    tile_count_z: u32,
+}
+
+#[derive(Deserialize)]
 struct RawBridgeComponentResult {
     #[serde(rename = "bridgeVersion")]
     bridge_version: String,
@@ -3388,6 +3568,154 @@ struct RawBridgePropertyList {
 
 fn workbench_bool(value: &Value) -> bool {
     matches!(value, Value::Bool(true)) || value.as_i64().is_some_and(|integer| integer != 0)
+}
+
+fn parse_terrain_metadata(raw: &RawBridgeTerrainSample) -> Result<WorkbenchTerrainMetadata, ()> {
+    if !raw.bounds_min_x.is_finite()
+        || !raw.bounds_min_y.is_finite()
+        || !raw.bounds_min_z.is_finite()
+        || !raw.bounds_max_x.is_finite()
+        || !raw.bounds_max_y.is_finite()
+        || !raw.bounds_max_z.is_finite()
+        || raw.bounds_min_x > raw.bounds_max_x
+        || raw.bounds_min_y > raw.bounds_max_y
+        || raw.bounds_min_z > raw.bounds_max_z
+        || raw.heightmap_resolution_x == 0
+        || raw.heightmap_resolution_z == 0
+        || !raw.native_spacing_meters.is_finite()
+        || raw.native_spacing_meters <= 0.0
+        || raw.tile_count_x == 0
+        || raw.tile_count_z == 0
+    {
+        return Err(());
+    }
+    Ok(WorkbenchTerrainMetadata {
+        bounds: WorkbenchTerrainBounds {
+            min: WorkbenchEntityPosition {
+                x: raw.bounds_min_x,
+                y: raw.bounds_min_y,
+                z: raw.bounds_min_z,
+            },
+            max: WorkbenchEntityPosition {
+                x: raw.bounds_max_x,
+                y: raw.bounds_max_y,
+                z: raw.bounds_max_z,
+            },
+        },
+        heightmap_resolution_x: raw.heightmap_resolution_x,
+        heightmap_resolution_z: raw.heightmap_resolution_z,
+        native_spacing_meters: raw.native_spacing_meters,
+        tile_count_x: raw.tile_count_x,
+        tile_count_z: raw.tile_count_z,
+    })
+}
+
+fn parse_terrain_grid(
+    raw: &RawBridgeTerrainSample,
+    requested_spacing_meters: Option<f32>,
+    max_samples: usize,
+) -> Result<WorkbenchTerrainGrid, ()> {
+    let sample_count = (raw.grid_width as usize).saturating_mul(raw.grid_height as usize);
+    if raw.grid_width == 0
+        || raw.grid_height == 0
+        || sample_count > max_samples
+        || !raw.half_extent_meters.is_finite()
+        || raw.half_extent_meters <= 0.0
+        || !raw.requested_spacing_meters.is_finite()
+        || !raw.effective_spacing_meters.is_finite()
+        || raw.effective_spacing_meters <= 0.0
+        || !raw.grid_origin_x.is_finite()
+        || !raw.grid_origin_z.is_finite()
+    {
+        return Err(());
+    }
+    let heights = raw
+        .heights
+        .split(';')
+        .map(|value| {
+            if value == "~" {
+                Ok(None)
+            } else {
+                value
+                    .parse::<f32>()
+                    .ok()
+                    .filter(|height| height.is_finite())
+                    .map(Some)
+                    .ok_or(())
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if heights.len() != sample_count {
+        return Err(());
+    }
+    Ok(WorkbenchTerrainGrid {
+        origin: WorkbenchTerrainCoordinate {
+            x: raw.grid_origin_x,
+            z: raw.grid_origin_z,
+        },
+        requested_half_extent_meters: raw.half_extent_meters,
+        requested_spacing_meters,
+        effective_spacing_meters: raw.effective_spacing_meters,
+        spacing_clamped: workbench_bool(&raw.spacing_clamped),
+        width: raw.grid_width,
+        height: raw.grid_height,
+        heights,
+    })
+}
+
+fn summarize_terrain_grid(grid: &WorkbenchTerrainGrid) -> WorkbenchTerrainSummary {
+    let valid_heights = grid.heights.iter().flatten().copied().collect::<Vec<_>>();
+    let valid_sample_count = valid_heights.len() as u32;
+    let minimum_height = valid_heights.iter().copied().reduce(f32::min);
+    let maximum_height = valid_heights.iter().copied().reduce(f32::max);
+    let mean_height = (!valid_heights.is_empty())
+        .then(|| valid_heights.iter().sum::<f32>() / valid_heights.len() as f32);
+    let elevation_range = minimum_height
+        .zip(maximum_height)
+        .map(|(min, max)| max - min);
+    let mut steepest: Option<(f32, WorkbenchTerrainCoordinate)> = None;
+    for z in 0..grid.height as usize {
+        for x in 0..grid.width as usize {
+            let index = z * grid.width as usize + x;
+            let Some(height) = grid.heights[index] else {
+                continue;
+            };
+            for (adjacent_x, adjacent_z) in [(x + 1, z), (x, z + 1)] {
+                if adjacent_x >= grid.width as usize || adjacent_z >= grid.height as usize {
+                    continue;
+                }
+                let adjacent_index = adjacent_z * grid.width as usize + adjacent_x;
+                let Some(adjacent_height) = grid.heights[adjacent_index] else {
+                    continue;
+                };
+                let slope_degrees = ((adjacent_height - height).abs()
+                    / grid.effective_spacing_meters)
+                    .atan()
+                    .to_degrees();
+                if steepest
+                    .as_ref()
+                    .is_none_or(|(current, _)| slope_degrees > *current)
+                {
+                    steepest = Some((
+                        slope_degrees,
+                        WorkbenchTerrainCoordinate {
+                            x: grid.origin.x + adjacent_x as f32 * grid.effective_spacing_meters,
+                            z: grid.origin.z + adjacent_z as f32 * grid.effective_spacing_meters,
+                        },
+                    ));
+                }
+            }
+        }
+    }
+    WorkbenchTerrainSummary {
+        valid_sample_count,
+        minimum_height,
+        maximum_height,
+        mean_height,
+        elevation_range,
+        steepest_adjacent_slope_degrees: steepest.as_ref().map(|(slope, _)| *slope),
+        steepest_adjacent_slope_position: steepest.map(|(_, position)| position),
+    }
 }
 
 fn play_session(
@@ -4311,6 +4639,7 @@ fn bridge_payload() -> &'static [(&'static str, &'static str)] {
             "RST_WorkbenchFindEntitiesByRadius.c",
             BRIDGE_ENTITY_RADIUS_QUERY_SOURCE,
         ),
+        ("RST_WorkbenchSampleTerrain.c", BRIDGE_TERRAIN_SAMPLE_SOURCE),
         (
             "RST_WorkbenchClearSelection.c",
             BRIDGE_CLEAR_SELECTION_SOURCE,
@@ -4356,7 +4685,7 @@ class RST_WorkbenchCapabilities : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchCapabilitiesResponse response = new RST_WorkbenchCapabilitiesResponse();
-		response.bridgeVersion = "1.19.0";
+		response.bridgeVersion = "1.20.0";
 	response.protocolVersion = 1;
 	response.capabilities = "state;open-world;play-session;project-context;inspect-resource;world-selection;entity-hierarchy;list-resources;list-entities;layer-state;inspect-entity;set-selection;clear-selection;entity-position;entity-details;create-entity;rename-entity;delete-entity;move-entity;rotate-entity;reparent-entity;duplicate-entity;entity-properties;components;component-properties";
 		return response;
@@ -4404,7 +4733,7 @@ class RST_WorkbenchState : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchStateResponse response = new RST_WorkbenchStateResponse();
-	response.bridgeVersion = "1.19.0";
+	response.bridgeVersion = "1.20.0";
 		response.protocolVersion = 1;
 		response.mode = "workbench";
 		response.playSession = "unavailable";
@@ -4595,7 +4924,7 @@ class RST_WorkbenchProjectContext : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchProjectContextResponse response = new RST_WorkbenchProjectContextResponse();
-		response.bridgeVersion = "1.19.0";
+		response.bridgeVersion = "1.20.0";
 		response.protocolVersion = 1;
 		array<string> addonGuids = new array<string>();
 		GameProject.GetLoadedAddons(addonGuids);
@@ -4713,7 +5042,7 @@ class RST_WorkbenchWorldSelection : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchWorldSelectionResponse response = new RST_WorkbenchWorldSelectionResponse();
-		response.bridgeVersion = "1.19.0";
+		response.bridgeVersion = "1.20.0";
 		response.protocolVersion = 1;
 		WorldEditor worldEditor = Workbench.GetModule(WorldEditor);
 		if (!worldEditor)
@@ -4791,7 +5120,7 @@ class RST_WorkbenchSelectedEntityHierarchy : NetApiHandler
 	{
 		RST_WorkbenchSelectedEntityHierarchyRequest typedRequest = RST_WorkbenchSelectedEntityHierarchyRequest.Cast(request);
 		RST_WorkbenchSelectedEntityHierarchyResponse response = new RST_WorkbenchSelectedEntityHierarchyResponse();
-		response.bridgeVersion = "1.19.0";
+		response.bridgeVersion = "1.20.0";
 		response.protocolVersion = 1;
 		WorldEditor worldEditor = Workbench.GetModule(WorldEditor);
 		if (!worldEditor)
@@ -4876,7 +5205,7 @@ class RST_WorkbenchListEntities : NetApiHandler
 	{
 		RST_WorkbenchListEntitiesRequest typedRequest = RST_WorkbenchListEntitiesRequest.Cast(request);
 		RST_WorkbenchListEntitiesResponse response = new RST_WorkbenchListEntitiesResponse();
-		response.bridgeVersion = "1.19.0";
+		response.bridgeVersion = "1.20.0";
 		response.protocolVersion = 1;
 		WorldEditor worldEditor = Workbench.GetModule(WorldEditor);
 		if (!worldEditor) return response;
@@ -4935,7 +5264,7 @@ class RST_WorkbenchLayerState : NetApiHandler
 	{
 		RST_WorkbenchLayerStateRequest typedRequest = RST_WorkbenchLayerStateRequest.Cast(request);
 		RST_WorkbenchLayerStateResponse response = new RST_WorkbenchLayerStateResponse();
-		response.bridgeVersion = "1.19.0";
+		response.bridgeVersion = "1.20.0";
 		response.protocolVersion = 1;
 		response.subScene = typedRequest.subScene;
 		response.layerId = typedRequest.layerId;
@@ -5045,7 +5374,7 @@ class RST_WorkbenchInspectEntity : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchInspectEntityRequest typedRequest = RST_WorkbenchInspectEntityRequest.Cast(request);
-		RST_WorkbenchInspectEntityResponse response = new RST_WorkbenchInspectEntityResponse(); response.bridgeVersion = "1.19.0"; response.protocolVersion = 1;
+		RST_WorkbenchInspectEntityResponse response = new RST_WorkbenchInspectEntityResponse(); response.bridgeVersion = "1.20.0"; response.protocolVersion = 1;
 		WorldEditor worldEditor = Workbench.GetModule(WorldEditor); if (!worldEditor) { response.status = "world-editor-unavailable"; return response; }
 		WorldEditorAPI api = worldEditor.GetApi(); if (!api) { response.status = "world-editor-api-unavailable"; return response; }
 		response.editorAvailable = true;
@@ -5090,7 +5419,7 @@ class RST_WorkbenchSetSelection : NetApiHandler
 	{
 		RST_WorkbenchSetSelectionRequest typedRequest = RST_WorkbenchSetSelectionRequest.Cast(request);
 		RST_WorkbenchSetSelectionResponse response = new RST_WorkbenchSetSelectionResponse();
-		response.bridgeVersion = "1.19.0";
+		response.bridgeVersion = "1.20.0";
 		response.protocolVersion = 1;
 		WorldEditor editor = Workbench.GetModule(WorldEditor);
 		if (!editor) { response.status = "world-editor-unavailable"; return response; }
@@ -5149,7 +5478,7 @@ class RST_WorkbenchFindEntitiesByRadius : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchFindEntitiesByRadiusRequest typedRequest = RST_WorkbenchFindEntitiesByRadiusRequest.Cast(request);
-		RST_WorkbenchFindEntitiesByRadiusResponse response = new RST_WorkbenchFindEntitiesByRadiusResponse(); response.bridgeVersion = "1.19.0"; response.protocolVersion = 1;
+		RST_WorkbenchFindEntitiesByRadiusResponse response = new RST_WorkbenchFindEntitiesByRadiusResponse(); response.bridgeVersion = "1.20.0"; response.protocolVersion = 1;
 		response.centerX = typedRequest.centerX; response.centerY = typedRequest.centerY; response.centerZ = typedRequest.centerZ; response.radiusMeters = typedRequest.radiusMeters; response.queryScope = typedRequest.queryScope; response.requireObject = typedRequest.requireObject; response.excludeProxies = typedRequest.excludeProxies;
 		if (typedRequest.radiusMeters < 0.01 || typedRequest.radiusMeters > 50000 || typedRequest.limit < 1 || typedRequest.limit > 100) { response.status = "invalid-query"; return response; }
 		WorldEditor editor = Workbench.GetModule(WorldEditor); if (!editor) { response.status = "world-editor-unavailable"; return response; }
@@ -5164,6 +5493,63 @@ class RST_WorkbenchFindEntitiesByRadius : NetApiHandler
 		if (typedRequest.excludeProxies) flags |= EQueryEntitiesFlags.NO_PROXIES;
 		RST_WorkbenchRadiusCollector collector = new RST_WorkbenchRadiusCollector(api, typedRequest, response);
 		root.GetWorld().QueryEntitiesBySphere(Vector(typedRequest.centerX, typedRequest.centerY, typedRequest.centerZ), typedRequest.radiusMeters, collector.AddEntity, null, flags);
+		response.status = "available"; return response;
+	}
+}
+#endif
+"#;
+
+const BRIDGE_TERRAIN_SAMPLE_SOURCE: &str = r#"#ifdef WORKBENCH
+class RST_WorkbenchSampleTerrainRequest : JsonApiStruct
+{
+	float centerX; float centerZ; float halfExtentMeters; float spacingMeters;
+	void RST_WorkbenchSampleTerrainRequest() { RegAll(); }
+}
+class RST_WorkbenchSampleTerrainResponse : JsonApiStruct
+{
+	string bridgeVersion; int protocolVersion; string status;
+	float centerX; float centerZ; float halfExtentMeters; float requestedSpacingMeters; float effectiveSpacingMeters; bool spacingClamped;
+	float gridOriginX; float gridOriginZ; int gridWidth; int gridHeight; string heights;
+	float boundsMinX; float boundsMinY; float boundsMinZ; float boundsMaxX; float boundsMaxY; float boundsMaxZ;
+	int heightmapResolutionX; int heightmapResolutionZ; float nativeSpacingMeters; int tileCountX; int tileCountZ;
+	void RST_WorkbenchSampleTerrainResponse() { RegAll(); }
+}
+class RST_WorkbenchSampleTerrain : NetApiHandler
+{
+	override JsonApiStruct GetRequest() { return new RST_WorkbenchSampleTerrainRequest(); }
+	override JsonApiStruct GetResponse(JsonApiStruct request)
+	{
+		RST_WorkbenchSampleTerrainRequest typedRequest = RST_WorkbenchSampleTerrainRequest.Cast(request);
+		RST_WorkbenchSampleTerrainResponse response = new RST_WorkbenchSampleTerrainResponse();
+		response.bridgeVersion = "1.20.0"; response.protocolVersion = 1;
+		response.centerX = typedRequest.centerX; response.centerZ = typedRequest.centerZ; response.halfExtentMeters = typedRequest.halfExtentMeters; response.requestedSpacingMeters = typedRequest.spacingMeters;
+		if (typedRequest.halfExtentMeters < 0.01 || typedRequest.halfExtentMeters > 500 || typedRequest.spacingMeters < 0 || typedRequest.spacingMeters > 500) { response.status = "invalid-query"; return response; }
+		WorldEditor editor = Workbench.GetModule(WorldEditor); if (!editor) { response.status = "world-editor-unavailable"; return response; }
+		WorldEditorAPI api = editor.GetApi(); if (!api) { response.status = "world-editor-api-unavailable"; return response; }
+		vector boundsMin, boundsMax;
+		if (!editor.GetTerrainBounds(boundsMin, boundsMax)) { response.status = "terrain-unavailable"; return response; }
+		response.boundsMinX = boundsMin[0]; response.boundsMinY = boundsMin[1]; response.boundsMinZ = boundsMin[2]; response.boundsMaxX = boundsMax[0]; response.boundsMaxY = boundsMax[1]; response.boundsMaxZ = boundsMax[2];
+		response.heightmapResolutionX = api.GetTerrainResolutionX(); response.heightmapResolutionZ = api.GetTerrainResolutionY(); response.nativeSpacingMeters = api.GetTerrainUnitScale(); response.tileCountX = api.GetTerrainTilesX(); response.tileCountZ = api.GetTerrainTilesY();
+		if (response.heightmapResolutionX < 1 || response.heightmapResolutionZ < 1 || response.nativeSpacingMeters <= 0 || response.tileCountX < 1 || response.tileCountZ < 1) { response.status = "terrain-metadata-unavailable"; return response; }
+		response.effectiveSpacingMeters = response.nativeSpacingMeters;
+		if (typedRequest.spacingMeters > 0) response.effectiveSpacingMeters = Math.Ceil(typedRequest.spacingMeters / response.nativeSpacingMeters) * response.nativeSpacingMeters;
+		response.spacingClamped = typedRequest.spacingMeters > 0 && typedRequest.spacingMeters != response.effectiveSpacingMeters;
+		int firstX = Math.Ceil((typedRequest.centerX - typedRequest.halfExtentMeters - boundsMin[0]) / response.effectiveSpacingMeters);
+		int lastX = Math.Floor((typedRequest.centerX + typedRequest.halfExtentMeters - boundsMin[0]) / response.effectiveSpacingMeters);
+		int firstZ = Math.Ceil((typedRequest.centerZ - typedRequest.halfExtentMeters - boundsMin[2]) / response.effectiveSpacingMeters);
+		int lastZ = Math.Floor((typedRequest.centerZ + typedRequest.halfExtentMeters - boundsMin[2]) / response.effectiveSpacingMeters);
+		response.gridWidth = lastX - firstX + 1; response.gridHeight = lastZ - firstZ + 1;
+		if (response.gridWidth < 1 || response.gridHeight < 1 || response.gridWidth * response.gridHeight > 4096) { response.status = "invalid-sample-grid"; return response; }
+		response.gridOriginX = boundsMin[0] + firstX * response.effectiveSpacingMeters; response.gridOriginZ = boundsMin[2] + firstZ * response.effectiveSpacingMeters;
+		for (int z = 0; z < response.gridHeight; z++)
+		{
+			for (int x = 0; x < response.gridWidth; x++)
+			{
+				if (!response.heights.IsEmpty()) response.heights += ";";
+				float height; float sampleX = response.gridOriginX + x * response.effectiveSpacingMeters; float sampleZ = response.gridOriginZ + z * response.effectiveSpacingMeters;
+				if (api.TryGetTerrainSurfaceY(sampleX, sampleZ, height)) response.heights += height.ToString(); else response.heights += "~";
+			}
+		}
 		response.status = "available"; return response;
 	}
 }
@@ -5192,7 +5578,7 @@ class RST_WorkbenchClearSelection : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchClearSelectionResponse response = new RST_WorkbenchClearSelectionResponse();
-		response.bridgeVersion = "1.19.0";
+		response.bridgeVersion = "1.20.0";
 		response.protocolVersion = 1;
 		WorldEditor editor = Workbench.GetModule(WorldEditor);
 		if (!editor)
@@ -5436,7 +5822,7 @@ class RST_WorkbenchEntityMutationBase : NetApiHandler
 	RST_WorkbenchEntityMutationResponse Response()
 	{
 		RST_WorkbenchEntityMutationResponse response = new RST_WorkbenchEntityMutationResponse();
-		response.bridgeVersion = "1.19.0";
+		response.bridgeVersion = "1.20.0";
 		response.protocolVersion = 1;
 		response.activeLayerId = -1;
 		return response;
@@ -5836,7 +6222,7 @@ class RST_WorkbenchComponentsResponse : JsonApiStruct { string bridgeVersion; in
 class RST_WorkbenchComponentsBase : NetApiHandler
 {
 	IEntitySource Find(WorldEditorAPI api, string id) { for (int i = 0, count = api.GetEditorEntityCount(); i < count; i++) { IEntitySource candidate = api.GetEditorEntity(i); if (candidate && candidate.GetID().ToString() == id) return candidate; } return null; }
-	RST_WorkbenchComponentsResponse Response() { RST_WorkbenchComponentsResponse response = new RST_WorkbenchComponentsResponse(); response.bridgeVersion = "1.19.0"; response.protocolVersion = 1; return response; }
+	RST_WorkbenchComponentsResponse Response() { RST_WorkbenchComponentsResponse response = new RST_WorkbenchComponentsResponse(); response.bridgeVersion = "1.20.0"; response.protocolVersion = 1; return response; }
 	// Workbench exposes authored direct components through the `components` container in
 	// some editor contexts, even when IEntitySource.GetComponentCount() is zero.
 	int ComponentCount(IEntitySource entity) { int count = entity.GetComponentCount(); if (count == 0) { ref BaseContainerList components = entity.GetObjectArray("components"); if (components) count = components.Count(); else count = entity.GetNumChildren(); } return count; }
@@ -6081,7 +6467,7 @@ class RST_WorkbenchListEntityProperties : RST_WorkbenchEntityMutationBase
 	{
 		RST_WorkbenchPropertiesRequest r = RST_WorkbenchPropertiesRequest.Cast(request);
 		RST_WorkbenchPropertiesResponse response = new RST_WorkbenchPropertiesResponse();
-		response.bridgeVersion = "1.19.0";
+		response.bridgeVersion = "1.20.0";
 		response.protocolVersion = 1;
 
 		WorldEditor editor = Workbench.GetModule(WorldEditor);
@@ -6207,7 +6593,7 @@ class RST_WorkbenchListResources : NetApiHandler
 	{
 		RST_WorkbenchListResourcesRequest typedRequest = RST_WorkbenchListResourcesRequest.Cast(request);
 		RST_WorkbenchListResourcesResponse response = new RST_WorkbenchListResourcesResponse();
-		response.bridgeVersion = "1.19.0";
+		response.bridgeVersion = "1.20.0";
 		response.protocolVersion = 1;
 		array<string> addonGuids = new array<string>();
 		GameProject.GetLoadedAddons(addonGuids);
@@ -6451,7 +6837,7 @@ mod tests {
             assert_eq!(request["subScene"], 2);
             assert_eq!(request["layerId"], 7);
             json!({
-                "bridgeVersion": "1.19.0",
+                "bridgeVersion": "1.20.0",
                 "protocolVersion": 1,
                 "worldPath": "$TestBullshit:worlds/test/arland_test.ent",
                 "entities": "0x0000000000000001 {}|GenericWorldEntity|0|0",
@@ -6487,7 +6873,7 @@ mod tests {
         let (port, peer) = start_peer(|request| {
             assert_eq!(request["APIFunc"], "RST_WorkbenchListEntities");
             json!({
-                "bridgeVersion": "1.19.0",
+                "bridgeVersion": "1.20.0",
                 "protocolVersion": 1,
                 "worldPath": "$Test:worlds/test.ent",
                 "entities": "0x0000000000000001 {}|TestEntity|2|7",
@@ -6527,7 +6913,7 @@ mod tests {
             assert_eq!(request["subScene"], -1);
             assert_eq!(request["layerId"], -1);
             json!({
-                "bridgeVersion": "1.19.0",
+                "bridgeVersion": "1.20.0",
                 "protocolVersion": 1,
                 "worldPath": "$Test:worlds/test.ent",
                 "entities": "",
@@ -6559,7 +6945,7 @@ mod tests {
                 json!({"APIFunc":"RST_WorkbenchLayerState","subScene":2,"layerId":7})
             );
             json!({
-                "bridgeVersion":"1.19.0",
+                "bridgeVersion":"1.20.0",
                 "protocolVersion":1,
                 "status":"available",
                 "subScene":2,
@@ -6587,6 +6973,160 @@ mod tests {
         assert!(!state.explicitly_locked);
         assert!(state.locked_in_hierarchy);
         peer.join().unwrap();
+    }
+
+    #[test]
+    fn terrain_sampling_returns_bounded_grid_metadata_and_derived_summary() {
+        let (port, peer) = start_peer(|request| {
+            assert_eq!(
+                request,
+                json!({
+                    "APIFunc": "RST_WorkbenchSampleTerrain",
+                    "centerX": 100.0,
+                    "centerZ": 200.0,
+                    "halfExtentMeters": 30.0,
+                    "spacingMeters": 1.0
+                })
+            );
+            json!({
+                "bridgeVersion": "1.20.0",
+                "protocolVersion": 1,
+                "status": "available",
+                "centerX": 100.0,
+                "centerZ": 200.0,
+                "halfExtentMeters": 30.0,
+                "requestedSpacingMeters": 1.0,
+                "effectiveSpacingMeters": 10.0,
+                "spacingClamped": true,
+                "gridOriginX": 70.0,
+                "gridOriginZ": 170.0,
+                "gridWidth": 2,
+                "gridHeight": 2,
+                "heights": "10;20;~;30",
+                "boundsMinX": 0.0,
+                "boundsMinY": -5.0,
+                "boundsMinZ": 0.0,
+                "boundsMaxX": 10240.0,
+                "boundsMaxY": 500.0,
+                "boundsMaxZ": 10240.0,
+                "heightmapResolutionX": 1024,
+                "heightmapResolutionZ": 1024,
+                "nativeSpacingMeters": 10.0,
+                "tileCountX": 8,
+                "tileCountZ": 8
+            })
+        });
+        let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
+            gateway: super::WorkbenchGatewayOptions {
+                port,
+                status_deadline: Duration::from_secs(1),
+                ..super::WorkbenchGatewayOptions::default()
+            },
+            ..super::WorkbenchControllerOptions::default()
+        });
+
+        let sample = controller
+            .sample_terrain(super::WorkbenchTerrainSampleOptions {
+                center_x: 100.0,
+                center_z: 200.0,
+                half_extent_meters: 30.0,
+                spacing_meters: Some(1.0),
+            })
+            .unwrap();
+
+        assert_eq!(sample.status, "available");
+        let terrain = sample.terrain.expect("terrain metadata");
+        assert_eq!(terrain.native_spacing_meters, 10.0);
+        assert_eq!(terrain.heightmap_resolution_x, 1024);
+        let grid = sample.grid.expect("terrain grid");
+        assert!(grid.spacing_clamped);
+        assert_eq!(grid.effective_spacing_meters, 10.0);
+        assert_eq!(grid.heights, vec![Some(10.0), Some(20.0), None, Some(30.0)]);
+        let summary = sample.summary.expect("terrain summary");
+        assert_eq!(summary.valid_sample_count, 3);
+        assert_eq!(summary.minimum_height, Some(10.0));
+        assert_eq!(summary.maximum_height, Some(30.0));
+        assert_eq!(summary.mean_height, Some(20.0));
+        assert_eq!(summary.elevation_range, Some(20.0));
+        assert_eq!(summary.steepest_adjacent_slope_degrees, Some(45.0));
+        peer.join().unwrap();
+    }
+
+    #[test]
+    fn terrain_sampling_rejects_invalid_parameter_values_before_gateway_dispatch() {
+        let controller = super::WorkbenchController::new(Default::default());
+        for options in [
+            super::WorkbenchTerrainSampleOptions {
+                center_x: f32::NAN,
+                center_z: 0.0,
+                half_extent_meters: 30.0,
+                spacing_meters: None,
+            },
+            super::WorkbenchTerrainSampleOptions {
+                center_x: 0.0,
+                center_z: 0.0,
+                half_extent_meters: 0.0,
+                spacing_meters: None,
+            },
+            super::WorkbenchTerrainSampleOptions {
+                center_x: 0.0,
+                center_z: 0.0,
+                half_extent_meters: 30.0,
+                spacing_meters: Some(501.0),
+            },
+        ] {
+            assert_eq!(
+                controller.sample_terrain(options).unwrap_err().code,
+                super::WorkbenchFailureCode::Protocol
+            );
+        }
+    }
+
+    #[test]
+    fn terrain_sampling_requires_the_matching_managed_handler_version() {
+        let (port, peer) = start_peer(|request| {
+            assert_eq!(
+                request,
+                json!({
+                    "APIFunc": "RST_WorkbenchSampleTerrain",
+                    "centerX": 0.0,
+                    "centerZ": 0.0,
+                    "halfExtentMeters": 30.0,
+                    "spacingMeters": 0.0
+                })
+            );
+            json!({"bridgeVersion":"1.19.0","protocolVersion":1,"status":"terrain-unavailable"})
+        });
+        let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
+            gateway: super::WorkbenchGatewayOptions {
+                port,
+                status_deadline: Duration::from_secs(1),
+                ..super::WorkbenchGatewayOptions::default()
+            },
+            ..super::WorkbenchControllerOptions::default()
+        });
+
+        assert_eq!(
+            controller
+                .sample_terrain(super::WorkbenchTerrainSampleOptions {
+                    center_x: 0.0,
+                    center_z: 0.0,
+                    half_extent_meters: 30.0,
+                    spacing_meters: None,
+                })
+                .unwrap_err()
+                .code,
+            super::WorkbenchFailureCode::Protocol
+        );
+        peer.join().unwrap();
+    }
+
+    #[test]
+    fn terrain_handler_aligns_coarser_spacing_to_native_lattice_and_enforces_limits() {
+        assert!(super::BRIDGE_TERRAIN_SAMPLE_SOURCE.contains("typedRequest.spacingMeters > 500"));
+        assert!(super::BRIDGE_TERRAIN_SAMPLE_SOURCE.contains(
+            "Math.Ceil(typedRequest.spacingMeters / response.nativeSpacingMeters) * response.nativeSpacingMeters"
+        ));
     }
 
     #[test]
@@ -6711,8 +7251,13 @@ mod tests {
     fn create_entity_bridge_distinguishes_resource_loading_from_editor_rejection() {
         assert!(super::BRIDGE_ENTITY_MUTATION_SOURCE
             .contains("response.status = \"resource-load-failed\""));
-        assert!(super::BRIDGE_ENTITY_MUTATION_SOURCE
-            .contains("if (!entity) { response.status = \"create-rejected\"; return response; }"));
+        let missing_entity = super::BRIDGE_ENTITY_MUTATION_SOURCE
+            .find("if (!entity)")
+            .unwrap();
+        let rejected = super::BRIDGE_ENTITY_MUTATION_SOURCE
+            .find("response.status = \"create-rejected\"")
+            .unwrap();
+        assert!(missing_entity < rejected);
     }
 
     #[test]
@@ -6730,7 +7275,7 @@ mod tests {
                 request,
                 json!({"APIFunc":"RST_WorkbenchMoveEntity","entityId":"0x01 {}","x":10.0,"y":20.0,"z":30.0})
             );
-            json!({"bridgeVersion":"1.19.0","protocolVersion":1,"status":"moved","entity":"0x01 {}|TestEntity|0|7|10|20|30"})
+            json!({"bridgeVersion":"1.20.0","protocolVersion":1,"status":"moved","entity":"0x01 {}|TestEntity|0|7|10|20|30"})
         });
         let root = test_root("move-entity");
         fs::create_dir_all(&root).unwrap();
@@ -6766,7 +7311,7 @@ mod tests {
                 request,
                 json!({"APIFunc":"RST_WorkbenchDuplicateEntity","entityId":"0x01 {}","x":11.0,"y":22.0,"z":33.0,"name":"Copy"})
             );
-            json!({"bridgeVersion":"1.19.0","protocolVersion":1,"status":"duplicated","entity":"0x02 {}|TestEntity|0|7|11|22|33"})
+            json!({"bridgeVersion":"1.20.0","protocolVersion":1,"status":"duplicated","entity":"0x02 {}|TestEntity|0|7|11|22|33"})
         });
         let root = test_root("duplicate-entity");
         fs::create_dir_all(&root).unwrap();
@@ -7508,7 +8053,7 @@ mod tests {
     #[test]
     fn mutation_audit_records_identify_the_action_without_recording_values() {
         let entity_result = super::WorkbenchEntityMutationResult {
-            bridge_version: "1.19.0".to_string(),
+            bridge_version: "1.20.0".to_string(),
             protocol_version: 1,
             status: "available".to_string(),
             active_layer_id: Some(3),
@@ -7543,7 +8088,7 @@ mod tests {
                 "value": 40,
             }),
             &super::WorkbenchComponentResult {
-                bridge_version: "1.19.0".to_string(),
+                bridge_version: "1.20.0".to_string(),
                 protocol_version: 1,
                 status: "available".to_string(),
                 entity: None,
@@ -8150,8 +8695,11 @@ mod tests {
     fn reparent_handler_rejects_a_descendant_parent_before_starting_an_action() {
         assert!(super::BRIDGE_ENTITY_MUTATION_SOURCE
             .contains("bool IsAncestor(IEntitySource entity, IEntitySource candidateParent)",));
-        assert!(super::BRIDGE_ENTITY_MUTATION_SOURCE
-            .contains("IsAncestor(entity, parent) || api.IsEntityLayerLockedHierarchy",));
+        let descendant_guard = super::BRIDGE_ENTITY_MUTATION_SOURCE
+            .find("IsAncestor(entity, parent)")
+            .unwrap();
+        let reparent_guard = &super::BRIDGE_ENTITY_MUTATION_SOURCE[descendant_guard..];
+        assert!(reparent_guard.contains("api.IsEntityLayerLockedHierarchy"));
     }
 
     #[test]
@@ -8166,8 +8714,13 @@ mod tests {
     fn entity_property_mutation_records_the_post_action_entity_state() {
         assert!(super::BRIDGE_PROPERTIES_SOURCE
             .contains("class RST_WorkbenchSetEntityProperty : RST_WorkbenchEntityMutationBase"));
-        assert!(super::BRIDGE_PROPERTIES_SOURCE
-            .contains("Record(api, response, entity); response.status = \"property-set\""));
+        let record = super::BRIDGE_PROPERTIES_SOURCE
+            .find("Record(api, response, entity);")
+            .unwrap();
+        let property_set = super::BRIDGE_PROPERTIES_SOURCE
+            .find("response.status = \"property-set\"")
+            .unwrap();
+        assert!(record < property_set);
     }
 
     #[test]
@@ -8183,7 +8736,7 @@ mod tests {
                     "value": "3.75",
                 })
             );
-            json!({"bridgeVersion":"1.19.0","protocolVersion":1,"status":"property-set","activeLayerId":7,"entity":""})
+            json!({"bridgeVersion":"1.20.0","protocolVersion":1,"status":"property-set","activeLayerId":7,"entity":""})
         });
         let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
             gateway: super::WorkbenchGatewayOptions {
@@ -8222,7 +8775,7 @@ mod tests {
                 request,
                 json!({"APIFunc":"RST_WorkbenchInspectComponent","entityId":"0x01 {}","componentId":"cmp1:0:TestComponent"})
             );
-            json!({"bridgeVersion":"1.19.0","protocolVersion":1,"status":"available","entity":"","components":"0|TestComponent","properties":"m_fRadius|float|2.5|1"})
+            json!({"bridgeVersion":"1.20.0","protocolVersion":1,"status":"available","entity":"","components":"0|TestComponent","properties":"m_fRadius|float|2.5|1"})
         });
         let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
             gateway: super::WorkbenchGatewayOptions {
