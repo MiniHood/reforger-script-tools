@@ -458,6 +458,7 @@ struct PropertyWriteDescriptor {
 struct ComponentDescriptor {
     entity_id: String,
     native_component_id: String,
+    component_snapshot: String,
     issued: Instant,
 }
 
@@ -1625,7 +1626,8 @@ impl WorkbenchController {
         entity_id: &str,
         component_id: &str,
     ) -> Result<WorkbenchComponentResult, WorkbenchFailure> {
-        let Some(native_component_id) = self.component_descriptor(entity_id, component_id) else {
+        let Some(native_component_id) = self.cached_component_descriptor(entity_id, component_id)
+        else {
             return Ok(invalid_component_descriptor_result());
         };
         self.component_operation(
@@ -1651,7 +1653,7 @@ impl WorkbenchController {
         component_id: &str,
         confirmation_token: Option<&str>,
     ) -> Result<WorkbenchComponentResult, WorkbenchFailure> {
-        let Some(native_component_id) = self.component_descriptor(entity_id, component_id) else {
+        let Some(native_component_id) = self.component_descriptor(entity_id, component_id)? else {
             return Ok(invalid_component_descriptor_result());
         };
         let bound = format!("{entity_id}|{component_id}|{native_component_id}");
@@ -1720,7 +1722,7 @@ impl WorkbenchController {
         let Some(value) = property_value_wire_format(&descriptor.data_type, &value) else {
             return Ok(invalid_component_property_descriptor_result());
         };
-        let Some(native_component_id) = self.component_descriptor(entity_id, component_id) else {
+        let Some(native_component_id) = self.component_descriptor(entity_id, component_id)? else {
             return Ok(invalid_component_descriptor_result());
         };
         self.component_operation("RST_WorkbenchSetComponentProperty", json!({"entityId":entity_id,"componentId":native_component_id,"propertyName":descriptor.property_name,"expectedValue":descriptor.observed_value,"value":value}), Some(component_id))
@@ -1771,6 +1773,7 @@ impl WorkbenchController {
             return;
         };
         descriptors.retain(|_, descriptor| descriptor.issued.elapsed() <= Duration::from_secs(30));
+        let component_snapshot = component_snapshot(components);
         for component in components {
             let native_component_id = component.component_id.clone();
             let sequence = COMPONENT_DESCRIPTOR_SEQUENCE.fetch_add(1, Ordering::Relaxed);
@@ -1783,6 +1786,7 @@ impl WorkbenchController {
                 ComponentDescriptor {
                     entity_id: entity_id.to_string(),
                     native_component_id,
+                    component_snapshot: component_snapshot.clone(),
                     issued: Instant::now(),
                 },
             );
@@ -1790,11 +1794,56 @@ impl WorkbenchController {
         }
     }
 
-    fn component_descriptor(&self, entity_id: &str, descriptor_id: &str) -> Option<String> {
-        let mut descriptors = self.component_descriptors.lock().ok()?;
+    fn component_descriptor(
+        &self,
+        entity_id: &str,
+        descriptor_id: &str,
+    ) -> Result<Option<String>, WorkbenchFailure> {
+        let Ok(mut descriptors) = self.component_descriptors.lock() else {
+            return Ok(None);
+        };
+        descriptors.retain(|_, descriptor| descriptor.issued.elapsed() <= Duration::from_secs(30));
+        let Some(descriptor) = descriptors.get(descriptor_id).cloned() else {
+            return Ok(None);
+        };
+        drop(descriptors);
+        if descriptor.entity_id != entity_id {
+            return Ok(None);
+        }
+
+        let components = self.current_components(entity_id)?;
+        if component_snapshot(&components) != descriptor.component_snapshot
+            || !components
+                .iter()
+                .any(|component| component.component_id == descriptor.native_component_id)
+        {
+            return Ok(None);
+        }
+        Ok(Some(descriptor.native_component_id))
+    }
+
+    fn cached_component_descriptor(&self, entity_id: &str, descriptor_id: &str) -> Option<String> {
+        let Ok(mut descriptors) = self.component_descriptors.lock() else {
+            return None;
+        };
         descriptors.retain(|_, descriptor| descriptor.issued.elapsed() <= Duration::from_secs(30));
         let descriptor = descriptors.get(descriptor_id)?;
         (descriptor.entity_id == entity_id).then(|| descriptor.native_component_id.clone())
+    }
+
+    fn current_components(
+        &self,
+        entity_id: &str,
+    ) -> Result<Vec<WorkbenchComponent>, WorkbenchFailure> {
+        let raw: RawBridgeComponentResult = serde_json::from_value(self.gateway.request(
+            json!({"APIFunc":"RST_WorkbenchListComponents","entityId":entity_id}),
+            self.options.gateway.status_deadline,
+        )?)
+        .map_err(|_| failure(WorkbenchFailureCode::Protocol))?;
+        if raw.protocol_version != WORKBENCH_BRIDGE_PROTOCOL_VERSION {
+            return Err(failure(WorkbenchFailureCode::Protocol));
+        }
+        parse_components(&raw.components).map_err(|_| failure(WorkbenchFailureCode::Protocol))
     }
 
     pub fn list_entity_properties(
@@ -3327,6 +3376,15 @@ fn parse_components(value: &str) -> Result<Vec<WorkbenchComponent>, ()> {
         })
         .collect()
 }
+
+fn component_snapshot(components: &[WorkbenchComponent]) -> String {
+    components
+        .iter()
+        .map(|component| component.component_id.as_str())
+        .collect::<Vec<_>>()
+        .join(";")
+}
+
 fn parse_properties(value: &str) -> Result<Vec<WorkbenchDirectProperty>, ()> {
     if value.is_empty() {
         return Ok(Vec::new());
@@ -7751,6 +7809,7 @@ mod tests {
             super::ComponentDescriptor {
                 entity_id: "0x01 {}".to_string(),
                 native_component_id: "cmp1:0:TestComponent".to_string(),
+                component_snapshot: "cmp1:0:TestComponent".to_string(),
                 issued: Instant::now(),
             },
         );
