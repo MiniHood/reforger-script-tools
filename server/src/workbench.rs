@@ -103,7 +103,7 @@ pub struct WorkbenchGateway {
     request_lock: Arc<Mutex<()>>,
 }
 
-pub const WORKBENCH_BRIDGE_VERSION: &str = "1.17.0";
+pub const WORKBENCH_BRIDGE_VERSION: &str = "1.18.0";
 pub const WORKBENCH_BRIDGE_PROTOCOL_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -335,16 +335,23 @@ pub struct WorkbenchEntityListPage {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkbenchEntityInspection {
+    #[serde(skip_serializing)]
     pub bridge_version: String,
+    #[serde(skip_serializing)]
     pub protocol_version: u32,
+    #[serde(skip_serializing)]
     pub editor_available: bool,
+    #[serde(skip_serializing_if = "is_available_status")]
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub entity: Option<WorkbenchSelectedEntity>,
     pub ancestors: Vec<WorkbenchSelectedEntity>,
+    #[serde(skip_serializing_if = "is_false")]
     pub ancestors_truncated: bool,
     pub children: Vec<WorkbenchSelectedEntity>,
+    #[serde(skip_serializing_if = "is_false")]
     pub children_truncated: bool,
+    pub components: Vec<WorkbenchComponent>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -397,6 +404,63 @@ pub struct WorkbenchEntityMutationResult {
     pub confirmation_token: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkbenchComponent {
+    pub component_id: String,
+    pub class_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkbenchComponentResult {
+    pub bridge_version: String,
+    pub protocol_version: u32,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entity: Option<WorkbenchSelectedEntity>,
+    pub components: Vec<WorkbenchComponent>,
+    pub properties: Vec<WorkbenchDirectProperty>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confirmation_token: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkbenchDirectProperty {
+    pub name: String,
+    pub data_type: String,
+    pub value: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub write_descriptor: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkbenchPropertyList {
+    pub bridge_version: String,
+    pub protocol_version: u32,
+    pub status: String,
+    pub properties: Vec<WorkbenchDirectProperty>,
+}
+
+#[derive(Debug, Clone)]
+struct PropertyWriteDescriptor {
+    entity_id: String,
+    component_id: Option<String>,
+    property_name: String,
+    data_type: String,
+    observed_value: String,
+    issued: Instant,
+}
+
+#[derive(Debug, Clone)]
+struct ComponentDescriptor {
+    entity_id: String,
+    native_component_id: String,
+    issued: Instant,
+}
+
 #[derive(Debug, Clone)]
 pub struct WorkbenchCreateEntityOptions {
     pub target: String,
@@ -443,6 +507,8 @@ pub struct WorkbenchController {
     validation_snapshot: Arc<Mutex<Option<(String, WorkbenchValidation)>>>,
     maintenance_lock: Arc<Mutex<()>>,
     delete_confirmations: Arc<Mutex<HashMap<String, (String, Instant)>>>,
+    property_write_descriptors: Arc<Mutex<HashMap<String, PropertyWriteDescriptor>>>,
+    component_descriptors: Arc<Mutex<HashMap<String, ComponentDescriptor>>>,
 }
 
 impl WorkbenchController {
@@ -455,6 +521,8 @@ impl WorkbenchController {
             validation_snapshot: Arc::new(Mutex::new(None)),
             maintenance_lock: Arc::new(Mutex::new(())),
             delete_confirmations: Arc::new(Mutex::new(HashMap::new())),
+            property_write_descriptors: Arc::new(Mutex::new(HashMap::new())),
+            component_descriptors: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -1318,6 +1386,9 @@ impl WorkbenchController {
         if ancestors.len() > 32 || children.len() > 64 {
             return Err(failure(WorkbenchFailureCode::Protocol));
         }
+        let mut components = parse_components(&raw.components)
+            .map_err(|_| failure(WorkbenchFailureCode::Protocol))?;
+        self.issue_component_descriptors(entity_id, &mut components);
         Ok(WorkbenchEntityInspection {
             bridge_version: raw.bridge_version,
             protocol_version: raw.protocol_version,
@@ -1328,6 +1399,7 @@ impl WorkbenchController {
             ancestors_truncated: workbench_bool(&raw.ancestors_truncated),
             children,
             children_truncated: workbench_bool(&raw.children_truncated),
+            components,
         })
     }
 
@@ -1420,6 +1492,51 @@ impl WorkbenchController {
         )
     }
 
+    pub fn move_entity(
+        &self,
+        entity_id: &str,
+        position: WorkbenchEntityPosition,
+    ) -> Result<WorkbenchEntityMutationResult, WorkbenchFailure> {
+        self.entity_mutation(
+            "RST_WorkbenchMoveEntity",
+            json!({"entityId":entity_id,"x":position.x,"y":position.y,"z":position.z}),
+        )
+    }
+
+    pub fn rotate_entity(
+        &self,
+        entity_id: &str,
+        angles: WorkbenchEntityPosition,
+    ) -> Result<WorkbenchEntityMutationResult, WorkbenchFailure> {
+        self.entity_mutation(
+            "RST_WorkbenchRotateEntity",
+            json!({"entityId":entity_id,"pitch":angles.x,"yaw":angles.y,"roll":angles.z}),
+        )
+    }
+
+    pub fn reparent_entity(
+        &self,
+        entity_id: &str,
+        parent_entity_id: &str,
+    ) -> Result<WorkbenchEntityMutationResult, WorkbenchFailure> {
+        self.entity_mutation(
+            "RST_WorkbenchReparentEntity",
+            json!({"entityId":entity_id,"parentEntityId":parent_entity_id}),
+        )
+    }
+
+    pub fn duplicate_entity(
+        &self,
+        entity_id: &str,
+        position: WorkbenchEntityPosition,
+        name: Option<&str>,
+    ) -> Result<WorkbenchEntityMutationResult, WorkbenchFailure> {
+        self.entity_mutation(
+            "RST_WorkbenchDuplicateEntity",
+            json!({"entityId":entity_id,"x":position.x,"y":position.y,"z":position.z,"name":name.unwrap_or_default()}),
+        )
+    }
+
     pub fn delete_entity(
         &self,
         entity_id: &str,
@@ -1491,6 +1608,303 @@ impl WorkbenchController {
                 .map_err(|_| failure(WorkbenchFailureCode::Protocol))?,
             confirmation_token: None,
         })
+    }
+
+    pub fn list_components(
+        &self,
+        entity_id: &str,
+    ) -> Result<WorkbenchComponentResult, WorkbenchFailure> {
+        self.component_operation(
+            "RST_WorkbenchListComponents",
+            json!({"entityId":entity_id}),
+            None,
+        )
+    }
+    pub fn inspect_component(
+        &self,
+        entity_id: &str,
+        component_id: &str,
+    ) -> Result<WorkbenchComponentResult, WorkbenchFailure> {
+        let Some(native_component_id) = self.component_descriptor(entity_id, component_id) else {
+            return Ok(invalid_component_descriptor_result());
+        };
+        self.component_operation(
+            "RST_WorkbenchInspectComponent",
+            json!({"entityId":entity_id,"componentId":native_component_id}),
+            Some(component_id),
+        )
+    }
+    pub fn add_component(
+        &self,
+        entity_id: &str,
+        class_name: &str,
+    ) -> Result<WorkbenchComponentResult, WorkbenchFailure> {
+        self.component_operation(
+            "RST_WorkbenchAddComponent",
+            json!({"entityId":entity_id,"className":class_name}),
+            None,
+        )
+    }
+    pub fn remove_component(
+        &self,
+        entity_id: &str,
+        component_id: &str,
+        confirmation_token: Option<&str>,
+    ) -> Result<WorkbenchComponentResult, WorkbenchFailure> {
+        let Some(native_component_id) = self.component_descriptor(entity_id, component_id) else {
+            return Ok(invalid_component_descriptor_result());
+        };
+        let bound = format!("{entity_id}|{component_id}|{native_component_id}");
+        if let Some(token) = confirmation_token {
+            let valid = self
+                .delete_confirmations
+                .lock()
+                .unwrap()
+                .remove(token)
+                .is_some_and(|(value, issued)| {
+                    value == bound && issued.elapsed() <= Duration::from_secs(30)
+                });
+            if !valid {
+                return Ok(WorkbenchComponentResult {
+                    bridge_version: WORKBENCH_BRIDGE_VERSION.to_string(),
+                    protocol_version: WORKBENCH_BRIDGE_PROTOCOL_VERSION,
+                    status: "invalid-confirmation".to_string(),
+                    entity: None,
+                    components: Vec::new(),
+                    properties: Vec::new(),
+                    confirmation_token: None,
+                });
+            }
+            return self.component_operation(
+                "RST_WorkbenchRemoveComponent",
+                json!({"entityId":entity_id,"componentId":native_component_id,"confirm":true}),
+                None,
+            );
+        }
+        let mut preview = self.component_operation(
+            "RST_WorkbenchRemoveComponent",
+            json!({"entityId":entity_id,"componentId":native_component_id,"confirm":false}),
+            None,
+        )?;
+        if preview.status == "confirmation-required" {
+            let token = format!(
+                "cmpdel1:{}",
+                sha256(
+                    format!(
+                        "{bound}:{}",
+                        DELETE_CONFIRMATION_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+                    )
+                    .as_bytes()
+                )
+            );
+            self.delete_confirmations
+                .lock()
+                .unwrap()
+                .insert(token.clone(), (bound, Instant::now()));
+            preview.confirmation_token = Some(token);
+        }
+        Ok(preview)
+    }
+    pub fn set_component_property(
+        &self,
+        entity_id: &str,
+        component_id: &str,
+        write_descriptor: &str,
+        value: Value,
+    ) -> Result<WorkbenchComponentResult, WorkbenchFailure> {
+        let Some(descriptor) =
+            self.take_property_descriptor(entity_id, Some(component_id), write_descriptor)
+        else {
+            return Ok(invalid_component_property_descriptor_result());
+        };
+        let Some(value) = property_value_wire_format(&descriptor.data_type, &value) else {
+            return Ok(invalid_component_property_descriptor_result());
+        };
+        let Some(native_component_id) = self.component_descriptor(entity_id, component_id) else {
+            return Ok(invalid_component_descriptor_result());
+        };
+        self.component_operation("RST_WorkbenchSetComponentProperty", json!({"entityId":entity_id,"componentId":native_component_id,"propertyName":descriptor.property_name,"expectedValue":descriptor.observed_value,"value":value}), Some(component_id))
+    }
+    fn component_operation(
+        &self,
+        api_func: &str,
+        mut request: Value,
+        inspected_component_id: Option<&str>,
+    ) -> Result<WorkbenchComponentResult, WorkbenchFailure> {
+        let entity_id = request["entityId"].as_str().unwrap_or_default().to_string();
+        request["APIFunc"] = Value::String(api_func.to_string());
+        let raw: RawBridgeComponentResult = serde_json::from_value(
+            self.gateway
+                .request(request, self.options.gateway.status_deadline)?,
+        )
+        .map_err(|_| failure(WorkbenchFailureCode::Protocol))?;
+        if raw.protocol_version != WORKBENCH_BRIDGE_PROTOCOL_VERSION {
+            return Err(failure(WorkbenchFailureCode::Protocol));
+        }
+        let mut components = parse_components(&raw.components)
+            .map_err(|_| failure(WorkbenchFailureCode::Protocol))?;
+        self.issue_component_descriptors(&entity_id, &mut components);
+        let mut properties = parse_properties(&raw.properties)
+            .map_err(|_| failure(WorkbenchFailureCode::Protocol))?;
+        if let Some(component_id) = inspected_component_id {
+            self.issue_property_descriptors(
+                &entity_id,
+                Some(component_id),
+                &raw.properties,
+                &mut properties,
+            );
+        }
+        Ok(WorkbenchComponentResult {
+            bridge_version: raw.bridge_version,
+            protocol_version: raw.protocol_version,
+            status: raw.status,
+            entity: parse_optional_world_selection_record(&raw.entity)
+                .map_err(|_| failure(WorkbenchFailureCode::Protocol))?,
+            components,
+            properties,
+            confirmation_token: None,
+        })
+    }
+
+    fn issue_component_descriptors(&self, entity_id: &str, components: &mut [WorkbenchComponent]) {
+        let Ok(mut descriptors) = self.component_descriptors.lock() else {
+            return;
+        };
+        descriptors.retain(|_, descriptor| descriptor.issued.elapsed() <= Duration::from_secs(30));
+        for component in components {
+            let native_component_id = component.component_id.clone();
+            let sequence = COMPONENT_DESCRIPTOR_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let descriptor_id = format!(
+                "cmp2:{}",
+                sha256(format!("{entity_id}|{native_component_id}|{sequence}").as_bytes())
+            );
+            descriptors.insert(
+                descriptor_id.clone(),
+                ComponentDescriptor {
+                    entity_id: entity_id.to_string(),
+                    native_component_id,
+                    issued: Instant::now(),
+                },
+            );
+            component.component_id = descriptor_id;
+        }
+    }
+
+    fn component_descriptor(&self, entity_id: &str, descriptor_id: &str) -> Option<String> {
+        let mut descriptors = self.component_descriptors.lock().ok()?;
+        descriptors.retain(|_, descriptor| descriptor.issued.elapsed() <= Duration::from_secs(30));
+        let descriptor = descriptors.get(descriptor_id)?;
+        (descriptor.entity_id == entity_id).then(|| descriptor.native_component_id.clone())
+    }
+
+    pub fn list_entity_properties(
+        &self,
+        entity_id: &str,
+    ) -> Result<WorkbenchPropertyList, WorkbenchFailure> {
+        let value = self.gateway.request(
+            json!({"APIFunc":"RST_WorkbenchListEntityProperties","entityId":entity_id}),
+            self.options.gateway.status_deadline,
+        )?;
+        let raw: RawBridgePropertyList =
+            serde_json::from_value(value).map_err(|_| failure(WorkbenchFailureCode::Protocol))?;
+        if raw.protocol_version != WORKBENCH_BRIDGE_PROTOCOL_VERSION {
+            return Err(failure(WorkbenchFailureCode::Protocol));
+        }
+        let mut properties = parse_properties(&raw.properties)
+            .map_err(|_| failure(WorkbenchFailureCode::Protocol))?;
+        self.issue_property_descriptors(entity_id, None, &raw.properties, &mut properties);
+        Ok(WorkbenchPropertyList {
+            bridge_version: raw.bridge_version,
+            protocol_version: raw.protocol_version,
+            status: raw.status,
+            properties,
+        })
+    }
+    pub fn set_entity_property(
+        &self,
+        entity_id: &str,
+        write_descriptor: &str,
+        value: Value,
+    ) -> Result<WorkbenchEntityMutationResult, WorkbenchFailure> {
+        let Some(descriptor) = self.take_property_descriptor(entity_id, None, write_descriptor)
+        else {
+            return Ok(invalid_property_descriptor_result());
+        };
+        let Some(value) = property_value_wire_format(&descriptor.data_type, &value) else {
+            return Ok(invalid_property_descriptor_result());
+        };
+        self.entity_mutation("RST_WorkbenchSetEntityProperty", json!({"entityId":entity_id,"propertyName":descriptor.property_name,"expectedValue":descriptor.observed_value,"value":value}))
+    }
+
+    fn issue_property_descriptors(
+        &self,
+        entity_id: &str,
+        component_id: Option<&str>,
+        raw_properties: &str,
+        properties: &mut [WorkbenchDirectProperty],
+    ) {
+        let raw_values = raw_properties
+            .split(';')
+            .filter_map(|record| {
+                let mut fields = record.split('|');
+                let name = fields.next()?;
+                let data_type = fields.next()?;
+                let value = fields.next()?;
+                fields.next();
+                Some((name, (data_type, value)))
+            })
+            .collect::<HashMap<_, _>>();
+        let Ok(mut descriptors) = self.property_write_descriptors.lock() else {
+            return;
+        };
+        descriptors.retain(|_, descriptor| descriptor.issued.elapsed() <= Duration::from_secs(30));
+        for property in properties {
+            let Some((data_type, observed_value)) = raw_values.get(property.name.as_str()).copied()
+            else {
+                continue;
+            };
+            if !supported_property_type(data_type) {
+                continue;
+            }
+            let sequence = PROPERTY_DESCRIPTOR_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let descriptor_id = format!(
+                "prop2:{}",
+                sha256(
+                    format!(
+                        "{entity_id}|{}|{}|{data_type}|{observed_value}|{sequence}",
+                        component_id.unwrap_or_default(),
+                        property.name
+                    )
+                    .as_bytes()
+                )
+            );
+            descriptors.insert(
+                descriptor_id.clone(),
+                PropertyWriteDescriptor {
+                    entity_id: entity_id.to_string(),
+                    component_id: component_id.map(str::to_string),
+                    property_name: property.name.clone(),
+                    data_type: data_type.to_string(),
+                    observed_value: observed_value.to_string(),
+                    issued: Instant::now(),
+                },
+            );
+            property.write_descriptor = Some(descriptor_id);
+        }
+    }
+
+    fn take_property_descriptor(
+        &self,
+        entity_id: &str,
+        component_id: Option<&str>,
+        descriptor_id: &str,
+    ) -> Option<PropertyWriteDescriptor> {
+        let mut descriptors = self.property_write_descriptors.lock().ok()?;
+        let descriptor = descriptors.remove(descriptor_id)?;
+        (descriptor.issued.elapsed() <= Duration::from_secs(30)
+            && descriptor.entity_id == entity_id
+            && descriptor.component_id.as_deref() == component_id)
+            .then_some(descriptor)
     }
 
     fn selection_mutation(
@@ -2534,6 +2948,8 @@ fn failure(code: WorkbenchFailureCode) -> WorkbenchFailure {
 
 static LOG_REFERENCE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static DELETE_CONFIRMATION_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+static PROPERTY_DESCRIPTOR_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+static COMPONENT_DESCRIPTOR_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 fn next_log_reference() -> String {
     let timestamp = std::time::SystemTime::now()
@@ -2677,6 +3093,8 @@ struct RawBridgeSelectedEntityHierarchy {
     children: String,
     #[serde(rename = "childrenTruncated", default)]
     children_truncated: Value,
+    #[serde(default)]
+    components: String,
 }
 
 #[derive(Deserialize)]
@@ -2731,6 +3149,31 @@ struct RawBridgeEntityRadiusQuery {
     entities: String,
     #[serde(default)]
     truncated: Value,
+}
+
+#[derive(Deserialize)]
+struct RawBridgeComponentResult {
+    #[serde(rename = "bridgeVersion")]
+    bridge_version: String,
+    #[serde(rename = "protocolVersion")]
+    protocol_version: u32,
+    status: String,
+    #[serde(default)]
+    entity: String,
+    #[serde(default)]
+    components: String,
+    #[serde(default)]
+    properties: String,
+}
+#[derive(Deserialize)]
+struct RawBridgePropertyList {
+    #[serde(rename = "bridgeVersion")]
+    bridge_version: String,
+    #[serde(rename = "protocolVersion")]
+    protocol_version: u32,
+    status: String,
+    #[serde(default)]
+    properties: String,
 }
 
 fn workbench_bool(value: &Value) -> bool {
@@ -2791,7 +3234,11 @@ fn parse_world_selection_records(value: &str) -> Result<Vec<WorkbenchSelectedEnt
                     if !x.is_finite() || !y.is_finite() || !z.is_finite() {
                         return Err(());
                     }
-                    Some(WorkbenchEntityPosition { x, y, z })
+                    Some(WorkbenchEntityPosition {
+                        x: round_world_coordinate(x),
+                        y: round_world_coordinate(y),
+                        z: round_world_coordinate(z),
+                    })
                 }
             };
             let resource_name = fields
@@ -2842,6 +3289,226 @@ fn parse_world_selection_records(value: &str) -> Result<Vec<WorkbenchSelectedEnt
             })
         })
         .collect()
+}
+
+fn round_world_coordinate(value: f32) -> f32 {
+    (value * 1000.0).round() / 1000.0
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
+}
+
+fn is_available_status(value: &String) -> bool {
+    value == "available"
+}
+
+fn parse_components(value: &str) -> Result<Vec<WorkbenchComponent>, ()> {
+    if value.is_empty() {
+        return Ok(Vec::new());
+    }
+    value
+        .split(';')
+        .map(|record| {
+            let mut fields = record.split('|');
+            let index = fields.next().ok_or(())?.parse::<u32>().map_err(|_| ())?;
+            let class_name = fields
+                .next()
+                .filter(|value| !value.is_empty())
+                .ok_or(())?
+                .to_string();
+            if fields.next().is_some() {
+                return Err(());
+            }
+            Ok(WorkbenchComponent {
+                component_id: format!("cmp1:{index}:{class_name}"),
+                class_name,
+            })
+        })
+        .collect()
+}
+fn parse_properties(value: &str) -> Result<Vec<WorkbenchDirectProperty>, ()> {
+    if value.is_empty() {
+        return Ok(Vec::new());
+    }
+    value
+        .split(';')
+        .map(|record| {
+            let mut fields = record.split('|');
+            let name = fields
+                .next()
+                .filter(|value| !value.is_empty())
+                .ok_or(())?
+                .to_string();
+            let data_type = fields.next().ok_or(())?.to_string();
+            let raw_value = fields.next().ok_or(())?.to_string();
+            fields.next();
+            if fields.next().is_some() {
+                return Err(());
+            }
+            Ok(WorkbenchDirectProperty {
+                name,
+                value: normalized_property_value(&data_type, &raw_value),
+                data_type,
+                write_descriptor: None,
+            })
+        })
+        .collect()
+}
+
+#[derive(Clone, Copy)]
+enum PropertyValueKind {
+    Bool,
+    Integer,
+    Float,
+    Vector,
+    String,
+}
+
+fn property_value_kind(data_type: &str) -> Option<PropertyValueKind> {
+    match data_type.trim().to_ascii_lowercase().as_str() {
+        "bool" => Some(PropertyValueKind::Bool),
+        "int" | "integer" | "enum" => Some(PropertyValueKind::Integer),
+        "float" => Some(PropertyValueKind::Float),
+        "vector" => Some(PropertyValueKind::Vector),
+        "string" | "resource" | "entity" => Some(PropertyValueKind::String),
+        _ => None,
+    }
+}
+
+fn supported_property_type(data_type: &str) -> bool {
+    property_value_kind(data_type).is_some()
+}
+
+fn normalized_property_value(data_type: &str, raw: &str) -> Value {
+    if matches!(
+        property_value_kind(data_type),
+        Some(PropertyValueKind::Bool)
+    ) {
+        return Value::Bool(matches!(raw, "1" | "true" | "True"));
+    }
+    if matches!(
+        property_value_kind(data_type),
+        Some(PropertyValueKind::Integer)
+    ) {
+        if let Ok(value) = raw.parse::<i64>() {
+            return Value::Number(value.into());
+        }
+    }
+    if matches!(
+        property_value_kind(data_type),
+        Some(PropertyValueKind::Float)
+    ) {
+        if let Ok(value) = raw.parse::<f64>() {
+            if let Some(value) = serde_json::Number::from_f64(value) {
+                return Value::Number(value);
+            }
+        }
+    }
+    if matches!(
+        property_value_kind(data_type),
+        Some(PropertyValueKind::Vector)
+    ) {
+        let values = raw
+            .split_whitespace()
+            .filter_map(|part| part.parse::<f64>().ok())
+            .collect::<Vec<_>>();
+        if values.len() == 3 && values.iter().all(|value| value.is_finite()) {
+            return json!({"x": values[0], "y": values[1], "z": values[2]});
+        }
+    }
+    Value::String(raw.to_string())
+}
+
+fn property_value_wire_format(data_type: &str, value: &Value) -> Option<String> {
+    if matches!(
+        property_value_kind(data_type),
+        Some(PropertyValueKind::Bool)
+    ) {
+        return value.as_bool().map(|value| {
+            if value {
+                "1".to_string()
+            } else {
+                "0".to_string()
+            }
+        });
+    }
+    if matches!(
+        property_value_kind(data_type),
+        Some(PropertyValueKind::Integer)
+    ) {
+        return value.as_i64().map(|value| value.to_string());
+    }
+    if matches!(
+        property_value_kind(data_type),
+        Some(PropertyValueKind::Float)
+    ) {
+        return value
+            .as_f64()
+            .filter(|value| value.is_finite())
+            .map(|value| value.to_string());
+    }
+    if matches!(
+        property_value_kind(data_type),
+        Some(PropertyValueKind::Vector)
+    ) {
+        let object = value.as_object()?;
+        let component = |name| {
+            object
+                .get(name)
+                .and_then(Value::as_f64)
+                .filter(|value| value.is_finite())
+        };
+        let x = component("x")?;
+        let y = component("y")?;
+        let z = component("z")?;
+        return Some(format!("{x} {y} {z}"));
+    }
+    if matches!(
+        property_value_kind(data_type),
+        Some(PropertyValueKind::String)
+    ) {
+        return value
+            .as_str()
+            .filter(|value| value.len() <= 1024 && !value.contains(['|', ';', '\0']))
+            .map(str::to_string);
+    }
+    None
+}
+
+fn invalid_property_descriptor_result() -> WorkbenchEntityMutationResult {
+    WorkbenchEntityMutationResult {
+        bridge_version: WORKBENCH_BRIDGE_VERSION.to_string(),
+        protocol_version: WORKBENCH_BRIDGE_PROTOCOL_VERSION,
+        status: "invalid-property-descriptor".to_string(),
+        active_layer_id: None,
+        entity: None,
+        confirmation_token: None,
+    }
+}
+
+fn invalid_component_property_descriptor_result() -> WorkbenchComponentResult {
+    WorkbenchComponentResult {
+        bridge_version: WORKBENCH_BRIDGE_VERSION.to_string(),
+        protocol_version: WORKBENCH_BRIDGE_PROTOCOL_VERSION,
+        status: "invalid-property-descriptor".to_string(),
+        entity: None,
+        components: Vec::new(),
+        properties: Vec::new(),
+        confirmation_token: None,
+    }
+}
+
+fn invalid_component_descriptor_result() -> WorkbenchComponentResult {
+    WorkbenchComponentResult {
+        bridge_version: WORKBENCH_BRIDGE_VERSION.to_string(),
+        protocol_version: WORKBENCH_BRIDGE_PROTOCOL_VERSION,
+        status: "invalid-component-descriptor".to_string(),
+        entity: None,
+        components: Vec::new(),
+        properties: Vec::new(),
+        confirmation_token: None,
+    }
 }
 
 fn parse_optional_world_selection_record(
@@ -3002,7 +3669,10 @@ fn workbench_log_markers(source: &str, lines: &[String]) -> Vec<WorkbenchLogMark
         ("script-validation", "Script validation"),
         ("gamelib-compilation", "Compiling GameLib scripts"),
         ("game-compilation", "Compiling Game scripts"),
-        ("game-module-loaded", "Module: Game; loaded"),
+        (
+            "workbench-game-module-loaded",
+            "Module: WorkbenchGame; loaded",
+        ),
     ];
     lines
         .iter()
@@ -3060,7 +3730,7 @@ fn reload_verification_since(
         "Script validation",
         "Compiling GameLib scripts",
         "Compiling Game scripts",
-        "Module: Game; loaded",
+        "Module: WorkbenchGame; loaded",
     ];
     let mut next_marker = 0;
     let mut matched = Vec::new();
@@ -3429,6 +4099,8 @@ fn bridge_payload() -> &'static [(&'static str, &'static str)] {
             "RST_WorkbenchEntityMutation.c",
             BRIDGE_ENTITY_MUTATION_SOURCE,
         ),
+        ("RST_WorkbenchComponents.c", BRIDGE_COMPONENTS_SOURCE),
+        ("RST_WorkbenchProperties.c", BRIDGE_PROPERTIES_SOURCE),
         ("RST_WorkbenchListResources.c", BRIDGE_LIST_RESOURCES_SOURCE),
     ]
 }
@@ -3464,9 +4136,9 @@ class RST_WorkbenchCapabilities : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchCapabilitiesResponse response = new RST_WorkbenchCapabilitiesResponse();
-		response.bridgeVersion = "1.17.0";
+		response.bridgeVersion = "1.18.0";
 	response.protocolVersion = 1;
-	response.capabilities = "state;open-world;play-session;project-context;inspect-resource;world-selection;entity-hierarchy;list-resources;list-entities;inspect-entity;set-selection;clear-selection;entity-position;entity-details;create-entity;rename-entity;delete-entity";
+	response.capabilities = "state;open-world;play-session;project-context;inspect-resource;world-selection;entity-hierarchy;list-resources;list-entities;inspect-entity;set-selection;clear-selection;entity-position;entity-details;create-entity;rename-entity;delete-entity;move-entity;rotate-entity;reparent-entity;duplicate-entity;entity-properties;components;component-properties";
 		return response;
 	}
 }
@@ -3512,7 +4184,7 @@ class RST_WorkbenchState : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchStateResponse response = new RST_WorkbenchStateResponse();
-	response.bridgeVersion = "1.17.0";
+	response.bridgeVersion = "1.18.0";
 		response.protocolVersion = 1;
 		response.mode = "workbench";
 		response.playSession = "unavailable";
@@ -3703,7 +4375,7 @@ class RST_WorkbenchProjectContext : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchProjectContextResponse response = new RST_WorkbenchProjectContextResponse();
-		response.bridgeVersion = "1.17.0";
+		response.bridgeVersion = "1.18.0";
 		response.protocolVersion = 1;
 		array<string> addonGuids = new array<string>();
 		GameProject.GetLoadedAddons(addonGuids);
@@ -3821,7 +4493,7 @@ class RST_WorkbenchWorldSelection : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchWorldSelectionResponse response = new RST_WorkbenchWorldSelectionResponse();
-		response.bridgeVersion = "1.17.0";
+		response.bridgeVersion = "1.18.0";
 		response.protocolVersion = 1;
 		WorldEditor worldEditor = Workbench.GetModule(WorldEditor);
 		if (!worldEditor)
@@ -3899,7 +4571,7 @@ class RST_WorkbenchSelectedEntityHierarchy : NetApiHandler
 	{
 		RST_WorkbenchSelectedEntityHierarchyRequest typedRequest = RST_WorkbenchSelectedEntityHierarchyRequest.Cast(request);
 		RST_WorkbenchSelectedEntityHierarchyResponse response = new RST_WorkbenchSelectedEntityHierarchyResponse();
-		response.bridgeVersion = "1.17.0";
+		response.bridgeVersion = "1.18.0";
 		response.protocolVersion = 1;
 		WorldEditor worldEditor = Workbench.GetModule(WorldEditor);
 		if (!worldEditor)
@@ -3982,7 +4654,7 @@ class RST_WorkbenchListEntities : NetApiHandler
 	{
 		RST_WorkbenchListEntitiesRequest typedRequest = RST_WorkbenchListEntitiesRequest.Cast(request);
 		RST_WorkbenchListEntitiesResponse response = new RST_WorkbenchListEntitiesResponse();
-		response.bridgeVersion = "1.17.0";
+		response.bridgeVersion = "1.18.0";
 		response.protocolVersion = 1;
 		WorldEditor worldEditor = Workbench.GetModule(WorldEditor);
 		if (!worldEditor) return response;
@@ -4020,7 +4692,7 @@ class RST_WorkbenchInspectEntityRequest : JsonApiStruct
 }
 class RST_WorkbenchInspectEntityResponse : JsonApiStruct
 {
-	string bridgeVersion; int protocolVersion; bool editorAvailable; string status; string entity; string ancestors; bool ancestorsTruncated; string children; bool childrenTruncated;
+	string bridgeVersion; int protocolVersion; bool editorAvailable; string status; string entity; string ancestors; bool ancestorsTruncated; string children; bool childrenTruncated; string components;
 	void RST_WorkbenchInspectEntityResponse() { RegAll(); }
 }
 class RST_WorkbenchInspectEntity : NetApiHandler
@@ -4038,10 +4710,36 @@ class RST_WorkbenchInspectEntity : NetApiHandler
 		resourceName.Replace("|", "/"); resourceName.Replace(";", "/"); name.Replace("|", "/"); name.Replace(";", "/"); subSceneName.Replace("|", "/"); subSceneName.Replace(";", "/"); layerName.Replace("|", "/"); layerName.Replace(";", "/");
 		records += string.Format("%1|%2|%3|%4|%5|%6|%7", entity.GetID().ToString(), entity.GetClassName(), entity.GetSubScene(), entity.GetLayerID(), transform[3][0], transform[3][1], transform[3][2]) + "|" + resourceName + "|" + name + "|" + subSceneName + "|" + layerName;
 	}
+	// Workbench exposes authored components through either its direct component
+	// list or the `components` container, depending on the editor context.
+	int ComponentCount(IEntitySource entity)
+	{
+		int count = entity.GetComponentCount();
+		if (count == 0)
+		{
+			ref BaseContainerList components = entity.GetObjectArray("components");
+			if (components) count = components.Count();
+			else count = entity.GetNumChildren();
+		}
+		return count;
+	}
+	IEntityComponentSource ComponentAt(IEntitySource entity, int index)
+	{
+		IEntityComponentSource component;
+		int count = entity.GetComponentCount();
+		if (count > 0) component = entity.GetComponent(index);
+		else
+		{
+			ref BaseContainerList components = entity.GetObjectArray("components");
+			if (components) component = IEntityComponentSource.Cast(components.Get(index));
+			else component = IEntityComponentSource.Cast(entity.GetChild(index));
+		}
+		return component;
+	}
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchInspectEntityRequest typedRequest = RST_WorkbenchInspectEntityRequest.Cast(request);
-		RST_WorkbenchInspectEntityResponse response = new RST_WorkbenchInspectEntityResponse(); response.bridgeVersion = "1.17.0"; response.protocolVersion = 1;
+		RST_WorkbenchInspectEntityResponse response = new RST_WorkbenchInspectEntityResponse(); response.bridgeVersion = "1.18.0"; response.protocolVersion = 1;
 		WorldEditor worldEditor = Workbench.GetModule(WorldEditor); if (!worldEditor) { response.status = "world-editor-unavailable"; return response; }
 		WorldEditorAPI api = worldEditor.GetApi(); if (!api) { response.status = "world-editor-api-unavailable"; return response; }
 		response.editorAvailable = true;
@@ -4049,6 +4747,14 @@ class RST_WorkbenchInspectEntity : NetApiHandler
 		for (int index = 0, count = api.GetEditorEntityCount(); index < count; index++) { IEntitySource candidate = api.GetEditorEntity(index); if (candidate && candidate.GetID().ToString() == typedRequest.entityId) { target = candidate; break; } }
 		if (!target) { response.status = "entity-not-found"; return response; }
 		response.status = "available"; AppendEntity(response.entity, api, target);
+		int componentCount = ComponentCount(target);
+		for (int index = 0; index < componentCount; index++)
+		{
+			IEntityComponentSource component = ComponentAt(target, index);
+			if (!component) continue;
+			if (!response.components.IsEmpty()) response.components += ";";
+			response.components += string.Format("%1|%2", index, component.GetClassName());
+		}
 		BaseContainer parent = target.GetParent(); for (int index = 0; parent && index < 32; index++) { IEntitySource parentEntity = IEntitySource.Cast(parent); if (parentEntity) AppendEntity(response.ancestors, api, parentEntity); parent = parent.GetParent(); } response.ancestorsTruncated = parent != null;
 		for (int index = 0, count = target.GetNumChildren(), returned = 0; index < count; index++) { IEntitySource child = IEntitySource.Cast(target.GetChild(index)); if (!child) continue; if (returned >= 64) { response.childrenTruncated = true; break; } AppendEntity(response.children, api, child); returned++; }
 		return response;
@@ -4078,7 +4784,7 @@ class RST_WorkbenchSetSelection : NetApiHandler
 	{
 		RST_WorkbenchSetSelectionRequest typedRequest = RST_WorkbenchSetSelectionRequest.Cast(request);
 		RST_WorkbenchSetSelectionResponse response = new RST_WorkbenchSetSelectionResponse();
-		response.bridgeVersion = "1.17.0";
+		response.bridgeVersion = "1.18.0";
 		response.protocolVersion = 1;
 		WorldEditor editor = Workbench.GetModule(WorldEditor);
 		if (!editor) { response.status = "world-editor-unavailable"; return response; }
@@ -4137,7 +4843,7 @@ class RST_WorkbenchFindEntitiesByRadius : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchFindEntitiesByRadiusRequest typedRequest = RST_WorkbenchFindEntitiesByRadiusRequest.Cast(request);
-		RST_WorkbenchFindEntitiesByRadiusResponse response = new RST_WorkbenchFindEntitiesByRadiusResponse(); response.bridgeVersion = "1.17.0"; response.protocolVersion = 1;
+		RST_WorkbenchFindEntitiesByRadiusResponse response = new RST_WorkbenchFindEntitiesByRadiusResponse(); response.bridgeVersion = "1.18.0"; response.protocolVersion = 1;
 		response.centerX = typedRequest.centerX; response.centerY = typedRequest.centerY; response.centerZ = typedRequest.centerZ; response.radiusMeters = typedRequest.radiusMeters; response.queryScope = typedRequest.queryScope; response.requireObject = typedRequest.requireObject; response.excludeProxies = typedRequest.excludeProxies;
 		if (typedRequest.radiusMeters < 0.01 || typedRequest.radiusMeters > 50000 || typedRequest.limit < 1 || typedRequest.limit > 100) { response.status = "invalid-query"; return response; }
 		WorldEditor editor = Workbench.GetModule(WorldEditor); if (!editor) { response.status = "world-editor-unavailable"; return response; }
@@ -4180,7 +4886,7 @@ class RST_WorkbenchClearSelection : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchClearSelectionResponse response = new RST_WorkbenchClearSelectionResponse();
-		response.bridgeVersion = "1.17.0";
+		response.bridgeVersion = "1.18.0";
 		response.protocolVersion = 1;
 		WorldEditor editor = Workbench.GetModule(WorldEditor);
 		if (!editor)
@@ -4211,35 +4917,961 @@ class RST_WorkbenchClearSelection : NetApiHandler
 const BRIDGE_ENTITY_MUTATION_SOURCE: &str = r#"#ifdef WORKBENCH
 class RST_WorkbenchEntityMutationRequest : JsonApiStruct
 {
-string entityId; string resourceName; string name; int subScene; float x; float y; float z; float pitch; float yaw; float roll; int layerId; bool targetIsResource; bool confirm;
-	void RST_WorkbenchEntityMutationRequest() { RegAll(); }
+	string entityId;
+	string parentEntityId;
+	string resourceName;
+	string name;
+	int subScene;
+	float x;
+	float y;
+	float z;
+	float pitch;
+	float yaw;
+	float roll;
+	int layerId;
+	bool targetIsResource;
+	bool confirm;
+
+	void RST_WorkbenchEntityMutationRequest()
+	{
+		RegV("entityId");
+		RegV("parentEntityId");
+		RegV("resourceName");
+		RegV("name");
+		RegV("subScene");
+		RegV("x");
+		RegV("y");
+		RegV("z");
+		RegV("pitch");
+		RegV("yaw");
+		RegV("roll");
+		RegV("layerId");
+		RegV("targetIsResource");
+		RegV("confirm");
+	}
 }
 class RST_WorkbenchEntityMutationResponse : JsonApiStruct
 {
-	string bridgeVersion; int protocolVersion; string status; int activeLayerId; string entity;
-	void RST_WorkbenchEntityMutationResponse() { RegAll(); }
+	string bridgeVersion;
+	int protocolVersion;
+	string status;
+	int activeLayerId;
+	string entity;
+
+	void RST_WorkbenchEntityMutationResponse()
+	{
+		RegAll();
+	}
 }
 class RST_WorkbenchEntityMutationBase : NetApiHandler
 {
-	IEntitySource Find(WorldEditorAPI api, string entityId) { IEntitySource candidate; for (int i, count = api.GetEditorEntityCount(); i < count; i++) { candidate = api.GetEditorEntity(i); if (candidate && candidate.GetID().ToString() == entityId) return candidate; } return null; }
-	bool Setup(WorldEditorAPI api, RST_WorkbenchEntityMutationResponse response) { if (!api) { response.status = "world-editor-api-unavailable"; return false; } if (!api.GetWorld()) { response.status = "world-unavailable"; return false; } if (api.IsPrefabEditMode()) { response.status = "prefab-edit-mode"; return false; } if (api.IsDoingEditAction()) { response.status = "editor-action-active"; return false; } return true; }
-	void Record(WorldEditorAPI api, RST_WorkbenchEntityMutationResponse response, IEntitySource entity) { IEntity runtimeEntity; vector p; string resourceName; string name; string subSceneName; string layerName; if (!entity) return; runtimeEntity = api.SourceToEntity(entity); if (runtimeEntity) p = runtimeEntity.GetOrigin(); else { p = vector.Zero; entity.Get("coords", p); } resourceName = string.Format("%1", entity.GetResourceName()); name = entity.GetName(); subSceneName = api.GetWorld().GetSubSceneName(entity.GetSubScene()); layerName = api.GetEntitySubsceneLayer(entity.GetSubScene(), entity); if (name == resourceName) name = string.Empty; resourceName.Replace("|", "/"); resourceName.Replace(";", "/"); name.Replace("|", "/"); name.Replace(";", "/"); subSceneName.Replace("|", "/"); subSceneName.Replace(";", "/"); layerName.Replace("|", "/"); layerName.Replace(";", "/"); response.entity = string.Format("%1|%2|%3|%4|%5|%6|%7", entity.GetID().ToString(), entity.GetClassName(), entity.GetSubScene(), entity.GetLayerID(), p[0], p[1], p[2]) + "|" + resourceName + "|" + name + "|" + subSceneName + "|" + layerName; }
-	RST_WorkbenchEntityMutationResponse Response() { RST_WorkbenchEntityMutationResponse response = new RST_WorkbenchEntityMutationResponse(); response.bridgeVersion = "1.17.0"; response.protocolVersion = 1; response.activeLayerId = -1; return response; }
+	IEntitySource Find(WorldEditorAPI api, string entityId)
+	{
+		IEntitySource candidate;
+		int selectedCount = api.GetSelectedEntitiesCount();
+		int editorCount = api.GetEditorEntityCount();
+
+		for (int i; i < selectedCount; i++)
+		{
+			candidate = api.GetSelectedEntity(i);
+			if (candidate && candidate.GetID().ToString() == entityId)
+			{
+				return candidate;
+			}
+		}
+
+		for (int i; i < editorCount; i++)
+		{
+			candidate = api.GetEditorEntity(i);
+			if (candidate && candidate.GetID().ToString() == entityId)
+			{
+				return candidate;
+			}
+		}
+
+		return null;
+	}
+	bool IsAncestor(IEntitySource entity, IEntitySource candidateParent)
+	{
+		IEntitySource current = candidateParent;
+		while (current)
+		{
+			if (current == entity) return true;
+			current = current.GetParent();
+		}
+
+		return false;
+	}
+
+	bool Setup(WorldEditorAPI api, RST_WorkbenchEntityMutationResponse response)
+	{
+		if (!api)
+		{
+			response.status = "world-editor-api-unavailable";
+			return false;
+		}
+		if (!api.GetWorld())
+		{
+			response.status = "world-unavailable";
+			return false;
+		}
+		if (api.IsPrefabEditMode())
+		{
+			response.status = "prefab-edit-mode";
+			return false;
+		}
+		if (api.IsDoingEditAction())
+		{
+			response.status = "editor-action-active";
+			return false;
+		}
+
+		return true;
+	}
+
+	void Record(WorldEditorAPI api, RST_WorkbenchEntityMutationResponse response, IEntitySource entity)
+	{
+		IEntity runtimeEntity;
+		vector p;
+		string resourceName;
+		string name;
+		string subSceneName;
+		string layerName;
+
+		if (!entity) return;
+
+		runtimeEntity = api.SourceToEntity(entity);
+		if (runtimeEntity)
+			p = runtimeEntity.GetOrigin();
+		else
+		{
+			p = vector.Zero;
+			entity.Get("coords", p);
+		}
+
+		resourceName = string.Format("%1", entity.GetResourceName());
+		name = entity.GetName();
+		subSceneName = api.GetWorld().GetSubSceneName(entity.GetSubScene());
+		layerName = api.GetEntitySubsceneLayer(entity.GetSubScene(), entity);
+		if (name == resourceName) name = string.Empty;
+
+		resourceName.Replace("|", "/");
+		resourceName.Replace(";", "/");
+		name.Replace("|", "/");
+		name.Replace(";", "/");
+		subSceneName.Replace("|", "/");
+		subSceneName.Replace(";", "/");
+		layerName.Replace("|", "/");
+		layerName.Replace(";", "/");
+
+		response.entity = string.Format(
+			"%1|%2|%3|%4|%5|%6|%7",
+			entity.GetID().ToString(),
+			entity.GetClassName(),
+			entity.GetSubScene(),
+			entity.GetLayerID(),
+			p[0],
+			p[1],
+			p[2]) + "|" + resourceName + "|" + name + "|" + subSceneName + "|" + layerName;
+	}
+
+	string PropertyTypeName(DataVarType dataType)
+	{
+		switch (dataType)
+		{
+			case DataVarType.BOOLEAN: return "bool";
+			case DataVarType.INTEGER: return "integer";
+			case DataVarType.SCALAR: return "float";
+			case DataVarType.VECTOR3: return "vector";
+			case DataVarType.STRING: return "string";
+			case DataVarType.RESOURCE_NAME: return "resource";
+		}
+
+		return string.Empty;
+	}
+
+	bool ReadPropertyValue(BaseContainer container, string name, DataVarType dataType, out string value)
+	{
+		bool boolValue;
+		int integerValue;
+		float floatValue;
+		vector vectorValue;
+		string stringValue;
+
+		switch (dataType)
+		{
+			case DataVarType.BOOLEAN:
+				if (!container.Get(name, boolValue)) return false;
+				if (boolValue) value = "1";
+				else value = "0";
+				return true;
+			case DataVarType.INTEGER:
+				if (!container.Get(name, integerValue)) return false;
+				value = integerValue.ToString();
+				return true;
+			case DataVarType.SCALAR:
+				if (!container.Get(name, floatValue)) return false;
+				value = floatValue.ToString();
+				return true;
+			case DataVarType.VECTOR3:
+				if (!container.Get(name, vectorValue)) return false;
+				value = string.Format("%1 %2 %3", vectorValue[0], vectorValue[1], vectorValue[2]);
+				return true;
+			case DataVarType.STRING:
+			case DataVarType.RESOURCE_NAME:
+				if (!container.Get(name, stringValue)) return false;
+				value = stringValue;
+				return true;
+		}
+
+		return false;
+	}
+
+	RST_WorkbenchEntityMutationResponse Response()
+	{
+		RST_WorkbenchEntityMutationResponse response = new RST_WorkbenchEntityMutationResponse();
+		response.bridgeVersion = "1.18.0";
+		response.protocolVersion = 1;
+		response.activeLayerId = -1;
+		return response;
+	}
 }
-	class RST_WorkbenchCreateEntity : RST_WorkbenchEntityMutationBase
+
+class RST_WorkbenchCreateEntity : RST_WorkbenchEntityMutationBase
 {
-	override JsonApiStruct GetRequest() { return new RST_WorkbenchEntityMutationRequest(); }
-	override JsonApiStruct GetResponse(JsonApiStruct request) { RST_WorkbenchEntityMutationRequest r; RST_WorkbenchEntityMutationResponse response; WorldEditor editor; WorldEditorAPI api; ResourceName prefab; Resource resource; IEntitySource entity; r = RST_WorkbenchEntityMutationRequest.Cast(request); response = Response(); editor = Workbench.GetModule(WorldEditor); if (!editor) { response.status = "world-editor-unavailable"; return response; } api = editor.GetApi(); if (!Setup(api, response)) return response; response.activeLayerId = api.GetCurrentEntityLayerId(); if (r.resourceName.IsEmpty() || r.subScene < 0 || r.layerId < 0 || api.IsEntityLayerLockedHierarchy(api.GetCurrentSubScene(), r.layerId)) { response.status = "invalid-create-target"; return response; } if (r.targetIsResource) { prefab = r.resourceName; resource = Resource.Load(prefab); if (!resource || !resource.IsValid()) { response.status = "resource-load-failed"; return response; } } if (!api.BeginEntityAction("Reforger Script Tools: create entity")) { response.status = "mutation-rejected"; return response; } entity = api.CreateEntity(r.resourceName, r.name, r.layerId, null, Vector(r.x, r.y, r.z), Vector(r.pitch, r.yaw, r.roll)); api.EndEntityAction("Reforger Script Tools: create entity"); if (!entity) { response.status = "create-rejected"; return response; } Record(api, response, entity); response.activeLayerId = entity.GetLayerID(); if (entity.GetSubScene() != r.subScene || entity.GetLayerID() != r.layerId) response.status = "target-mismatch"; else response.status = "created"; return response; }
+	override JsonApiStruct GetRequest()
+	{
+		return new RST_WorkbenchEntityMutationRequest();
+	}
+
+	override JsonApiStruct GetResponse(JsonApiStruct request)
+	{
+		RST_WorkbenchEntityMutationRequest r = RST_WorkbenchEntityMutationRequest.Cast(request);
+		RST_WorkbenchEntityMutationResponse response = Response();
+		WorldEditor editor = Workbench.GetModule(WorldEditor);
+		if (!editor)
+		{
+			response.status = "world-editor-unavailable";
+			return response;
+		}
+
+		WorldEditorAPI api = editor.GetApi();
+		if (!Setup(api, response)) return response;
+
+		response.activeLayerId = api.GetCurrentEntityLayerId();
+		if (r.resourceName.IsEmpty() || r.subScene < 0 || r.layerId < 0
+			|| api.IsEntityLayerLockedHierarchy(api.GetCurrentSubScene(), r.layerId))
+		{
+			response.status = "invalid-create-target";
+			return response;
+		}
+
+		if (r.targetIsResource)
+		{
+			ResourceName prefab = r.resourceName;
+			Resource resource = Resource.Load(prefab);
+			if (!resource || !resource.IsValid())
+			{
+				response.status = "resource-load-failed";
+				return response;
+			}
+		}
+
+		if (!api.BeginEntityAction("Reforger Script Tools: create entity"))
+		{
+			response.status = "mutation-rejected";
+			return response;
+		}
+
+		IEntitySource entity = api.CreateEntity(
+			r.resourceName,
+			r.name,
+			r.layerId,
+			null,
+			Vector(r.x, r.y, r.z),
+			Vector(r.pitch, r.yaw, r.roll));
+		api.EndEntityAction("Reforger Script Tools: create entity");
+		if (!entity)
+		{
+			response.status = "create-rejected";
+			return response;
+		}
+
+		Record(api, response, entity);
+		response.activeLayerId = entity.GetLayerID();
+		if (entity.GetSubScene() != r.subScene || entity.GetLayerID() != r.layerId)
+			response.status = "target-mismatch";
+		else
+			response.status = "created";
+		return response;
+	}
 }
 class RST_WorkbenchRenameEntity : RST_WorkbenchEntityMutationBase
 {
-	override JsonApiStruct GetRequest() { return new RST_WorkbenchEntityMutationRequest(); }
-	override JsonApiStruct GetResponse(JsonApiStruct request) { RST_WorkbenchEntityMutationRequest r; RST_WorkbenchEntityMutationResponse response; WorldEditor editor; WorldEditorAPI api; IEntitySource entity; bool changed; r = RST_WorkbenchEntityMutationRequest.Cast(request); response = Response(); editor = Workbench.GetModule(WorldEditor); if (!editor) { response.status = "world-editor-unavailable"; return response; } api = editor.GetApi(); if (!Setup(api, response)) return response; entity = Find(api, r.entityId); if (!entity) { response.status = "entity-not-found"; return response; } if (api.IsEntityLayerLockedHierarchy(entity.GetSubScene(), entity.GetLayerID()) || !api.BeginEntityAction("Reforger Script Tools: rename entity")) { response.status = "mutation-rejected"; return response; } changed = api.RenameEntity(entity, r.name); api.EndEntityAction("Reforger Script Tools: rename entity"); if (!changed) { response.status = "mutation-rejected"; return response; } Record(api, response, entity); response.status = "renamed"; return response; }
+	override JsonApiStruct GetRequest()
+	{
+		return new RST_WorkbenchEntityMutationRequest();
+	}
+
+	override JsonApiStruct GetResponse(JsonApiStruct request)
+	{
+		RST_WorkbenchEntityMutationRequest r = RST_WorkbenchEntityMutationRequest.Cast(request);
+		RST_WorkbenchEntityMutationResponse response = Response();
+		WorldEditor editor = Workbench.GetModule(WorldEditor);
+		if (!editor)
+		{
+			response.status = "world-editor-unavailable";
+			return response;
+		}
+
+		WorldEditorAPI api = editor.GetApi();
+		if (!Setup(api, response)) return response;
+
+		IEntitySource entity = Find(api, r.entityId);
+		if (!entity)
+		{
+			response.status = "entity-not-found";
+			return response;
+		}
+
+		if (api.IsEntityLayerLockedHierarchy(entity.GetSubScene(), entity.GetLayerID())
+			|| !api.BeginEntityAction("Reforger Script Tools: rename entity"))
+		{
+			response.status = "mutation-rejected";
+			return response;
+		}
+
+		bool changed = api.RenameEntity(entity, r.name);
+		api.EndEntityAction("Reforger Script Tools: rename entity");
+		if (!changed)
+		{
+			response.status = "mutation-rejected";
+			return response;
+		}
+
+		Record(api, response, entity);
+		response.status = "renamed";
+		return response;
+	}
+}
+class RST_WorkbenchMoveEntity : RST_WorkbenchEntityMutationBase
+{
+	override JsonApiStruct GetRequest()
+	{
+		return new RST_WorkbenchEntityMutationRequest();
+	}
+
+	override JsonApiStruct GetResponse(JsonApiStruct request)
+	{
+		RST_WorkbenchEntityMutationRequest r = RST_WorkbenchEntityMutationRequest.Cast(request);
+		RST_WorkbenchEntityMutationResponse response = Response();
+		WorldEditor editor = Workbench.GetModule(WorldEditor);
+		if (!editor)
+		{
+			response.status = "world-editor-unavailable";
+			return response;
+		}
+
+		WorldEditorAPI api = editor.GetApi();
+		if (!Setup(api, response)) return response;
+
+		IEntitySource entity = Find(api, r.entityId);
+		if (!entity)
+		{
+			response.status = "entity-not-found";
+			return response;
+		}
+
+		if (api.IsEntityLayerLockedHierarchy(entity.GetSubScene(), entity.GetLayerID())
+			|| !api.BeginEntityAction("Reforger Script Tools: move entity"))
+		{
+			response.status = "mutation-rejected";
+			return response;
+		}
+
+		if (!api.SetVariableValue(entity, null, "coords", string.Format("%1 %2 %3", r.x, r.y, r.z)))
+		{
+			api.EndEntityAction("Reforger Script Tools: move entity");
+			response.status = "mutation-rejected";
+			return response;
+		}
+
+		api.EndEntityAction("Reforger Script Tools: move entity");
+		Record(api, response, entity);
+		response.status = "moved";
+		return response;
+	}
+}
+class RST_WorkbenchRotateEntity : RST_WorkbenchEntityMutationBase
+{
+	override JsonApiStruct GetRequest()
+	{
+		return new RST_WorkbenchEntityMutationRequest();
+	}
+
+	override JsonApiStruct GetResponse(JsonApiStruct request)
+	{
+		RST_WorkbenchEntityMutationRequest r = RST_WorkbenchEntityMutationRequest.Cast(request);
+		RST_WorkbenchEntityMutationResponse response = Response();
+		WorldEditor editor = Workbench.GetModule(WorldEditor);
+		if (!editor)
+		{
+			response.status = "world-editor-unavailable";
+			return response;
+		}
+
+		WorldEditorAPI api = editor.GetApi();
+		if (!Setup(api, response)) return response;
+
+		IEntitySource entity = Find(api, r.entityId);
+		if (!entity)
+		{
+			response.status = "entity-not-found";
+			return response;
+		}
+
+		if (api.IsEntityLayerLockedHierarchy(entity.GetSubScene(), entity.GetLayerID()))
+		{
+			response.status = "mutation-rejected";
+			return response;
+		}
+		if (!api.BeginEntityAction("Reforger Script Tools: rotate entity"))
+		{
+			response.status = "mutation-rejected";
+			return response;
+		}
+
+		bool changed = api.SetVariableValue(
+			entity,
+			null,
+			"angles",
+			string.Format("%1 %2 %3", r.pitch, r.yaw, r.roll));
+		api.EndEntityAction("Reforger Script Tools: rotate entity");
+		if (!changed)
+		{
+			response.status = "mutation-rejected";
+			return response;
+		}
+
+		Record(api, response, entity);
+		response.status = "rotated";
+		return response;
+	}
+}
+class RST_WorkbenchReparentEntity : RST_WorkbenchEntityMutationBase
+{
+	override JsonApiStruct GetRequest()
+	{
+		return new RST_WorkbenchEntityMutationRequest();
+	}
+
+	override JsonApiStruct GetResponse(JsonApiStruct request)
+	{
+		RST_WorkbenchEntityMutationRequest r = RST_WorkbenchEntityMutationRequest.Cast(request);
+		RST_WorkbenchEntityMutationResponse response = Response();
+		WorldEditor editor = Workbench.GetModule(WorldEditor);
+		if (!editor)
+		{
+			response.status = "world-editor-unavailable";
+			return response;
+		}
+
+		WorldEditorAPI api = editor.GetApi();
+		if (!Setup(api, response)) return response;
+
+		IEntitySource entity = Find(api, r.entityId);
+		if (!entity)
+		{
+			response.status = "entity-not-found";
+			return response;
+		}
+
+		IEntitySource parent = Find(api, r.parentEntityId);
+		if (!parent)
+		{
+			response.status = "parent-entity-not-found";
+			return response;
+		}
+
+		if (entity == parent || entity.GetSubScene() != parent.GetSubScene()
+			|| IsAncestor(entity, parent)
+			|| api.IsEntityLayerLockedHierarchy(entity.GetSubScene(), entity.GetLayerID())
+			|| api.IsEntityLayerLockedHierarchy(parent.GetSubScene(), parent.GetLayerID())
+			|| !api.BeginEntityAction("Reforger Script Tools: reparent entity"))
+		{
+			response.status = "mutation-rejected";
+			return response;
+		}
+
+		bool changed = api.ParentEntity(parent, entity, true);
+		api.EndEntityAction("Reforger Script Tools: reparent entity");
+		if (!changed)
+		{
+			response.status = "mutation-rejected";
+			return response;
+		}
+
+		Record(api, response, entity);
+		response.status = "reparented";
+		return response;
+	}
+}
+class RST_WorkbenchDuplicateEntity : RST_WorkbenchEntityMutationBase
+{
+	override JsonApiStruct GetRequest()
+	{
+		return new RST_WorkbenchEntityMutationRequest();
+	}
+
+	override JsonApiStruct GetResponse(JsonApiStruct request)
+	{
+		RST_WorkbenchEntityMutationRequest r = RST_WorkbenchEntityMutationRequest.Cast(request);
+		RST_WorkbenchEntityMutationResponse response = Response();
+		WorldEditor editor = Workbench.GetModule(WorldEditor);
+		if (!editor)
+		{
+			response.status = "world-editor-unavailable";
+			return response;
+		}
+
+		WorldEditorAPI api = editor.GetApi();
+		if (!Setup(api, response)) return response;
+
+		IEntitySource entity = Find(api, r.entityId);
+		if (!entity)
+		{
+			response.status = "entity-not-found";
+			return response;
+		}
+
+		if (api.IsEntityLayerLockedHierarchy(entity.GetSubScene(), entity.GetLayerID())
+			|| !api.BeginEntityAction("Reforger Script Tools: duplicate entity"))
+		{
+			response.status = "mutation-rejected";
+			return response;
+		}
+
+		IEntitySource clone = api.CreateClonedEntity(entity, r.name, null, false);
+		bool moved = clone && api.SetVariableValue(
+			clone,
+			null,
+			"coords",
+			string.Format("%1 %2 %3", r.x, r.y, r.z));
+		api.EndEntityAction("Reforger Script Tools: duplicate entity");
+		if (!clone || !moved)
+		{
+			response.status = "mutation-rejected";
+			return response;
+		}
+
+		Record(api, response, clone);
+		response.status = "duplicated";
+		return response;
+	}
 }
 class RST_WorkbenchDeleteEntity : RST_WorkbenchEntityMutationBase
 {
-	override JsonApiStruct GetRequest() { return new RST_WorkbenchEntityMutationRequest(); }
-	override JsonApiStruct GetResponse(JsonApiStruct request) { RST_WorkbenchEntityMutationRequest r; RST_WorkbenchEntityMutationResponse response; WorldEditor editor; WorldEditorAPI api; IEntitySource entity; bool deleted; r = RST_WorkbenchEntityMutationRequest.Cast(request); response = Response(); editor = Workbench.GetModule(WorldEditor); if (!editor) { response.status = "world-editor-unavailable"; return response; } api = editor.GetApi(); if (!Setup(api, response)) return response; entity = Find(api, r.entityId); if (!entity) { response.status = "entity-not-found"; return response; } Record(api, response, entity); if (!r.confirm) { response.status = "confirmation-required"; return response; } if (api.IsEntityLayerLockedHierarchy(entity.GetSubScene(), entity.GetLayerID()) || !api.BeginEntityAction("Reforger Script Tools: delete entity")) { response.status = "mutation-rejected"; return response; } deleted = api.DeleteEntity(entity); api.EndEntityAction("Reforger Script Tools: delete entity"); response.entity = string.Empty; if (deleted && !Find(api, r.entityId)) response.status = "deleted"; else response.status = "mutation-rejected"; return response; }
+	override JsonApiStruct GetRequest()
+	{
+		return new RST_WorkbenchEntityMutationRequest();
+	}
+
+	override JsonApiStruct GetResponse(JsonApiStruct request)
+	{
+		RST_WorkbenchEntityMutationRequest r = RST_WorkbenchEntityMutationRequest.Cast(request);
+		RST_WorkbenchEntityMutationResponse response = Response();
+		WorldEditor editor = Workbench.GetModule(WorldEditor);
+		if (!editor)
+		{
+			response.status = "world-editor-unavailable";
+			return response;
+		}
+
+		WorldEditorAPI api = editor.GetApi();
+		if (!Setup(api, response)) return response;
+
+		IEntitySource entity = Find(api, r.entityId);
+		if (!entity)
+		{
+			response.status = "entity-not-found";
+			return response;
+		}
+
+		Record(api, response, entity);
+		if (!r.confirm)
+		{
+			response.status = "confirmation-required";
+			return response;
+		}
+
+		if (api.IsEntityLayerLockedHierarchy(entity.GetSubScene(), entity.GetLayerID())
+			|| !api.BeginEntityAction("Reforger Script Tools: delete entity"))
+		{
+			response.status = "mutation-rejected";
+			return response;
+		}
+
+		bool deleted = api.DeleteEntity(entity);
+		api.EndEntityAction("Reforger Script Tools: delete entity");
+		response.entity = string.Empty;
+		if (deleted && !Find(api, r.entityId))
+			response.status = "deleted";
+		else
+			response.status = "mutation-rejected";
+		return response;
+	}
+}
+#endif
+"#;
+
+const BRIDGE_COMPONENTS_SOURCE: &str = r#"#ifdef WORKBENCH
+class RST_WorkbenchComponentsRequest : JsonApiStruct { string entityId; string componentId; string className; string propertyName; string expectedValue; string value; bool confirm; void RST_WorkbenchComponentsRequest() { RegAll(); } }
+class RST_WorkbenchComponentsResponse : JsonApiStruct { string bridgeVersion; int protocolVersion; string status; string entity; string components; string properties; void RST_WorkbenchComponentsResponse() { RegAll(); } }
+class RST_WorkbenchComponentsBase : NetApiHandler
+{
+	IEntitySource Find(WorldEditorAPI api, string id) { for (int i = 0, count = api.GetEditorEntityCount(); i < count; i++) { IEntitySource candidate = api.GetEditorEntity(i); if (candidate && candidate.GetID().ToString() == id) return candidate; } return null; }
+	RST_WorkbenchComponentsResponse Response() { RST_WorkbenchComponentsResponse response = new RST_WorkbenchComponentsResponse(); response.bridgeVersion = "1.18.0"; response.protocolVersion = 1; return response; }
+	// Workbench exposes authored direct components through the `components` container in
+	// some editor contexts, even when IEntitySource.GetComponentCount() is zero.
+	int ComponentCount(IEntitySource entity) { int count = entity.GetComponentCount(); if (count == 0) { ref BaseContainerList components = entity.GetObjectArray("components"); if (components) count = components.Count(); else count = entity.GetNumChildren(); } return count; }
+	IEntityComponentSource ComponentAt(IEntitySource entity, int index) { IEntityComponentSource component; int count = entity.GetComponentCount(); if (count > 0) component = entity.GetComponent(index); else { ref BaseContainerList components = entity.GetObjectArray("components"); if (components) component = IEntityComponentSource.Cast(components.Get(index)); else component = IEntityComponentSource.Cast(entity.GetChild(index)); } return component; }
+	void List(IEntitySource entity, RST_WorkbenchComponentsResponse response)
+	{
+		int count = ComponentCount(entity);
+		for (int i; i < count; i++)
+		{
+			IEntityComponentSource component = ComponentAt(entity, i);
+			if (!component) continue;
+			if (!response.components.IsEmpty()) response.components += ";";
+			response.components += string.Format("%1|%2", i, component.GetClassName());
+		}
+	}
+	string SupportedPropertyType(DataVarType dataType)
+	{
+		switch (dataType)
+		{
+			case DataVarType.BOOLEAN: return "bool";
+			case DataVarType.INTEGER: return "integer";
+			case DataVarType.SCALAR: return "float";
+			case DataVarType.VECTOR3: return "vector";
+			case DataVarType.STRING: return "string";
+			case DataVarType.RESOURCE_NAME: return "resource";
+		}
+
+		return string.Empty;
+	}
+
+	bool ReadPropertyValue(IEntityComponentSource component, string name, DataVarType dataType, out string value)
+	{
+		bool boolValue;
+		int integerValue;
+		float floatValue;
+		vector vectorValue;
+		string stringValue;
+
+		switch (dataType)
+		{
+			case DataVarType.BOOLEAN:
+				if (!component.Get(name, boolValue)) return false;
+				if (boolValue)
+					value = "1";
+				else
+					value = "0";
+				return true;
+			case DataVarType.INTEGER:
+				if (!component.Get(name, integerValue)) return false;
+				value = integerValue.ToString();
+				return true;
+			case DataVarType.SCALAR:
+				if (!component.Get(name, floatValue)) return false;
+				value = floatValue.ToString();
+				return true;
+			case DataVarType.VECTOR3:
+				if (!component.Get(name, vectorValue)) return false;
+				value = string.Format("%1 %2 %3", vectorValue[0], vectorValue[1], vectorValue[2]);
+				return true;
+			case DataVarType.STRING:
+			case DataVarType.RESOURCE_NAME:
+				if (!component.Get(name, stringValue)) return false;
+				value = stringValue;
+				return true;
+		}
+
+		return false;
+	}
+
+	void ListProperties(IEntityComponentSource component, RST_WorkbenchComponentsResponse response)
+	{
+		for (int i = 0, count = component.GetNumVars(); i < count; i++)
+		{
+			string name = component.GetVarName(i);
+			DataVarType dataType = component.GetDataVarType(i);
+			string typeName = SupportedPropertyType(dataType);
+			string value;
+			string directlySet;
+			if (typeName.IsEmpty() || !ReadPropertyValue(component, name, dataType, value)) continue;
+			if (component.IsVariableSetDirectly(name))
+				directlySet = "1";
+			else
+				directlySet = "0";
+
+			value.Replace("|", "/");
+			value.Replace(";", "/");
+			if (!response.properties.IsEmpty()) response.properties += ";";
+			response.properties += string.Format(
+				"%1|%2|%3|%4",
+				name,
+				typeName,
+				value,
+				directlySet);
+		}
+	}
+	IEntityComponentSource FindComponent(IEntitySource entity, string componentId) { for (int i = 0, count = ComponentCount(entity); i < count; i++) { IEntityComponentSource component = ComponentAt(entity, i); if (component && componentId == string.Format("cmp1:%1:%2", i, component.GetClassName())) return component; } return null; }
+}
+class RST_WorkbenchListComponents : RST_WorkbenchComponentsBase
+{
+	override JsonApiStruct GetRequest() { return new RST_WorkbenchComponentsRequest(); }
+	override JsonApiStruct GetResponse(JsonApiStruct request) { RST_WorkbenchComponentsRequest r = RST_WorkbenchComponentsRequest.Cast(request); RST_WorkbenchComponentsResponse response = Response(); WorldEditor editor = Workbench.GetModule(WorldEditor); if (!editor || !editor.GetApi()) { response.status = "world-editor-unavailable"; return response; } IEntitySource entity = Find(editor.GetApi(), r.entityId); if (!entity) { response.status = "entity-not-found"; return response; } List(entity, response); response.status = "available"; return response; }
+}
+class RST_WorkbenchInspectComponent : RST_WorkbenchComponentsBase
+{
+	override JsonApiStruct GetRequest() { return new RST_WorkbenchComponentsRequest(); }
+override JsonApiStruct GetResponse(JsonApiStruct request) { RST_WorkbenchComponentsRequest r = RST_WorkbenchComponentsRequest.Cast(request); RST_WorkbenchComponentsResponse response = Response(); WorldEditor editor = Workbench.GetModule(WorldEditor); if (!editor || !editor.GetApi()) { response.status = "world-editor-unavailable"; return response; } IEntitySource entity = Find(editor.GetApi(), r.entityId); if (!entity) { response.status = "entity-not-found"; return response; } List(entity, response); for (int i = 0, count = ComponentCount(entity); i < count; i++) { IEntityComponentSource component = ComponentAt(entity, i); if (component && r.componentId == string.Format("cmp1:%1:%2", i, component.GetClassName())) { ListProperties(component, response); response.status = "available"; return response; } } response.status = "component-not-found"; return response; }
+}
+class RST_WorkbenchAddComponent : RST_WorkbenchComponentsBase
+{
+	override JsonApiStruct GetRequest() { return new RST_WorkbenchComponentsRequest(); }
+	override JsonApiStruct GetResponse(JsonApiStruct request) { RST_WorkbenchComponentsRequest r = RST_WorkbenchComponentsRequest.Cast(request); RST_WorkbenchComponentsResponse response = Response(); WorldEditor editor = Workbench.GetModule(WorldEditor); WorldEditorAPI api; IEntitySource entity; typename componentType; if (!editor) { response.status = "world-editor-unavailable"; return response; } api = editor.GetApi(); if (!api || api.IsPrefabEditMode() || api.IsDoingEditAction()) { response.status = "world-editor-unavailable"; return response; } entity = Find(api, r.entityId); componentType = r.className.ToType(); if (!entity || r.className.IsEmpty() || !componentType || !componentType.IsInherited(ScriptComponent) || api.IsEntityLayerLockedHierarchy(entity.GetSubScene(), entity.GetLayerID()) || !api.BeginEntityAction("Reforger Script Tools: add component")) { response.status = "mutation-rejected"; return response; } if (!api.CreateComponent(entity, r.className)) { api.EndEntityAction("Reforger Script Tools: add component"); response.status = "mutation-rejected"; return response; } api.EndEntityAction("Reforger Script Tools: add component"); List(entity, response); response.status = "added"; return response; }
+}
+class RST_WorkbenchRemoveComponent : RST_WorkbenchComponentsBase
+{
+	override JsonApiStruct GetRequest() { return new RST_WorkbenchComponentsRequest(); }
+	override JsonApiStruct GetResponse(JsonApiStruct request) { RST_WorkbenchComponentsRequest r = RST_WorkbenchComponentsRequest.Cast(request); RST_WorkbenchComponentsResponse response = Response(); WorldEditor editor = Workbench.GetModule(WorldEditor); WorldEditorAPI api; IEntitySource entity; IEntityComponentSource component; if (!editor) { response.status = "world-editor-unavailable"; return response; } api = editor.GetApi(); if (!api || api.IsPrefabEditMode() || api.IsDoingEditAction()) { response.status = "world-editor-unavailable"; return response; } entity = Find(api, r.entityId); if (!entity) { response.status = "component-not-found"; return response; } component = FindComponent(entity, r.componentId); if (!component) { response.status = "component-not-found"; return response; } if (!r.confirm) { List(entity, response); response.status = "confirmation-required"; return response; } if (api.IsEntityLayerLockedHierarchy(entity.GetSubScene(), entity.GetLayerID()) || !api.BeginEntityAction("Reforger Script Tools: remove component")) { response.status = "mutation-rejected"; return response; } if (!api.DeleteComponent(entity, component)) { api.EndEntityAction("Reforger Script Tools: remove component"); response.status = "mutation-rejected"; return response; } api.EndEntityAction("Reforger Script Tools: remove component"); List(entity, response); response.status = "removed"; return response; }
+}
+class RST_WorkbenchSetComponentProperty : RST_WorkbenchComponentsBase
+{
+	override JsonApiStruct GetRequest()
+	{
+		return new RST_WorkbenchComponentsRequest();
+	}
+
+	override JsonApiStruct GetResponse(JsonApiStruct request)
+	{
+		RST_WorkbenchComponentsRequest r = RST_WorkbenchComponentsRequest.Cast(request);
+		RST_WorkbenchComponentsResponse response = Response();
+		WorldEditor editor = Workbench.GetModule(WorldEditor);
+		if (!editor)
+		{
+			response.status = "world-editor-unavailable";
+			return response;
+		}
+
+		WorldEditorAPI api = editor.GetApi();
+		if (!api || api.IsPrefabEditMode() || api.IsDoingEditAction())
+		{
+			response.status = "world-editor-unavailable";
+			return response;
+		}
+
+		IEntitySource entity = Find(api, r.entityId);
+		if (!entity || api.IsEntityLayerLockedHierarchy(entity.GetSubScene(), entity.GetLayerID()))
+		{
+			response.status = "mutation-rejected";
+			return response;
+		}
+
+		IEntityComponentSource component = FindComponent(entity, r.componentId);
+		if (!component)
+		{
+			response.status = "property-not-found";
+			return response;
+		}
+
+		int propertyIndex = component.GetVarIndex(r.propertyName);
+		if (r.propertyName.IsEmpty() || propertyIndex < 0)
+		{
+			response.status = "property-not-found";
+			return response;
+		}
+
+		string observedValue;
+		DataVarType propertyDataType = component.GetDataVarType(propertyIndex);
+		if (!ReadPropertyValue(component, r.propertyName, propertyDataType, observedValue)
+			|| observedValue != r.expectedValue)
+		{
+			response.status = "stale-property-observation";
+			return response;
+		}
+
+		int componentIndex = -1;
+		for (int i = 0, count = ComponentCount(entity); i < count; i++)
+		{
+			if (ComponentAt(entity, i) == component)
+			{
+				componentIndex = i;
+				break;
+			}
+		}
+		if (componentIndex < 0 || !api.BeginEntityAction("Reforger Script Tools: set component property"))
+		{
+			response.status = "mutation-rejected";
+			return response;
+		}
+
+		if (!api.SetVariableValue(
+			entity,
+			{ new ContainerIdPathEntry("components", componentIndex) },
+			r.propertyName,
+			r.value))
+		{
+			api.EndEntityAction("Reforger Script Tools: set component property");
+			response.status = "mutation-rejected";
+			return response;
+		}
+
+		api.EndEntityAction("Reforger Script Tools: set component property");
+		List(entity, response);
+		ListProperties(component, response);
+		response.status = "property-set";
+		return response;
+	}
+}
+#endif
+"#;
+
+const BRIDGE_PROPERTIES_SOURCE: &str = r#"#ifdef WORKBENCH
+class RST_WorkbenchPropertiesRequest : JsonApiStruct
+{
+	string entityId;
+	string propertyName;
+	string expectedValue;
+	string value;
+
+	void RST_WorkbenchPropertiesRequest()
+	{
+		RegAll();
+	}
+}
+class RST_WorkbenchPropertiesResponse : JsonApiStruct
+{
+	string bridgeVersion;
+	int protocolVersion;
+	string status;
+	string properties;
+
+	void RST_WorkbenchPropertiesResponse()
+	{
+		RegAll();
+	}
+}
+class RST_WorkbenchListEntityProperties : RST_WorkbenchEntityMutationBase
+{
+	override JsonApiStruct GetRequest()
+	{
+		return new RST_WorkbenchPropertiesRequest();
+	}
+
+	override JsonApiStruct GetResponse(JsonApiStruct request)
+	{
+		RST_WorkbenchPropertiesRequest r = RST_WorkbenchPropertiesRequest.Cast(request);
+		RST_WorkbenchPropertiesResponse response = new RST_WorkbenchPropertiesResponse();
+		response.bridgeVersion = "1.18.0";
+		response.protocolVersion = 1;
+
+		WorldEditor editor = Workbench.GetModule(WorldEditor);
+		if (!editor || !editor.GetApi())
+		{
+			response.status = "world-editor-unavailable";
+			return response;
+		}
+
+		IEntitySource entity = Find(editor.GetApi(), r.entityId);
+		if (!entity)
+		{
+			response.status = "entity-not-found";
+			return response;
+		}
+
+		for (int i, count = entity.GetNumVars(); i < count; i++)
+		{
+			string name = entity.GetVarName(i);
+			DataVarType dataType = entity.GetDataVarType(i);
+			string typeName = PropertyTypeName(dataType);
+			string value;
+			if (typeName.IsEmpty() || !ReadPropertyValue(entity, name, dataType, value)) continue;
+
+			value.Replace("|", "/");
+			value.Replace(";", "/");
+			if (!response.properties.IsEmpty()) response.properties += ";";
+			response.properties += string.Format("%1|%2|%3|1", name, typeName, value);
+		}
+
+		response.status = "available";
+		return response;
+	}
+}
+class RST_WorkbenchSetEntityProperty : RST_WorkbenchEntityMutationBase
+{
+	override JsonApiStruct GetRequest()
+	{
+		return new RST_WorkbenchPropertiesRequest();
+	}
+
+	override JsonApiStruct GetResponse(JsonApiStruct request)
+	{
+		RST_WorkbenchPropertiesRequest r = RST_WorkbenchPropertiesRequest.Cast(request);
+		RST_WorkbenchEntityMutationResponse response = Response();
+		WorldEditor editor = Workbench.GetModule(WorldEditor);
+		if (!editor)
+		{
+			response.status = "world-editor-unavailable";
+			return response;
+		}
+
+		WorldEditorAPI api = editor.GetApi();
+		if (!Setup(api, response)) return response;
+
+		IEntitySource entity = Find(api, r.entityId);
+		if (!entity || r.propertyName.IsEmpty())
+		{
+			response.status = "property-not-found";
+			return response;
+		}
+
+		int propertyIndex = entity.GetVarIndex(r.propertyName);
+		if (propertyIndex < 0)
+		{
+			response.status = "property-not-found";
+			return response;
+		}
+
+		string observedValue;
+		if (!ReadPropertyValue(entity, r.propertyName, entity.GetDataVarType(propertyIndex), observedValue)
+			|| observedValue != r.expectedValue)
+		{
+			response.status = "stale-property-observation";
+			return response;
+		}
+
+		if (api.IsEntityLayerLockedHierarchy(entity.GetSubScene(), entity.GetLayerID())
+			|| !api.BeginEntityAction("Reforger Script Tools: set entity property"))
+		{
+			response.status = "mutation-rejected";
+			return response;
+		}
+
+		if (!api.SetVariableValue(entity, null, r.propertyName, r.value))
+		{
+			api.EndEntityAction("Reforger Script Tools: set entity property");
+			response.status = "mutation-rejected";
+			return response;
+		}
+
+		api.EndEntityAction("Reforger Script Tools: set entity property");
+		Record(api, response, entity);
+		response.status = "property-set";
+		return response;
+	}
 }
 #endif
 "#;
@@ -4269,7 +5901,7 @@ class RST_WorkbenchListResources : NetApiHandler
 	{
 		RST_WorkbenchListResourcesRequest typedRequest = RST_WorkbenchListResourcesRequest.Cast(request);
 		RST_WorkbenchListResourcesResponse response = new RST_WorkbenchListResourcesResponse();
-		response.bridgeVersion = "1.17.0";
+		response.bridgeVersion = "1.18.0";
 		response.protocolVersion = 1;
 		array<string> addonGuids = new array<string>();
 		GameProject.GetLoadedAddons(addonGuids);
@@ -4330,7 +5962,7 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::thread;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn workbench_bool_accepts_json_and_enfusion_representations() {
@@ -4410,7 +6042,7 @@ mod tests {
             "SCRIPT: Script validation".to_string(),
             "SCRIPT: Compiling GameLib scripts".to_string(),
             "SCRIPT: Compiling Game scripts".to_string(),
-            "SCRIPT: Module: Game; loaded".to_string(),
+            "SCRIPT: Module: WorkbenchGame; loaded".to_string(),
         ];
         let markers = super::workbench_log_markers("workbench", &lines);
         assert_eq!(
@@ -4423,7 +6055,7 @@ mod tests {
                 "script-validation",
                 "gamelib-compilation",
                 "game-compilation",
-                "game-module-loaded",
+                "workbench-game-module-loaded",
             ]
         );
         assert!(super::workbench_log_markers("integration", &lines).is_empty());
@@ -4667,6 +6299,86 @@ mod tests {
     }
 
     #[test]
+    fn entity_mutations_resolve_the_exact_selected_entity_before_the_general_enumeration() {
+        assert!(super::BRIDGE_ENTITY_MUTATION_SOURCE.contains("api.GetSelectedEntitiesCount()"));
+        assert!(super::BRIDGE_ENTITY_MUTATION_SOURCE.contains("api.GetSelectedEntity(i)"));
+        assert!(super::BRIDGE_ENTITY_MUTATION_SOURCE.contains("api.GetEditorEntityCount()"));
+        assert!(super::BRIDGE_ENTITY_MUTATION_SOURCE.contains("RegV(\"entityId\")"));
+    }
+
+    #[test]
+    fn entity_transform_and_parenting_use_exact_id_requests() {
+        let (port, peer) = start_peer(|request| {
+            assert_eq!(
+                request,
+                json!({"APIFunc":"RST_WorkbenchMoveEntity","entityId":"0x01 {}","x":10.0,"y":20.0,"z":30.0})
+            );
+            json!({"bridgeVersion":"1.18.0","protocolVersion":1,"status":"moved","entity":"0x01 {}|TestEntity|0|7|10|20|30"})
+        });
+        let root = test_root("move-entity");
+        fs::create_dir_all(&root).unwrap();
+        let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
+            gateway: super::WorkbenchGatewayOptions {
+                port,
+                status_deadline: Duration::from_secs(1),
+                ..super::WorkbenchGatewayOptions::default()
+            },
+            user_directory: Some(root.clone()),
+            ..super::WorkbenchControllerOptions::default()
+        });
+        let result = controller
+            .move_entity(
+                "0x01 {}",
+                super::WorkbenchEntityPosition {
+                    x: 10.0,
+                    y: 20.0,
+                    z: 30.0,
+                },
+            )
+            .unwrap();
+        assert_eq!(result.status, "moved");
+        assert_eq!(result.entity.unwrap().position.unwrap().x, 10.0);
+        peer.join().unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn duplicate_entity_uses_native_clone_with_an_explicit_destination() {
+        let (port, peer) = start_peer(|request| {
+            assert_eq!(
+                request,
+                json!({"APIFunc":"RST_WorkbenchDuplicateEntity","entityId":"0x01 {}","x":11.0,"y":22.0,"z":33.0,"name":"Copy"})
+            );
+            json!({"bridgeVersion":"1.18.0","protocolVersion":1,"status":"duplicated","entity":"0x02 {}|TestEntity|0|7|11|22|33"})
+        });
+        let root = test_root("duplicate-entity");
+        fs::create_dir_all(&root).unwrap();
+        let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
+            gateway: super::WorkbenchGatewayOptions {
+                port,
+                status_deadline: Duration::from_secs(1),
+                ..super::WorkbenchGatewayOptions::default()
+            },
+            user_directory: Some(root.clone()),
+            ..super::WorkbenchControllerOptions::default()
+        });
+        let result = controller
+            .duplicate_entity(
+                "0x01 {}",
+                super::WorkbenchEntityPosition {
+                    x: 11.0,
+                    y: 22.0,
+                    z: 33.0,
+                },
+                Some("Copy"),
+            )
+            .unwrap();
+        assert_eq!(result.entity.unwrap().entity_id, "0x02 {}");
+        peer.join().unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn delete_entity_preview_returns_a_one_use_confirmation_token() {
         let (port, peer) = start_peer(|request| {
             assert_eq!(
@@ -4706,7 +6418,8 @@ mod tests {
                 "ancestors": "",
                 "ancestorsTruncated": 0,
                 "children": "",
-                "childrenTruncated": 0
+                "childrenTruncated": 0,
+                "components": "0|GRAY_TEST"
             })
         });
         let root = test_root("entity-inspection-numeric-hierarchy-flags");
@@ -4736,8 +6449,19 @@ mod tests {
         );
         assert!(!inspection.ancestors_truncated);
         assert!(!inspection.children_truncated);
+        assert_eq!(inspection.components.len(), 1);
+        assert_eq!(inspection.components[0].class_name, "GRAY_TEST");
         peer.join().unwrap();
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn entity_inspection_bridge_uses_the_component_container_fallback() {
+        assert!(super::BRIDGE_ENTITY_INSPECT_SOURCE
+            .contains("int componentCount = ComponentCount(target);"));
+        assert!(
+            super::BRIDGE_ENTITY_INSPECT_SOURCE.contains("entity.GetObjectArray(\"components\")")
+        );
     }
 
     #[test]
@@ -5420,7 +7144,7 @@ mod tests {
         let path = root.join("console.log");
         fs::write(
             &path,
-            "SCRIPT        : Reloading game scripts\nSCRIPT        : Script validation\nSCRIPT        : Compiling GameLib scripts\nSCRIPT        : Compiling Game scripts\nModule: Game; loaded 171x files\n",
+            "SCRIPT        : Reloading game scripts\nSCRIPT        : Script validation\nSCRIPT        : Compiling GameLib scripts\nSCRIPT        : Compiling Game scripts\nModule: WorkbenchGame; loaded 171x files\n",
         )
         .unwrap();
         let cursor = super::log_cursor(&path).unwrap();
@@ -5428,7 +7152,7 @@ mod tests {
         fs::write(
             &path,
             format!(
-                "{}Game destroyed.\nSCRIPT        : Reloading game scripts\nSCRIPT        : Script validation\nSCRIPT        : Compiling GameLib scripts\nSCRIPT        : Compiling Game scripts\nModule: Game; loaded 171x files\n",
+                "{}Game destroyed.\nSCRIPT        : Reloading game scripts\nSCRIPT        : Script validation\nSCRIPT        : Compiling GameLib scripts\nSCRIPT        : Compiling Game scripts\nModule: WorkbenchGame; loaded 171x files\n",
                 fs::read_to_string(&path).unwrap()
             ),
         )
@@ -5440,7 +7164,7 @@ mod tests {
         assert_eq!(verification.path, path);
         assert_eq!(verification.lines.len(), 5);
         assert!(verification.lines[0].contains("Reloading game scripts"));
-        assert!(verification.lines[4].contains("Module: Game; loaded"));
+        assert!(verification.lines[4].contains("Module: WorkbenchGame; loaded"));
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -5451,7 +7175,7 @@ mod tests {
         let path = root.join("console.log");
         fs::write(
             &path,
-            "SCRIPT        : Reloading game scripts\nSCRIPT        : Script validation\nSCRIPT        : Compiling GameLib scripts\nSCRIPT        : Compiling Game scripts\nModule: Game; loaded 171x files\n",
+            "SCRIPT        : Reloading game scripts\nSCRIPT        : Script validation\nSCRIPT        : Compiling GameLib scripts\nSCRIPT        : Compiling Game scripts\nModule: WorkbenchGame; loaded 171x files\n",
         )
         .unwrap();
         let cursor = super::log_cursor(&path).unwrap();
@@ -5471,7 +7195,7 @@ mod tests {
         fs::rename(&path, &rotated).unwrap();
         fs::write(
             &path,
-            "SCRIPT        : Reloading game scripts\nSCRIPT        : Script validation\nSCRIPT        : Compiling GameLib scripts\nSCRIPT        : Compiling Game scripts\nModule: Game; loaded 171x files\n",
+            "SCRIPT        : Reloading game scripts\nSCRIPT        : Script validation\nSCRIPT        : Compiling GameLib scripts\nSCRIPT        : Compiling Game scripts\nModule: WorkbenchGame; loaded 171x files\n",
         )
         .unwrap();
         assert!(super::reload_verification_since(&path, Some(&cursor))
@@ -5913,6 +7637,148 @@ mod tests {
             format!("\"AppState\"\n{{\n\"installdir\"\t\"{install_dir}\"\n}}\n"),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn typed_property_values_are_normalized_and_reject_mismatched_wire_values() {
+        assert_eq!(super::normalized_property_value("float", "2.5"), json!(2.5));
+        assert_eq!(
+            super::normalized_property_value("vector", "1 2 3"),
+            json!({"x": 1.0, "y": 2.0, "z": 3.0})
+        );
+        assert_eq!(
+            super::property_value_wire_format("bool", &json!(true)).as_deref(),
+            Some("1")
+        );
+        assert_eq!(
+            super::property_value_wire_format("float", &json!("not-a-number")),
+            None
+        );
+        assert_eq!(
+            super::property_value_wire_format("vector", &json!({"x": 1.0, "y": 2.0})),
+            None
+        );
+    }
+
+    #[test]
+    fn reparent_handler_rejects_a_descendant_parent_before_starting_an_action() {
+        assert!(super::BRIDGE_ENTITY_MUTATION_SOURCE
+            .contains("bool IsAncestor(IEntitySource entity, IEntitySource candidateParent)",));
+        assert!(super::BRIDGE_ENTITY_MUTATION_SOURCE
+            .contains("IsAncestor(entity, parent) || api.IsEntityLayerLockedHierarchy",));
+    }
+
+    #[test]
+    fn component_addition_accepts_only_a_loaded_script_component_class() {
+        assert!(
+            super::BRIDGE_COMPONENTS_SOURCE.contains("r.className.ToType()")
+                && super::BRIDGE_COMPONENTS_SOURCE.contains("IsInherited(ScriptComponent)")
+        );
+    }
+
+    #[test]
+    fn entity_property_mutation_records_the_post_action_entity_state() {
+        assert!(super::BRIDGE_PROPERTIES_SOURCE
+            .contains("class RST_WorkbenchSetEntityProperty : RST_WorkbenchEntityMutationBase"));
+        assert!(super::BRIDGE_PROPERTIES_SOURCE
+            .contains("Record(api, response, entity); response.status = \"property-set\""));
+    }
+
+    #[test]
+    fn entity_property_write_uses_only_the_inspection_descriptor_binding() {
+        let (port, peer) = start_peer(|request| {
+            assert_eq!(
+                request,
+                json!({
+                    "APIFunc": "RST_WorkbenchSetEntityProperty",
+                    "entityId": "0x01 {}",
+                    "propertyName": "m_fRadius",
+                    "expectedValue": "2.5",
+                    "value": "3.75",
+                })
+            );
+            json!({"bridgeVersion":"1.18.0","protocolVersion":1,"status":"property-set","activeLayerId":7,"entity":""})
+        });
+        let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
+            gateway: super::WorkbenchGatewayOptions {
+                port,
+                status_deadline: Duration::from_secs(1),
+                ..super::WorkbenchGatewayOptions::default()
+            },
+            ..super::WorkbenchControllerOptions::default()
+        });
+        controller
+            .property_write_descriptors
+            .lock()
+            .unwrap()
+            .insert(
+                "prop2:test".to_string(),
+                super::PropertyWriteDescriptor {
+                    entity_id: "0x01 {}".to_string(),
+                    component_id: None,
+                    property_name: "m_fRadius".to_string(),
+                    data_type: "float".to_string(),
+                    observed_value: "2.5".to_string(),
+                    issued: Instant::now(),
+                },
+            );
+        let result = controller
+            .set_entity_property("0x01 {}", "prop2:test", json!(3.75))
+            .unwrap();
+        assert_eq!(result.status, "property-set");
+        peer.join().unwrap();
+    }
+
+    #[test]
+    fn component_inspection_issues_a_component_bound_property_descriptor() {
+        let (port, peer) = start_peer(|request| {
+            assert_eq!(
+                request,
+                json!({"APIFunc":"RST_WorkbenchInspectComponent","entityId":"0x01 {}","componentId":"cmp1:0:TestComponent"})
+            );
+            json!({"bridgeVersion":"1.18.0","protocolVersion":1,"status":"available","entity":"","components":"0|TestComponent","properties":"m_fRadius|float|2.5|1"})
+        });
+        let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
+            gateway: super::WorkbenchGatewayOptions {
+                port,
+                status_deadline: Duration::from_secs(1),
+                ..super::WorkbenchGatewayOptions::default()
+            },
+            ..super::WorkbenchControllerOptions::default()
+        });
+        controller.component_descriptors.lock().unwrap().insert(
+            "cmp2:test".to_string(),
+            super::ComponentDescriptor {
+                entity_id: "0x01 {}".to_string(),
+                native_component_id: "cmp1:0:TestComponent".to_string(),
+                issued: Instant::now(),
+            },
+        );
+        let result = controller
+            .inspect_component("0x01 {}", "cmp2:test")
+            .unwrap();
+        assert_eq!(result.components.len(), 1);
+        assert_eq!(result.properties.len(), 1);
+        let property = serde_json::to_value(&result.properties[0]).unwrap();
+        assert!(property.get("directlySet").is_none());
+        assert!(property.get("writable").is_none());
+        assert!(result.properties[0]
+            .write_descriptor
+            .as_deref()
+            .is_some_and(|value| value.starts_with("prop2:")));
+        peer.join().unwrap();
+    }
+
+    #[test]
+    fn component_operations_reject_an_unissued_component_descriptor_before_gateway_dispatch() {
+        let controller =
+            super::WorkbenchController::new(super::WorkbenchControllerOptions::default());
+
+        let result = controller
+            .inspect_component("0x01 {}", "cmp1:0:ForgedComponent")
+            .unwrap();
+
+        assert_eq!(result.status, "invalid-component-descriptor");
     }
 
     fn test_gateway(port: u16) -> WorkbenchGateway {
