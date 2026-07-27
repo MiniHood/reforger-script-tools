@@ -3499,7 +3499,7 @@ Workbench tools return structured tool errors with a stable code, operation phas
 
 ## `workbench_list_entities`
 
-List one bounded page of live World Editor entities. Entity IDs are stable only for the observed editor context; class and text filters are discovery metadata, never target identities.
+List one bounded page of live World Editor entities, optionally constrained to an exact subscene and layer. Entity IDs are stable only for the observed editor context; filters are discovery metadata, never target identities.
 
 ### Annotations
 
@@ -3533,6 +3533,14 @@ List one bounded page of live World Editor entities. Entity IDs are stable only 
         "null"
       ]
     },
+    "layerId": {
+      "format": "int32",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
     "limit": {
       "maximum": 100,
       "minimum": 1,
@@ -3545,6 +3553,14 @@ List one bounded page of live World Editor entities. Entity IDs are stable only 
       "maxLength": 128,
       "type": [
         "string",
+        "null"
+      ]
+    },
+    "subScene": {
+      "format": "int32",
+      "minimum": 0,
+      "type": [
+        "integer",
         "null"
       ]
     }
@@ -3679,6 +3695,102 @@ List one bounded page of live World Editor entities. Entity IDs are stable only 
     "limit",
     "entities",
     "truncated"
+  ],
+  "type": "object"
+}
+```
+
+### Stable failures
+
+Workbench tools return structured tool errors with a stable code, operation phase, retryability, and a unique log reference matching a rotating integration-log record. Raw transport and Workbench payload details are not exposed.
+
+## `workbench_layer_state`
+
+Read one exact World Editor layer's canonical path, visibility, explicit lock state, and effective hierarchical lock state without changing the world or editor.
+
+### Annotations
+
+```json
+{
+  "title": "Read Workbench layer state",
+  "readOnlyHint": true,
+  "openWorldHint": false
+}
+```
+
+### Input schema
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "layerId": {
+      "format": "int32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "subScene": {
+      "format": "int32",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "subScene",
+    "layerId"
+  ],
+  "type": "object"
+}
+```
+
+### Output schema
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "bridgeVersion": {
+      "type": "string"
+    },
+    "explicitlyLocked": {
+      "type": "boolean"
+    },
+    "layerId": {
+      "format": "int32",
+      "type": "integer"
+    },
+    "layerPath": {
+      "type": "string"
+    },
+    "lockedInHierarchy": {
+      "type": "boolean"
+    },
+    "protocolVersion": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "status": {
+      "type": "string"
+    },
+    "subScene": {
+      "format": "int32",
+      "type": "integer"
+    },
+    "visible": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "bridgeVersion",
+    "protocolVersion",
+    "status",
+    "subScene",
+    "layerId",
+    "layerPath",
+    "visible",
+    "explicitlyLocked",
+    "lockedInHierarchy"
   ],
   "type": "object"
 }
@@ -4122,10 +4234,28 @@ Inspect one exact stable World Editor entity identity through the compatible man
         }
       ]
     },
+    "originKind": {
+      "type": "string"
+    },
+    "originResourceName": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "protocolVersion": {
       "minimum": 0,
       "type": "integer",
       "writeOnly": true
+    },
+    "sourceAddons": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "sourceAddonsTruncated": {
+      "type": "boolean"
     },
     "status": {
       "type": "string"
@@ -4136,6 +4266,9 @@ Inspect one exact stable World Editor entity identity through the compatible man
     "protocolVersion",
     "editorAvailable",
     "status",
+    "originKind",
+    "sourceAddons",
+    "sourceAddonsTruncated",
     "ancestors",
     "ancestorsTruncated",
     "children",

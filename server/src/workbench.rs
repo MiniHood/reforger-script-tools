@@ -103,7 +103,7 @@ pub struct WorkbenchGateway {
     request_lock: Arc<Mutex<()>>,
 }
 
-pub const WORKBENCH_BRIDGE_VERSION: &str = "1.18.0";
+pub const WORKBENCH_BRIDGE_VERSION: &str = "1.19.0";
 pub const WORKBENCH_BRIDGE_PROTOCOL_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -334,6 +334,20 @@ pub struct WorkbenchEntityListPage {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
+pub struct WorkbenchLayerState {
+    pub bridge_version: String,
+    pub protocol_version: u32,
+    pub status: String,
+    pub sub_scene: i32,
+    pub layer_id: i32,
+    pub layer_path: String,
+    pub visible: bool,
+    pub explicitly_locked: bool,
+    pub locked_in_hierarchy: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct WorkbenchEntityInspection {
     #[serde(skip_serializing)]
     pub bridge_version: String,
@@ -345,6 +359,12 @@ pub struct WorkbenchEntityInspection {
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub entity: Option<WorkbenchSelectedEntity>,
+    pub origin_kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin_resource_name: Option<String>,
+    pub source_addons: Vec<String>,
+    #[serde(skip_serializing_if = "is_false")]
+    pub source_addons_truncated: bool,
     pub ancestors: Vec<WorkbenchSelectedEntity>,
     #[serde(skip_serializing_if = "is_false")]
     pub ancestors_truncated: bool,
@@ -1324,14 +1344,18 @@ impl WorkbenchController {
         &self,
         query: Option<&str>,
         class_name: Option<&str>,
+        sub_scene: Option<i32>,
+        layer_id: Option<i32>,
         cursor: Option<&str>,
         limit: usize,
     ) -> Result<WorkbenchEntityListPage, WorkbenchFailure> {
         let signature = sha256(
             format!(
-                "{}\n{}",
+                "{}\n{}\n{}\n{}",
                 query.unwrap_or_default(),
-                class_name.unwrap_or_default()
+                class_name.unwrap_or_default(),
+                sub_scene.map_or(String::new(), |value| value.to_string()),
+                layer_id.map_or(String::new(), |value| value.to_string())
             )
             .as_bytes(),
         );
@@ -1345,7 +1369,7 @@ impl WorkbenchController {
             }
             None => 0,
         };
-        let value = self.gateway.request(json!({"APIFunc":"RST_WorkbenchListEntities","query":query.unwrap_or_default(),"className":class_name.unwrap_or_default(),"offset":offset,"limit":limit}), self.options.gateway.status_deadline)?;
+        let value = self.gateway.request(json!({"APIFunc":"RST_WorkbenchListEntities","query":query.unwrap_or_default(),"className":class_name.unwrap_or_default(),"subScene":sub_scene,"layerId":layer_id,"offset":offset,"limit":limit}), self.options.gateway.status_deadline)?;
         let raw: RawBridgeEntityList =
             serde_json::from_value(value).map_err(|_| failure(WorkbenchFailureCode::Protocol))?;
         let entities = parse_world_selection_records(&raw.entities)
@@ -1362,6 +1386,36 @@ impl WorkbenchController {
                 .then(|| format!("wel1:{signature}:{}", offset + entities.len())),
             truncated: workbench_bool(&raw.has_more),
             entities,
+        })
+    }
+
+    pub fn layer_state(
+        &self,
+        sub_scene: i32,
+        layer_id: i32,
+    ) -> Result<WorkbenchLayerState, WorkbenchFailure> {
+        let value = self.gateway.request(
+            json!({"APIFunc":"RST_WorkbenchLayerState","subScene":sub_scene,"layerId":layer_id}),
+            self.options.gateway.status_deadline,
+        )?;
+        let raw: RawBridgeLayerState =
+            serde_json::from_value(value).map_err(|_| failure(WorkbenchFailureCode::Protocol))?;
+        if raw.protocol_version != WORKBENCH_BRIDGE_PROTOCOL_VERSION
+            || raw.sub_scene != sub_scene
+            || raw.layer_id != layer_id
+        {
+            return Err(failure(WorkbenchFailureCode::Protocol));
+        }
+        Ok(WorkbenchLayerState {
+            bridge_version: raw.bridge_version,
+            protocol_version: raw.protocol_version,
+            status: raw.status,
+            sub_scene: raw.sub_scene,
+            layer_id: raw.layer_id,
+            layer_path: raw.layer_path,
+            visible: workbench_bool(&raw.visible),
+            explicitly_locked: workbench_bool(&raw.explicitly_locked),
+            locked_in_hierarchy: workbench_bool(&raw.locked_in_hierarchy),
         })
     }
 
@@ -1390,12 +1444,19 @@ impl WorkbenchController {
         let mut components = parse_components(&raw.components)
             .map_err(|_| failure(WorkbenchFailureCode::Protocol))?;
         self.issue_component_descriptors(entity_id, &mut components);
+        let (source_addons, source_addons_truncated) =
+            split_bounded_list(&raw.source_addons, 64, 4 * 1024);
         Ok(WorkbenchEntityInspection {
             bridge_version: raw.bridge_version,
             protocol_version: raw.protocol_version,
             editor_available: workbench_bool(&raw.editor_available),
             status: raw.status,
             entity,
+            origin_kind: raw.origin_kind,
+            origin_resource_name: raw.origin_resource_name,
+            source_addons,
+            source_addons_truncated: workbench_bool(&raw.source_addons_truncated)
+                || source_addons_truncated,
             ancestors,
             ancestors_truncated: workbench_bool(&raw.ancestors_truncated),
             children,
@@ -3201,6 +3262,14 @@ struct RawBridgeSelectedEntityHierarchy {
     status: String,
     #[serde(default)]
     entity: String,
+    #[serde(rename = "originKind", default)]
+    origin_kind: String,
+    #[serde(rename = "originResourceName")]
+    origin_resource_name: Option<String>,
+    #[serde(rename = "sourceAddons", default)]
+    source_addons: String,
+    #[serde(rename = "sourceAddonsTruncated", default)]
+    source_addons_truncated: Value,
     #[serde(default)]
     ancestors: String,
     #[serde(rename = "ancestorsTruncated", default)]
@@ -3225,6 +3294,27 @@ struct RawBridgeEntityList {
     entities: String,
     #[serde(rename = "hasMore", default)]
     has_more: Value,
+}
+
+#[derive(Deserialize)]
+struct RawBridgeLayerState {
+    #[serde(rename = "bridgeVersion")]
+    bridge_version: String,
+    #[serde(rename = "protocolVersion")]
+    protocol_version: u32,
+    status: String,
+    #[serde(rename = "subScene")]
+    sub_scene: i32,
+    #[serde(rename = "layerId")]
+    layer_id: i32,
+    #[serde(rename = "layerPath", default)]
+    layer_path: String,
+    #[serde(default)]
+    visible: Value,
+    #[serde(rename = "explicitlyLocked", default)]
+    explicitly_locked: Value,
+    #[serde(rename = "lockedInHierarchy", default)]
+    locked_in_hierarchy: Value,
 }
 
 #[derive(Deserialize)]
@@ -4210,6 +4300,7 @@ fn bridge_payload() -> &'static [(&'static str, &'static str)] {
             BRIDGE_SELECTED_ENTITY_HIERARCHY_SOURCE,
         ),
         ("RST_WorkbenchListEntities.c", BRIDGE_ENTITY_LIST_SOURCE),
+        ("RST_WorkbenchLayerState.c", BRIDGE_LAYER_STATE_SOURCE),
         ("RST_WorkbenchInspectEntity.c", BRIDGE_ENTITY_INSPECT_SOURCE),
         ("RST_WorkbenchSetSelection.c", BRIDGE_SET_SELECTION_SOURCE),
         (
@@ -4261,9 +4352,9 @@ class RST_WorkbenchCapabilities : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchCapabilitiesResponse response = new RST_WorkbenchCapabilitiesResponse();
-		response.bridgeVersion = "1.18.0";
+		response.bridgeVersion = "1.19.0";
 	response.protocolVersion = 1;
-	response.capabilities = "state;open-world;play-session;project-context;inspect-resource;world-selection;entity-hierarchy;list-resources;list-entities;inspect-entity;set-selection;clear-selection;entity-position;entity-details;create-entity;rename-entity;delete-entity;move-entity;rotate-entity;reparent-entity;duplicate-entity;entity-properties;components;component-properties";
+	response.capabilities = "state;open-world;play-session;project-context;inspect-resource;world-selection;entity-hierarchy;list-resources;list-entities;layer-state;inspect-entity;set-selection;clear-selection;entity-position;entity-details;create-entity;rename-entity;delete-entity;move-entity;rotate-entity;reparent-entity;duplicate-entity;entity-properties;components;component-properties";
 		return response;
 	}
 }
@@ -4309,7 +4400,7 @@ class RST_WorkbenchState : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchStateResponse response = new RST_WorkbenchStateResponse();
-	response.bridgeVersion = "1.18.0";
+	response.bridgeVersion = "1.19.0";
 		response.protocolVersion = 1;
 		response.mode = "workbench";
 		response.playSession = "unavailable";
@@ -4500,7 +4591,7 @@ class RST_WorkbenchProjectContext : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchProjectContextResponse response = new RST_WorkbenchProjectContextResponse();
-		response.bridgeVersion = "1.18.0";
+		response.bridgeVersion = "1.19.0";
 		response.protocolVersion = 1;
 		array<string> addonGuids = new array<string>();
 		GameProject.GetLoadedAddons(addonGuids);
@@ -4618,7 +4709,7 @@ class RST_WorkbenchWorldSelection : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchWorldSelectionResponse response = new RST_WorkbenchWorldSelectionResponse();
-		response.bridgeVersion = "1.18.0";
+		response.bridgeVersion = "1.19.0";
 		response.protocolVersion = 1;
 		WorldEditor worldEditor = Workbench.GetModule(WorldEditor);
 		if (!worldEditor)
@@ -4696,7 +4787,7 @@ class RST_WorkbenchSelectedEntityHierarchy : NetApiHandler
 	{
 		RST_WorkbenchSelectedEntityHierarchyRequest typedRequest = RST_WorkbenchSelectedEntityHierarchyRequest.Cast(request);
 		RST_WorkbenchSelectedEntityHierarchyResponse response = new RST_WorkbenchSelectedEntityHierarchyResponse();
-		response.bridgeVersion = "1.18.0";
+		response.bridgeVersion = "1.19.0";
 		response.protocolVersion = 1;
 		WorldEditor worldEditor = Workbench.GetModule(WorldEditor);
 		if (!worldEditor)
@@ -4759,9 +4850,11 @@ class RST_WorkbenchListEntitiesRequest : JsonApiStruct
 {
 	string query;
 	string className;
+	int subScene;
+	int layerId;
 	int offset;
 	int limit;
-	void RST_WorkbenchListEntitiesRequest() { RegAll(); }
+	void RST_WorkbenchListEntitiesRequest() { RegAll(); subScene = -1; layerId = -1; }
 }
 class RST_WorkbenchListEntitiesResponse : JsonApiStruct
 {
@@ -4779,7 +4872,7 @@ class RST_WorkbenchListEntities : NetApiHandler
 	{
 		RST_WorkbenchListEntitiesRequest typedRequest = RST_WorkbenchListEntitiesRequest.Cast(request);
 		RST_WorkbenchListEntitiesResponse response = new RST_WorkbenchListEntitiesResponse();
-		response.bridgeVersion = "1.18.0";
+		response.bridgeVersion = "1.19.0";
 		response.protocolVersion = 1;
 		WorldEditor worldEditor = Workbench.GetModule(WorldEditor);
 		if (!worldEditor) return response;
@@ -4792,6 +4885,8 @@ class RST_WorkbenchListEntities : NetApiHandler
 		{
 			IEntitySource entity = api.GetEditorEntity(index);
 			if (!entity) continue;
+			if (typedRequest.subScene >= 0 && entity.GetSubScene() != typedRequest.subScene) continue;
+			if (typedRequest.layerId >= 0 && entity.GetLayerID() != typedRequest.layerId) continue;
 			string name = api.GetEntityNiceName(entity);
 			if (!typedRequest.className.IsEmpty() && entity.GetClassName().IndexOf(typedRequest.className) == -1) continue;
 			if (!typedRequest.query.IsEmpty() && name.IndexOf(typedRequest.query) == -1 && entity.GetClassName().IndexOf(typedRequest.query) == -1) continue;
@@ -4809,6 +4904,53 @@ class RST_WorkbenchListEntities : NetApiHandler
 #endif
 "#;
 
+const BRIDGE_LAYER_STATE_SOURCE: &str = r#"#ifdef WORKBENCH
+class RST_WorkbenchLayerStateRequest : JsonApiStruct
+{
+	int subScene;
+	int layerId;
+	void RST_WorkbenchLayerStateRequest() { RegAll(); }
+}
+class RST_WorkbenchLayerStateResponse : JsonApiStruct
+{
+	string bridgeVersion;
+	int protocolVersion;
+	string status;
+	int subScene;
+	int layerId;
+	string layerPath;
+	bool visible;
+	bool explicitlyLocked;
+	bool lockedInHierarchy;
+	void RST_WorkbenchLayerStateResponse() { RegAll(); }
+}
+class RST_WorkbenchLayerState : NetApiHandler
+{
+	override JsonApiStruct GetRequest() { return new RST_WorkbenchLayerStateRequest(); }
+	override JsonApiStruct GetResponse(JsonApiStruct request)
+	{
+		RST_WorkbenchLayerStateRequest typedRequest = RST_WorkbenchLayerStateRequest.Cast(request);
+		RST_WorkbenchLayerStateResponse response = new RST_WorkbenchLayerStateResponse();
+		response.bridgeVersion = "1.19.0";
+		response.protocolVersion = 1;
+		response.subScene = typedRequest.subScene;
+		response.layerId = typedRequest.layerId;
+		WorldEditor editor = Workbench.GetModule(WorldEditor);
+		if (!editor || !editor.GetApi()) { response.status = "world-editor-unavailable"; return response; }
+		WorldEditorAPI api = editor.GetApi();
+		if (typedRequest.subScene < 0 || typedRequest.subScene >= api.GetNumSubScenes() || typedRequest.layerId < 0) { response.status = "invalid-layer"; return response; }
+		response.layerPath = api.GetSubsceneLayerPath(typedRequest.subScene, typedRequest.layerId);
+		if (response.layerPath.IsEmpty()) { response.status = "layer-not-found"; return response; }
+		response.visible = api.IsEntityLayerVisible(typedRequest.subScene, typedRequest.layerId);
+		response.explicitlyLocked = api.IsEntityLayerLocked(typedRequest.subScene, typedRequest.layerId);
+		response.lockedInHierarchy = api.IsEntityLayerLockedHierarchy(typedRequest.subScene, typedRequest.layerId);
+		response.status = "available";
+		return response;
+	}
+}
+#endif
+"#;
+
 const BRIDGE_ENTITY_INSPECT_SOURCE: &str = r#"#ifdef WORKBENCH
 class RST_WorkbenchInspectEntityRequest : JsonApiStruct
 {
@@ -4817,7 +4959,7 @@ class RST_WorkbenchInspectEntityRequest : JsonApiStruct
 }
 class RST_WorkbenchInspectEntityResponse : JsonApiStruct
 {
-	string bridgeVersion; int protocolVersion; bool editorAvailable; string status; string entity; string ancestors; bool ancestorsTruncated; string children; bool childrenTruncated; string components;
+	string bridgeVersion; int protocolVersion; bool editorAvailable; string status; string entity; string originKind; string originResourceName; string sourceAddons; bool sourceAddonsTruncated; string ancestors; bool ancestorsTruncated; string children; bool childrenTruncated; string components;
 	void RST_WorkbenchInspectEntityResponse() { RegAll(); }
 }
 class RST_WorkbenchInspectEntity : NetApiHandler
@@ -4861,17 +5003,52 @@ class RST_WorkbenchInspectEntity : NetApiHandler
 		}
 		return component;
 	}
+	protected void ResolveOrigin(RST_WorkbenchInspectEntityResponse response, IEntitySource entity, IEntity runtimeEntity)
+	{
+		response.originKind = "unresolved";
+		if (!runtimeEntity) return;
+		ResourceManager resourceManager = Workbench.GetModule(ResourceManager);
+		if (!resourceManager) { response.originKind = "resource-manager-unavailable"; return; }
+
+		string entityResourceName = string.Format("%1", entity.GetResourceName());
+		string subsceneResourceName = runtimeEntity.GetWorld().GetSubSceneName(entity.GetSubScene());
+		MetaFile meta;
+		if (!entityResourceName.IsEmpty())
+		{
+			ResourceName entityResource = entityResourceName;
+			meta = resourceManager.GetMetaFile(entityResource.GetPath());
+			if (meta) response.originKind = "prefab-resource";
+		}
+		if (!meta && !subsceneResourceName.IsEmpty())
+		{
+			ResourceName subsceneResource = subsceneResourceName;
+			meta = resourceManager.GetMetaFile(subsceneResource.GetPath());
+			if (meta) response.originKind = "world-subscene";
+		}
+		if (!meta) return;
+
+		response.originResourceName = meta.GetResourceID();
+		array<string> sourceAddons = new array<string>();
+		meta.GetSourceAddons(sourceAddons);
+		for (int index = 0; index < sourceAddons.Count(); index++)
+		{
+			if (index >= 64 || response.sourceAddons.Length() >= 4096) { response.sourceAddonsTruncated = true; break; }
+			string sourceAddon = sourceAddons[index];
+			if (!response.sourceAddons.IsEmpty()) response.sourceAddons += ";";
+			response.sourceAddons += sourceAddon;
+		}
+	}
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchInspectEntityRequest typedRequest = RST_WorkbenchInspectEntityRequest.Cast(request);
-		RST_WorkbenchInspectEntityResponse response = new RST_WorkbenchInspectEntityResponse(); response.bridgeVersion = "1.18.0"; response.protocolVersion = 1;
+		RST_WorkbenchInspectEntityResponse response = new RST_WorkbenchInspectEntityResponse(); response.bridgeVersion = "1.19.0"; response.protocolVersion = 1;
 		WorldEditor worldEditor = Workbench.GetModule(WorldEditor); if (!worldEditor) { response.status = "world-editor-unavailable"; return response; }
 		WorldEditorAPI api = worldEditor.GetApi(); if (!api) { response.status = "world-editor-api-unavailable"; return response; }
 		response.editorAvailable = true;
 		IEntitySource target;
 		for (int index = 0, count = api.GetEditorEntityCount(); index < count; index++) { IEntitySource candidate = api.GetEditorEntity(index); if (candidate && candidate.GetID().ToString() == typedRequest.entityId) { target = candidate; break; } }
 		if (!target) { response.status = "entity-not-found"; return response; }
-		response.status = "available"; AppendEntity(response.entity, api, target);
+		response.status = "available"; AppendEntity(response.entity, api, target); ResolveOrigin(response, target, api.SourceToEntity(target));
 		int componentCount = ComponentCount(target);
 		for (int index = 0; index < componentCount; index++)
 		{
@@ -4909,7 +5086,7 @@ class RST_WorkbenchSetSelection : NetApiHandler
 	{
 		RST_WorkbenchSetSelectionRequest typedRequest = RST_WorkbenchSetSelectionRequest.Cast(request);
 		RST_WorkbenchSetSelectionResponse response = new RST_WorkbenchSetSelectionResponse();
-		response.bridgeVersion = "1.18.0";
+		response.bridgeVersion = "1.19.0";
 		response.protocolVersion = 1;
 		WorldEditor editor = Workbench.GetModule(WorldEditor);
 		if (!editor) { response.status = "world-editor-unavailable"; return response; }
@@ -4968,7 +5145,7 @@ class RST_WorkbenchFindEntitiesByRadius : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchFindEntitiesByRadiusRequest typedRequest = RST_WorkbenchFindEntitiesByRadiusRequest.Cast(request);
-		RST_WorkbenchFindEntitiesByRadiusResponse response = new RST_WorkbenchFindEntitiesByRadiusResponse(); response.bridgeVersion = "1.18.0"; response.protocolVersion = 1;
+		RST_WorkbenchFindEntitiesByRadiusResponse response = new RST_WorkbenchFindEntitiesByRadiusResponse(); response.bridgeVersion = "1.19.0"; response.protocolVersion = 1;
 		response.centerX = typedRequest.centerX; response.centerY = typedRequest.centerY; response.centerZ = typedRequest.centerZ; response.radiusMeters = typedRequest.radiusMeters; response.queryScope = typedRequest.queryScope; response.requireObject = typedRequest.requireObject; response.excludeProxies = typedRequest.excludeProxies;
 		if (typedRequest.radiusMeters < 0.01 || typedRequest.radiusMeters > 50000 || typedRequest.limit < 1 || typedRequest.limit > 100) { response.status = "invalid-query"; return response; }
 		WorldEditor editor = Workbench.GetModule(WorldEditor); if (!editor) { response.status = "world-editor-unavailable"; return response; }
@@ -5011,7 +5188,7 @@ class RST_WorkbenchClearSelection : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchClearSelectionResponse response = new RST_WorkbenchClearSelectionResponse();
-		response.bridgeVersion = "1.18.0";
+		response.bridgeVersion = "1.19.0";
 		response.protocolVersion = 1;
 		WorldEditor editor = Workbench.GetModule(WorldEditor);
 		if (!editor)
@@ -5255,7 +5432,7 @@ class RST_WorkbenchEntityMutationBase : NetApiHandler
 	RST_WorkbenchEntityMutationResponse Response()
 	{
 		RST_WorkbenchEntityMutationResponse response = new RST_WorkbenchEntityMutationResponse();
-		response.bridgeVersion = "1.18.0";
+		response.bridgeVersion = "1.19.0";
 		response.protocolVersion = 1;
 		response.activeLayerId = -1;
 		return response;
@@ -5655,7 +5832,7 @@ class RST_WorkbenchComponentsResponse : JsonApiStruct { string bridgeVersion; in
 class RST_WorkbenchComponentsBase : NetApiHandler
 {
 	IEntitySource Find(WorldEditorAPI api, string id) { for (int i = 0, count = api.GetEditorEntityCount(); i < count; i++) { IEntitySource candidate = api.GetEditorEntity(i); if (candidate && candidate.GetID().ToString() == id) return candidate; } return null; }
-	RST_WorkbenchComponentsResponse Response() { RST_WorkbenchComponentsResponse response = new RST_WorkbenchComponentsResponse(); response.bridgeVersion = "1.18.0"; response.protocolVersion = 1; return response; }
+	RST_WorkbenchComponentsResponse Response() { RST_WorkbenchComponentsResponse response = new RST_WorkbenchComponentsResponse(); response.bridgeVersion = "1.19.0"; response.protocolVersion = 1; return response; }
 	// Workbench exposes authored direct components through the `components` container in
 	// some editor contexts, even when IEntitySource.GetComponentCount() is zero.
 	int ComponentCount(IEntitySource entity) { int count = entity.GetComponentCount(); if (count == 0) { ref BaseContainerList components = entity.GetObjectArray("components"); if (components) count = components.Count(); else count = entity.GetNumChildren(); } return count; }
@@ -5900,7 +6077,7 @@ class RST_WorkbenchListEntityProperties : RST_WorkbenchEntityMutationBase
 	{
 		RST_WorkbenchPropertiesRequest r = RST_WorkbenchPropertiesRequest.Cast(request);
 		RST_WorkbenchPropertiesResponse response = new RST_WorkbenchPropertiesResponse();
-		response.bridgeVersion = "1.18.0";
+		response.bridgeVersion = "1.19.0";
 		response.protocolVersion = 1;
 
 		WorldEditor editor = Workbench.GetModule(WorldEditor);
@@ -6026,7 +6203,7 @@ class RST_WorkbenchListResources : NetApiHandler
 	{
 		RST_WorkbenchListResourcesRequest typedRequest = RST_WorkbenchListResourcesRequest.Cast(request);
 		RST_WorkbenchListResourcesResponse response = new RST_WorkbenchListResourcesResponse();
-		response.bridgeVersion = "1.18.0";
+		response.bridgeVersion = "1.19.0";
 		response.protocolVersion = 1;
 		array<string> addonGuids = new array<string>();
 		GameProject.GetLoadedAddons(addonGuids);
@@ -6267,6 +6444,8 @@ mod tests {
         let (port, peer) = start_peer(|request| {
             assert_eq!(request["APIFunc"], "RST_WorkbenchListEntities");
             assert_eq!(request["limit"], 30);
+            assert_eq!(request["subScene"], 2);
+            assert_eq!(request["layerId"], 7);
             json!({
                 "bridgeVersion": "1.10.0",
                 "protocolVersion": 1,
@@ -6287,7 +6466,9 @@ mod tests {
             ..super::WorkbenchControllerOptions::default()
         });
 
-        let page = controller.list_entities(None, None, None, 30).unwrap();
+        let page = controller
+            .list_entities(None, None, Some(2), Some(7), None, 30)
+            .unwrap();
 
         assert_eq!(page.entities.len(), 1);
         assert_eq!(page.entities[0].entity_id, "0x0000000000000001 {}");
@@ -6295,6 +6476,83 @@ mod tests {
         assert!(page.next_cursor.is_some());
         peer.join().unwrap();
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn entity_listing_rejects_a_cursor_reused_with_a_different_layer_filter() {
+        let (port, peer) = start_peer(|request| {
+            assert_eq!(request["APIFunc"], "RST_WorkbenchListEntities");
+            json!({
+                "bridgeVersion": "1.19.0",
+                "protocolVersion": 1,
+                "worldPath": "$Test:worlds/test.ent",
+                "entities": "0x0000000000000001 {}|TestEntity|2|7",
+                "hasMore": true
+            })
+        });
+        let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
+            gateway: super::WorkbenchGatewayOptions {
+                port,
+                status_deadline: Duration::from_secs(1),
+                ..super::WorkbenchGatewayOptions::default()
+            },
+            ..super::WorkbenchControllerOptions::default()
+        });
+
+        let first = controller
+            .list_entities(None, None, Some(2), Some(7), None, 1)
+            .unwrap();
+        let failure = controller
+            .list_entities(
+                None,
+                None,
+                Some(2),
+                Some(8),
+                first.next_cursor.as_deref(),
+                1,
+            )
+            .unwrap_err();
+
+        assert_eq!(failure.code, super::WorkbenchFailureCode::Protocol);
+        peer.join().unwrap();
+    }
+
+    #[test]
+    fn layer_state_reports_explicit_and_hierarchical_lock_facts() {
+        let (port, peer) = start_peer(|request| {
+            assert_eq!(
+                request,
+                json!({"APIFunc":"RST_WorkbenchLayerState","subScene":2,"layerId":7})
+            );
+            json!({
+                "bridgeVersion":"1.19.0",
+                "protocolVersion":1,
+                "status":"available",
+                "subScene":2,
+                "layerId":7,
+                "layerPath":"Gameplay/LockedParent/Child",
+                "visible":true,
+                "explicitlyLocked":false,
+                "lockedInHierarchy":true
+            })
+        });
+        let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
+            gateway: super::WorkbenchGatewayOptions {
+                port,
+                status_deadline: Duration::from_secs(1),
+                ..super::WorkbenchGatewayOptions::default()
+            },
+            ..super::WorkbenchControllerOptions::default()
+        });
+
+        let state = controller.layer_state(2, 7).unwrap();
+
+        assert_eq!(state.status, "available");
+        assert_eq!(state.layer_path, "Gameplay/LockedParent/Child");
+        assert!(state.visible);
+        assert!(!state.explicitly_locked);
+        assert!(state.locked_in_hierarchy);
+        peer.join().unwrap();
     }
 
     #[test]
@@ -6438,7 +6696,7 @@ mod tests {
                 request,
                 json!({"APIFunc":"RST_WorkbenchMoveEntity","entityId":"0x01 {}","x":10.0,"y":20.0,"z":30.0})
             );
-            json!({"bridgeVersion":"1.18.0","protocolVersion":1,"status":"moved","entity":"0x01 {}|TestEntity|0|7|10|20|30"})
+            json!({"bridgeVersion":"1.19.0","protocolVersion":1,"status":"moved","entity":"0x01 {}|TestEntity|0|7|10|20|30"})
         });
         let root = test_root("move-entity");
         fs::create_dir_all(&root).unwrap();
@@ -6474,7 +6732,7 @@ mod tests {
                 request,
                 json!({"APIFunc":"RST_WorkbenchDuplicateEntity","entityId":"0x01 {}","x":11.0,"y":22.0,"z":33.0,"name":"Copy"})
             );
-            json!({"bridgeVersion":"1.18.0","protocolVersion":1,"status":"duplicated","entity":"0x02 {}|TestEntity|0|7|11|22|33"})
+            json!({"bridgeVersion":"1.19.0","protocolVersion":1,"status":"duplicated","entity":"0x02 {}|TestEntity|0|7|11|22|33"})
         });
         let root = test_root("duplicate-entity");
         fs::create_dir_all(&root).unwrap();
@@ -6540,6 +6798,10 @@ mod tests {
                 "editorAvailable": 1,
                 "status": "available",
                 "entity": "0x0000000000000003 {}|GenericTerrainEntity|0|0|1|2|3",
+                "originKind": "world-subscene",
+                "originResourceName": "$Example:worlds/Test.ent",
+                "sourceAddons": "Example",
+                "sourceAddonsTruncated": 0,
                 "ancestors": "",
                 "ancestorsTruncated": 0,
                 "children": "",
@@ -6574,6 +6836,13 @@ mod tests {
         );
         assert!(!inspection.ancestors_truncated);
         assert!(!inspection.children_truncated);
+        assert_eq!(inspection.origin_kind, "world-subscene");
+        assert_eq!(
+            inspection.origin_resource_name.as_deref(),
+            Some("$Example:worlds/Test.ent")
+        );
+        assert_eq!(inspection.source_addons, vec!["Example"]);
+        assert!(!inspection.source_addons_truncated);
         assert_eq!(inspection.components.len(), 1);
         assert_eq!(inspection.components[0].class_name, "GRAY_TEST");
         peer.join().unwrap();
@@ -7205,7 +7474,7 @@ mod tests {
     #[test]
     fn mutation_audit_records_identify_the_action_without_recording_values() {
         let entity_result = super::WorkbenchEntityMutationResult {
-            bridge_version: "1.18.0".to_string(),
+            bridge_version: "1.19.0".to_string(),
             protocol_version: 1,
             status: "available".to_string(),
             active_layer_id: Some(3),
@@ -7240,7 +7509,7 @@ mod tests {
                 "value": 40,
             }),
             &super::WorkbenchComponentResult {
-                bridge_version: "1.18.0".to_string(),
+                bridge_version: "1.19.0".to_string(),
                 protocol_version: 1,
                 status: "available".to_string(),
                 entity: None,
@@ -7880,7 +8149,7 @@ mod tests {
                     "value": "3.75",
                 })
             );
-            json!({"bridgeVersion":"1.18.0","protocolVersion":1,"status":"property-set","activeLayerId":7,"entity":""})
+            json!({"bridgeVersion":"1.19.0","protocolVersion":1,"status":"property-set","activeLayerId":7,"entity":""})
         });
         let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
             gateway: super::WorkbenchGatewayOptions {
@@ -7919,7 +8188,7 @@ mod tests {
                 request,
                 json!({"APIFunc":"RST_WorkbenchInspectComponent","entityId":"0x01 {}","componentId":"cmp1:0:TestComponent"})
             );
-            json!({"bridgeVersion":"1.18.0","protocolVersion":1,"status":"available","entity":"","components":"0|TestComponent","properties":"m_fRadius|float|2.5|1"})
+            json!({"bridgeVersion":"1.19.0","protocolVersion":1,"status":"available","entity":"","components":"0|TestComponent","properties":"m_fRadius|float|2.5|1"})
         });
         let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
             gateway: super::WorkbenchGatewayOptions {

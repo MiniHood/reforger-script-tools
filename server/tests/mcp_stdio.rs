@@ -146,6 +146,7 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
         "workbench_world_selection_summary",
         "workbench_selected_entity_hierarchy",
         "workbench_list_entities",
+        "workbench_layer_state",
         "workbench_find_entities_by_radius",
         "workbench_inspect_entity",
         "workbench_set_selection",

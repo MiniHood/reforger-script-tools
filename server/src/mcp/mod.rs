@@ -27,11 +27,12 @@ use crate::workbench::{
     WorkbenchControllerOptions, WorkbenchCreateEntityOptions, WorkbenchEntityInspection,
     WorkbenchEntityListPage, WorkbenchEntityMutationResult, WorkbenchEntityPosition,
     WorkbenchEntityRadiusQuery, WorkbenchEntityRadiusQueryOptions, WorkbenchEntitySelectionResult,
-    WorkbenchFailure, WorkbenchFailureCode, WorkbenchInstallAuthorization, WorkbenchLiveState,
-    WorkbenchLogRead, WorkbenchOpenWorldResult, WorkbenchOverview, WorkbenchPlaySessionResult,
-    WorkbenchProcessResult, WorkbenchProjectContext, WorkbenchPropertyList,
-    WorkbenchResourceInspection, WorkbenchResourceListPage, WorkbenchScriptActivationResult,
-    WorkbenchSelectedEntityHierarchy, WorkbenchValidationPage, WorkbenchWorldSelectionSummary,
+    WorkbenchFailure, WorkbenchFailureCode, WorkbenchInstallAuthorization, WorkbenchLayerState,
+    WorkbenchLiveState, WorkbenchLogRead, WorkbenchOpenWorldResult, WorkbenchOverview,
+    WorkbenchPlaySessionResult, WorkbenchProcessResult, WorkbenchProjectContext,
+    WorkbenchPropertyList, WorkbenchResourceInspection, WorkbenchResourceListPage,
+    WorkbenchScriptActivationResult, WorkbenchSelectedEntityHierarchy, WorkbenchValidationPage,
+    WorkbenchWorldSelectionSummary,
 };
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, ContentBlock, Implementation, ListToolsResult,
@@ -68,6 +69,7 @@ pub const WORKBENCH_WORLD_SELECTION_SUMMARY_TOOL_NAME: &str = "workbench_world_s
 pub const WORKBENCH_SELECTED_ENTITY_HIERARCHY_TOOL_NAME: &str =
     "workbench_selected_entity_hierarchy";
 pub const WORKBENCH_LIST_ENTITIES_TOOL_NAME: &str = "workbench_list_entities";
+pub const WORKBENCH_LAYER_STATE_TOOL_NAME: &str = "workbench_layer_state";
 pub const WORKBENCH_FIND_ENTITIES_BY_RADIUS_TOOL_NAME: &str = "workbench_find_entities_by_radius";
 pub const WORKBENCH_INSPECT_ENTITY_TOOL_NAME: &str = "workbench_inspect_entity";
 pub const WORKBENCH_SET_SELECTION_TOOL_NAME: &str = "workbench_set_selection";
@@ -123,7 +125,8 @@ const WORKBENCH_INSPECT_RESOURCE_DESCRIPTION: &str = "Inspect one canonical Work
 const WORKBENCH_LIST_RESOURCES_DESCRIPTION: &str = "List a bounded page of Workbench resources by fixed resource kinds and an optional text query. Continue with the opaque cursor while preserving the same kinds and query; filesystem paths and arbitrary extensions are not accepted.";
 const WORKBENCH_WORLD_SELECTION_SUMMARY_DESCRIPTION: &str = "Read a bounded live World Editor selection summary through the compatible managed handler package. It returns stable entity IDs, classes, subscenes, and layers; it never changes the editor selection.";
 const WORKBENCH_SELECTED_ENTITY_HIERARCHY_DESCRIPTION: &str = "Inspect the bounded parent and direct-child hierarchy for one current World Editor selection index. It uses only stable entity identities, never display-name matching, and never changes the editor selection.";
-const WORKBENCH_LIST_ENTITIES_DESCRIPTION: &str = "List one bounded page of live World Editor entities. Entity IDs are stable only for the observed editor context; class and text filters are discovery metadata, never target identities.";
+const WORKBENCH_LIST_ENTITIES_DESCRIPTION: &str = "List one bounded page of live World Editor entities, optionally constrained to an exact subscene and layer. Entity IDs are stable only for the observed editor context; filters are discovery metadata, never target identities.";
+const WORKBENCH_LAYER_STATE_DESCRIPTION: &str = "Read one exact World Editor layer's canonical path, visibility, explicit lock state, and effective hierarchical lock state without changing the world or editor.";
 const WORKBENCH_FIND_ENTITIES_BY_RADIUS_DESCRIPTION: &str = "Find a bounded set of live World Editor entities whose bounds touch a world-space sphere. The engine query stops after one additional match, so truncated means more matches exist; returned order is not nearest-first.";
 const WORKBENCH_INSPECT_ENTITY_DESCRIPTION: &str = "Inspect one exact stable World Editor entity identity through the compatible managed handler package. It never changes editor selection or world content.";
 const WORKBENCH_SET_SELECTION_DESCRIPTION: &str = "Explicitly replace the visible World Editor selection with one exact stable entity identity. This experimental command changes only editor selection, never world content.";
@@ -228,10 +231,23 @@ struct McpWorkbenchEntityListInput {
     query: Option<String>,
     #[schemars(length(max = 128))]
     class_name: Option<String>,
+    #[schemars(range(min = 0))]
+    sub_scene: Option<i32>,
+    #[schemars(range(min = 0))]
+    layer_id: Option<i32>,
     #[schemars(range(min = 1, max = 100))]
     limit: Option<usize>,
     #[schemars(length(min = 1, max = 256))]
     cursor: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct McpWorkbenchLayerStateInput {
+    #[schemars(range(min = 0))]
+    sub_scene: i32,
+    #[schemars(range(min = 0))]
+    layer_id: i32,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1262,6 +1278,7 @@ impl ServerHandler for ReforgerMcpServer {
             workbench_world_selection_summary_tool(),
             workbench_selected_entity_hierarchy_tool(),
             workbench_list_entities_tool(),
+            workbench_layer_state_tool(),
             workbench_find_entities_by_radius_tool(),
             workbench_inspect_entity_tool(),
             workbench_set_selection_tool(),
@@ -1319,6 +1336,7 @@ impl ServerHandler for ReforgerMcpServer {
                 Some(workbench_selected_entity_hierarchy_tool())
             }
             WORKBENCH_LIST_ENTITIES_TOOL_NAME => Some(workbench_list_entities_tool()),
+            WORKBENCH_LAYER_STATE_TOOL_NAME => Some(workbench_layer_state_tool()),
             WORKBENCH_FIND_ENTITIES_BY_RADIUS_TOOL_NAME => {
                 Some(workbench_find_entities_by_radius_tool())
             }
@@ -1494,10 +1512,27 @@ impl ServerHandler for ReforgerMcpServer {
                         .list_entities(
                             input.query.as_deref(),
                             input.class_name.as_deref(),
+                            input.sub_scene,
+                            input.layer_id,
                             input.cursor.as_deref(),
                             input.limit.unwrap_or(100),
                         )
                         .map_err(|failure| workbench.correlate_failure("list_entities", failure))
+                },
+            )
+            .await;
+        }
+        if request.name == WORKBENCH_LAYER_STATE_TOOL_NAME {
+            let input = parse_workbench_input::<McpWorkbenchLayerStateInput>(&request)?;
+            let workbench = self.workbench.clone();
+            return blocking_workbench_call(
+                self.admission.clone(),
+                context,
+                "layer_state",
+                move || {
+                    workbench
+                        .layer_state(input.sub_scene, input.layer_id)
+                        .map_err(|failure| workbench.correlate_failure("layer_state", failure))
                 },
             )
             .await;
@@ -2592,6 +2627,7 @@ Copy a hit's `inspectInput` unchanged to `inspect_game_data_symbol`, or its `rea
         workbench_world_selection_summary_tool(),
         workbench_selected_entity_hierarchy_tool(),
         workbench_list_entities_tool(),
+        workbench_layer_state_tool(),
         workbench_find_entities_by_radius_tool(),
         workbench_inspect_entity_tool(),
         workbench_set_selection_tool(),
@@ -2979,6 +3015,17 @@ fn workbench_list_entities_tool() -> Tool {
         WORKBENCH_LIST_ENTITIES_DESCRIPTION,
         "List Workbench entities",
         ToolAnnotations::with_title("List Workbench entities")
+            .read_only(true)
+            .open_world(false),
+    )
+}
+
+fn workbench_layer_state_tool() -> Tool {
+    workbench_input_tool::<McpWorkbenchLayerStateInput, WorkbenchLayerState>(
+        WORKBENCH_LAYER_STATE_TOOL_NAME,
+        WORKBENCH_LAYER_STATE_DESCRIPTION,
+        "Read Workbench layer state",
+        ToolAnnotations::with_title("Read Workbench layer state")
             .read_only(true)
             .open_world(false),
     )
@@ -3396,7 +3443,7 @@ mod tests {
         game_data_status_tool, inspect_game_data_symbol_tool, render_api_reference,
         workbench_add_component_tool, workbench_duplicate_entity_tool,
         workbench_inspect_component_tool, workbench_install_bridge_tool,
-        workbench_list_components_tool, workbench_list_entities_tool,
+        workbench_layer_state_tool, workbench_list_components_tool, workbench_list_entities_tool,
         workbench_list_entity_properties_tool, workbench_list_resources_tool,
         workbench_move_entity_tool, workbench_open_world_tool, workbench_project_context_tool,
         workbench_reload_tool, workbench_remove_component_tool, workbench_reparent_entity_tool,
@@ -3406,13 +3453,13 @@ mod tests {
         workbench_validate_scripts_tool, workbench_world_selection_summary_tool,
         DEADLINE_EXCEEDED_CODE, GAME_DATA_STATUS_TOOL_NAME, RESPONSE_TOO_LARGE_CODE,
         WORKBENCH_ADD_COMPONENT_TOOL_NAME, WORKBENCH_DUPLICATE_ENTITY_TOOL_NAME,
-        WORKBENCH_INSPECT_COMPONENT_TOOL_NAME, WORKBENCH_LIST_COMPONENTS_TOOL_NAME,
-        WORKBENCH_LIST_ENTITIES_TOOL_NAME, WORKBENCH_LIST_ENTITY_PROPERTIES_TOOL_NAME,
-        WORKBENCH_LIST_RESOURCES_TOOL_NAME, WORKBENCH_MOVE_ENTITY_TOOL_NAME,
-        WORKBENCH_OPEN_WORLD_TOOL_NAME, WORKBENCH_PROJECT_CONTEXT_TOOL_NAME,
-        WORKBENCH_RELOAD_TOOL_NAME, WORKBENCH_REMOVE_COMPONENT_TOOL_NAME,
-        WORKBENCH_REPARENT_ENTITY_TOOL_NAME, WORKBENCH_ROTATE_ENTITY_TOOL_NAME,
-        WORKBENCH_SELECTED_ENTITY_HIERARCHY_TOOL_NAME,
+        WORKBENCH_INSPECT_COMPONENT_TOOL_NAME, WORKBENCH_LAYER_STATE_TOOL_NAME,
+        WORKBENCH_LIST_COMPONENTS_TOOL_NAME, WORKBENCH_LIST_ENTITIES_TOOL_NAME,
+        WORKBENCH_LIST_ENTITY_PROPERTIES_TOOL_NAME, WORKBENCH_LIST_RESOURCES_TOOL_NAME,
+        WORKBENCH_MOVE_ENTITY_TOOL_NAME, WORKBENCH_OPEN_WORLD_TOOL_NAME,
+        WORKBENCH_PROJECT_CONTEXT_TOOL_NAME, WORKBENCH_RELOAD_TOOL_NAME,
+        WORKBENCH_REMOVE_COMPONENT_TOOL_NAME, WORKBENCH_REPARENT_ENTITY_TOOL_NAME,
+        WORKBENCH_ROTATE_ENTITY_TOOL_NAME, WORKBENCH_SELECTED_ENTITY_HIERARCHY_TOOL_NAME,
         WORKBENCH_SET_COMPONENT_PROPERTIES_TOOL_NAME, WORKBENCH_SET_ENTITY_PROPERTY_TOOL_NAME,
         WORKBENCH_START_PLAY_SESSION_TOOL_NAME, WORKBENCH_STATUS_TOOL_NAME,
         WORKBENCH_STOP_PLAY_SESSION_TOOL_NAME, WORKBENCH_VALIDATE_SCRIPTS_TOOL_NAME,
@@ -3481,6 +3528,7 @@ mod tests {
         let world_selection = workbench_world_selection_summary_tool();
         let hierarchy = workbench_selected_entity_hierarchy_tool();
         let entities = workbench_list_entities_tool();
+        let layer_state = workbench_layer_state_tool();
         let start_play = workbench_start_play_session_tool();
         let stop_play = workbench_stop_play_session_tool();
         let move_entity = workbench_move_entity_tool();
@@ -3509,6 +3557,14 @@ mod tests {
             WORKBENCH_SELECTED_ENTITY_HIERARCHY_TOOL_NAME
         );
         assert_eq!(entities.name, WORKBENCH_LIST_ENTITIES_TOOL_NAME);
+        assert_eq!(layer_state.name, WORKBENCH_LAYER_STATE_TOOL_NAME);
+        assert_eq!(
+            layer_state
+                .annotations
+                .as_ref()
+                .and_then(|annotations| annotations.read_only_hint),
+            Some(true)
+        );
         assert_eq!(
             entities
                 .annotations
