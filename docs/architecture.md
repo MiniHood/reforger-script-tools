@@ -140,8 +140,12 @@ closure if either project identity or the base-game addon source cannot be resol
 
 Every failed public Workbench operation returns a unique support reference.
 The same reference is written to the default-on rotating integration log with
-the operation, stable outcome, timing, versions, and logical managed filenames
-needed for diagnosis. Raw NET API payloads and source text are not logged.
+the operation, stable outcome, millisecond timestamp, timing, versions, and
+logical managed filenames needed for diagnosis. The log also records successful
+state-changing actions (bridge/process/world/play/reload and entity/component/
+property mutations) with bounded semantic context such as stable entity identity,
+component class, or property name. It intentionally does not record read calls,
+raw NET API payloads, property values, confirmation tokens, or source text.
 
 ## Module Boundaries
 

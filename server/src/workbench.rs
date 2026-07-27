@@ -1591,7 +1591,9 @@ impl WorkbenchController {
         api_func: &str,
         mut request: Value,
     ) -> Result<WorkbenchEntityMutationResult, WorkbenchFailure> {
+        let started = Instant::now();
         request["APIFunc"] = Value::String(api_func.to_string());
+        let audit_request = request.clone();
         let value = self
             .gateway
             .request(request, self.options.gateway.status_deadline)?;
@@ -1600,7 +1602,7 @@ impl WorkbenchController {
         if raw.protocol_version != WORKBENCH_BRIDGE_PROTOCOL_VERSION {
             return Err(failure(WorkbenchFailureCode::Protocol));
         }
-        Ok(WorkbenchEntityMutationResult {
+        let result = WorkbenchEntityMutationResult {
             bridge_version: raw.bridge_version,
             protocol_version: raw.protocol_version,
             status: raw.status,
@@ -1608,7 +1610,14 @@ impl WorkbenchController {
             entity: parse_optional_world_selection_record(&raw.entity)
                 .map_err(|_| failure(WorkbenchFailureCode::Protocol))?,
             confirmation_token: None,
-        })
+        };
+        self.log_event_timed(
+            entity_mutation_operation(api_func),
+            &result.status,
+            started,
+            entity_mutation_audit_details(&audit_request, &result),
+        );
+        Ok(result)
     }
 
     pub fn list_components(
@@ -1733,8 +1742,10 @@ impl WorkbenchController {
         mut request: Value,
         inspected_component_id: Option<&str>,
     ) -> Result<WorkbenchComponentResult, WorkbenchFailure> {
+        let started = Instant::now();
         let entity_id = request["entityId"].as_str().unwrap_or_default().to_string();
         request["APIFunc"] = Value::String(api_func.to_string());
+        let audit_request = request.clone();
         let raw: RawBridgeComponentResult = serde_json::from_value(
             self.gateway
                 .request(request, self.options.gateway.status_deadline)?,
@@ -1756,7 +1767,7 @@ impl WorkbenchController {
                 &mut properties,
             );
         }
-        Ok(WorkbenchComponentResult {
+        let result = WorkbenchComponentResult {
             bridge_version: raw.bridge_version,
             protocol_version: raw.protocol_version,
             status: raw.status,
@@ -1765,7 +1776,16 @@ impl WorkbenchController {
             components,
             properties,
             confirmation_token: None,
-        })
+        };
+        if let Some(operation) = component_mutation_operation(api_func) {
+            self.log_event_timed(
+                operation,
+                &result.status,
+                started,
+                component_mutation_audit_details(&audit_request, &result),
+            );
+        }
+        Ok(result)
     }
 
     fn issue_component_descriptors(&self, entity_id: &str, components: &mut [WorkbenchComponent]) {
@@ -2724,11 +2744,11 @@ impl WorkbenchController {
         if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(path) {
             let timestamp = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|value| value.as_secs())
+                .map(|value| value.as_millis())
                 .unwrap_or_default();
             let record = json!({
                 "reference": reference,
-                "timestamp": timestamp,
+                "timestampMs": timestamp,
                 "operation": operation,
                 "outcome": outcome,
                 "durationMs": started.elapsed().as_millis(),
@@ -2773,6 +2793,53 @@ impl WorkbenchController {
             observed.extend(processes.iter().copied());
         }
     }
+}
+
+fn entity_mutation_operation(api_func: &str) -> &str {
+    match api_func {
+        "RST_WorkbenchCreateEntity" => "create-entity",
+        "RST_WorkbenchRenameEntity" => "rename-entity",
+        "RST_WorkbenchMoveEntity" => "move-entity",
+        "RST_WorkbenchRotateEntity" => "rotate-entity",
+        "RST_WorkbenchReparentEntity" => "reparent-entity",
+        "RST_WorkbenchDuplicateEntity" => "duplicate-entity",
+        "RST_WorkbenchDeleteEntity" => "delete-entity",
+        "RST_WorkbenchSetEntityProperty" => "set-entity-property",
+        _ => "entity-mutation",
+    }
+}
+
+fn entity_mutation_audit_details(request: &Value, result: &WorkbenchEntityMutationResult) -> Value {
+    let entity = result.entity.as_ref();
+    json!({
+        "entityId": request.get("entityId").and_then(Value::as_str),
+        "parentEntityId": request.get("parentEntityId").and_then(Value::as_str),
+        "propertyName": request.get("propertyName").and_then(Value::as_str),
+        "resultEntityId": entity.map(|entity| entity.entity_id.as_str()),
+        "resultClass": entity.map(|entity| entity.class_name.as_str()),
+        "activeLayerId": result.active_layer_id,
+    })
+}
+
+fn component_mutation_operation(api_func: &str) -> Option<&str> {
+    match api_func {
+        "RST_WorkbenchAddComponent" => Some("add-component"),
+        "RST_WorkbenchRemoveComponent" => Some("remove-component"),
+        "RST_WorkbenchSetComponentProperty" => Some("set-component-property"),
+        _ => None,
+    }
+}
+
+fn component_mutation_audit_details(request: &Value, result: &WorkbenchComponentResult) -> Value {
+    let entity = result.entity.as_ref();
+    json!({
+        "entityId": request.get("entityId").and_then(Value::as_str),
+        "componentClass": request.get("className").and_then(Value::as_str),
+        "propertyName": request.get("propertyName").and_then(Value::as_str),
+        "resultEntityId": entity.map(|entity| entity.entity_id.as_str()),
+        "resultClass": entity.map(|entity| entity.class_name.as_str()),
+        "componentCount": result.components.len(),
+    })
 }
 
 impl WorkbenchGateway {
@@ -7133,6 +7200,64 @@ mod tests {
         assert!(record.get("sourceText").is_none());
         assert!(record.get("netApiPayload").is_none());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn mutation_audit_records_identify_the_action_without_recording_values() {
+        let entity_result = super::WorkbenchEntityMutationResult {
+            bridge_version: "1.18.0".to_string(),
+            protocol_version: 1,
+            status: "available".to_string(),
+            active_layer_id: Some(3),
+            entity: None,
+            confirmation_token: None,
+        };
+        let entity_details = super::entity_mutation_audit_details(
+            &json!({
+                "entityId": "0x10",
+                "propertyName": "m_iNumTest",
+                "value": "must-not-be-logged",
+            }),
+            &entity_result,
+        );
+
+        assert_eq!(
+            super::entity_mutation_operation("RST_WorkbenchSetEntityProperty"),
+            "set-entity-property"
+        );
+        assert_eq!(entity_details.get("entityId"), Some(&json!("0x10")));
+        assert_eq!(
+            entity_details.get("propertyName"),
+            Some(&json!("m_iNumTest"))
+        );
+        assert!(entity_details.get("value").is_none());
+
+        let component_details = super::component_mutation_audit_details(
+            &json!({
+                "entityId": "0x10",
+                "className": "GRAY_TEST",
+                "propertyName": "m_iNumTest",
+                "value": 40,
+            }),
+            &super::WorkbenchComponentResult {
+                bridge_version: "1.18.0".to_string(),
+                protocol_version: 1,
+                status: "available".to_string(),
+                entity: None,
+                components: Vec::new(),
+                properties: Vec::new(),
+                confirmation_token: None,
+            },
+        );
+        assert_eq!(
+            super::component_mutation_operation("RST_WorkbenchSetComponentProperty"),
+            Some("set-component-property")
+        );
+        assert_eq!(
+            component_details.get("componentClass"),
+            Some(&json!("GRAY_TEST"))
+        );
+        assert!(component_details.get("value").is_none());
     }
 
     #[test]
