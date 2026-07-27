@@ -2811,8 +2811,28 @@ Read bounded live editor state from the compatible managed Workbench handler pac
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
+    "activeSubsceneLayer": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "bridgeVersion": {
       "type": "string"
+    },
+    "currentEntityLayerId": {
+      "format": "int32",
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "currentSubScene": {
+      "format": "int32",
+      "type": [
+        "integer",
+        "null"
+      ]
     },
     "loadedAddons": {
       "items": {
@@ -4414,6 +4434,601 @@ Explicitly clear the visible World Editor selection and return the observed empt
     "selectedCount",
     "selectedEntities",
     "selectedEntitiesTruncated"
+  ],
+  "type": "object"
+}
+```
+
+### Stable failures
+
+Workbench tools return structured tool errors with a stable code, operation phase, retryability, and a unique log reference matching a rotating integration-log record. Raw transport and Workbench payload details are not exposed.
+
+## `workbench_create_entity`
+
+Create one verified entity-template resource or editor entity class at an explicit position and layer. This changes the loaded world in one native Workbench undo action.
+
+### Annotations
+
+```json
+{
+  "title": "Create one Workbench entity",
+  "readOnlyHint": false,
+  "destructiveHint": false,
+  "idempotentHint": false,
+  "openWorldHint": false
+}
+```
+
+### Input schema
+
+```json
+{
+  "$defs": {
+    "WorkbenchEntityPosition": {
+      "properties": {
+        "x": {
+          "format": "float",
+          "type": "number"
+        },
+        "y": {
+          "format": "float",
+          "type": "number"
+        },
+        "z": {
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "z"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "angles": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkbenchEntityPosition"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "className": {
+      "maxLength": 256,
+      "minLength": 1,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "layerId": {
+      "format": "int32",
+      "type": "integer"
+    },
+    "name": {
+      "maxLength": 256,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "position": {
+      "$ref": "#/$defs/WorkbenchEntityPosition"
+    },
+    "resourceName": {
+      "maxLength": 1024,
+      "minLength": 1,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "subScene": {
+      "format": "int32",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "subScene",
+    "position",
+    "layerId"
+  ],
+  "type": "object"
+}
+```
+
+### Output schema
+
+```json
+{
+  "$defs": {
+    "WorkbenchEntityPosition": {
+      "properties": {
+        "x": {
+          "format": "float",
+          "type": "number"
+        },
+        "y": {
+          "format": "float",
+          "type": "number"
+        },
+        "z": {
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "z"
+      ],
+      "type": "object"
+    },
+    "WorkbenchSelectedEntity": {
+      "properties": {
+        "className": {
+          "type": "string"
+        },
+        "entityId": {
+          "type": "string"
+        },
+        "layerId": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "layerName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "position": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchEntityPosition"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "resourceName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "subScene": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "subSceneName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "entityId",
+        "className",
+        "subScene",
+        "layerId"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "activeLayerId": {
+      "format": "int32",
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "bridgeVersion": {
+      "type": "string"
+    },
+    "confirmationToken": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "entity": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkbenchSelectedEntity"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "protocolVersion": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "status": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "bridgeVersion",
+    "protocolVersion",
+    "status"
+  ],
+  "type": "object"
+}
+```
+
+### Stable failures
+
+Workbench tools return structured tool errors with a stable code, operation phase, retryability, and a unique log reference matching a rotating integration-log record. Raw transport and Workbench payload details are not exposed.
+
+## `workbench_rename_entity`
+
+Rename one exact live World Editor entity identity in one native Workbench undo action.
+
+### Annotations
+
+```json
+{
+  "title": "Rename one Workbench entity",
+  "readOnlyHint": false,
+  "destructiveHint": false,
+  "idempotentHint": false,
+  "openWorldHint": false
+}
+```
+
+### Input schema
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "entityId": {
+      "maxLength": 256,
+      "minLength": 1,
+      "type": "string"
+    },
+    "name": {
+      "maxLength": 256,
+      "type": "string"
+    }
+  },
+  "required": [
+    "entityId",
+    "name"
+  ],
+  "type": "object"
+}
+```
+
+### Output schema
+
+```json
+{
+  "$defs": {
+    "WorkbenchEntityPosition": {
+      "properties": {
+        "x": {
+          "format": "float",
+          "type": "number"
+        },
+        "y": {
+          "format": "float",
+          "type": "number"
+        },
+        "z": {
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "z"
+      ],
+      "type": "object"
+    },
+    "WorkbenchSelectedEntity": {
+      "properties": {
+        "className": {
+          "type": "string"
+        },
+        "entityId": {
+          "type": "string"
+        },
+        "layerId": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "layerName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "position": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchEntityPosition"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "resourceName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "subScene": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "subSceneName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "entityId",
+        "className",
+        "subScene",
+        "layerId"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "activeLayerId": {
+      "format": "int32",
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "bridgeVersion": {
+      "type": "string"
+    },
+    "confirmationToken": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "entity": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkbenchSelectedEntity"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "protocolVersion": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "status": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "bridgeVersion",
+    "protocolVersion",
+    "status"
+  ],
+  "type": "object"
+}
+```
+
+### Stable failures
+
+Workbench tools return structured tool errors with a stable code, operation phase, retryability, and a unique log reference matching a rotating integration-log record. Raw transport and Workbench payload details are not exposed.
+
+## `workbench_delete_entity`
+
+Preview or explicitly confirm deletion of one exact live World Editor entity identity. Confirmed deletion changes the loaded world in one native Workbench undo action.
+
+### Annotations
+
+```json
+{
+  "title": "Preview or delete one Workbench entity",
+  "readOnlyHint": false,
+  "destructiveHint": true,
+  "idempotentHint": false,
+  "openWorldHint": false
+}
+```
+
+### Input schema
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "confirmationToken": {
+      "maxLength": 128,
+      "minLength": 1,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "entityId": {
+      "maxLength": 256,
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "entityId"
+  ],
+  "type": "object"
+}
+```
+
+### Output schema
+
+```json
+{
+  "$defs": {
+    "WorkbenchEntityPosition": {
+      "properties": {
+        "x": {
+          "format": "float",
+          "type": "number"
+        },
+        "y": {
+          "format": "float",
+          "type": "number"
+        },
+        "z": {
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "z"
+      ],
+      "type": "object"
+    },
+    "WorkbenchSelectedEntity": {
+      "properties": {
+        "className": {
+          "type": "string"
+        },
+        "entityId": {
+          "type": "string"
+        },
+        "layerId": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "layerName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "position": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchEntityPosition"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "resourceName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "subScene": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "subSceneName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "entityId",
+        "className",
+        "subScene",
+        "layerId"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "activeLayerId": {
+      "format": "int32",
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "bridgeVersion": {
+      "type": "string"
+    },
+    "confirmationToken": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "entity": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkbenchSelectedEntity"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "protocolVersion": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "status": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "bridgeVersion",
+    "protocolVersion",
+    "status"
   ],
   "type": "object"
 }

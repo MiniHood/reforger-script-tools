@@ -24,10 +24,11 @@ use crate::official_wiki::{
 };
 use crate::workbench::{
     WorkbenchBridgeInstallResult, WorkbenchController, WorkbenchControllerOptions,
-    WorkbenchEntityInspection, WorkbenchEntityListPage, WorkbenchEntityPosition,
-    WorkbenchEntityRadiusQuery, WorkbenchEntityRadiusQueryOptions, WorkbenchEntitySelectionResult,
-    WorkbenchFailure, WorkbenchFailureCode, WorkbenchInstallAuthorization, WorkbenchLiveState,
-    WorkbenchLogRead, WorkbenchOpenWorldResult, WorkbenchOverview, WorkbenchPlaySessionResult,
+    WorkbenchCreateEntityOptions, WorkbenchEntityInspection, WorkbenchEntityListPage,
+    WorkbenchEntityMutationResult, WorkbenchEntityPosition, WorkbenchEntityRadiusQuery,
+    WorkbenchEntityRadiusQueryOptions, WorkbenchEntitySelectionResult, WorkbenchFailure,
+    WorkbenchFailureCode, WorkbenchInstallAuthorization, WorkbenchLiveState, WorkbenchLogRead,
+    WorkbenchOpenWorldResult, WorkbenchOverview, WorkbenchPlaySessionResult,
     WorkbenchProcessResult, WorkbenchProjectContext, WorkbenchResourceInspection,
     WorkbenchResourceListPage, WorkbenchScriptActivationResult, WorkbenchSelectedEntityHierarchy,
     WorkbenchValidationPage, WorkbenchWorldSelectionSummary,
@@ -71,6 +72,9 @@ pub const WORKBENCH_FIND_ENTITIES_BY_RADIUS_TOOL_NAME: &str = "workbench_find_en
 pub const WORKBENCH_INSPECT_ENTITY_TOOL_NAME: &str = "workbench_inspect_entity";
 pub const WORKBENCH_SET_SELECTION_TOOL_NAME: &str = "workbench_set_selection";
 pub const WORKBENCH_CLEAR_SELECTION_TOOL_NAME: &str = "workbench_clear_selection";
+pub const WORKBENCH_CREATE_ENTITY_TOOL_NAME: &str = "workbench_create_entity";
+pub const WORKBENCH_RENAME_ENTITY_TOOL_NAME: &str = "workbench_rename_entity";
+pub const WORKBENCH_DELETE_ENTITY_TOOL_NAME: &str = "workbench_delete_entity";
 pub const WORKBENCH_OPEN_WORLD_TOOL_NAME: &str = "workbench_open_world";
 pub const WORKBENCH_START_PLAY_SESSION_TOOL_NAME: &str = "workbench_start_play_session";
 pub const WORKBENCH_STOP_PLAY_SESSION_TOOL_NAME: &str = "workbench_stop_play_session";
@@ -113,6 +117,10 @@ const WORKBENCH_FIND_ENTITIES_BY_RADIUS_DESCRIPTION: &str = "Find a bounded set 
 const WORKBENCH_INSPECT_ENTITY_DESCRIPTION: &str = "Inspect one exact stable World Editor entity identity through the compatible managed handler package. It never changes editor selection or world content.";
 const WORKBENCH_SET_SELECTION_DESCRIPTION: &str = "Explicitly replace the visible World Editor selection with one exact stable entity identity. This experimental command changes only editor selection, never world content.";
 const WORKBENCH_CLEAR_SELECTION_DESCRIPTION: &str = "Explicitly clear the visible World Editor selection and return the observed empty selection summary.";
+const WORKBENCH_CREATE_ENTITY_DESCRIPTION: &str = "Create one verified entity-template resource or editor entity class at an explicit position and layer. This changes the loaded world in one native Workbench undo action.";
+const WORKBENCH_RENAME_ENTITY_DESCRIPTION: &str =
+    "Rename one exact live World Editor entity identity in one native Workbench undo action.";
+const WORKBENCH_DELETE_ENTITY_DESCRIPTION: &str = "Preview or explicitly confirm deletion of one exact live World Editor entity identity. Confirmed deletion changes the loaded world in one native Workbench undo action.";
 const WORKBENCH_OPEN_WORLD_DESCRIPTION: &str = "Open one typed World Editor world through the compatible managed Workbench handler package without restarting Workbench.";
 const WORKBENCH_START_PLAY_SESSION_DESCRIPTION: &str = "Explicitly request that World Editor starts a play session. Acceptance confirms the command was issued, not that a world has finished loading.";
 const WORKBENCH_STOP_PLAY_SESSION_DESCRIPTION: &str = "Explicitly request that World Editor returns to edit mode. This is distinct from stopping the Workbench process.";
@@ -206,6 +214,38 @@ struct McpWorkbenchEntityListInput {
 struct McpWorkbenchEntityInput {
     #[schemars(length(min = 1, max = 256))]
     entity_id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct McpWorkbenchCreateEntityInput {
+    #[schemars(length(min = 1, max = 1024))]
+    resource_name: Option<String>,
+    #[schemars(length(min = 1, max = 256))]
+    class_name: Option<String>,
+    #[schemars(range(min = 0))]
+    sub_scene: i32,
+    position: WorkbenchEntityPosition,
+    angles: Option<WorkbenchEntityPosition>,
+    layer_id: i32,
+    #[schemars(length(max = 256))]
+    name: Option<String>,
+}
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct McpWorkbenchRenameEntityInput {
+    #[schemars(length(min = 1, max = 256))]
+    entity_id: String,
+    #[schemars(length(max = 256))]
+    name: String,
+}
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct McpWorkbenchDeleteEntityInput {
+    #[schemars(length(min = 1, max = 256))]
+    entity_id: String,
+    #[schemars(length(min = 1, max = 128))]
+    confirmation_token: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1131,6 +1171,9 @@ impl ServerHandler for ReforgerMcpServer {
             workbench_inspect_entity_tool(),
             workbench_set_selection_tool(),
             workbench_clear_selection_tool(),
+            workbench_create_entity_tool(),
+            workbench_rename_entity_tool(),
+            workbench_delete_entity_tool(),
             workbench_open_world_tool(),
             workbench_start_play_session_tool(),
             workbench_stop_play_session_tool(),
@@ -1176,6 +1219,9 @@ impl ServerHandler for ReforgerMcpServer {
             WORKBENCH_INSPECT_ENTITY_TOOL_NAME => Some(workbench_inspect_entity_tool()),
             WORKBENCH_SET_SELECTION_TOOL_NAME => Some(workbench_set_selection_tool()),
             WORKBENCH_CLEAR_SELECTION_TOOL_NAME => Some(workbench_clear_selection_tool()),
+            WORKBENCH_CREATE_ENTITY_TOOL_NAME => Some(workbench_create_entity_tool()),
+            WORKBENCH_RENAME_ENTITY_TOOL_NAME => Some(workbench_rename_entity_tool()),
+            WORKBENCH_DELETE_ENTITY_TOOL_NAME => Some(workbench_delete_entity_tool()),
             WORKBENCH_OPEN_WORLD_TOOL_NAME => Some(workbench_open_world_tool()),
             WORKBENCH_START_PLAY_SESSION_TOOL_NAME => Some(workbench_start_play_session_tool()),
             WORKBENCH_STOP_PLAY_SESSION_TOOL_NAME => Some(workbench_stop_play_session_tool()),
@@ -1405,6 +1451,73 @@ impl ServerHandler for ReforgerMcpServer {
                     workbench
                         .clear_selection()
                         .map_err(|failure| workbench.correlate_failure("clear_selection", failure))
+                },
+            )
+            .await;
+        }
+        if request.name == WORKBENCH_CREATE_ENTITY_TOOL_NAME {
+            let input = parse_workbench_input::<McpWorkbenchCreateEntityInput>(&request)?;
+            let (target, target_is_resource) = match (input.resource_name, input.class_name) {
+                (Some(resource_name), None) => (resource_name, true),
+                (None, Some(class_name)) => (class_name, false),
+                _ => {
+                    return Err(McpError::invalid_params(
+                        "provide exactly one of resourceName or className",
+                        None,
+                    ))
+                }
+            };
+            let workbench = self.workbench.clone();
+            return blocking_workbench_call(
+                self.admission.clone(),
+                context,
+                "create_entity",
+                move || {
+                    workbench
+                        .create_entity(WorkbenchCreateEntityOptions {
+                            target,
+                            target_is_resource,
+                            sub_scene: input.sub_scene,
+                            position: input.position,
+                            angles: input.angles.unwrap_or(WorkbenchEntityPosition {
+                                x: 0.0,
+                                y: 0.0,
+                                z: 0.0,
+                            }),
+                            layer_id: input.layer_id,
+                            name: input.name,
+                        })
+                        .map_err(|failure| workbench.correlate_failure("create_entity", failure))
+                },
+            )
+            .await;
+        }
+        if request.name == WORKBENCH_RENAME_ENTITY_TOOL_NAME {
+            let input = parse_workbench_input::<McpWorkbenchRenameEntityInput>(&request)?;
+            let workbench = self.workbench.clone();
+            return blocking_workbench_call(
+                self.admission.clone(),
+                context,
+                "rename_entity",
+                move || {
+                    workbench
+                        .rename_entity(&input.entity_id, &input.name)
+                        .map_err(|failure| workbench.correlate_failure("rename_entity", failure))
+                },
+            )
+            .await;
+        }
+        if request.name == WORKBENCH_DELETE_ENTITY_TOOL_NAME {
+            let input = parse_workbench_input::<McpWorkbenchDeleteEntityInput>(&request)?;
+            let workbench = self.workbench.clone();
+            return blocking_workbench_call(
+                self.admission.clone(),
+                context,
+                "delete_entity",
+                move || {
+                    workbench
+                        .delete_entity(&input.entity_id, input.confirmation_token.as_deref())
+                        .map_err(|failure| workbench.correlate_failure("delete_entity", failure))
                 },
             )
             .await;
@@ -2180,6 +2293,9 @@ Copy a hit's `inspectInput` unchanged to `inspect_game_data_symbol`, or its `rea
         workbench_inspect_entity_tool(),
         workbench_set_selection_tool(),
         workbench_clear_selection_tool(),
+        workbench_create_entity_tool(),
+        workbench_rename_entity_tool(),
+        workbench_delete_entity_tool(),
         workbench_open_world_tool(),
         workbench_start_play_session_tool(),
         workbench_stop_play_session_tool(),
@@ -2598,6 +2714,45 @@ fn workbench_clear_selection_tool() -> Tool {
             .read_only(false)
             .destructive(false)
             .idempotent(true)
+            .open_world(false),
+    )
+}
+
+fn workbench_create_entity_tool() -> Tool {
+    workbench_input_tool::<McpWorkbenchCreateEntityInput, WorkbenchEntityMutationResult>(
+        WORKBENCH_CREATE_ENTITY_TOOL_NAME,
+        WORKBENCH_CREATE_ENTITY_DESCRIPTION,
+        "Create one Workbench entity",
+        ToolAnnotations::with_title("Create one Workbench entity")
+            .read_only(false)
+            .destructive(false)
+            .idempotent(false)
+            .open_world(false),
+    )
+}
+
+fn workbench_rename_entity_tool() -> Tool {
+    workbench_input_tool::<McpWorkbenchRenameEntityInput, WorkbenchEntityMutationResult>(
+        WORKBENCH_RENAME_ENTITY_TOOL_NAME,
+        WORKBENCH_RENAME_ENTITY_DESCRIPTION,
+        "Rename one Workbench entity",
+        ToolAnnotations::with_title("Rename one Workbench entity")
+            .read_only(false)
+            .destructive(false)
+            .idempotent(false)
+            .open_world(false),
+    )
+}
+
+fn workbench_delete_entity_tool() -> Tool {
+    workbench_input_tool::<McpWorkbenchDeleteEntityInput, WorkbenchEntityMutationResult>(
+        WORKBENCH_DELETE_ENTITY_TOOL_NAME,
+        WORKBENCH_DELETE_ENTITY_DESCRIPTION,
+        "Preview or delete one Workbench entity",
+        ToolAnnotations::with_title("Preview or delete one Workbench entity")
+            .read_only(false)
+            .destructive(true)
+            .idempotent(false)
             .open_world(false),
     )
 }

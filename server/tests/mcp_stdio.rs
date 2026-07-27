@@ -72,7 +72,7 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
         .pointer("/result/tools")
         .and_then(Value::as_array)
         .expect("tools/list result");
-    assert_eq!(listed.len(), 32);
+    assert_eq!(listed.len(), 35);
     assert_eq!(listed[0].get("name"), Some(&json!("game_data_status")));
     assert_eq!(
         listed[0].pointer("/annotations/readOnlyHint"),
@@ -150,6 +150,9 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
         "workbench_inspect_entity",
         "workbench_set_selection",
         "workbench_clear_selection",
+        "workbench_create_entity",
+        "workbench_rename_entity",
+        "workbench_delete_entity",
         "workbench_open_world",
         "workbench_start_play_session",
         "workbench_stop_play_session",
