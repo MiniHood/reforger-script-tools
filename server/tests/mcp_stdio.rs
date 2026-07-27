@@ -72,7 +72,7 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
         .pointer("/result/tools")
         .and_then(Value::as_array)
         .expect("tools/list result");
-    assert_eq!(listed.len(), 27);
+    assert_eq!(listed.len(), 32);
     assert_eq!(listed[0].get("name"), Some(&json!("game_data_status")));
     assert_eq!(
         listed[0].pointer("/annotations/readOnlyHint"),
@@ -145,6 +145,11 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
         "workbench_list_resources",
         "workbench_world_selection_summary",
         "workbench_selected_entity_hierarchy",
+        "workbench_list_entities",
+        "workbench_find_entities_by_radius",
+        "workbench_inspect_entity",
+        "workbench_set_selection",
+        "workbench_clear_selection",
         "workbench_open_world",
         "workbench_start_play_session",
         "workbench_stop_play_session",
@@ -559,7 +564,7 @@ fn mcp_game_data_research_tools_complete_the_progressive_lookup_loop() {
         .pointer("/result/tools")
         .and_then(Value::as_array)
         .expect("tool catalogue");
-    assert_eq!(listed.len(), 27);
+    assert_eq!(listed.len(), 32);
     assert_eq!(
         listed[2].get("name"),
         Some(&json!("search_game_data_examples"))

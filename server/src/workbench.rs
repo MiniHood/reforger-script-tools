@@ -103,7 +103,7 @@ pub struct WorkbenchGateway {
     request_lock: Arc<Mutex<()>>,
 }
 
-pub const WORKBENCH_BRIDGE_VERSION: &str = "1.9.0";
+pub const WORKBENCH_BRIDGE_VERSION: &str = "1.15.0";
 pub const WORKBENCH_BRIDGE_PROTOCOL_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -259,16 +259,34 @@ pub struct WorkbenchResourceListPage {
     pub next_cursor: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkbenchEntityPosition {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkbenchSelectedEntity {
     pub entity_id: String,
     pub class_name: String,
     pub sub_scene: i32,
     pub layer_id: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sub_scene_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub layer_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub position: Option<WorkbenchEntityPosition>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkbenchWorldSelectionSummary {
     pub bridge_version: String,
@@ -280,7 +298,7 @@ pub struct WorkbenchWorldSelectionSummary {
     pub selected_entities_truncated: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkbenchSelectedEntityHierarchy {
     pub bridge_version: String,
@@ -294,6 +312,69 @@ pub struct WorkbenchSelectedEntityHierarchy {
     pub ancestors_truncated: bool,
     pub children: Vec<WorkbenchSelectedEntity>,
     pub children_truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkbenchEntityListPage {
+    pub bridge_version: String,
+    pub protocol_version: u32,
+    pub world_revision: String,
+    pub limit: usize,
+    pub entities: Vec<WorkbenchSelectedEntity>,
+    pub truncated: bool,
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkbenchEntityInspection {
+    pub bridge_version: String,
+    pub protocol_version: u32,
+    pub editor_available: bool,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entity: Option<WorkbenchSelectedEntity>,
+    pub ancestors: Vec<WorkbenchSelectedEntity>,
+    pub ancestors_truncated: bool,
+    pub children: Vec<WorkbenchSelectedEntity>,
+    pub children_truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkbenchEntitySelectionResult {
+    pub bridge_version: String,
+    pub protocol_version: u32,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entity: Option<WorkbenchSelectedEntity>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkbenchEntityRadiusQuery {
+    pub bridge_version: String,
+    pub protocol_version: u32,
+    pub status: String,
+    pub center: WorkbenchEntityPosition,
+    pub radius_meters: f32,
+    pub query_scope: String,
+    pub require_object: bool,
+    pub exclude_proxies: bool,
+    pub entities: Vec<WorkbenchSelectedEntity>,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct WorkbenchEntityRadiusQueryOptions {
+    pub center: WorkbenchEntityPosition,
+    pub radius_meters: f32,
+    pub query_scope: String,
+    pub require_object: bool,
+    pub exclude_proxies: bool,
+    pub class_name: Option<String>,
+    pub limit: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
@@ -1009,10 +1090,10 @@ impl WorkbenchController {
         let result = WorkbenchWorldSelectionSummary {
             bridge_version: raw.bridge_version,
             protocol_version: raw.protocol_version,
-            editor_available: raw.editor_available,
+            editor_available: workbench_bool(&raw.editor_available),
             status: raw.status,
             selected_count: raw.selected_count,
-            selected_entities_truncated: raw.selected_entities_truncated
+            selected_entities_truncated: workbench_bool(&raw.selected_entities_truncated)
                 || selected_entities.len() < raw.selected_count as usize,
             selected_entities,
         };
@@ -1118,20 +1199,202 @@ impl WorkbenchController {
         let result = WorkbenchSelectedEntityHierarchy {
             bridge_version: raw.bridge_version,
             protocol_version: raw.protocol_version,
-            editor_available: raw.editor_available,
+            editor_available: workbench_bool(&raw.editor_available),
             status: raw.status,
             selection_index,
             entity,
             ancestors,
-            ancestors_truncated: raw.ancestors_truncated,
+            ancestors_truncated: workbench_bool(&raw.ancestors_truncated),
             children,
-            children_truncated: raw.children_truncated,
+            children_truncated: workbench_bool(&raw.children_truncated),
         };
         self.log_event_timed(
             "selected-entity-hierarchy", &result.status, started,
             json!({"selectionIndex": selection_index, "ancestorCount": result.ancestors.len(), "ancestorsTruncated": result.ancestors_truncated, "childCount": result.children.len(), "childrenTruncated": result.children_truncated}),
         );
         Ok(result)
+    }
+
+    pub fn list_entities(
+        &self,
+        query: Option<&str>,
+        class_name: Option<&str>,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<WorkbenchEntityListPage, WorkbenchFailure> {
+        let signature = sha256(
+            format!(
+                "{}\n{}",
+                query.unwrap_or_default(),
+                class_name.unwrap_or_default()
+            )
+            .as_bytes(),
+        );
+        let offset = match cursor {
+            Some(cursor) => {
+                let (found, offset) = parse_entity_list_cursor(cursor)
+                    .ok_or_else(|| failure(WorkbenchFailureCode::Protocol))?;
+                (found == signature)
+                    .then_some(offset)
+                    .ok_or_else(|| failure(WorkbenchFailureCode::Protocol))?
+            }
+            None => 0,
+        };
+        let value = self.gateway.request(json!({"APIFunc":"RST_WorkbenchListEntities","query":query.unwrap_or_default(),"className":class_name.unwrap_or_default(),"offset":offset,"limit":limit}), self.options.gateway.status_deadline)?;
+        let raw: RawBridgeEntityList =
+            serde_json::from_value(value).map_err(|_| failure(WorkbenchFailureCode::Protocol))?;
+        let entities = parse_world_selection_records(&raw.entities)
+            .map_err(|_| failure(WorkbenchFailureCode::Protocol))?;
+        if raw.protocol_version != WORKBENCH_BRIDGE_PROTOCOL_VERSION || entities.len() > limit {
+            return Err(failure(WorkbenchFailureCode::Protocol));
+        }
+        Ok(WorkbenchEntityListPage {
+            bridge_version: raw.bridge_version,
+            protocol_version: raw.protocol_version,
+            world_revision: sha256(raw.world_path.as_bytes()),
+            limit,
+            next_cursor: workbench_bool(&raw.has_more)
+                .then(|| format!("wel1:{signature}:{}", offset + entities.len())),
+            truncated: workbench_bool(&raw.has_more),
+            entities,
+        })
+    }
+
+    pub fn inspect_entity(
+        &self,
+        entity_id: &str,
+    ) -> Result<WorkbenchEntityInspection, WorkbenchFailure> {
+        let value = self.gateway.request(
+            json!({"APIFunc":"RST_WorkbenchInspectEntity","entityId":entity_id}),
+            self.options.gateway.status_deadline,
+        )?;
+        let raw: RawBridgeSelectedEntityHierarchy =
+            serde_json::from_value(value).map_err(|_| failure(WorkbenchFailureCode::Protocol))?;
+        if raw.protocol_version != WORKBENCH_BRIDGE_PROTOCOL_VERSION {
+            return Err(failure(WorkbenchFailureCode::Protocol));
+        }
+        let entity = parse_optional_world_selection_record(&raw.entity)
+            .map_err(|_| failure(WorkbenchFailureCode::Protocol))?;
+        let ancestors = parse_world_selection_records(&raw.ancestors)
+            .map_err(|_| failure(WorkbenchFailureCode::Protocol))?;
+        let children = parse_world_selection_records(&raw.children)
+            .map_err(|_| failure(WorkbenchFailureCode::Protocol))?;
+        if ancestors.len() > 32 || children.len() > 64 {
+            return Err(failure(WorkbenchFailureCode::Protocol));
+        }
+        Ok(WorkbenchEntityInspection {
+            bridge_version: raw.bridge_version,
+            protocol_version: raw.protocol_version,
+            editor_available: workbench_bool(&raw.editor_available),
+            status: raw.status,
+            entity,
+            ancestors,
+            ancestors_truncated: workbench_bool(&raw.ancestors_truncated),
+            children,
+            children_truncated: workbench_bool(&raw.children_truncated),
+        })
+    }
+
+    pub fn find_entities_by_radius(
+        &self,
+        options: WorkbenchEntityRadiusQueryOptions,
+    ) -> Result<WorkbenchEntityRadiusQuery, WorkbenchFailure> {
+        if !(0.01..=50_000.0).contains(&options.radius_meters)
+            || !(1..=100).contains(&options.limit)
+            || !matches!(
+                options.query_scope.as_str(),
+                "all" | "static" | "dynamic" | "features"
+            )
+        {
+            return Err(failure(WorkbenchFailureCode::Protocol));
+        }
+        let value = self.gateway.request(
+            json!({"APIFunc":"RST_WorkbenchFindEntitiesByRadius","centerX":options.center.x,"centerY":options.center.y,"centerZ":options.center.z,"radiusMeters":options.radius_meters,"queryScope":options.query_scope,"requireObject":options.require_object,"excludeProxies":options.exclude_proxies,"className":options.class_name.unwrap_or_default(),"limit":options.limit}),
+            self.options.gateway.status_deadline,
+        )?;
+        let raw: RawBridgeEntityRadiusQuery =
+            serde_json::from_value(value).map_err(|_| failure(WorkbenchFailureCode::Protocol))?;
+        let entities = parse_world_selection_records(&raw.entities)
+            .map_err(|_| failure(WorkbenchFailureCode::Protocol))?;
+        if raw.protocol_version != WORKBENCH_BRIDGE_PROTOCOL_VERSION
+            || entities.len() > options.limit
+        {
+            return Err(failure(WorkbenchFailureCode::Protocol));
+        }
+        Ok(WorkbenchEntityRadiusQuery {
+            bridge_version: raw.bridge_version,
+            protocol_version: raw.protocol_version,
+            status: raw.status,
+            center: WorkbenchEntityPosition {
+                x: raw.center_x,
+                y: raw.center_y,
+                z: raw.center_z,
+            },
+            radius_meters: raw.radius_meters,
+            query_scope: raw.query_scope,
+            require_object: workbench_bool(&raw.require_object),
+            exclude_proxies: workbench_bool(&raw.exclude_proxies),
+            entities,
+            truncated: workbench_bool(&raw.truncated),
+        })
+    }
+
+    pub fn clear_selection(&self) -> Result<WorkbenchWorldSelectionSummary, WorkbenchFailure> {
+        self.selection_mutation("RST_WorkbenchClearSelection", json!({}))
+    }
+
+    pub fn set_selection(
+        &self,
+        entity_id: &str,
+    ) -> Result<WorkbenchEntitySelectionResult, WorkbenchFailure> {
+        let value = self.gateway.request(
+            json!({"APIFunc":"RST_WorkbenchSetSelection","entityId":entity_id}),
+            self.options.gateway.status_deadline,
+        )?;
+        let raw: RawBridgeEntitySelection =
+            serde_json::from_value(value).map_err(|_| failure(WorkbenchFailureCode::Protocol))?;
+        if raw.protocol_version != WORKBENCH_BRIDGE_PROTOCOL_VERSION {
+            return Err(failure(WorkbenchFailureCode::Protocol));
+        }
+        let entity = parse_optional_world_selection_record(&raw.entity)
+            .map_err(|_| failure(WorkbenchFailureCode::Protocol))?;
+        Ok(WorkbenchEntitySelectionResult {
+            bridge_version: raw.bridge_version,
+            protocol_version: raw.protocol_version,
+            status: raw.status,
+            entity,
+        })
+    }
+
+    fn selection_mutation(
+        &self,
+        api_func: &str,
+        mut request: Value,
+    ) -> Result<WorkbenchWorldSelectionSummary, WorkbenchFailure> {
+        request["APIFunc"] = Value::String(api_func.to_string());
+        let value = self
+            .gateway
+            .request(request, self.options.gateway.status_deadline)?;
+        let raw: RawBridgeWorldSelection =
+            serde_json::from_value(value).map_err(|_| failure(WorkbenchFailureCode::Protocol))?;
+        if raw.protocol_version != WORKBENCH_BRIDGE_PROTOCOL_VERSION {
+            return Err(failure(WorkbenchFailureCode::Protocol));
+        }
+        let selected_entities = parse_world_selection_records(&raw.selected_entities)
+            .map_err(|_| failure(WorkbenchFailureCode::Protocol))?;
+        if selected_entities.len() > 32 || selected_entities.len() > raw.selected_count as usize {
+            return Err(failure(WorkbenchFailureCode::Protocol));
+        }
+        Ok(WorkbenchWorldSelectionSummary {
+            bridge_version: raw.bridge_version,
+            protocol_version: raw.protocol_version,
+            editor_available: workbench_bool(&raw.editor_available),
+            status: raw.status,
+            selected_count: raw.selected_count,
+            selected_entities_truncated: workbench_bool(&raw.selected_entities_truncated)
+                || selected_entities.len() < raw.selected_count as usize,
+            selected_entities,
+        })
     }
 
     /// Perform the one intentional keyboard automation supported by the Workbench bridge.
@@ -2223,14 +2486,14 @@ struct RawBridgeWorldSelection {
     #[serde(rename = "protocolVersion")]
     protocol_version: u32,
     #[serde(rename = "editorAvailable")]
-    editor_available: bool,
+    editor_available: Value,
     status: String,
     #[serde(rename = "selectedCount")]
     selected_count: u32,
     #[serde(rename = "selectedEntities", default)]
     selected_entities: String,
     #[serde(rename = "selectedEntitiesTruncated", default)]
-    selected_entities_truncated: bool,
+    selected_entities_truncated: Value,
 }
 
 #[derive(Deserialize)]
@@ -2268,18 +2531,70 @@ struct RawBridgeSelectedEntityHierarchy {
     #[serde(rename = "protocolVersion")]
     protocol_version: u32,
     #[serde(rename = "editorAvailable")]
-    editor_available: bool,
+    editor_available: Value,
     status: String,
     #[serde(default)]
     entity: String,
     #[serde(default)]
     ancestors: String,
     #[serde(rename = "ancestorsTruncated", default)]
-    ancestors_truncated: bool,
+    ancestors_truncated: Value,
     #[serde(default)]
     children: String,
     #[serde(rename = "childrenTruncated", default)]
-    children_truncated: bool,
+    children_truncated: Value,
+}
+
+#[derive(Deserialize)]
+struct RawBridgeEntityList {
+    #[serde(rename = "bridgeVersion")]
+    bridge_version: String,
+    #[serde(rename = "protocolVersion")]
+    protocol_version: u32,
+    #[serde(rename = "worldPath", default)]
+    world_path: String,
+    #[serde(default)]
+    entities: String,
+    #[serde(rename = "hasMore", default)]
+    has_more: Value,
+}
+
+#[derive(Deserialize)]
+struct RawBridgeEntitySelection {
+    #[serde(rename = "bridgeVersion")]
+    bridge_version: String,
+    #[serde(rename = "protocolVersion")]
+    protocol_version: u32,
+    status: String,
+    #[serde(default)]
+    entity: String,
+}
+
+#[derive(Deserialize)]
+struct RawBridgeEntityRadiusQuery {
+    #[serde(rename = "bridgeVersion")]
+    bridge_version: String,
+    #[serde(rename = "protocolVersion")]
+    protocol_version: u32,
+    status: String,
+    #[serde(rename = "centerX")]
+    center_x: f32,
+    #[serde(rename = "centerY")]
+    center_y: f32,
+    #[serde(rename = "centerZ")]
+    center_z: f32,
+    #[serde(rename = "radiusMeters")]
+    radius_meters: f32,
+    #[serde(rename = "queryScope")]
+    query_scope: String,
+    #[serde(rename = "requireObject")]
+    require_object: Value,
+    #[serde(rename = "excludeProxies")]
+    exclude_proxies: Value,
+    #[serde(default)]
+    entities: String,
+    #[serde(default)]
+    truncated: Value,
 }
 
 fn workbench_bool(value: &Value) -> bool {
@@ -2329,9 +2644,50 @@ fn parse_world_selection_records(value: &str) -> Result<Vec<WorkbenchSelectedEnt
             let class_name = fields.next().filter(|value| !value.is_empty()).ok_or(())?;
             let sub_scene = fields.next().ok_or(())?.parse::<i32>().map_err(|_| ())?;
             let layer_id = fields.next().ok_or(())?.parse::<i32>().map_err(|_| ())?;
+            let position = match fields.next() {
+                None => None,
+                Some(x) => {
+                    let y = fields.next().ok_or(())?;
+                    let z = fields.next().ok_or(())?;
+                    let x = x.parse::<f32>().map_err(|_| ())?;
+                    let y = y.parse::<f32>().map_err(|_| ())?;
+                    let z = z.parse::<f32>().map_err(|_| ())?;
+                    if !x.is_finite() || !y.is_finite() || !z.is_finite() {
+                        return Err(());
+                    }
+                    Some(WorkbenchEntityPosition { x, y, z })
+                }
+            };
+            let resource_name = fields
+                .next()
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
+            let name = fields
+                .next()
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
+            let sub_scene_name = fields
+                .next()
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
+            let layer_name = fields
+                .next()
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
             if fields.next().is_some()
                 || entity_id.len() > 128
                 || class_name.len() > 256
+                || [
+                    resource_name.as_deref(),
+                    name.as_deref(),
+                    sub_scene_name.as_deref(),
+                    layer_name.as_deref(),
+                ]
+                .into_iter()
+                .flatten()
+                .any(|value| {
+                    value.len() > 1024 || value.contains(|character: char| character.is_control())
+                })
                 || entity_id.contains(|character: char| character.is_control())
                 || class_name.contains(|character: char| character.is_control())
             {
@@ -2342,6 +2698,11 @@ fn parse_world_selection_records(value: &str) -> Result<Vec<WorkbenchSelectedEnt
                 class_name: class_name.to_string(),
                 sub_scene,
                 layer_id,
+                resource_name,
+                name,
+                sub_scene_name,
+                layer_name,
+                position,
             })
         })
         .collect()
@@ -2471,6 +2832,14 @@ fn parse_resource_list_cursor(cursor: &str) -> Option<(String, usize)> {
     let signature = parts.next()?.to_string();
     let offset = parts.next()?.parse().ok()?;
     parts.next().is_none().then_some((signature, offset))
+}
+
+fn parse_entity_list_cursor(cursor: &str) -> Option<(String, usize)> {
+    let mut fields = cursor.split(':');
+    (fields.next()? == "wel1")
+        .then_some(())
+        .and_then(|_| Some((fields.next()?.to_string(), fields.next()?.parse().ok()?)))
+        .filter(|_| fields.next().is_none())
 }
 
 fn latest_workbench_log(workbench_root: &std::path::Path) -> Option<PathBuf> {
@@ -2909,6 +3278,17 @@ fn bridge_payload() -> &'static [(&'static str, &'static str)] {
             "RST_WorkbenchSelectedEntityHierarchy.c",
             BRIDGE_SELECTED_ENTITY_HIERARCHY_SOURCE,
         ),
+        ("RST_WorkbenchListEntities.c", BRIDGE_ENTITY_LIST_SOURCE),
+        ("RST_WorkbenchInspectEntity.c", BRIDGE_ENTITY_INSPECT_SOURCE),
+        ("RST_WorkbenchSetSelection.c", BRIDGE_SET_SELECTION_SOURCE),
+        (
+            "RST_WorkbenchFindEntitiesByRadius.c",
+            BRIDGE_ENTITY_RADIUS_QUERY_SOURCE,
+        ),
+        (
+            "RST_WorkbenchClearSelection.c",
+            BRIDGE_CLEAR_SELECTION_SOURCE,
+        ),
         ("RST_WorkbenchListResources.c", BRIDGE_LIST_RESOURCES_SOURCE),
     ]
 }
@@ -2944,9 +3324,9 @@ class RST_WorkbenchCapabilities : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchCapabilitiesResponse response = new RST_WorkbenchCapabilitiesResponse();
-		response.bridgeVersion = "1.9.0";
+		response.bridgeVersion = "1.15.0";
 	response.protocolVersion = 1;
-	response.capabilities = "state;open-world;play-session;project-context;inspect-resource;world-selection;entity-hierarchy;list-resources";
+	response.capabilities = "state;open-world;play-session;project-context;inspect-resource;world-selection;entity-hierarchy;list-resources;list-entities;inspect-entity;set-selection;clear-selection;entity-position;entity-details";
 		return response;
 	}
 }
@@ -2989,7 +3369,7 @@ class RST_WorkbenchState : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchStateResponse response = new RST_WorkbenchStateResponse();
-	response.bridgeVersion = "1.9.0";
+	response.bridgeVersion = "1.15.0";
 		response.protocolVersion = 1;
 		response.mode = "workbench";
 		response.playSession = "unavailable";
@@ -3177,7 +3557,7 @@ class RST_WorkbenchProjectContext : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchProjectContextResponse response = new RST_WorkbenchProjectContextResponse();
-		response.bridgeVersion = "1.9.0";
+		response.bridgeVersion = "1.15.0";
 		response.protocolVersion = 1;
 		array<string> addonGuids = new array<string>();
 		GameProject.GetLoadedAddons(addonGuids);
@@ -3279,11 +3659,23 @@ class RST_WorkbenchWorldSelectionResponse : JsonApiStruct
 class RST_WorkbenchWorldSelection : NetApiHandler
 {
 	override JsonApiStruct GetRequest() { return new RST_WorkbenchWorldSelectionRequest(); }
+	protected void AppendEntity(out string records, WorldEditorAPI api, IEntitySource entity)
+	{
+		if (!entity) return;
+		if (!records.IsEmpty()) records += ";";
+		IEntity runtimeEntity = api.SourceToEntity(entity);
+		if (!runtimeEntity) { records += string.Format("%1|%2|%3|%4", entity.GetID().ToString(), entity.GetClassName(), entity.GetSubScene(), entity.GetLayerID()); return; }
+		vector transform[4]; runtimeEntity.GetTransform(transform);
+		string resourceName = string.Format("%1", entity.GetResourceName()); string name = entity.GetName(); string subSceneName = runtimeEntity.GetWorld().GetSubSceneName(entity.GetSubScene()); string layerName = api.GetEntitySubsceneLayer(entity.GetSubScene(), entity);
+		if (name == resourceName) name = string.Empty;
+		resourceName.Replace("|", "/"); resourceName.Replace(";", "/"); name.Replace("|", "/"); name.Replace(";", "/"); subSceneName.Replace("|", "/"); subSceneName.Replace(";", "/"); layerName.Replace("|", "/"); layerName.Replace(";", "/");
+		records += string.Format("%1|%2|%3|%4|%5|%6|%7", entity.GetID().ToString(), entity.GetClassName(), entity.GetSubScene(), entity.GetLayerID(), transform[3][0], transform[3][1], transform[3][2]) + "|" + resourceName + "|" + name + "|" + subSceneName + "|" + layerName;
+	}
 
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchWorldSelectionResponse response = new RST_WorkbenchWorldSelectionResponse();
-		response.bridgeVersion = "1.9.0";
+		response.bridgeVersion = "1.15.0";
 		response.protocolVersion = 1;
 		WorldEditor worldEditor = Workbench.GetModule(WorldEditor);
 		if (!worldEditor)
@@ -3311,9 +3703,7 @@ class RST_WorkbenchWorldSelection : NetApiHandler
 			IEntitySource entity = worldEditorApi.GetSelectedEntity(index);
 			if (!entity)
 				continue;
-			if (response.selectedEntities != string.Empty)
-				response.selectedEntities += ";";
-			response.selectedEntities += string.Format("%1|%2|%3|%4", entity.GetID().ToString(), entity.GetClassName(), entity.GetSubScene(), entity.GetLayerID());
+			AppendEntity(response.selectedEntities, worldEditorApi, entity);
 		}
 		return response;
 	}
@@ -3344,20 +3734,26 @@ class RST_WorkbenchSelectedEntityHierarchy : NetApiHandler
 {
 	override JsonApiStruct GetRequest() { return new RST_WorkbenchSelectedEntityHierarchyRequest(); }
 
-	protected void AppendEntity(out string records, IEntitySource entity)
+	protected void AppendEntity(out string records, WorldEditorAPI api, IEntitySource entity)
 	{
 		if (!entity)
 			return;
 		if (records != string.Empty)
 			records += ";";
-		records += string.Format("%1|%2|%3|%4", entity.GetID().ToString(), entity.GetClassName(), entity.GetSubScene(), entity.GetLayerID());
+		IEntity runtimeEntity = api.SourceToEntity(entity);
+		if (!runtimeEntity) { records += string.Format("%1|%2|%3|%4", entity.GetID().ToString(), entity.GetClassName(), entity.GetSubScene(), entity.GetLayerID()); return; }
+		vector transform[4]; runtimeEntity.GetTransform(transform);
+		string resourceName = string.Format("%1", entity.GetResourceName()); string name = entity.GetName(); string subSceneName = runtimeEntity.GetWorld().GetSubSceneName(entity.GetSubScene()); string layerName = api.GetEntitySubsceneLayer(entity.GetSubScene(), entity);
+		if (name == resourceName) name = string.Empty;
+		resourceName.Replace("|", "/"); resourceName.Replace(";", "/"); name.Replace("|", "/"); name.Replace(";", "/"); subSceneName.Replace("|", "/"); subSceneName.Replace(";", "/"); layerName.Replace("|", "/"); layerName.Replace(";", "/");
+		records += string.Format("%1|%2|%3|%4|%5|%6|%7", entity.GetID().ToString(), entity.GetClassName(), entity.GetSubScene(), entity.GetLayerID(), transform[3][0], transform[3][1], transform[3][2]) + "|" + resourceName + "|" + name + "|" + subSceneName + "|" + layerName;
 	}
 
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchSelectedEntityHierarchyRequest typedRequest = RST_WorkbenchSelectedEntityHierarchyRequest.Cast(request);
 		RST_WorkbenchSelectedEntityHierarchyResponse response = new RST_WorkbenchSelectedEntityHierarchyResponse();
-		response.bridgeVersion = "1.9.0";
+		response.bridgeVersion = "1.15.0";
 		response.protocolVersion = 1;
 		WorldEditor worldEditor = Workbench.GetModule(WorldEditor);
 		if (!worldEditor)
@@ -3384,13 +3780,13 @@ class RST_WorkbenchSelectedEntityHierarchy : NetApiHandler
 			return response;
 		}
 		response.status = "available";
-		AppendEntity(response.entity, entity);
+		AppendEntity(response.entity, worldEditorApi, entity);
 		BaseContainer parent = entity.GetParent();
 		for (int index = 0; parent && index < 32; index++)
 		{
 			IEntitySource parentEntity = IEntitySource.Cast(parent);
 			if (parentEntity)
-				AppendEntity(response.ancestors, parentEntity);
+				AppendEntity(response.ancestors, worldEditorApi, parentEntity);
 			parent = parent.GetParent();
 		}
 		response.ancestorsTruncated = parent != null;
@@ -3406,9 +3802,260 @@ class RST_WorkbenchSelectedEntityHierarchy : NetApiHandler
 				response.childrenTruncated = true;
 				break;
 			}
-			AppendEntity(response.children, childEntity);
+			AppendEntity(response.children, worldEditorApi, childEntity);
 			returnedCount++;
 		}
+		return response;
+	}
+}
+#endif
+"#;
+
+const BRIDGE_ENTITY_LIST_SOURCE: &str = r#"#ifdef WORKBENCH
+class RST_WorkbenchListEntitiesRequest : JsonApiStruct
+{
+	string query;
+	string className;
+	int offset;
+	int limit;
+	void RST_WorkbenchListEntitiesRequest() { RegAll(); }
+}
+class RST_WorkbenchListEntitiesResponse : JsonApiStruct
+{
+	string bridgeVersion;
+	int protocolVersion;
+	string worldPath;
+	string entities;
+	bool hasMore;
+	void RST_WorkbenchListEntitiesResponse() { RegAll(); }
+}
+class RST_WorkbenchListEntities : NetApiHandler
+{
+	override JsonApiStruct GetRequest() { return new RST_WorkbenchListEntitiesRequest(); }
+	override JsonApiStruct GetResponse(JsonApiStruct request)
+	{
+		RST_WorkbenchListEntitiesRequest typedRequest = RST_WorkbenchListEntitiesRequest.Cast(request);
+		RST_WorkbenchListEntitiesResponse response = new RST_WorkbenchListEntitiesResponse();
+		response.bridgeVersion = "1.15.0";
+		response.protocolVersion = 1;
+		WorldEditor worldEditor = Workbench.GetModule(WorldEditor);
+		if (!worldEditor) return response;
+		WorldEditorAPI api = worldEditor.GetApi();
+		if (!api || typedRequest.offset < 0 || typedRequest.limit < 1 || typedRequest.limit > 100) return response;
+		api.GetWorldPath(response.worldPath);
+		int matched = 0;
+		int returned = 0;
+		for (int index = 0, count = api.GetEditorEntityCount(); index < count; index++)
+		{
+			IEntitySource entity = api.GetEditorEntity(index);
+			if (!entity) continue;
+			string name = api.GetEntityNiceName(entity);
+			if (!typedRequest.className.IsEmpty() && entity.GetClassName().IndexOf(typedRequest.className) == -1) continue;
+			if (!typedRequest.query.IsEmpty() && name.IndexOf(typedRequest.query) == -1 && entity.GetClassName().IndexOf(typedRequest.query) == -1) continue;
+			if (matched++ < typedRequest.offset) continue;
+			if (returned >= typedRequest.limit) { response.hasMore = true; break; }
+			if (!response.entities.IsEmpty()) response.entities += ";";
+			IEntity runtimeEntity = api.SourceToEntity(entity);
+			if (!runtimeEntity) response.entities += string.Format("%1|%2|%3|%4", entity.GetID().ToString(), entity.GetClassName(), entity.GetSubScene(), entity.GetLayerID());
+			else { vector transform[4]; runtimeEntity.GetTransform(transform); string resourceName = string.Format("%1", entity.GetResourceName()); string authoredName = entity.GetName(); string subSceneName = runtimeEntity.GetWorld().GetSubSceneName(entity.GetSubScene()); string layerName = api.GetEntitySubsceneLayer(entity.GetSubScene(), entity); if (authoredName == resourceName) authoredName = string.Empty; resourceName.Replace("|", "/"); resourceName.Replace(";", "/"); authoredName.Replace("|", "/"); authoredName.Replace(";", "/"); subSceneName.Replace("|", "/"); subSceneName.Replace(";", "/"); layerName.Replace("|", "/"); layerName.Replace(";", "/"); response.entities += string.Format("%1|%2|%3|%4|%5|%6|%7", entity.GetID().ToString(), entity.GetClassName(), entity.GetSubScene(), entity.GetLayerID(), transform[3][0], transform[3][1], transform[3][2]) + "|" + resourceName + "|" + authoredName + "|" + subSceneName + "|" + layerName; }
+			returned++;
+		}
+		return response;
+	}
+}
+#endif
+"#;
+
+const BRIDGE_ENTITY_INSPECT_SOURCE: &str = r#"#ifdef WORKBENCH
+class RST_WorkbenchInspectEntityRequest : JsonApiStruct
+{
+	string entityId;
+	void RST_WorkbenchInspectEntityRequest() { RegAll(); }
+}
+class RST_WorkbenchInspectEntityResponse : JsonApiStruct
+{
+	string bridgeVersion; int protocolVersion; bool editorAvailable; string status; string entity; string ancestors; bool ancestorsTruncated; string children; bool childrenTruncated;
+	void RST_WorkbenchInspectEntityResponse() { RegAll(); }
+}
+class RST_WorkbenchInspectEntity : NetApiHandler
+{
+	override JsonApiStruct GetRequest() { return new RST_WorkbenchInspectEntityRequest(); }
+	protected void AppendEntity(out string records, WorldEditorAPI api, IEntitySource entity)
+	{
+		if (!entity) return;
+		if (!records.IsEmpty()) records += ";";
+		IEntity runtimeEntity = api.SourceToEntity(entity);
+		if (!runtimeEntity) { records += string.Format("%1|%2|%3|%4", entity.GetID().ToString(), entity.GetClassName(), entity.GetSubScene(), entity.GetLayerID()); return; }
+		vector transform[4]; runtimeEntity.GetTransform(transform);
+		string resourceName = string.Format("%1", entity.GetResourceName()); string name = entity.GetName(); string subSceneName = runtimeEntity.GetWorld().GetSubSceneName(entity.GetSubScene()); string layerName = api.GetEntitySubsceneLayer(entity.GetSubScene(), entity);
+		if (name == resourceName) name = string.Empty;
+		resourceName.Replace("|", "/"); resourceName.Replace(";", "/"); name.Replace("|", "/"); name.Replace(";", "/"); subSceneName.Replace("|", "/"); subSceneName.Replace(";", "/"); layerName.Replace("|", "/"); layerName.Replace(";", "/");
+		records += string.Format("%1|%2|%3|%4|%5|%6|%7", entity.GetID().ToString(), entity.GetClassName(), entity.GetSubScene(), entity.GetLayerID(), transform[3][0], transform[3][1], transform[3][2]) + "|" + resourceName + "|" + name + "|" + subSceneName + "|" + layerName;
+	}
+	override JsonApiStruct GetResponse(JsonApiStruct request)
+	{
+		RST_WorkbenchInspectEntityRequest typedRequest = RST_WorkbenchInspectEntityRequest.Cast(request);
+		RST_WorkbenchInspectEntityResponse response = new RST_WorkbenchInspectEntityResponse(); response.bridgeVersion = "1.15.0"; response.protocolVersion = 1;
+		WorldEditor worldEditor = Workbench.GetModule(WorldEditor); if (!worldEditor) { response.status = "world-editor-unavailable"; return response; }
+		WorldEditorAPI api = worldEditor.GetApi(); if (!api) { response.status = "world-editor-api-unavailable"; return response; }
+		response.editorAvailable = true;
+		IEntitySource target;
+		for (int index = 0, count = api.GetEditorEntityCount(); index < count; index++) { IEntitySource candidate = api.GetEditorEntity(index); if (candidate && candidate.GetID().ToString() == typedRequest.entityId) { target = candidate; break; } }
+		if (!target) { response.status = "entity-not-found"; return response; }
+		response.status = "available"; AppendEntity(response.entity, api, target);
+		BaseContainer parent = target.GetParent(); for (int index = 0; parent && index < 32; index++) { IEntitySource parentEntity = IEntitySource.Cast(parent); if (parentEntity) AppendEntity(response.ancestors, api, parentEntity); parent = parent.GetParent(); } response.ancestorsTruncated = parent != null;
+		for (int index = 0, count = target.GetNumChildren(), returned = 0; index < count; index++) { IEntitySource child = IEntitySource.Cast(target.GetChild(index)); if (!child) continue; if (returned >= 64) { response.childrenTruncated = true; break; } AppendEntity(response.children, api, child); returned++; }
+		return response;
+	}
+}
+#endif
+"#;
+
+const BRIDGE_SET_SELECTION_SOURCE: &str = r#"#ifdef WORKBENCH
+class RST_WorkbenchSetSelectionRequest : JsonApiStruct
+{
+	string entityId;
+	void RST_WorkbenchSetSelectionRequest() { RegAll(); }
+}
+class RST_WorkbenchSetSelectionResponse : JsonApiStruct
+{
+	string bridgeVersion;
+	int protocolVersion;
+	string status;
+	string entity;
+	void RST_WorkbenchSetSelectionResponse() { RegAll(); }
+}
+class RST_WorkbenchSetSelection : NetApiHandler
+{
+	override JsonApiStruct GetRequest() { return new RST_WorkbenchSetSelectionRequest(); }
+	override JsonApiStruct GetResponse(JsonApiStruct request)
+	{
+		RST_WorkbenchSetSelectionRequest typedRequest = RST_WorkbenchSetSelectionRequest.Cast(request);
+		RST_WorkbenchSetSelectionResponse response = new RST_WorkbenchSetSelectionResponse();
+		response.bridgeVersion = "1.15.0";
+		response.protocolVersion = 1;
+		WorldEditor editor = Workbench.GetModule(WorldEditor);
+		if (!editor) { response.status = "world-editor-unavailable"; return response; }
+		WorldEditorAPI api = editor.GetApi();
+		if (!api) { response.status = "world-editor-api-unavailable"; return response; }
+		IEntitySource target;
+		for (int index = 0, count = api.GetEditorEntityCount(); index < count; index++)
+		{
+			IEntitySource candidate = api.GetEditorEntity(index);
+			if (candidate && candidate.GetID().ToString() == typedRequest.entityId) { target = candidate; break; }
+		}
+		if (!target) { response.status = "entity-not-found"; return response; }
+		api.SetEntitySelection(target);
+		response.status = "selected";
+		IEntity runtimeEntity = api.SourceToEntity(target);
+		if (!runtimeEntity) response.entity = string.Format("%1|%2|%3|%4", target.GetID().ToString(), target.GetClassName(), target.GetSubScene(), target.GetLayerID());
+		else { vector transform[4]; runtimeEntity.GetTransform(transform); string resourceName = string.Format("%1", target.GetResourceName()); string name = target.GetName(); string subSceneName = runtimeEntity.GetWorld().GetSubSceneName(target.GetSubScene()); string layerName = api.GetEntitySubsceneLayer(target.GetSubScene(), target); if (name == resourceName) name = string.Empty; resourceName.Replace("|", "/"); resourceName.Replace(";", "/"); name.Replace("|", "/"); name.Replace(";", "/"); subSceneName.Replace("|", "/"); subSceneName.Replace(";", "/"); layerName.Replace("|", "/"); layerName.Replace(";", "/"); response.entity = string.Format("%1|%2|%3|%4|%5|%6|%7", target.GetID().ToString(), target.GetClassName(), target.GetSubScene(), target.GetLayerID(), transform[3][0], transform[3][1], transform[3][2]) + "|" + resourceName + "|" + name + "|" + subSceneName + "|" + layerName; }
+		return response;
+	}
+}
+#endif
+"#;
+
+const BRIDGE_ENTITY_RADIUS_QUERY_SOURCE: &str = r#"#ifdef WORKBENCH
+class RST_WorkbenchFindEntitiesByRadiusRequest : JsonApiStruct
+{
+	float centerX; float centerY; float centerZ; float radiusMeters; string queryScope; bool requireObject; bool excludeProxies; string className; int limit;
+	void RST_WorkbenchFindEntitiesByRadiusRequest() { RegAll(); }
+}
+class RST_WorkbenchFindEntitiesByRadiusResponse : JsonApiStruct
+{
+	string bridgeVersion; int protocolVersion; string status; float centerX; float centerY; float centerZ; float radiusMeters; string queryScope; bool requireObject; bool excludeProxies; string entities; bool truncated;
+	void RST_WorkbenchFindEntitiesByRadiusResponse() { RegAll(); }
+}
+class RST_WorkbenchRadiusCollector
+{
+	WorldEditorAPI m_Api; RST_WorkbenchFindEntitiesByRadiusRequest m_Request; RST_WorkbenchFindEntitiesByRadiusResponse m_Response; int m_Returned;
+	void RST_WorkbenchRadiusCollector(WorldEditorAPI api, RST_WorkbenchFindEntitiesByRadiusRequest request, RST_WorkbenchFindEntitiesByRadiusResponse response) { m_Api = api; m_Request = request; m_Response = response; }
+	bool AddEntity(IEntity entity)
+	{
+		IEntitySource source = m_Api.EntityToSource(entity); if (!source) return true;
+		if (!m_Request.className.IsEmpty() && source.GetClassName().IndexOf(m_Request.className) == -1) return true;
+		if (m_Returned >= m_Request.limit) { m_Response.truncated = true; return false; }
+		if (!m_Response.entities.IsEmpty()) m_Response.entities += ";";
+		vector position = entity.GetOrigin();
+		string resourceName = string.Format("%1", source.GetResourceName()); string name = source.GetName(); string subSceneName = entity.GetWorld().GetSubSceneName(source.GetSubScene()); string layerName = m_Api.GetEntitySubsceneLayer(source.GetSubScene(), source);
+		if (name == resourceName) name = string.Empty;
+		resourceName.Replace("|", "/"); resourceName.Replace(";", "/"); name.Replace("|", "/"); name.Replace(";", "/"); subSceneName.Replace("|", "/"); subSceneName.Replace(";", "/"); layerName.Replace("|", "/"); layerName.Replace(";", "/");
+		m_Response.entities += string.Format("%1|%2|%3|%4|%5|%6|%7", source.GetID().ToString(), source.GetClassName(), source.GetSubScene(), source.GetLayerID(), position[0], position[1], position[2]) + "|" + resourceName + "|" + name + "|" + subSceneName + "|" + layerName;
+		m_Returned++; return true;
+	}
+}
+class RST_WorkbenchFindEntitiesByRadius : NetApiHandler
+{
+	override JsonApiStruct GetRequest() { return new RST_WorkbenchFindEntitiesByRadiusRequest(); }
+	override JsonApiStruct GetResponse(JsonApiStruct request)
+	{
+		RST_WorkbenchFindEntitiesByRadiusRequest typedRequest = RST_WorkbenchFindEntitiesByRadiusRequest.Cast(request);
+		RST_WorkbenchFindEntitiesByRadiusResponse response = new RST_WorkbenchFindEntitiesByRadiusResponse(); response.bridgeVersion = "1.15.0"; response.protocolVersion = 1;
+		response.centerX = typedRequest.centerX; response.centerY = typedRequest.centerY; response.centerZ = typedRequest.centerZ; response.radiusMeters = typedRequest.radiusMeters; response.queryScope = typedRequest.queryScope; response.requireObject = typedRequest.requireObject; response.excludeProxies = typedRequest.excludeProxies;
+		if (typedRequest.radiusMeters < 0.01 || typedRequest.radiusMeters > 50000 || typedRequest.limit < 1 || typedRequest.limit > 100) { response.status = "invalid-query"; return response; }
+		WorldEditor editor = Workbench.GetModule(WorldEditor); if (!editor) { response.status = "world-editor-unavailable"; return response; }
+		WorldEditorAPI api = editor.GetApi(); if (!api || api.GetEditorEntityCount() < 1) { response.status = "world-editor-api-unavailable"; return response; }
+		IEntity root = api.SourceToEntity(api.GetEditorEntity(0)); if (!root) { response.status = "world-unavailable"; return response; }
+		EQueryEntitiesFlags flags = EQueryEntitiesFlags.ALL;
+		if (typedRequest.queryScope == "static") flags = EQueryEntitiesFlags.STATIC;
+		else if (typedRequest.queryScope == "dynamic") flags = EQueryEntitiesFlags.DYNAMIC;
+		else if (typedRequest.queryScope == "features") flags = EQueryEntitiesFlags.FEATURES;
+		else if (typedRequest.queryScope != "all") { response.status = "invalid-query-scope"; return response; }
+		if (typedRequest.requireObject) flags |= EQueryEntitiesFlags.WITH_OBJECT;
+		if (typedRequest.excludeProxies) flags |= EQueryEntitiesFlags.NO_PROXIES;
+		RST_WorkbenchRadiusCollector collector = new RST_WorkbenchRadiusCollector(api, typedRequest, response);
+		root.GetWorld().QueryEntitiesBySphere(Vector(typedRequest.centerX, typedRequest.centerY, typedRequest.centerZ), typedRequest.radiusMeters, collector.AddEntity, null, flags);
+		response.status = "available"; return response;
+	}
+}
+#endif
+"#;
+
+const BRIDGE_CLEAR_SELECTION_SOURCE: &str = r#"#ifdef WORKBENCH
+class RST_WorkbenchClearSelectionRequest : JsonApiStruct
+{
+	void RST_WorkbenchClearSelectionRequest() { RegAll(); }
+}
+class RST_WorkbenchClearSelectionResponse : JsonApiStruct
+{
+	string bridgeVersion;
+	int protocolVersion;
+	bool editorAvailable;
+	string status;
+	int selectedCount;
+	string selectedEntities;
+	bool selectedEntitiesTruncated;
+	void RST_WorkbenchClearSelectionResponse() { RegAll(); }
+}
+class RST_WorkbenchClearSelection : NetApiHandler
+{
+	override JsonApiStruct GetRequest() { return new RST_WorkbenchClearSelectionRequest(); }
+	override JsonApiStruct GetResponse(JsonApiStruct request)
+	{
+		RST_WorkbenchClearSelectionResponse response = new RST_WorkbenchClearSelectionResponse();
+		response.bridgeVersion = "1.15.0";
+		response.protocolVersion = 1;
+		WorldEditor editor = Workbench.GetModule(WorldEditor);
+		if (!editor)
+		{
+			response.status = "world-editor-unavailable";
+			return response;
+		}
+		WorldEditorAPI api = editor.GetApi();
+		if (!api)
+		{
+			response.status = "world-editor-api-unavailable";
+			return response;
+		}
+		response.editorAvailable = true;
+		api.ClearEntitySelection();
+		api.UpdateSelectionGui();
+		response.selectedCount = api.GetSelectedEntitiesCount();
+		if (response.selectedCount == 0)
+			response.status = "available";
+		else
+			response.status = "selection-not-observed";
 		return response;
 	}
 }
@@ -3440,7 +4087,7 @@ class RST_WorkbenchListResources : NetApiHandler
 	{
 		RST_WorkbenchListResourcesRequest typedRequest = RST_WorkbenchListResourcesRequest.Cast(request);
 		RST_WorkbenchListResourcesResponse response = new RST_WorkbenchListResourcesResponse();
-		response.bridgeVersion = "1.9.0";
+		response.bridgeVersion = "1.15.0";
 		response.protocolVersion = 1;
 		array<string> addonGuids = new array<string>();
 		GameProject.GetLoadedAddons(addonGuids);
@@ -3507,7 +4154,7 @@ mod tests {
     #[test]
     fn world_selection_records_are_bounded_and_require_stable_identity_fields() {
         let records = super::parse_world_selection_records(
-            "0x0000000000000001|TestEntity|0|12;0x0000000000000002|LightEntity|2|4",
+            "0x0000000000000001|TestEntity|0|12|12.5|3|-4.25|PrefabName|Authored name|Main scene|Gameplay;0x0000000000000002|LightEntity|2|4",
         )
         .unwrap();
 
@@ -3516,8 +4163,22 @@ mod tests {
         assert_eq!(records[0].class_name, "TestEntity");
         assert_eq!(records[0].sub_scene, 0);
         assert_eq!(records[0].layer_id, 12);
+        assert_eq!(
+            records[0].position,
+            Some(super::WorkbenchEntityPosition {
+                x: 12.5,
+                y: 3.0,
+                z: -4.25,
+            })
+        );
+        assert_eq!(records[0].resource_name.as_deref(), Some("PrefabName"));
+        assert_eq!(records[0].name.as_deref(), Some("Authored name"));
+        assert_eq!(records[0].sub_scene_name.as_deref(), Some("Main scene"));
+        assert_eq!(records[0].layer_name.as_deref(), Some("Gameplay"));
+        assert!(records[1].position.is_none());
         assert!(super::parse_world_selection_records("missing-fields").is_err());
         assert!(super::parse_world_selection_records("id|class|nope|0").is_err());
+        assert!(super::parse_world_selection_records("id|class|0|0|NaN|0|0").is_err());
     }
 
     #[test]
@@ -3650,6 +4311,161 @@ mod tests {
         assert!(page.next_cursor.is_some());
         assert!(super::parse_resource_list_cursor(page.next_cursor.as_deref().unwrap()).is_some());
         assert_ne!(page.project_revision, "ArmaReforger;TestBullshit");
+        peer.join().unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn entity_listing_accepts_workbenchs_numeric_has_more_flag() {
+        let (port, peer) = start_peer(|request| {
+            assert_eq!(request["APIFunc"], "RST_WorkbenchListEntities");
+            assert_eq!(request["limit"], 30);
+            json!({
+                "bridgeVersion": "1.10.0",
+                "protocolVersion": 1,
+                "worldPath": "$TestBullshit:worlds/test/arland_test.ent",
+                "entities": "0x0000000000000001 {}|GenericWorldEntity|0|0",
+                "hasMore": 1
+            })
+        });
+        let root = test_root("entity-listing-numeric-has-more");
+        fs::create_dir_all(&root).unwrap();
+        let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
+            gateway: super::WorkbenchGatewayOptions {
+                port,
+                status_deadline: Duration::from_secs(1),
+                ..super::WorkbenchGatewayOptions::default()
+            },
+            user_directory: Some(root.clone()),
+            ..super::WorkbenchControllerOptions::default()
+        });
+
+        let page = controller.list_entities(None, None, None, 30).unwrap();
+
+        assert_eq!(page.entities.len(), 1);
+        assert_eq!(page.entities[0].entity_id, "0x0000000000000001 {}");
+        assert!(page.truncated);
+        assert!(page.next_cursor.is_some());
+        peer.join().unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn clear_selection_accepts_workbenchs_numeric_boolean_fields() {
+        let (port, peer) = start_peer(|request| {
+            assert_eq!(request, json!({"APIFunc": "RST_WorkbenchClearSelection"}));
+            json!({
+                "bridgeVersion": "1.10.0",
+                "protocolVersion": 1,
+                "editorAvailable": 1,
+                "status": "available",
+                "selectedCount": 0,
+                "selectedEntities": "",
+                "selectedEntitiesTruncated": 0
+            })
+        });
+        let root = test_root("clear-selection-numeric-booleans");
+        fs::create_dir_all(&root).unwrap();
+        let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
+            gateway: super::WorkbenchGatewayOptions {
+                port,
+                status_deadline: Duration::from_secs(1),
+                ..super::WorkbenchGatewayOptions::default()
+            },
+            user_directory: Some(root.clone()),
+            ..super::WorkbenchControllerOptions::default()
+        });
+
+        let selection = controller.clear_selection().unwrap();
+
+        assert!(selection.editor_available);
+        assert_eq!(selection.selected_count, 0);
+        assert!(selection.selected_entities.is_empty());
+        assert!(!selection.selected_entities_truncated);
+        peer.join().unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn set_selection_uses_one_exact_entity_identity() {
+        let (port, peer) = start_peer(|request| {
+            assert_eq!(
+                request,
+                json!({
+                    "APIFunc": "RST_WorkbenchSetSelection",
+                    "entityId": "0x0000000000000003 {}"
+                })
+            );
+            json!({
+                "bridgeVersion": "1.11.0",
+                "protocolVersion": 1,
+                "status": "selected",
+                "entity": "0x0000000000000003 {}|GenericTerrainEntity|0|0|10|20|30"
+            })
+        });
+        let root = test_root("set-selection-single-entity");
+        fs::create_dir_all(&root).unwrap();
+        let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
+            gateway: super::WorkbenchGatewayOptions {
+                port,
+                status_deadline: Duration::from_secs(1),
+                ..super::WorkbenchGatewayOptions::default()
+            },
+            user_directory: Some(root.clone()),
+            ..super::WorkbenchControllerOptions::default()
+        });
+
+        let result = controller.set_selection("0x0000000000000003 {}").unwrap();
+
+        assert_eq!(result.status, "selected");
+        assert_eq!(result.entity.unwrap().class_name, "GenericTerrainEntity");
+        peer.join().unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn entity_inspection_accepts_workbenchs_numeric_hierarchy_flags() {
+        let (port, peer) = start_peer(|request| {
+            assert_eq!(request["APIFunc"], "RST_WorkbenchInspectEntity");
+            json!({
+                "bridgeVersion": "1.11.0",
+                "protocolVersion": 1,
+                "editorAvailable": 1,
+                "status": "available",
+                "entity": "0x0000000000000003 {}|GenericTerrainEntity|0|0|1|2|3",
+                "ancestors": "",
+                "ancestorsTruncated": 0,
+                "children": "",
+                "childrenTruncated": 0
+            })
+        });
+        let root = test_root("entity-inspection-numeric-hierarchy-flags");
+        fs::create_dir_all(&root).unwrap();
+        let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
+            gateway: super::WorkbenchGatewayOptions {
+                port,
+                status_deadline: Duration::from_secs(1),
+                ..super::WorkbenchGatewayOptions::default()
+            },
+            user_directory: Some(root.clone()),
+            ..super::WorkbenchControllerOptions::default()
+        });
+
+        let inspection = controller.inspect_entity("0x0000000000000003 {}").unwrap();
+
+        assert!(inspection.editor_available);
+        let entity = inspection.entity.unwrap();
+        assert_eq!(entity.class_name, "GenericTerrainEntity");
+        assert_eq!(
+            entity.position,
+            Some(super::WorkbenchEntityPosition {
+                x: 1.0,
+                y: 2.0,
+                z: 3.0,
+            })
+        );
+        assert!(!inspection.ancestors_truncated);
+        assert!(!inspection.children_truncated);
         peer.join().unwrap();
         fs::remove_dir_all(root).unwrap();
     }
