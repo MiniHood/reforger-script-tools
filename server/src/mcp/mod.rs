@@ -129,7 +129,7 @@ const WORKBENCH_SELECTED_ENTITY_HIERARCHY_DESCRIPTION: &str = "Inspect the bound
 const WORKBENCH_LIST_ENTITIES_DESCRIPTION: &str = "List one bounded page of live World Editor entities, optionally constrained to an exact subscene and layer. Entity IDs are stable only for the observed editor context; filters are discovery metadata, never target identities.";
 const WORKBENCH_LAYER_STATE_DESCRIPTION: &str = "Read one exact World Editor layer's canonical path, visibility, explicit lock state, and effective hierarchical lock state without changing the world or editor.";
 const WORKBENCH_FIND_ENTITIES_BY_RADIUS_DESCRIPTION: &str = "Find a bounded set of live World Editor entities whose bounds touch a world-space sphere. The engine query stops after one additional match, so truncated means more matches exist; returned order is not nearest-first.";
-const WORKBENCH_SAMPLE_TERRAIN_DESCRIPTION: &str = "Sample a bounded square of loaded World Editor terrain heights around a world X/Z coordinate. The result includes native terrain resolution and planar spacing, plus a row-major grid and derived elevation/slope summary. At most 4,096 cells are returned; heights[z * width + x] is at origin.x + x * effectiveSpacingMeters, origin.z + z * effectiveSpacingMeters, so X changes fastest. It samples terrain only: it does not trace geometry, inspect water/materials/entities, or edit the world.";
+const WORKBENCH_SAMPLE_TERRAIN_DESCRIPTION: &str = "Sample a bounded square of loaded World Editor terrain heights around a world X/Z coordinate. The result includes native terrain resolution and planar spacing, plus a row-major grid and derived elevation/slope summary. At most 4,096 cells are returned; heights[z * width + x] is at origin.x + x * effectiveSpacingMeters, origin.z + z * effectiveSpacingMeters, so X changes fastest. Set includeWater to add same-lattice water facts reported by the engine point-water API (ocean, pond, or river when registered by the engine); it does not trace geometry, inspect materials/entities, or edit the world.";
 const WORKBENCH_INSPECT_ENTITY_DESCRIPTION: &str = "Inspect one exact stable World Editor entity identity through the compatible managed handler package. It never changes editor selection or world content.";
 const WORKBENCH_SET_SELECTION_DESCRIPTION: &str = "Explicitly replace the visible World Editor selection with one exact stable entity identity. This experimental command changes only editor selection, never world content.";
 const WORKBENCH_CLEAR_SELECTION_DESCRIPTION: &str = "Explicitly clear the visible World Editor selection and return the observed empty selection summary.";
@@ -385,6 +385,7 @@ struct McpWorkbenchTerrainSampleInput {
     half_extent_meters: f32,
     #[schemars(range(min = 0.01, max = 500.0))]
     spacing_meters: Option<f32>,
+    include_water: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
@@ -1595,6 +1596,7 @@ impl ServerHandler for ReforgerMcpServer {
                             center_z: input.z,
                             half_extent_meters: input.half_extent_meters,
                             spacing_meters: input.spacing_meters,
+                            include_water: input.include_water.unwrap_or(false),
                         })
                         .map_err(|failure| workbench.correlate_failure("sample_terrain", failure))
                 },

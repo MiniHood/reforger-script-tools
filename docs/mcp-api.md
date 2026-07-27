@@ -4056,7 +4056,7 @@ Workbench tools return structured tool errors with a stable code, operation phas
 
 ## `workbench_sample_terrain`
 
-Sample a bounded square of loaded World Editor terrain heights around a world X/Z coordinate. The result includes native terrain resolution and planar spacing, plus a row-major grid and derived elevation/slope summary. At most 4,096 cells are returned; heights[z * width + x] is at origin.x + x * effectiveSpacingMeters, origin.z + z * effectiveSpacingMeters, so X changes fastest. It samples terrain only: it does not trace geometry, inspect water/materials/entities, or edit the world.
+Sample a bounded square of loaded World Editor terrain heights around a world X/Z coordinate. The result includes native terrain resolution and planar spacing, plus a row-major grid and derived elevation/slope summary. At most 4,096 cells are returned; heights[z * width + x] is at origin.x + x * effectiveSpacingMeters, origin.z + z * effectiveSpacingMeters, so X changes fastest. Set includeWater to add same-lattice water facts reported by the engine point-water API (ocean, pond, or river when registered by the engine); it does not trace geometry, inspect materials/entities, or edit the world.
 
 ### Annotations
 
@@ -4080,6 +4080,12 @@ Sample a bounded square of loaded World Editor terrain heights around a world X/
       "maximum": 500.0,
       "minimum": 0.01,
       "type": "number"
+    },
+    "includeWater": {
+      "type": [
+        "boolean",
+        "null"
+      ]
     },
     "spacingMeters": {
       "format": "float",
@@ -4312,6 +4318,93 @@ Sample a bounded square of loaded World Editor terrain heights around a world X/
         "validSampleCount"
       ],
       "type": "object"
+    },
+    "WorkbenchTerrainWaterGrid": {
+      "properties": {
+        "depthsAboveTerrain": {
+          "items": {
+            "format": "float",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "type": "array"
+        },
+        "surfaceHeights": {
+          "items": {
+            "format": "float",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "type": "array"
+        },
+        "types": {
+          "description": "`null` marks an absent terrain cell; `none` marks dry valid terrain.",
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/WorkbenchTerrainWaterType"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "types",
+        "surfaceHeights",
+        "depthsAboveTerrain"
+      ],
+      "type": "object"
+    },
+    "WorkbenchTerrainWaterSummary": {
+      "properties": {
+        "maximumDepthAboveTerrain": {
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "oceanSampleCount": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "pondSampleCount": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "riverSampleCount": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "wetSampleCount": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "wetSampleCount",
+        "oceanSampleCount",
+        "pondSampleCount",
+        "riverSampleCount"
+      ],
+      "type": "object"
+    },
+    "WorkbenchTerrainWaterType": {
+      "enum": [
+        "none",
+        "ocean",
+        "pond",
+        "river"
+      ],
+      "type": "string"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -4350,6 +4443,26 @@ Sample a bounded square of loaded World Editor terrain heights around a world X/
       "anyOf": [
         {
           "$ref": "#/$defs/WorkbenchTerrainMetadata"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "water": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkbenchTerrainWaterGrid"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "waterSummary": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkbenchTerrainWaterSummary"
         },
         {
           "type": "null"

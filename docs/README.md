@@ -50,6 +50,9 @@ implementation slice is progress, not a completed ticket.
 - [Workbench compiler-validation research](research/workbench-compiler-validation-research.md):
   `ValidateScripts` contract, continuous-validation design, diagnostics, and
   live-session acceptance experiments.
+- [Workbench water-surface sampling research](research/workbench-water-surface-research.md):
+  primary API evidence, live acceptance findings, and the boundary between
+  engine-registered water and editor-authored water generators.
 - [Enfusion structural-formatting research](research/enfusion-structural-formatting-research.md):
   evidence and design notes for automated editing behavior.
 - [Enfusion `new` editing research](research/enfusion-new-formatting-research.md):

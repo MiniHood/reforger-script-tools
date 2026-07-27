@@ -103,7 +103,7 @@ pub struct WorkbenchGateway {
     request_lock: Arc<Mutex<()>>,
 }
 
-pub const WORKBENCH_BRIDGE_VERSION: &str = "1.20.0";
+pub const WORKBENCH_BRIDGE_VERSION: &str = "1.29.0";
 pub const WORKBENCH_BRIDGE_PROTOCOL_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -416,6 +416,7 @@ pub struct WorkbenchTerrainSampleOptions {
     pub center_z: f32,
     pub half_extent_meters: f32,
     pub spacing_meters: Option<f32>,
+    pub include_water: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -456,6 +457,35 @@ pub struct WorkbenchTerrainGrid {
     pub heights: Vec<Option<f32>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum WorkbenchTerrainWaterType {
+    None,
+    Ocean,
+    Pond,
+    River,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkbenchTerrainWaterGrid {
+    /// `null` marks an absent terrain cell; `none` marks dry valid terrain.
+    pub types: Vec<Option<WorkbenchTerrainWaterType>>,
+    pub surface_heights: Vec<Option<f32>>,
+    pub depths_above_terrain: Vec<Option<f32>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkbenchTerrainWaterSummary {
+    pub wet_sample_count: u32,
+    pub ocean_sample_count: u32,
+    pub pond_sample_count: u32,
+    pub river_sample_count: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub maximum_depth_above_terrain: Option<f32>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkbenchTerrainSummary {
@@ -486,6 +516,10 @@ pub struct WorkbenchTerrainSample {
     pub grid: Option<WorkbenchTerrainGrid>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summary: Option<WorkbenchTerrainSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub water: Option<WorkbenchTerrainWaterGrid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub water_summary: Option<WorkbenchTerrainWaterSummary>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -1609,7 +1643,7 @@ impl WorkbenchController {
         }
         let requested_spacing = options.spacing_meters.unwrap_or(0.0);
         let value = self.gateway.request(
-            json!({"APIFunc":"RST_WorkbenchSampleTerrain","centerX":options.center_x,"centerZ":options.center_z,"halfExtentMeters":options.half_extent_meters,"spacingMeters":requested_spacing}),
+            json!({"APIFunc":"RST_WorkbenchSampleTerrain","centerX":options.center_x,"centerZ":options.center_z,"halfExtentMeters":options.half_extent_meters,"spacingMeters":requested_spacing,"includeWater":options.include_water}),
             self.options.gateway.status_deadline,
         )?;
         let raw: RawBridgeTerrainSample =
@@ -1627,6 +1661,8 @@ impl WorkbenchController {
                 terrain: None,
                 grid: None,
                 summary: None,
+                water: None,
+                water_summary: None,
             });
         }
         let terrain =
@@ -1634,6 +1670,12 @@ impl WorkbenchController {
         let grid = parse_terrain_grid(&raw, options.spacing_meters, MAX_SAMPLES)
             .map_err(|_| failure(WorkbenchFailureCode::Protocol))?;
         let summary = summarize_terrain_grid(&grid);
+        let water = options
+            .include_water
+            .then(|| parse_terrain_water_grid(&raw, grid.heights.len()))
+            .transpose()
+            .map_err(|_| failure(WorkbenchFailureCode::Protocol))?;
+        let water_summary = water.as_ref().map(summarize_terrain_water_grid);
         Ok(WorkbenchTerrainSample {
             bridge_version: raw.bridge_version,
             protocol_version: raw.protocol_version,
@@ -1641,6 +1683,8 @@ impl WorkbenchController {
             terrain: Some(terrain),
             grid: Some(grid),
             summary: Some(summary),
+            water,
+            water_summary,
         })
     }
 
@@ -3517,6 +3561,12 @@ struct RawBridgeTerrainSample {
     grid_height: u32,
     #[serde(default)]
     heights: String,
+    #[serde(rename = "waterTypes", default)]
+    water_types: String,
+    #[serde(rename = "waterSurfaceHeights", default)]
+    water_surface_heights: String,
+    #[serde(rename = "waterDepthsAboveTerrain", default)]
+    water_depths_above_terrain: String,
     #[serde(rename = "boundsMinX", default)]
     bounds_min_x: f32,
     #[serde(rename = "boundsMinY", default)]
@@ -3716,6 +3766,81 @@ fn summarize_terrain_grid(grid: &WorkbenchTerrainGrid) -> WorkbenchTerrainSummar
         steepest_adjacent_slope_degrees: steepest.as_ref().map(|(slope, _)| *slope),
         steepest_adjacent_slope_position: steepest.map(|(_, position)| position),
     }
+}
+
+fn parse_terrain_water_grid(
+    raw: &RawBridgeTerrainSample,
+    sample_count: usize,
+) -> Result<WorkbenchTerrainWaterGrid, ()> {
+    let types = raw
+        .water_types
+        .split(';')
+        .map(|value| match value {
+            "~" => Ok(None),
+            "n" => Ok(Some(WorkbenchTerrainWaterType::None)),
+            "o" => Ok(Some(WorkbenchTerrainWaterType::Ocean)),
+            "p" => Ok(Some(WorkbenchTerrainWaterType::Pond)),
+            "r" => Ok(Some(WorkbenchTerrainWaterType::River)),
+            _ => Err(()),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let values = |encoded: &str| {
+        encoded
+            .split(';')
+            .map(|value| {
+                if value == "~" {
+                    Ok(None)
+                } else {
+                    value
+                        .parse::<f32>()
+                        .ok()
+                        .filter(|value| value.is_finite())
+                        .map(Some)
+                        .ok_or(())
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()
+    };
+    let surface_heights = values(&raw.water_surface_heights)?;
+    let depths_above_terrain = values(&raw.water_depths_above_terrain)?;
+    if types.len() != sample_count
+        || surface_heights.len() != sample_count
+        || depths_above_terrain.len() != sample_count
+    {
+        return Err(());
+    }
+    Ok(WorkbenchTerrainWaterGrid {
+        types,
+        surface_heights,
+        depths_above_terrain,
+    })
+}
+
+fn summarize_terrain_water_grid(grid: &WorkbenchTerrainWaterGrid) -> WorkbenchTerrainWaterSummary {
+    let mut summary = WorkbenchTerrainWaterSummary {
+        wet_sample_count: 0,
+        ocean_sample_count: 0,
+        pond_sample_count: 0,
+        river_sample_count: 0,
+        maximum_depth_above_terrain: None,
+    };
+    for (kind, depth) in grid.types.iter().zip(&grid.depths_above_terrain) {
+        match kind {
+            Some(WorkbenchTerrainWaterType::Ocean) => summary.ocean_sample_count += 1,
+            Some(WorkbenchTerrainWaterType::Pond) => summary.pond_sample_count += 1,
+            Some(WorkbenchTerrainWaterType::River) => summary.river_sample_count += 1,
+            _ => continue,
+        }
+        summary.wet_sample_count += 1;
+        if let Some(depth) = depth {
+            summary.maximum_depth_above_terrain = Some(
+                summary
+                    .maximum_depth_above_terrain
+                    .map_or(*depth, |maximum| maximum.max(*depth)),
+            );
+        }
+    }
+    summary
 }
 
 fn play_session(
@@ -4685,7 +4810,7 @@ class RST_WorkbenchCapabilities : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchCapabilitiesResponse response = new RST_WorkbenchCapabilitiesResponse();
-		response.bridgeVersion = "1.20.0";
+		response.bridgeVersion = "1.29.0";
 	response.protocolVersion = 1;
 	response.capabilities = "state;open-world;play-session;project-context;inspect-resource;world-selection;entity-hierarchy;list-resources;list-entities;layer-state;inspect-entity;set-selection;clear-selection;entity-position;entity-details;create-entity;rename-entity;delete-entity;move-entity;rotate-entity;reparent-entity;duplicate-entity;entity-properties;components;component-properties";
 		return response;
@@ -4733,7 +4858,7 @@ class RST_WorkbenchState : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchStateResponse response = new RST_WorkbenchStateResponse();
-	response.bridgeVersion = "1.20.0";
+	response.bridgeVersion = "1.29.0";
 		response.protocolVersion = 1;
 		response.mode = "workbench";
 		response.playSession = "unavailable";
@@ -4924,7 +5049,7 @@ class RST_WorkbenchProjectContext : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchProjectContextResponse response = new RST_WorkbenchProjectContextResponse();
-		response.bridgeVersion = "1.20.0";
+		response.bridgeVersion = "1.29.0";
 		response.protocolVersion = 1;
 		array<string> addonGuids = new array<string>();
 		GameProject.GetLoadedAddons(addonGuids);
@@ -5042,7 +5167,7 @@ class RST_WorkbenchWorldSelection : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchWorldSelectionResponse response = new RST_WorkbenchWorldSelectionResponse();
-		response.bridgeVersion = "1.20.0";
+		response.bridgeVersion = "1.29.0";
 		response.protocolVersion = 1;
 		WorldEditor worldEditor = Workbench.GetModule(WorldEditor);
 		if (!worldEditor)
@@ -5120,7 +5245,7 @@ class RST_WorkbenchSelectedEntityHierarchy : NetApiHandler
 	{
 		RST_WorkbenchSelectedEntityHierarchyRequest typedRequest = RST_WorkbenchSelectedEntityHierarchyRequest.Cast(request);
 		RST_WorkbenchSelectedEntityHierarchyResponse response = new RST_WorkbenchSelectedEntityHierarchyResponse();
-		response.bridgeVersion = "1.20.0";
+		response.bridgeVersion = "1.29.0";
 		response.protocolVersion = 1;
 		WorldEditor worldEditor = Workbench.GetModule(WorldEditor);
 		if (!worldEditor)
@@ -5205,7 +5330,7 @@ class RST_WorkbenchListEntities : NetApiHandler
 	{
 		RST_WorkbenchListEntitiesRequest typedRequest = RST_WorkbenchListEntitiesRequest.Cast(request);
 		RST_WorkbenchListEntitiesResponse response = new RST_WorkbenchListEntitiesResponse();
-		response.bridgeVersion = "1.20.0";
+		response.bridgeVersion = "1.29.0";
 		response.protocolVersion = 1;
 		WorldEditor worldEditor = Workbench.GetModule(WorldEditor);
 		if (!worldEditor) return response;
@@ -5264,7 +5389,7 @@ class RST_WorkbenchLayerState : NetApiHandler
 	{
 		RST_WorkbenchLayerStateRequest typedRequest = RST_WorkbenchLayerStateRequest.Cast(request);
 		RST_WorkbenchLayerStateResponse response = new RST_WorkbenchLayerStateResponse();
-		response.bridgeVersion = "1.20.0";
+		response.bridgeVersion = "1.29.0";
 		response.protocolVersion = 1;
 		response.subScene = typedRequest.subScene;
 		response.layerId = typedRequest.layerId;
@@ -5374,7 +5499,7 @@ class RST_WorkbenchInspectEntity : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchInspectEntityRequest typedRequest = RST_WorkbenchInspectEntityRequest.Cast(request);
-		RST_WorkbenchInspectEntityResponse response = new RST_WorkbenchInspectEntityResponse(); response.bridgeVersion = "1.20.0"; response.protocolVersion = 1;
+		RST_WorkbenchInspectEntityResponse response = new RST_WorkbenchInspectEntityResponse(); response.bridgeVersion = "1.29.0"; response.protocolVersion = 1;
 		WorldEditor worldEditor = Workbench.GetModule(WorldEditor); if (!worldEditor) { response.status = "world-editor-unavailable"; return response; }
 		WorldEditorAPI api = worldEditor.GetApi(); if (!api) { response.status = "world-editor-api-unavailable"; return response; }
 		response.editorAvailable = true;
@@ -5419,7 +5544,7 @@ class RST_WorkbenchSetSelection : NetApiHandler
 	{
 		RST_WorkbenchSetSelectionRequest typedRequest = RST_WorkbenchSetSelectionRequest.Cast(request);
 		RST_WorkbenchSetSelectionResponse response = new RST_WorkbenchSetSelectionResponse();
-		response.bridgeVersion = "1.20.0";
+		response.bridgeVersion = "1.29.0";
 		response.protocolVersion = 1;
 		WorldEditor editor = Workbench.GetModule(WorldEditor);
 		if (!editor) { response.status = "world-editor-unavailable"; return response; }
@@ -5478,7 +5603,7 @@ class RST_WorkbenchFindEntitiesByRadius : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchFindEntitiesByRadiusRequest typedRequest = RST_WorkbenchFindEntitiesByRadiusRequest.Cast(request);
-		RST_WorkbenchFindEntitiesByRadiusResponse response = new RST_WorkbenchFindEntitiesByRadiusResponse(); response.bridgeVersion = "1.20.0"; response.protocolVersion = 1;
+		RST_WorkbenchFindEntitiesByRadiusResponse response = new RST_WorkbenchFindEntitiesByRadiusResponse(); response.bridgeVersion = "1.29.0"; response.protocolVersion = 1;
 		response.centerX = typedRequest.centerX; response.centerY = typedRequest.centerY; response.centerZ = typedRequest.centerZ; response.radiusMeters = typedRequest.radiusMeters; response.queryScope = typedRequest.queryScope; response.requireObject = typedRequest.requireObject; response.excludeProxies = typedRequest.excludeProxies;
 		if (typedRequest.radiusMeters < 0.01 || typedRequest.radiusMeters > 50000 || typedRequest.limit < 1 || typedRequest.limit > 100) { response.status = "invalid-query"; return response; }
 		WorldEditor editor = Workbench.GetModule(WorldEditor); if (!editor) { response.status = "world-editor-unavailable"; return response; }
@@ -5502,7 +5627,7 @@ class RST_WorkbenchFindEntitiesByRadius : NetApiHandler
 const BRIDGE_TERRAIN_SAMPLE_SOURCE: &str = r#"#ifdef WORKBENCH
 class RST_WorkbenchSampleTerrainRequest : JsonApiStruct
 {
-	float centerX; float centerZ; float halfExtentMeters; float spacingMeters;
+	float centerX; float centerZ; float halfExtentMeters; float spacingMeters; bool includeWater;
 	void RST_WorkbenchSampleTerrainRequest() { RegAll(); }
 }
 class RST_WorkbenchSampleTerrainResponse : JsonApiStruct
@@ -5510,6 +5635,7 @@ class RST_WorkbenchSampleTerrainResponse : JsonApiStruct
 	string bridgeVersion; int protocolVersion; string status;
 	float centerX; float centerZ; float halfExtentMeters; float requestedSpacingMeters; float effectiveSpacingMeters; bool spacingClamped;
 	float gridOriginX; float gridOriginZ; int gridWidth; int gridHeight; string heights;
+	string waterTypes; string waterSurfaceHeights; string waterDepthsAboveTerrain;
 	float boundsMinX; float boundsMinY; float boundsMinZ; float boundsMaxX; float boundsMaxY; float boundsMaxZ;
 	int heightmapResolutionX; int heightmapResolutionZ; float nativeSpacingMeters; int tileCountX; int tileCountZ;
 	void RST_WorkbenchSampleTerrainResponse() { RegAll(); }
@@ -5521,11 +5647,12 @@ class RST_WorkbenchSampleTerrain : NetApiHandler
 	{
 		RST_WorkbenchSampleTerrainRequest typedRequest = RST_WorkbenchSampleTerrainRequest.Cast(request);
 		RST_WorkbenchSampleTerrainResponse response = new RST_WorkbenchSampleTerrainResponse();
-		response.bridgeVersion = "1.20.0"; response.protocolVersion = 1;
+		response.bridgeVersion = "1.29.0"; response.protocolVersion = 1;
 		response.centerX = typedRequest.centerX; response.centerZ = typedRequest.centerZ; response.halfExtentMeters = typedRequest.halfExtentMeters; response.requestedSpacingMeters = typedRequest.spacingMeters;
 		if (typedRequest.halfExtentMeters < 0.01 || typedRequest.halfExtentMeters > 500 || typedRequest.spacingMeters < 0 || typedRequest.spacingMeters > 500) { response.status = "invalid-query"; return response; }
 		WorldEditor editor = Workbench.GetModule(WorldEditor); if (!editor) { response.status = "world-editor-unavailable"; return response; }
 		WorldEditorAPI api = editor.GetApi(); if (!api) { response.status = "world-editor-api-unavailable"; return response; }
+		BaseWorld world = api.GetWorld(); if (typedRequest.includeWater && !world) { response.status = "water-world-unavailable"; return response; }
 		vector boundsMin, boundsMax;
 		if (!editor.GetTerrainBounds(boundsMin, boundsMax)) { response.status = "terrain-unavailable"; return response; }
 		response.boundsMinX = boundsMin[0]; response.boundsMinY = boundsMin[1]; response.boundsMinZ = boundsMin[2]; response.boundsMaxX = boundsMax[0]; response.boundsMaxY = boundsMax[1]; response.boundsMaxZ = boundsMax[2];
@@ -5546,8 +5673,27 @@ class RST_WorkbenchSampleTerrain : NetApiHandler
 			for (int x = 0; x < response.gridWidth; x++)
 			{
 				if (!response.heights.IsEmpty()) response.heights += ";";
+				if (typedRequest.includeWater && !response.waterTypes.IsEmpty()) { response.waterTypes += ";"; response.waterSurfaceHeights += ";"; response.waterDepthsAboveTerrain += ";"; }
 				float height; float sampleX = response.gridOriginX + x * response.effectiveSpacingMeters; float sampleZ = response.gridOriginZ + z * response.effectiveSpacingMeters;
-				if (api.TryGetTerrainSurfaceY(sampleX, sampleZ, height)) response.heights += height.ToString(); else response.heights += "~";
+				if (!api.TryGetTerrainSurfaceY(sampleX, sampleZ, height)) { response.heights += "~"; if (typedRequest.includeWater) { response.waterTypes += "~"; response.waterSurfaceHeights += "~"; response.waterDepthsAboveTerrain += "~"; } continue; }
+				response.heights += height.ToString();
+				if (typedRequest.includeWater)
+				{
+					vector waterSurface; EWaterSurfaceType waterType; vector transformWS[4]; vector obbExtents; float surfaceY;
+					if (ChimeraWorldUtils.TryGetWaterSurface(world, Vector(sampleX, height, sampleZ), waterSurface, waterType, transformWS, obbExtents))
+					{
+						if (waterType == EWaterSurfaceType.WST_OCEAN) response.waterTypes += "o"; else if (waterType == EWaterSurfaceType.WST_POND) response.waterTypes += "p"; else if (waterType == EWaterSurfaceType.WST_RIVER) response.waterTypes += "r"; else response.waterTypes += "n";
+						surfaceY = waterSurface[1];
+					}
+					else
+					{
+						response.waterTypes += "n";
+						response.waterSurfaceHeights += "~";
+						response.waterDepthsAboveTerrain += "~";
+						continue;
+					}
+					response.waterSurfaceHeights += surfaceY.ToString(); response.waterDepthsAboveTerrain += (surfaceY - height).ToString();
+				}
 			}
 		}
 		response.status = "available"; return response;
@@ -5578,7 +5724,7 @@ class RST_WorkbenchClearSelection : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchClearSelectionResponse response = new RST_WorkbenchClearSelectionResponse();
-		response.bridgeVersion = "1.20.0";
+		response.bridgeVersion = "1.29.0";
 		response.protocolVersion = 1;
 		WorldEditor editor = Workbench.GetModule(WorldEditor);
 		if (!editor)
@@ -5822,7 +5968,7 @@ class RST_WorkbenchEntityMutationBase : NetApiHandler
 	RST_WorkbenchEntityMutationResponse Response()
 	{
 		RST_WorkbenchEntityMutationResponse response = new RST_WorkbenchEntityMutationResponse();
-		response.bridgeVersion = "1.20.0";
+		response.bridgeVersion = "1.29.0";
 		response.protocolVersion = 1;
 		response.activeLayerId = -1;
 		return response;
@@ -6222,7 +6368,7 @@ class RST_WorkbenchComponentsResponse : JsonApiStruct { string bridgeVersion; in
 class RST_WorkbenchComponentsBase : NetApiHandler
 {
 	IEntitySource Find(WorldEditorAPI api, string id) { for (int i = 0, count = api.GetEditorEntityCount(); i < count; i++) { IEntitySource candidate = api.GetEditorEntity(i); if (candidate && candidate.GetID().ToString() == id) return candidate; } return null; }
-	RST_WorkbenchComponentsResponse Response() { RST_WorkbenchComponentsResponse response = new RST_WorkbenchComponentsResponse(); response.bridgeVersion = "1.20.0"; response.protocolVersion = 1; return response; }
+	RST_WorkbenchComponentsResponse Response() { RST_WorkbenchComponentsResponse response = new RST_WorkbenchComponentsResponse(); response.bridgeVersion = "1.29.0"; response.protocolVersion = 1; return response; }
 	// Workbench exposes authored direct components through the `components` container in
 	// some editor contexts, even when IEntitySource.GetComponentCount() is zero.
 	int ComponentCount(IEntitySource entity) { int count = entity.GetComponentCount(); if (count == 0) { ref BaseContainerList components = entity.GetObjectArray("components"); if (components) count = components.Count(); else count = entity.GetNumChildren(); } return count; }
@@ -6467,7 +6613,7 @@ class RST_WorkbenchListEntityProperties : RST_WorkbenchEntityMutationBase
 	{
 		RST_WorkbenchPropertiesRequest r = RST_WorkbenchPropertiesRequest.Cast(request);
 		RST_WorkbenchPropertiesResponse response = new RST_WorkbenchPropertiesResponse();
-		response.bridgeVersion = "1.20.0";
+		response.bridgeVersion = "1.29.0";
 		response.protocolVersion = 1;
 
 		WorldEditor editor = Workbench.GetModule(WorldEditor);
@@ -6593,7 +6739,7 @@ class RST_WorkbenchListResources : NetApiHandler
 	{
 		RST_WorkbenchListResourcesRequest typedRequest = RST_WorkbenchListResourcesRequest.Cast(request);
 		RST_WorkbenchListResourcesResponse response = new RST_WorkbenchListResourcesResponse();
-		response.bridgeVersion = "1.20.0";
+		response.bridgeVersion = "1.29.0";
 		response.protocolVersion = 1;
 		array<string> addonGuids = new array<string>();
 		GameProject.GetLoadedAddons(addonGuids);
@@ -6837,7 +6983,7 @@ mod tests {
             assert_eq!(request["subScene"], 2);
             assert_eq!(request["layerId"], 7);
             json!({
-                "bridgeVersion": "1.20.0",
+                "bridgeVersion": "1.29.0",
                 "protocolVersion": 1,
                 "worldPath": "$TestBullshit:worlds/test/arland_test.ent",
                 "entities": "0x0000000000000001 {}|GenericWorldEntity|0|0",
@@ -6873,7 +7019,7 @@ mod tests {
         let (port, peer) = start_peer(|request| {
             assert_eq!(request["APIFunc"], "RST_WorkbenchListEntities");
             json!({
-                "bridgeVersion": "1.20.0",
+                "bridgeVersion": "1.29.0",
                 "protocolVersion": 1,
                 "worldPath": "$Test:worlds/test.ent",
                 "entities": "0x0000000000000001 {}|TestEntity|2|7",
@@ -6913,7 +7059,7 @@ mod tests {
             assert_eq!(request["subScene"], -1);
             assert_eq!(request["layerId"], -1);
             json!({
-                "bridgeVersion": "1.20.0",
+                "bridgeVersion": "1.29.0",
                 "protocolVersion": 1,
                 "worldPath": "$Test:worlds/test.ent",
                 "entities": "",
@@ -6945,7 +7091,7 @@ mod tests {
                 json!({"APIFunc":"RST_WorkbenchLayerState","subScene":2,"layerId":7})
             );
             json!({
-                "bridgeVersion":"1.20.0",
+                "bridgeVersion":"1.29.0",
                 "protocolVersion":1,
                 "status":"available",
                 "subScene":2,
@@ -6985,11 +7131,12 @@ mod tests {
                     "centerX": 100.0,
                     "centerZ": 200.0,
                     "halfExtentMeters": 30.0,
-                    "spacingMeters": 1.0
+                    "spacingMeters": 1.0,
+                    "includeWater": true
                 })
             );
             json!({
-                "bridgeVersion": "1.20.0",
+                "bridgeVersion": "1.29.0",
                 "protocolVersion": 1,
                 "status": "available",
                 "centerX": 100.0,
@@ -7003,6 +7150,9 @@ mod tests {
                 "gridWidth": 2,
                 "gridHeight": 2,
                 "heights": "10;20;~;30",
+                "waterTypes": "n;p;~;r",
+                "waterSurfaceHeights": "~;22;~;35",
+                "waterDepthsAboveTerrain": "~;2;~;5",
                 "boundsMinX": 0.0,
                 "boundsMinY": -5.0,
                 "boundsMinZ": 0.0,
@@ -7031,6 +7181,7 @@ mod tests {
                 center_z: 200.0,
                 half_extent_meters: 30.0,
                 spacing_meters: Some(1.0),
+                include_water: true,
             })
             .unwrap();
 
@@ -7049,6 +7200,21 @@ mod tests {
         assert_eq!(summary.mean_height, Some(20.0));
         assert_eq!(summary.elevation_range, Some(20.0));
         assert_eq!(summary.steepest_adjacent_slope_degrees, Some(45.0));
+        let water = sample.water.expect("water grid");
+        assert_eq!(
+            water.types,
+            vec![
+                Some(super::WorkbenchTerrainWaterType::None),
+                Some(super::WorkbenchTerrainWaterType::Pond),
+                None,
+                Some(super::WorkbenchTerrainWaterType::River),
+            ]
+        );
+        let water_summary = sample.water_summary.expect("water summary");
+        assert_eq!(water_summary.wet_sample_count, 2);
+        assert_eq!(water_summary.pond_sample_count, 1);
+        assert_eq!(water_summary.river_sample_count, 1);
+        assert_eq!(water_summary.maximum_depth_above_terrain, Some(5.0));
         peer.join().unwrap();
     }
 
@@ -7061,18 +7227,21 @@ mod tests {
                 center_z: 0.0,
                 half_extent_meters: 30.0,
                 spacing_meters: None,
+                include_water: false,
             },
             super::WorkbenchTerrainSampleOptions {
                 center_x: 0.0,
                 center_z: 0.0,
                 half_extent_meters: 0.0,
                 spacing_meters: None,
+                include_water: false,
             },
             super::WorkbenchTerrainSampleOptions {
                 center_x: 0.0,
                 center_z: 0.0,
                 half_extent_meters: 30.0,
                 spacing_meters: Some(501.0),
+                include_water: false,
             },
         ] {
             assert_eq!(
@@ -7092,7 +7261,8 @@ mod tests {
                     "centerX": 0.0,
                     "centerZ": 0.0,
                     "halfExtentMeters": 30.0,
-                    "spacingMeters": 0.0
+                    "spacingMeters": 0.0,
+                    "includeWater": false
                 })
             );
             json!({"bridgeVersion":"1.19.0","protocolVersion":1,"status":"terrain-unavailable"})
@@ -7113,6 +7283,7 @@ mod tests {
                     center_z: 0.0,
                     half_extent_meters: 30.0,
                     spacing_meters: None,
+                    include_water: false,
                 })
                 .unwrap_err()
                 .code,
@@ -7275,7 +7446,7 @@ mod tests {
                 request,
                 json!({"APIFunc":"RST_WorkbenchMoveEntity","entityId":"0x01 {}","x":10.0,"y":20.0,"z":30.0})
             );
-            json!({"bridgeVersion":"1.20.0","protocolVersion":1,"status":"moved","entity":"0x01 {}|TestEntity|0|7|10|20|30"})
+            json!({"bridgeVersion":"1.29.0","protocolVersion":1,"status":"moved","entity":"0x01 {}|TestEntity|0|7|10|20|30"})
         });
         let root = test_root("move-entity");
         fs::create_dir_all(&root).unwrap();
@@ -7311,7 +7482,7 @@ mod tests {
                 request,
                 json!({"APIFunc":"RST_WorkbenchDuplicateEntity","entityId":"0x01 {}","x":11.0,"y":22.0,"z":33.0,"name":"Copy"})
             );
-            json!({"bridgeVersion":"1.20.0","protocolVersion":1,"status":"duplicated","entity":"0x02 {}|TestEntity|0|7|11|22|33"})
+            json!({"bridgeVersion":"1.29.0","protocolVersion":1,"status":"duplicated","entity":"0x02 {}|TestEntity|0|7|11|22|33"})
         });
         let root = test_root("duplicate-entity");
         fs::create_dir_all(&root).unwrap();
@@ -8053,7 +8224,7 @@ mod tests {
     #[test]
     fn mutation_audit_records_identify_the_action_without_recording_values() {
         let entity_result = super::WorkbenchEntityMutationResult {
-            bridge_version: "1.20.0".to_string(),
+            bridge_version: "1.29.0".to_string(),
             protocol_version: 1,
             status: "available".to_string(),
             active_layer_id: Some(3),
@@ -8088,7 +8259,7 @@ mod tests {
                 "value": 40,
             }),
             &super::WorkbenchComponentResult {
-                bridge_version: "1.20.0".to_string(),
+                bridge_version: "1.29.0".to_string(),
                 protocol_version: 1,
                 status: "available".to_string(),
                 entity: None,
@@ -8736,7 +8907,7 @@ mod tests {
                     "value": "3.75",
                 })
             );
-            json!({"bridgeVersion":"1.20.0","protocolVersion":1,"status":"property-set","activeLayerId":7,"entity":""})
+            json!({"bridgeVersion":"1.29.0","protocolVersion":1,"status":"property-set","activeLayerId":7,"entity":""})
         });
         let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
             gateway: super::WorkbenchGatewayOptions {
@@ -8775,7 +8946,7 @@ mod tests {
                 request,
                 json!({"APIFunc":"RST_WorkbenchInspectComponent","entityId":"0x01 {}","componentId":"cmp1:0:TestComponent"})
             );
-            json!({"bridgeVersion":"1.20.0","protocolVersion":1,"status":"available","entity":"","components":"0|TestComponent","properties":"m_fRadius|float|2.5|1"})
+            json!({"bridgeVersion":"1.29.0","protocolVersion":1,"status":"available","entity":"","components":"0|TestComponent","properties":"m_fRadius|float|2.5|1"})
         });
         let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
             gateway: super::WorkbenchGatewayOptions {
