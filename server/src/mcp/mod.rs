@@ -3794,28 +3794,33 @@ fn tool_error(code: &str, cause: &str, recovery: &str) -> CallToolResult {
 mod tests {
     use super::{
         game_data_status_tool, inspect_game_data_symbol_tool, render_api_reference,
-        workbench_add_component_tool, workbench_duplicate_entity_tool,
-        workbench_inspect_component_tool, workbench_install_bridge_tool,
+        workbench_add_component_tool, workbench_create_prefab_tool,
+        workbench_duplicate_entity_tool, workbench_inspect_component_tool,
+        workbench_inspect_prefab_context_tool, workbench_install_bridge_tool,
         workbench_layer_state_tool, workbench_list_components_tool, workbench_list_entities_tool,
         workbench_list_entity_properties_tool, workbench_list_resources_tool,
         workbench_move_entity_tool, workbench_open_world_tool, workbench_project_context_tool,
         workbench_reload_tool, workbench_remove_component_tool, workbench_reparent_entity_tool,
-        workbench_rotate_entity_tool, workbench_sample_terrain_tool,
+        workbench_rotate_entity_tool, workbench_sample_terrain_tool, workbench_save_prefab_tool,
         workbench_selected_entity_hierarchy_tool, workbench_set_component_properties_tool,
-        workbench_set_entity_property_tool, workbench_start_play_session_tool,
+        workbench_set_entity_property_tool, workbench_set_prefab_component_property_tool,
+        workbench_set_prefab_property_tool, workbench_start_play_session_tool,
         workbench_status_tool, workbench_stop_play_session_tool, workbench_trace_tool,
         workbench_validate_scripts_tool, workbench_viewport_context_tool,
         workbench_world_selection_summary_tool, DEADLINE_EXCEEDED_CODE, GAME_DATA_STATUS_TOOL_NAME,
         RESPONSE_TOO_LARGE_CODE, WORKBENCH_ADD_COMPONENT_TOOL_NAME,
-        WORKBENCH_DUPLICATE_ENTITY_TOOL_NAME, WORKBENCH_INSPECT_COMPONENT_TOOL_NAME,
+        WORKBENCH_CREATE_PREFAB_TOOL_NAME, WORKBENCH_DUPLICATE_ENTITY_TOOL_NAME,
+        WORKBENCH_INSPECT_COMPONENT_TOOL_NAME, WORKBENCH_INSPECT_PREFAB_CONTEXT_TOOL_NAME,
         WORKBENCH_LAYER_STATE_TOOL_NAME, WORKBENCH_LIST_COMPONENTS_TOOL_NAME,
         WORKBENCH_LIST_ENTITIES_TOOL_NAME, WORKBENCH_LIST_ENTITY_PROPERTIES_TOOL_NAME,
         WORKBENCH_LIST_RESOURCES_TOOL_NAME, WORKBENCH_MOVE_ENTITY_TOOL_NAME,
         WORKBENCH_OPEN_WORLD_TOOL_NAME, WORKBENCH_PROJECT_CONTEXT_TOOL_NAME,
         WORKBENCH_RELOAD_TOOL_NAME, WORKBENCH_REMOVE_COMPONENT_TOOL_NAME,
         WORKBENCH_REPARENT_ENTITY_TOOL_NAME, WORKBENCH_ROTATE_ENTITY_TOOL_NAME,
-        WORKBENCH_SAMPLE_TERRAIN_TOOL_NAME, WORKBENCH_SELECTED_ENTITY_HIERARCHY_TOOL_NAME,
+        WORKBENCH_SAMPLE_TERRAIN_TOOL_NAME, WORKBENCH_SAVE_PREFAB_TOOL_NAME,
+        WORKBENCH_SELECTED_ENTITY_HIERARCHY_TOOL_NAME,
         WORKBENCH_SET_COMPONENT_PROPERTIES_TOOL_NAME, WORKBENCH_SET_ENTITY_PROPERTY_TOOL_NAME,
+        WORKBENCH_SET_PREFAB_COMPONENT_PROPERTY_TOOL_NAME, WORKBENCH_SET_PREFAB_PROPERTY_TOOL_NAME,
         WORKBENCH_START_PLAY_SESSION_TOOL_NAME, WORKBENCH_STATUS_TOOL_NAME,
         WORKBENCH_STOP_PLAY_SESSION_TOOL_NAME, WORKBENCH_TRACE_TOOL_NAME,
         WORKBENCH_VALIDATE_SCRIPTS_TOOL_NAME, WORKBENCH_VIEWPORT_CONTEXT_TOOL_NAME,
@@ -3901,6 +3906,11 @@ mod tests {
         let remove_component = workbench_remove_component_tool();
         let entity_properties = workbench_list_entity_properties_tool();
         let set_entity_properties = workbench_set_entity_property_tool();
+        let prefab_context = workbench_inspect_prefab_context_tool();
+        let create_prefab = workbench_create_prefab_tool();
+        let save_prefab = workbench_save_prefab_tool();
+        let set_prefab_property = workbench_set_prefab_property_tool();
+        let set_prefab_component_property = workbench_set_prefab_component_property_tool();
         assert_eq!(status.name, WORKBENCH_STATUS_TOOL_NAME);
         assert_eq!(validation.name, WORKBENCH_VALIDATE_SCRIPTS_TOOL_NAME);
         assert_eq!(reload.name, WORKBENCH_RELOAD_TOOL_NAME);
@@ -3980,6 +3990,40 @@ mod tests {
             set_entity_properties.name,
             WORKBENCH_SET_ENTITY_PROPERTY_TOOL_NAME
         );
+        assert_eq!(
+            prefab_context.name,
+            WORKBENCH_INSPECT_PREFAB_CONTEXT_TOOL_NAME
+        );
+        assert_eq!(create_prefab.name, WORKBENCH_CREATE_PREFAB_TOOL_NAME);
+        assert_eq!(save_prefab.name, WORKBENCH_SAVE_PREFAB_TOOL_NAME);
+        assert_eq!(
+            set_prefab_property.name,
+            WORKBENCH_SET_PREFAB_PROPERTY_TOOL_NAME
+        );
+        assert_eq!(
+            set_prefab_component_property.name,
+            WORKBENCH_SET_PREFAB_COMPONENT_PROPERTY_TOOL_NAME
+        );
+        assert_eq!(
+            prefab_context
+                .annotations
+                .as_ref()
+                .and_then(|annotations| annotations.read_only_hint),
+            Some(true)
+        );
+        for tool in [
+            &create_prefab,
+            &save_prefab,
+            &set_prefab_property,
+            &set_prefab_component_property,
+        ] {
+            assert_eq!(
+                tool.annotations
+                    .as_ref()
+                    .and_then(|annotations| annotations.read_only_hint),
+                Some(false)
+            );
+        }
         assert_ne!(stop_play.name, "workbench_stop");
         assert_eq!(
             status
@@ -4022,5 +4066,7 @@ mod tests {
         assert!(reference.contains("## `workbench_validate_scripts`"));
         assert!(reference.contains("## `workbench_world_selection_summary`"));
         assert!(reference.contains("## `workbench_selected_entity_hierarchy`"));
+        assert!(reference.contains("## `workbench_inspect_prefab_context`"));
+        assert!(reference.contains("## `workbench_create_prefab`"));
     }
 }

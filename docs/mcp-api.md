@@ -5167,6 +5167,16 @@ Inspect one exact World Editor entity or prefab resource's bounded prefab contex
       "minimum": 0,
       "type": "integer"
     },
+    "children": {
+      "description": "Direct scene/prefab children only; ancestor resources are reported separately.",
+      "items": {
+        "$ref": "#/$defs/WorkbenchSelectedEntity"
+      },
+      "type": "array"
+    },
+    "childrenTruncated": {
+      "type": "boolean"
+    },
     "components": {
       "items": {
         "$ref": "#/$defs/WorkbenchComponent"
@@ -5236,6 +5246,8 @@ Inspect one exact World Editor entity or prefab resource's bounded prefab contex
     "ancestorResourcesTruncated",
     "prefabEditMode",
     "components",
+    "children",
+    "childrenTruncated",
     "properties",
     "propertiesTruncated",
     "childCount"
@@ -5400,6 +5412,18 @@ Preview then explicitly confirm creation of one prefab from one exact scene enti
     "confirmationToken": {
       "type": [
         "string",
+        "null"
+      ]
+    },
+    "destination": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "destinationExists": {
+      "type": [
+        "boolean",
         "null"
       ]
     },
@@ -5583,6 +5607,18 @@ Preview then explicitly confirm saving the exact prefab currently represented by
         "null"
       ]
     },
+    "destination": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "destinationExists": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
     "entity": {
       "anyOf": [
         {
@@ -5760,6 +5796,18 @@ Set one typed prefab property only in prefab-edit mode using a write descriptor 
     "confirmationToken": {
       "type": [
         "string",
+        "null"
+      ]
+    },
+    "destination": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "destinationExists": {
+      "type": [
+        "boolean",
         "null"
       ]
     },
@@ -6779,6 +6827,18 @@ Create one verified entity-template resource or editor entity class at an explic
         "null"
       ]
     },
+    "destination": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "destinationExists": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
     "entity": {
       "anyOf": [
         {
@@ -6953,6 +7013,18 @@ Rename one exact live World Editor entity identity in one native Workbench undo 
     "confirmationToken": {
       "type": [
         "string",
+        "null"
+      ]
+    },
+    "destination": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "destinationExists": {
+      "type": [
+        "boolean",
         "null"
       ]
     },
@@ -7133,6 +7205,18 @@ Preview or explicitly confirm deletion of one exact live World Editor entity ide
     "confirmationToken": {
       "type": [
         "string",
+        "null"
+      ]
+    },
+    "destination": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "destinationExists": {
+      "type": [
+        "boolean",
         "null"
       ]
     },
@@ -7336,6 +7420,18 @@ Move one exact live World Editor entity to an explicit position in one native Wo
         "null"
       ]
     },
+    "destination": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "destinationExists": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
     "entity": {
       "anyOf": [
         {
@@ -7536,6 +7632,18 @@ Rotate one exact live World Editor entity to explicit angles in one native Workb
         "null"
       ]
     },
+    "destination": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "destinationExists": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
     "entity": {
       "anyOf": [
         {
@@ -7711,6 +7819,18 @@ Parent one exact live World Editor entity beneath one exact live parent in one n
     "confirmationToken": {
       "type": [
         "string",
+        "null"
+      ]
+    },
+    "destination": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "destinationExists": {
+      "type": [
+        "boolean",
         "null"
       ]
     },
@@ -7918,6 +8038,18 @@ Duplicate one exact live World Editor entity at an explicit position without cha
     "confirmationToken": {
       "type": [
         "string",
+        "null"
+      ]
+    },
+    "destination": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "destinationExists": {
+      "type": [
+        "boolean",
         "null"
       ]
     },
@@ -9315,6 +9447,18 @@ Set one direct entity property using only a typed write descriptor returned by w
     "confirmationToken": {
       "type": [
         "string",
+        "null"
+      ]
+    },
+    "destination": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "destinationExists": {
+      "type": [
+        "boolean",
         "null"
       ]
     },
