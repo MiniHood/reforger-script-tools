@@ -45,6 +45,9 @@ implementation slice is progress, not a completed ticket.
 - [MCP server exploration journal](research/mcp-server-research.md): current
   capability boundary and future Workbench expansion for the local Reforger
   MCP runtime.
+- [ArmoryForger MCP useful-feature backlog](research/mcp-feature-backlog-research.md):
+  evidence-led comparison and prioritised candidate capabilities beyond the
+  current MCP tool surface.
 - [Workbench NET API exploration journal](research/workbench-net-api-research.md):
   extracted protocol evidence, adapter boundary, and validation backlog.
 - [Workbench compiler-validation research](research/workbench-compiler-validation-research.md):
