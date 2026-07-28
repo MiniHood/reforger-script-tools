@@ -29,11 +29,11 @@ use crate::workbench::{
     WorkbenchEntityRadiusQuery, WorkbenchEntityRadiusQueryOptions, WorkbenchEntitySelectionResult,
     WorkbenchFailure, WorkbenchFailureCode, WorkbenchInstallAuthorization, WorkbenchLayerState,
     WorkbenchLiveState, WorkbenchLogRead, WorkbenchOpenWorldResult, WorkbenchOverview,
-    WorkbenchPlaySessionResult, WorkbenchProcessResult, WorkbenchProjectContext,
-    WorkbenchPropertyList, WorkbenchResourceInspection, WorkbenchResourceListPage,
-    WorkbenchScriptActivationResult, WorkbenchSelectedEntityHierarchy, WorkbenchTerrainSample,
-    WorkbenchTerrainSampleOptions, WorkbenchTraceOptions, WorkbenchTraceResult,
-    WorkbenchTraceShape, WorkbenchValidationPage, WorkbenchViewportContext,
+    WorkbenchPlaySessionResult, WorkbenchPrefabContext, WorkbenchProcessResult,
+    WorkbenchProjectContext, WorkbenchPropertyList, WorkbenchResourceInspection,
+    WorkbenchResourceListPage, WorkbenchScriptActivationResult, WorkbenchSelectedEntityHierarchy,
+    WorkbenchTerrainSample, WorkbenchTerrainSampleOptions, WorkbenchTraceOptions,
+    WorkbenchTraceResult, WorkbenchTraceShape, WorkbenchValidationPage, WorkbenchViewportContext,
     WorkbenchViewportContextOptions, WorkbenchWorldSelectionSummary,
 };
 use rmcp::model::{
@@ -76,6 +76,12 @@ pub const WORKBENCH_FIND_ENTITIES_BY_RADIUS_TOOL_NAME: &str = "workbench_find_en
 pub const WORKBENCH_SAMPLE_TERRAIN_TOOL_NAME: &str = "workbench_sample_terrain";
 pub const WORKBENCH_VIEWPORT_CONTEXT_TOOL_NAME: &str = "workbench_get_viewport_context";
 pub const WORKBENCH_TRACE_TOOL_NAME: &str = "workbench_trace";
+pub const WORKBENCH_INSPECT_PREFAB_CONTEXT_TOOL_NAME: &str = "workbench_inspect_prefab_context";
+pub const WORKBENCH_CREATE_PREFAB_TOOL_NAME: &str = "workbench_create_prefab";
+pub const WORKBENCH_SAVE_PREFAB_TOOL_NAME: &str = "workbench_save_prefab";
+pub const WORKBENCH_SET_PREFAB_PROPERTY_TOOL_NAME: &str = "workbench_set_prefab_property";
+pub const WORKBENCH_SET_PREFAB_COMPONENT_PROPERTY_TOOL_NAME: &str =
+    "workbench_set_prefab_component_property";
 pub const WORKBENCH_INSPECT_ENTITY_TOOL_NAME: &str = "workbench_inspect_entity";
 pub const WORKBENCH_SET_SELECTION_TOOL_NAME: &str = "workbench_set_selection";
 pub const WORKBENCH_CLEAR_SELECTION_TOOL_NAME: &str = "workbench_clear_selection";
@@ -136,6 +142,11 @@ const WORKBENCH_FIND_ENTITIES_BY_RADIUS_DESCRIPTION: &str = "Find a bounded set 
 const WORKBENCH_SAMPLE_TERRAIN_DESCRIPTION: &str = "Sample a bounded square of loaded World Editor terrain heights around a world X/Z coordinate. The result includes native terrain resolution and planar spacing, plus a row-major grid and derived elevation/slope summary. At most 4,096 cells are returned; heights[z * width + x] is at origin.x + x * effectiveSpacingMeters, origin.z + z * effectiveSpacingMeters, so X changes fastest. Set includeWater to add same-lattice water facts: the engine point-water API first, then a water-targeted physics trace for generated lakes and rivers. It does not inspect authored geometry, inspect materials/entities, or edit the world.";
 const WORKBENCH_VIEWPORT_CONTEXT_DESCRIPTION: &str = "Read the active World Editor camera position and terrain cursor world position. Set includeRay to add screen coordinates, viewport dimensions, and native cursor-ray diagnostics.";
 const WORKBENCH_TRACE_DESCRIPTION: &str = "Perform one bounded, read-only World Editor collision sweep between explicit world positions. Supports line, sphere, and box shapes with explicit entity, terrain, and ocean target selection; returns the nearest hit or a successful miss. Start/end separation is limited to 10,000 m; sphere radius and each box dimension are limited to 1,000 m. A targetLayers mask is accepted only for entity traces.";
+const WORKBENCH_INSPECT_PREFAB_CONTEXT_DESCRIPTION: &str = "Inspect one exact World Editor entity or prefab resource's bounded prefab context: resource provenance, contributor add-ons, ancestor chain, prefab-edit state, root components, and scalar direct-override facts. Scene hierarchy and prefab ancestry remain distinct.";
+const WORKBENCH_CREATE_PREFAB_DESCRIPTION: &str = "Preview then explicitly confirm creation of one prefab from one exact scene entity at a project-relative destination. This never accepts an absolute filesystem path.";
+const WORKBENCH_SAVE_PREFAB_DESCRIPTION: &str = "Preview then explicitly confirm saving the exact prefab currently represented by one World Editor entity in prefab-edit mode.";
+const WORKBENCH_SET_PREFAB_PROPERTY_DESCRIPTION: &str = "Set one typed prefab property only in prefab-edit mode using a write descriptor returned by workbench_inspect_prefab_context. This does not save the prefab.";
+const WORKBENCH_SET_PREFAB_COMPONENT_PROPERTY_DESCRIPTION: &str = "Set one typed prefab component property only in prefab-edit mode using a descriptor returned by workbench_inspect_component. This does not save the prefab.";
 const WORKBENCH_INSPECT_ENTITY_DESCRIPTION: &str = "Inspect one exact stable World Editor entity identity through the compatible managed handler package. It never changes editor selection or world content.";
 const WORKBENCH_SET_SELECTION_DESCRIPTION: &str = "Explicitly replace the visible World Editor selection with one exact stable entity identity. This experimental command changes only editor selection, never world content.";
 const WORKBENCH_CLEAR_SELECTION_DESCRIPTION: &str = "Explicitly clear the visible World Editor selection and return the observed empty selection summary.";
@@ -263,6 +274,35 @@ struct McpWorkbenchLayerStateInput {
 struct McpWorkbenchEntityInput {
     #[schemars(length(min = 1, max = 256))]
     entity_id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct McpWorkbenchPrefabContextInput {
+    #[schemars(length(min = 1, max = 256))]
+    entity_id: Option<String>,
+    #[schemars(length(min = 1, max = 1024))]
+    resource_name: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct McpWorkbenchCreatePrefabInput {
+    #[schemars(length(min = 1, max = 256))]
+    entity_id: String,
+    #[schemars(length(min = 1, max = 512))]
+    destination: String,
+    #[schemars(length(min = 1, max = 256))]
+    confirmation_token: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct McpWorkbenchSavePrefabInput {
+    #[schemars(length(min = 1, max = 256))]
+    entity_id: String,
+    #[schemars(length(min = 1, max = 256))]
+    confirmation_token: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1323,6 +1363,11 @@ impl ServerHandler for ReforgerMcpServer {
             workbench_sample_terrain_tool(),
             workbench_viewport_context_tool(),
             workbench_trace_tool(),
+            workbench_inspect_prefab_context_tool(),
+            workbench_create_prefab_tool(),
+            workbench_save_prefab_tool(),
+            workbench_set_prefab_property_tool(),
+            workbench_set_prefab_component_property_tool(),
             workbench_inspect_entity_tool(),
             workbench_set_selection_tool(),
             workbench_clear_selection_tool(),
@@ -1386,6 +1431,15 @@ impl ServerHandler for ReforgerMcpServer {
             WORKBENCH_SAMPLE_TERRAIN_TOOL_NAME => Some(workbench_sample_terrain_tool()),
             WORKBENCH_VIEWPORT_CONTEXT_TOOL_NAME => Some(workbench_viewport_context_tool()),
             WORKBENCH_TRACE_TOOL_NAME => Some(workbench_trace_tool()),
+            WORKBENCH_INSPECT_PREFAB_CONTEXT_TOOL_NAME => {
+                Some(workbench_inspect_prefab_context_tool())
+            }
+            WORKBENCH_CREATE_PREFAB_TOOL_NAME => Some(workbench_create_prefab_tool()),
+            WORKBENCH_SAVE_PREFAB_TOOL_NAME => Some(workbench_save_prefab_tool()),
+            WORKBENCH_SET_PREFAB_PROPERTY_TOOL_NAME => Some(workbench_set_prefab_property_tool()),
+            WORKBENCH_SET_PREFAB_COMPONENT_PROPERTY_TOOL_NAME => {
+                Some(workbench_set_prefab_component_property_tool())
+            }
             WORKBENCH_INSPECT_ENTITY_TOOL_NAME => Some(workbench_inspect_entity_tool()),
             WORKBENCH_SET_SELECTION_TOOL_NAME => Some(workbench_set_selection_tool()),
             WORKBENCH_CLEAR_SELECTION_TOOL_NAME => Some(workbench_clear_selection_tool()),
@@ -1669,6 +1723,99 @@ impl ServerHandler for ReforgerMcpServer {
                     })
                     .map_err(|failure| workbench.correlate_failure("trace", failure))
             })
+            .await;
+        }
+        if request.name == WORKBENCH_INSPECT_PREFAB_CONTEXT_TOOL_NAME {
+            let input = parse_workbench_input::<McpWorkbenchPrefabContextInput>(&request)?;
+            let workbench = self.workbench.clone();
+            return blocking_workbench_call(
+                self.admission.clone(),
+                context,
+                "inspect_prefab_context",
+                move || {
+                    workbench
+                        .inspect_prefab_context(
+                            input.entity_id.as_deref(),
+                            input.resource_name.as_deref(),
+                        )
+                        .map_err(|failure| {
+                            workbench.correlate_failure("inspect_prefab_context", failure)
+                        })
+                },
+            )
+            .await;
+        }
+        if request.name == WORKBENCH_CREATE_PREFAB_TOOL_NAME {
+            let input = parse_workbench_input::<McpWorkbenchCreatePrefabInput>(&request)?;
+            let workbench = self.workbench.clone();
+            return blocking_workbench_call(
+                self.admission.clone(),
+                context,
+                "create_prefab",
+                move || {
+                    workbench
+                        .create_prefab(
+                            &input.entity_id,
+                            &input.destination,
+                            input.confirmation_token.as_deref(),
+                        )
+                        .map_err(|failure| workbench.correlate_failure("create_prefab", failure))
+                },
+            )
+            .await;
+        }
+        if request.name == WORKBENCH_SAVE_PREFAB_TOOL_NAME {
+            let input = parse_workbench_input::<McpWorkbenchSavePrefabInput>(&request)?;
+            let workbench = self.workbench.clone();
+            return blocking_workbench_call(
+                self.admission.clone(),
+                context,
+                "save_prefab",
+                move || {
+                    workbench
+                        .save_prefab(&input.entity_id, input.confirmation_token.as_deref())
+                        .map_err(|failure| workbench.correlate_failure("save_prefab", failure))
+                },
+            )
+            .await;
+        }
+        if request.name == WORKBENCH_SET_PREFAB_PROPERTY_TOOL_NAME {
+            let input = parse_workbench_input::<McpWorkbenchSetEntityPropertyInput>(&request)?;
+            let workbench = self.workbench.clone();
+            return blocking_workbench_call(
+                self.admission.clone(),
+                context,
+                "set_prefab_property",
+                move || {
+                    workbench
+                        .set_prefab_property(&input.entity_id, &input.write_descriptor, input.value)
+                        .map_err(|failure| {
+                            workbench.correlate_failure("set_prefab_property", failure)
+                        })
+                },
+            )
+            .await;
+        }
+        if request.name == WORKBENCH_SET_PREFAB_COMPONENT_PROPERTY_TOOL_NAME {
+            let input = parse_workbench_input::<McpWorkbenchSetComponentPropertiesInput>(&request)?;
+            let workbench = self.workbench.clone();
+            return blocking_workbench_call(
+                self.admission.clone(),
+                context,
+                "set_prefab_component_property",
+                move || {
+                    workbench
+                        .set_prefab_component_property(
+                            &input.entity_id,
+                            &input.component_id,
+                            &input.write_descriptor,
+                            input.value,
+                        )
+                        .map_err(|failure| {
+                            workbench.correlate_failure("set_prefab_component_property", failure)
+                        })
+                },
+            )
             .await;
         }
         if request.name == WORKBENCH_INSPECT_ENTITY_TOOL_NAME {
@@ -2737,6 +2884,11 @@ Copy a hit's `inspectInput` unchanged to `inspect_game_data_symbol`, or its `rea
         workbench_sample_terrain_tool(),
         workbench_viewport_context_tool(),
         workbench_trace_tool(),
+        workbench_inspect_prefab_context_tool(),
+        workbench_create_prefab_tool(),
+        workbench_save_prefab_tool(),
+        workbench_set_prefab_property_tool(),
+        workbench_set_prefab_component_property_tool(),
         workbench_inspect_entity_tool(),
         workbench_set_selection_tool(),
         workbench_clear_selection_tool(),
@@ -3177,6 +3329,68 @@ fn workbench_trace_tool() -> Tool {
         "Trace the Workbench world",
         ToolAnnotations::with_title("Trace the Workbench world")
             .read_only(true)
+            .open_world(false),
+    )
+}
+fn workbench_inspect_prefab_context_tool() -> Tool {
+    workbench_input_tool::<McpWorkbenchPrefabContextInput, WorkbenchPrefabContext>(
+        WORKBENCH_INSPECT_PREFAB_CONTEXT_TOOL_NAME,
+        WORKBENCH_INSPECT_PREFAB_CONTEXT_DESCRIPTION,
+        "Inspect Workbench prefab context",
+        ToolAnnotations::with_title("Inspect Workbench prefab context")
+            .read_only(true)
+            .open_world(false),
+    )
+}
+
+fn workbench_create_prefab_tool() -> Tool {
+    workbench_input_tool::<McpWorkbenchCreatePrefabInput, WorkbenchEntityMutationResult>(
+        WORKBENCH_CREATE_PREFAB_TOOL_NAME,
+        WORKBENCH_CREATE_PREFAB_DESCRIPTION,
+        "Create Workbench prefab",
+        ToolAnnotations::with_title("Create Workbench prefab")
+            .read_only(false)
+            .destructive(false)
+            .idempotent(false)
+            .open_world(false),
+    )
+}
+
+fn workbench_save_prefab_tool() -> Tool {
+    workbench_input_tool::<McpWorkbenchSavePrefabInput, WorkbenchEntityMutationResult>(
+        WORKBENCH_SAVE_PREFAB_TOOL_NAME,
+        WORKBENCH_SAVE_PREFAB_DESCRIPTION,
+        "Save Workbench prefab",
+        ToolAnnotations::with_title("Save Workbench prefab")
+            .read_only(false)
+            .destructive(false)
+            .idempotent(false)
+            .open_world(false),
+    )
+}
+
+fn workbench_set_prefab_property_tool() -> Tool {
+    workbench_input_tool::<McpWorkbenchSetEntityPropertyInput, WorkbenchEntityMutationResult>(
+        WORKBENCH_SET_PREFAB_PROPERTY_TOOL_NAME,
+        WORKBENCH_SET_PREFAB_PROPERTY_DESCRIPTION,
+        "Set Workbench prefab property",
+        ToolAnnotations::with_title("Set Workbench prefab property")
+            .read_only(false)
+            .destructive(false)
+            .idempotent(false)
+            .open_world(false),
+    )
+}
+
+fn workbench_set_prefab_component_property_tool() -> Tool {
+    workbench_input_tool::<McpWorkbenchSetComponentPropertiesInput, WorkbenchComponentResult>(
+        WORKBENCH_SET_PREFAB_COMPONENT_PROPERTY_TOOL_NAME,
+        WORKBENCH_SET_PREFAB_COMPONENT_PROPERTY_DESCRIPTION,
+        "Set Workbench prefab component property",
+        ToolAnnotations::with_title("Set Workbench prefab component property")
+            .read_only(false)
+            .destructive(false)
+            .idempotent(false)
             .open_world(false),
     )
 }
