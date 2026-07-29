@@ -3949,7 +3949,7 @@ Search authored live World Editor entities by text, exact class, prefab resource
           "$ref": "#/$defs/McpWorkbenchEntityRelationDirection"
         },
         "maxDepth": {
-          "format": "uint8",
+          "format": "int32",
           "maximum": 8,
           "minimum": 1,
           "type": "integer"
@@ -4085,9 +4085,7 @@ Search authored live World Editor entities by text, exact class, prefab resource
           "type": "string"
         },
         "depth": {
-          "format": "uint8",
-          "maximum": 255,
-          "minimum": 0,
+          "format": "int32",
           "type": "integer"
         },
         "direction": {
@@ -15369,7 +15367,7 @@ Workbench tools return structured tool errors with a stable code, operation phas
 
 ## `workbench_reload`
 
-Save all currently open Workbench tabs and, only when an existing World Editor world has a path, save that world without UI automation; then request Reload WB Scripts through Workbench's in-process Resource Manager action dispatcher with keep-focus enabled. An absent or untitled World Editor world is reported as skipped and never opens a Save As dialog. The dispatcher acknowledgement is not confirmation: the tool waits up to 60 seconds for the console log to prove the full script reload, and fails closed if the foreground window changes or that log evidence is absent.
+Confirm Save All for currently open Workbench tabs and save the active World Editor world when it already has a path, then request Reload WB Scripts through Workbench's in-process Resource Manager action dispatcher. An absent or untitled World Editor world is reported as skipped and never opens a Save As dialog. The dispatcher acknowledgement is not confirmation: the tool waits up to 60 seconds for fresh console-log evidence of the full script reload.
 
 ### Annotations
 
@@ -15444,7 +15442,7 @@ Workbench tools return structured tool errors with a stable code, operation phas
 
 ## `workbench_save_all`
 
-Save all currently open Workbench tabs through the fixed in-process Resource Manager Save All action and, only when the active World Editor has an existing world path, save that world through WorldEditor.Save(). An absent or untitled world is reported as skipped; no name is invented and no Save As dialog is opened. The tool never focuses, maximizes, or sends keyboard input, and fails closed if Workbench becomes foreground.
+Save all currently open Workbench tabs through the fixed in-process Resource Manager Save All action and, only when the active World Editor has an existing world path, save that world through WorldEditor.Save(). An absent or untitled world is reported as skipped; no name is invented and no Save As dialog is opened. The tool uses in-process actions only and waits briefly after an accepted save action before returning.
 
 ### Annotations
 
@@ -15512,7 +15510,7 @@ Workbench tools return structured tool errors with a stable code, operation phas
 
 ## `workbench_save_world`
 
-Save the active World Editor document through WorldEditor.Save() only when it already has a world path. An absent or untitled world is reported as skipped; no name is invented and no Save As dialog is opened. It remains separate from workbench_save_all, never focuses, maximizes, or sends keyboard input, and fails closed if Workbench becomes foreground.
+Save the active World Editor document through WorldEditor.Save() only when it already has a world path. An absent or untitled world is reported as skipped; no name is invented and no Save As dialog is opened. It remains separate from workbench_save_all, uses no UI automation, and waits briefly after a successful save action before returning.
 
 ### Annotations
 
@@ -15829,7 +15827,7 @@ Workbench tools return structured tool errors with a stable code, operation phas
 
 ## `workbench_restart`
 
-Gracefully close one exact observed Workbench process and relaunch its one resolved Enfusion Workbench project with -noThrow, -gproj, and the installed base-game addons directory only after the original exits. It refuses to close Workbench if the visible project window, exact local project descriptor, or installed base-game project cannot be resolved.
+Confirm Save All for one exact running Workbench process, force-close that still-matching process, and relaunch its one resolved Enfusion Workbench project with -noThrow, -gproj, and the installed base-game addons directory only after the original exits. It refuses to force-close if the visible project window, exact local project descriptor, or installed base-game project cannot be resolved, or if saving is not accepted.
 
 ### Annotations
 

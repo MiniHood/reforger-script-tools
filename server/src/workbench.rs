@@ -433,14 +433,14 @@ pub struct WorkbenchEntityRelationFilter {
     pub direction: WorkbenchEntityRelationDirection,
     pub class_name: Option<String>,
     pub component_classes: Vec<String>,
-    pub max_depth: u8,
+    pub max_depth: i32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkbenchEntityRelationMatch {
     pub direction: WorkbenchEntityRelationDirection,
-    pub depth: u8,
+    pub depth: i32,
     pub entity_id: String,
     pub class_name: String,
     pub sub_scene: i32,
@@ -3728,9 +3728,9 @@ impl WorkbenchController {
         Ok(raw)
     }
 
-    /// Dispatch the fixed Workbench Save All action in-process without foregrounding Workbench.
+    /// Dispatch the fixed Workbench Save All action in-process and wait briefly for it to settle.
     pub fn save_all(&self) -> Result<WorkbenchSaveAllResult, WorkbenchFailure> {
-        const BACKGROUND_STABILITY_DELAY: Duration = Duration::from_millis(750);
+        const POST_SAVE_ACTION_DELAY: Duration = Duration::from_millis(750);
 
         let started = Instant::now();
         let processes = workbench_processes();
@@ -3751,22 +3751,6 @@ impl WorkbenchController {
                     json!({"processId": process.id}),
                 )
             })?;
-        let foreground_before = foreground_window_identity().map_err(|outcome| {
-            self.correlate_failure_details(
-                "save-all",
-                outcome,
-                failure(WorkbenchFailureCode::Unavailable),
-                json!({"processId": process.id}),
-            )
-        })?;
-        if foreground_before.process_id == process.id {
-            return Err(self.correlate_failure_details(
-                "save-all",
-                "workbench-already-foreground",
-                failure(WorkbenchFailureCode::Unavailable),
-                json!({"processId": process.id}),
-            ));
-        }
         let action = self
             .dispatch_background_save_all_action()
             .map_err(|dispatch_failure| {
@@ -3778,6 +3762,7 @@ impl WorkbenchController {
                 )
             })?;
         if !workbench_bool(&action.accepted)
+            || (action.world_save_status == "saved" && !workbench_bool(&action.world_save_accepted))
             || !matches!(
                 action.world_save_status.as_str(),
                 "saved" | "skipped-no-open-world"
@@ -3796,17 +3781,7 @@ impl WorkbenchController {
                 }),
             ));
         }
-        std::thread::sleep(BACKGROUND_STABILITY_DELAY);
-        if !workbench_was_minimized
-            && foreground_window_identity().as_ref() != Ok(&foreground_before)
-        {
-            return Err(self.correlate_failure_details(
-                "save-all",
-                "workbench-save-all-changed-foreground",
-                failure(WorkbenchFailureCode::Unavailable),
-                json!({"processId": process.id, "actionPath": action.action_path}),
-            ));
-        }
+        std::thread::sleep(POST_SAVE_ACTION_DELAY);
         let result = WorkbenchSaveAllResult {
             process_id: process.id,
             workbench_was_minimized,
@@ -3830,10 +3805,10 @@ impl WorkbenchController {
         Ok(result)
     }
 
-    /// Save the active World Editor document through its own Workbench module without foregrounding
-    /// Workbench. This intentionally remains separate from Resource Manager Save All.
+    /// Save the active World Editor document through its own Workbench module. This intentionally
+    /// remains separate from Resource Manager Save All.
     pub fn save_world(&self) -> Result<WorkbenchSaveWorldResult, WorkbenchFailure> {
-        const BACKGROUND_STABILITY_DELAY: Duration = Duration::from_millis(750);
+        const POST_SAVE_ACTION_DELAY: Duration = Duration::from_millis(750);
 
         let started = Instant::now();
         let processes = workbench_processes();
@@ -3854,22 +3829,6 @@ impl WorkbenchController {
                     json!({"processId": process.id}),
                 )
             })?;
-        let foreground_before = foreground_window_identity().map_err(|outcome| {
-            self.correlate_failure_details(
-                "save-world",
-                outcome,
-                failure(WorkbenchFailureCode::Unavailable),
-                json!({"processId": process.id}),
-            )
-        })?;
-        if foreground_before.process_id == process.id {
-            return Err(self.correlate_failure_details(
-                "save-world",
-                "workbench-already-foreground",
-                failure(WorkbenchFailureCode::Unavailable),
-                json!({"processId": process.id}),
-            ));
-        }
         let action = self
             .dispatch_background_save_world_action()
             .map_err(|dispatch_failure| {
@@ -3880,10 +3839,12 @@ impl WorkbenchController {
                     json!({"processId": process.id}),
                 )
             })?;
-        if !matches!(
-            action.world_save_status.as_str(),
-            "saved" | "skipped-no-open-world"
-        ) {
+        if !workbench_bool(&action.accepted)
+            || !matches!(
+                action.world_save_status.as_str(),
+                "saved" | "skipped-no-open-world"
+            )
+        {
             return Err(self.correlate_failure_details(
                 "save-world",
                 "world-editor-save-unavailable",
@@ -3895,17 +3856,7 @@ impl WorkbenchController {
                 }),
             ));
         }
-        std::thread::sleep(BACKGROUND_STABILITY_DELAY);
-        if !workbench_was_minimized
-            && foreground_window_identity().as_ref() != Ok(&foreground_before)
-        {
-            return Err(self.correlate_failure_details(
-                "save-world",
-                "world-editor-save-changed-foreground",
-                failure(WorkbenchFailureCode::Unavailable),
-                json!({"processId": process.id, "actionPath": action.action_path}),
-            ));
-        }
+        std::thread::sleep(POST_SAVE_ACTION_DELAY);
         let result = WorkbenchSaveWorldResult {
             process_id: process.id,
             workbench_was_minimized,
@@ -3927,11 +3878,11 @@ impl WorkbenchController {
         Ok(result)
     }
 
-    /// Dispatch the fixed Workbench reload action in-process without foregrounding Workbench.
+    /// Dispatch the fixed Workbench reload action in-process after a confirmed Save All action.
     ///
     /// The dispatcher response only records whether Workbench reported accepting the action.
     /// Success is established solely by a complete fresh reload marker sequence in the Workbench
-    /// log, while foreground focus remains unchanged.
+    /// log.
     pub fn activate_scripts(&self) -> Result<WorkbenchScriptActivationResult, WorkbenchFailure> {
         const RELOAD_VERIFICATION_DEADLINE: Duration = Duration::from_secs(60);
         const RELOAD_VERIFICATION_POLL: Duration = Duration::from_millis(500);
@@ -3946,22 +3897,6 @@ impl WorkbenchController {
                 json!({"processCount": processes.len()}),
             ));
         };
-        let foreground_before = foreground_window_identity().map_err(|outcome| {
-            self.correlate_failure_details(
-                "activate-scripts",
-                outcome,
-                failure(WorkbenchFailureCode::Unavailable),
-                json!({"processId": process.id}),
-            )
-        })?;
-        if foreground_before.process_id == process.id {
-            return Err(self.correlate_failure_details(
-                "activate-scripts",
-                "workbench-already-foreground",
-                failure(WorkbenchFailureCode::Unavailable),
-                json!({"processId": process.id}),
-            ));
-        }
         let save_result = self.save_all().map_err(|save_failure| {
             self.correlate_failure_details(
                 "activate-scripts",
@@ -3983,7 +3918,7 @@ impl WorkbenchController {
                     json!({"processId": process.id}),
                 )
             })?;
-        let action_path = reload_action_path(self.dispatch_background_reload_action()).map_err(
+        reload_action_path(self.dispatch_background_reload_action()).map_err(
             |dispatch_failure| {
                 self.correlate_failure_details(
                     "activate-scripts",
@@ -3993,17 +3928,6 @@ impl WorkbenchController {
                 )
             },
         )?;
-        if !workbench_was_minimized
-            && foreground_window_identity().as_ref() != Ok(&foreground_before)
-        {
-            return Err(self.correlate_failure_details(
-                "activate-scripts",
-                "workbench-reload-changed-foreground",
-                failure(WorkbenchFailureCode::Unavailable),
-                json!({"processId": process.id, "actionPath": action_path}),
-            ));
-        }
-
         while started.elapsed() < RELOAD_VERIFICATION_DEADLINE {
             if let Some(verification) = latest_workbench_log(&self.paths().workbench_root)
                 .and_then(|path| reload_verification_since(&path, Some(&log_before)).ok())
@@ -4015,16 +3939,6 @@ impl WorkbenchController {
                         "workbench-process-changed",
                         failure(WorkbenchFailureCode::Unavailable),
                         json!({"processId": process.id}),
-                    ));
-                }
-                if !workbench_was_minimized
-                    && foreground_window_identity().as_ref() != Ok(&foreground_before)
-                {
-                    return Err(self.correlate_failure_details(
-                        "activate-scripts",
-                        "workbench-reload-changed-foreground",
-                        failure(WorkbenchFailureCode::Unavailable),
-                        json!({"processId": process.id, "actionPath": action_path}),
                     ));
                 }
                 let result = WorkbenchScriptActivationResult {
@@ -4348,23 +4262,21 @@ impl WorkbenchController {
     }
 
     pub fn restart(&self, process_id: u32) -> Result<WorkbenchProcessResult, WorkbenchFailure> {
-        let observed = self.observed_processes.lock().ok().and_then(|processes| {
-            processes
-                .iter()
-                .find(|process| process.id == process_id)
-                .copied()
-        });
-        let Some(observed) = observed.filter(|process| workbench_processes().contains(process))
+        let current = workbench_processes();
+        let Some(process) = current
+            .iter()
+            .find(|process| process.id == process_id)
+            .copied()
         else {
             return Err(self.correlate_failure_details(
                 "restart",
-                "stale-or-unobserved-process",
+                "workbench-process-not-running",
                 failure(WorkbenchFailureCode::Unavailable),
                 json!({"processId": process_id}),
             ));
         };
         let paths = self.paths();
-        let project = workbench_project_title(observed)
+        let project = workbench_project_title(process)
             .and_then(|title| resolve_project_gproj(&paths.workbench_root, &title))
             .ok_or_else(|| {
                 self.correlate_failure_details(
@@ -4385,11 +4297,58 @@ impl WorkbenchController {
                 }),
             ));
         }
-        let stopped = self.stop(process_id)?;
-        if !stopped.exited {
-            return Ok(stopped);
+        self.save_all().map_err(|save_failure| {
+            self.correlate_failure_details(
+                "restart",
+                "workbench-save-all-before-force-close-failed",
+                save_failure,
+                json!({"processId": process_id}),
+            )
+        })?;
+        let script = force_stop_workbench_script(process);
+        let status = std::process::Command::new("powershell.exe")
+            .args([
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                &script,
+            ])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map_err(|error| {
+                self.correlate_failure_details(
+                    "restart",
+                    "force-close-request-failed",
+                    failure(WorkbenchFailureCode::Unavailable),
+                    json!({
+                        "processId": process_id,
+                        "errorKind": format!("{:?}", error.kind()),
+                    }),
+                )
+            })?;
+        if !status.success() {
+            return Err(self.correlate_failure_details(
+                "restart",
+                "force-close-failed",
+                failure(WorkbenchFailureCode::Unavailable),
+                json!({"processId": process_id, "exitCode": status.code()}),
+            ));
         }
-        self.launch_project(Some(&project))
+        for _ in 0..20 {
+            if !workbench_processes().contains(&process) {
+                return self.launch_project(Some(&project));
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        Err(self.correlate_failure_details(
+            "restart",
+            "force-close-not-observed",
+            failure(WorkbenchFailureCode::Unavailable),
+            json!({"processId": process_id}),
+        ))
     }
 
     fn active_bridge_status(
@@ -6058,22 +6017,37 @@ fn parse_entity_search_records(value: &str) -> Result<Vec<WorkbenchEntitySearchH
                         "descendant" => WorkbenchEntityRelationDirection::Descendant,
                         _ => return Err(()),
                     };
+                    let depth = depth.parse::<i32>().map_err(|_| ())?;
+                    if !(1..=8).contains(&depth)
+                        || entity_id.is_empty()
+                        || entity_id.len() > 256
+                        || entity_id
+                            .bytes()
+                            .any(|byte| matches!(byte, b'|' | b';' | b',' | b'\r' | b'\n'))
+                        || !valid_component_class_name(class_name)
+                    {
+                        return Err(());
+                    }
+                    let matched_component_classes = if components.is_empty() {
+                        Vec::new()
+                    } else {
+                        components.split(',').map(str::to_owned).collect()
+                    };
+                    if matched_component_classes.len() > 32
+                        || matched_component_classes
+                            .iter()
+                            .any(|class_name| !valid_component_class_name(class_name))
+                    {
+                        return Err(());
+                    }
                     Some(WorkbenchEntityRelationMatch {
                         direction,
-                        depth: depth.parse().map_err(|_| ())?,
-                        entity_id: (!entity_id.is_empty())
-                            .then(|| entity_id.to_owned())
-                            .ok_or(())?,
-                        class_name: (!class_name.is_empty())
-                            .then(|| class_name.to_owned())
-                            .ok_or(())?,
+                        depth,
+                        entity_id: entity_id.to_owned(),
+                        class_name: class_name.to_owned(),
                         sub_scene: sub_scene.parse().map_err(|_| ())?,
                         layer_id: layer_id.parse().map_err(|_| ())?,
-                        matched_component_classes: if components.is_empty() {
-                            Vec::new()
-                        } else {
-                            components.split(',').map(str::to_owned).collect()
-                        },
+                        matched_component_classes,
                     })
                 }
             };
@@ -6973,46 +6947,6 @@ fn reload_verification_since(
     Ok(None)
 }
 
-#[derive(Debug, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-struct ForegroundWindowIdentity {
-    handle: i64,
-    process_id: u32,
-}
-
-fn foreground_window_identity() -> Result<ForegroundWindowIdentity, &'static str> {
-    let script = r#"
-Add-Type @'
-using System;
-using System.Runtime.InteropServices;
-public static class RSTWorkbenchForeground {
-    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
-    [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
-}
-'@
-$window = [RSTWorkbenchForeground]::GetForegroundWindow()
-[uint32]$processId = 0
-[void][RSTWorkbenchForeground]::GetWindowThreadProcessId($window, [ref]$processId)
-[pscustomobject]@{handle = $window.ToInt64(); processId = $processId} | ConvertTo-Json -Compress
-"#;
-    let output = std::process::Command::new("powershell.exe")
-        .args([
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            script,
-        ])
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .map_err(|_| "foreground-window-unavailable")?;
-    if !output.status.success() {
-        return Err("foreground-window-unavailable");
-    }
-    serde_json::from_slice(&output.stdout).map_err(|_| "foreground-window-unavailable")
-}
-
 fn workbench_has_minimized_window(process_id: u32) -> Result<bool, &'static str> {
     let script = format!(
         r#"
@@ -7103,6 +7037,16 @@ fn workbench_processes() -> Vec<ProcessIdentity> {
         return Vec::new();
     };
     parse_process_identities(&output.stdout)
+}
+
+fn force_stop_workbench_script(process: ProcessIdentity) -> String {
+    format!(
+        "$p=Get-Process -Id {} -ErrorAction Stop; \
+         if ($p.ProcessName -ne 'ArmaReforgerWorkbenchSteamDiag' -or \
+             [uint64]$p.StartTime.ToUniversalTime().Ticks -ne [uint64]{}) {{ exit 2 }}; \
+         Stop-Process -Id $p.Id -Force",
+        process.id, process.start_ticks
+    )
 }
 
 fn parse_process_identities(bytes: &[u8]) -> Vec<ProcessIdentity> {
@@ -8195,7 +8139,14 @@ class RST_WorkbenchSearchEntities : NetApiHandler
 		WorldEditor editor = Workbench.GetModule(WorldEditor); if (!editor || !editor.GetApi()) { response.status = "world-editor-unavailable"; return response; }
 		bool hasRelation = !req.relationDirection.IsEmpty();
 		bool validDirection = req.relationDirection == "parent" || req.relationDirection == "ancestor" || req.relationDirection == "child" || req.relationDirection == "descendant";
-		if (req.offset < 0 || req.limit < 1 || req.limit > 100 || (!hasRelation && (!req.relationClassName.IsEmpty() || !req.relationComponentClasses.IsEmpty() || req.relationMaxDepth != 0)) || (hasRelation && (!validDirection || (req.relationClassName.IsEmpty() && req.relationComponentClasses.IsEmpty()) || req.relationMaxDepth < 1 || req.relationMaxDepth > 8 || ((req.relationDirection == "parent" || req.relationDirection == "child") && req.relationMaxDepth != 1))) { response.status = "invalid-request"; return response; }
+		bool invalidRelation = false;
+		if (!hasRelation)
+			invalidRelation = !req.relationClassName.IsEmpty() || !req.relationComponentClasses.IsEmpty() || req.relationMaxDepth != 0;
+		else if (!validDirection || (req.relationClassName.IsEmpty() && req.relationComponentClasses.IsEmpty()) || req.relationMaxDepth < 1 || req.relationMaxDepth > 8)
+			invalidRelation = true;
+		else if ((req.relationDirection == "parent" || req.relationDirection == "child") && req.relationMaxDepth != 1)
+			invalidRelation = true;
+		if (req.offset < 0 || req.limit < 1 || req.limit > 100 || invalidRelation) { response.status = "invalid-request"; return response; }
 		WorldEditorAPI api = editor.GetApi(); response.status = "available"; api.GetWorldPath(response.worldPath); array<string> required = new array<string>(); if (!req.componentClasses.IsEmpty()) req.componentClasses.Split(";", required, true); array<string> relationRequired = new array<string>(); if (!req.relationComponentClasses.IsEmpty()) req.relationComponentClasses.Split(";", relationRequired, true); int matched = 0; int named = 0; int returned = 0;
 		for (int index, count = api.GetEditorEntityCount(); index < count; index++)
 		{
@@ -8212,7 +8163,11 @@ class RST_WorkbenchSearchEntities : NetApiHandler
 			IEntitySource parent = IEntitySource.Cast(entity.GetParent()); string parentClass; if (parent) parentClass = parent.GetClassName(); string relationDirection; string relationDepthText; string relationId; string relationClass; string relationSubScene; string relationLayer; string relationComponents;
 			if (hasRelation) { relationDirection = req.relationDirection; relationDepthText = relationDepth.ToString(); relationId = related.GetID().ToString(); relationClass = related.GetClassName(); relationSubScene = related.GetSubScene().ToString(); relationLayer = related.GetLayerID().ToString(); foreach (string expected : relationRequired) { if (!relationComponents.IsEmpty()) relationComponents += ","; relationComponents += expected; } }
 			resource.Replace("|", "/"); resource.Replace(";", "/"); name.Replace("|", "/"); name.Replace(";", "/"); parentClass.Replace("|", "/"); parentClass.Replace(";", "/"); relationId.Replace("|", "/"); relationId.Replace(";", "/"); relationClass.Replace("|", "/"); relationClass.Replace(";", "/");
-			if (!response.results.IsEmpty()) response.results += ";"; response.results += string.Format("%1|%2|%3|%4|%5|%6|%7", entity.GetID().ToString(), className, entity.GetSubScene(), entity.GetLayerID(), resource, name, components) + "|" + matches + "|" + matchedComponents + "|" + parentClass + "|" + entity.GetNumChildren() + "|" + relationDirection + "|" + relationDepthText + "|" + relationId + "|" + relationClass + "|" + relationSubScene + "|" + relationLayer + "|" + relationComponents; returned = returned + 1;
+			string record = string.Format("%1|%2|%3|%4|%5|%6|%7", entity.GetID().ToString(), className, entity.GetSubScene(), entity.GetLayerID(), resource, name, components);
+			record += "|" + matches; record += "|" + matchedComponents; record += "|" + parentClass; record += "|" + entity.GetNumChildren();
+			record += "|" + relationDirection; record += "|" + relationDepthText; record += "|" + relationId; record += "|" + relationClass;
+			record += "|" + relationSubScene; record += "|" + relationLayer; record += "|" + relationComponents;
+			if (!response.results.IsEmpty()) response.results += ";"; response.results += record; returned = returned + 1;
 		}
 		response.totalMatches = matched; response.namedMatches = named; return response;
 	}
@@ -11618,6 +11573,63 @@ mod tests {
     }
 
     #[test]
+    fn entity_search_cursor_is_bound_to_the_relation_filter() {
+        let (port, peer) = start_peer(|request| {
+            assert_eq!(request["relationDirection"], "descendant");
+            assert_eq!(request["relationClassName"], "SCR_TriggerEntity");
+            json!({"bridgeVersion":"1.39.0","protocolVersion":1,"status":"available","worldPath":"$Test:worlds/test.ent","results":"0x01|GenericEntity|0|7||||||GenericEntity|1|descendant|1|0x02|SCR_TriggerEntity|0|7|","totalMatches":2,"namedMatches":0,"hasMore":true})
+        });
+        let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
+            gateway: super::WorkbenchGatewayOptions {
+                port,
+                status_deadline: Duration::from_secs(1),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let trigger_relation = super::WorkbenchEntityRelationFilter {
+            direction: super::WorkbenchEntityRelationDirection::Descendant,
+            class_name: Some("SCR_TriggerEntity".to_string()),
+            component_classes: Vec::new(),
+            max_depth: 2,
+        };
+        let checkpoint_relation = super::WorkbenchEntityRelationFilter {
+            class_name: Some("SCR_CheckpointEntity".to_string()),
+            ..trigger_relation.clone()
+        };
+
+        let page = controller
+            .search_entities(
+                None,
+                None,
+                None,
+                &[],
+                Some(&trigger_relation),
+                None,
+                None,
+                None,
+                1,
+            )
+            .unwrap();
+        let failure = controller
+            .search_entities(
+                None,
+                None,
+                None,
+                &[],
+                Some(&checkpoint_relation),
+                None,
+                None,
+                page.next_cursor.as_deref(),
+                1,
+            )
+            .unwrap_err();
+
+        assert_eq!(failure.code, super::WorkbenchFailureCode::Protocol);
+        peer.join().unwrap();
+    }
+
+    #[test]
     fn entity_search_returns_a_structured_unavailable_world_status() {
         let (port, peer) = start_peer(|request| {
             assert_eq!(request["APIFunc"], "RST_WorkbenchSearchEntities");
@@ -14012,6 +14024,19 @@ mod tests {
     }
 
     #[test]
+    fn force_close_script_requires_the_exact_running_workbench_identity() {
+        let script = super::force_stop_workbench_script(super::ProcessIdentity {
+            id: 7,
+            start_ticks: 11,
+        });
+
+        assert!(script.contains("Get-Process -Id 7"));
+        assert!(script.contains("ArmaReforgerWorkbenchSteamDiag"));
+        assert!(script.contains("Ticks -ne [uint64]11"));
+        assert!(script.contains("Stop-Process -Id $p.Id -Force"));
+    }
+
+    #[test]
     fn validation_cursor_pages_one_immutable_compiler_snapshot() {
         let controller =
             super::WorkbenchController::new(super::WorkbenchControllerOptions::default());
@@ -14223,7 +14248,7 @@ mod tests {
             super::WorkbenchController::new(super::WorkbenchControllerOptions::default());
 
         let result = controller
-            .inspect_component("0x01 {}", "cmp1:0:ForgedComponent")
+            .inspect_component("0x01 {}", "forged-component")
             .unwrap();
 
         assert_eq!(result.status, "invalid-component-descriptor");
