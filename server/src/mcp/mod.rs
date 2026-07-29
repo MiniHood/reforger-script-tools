@@ -27,17 +27,18 @@ use crate::workbench::{
     WorkbenchControllerOptions, WorkbenchCreateEntityOptions, WorkbenchEditorList,
     WorkbenchEntityInspection, WorkbenchEntityListPage, WorkbenchEntityMutationResult,
     WorkbenchEntityPosition, WorkbenchEntityRadiusQuery, WorkbenchEntityRadiusQueryOptions,
-    WorkbenchEntitySearchPage, WorkbenchEntitySelectionResult, WorkbenchFailure,
-    WorkbenchFailureCode, WorkbenchInstallAuthorization, WorkbenchLayerState, WorkbenchLiveState,
-    WorkbenchLogRead, WorkbenchOpenEditorResult, WorkbenchOpenResourceResult, WorkbenchOverview,
+    WorkbenchEntityRelationDirection, WorkbenchEntityRelationFilter, WorkbenchEntitySearchPage,
+    WorkbenchEntitySelectionResult, WorkbenchFailure, WorkbenchFailureCode,
+    WorkbenchInstallAuthorization, WorkbenchLayerState, WorkbenchLiveState, WorkbenchLogRead,
+    WorkbenchOpenEditorResult, WorkbenchOpenResourceResult, WorkbenchOverview,
     WorkbenchPlaySessionResult, WorkbenchPrefabComponentInspection, WorkbenchPrefabContext,
     WorkbenchPrefabResourceMutationResult, WorkbenchProcessResult, WorkbenchProjectContext,
     WorkbenchPropertyList, WorkbenchResourceInspection, WorkbenchResourceListPage,
-    WorkbenchResourceSearchPage,
-    WorkbenchSaveAllResult, WorkbenchSaveWorldResult, WorkbenchScriptActivationResult,
-    WorkbenchSelectedEntityHierarchy, WorkbenchTerrainSample, WorkbenchTerrainSampleOptions,
-    WorkbenchTraceOptions, WorkbenchTraceResult, WorkbenchTraceShape, WorkbenchValidationPage,
-    WorkbenchViewportContext, WorkbenchViewportContextOptions, WorkbenchWorldSelectionSummary,
+    WorkbenchResourceSearchPage, WorkbenchSaveAllResult, WorkbenchSaveWorldResult,
+    WorkbenchScriptActivationResult, WorkbenchSelectedEntityHierarchy, WorkbenchTerrainSample,
+    WorkbenchTerrainSampleOptions, WorkbenchTraceOptions, WorkbenchTraceResult,
+    WorkbenchTraceShape, WorkbenchValidationPage, WorkbenchViewportContext,
+    WorkbenchViewportContextOptions, WorkbenchWorldSelectionSummary,
 };
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, ContentBlock, Implementation, ListToolsResult,
@@ -155,7 +156,7 @@ const WORKBENCH_SEARCH_RESOURCES_DESCRIPTION: &str = "Search registered Workbenc
 const WORKBENCH_WORLD_SELECTION_SUMMARY_DESCRIPTION: &str = "Read a bounded live World Editor selection summary through the compatible managed handler package. It returns stable entity IDs, classes, subscenes, and layers; it never changes the editor selection.";
 const WORKBENCH_SELECTED_ENTITY_HIERARCHY_DESCRIPTION: &str = "Inspect the bounded parent and direct-child hierarchy for one current World Editor selection index. It uses only stable entity identities, never display-name matching, and never changes the editor selection.";
 const WORKBENCH_LIST_ENTITIES_DESCRIPTION: &str = "List one bounded page of live World Editor entities, optionally constrained to an exact subscene and layer. Entity IDs are stable only for the observed editor context; filters are discovery metadata, never target identities.";
-const WORKBENCH_SEARCH_WORLD_ENTITIES_DESCRIPTION: &str = "Search authored live World Editor entities by text, class, prefab resource, direct component classes, subscene, and layer. The exact summary describes the full match set and whether names are available; the bounded page supplies compact entity targets, their direct components, and the requested components they satisfied. Use a returned exact entity ID for deeper inspection or mutation.";
+const WORKBENCH_SEARCH_WORLD_ENTITIES_DESCRIPTION: &str = "Search authored live World Editor entities by text, exact class, prefab resource, direct component classes, layer, subscene, and one bounded exact-class containment relation. A relation may match a parent, ancestor, child, or descendant and may require direct components on the related entity. Every result carries its matched relation evidence; use a returned exact entity ID for deeper inspection or mutation.";
 const WORKBENCH_LAYER_STATE_DESCRIPTION: &str = "Read one exact World Editor layer's canonical path, visibility, explicit lock state, and effective hierarchical lock state without changing the world or editor.";
 const WORKBENCH_FIND_ENTITIES_BY_RADIUS_DESCRIPTION: &str = "Find a bounded set of live World Editor entities whose bounds touch a world-space sphere. The engine query stops after one additional match, so truncated means more matches exist; returned order is not nearest-first.";
 const WORKBENCH_SAMPLE_TERRAIN_DESCRIPTION: &str = "Sample a bounded square of loaded World Editor terrain heights around a world X/Z coordinate. The result includes native terrain resolution and planar spacing, plus a row-major grid and derived elevation/slope summary. At most 4,096 cells are returned; heights[z * width + x] is at origin.x + x * effectiveSpacingMeters, origin.z + z * effectiveSpacingMeters, so X changes fastest. Set includeWater to add same-lattice water facts: the engine point-water API first, then a water-targeted physics trace for generated lakes and rivers. It does not inspect authored geometry, inspect materials/entities, or edit the world.";
@@ -306,6 +307,7 @@ struct McpWorkbenchEntitySearchInput {
     resource_query: Option<String>,
     #[schemars(length(max = 32))]
     component_classes: Option<Vec<String>>,
+    relation: Option<McpWorkbenchEntityRelationInput>,
     #[schemars(range(min = 0))]
     sub_scene: Option<i32>,
     #[schemars(range(min = 0))]
@@ -314,6 +316,51 @@ struct McpWorkbenchEntitySearchInput {
     limit: Option<usize>,
     #[schemars(length(min = 1, max = 256))]
     cursor: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct McpWorkbenchEntityRelationInput {
+    direction: McpWorkbenchEntityRelationDirection,
+    #[schemars(length(max = 128))]
+    class_name: Option<String>,
+    #[schemars(length(max = 32))]
+    component_classes: Option<Vec<String>>,
+    #[schemars(range(min = 1, max = 8))]
+    max_depth: u8,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+enum McpWorkbenchEntityRelationDirection {
+    Parent,
+    Ancestor,
+    Child,
+    Descendant,
+}
+
+impl From<McpWorkbenchEntityRelationInput> for WorkbenchEntityRelationFilter {
+    fn from(value: McpWorkbenchEntityRelationInput) -> Self {
+        Self {
+            direction: match value.direction {
+                McpWorkbenchEntityRelationDirection::Parent => {
+                    WorkbenchEntityRelationDirection::Parent
+                }
+                McpWorkbenchEntityRelationDirection::Ancestor => {
+                    WorkbenchEntityRelationDirection::Ancestor
+                }
+                McpWorkbenchEntityRelationDirection::Child => {
+                    WorkbenchEntityRelationDirection::Child
+                }
+                McpWorkbenchEntityRelationDirection::Descendant => {
+                    WorkbenchEntityRelationDirection::Descendant
+                }
+            },
+            class_name: value.class_name,
+            component_classes: value.component_classes.unwrap_or_default(),
+            max_depth: value.max_depth,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1839,6 +1886,7 @@ impl ServerHandler for ReforgerMcpServer {
         }
         if request.name == WORKBENCH_SEARCH_WORLD_ENTITIES_TOOL_NAME {
             let input = parse_workbench_input::<McpWorkbenchEntitySearchInput>(&request)?;
+            let relation = input.relation.map(WorkbenchEntityRelationFilter::from);
             let workbench = self.workbench.clone();
             return blocking_workbench_call(
                 self.admission.clone(),
@@ -1857,6 +1905,7 @@ impl ServerHandler for ReforgerMcpServer {
                             input.class_name.as_deref(),
                             input.resource_query.as_deref(),
                             &classes,
+                            relation.as_ref(),
                             input.sub_scene,
                             input.layer_id,
                             input.cursor.as_deref(),
@@ -4377,17 +4426,16 @@ mod tests {
         workbench_install_bridge_tool, workbench_layer_state_tool, workbench_list_components_tool,
         workbench_list_editors_tool, workbench_list_entities_tool,
         workbench_list_entity_properties_tool, workbench_list_resources_tool,
-        workbench_search_resources_tool,
         workbench_move_entity_tool, workbench_open_editor_tool, workbench_open_resource_tool,
         workbench_project_context_tool, workbench_reload_tool, workbench_remove_component_tool,
         workbench_reparent_entity_tool, workbench_rotate_entity_tool,
         workbench_sample_terrain_tool, workbench_save_all_tool, workbench_save_prefab_tool,
-        workbench_save_world_tool, workbench_search_world_entities_tool,
-        workbench_selected_entity_hierarchy_tool, workbench_set_component_properties_tool,
-        workbench_set_entity_property_tool, workbench_set_prefab_component_property_tool,
-        workbench_set_prefab_property_tool, workbench_start_play_session_tool,
-        workbench_status_tool, workbench_stop_play_session_tool, workbench_trace_tool,
-        workbench_validate_scripts_tool, workbench_viewport_context_tool,
+        workbench_save_world_tool, workbench_search_resources_tool,
+        workbench_search_world_entities_tool, workbench_selected_entity_hierarchy_tool,
+        workbench_set_component_properties_tool, workbench_set_entity_property_tool,
+        workbench_set_prefab_component_property_tool, workbench_set_prefab_property_tool,
+        workbench_start_play_session_tool, workbench_status_tool, workbench_stop_play_session_tool,
+        workbench_trace_tool, workbench_validate_scripts_tool, workbench_viewport_context_tool,
         workbench_world_selection_summary_tool, DEADLINE_EXCEEDED_CODE, GAME_DATA_STATUS_TOOL_NAME,
         RESPONSE_TOO_LARGE_CODE, WORKBENCH_ADD_COMPONENT_TOOL_NAME,
         WORKBENCH_CREATE_PREFAB_TOOL_NAME, WORKBENCH_DUPLICATE_ENTITY_TOOL_NAME,
@@ -4395,15 +4443,14 @@ mod tests {
         WORKBENCH_INSPECT_PREFAB_CONTEXT_TOOL_NAME, WORKBENCH_LAYER_STATE_TOOL_NAME,
         WORKBENCH_LIST_COMPONENTS_TOOL_NAME, WORKBENCH_LIST_EDITORS_TOOL_NAME,
         WORKBENCH_LIST_ENTITIES_TOOL_NAME, WORKBENCH_LIST_ENTITY_PROPERTIES_TOOL_NAME,
-        WORKBENCH_LIST_RESOURCES_TOOL_NAME, WORKBENCH_SEARCH_RESOURCES_TOOL_NAME,
-        WORKBENCH_MOVE_ENTITY_TOOL_NAME,
+        WORKBENCH_LIST_RESOURCES_TOOL_NAME, WORKBENCH_MOVE_ENTITY_TOOL_NAME,
         WORKBENCH_OPEN_EDITOR_TOOL_NAME, WORKBENCH_OPEN_RESOURCE_TOOL_NAME,
         WORKBENCH_PROJECT_CONTEXT_TOOL_NAME, WORKBENCH_RELOAD_TOOL_NAME,
         WORKBENCH_REMOVE_COMPONENT_TOOL_NAME, WORKBENCH_REPARENT_ENTITY_TOOL_NAME,
         WORKBENCH_ROTATE_ENTITY_TOOL_NAME, WORKBENCH_SAMPLE_TERRAIN_TOOL_NAME,
         WORKBENCH_SAVE_ALL_TOOL_NAME, WORKBENCH_SAVE_PREFAB_TOOL_NAME,
-        WORKBENCH_SAVE_WORLD_TOOL_NAME, WORKBENCH_SEARCH_WORLD_ENTITIES_TOOL_NAME,
-        WORKBENCH_SELECTED_ENTITY_HIERARCHY_TOOL_NAME,
+        WORKBENCH_SAVE_WORLD_TOOL_NAME, WORKBENCH_SEARCH_RESOURCES_TOOL_NAME,
+        WORKBENCH_SEARCH_WORLD_ENTITIES_TOOL_NAME, WORKBENCH_SELECTED_ENTITY_HIERARCHY_TOOL_NAME,
         WORKBENCH_SET_COMPONENT_PROPERTIES_TOOL_NAME, WORKBENCH_SET_ENTITY_PROPERTY_TOOL_NAME,
         WORKBENCH_SET_PREFAB_COMPONENT_PROPERTY_TOOL_NAME, WORKBENCH_SET_PREFAB_PROPERTY_TOOL_NAME,
         WORKBENCH_START_PLAY_SESSION_TOOL_NAME, WORKBENCH_STATUS_TOOL_NAME,
@@ -4684,5 +4731,31 @@ mod tests {
         assert!(reference.contains("## `workbench_selected_entity_hierarchy`"));
         assert!(reference.contains("## `workbench_inspect_prefab_context`"));
         assert!(reference.contains("## `workbench_create_prefab`"));
+    }
+
+    #[test]
+    fn world_entity_search_schema_exposes_bounded_relation_filters_and_evidence() {
+        let tool = workbench_search_world_entities_tool();
+        let input_schema = Value::Object((*tool.input_schema).clone());
+        let output_schema = Value::Object((*tool.output_schema.expect("output schema")).clone());
+
+        assert!(input_schema.pointer("/properties/relation").is_some());
+        assert_eq!(
+            input_schema
+                .pointer("/$defs/McpWorkbenchEntityRelationInput/properties/maxDepth/maximum"),
+            Some(&serde_json::json!(8))
+        );
+        assert_eq!(
+            input_schema.pointer("/$defs/McpWorkbenchEntityRelationDirection/enum"),
+            Some(&serde_json::json!([
+                "parent",
+                "ancestor",
+                "child",
+                "descendant"
+            ]))
+        );
+        assert!(output_schema
+            .pointer("/$defs/WorkbenchEntitySearchHit/properties/relationMatch")
+            .is_some());
     }
 }

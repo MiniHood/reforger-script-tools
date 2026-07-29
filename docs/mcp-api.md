@@ -3899,7 +3899,7 @@ Workbench tools return structured tool errors with a stable code, operation phas
 
 ## `workbench_search_world_entities`
 
-Search authored live World Editor entities by text, class, prefab resource, direct component classes, subscene, and layer. The exact summary describes the full match set and whether names are available; the bounded page supplies compact entity targets, their direct components, and the requested components they satisfied. Use a returned exact entity ID for deeper inspection or mutation.
+Search authored live World Editor entities by text, exact class, prefab resource, direct component classes, layer, subscene, and one bounded exact-class containment relation. A relation may match a parent, ancestor, child, or descendant and may require direct components on the related entity. Every result carries its matched relation evidence; use a returned exact entity ID for deeper inspection or mutation.
 
 ### Annotations
 
@@ -3915,6 +3915,53 @@ Search authored live World Editor entities by text, class, prefab resource, dire
 
 ```json
 {
+  "$defs": {
+    "McpWorkbenchEntityRelationDirection": {
+      "enum": [
+        "parent",
+        "ancestor",
+        "child",
+        "descendant"
+      ],
+      "type": "string"
+    },
+    "McpWorkbenchEntityRelationInput": {
+      "additionalProperties": false,
+      "properties": {
+        "className": {
+          "maxLength": 128,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "componentClasses": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 32,
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "direction": {
+          "$ref": "#/$defs/McpWorkbenchEntityRelationDirection"
+        },
+        "maxDepth": {
+          "format": "uint8",
+          "maximum": 8,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "direction",
+        "maxDepth"
+      ],
+      "type": "object"
+    }
+  },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "properties": {
@@ -3966,6 +4013,16 @@ Search authored live World Editor entities by text, class, prefab resource, dire
         "null"
       ]
     },
+    "relation": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/McpWorkbenchEntityRelationInput"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "resourceQuery": {
       "maxLength": 512,
       "type": [
@@ -4013,6 +4070,58 @@ Search authored live World Editor entities by text, class, prefab resource, dire
       ],
       "type": "object"
     },
+    "WorkbenchEntityRelationDirection": {
+      "enum": [
+        "parent",
+        "ancestor",
+        "child",
+        "descendant"
+      ],
+      "type": "string"
+    },
+    "WorkbenchEntityRelationMatch": {
+      "properties": {
+        "className": {
+          "type": "string"
+        },
+        "depth": {
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "direction": {
+          "$ref": "#/$defs/WorkbenchEntityRelationDirection"
+        },
+        "entityId": {
+          "type": "string"
+        },
+        "layerId": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "matchedComponentClasses": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "subScene": {
+          "format": "int32",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "direction",
+        "depth",
+        "entityId",
+        "className",
+        "subScene",
+        "layerId",
+        "matchedComponentClasses"
+      ],
+      "type": "object"
+    },
     "WorkbenchEntitySearchHit": {
       "properties": {
         "childCount": {
@@ -4045,6 +4154,16 @@ Search authored live World Editor entities by text, class, prefab resource, dire
           "type": [
             "string",
             "null"
+          ]
+        },
+        "relationMatch": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchEntityRelationMatch"
+            },
+            {
+              "type": "null"
+            }
           ]
         }
       },

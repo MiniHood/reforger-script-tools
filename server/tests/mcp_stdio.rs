@@ -168,7 +168,9 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
     ]
     .into_iter()
     {
-        assert!(listed.iter().any(|tool| tool.get("name") == Some(&json!(name))));
+        assert!(listed
+            .iter()
+            .any(|tool| tool.get("name") == Some(&json!(name))));
     }
     assert_eq!(
         listed[12].pointer("/annotations/destructiveHint"),
