@@ -180,6 +180,7 @@ fn debug_hover_report_for_cached_analysis_with_external_layers(
         append_display_details(&mut report, source, index, &query, id);
         if let Some(display) = query.symbol_display(id) {
             let external_query = workspace_index.or(game_data_index).map(IndexQuery::new);
+            let game_data_query = game_data_index.map(IndexQuery::new);
             report.push_str("\n### Hover Markdown\n\n```markdown\n");
             report.push_str(&escape_fence_text(&render_hover_markdown(
                 &display,
@@ -189,6 +190,7 @@ fn debug_hover_report_for_cached_analysis_with_external_layers(
                     links: Some(HoverLinkContext {
                         current_uri,
                         external_query: external_query.as_ref(),
+                        game_data_query: game_data_query.as_ref(),
                     }),
                 }),
             )));
@@ -211,6 +213,7 @@ fn debug_hover_report_for_cached_analysis_with_external_layers(
                         links: Some(HoverLinkContext {
                             current_uri,
                             external_query: None,
+                            game_data_query: None,
                         }),
                     }),
                 )));

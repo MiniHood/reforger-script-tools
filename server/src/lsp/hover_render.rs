@@ -32,6 +32,7 @@ pub(crate) struct HoverRenderContext<'a, 'index> {
 pub(crate) struct HoverLinkContext<'a, 'index> {
     pub current_uri: &'a str,
     pub external_query: Option<&'a IndexQuery<'index>>,
+    pub game_data_query: Option<&'a IndexQuery<'index>>,
 }
 
 pub(crate) fn render_hover_markdown(
@@ -651,12 +652,19 @@ fn find_type_display(
     context: &HoverRenderContext<'_, '_>,
     name: &str,
 ) -> Option<SymbolDisplayInfo> {
-    find_type_display_in_query(context.query, name).or_else(|| {
-        context
-            .links
-            .and_then(|links| links.external_query)
-            .and_then(|query| find_type_display_in_query(query, name))
-    })
+    find_type_display_in_query(context.query, name)
+        .or_else(|| {
+            context
+                .links
+                .and_then(|links| links.external_query)
+                .and_then(|query| find_type_display_in_query(query, name))
+        })
+        .or_else(|| {
+            context
+                .links
+                .and_then(|links| links.game_data_query)
+                .and_then(|query| find_type_display_in_query(query, name))
+        })
 }
 
 fn find_type_display_in_query(query: &IndexQuery<'_>, name: &str) -> Option<SymbolDisplayInfo> {
@@ -1556,6 +1564,7 @@ class Example : Base
                 links: Some(HoverLinkContext {
                     current_uri: "file:///current.c",
                     external_query: None,
+                    game_data_query: None,
                 }),
             }),
         );
@@ -1736,6 +1745,7 @@ class Child : Base
                 links: Some(HoverLinkContext {
                     current_uri: "file:///current.c",
                     external_query: None,
+                    game_data_query: None,
                 }),
             }),
         );
@@ -1780,6 +1790,7 @@ class Child : Base
                 links: Some(HoverLinkContext {
                     current_uri: "file:///current.c",
                     external_query: None,
+                    game_data_query: None,
                 }),
             }),
         );

@@ -5469,6 +5469,41 @@ fn hover_returns_none_for_whitespace_outside_symbols() {
 }
 
 #[test]
+fn hover_links_game_data_parameter_types_when_workspace_index_is_also_available() {
+    let source = r#"class Example
+{
+	void Configure(ScriptComponent component);
+}
+"#;
+    let analysis = file_index_for_source(source);
+    let workspace = file_index_for_source("class WorkspaceOnly {}").index;
+    let game_data = file_index_for_source("class ScriptComponent {}").index;
+
+    let report = hover_report_for_cached_analysis_with_external_indexes(
+        source,
+        &analysis,
+        "file:///Scripts/Example.c",
+        position_for_needle(source, "Configure(ScriptComponent", "Configure"),
+        Some(&workspace),
+        Some(&game_data),
+    );
+    let markdown = report.hover.expect("function hover").contents.value;
+
+    assert!(
+        markdown.contains(
+            "<a href=\"command:reforger-sript-tools.openSymbolLocation?"
+        ),
+        "{markdown}"
+    );
+    assert!(
+        markdown.contains(
+            "><span data-semantic-token=\"class\">ScriptComponent</span></a>"
+        ),
+        "{markdown}"
+    );
+}
+
+#[test]
 fn hover_uses_resolver_syntax_span_for_non_identifier_inside_symbol_span() {
     let source = r#"class Example
 {
