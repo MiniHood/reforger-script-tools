@@ -84,15 +84,45 @@ rolled back. Version precedence follows semantic-version ordering; an
 unrecognized installed version is preserved because automatic downgrade safety
 cannot be proven.
 
-The explicit MCP `workbench_reload` operation is the only supported
-keyboard automation. It requires exactly one current Workbench process and one
-visible `Enfusion Workbench - <project>` top-level window; World Editor and
-other module windows are never valid targets. It checks process identity and
-foreground focus, sends only `Ctrl+Shift+R`, then waits up to 60 seconds for the
-newly appended console-log reload sequence to finish: reload, validation,
-GameLib compile, Game compile, then the loaded Game module. It never exposes
-arbitrary key input. Failure to focus the exact project window or observe that
-terminal sequence is a failed operation, not a claimed reload.
+The explicit MCP `workbench_reload` operation first performs the composite background-safe save described below, then invokes Workbench's own Resource
+Manager action dispatcher with the fixed menu path `Plugins → Settings → Reload
+WB Scripts` and `keepFocus` enabled. It does not focus or maximize a Workbench
+window, or simulate keyboard input. Because the reload
+tears down the in-flight script handler before it can respond, the host treats
+that request timeout as pending verification—not success—and waits up to 60
+seconds for the newly appended console-log sequence: reload, validation,
+GameLib compile, Game compile, then the loaded WorkbenchGame module. It also
+requires the exact foreground window identity to remain unchanged throughout;
+any focus change or missing terminal sequence is a failed operation.
+
+The explicit MCP `workbench_save_all` operation uses the same in-process
+Resource Manager dispatcher with the fixed path `File → Save All` and
+`keepFocus` enabled. It verifies that Workbench accepts the command and that
+the exact foreground window identity is unchanged before returning. It saves
+the currently open editor tabs; persistence of a particular resource is
+verified by the caller's normal resource or world workflow rather than inferred
+from the action acceptance. In addition, the active World Editor document is
+saved through `WorldEditor.Save()`; both the Resource Manager action and this
+native World Editor save must accept when a saved world is present, while the
+exact foreground window identity remains unchanged through a short post-save
+stability interval.
+
+Before calling `WorldEditor.Save()`, the bridge obtains `WorldEditorAPI` and
+checks its `GetWorldPath` result. An absent or untitled world has no path, so
+the World Editor save is skipped and reported as `skipped-no-open-world`; it
+does not invent a destination, trigger Save As, or discard any editor state.
+
+For an already-visible, non-minimized Workbench, save and reload require the
+exact foreground window identity to remain unchanged. If Workbench began
+minimized, the native command is allowed to restore it so saving and reloading
+remain available; results report `workbenchWasMinimized: true` rather than
+claiming the normal background invariant held.
+
+The separate `workbench_save_world` operation saves the active World Editor
+document through the native `WorldEditor.Save()` module method. It is not a
+Resource Manager action and does not substitute for `workbench_save_all`.
+Like the other background-safe Workbench actions, it performs no UI automation
+and fails closed if the exact foreground window identity changes.
 
 Bounded Workbench-log reads retain their raw tail and additionally classify only
 the observed reload milestones: reload start, script validation, GameLib

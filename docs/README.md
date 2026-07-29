@@ -53,6 +53,9 @@ implementation slice is progress, not a completed ticket.
 - [Workbench compiler-validation research](research/workbench-compiler-validation-research.md):
   `ValidateScripts` contract, continuous-validation design, diagnostics, and
   live-session acceptance experiments.
+- [Workbench script-reload research](research/workbench-script-reload-research.md):
+  version-pinned reload-command evidence, public API limits, and the
+  background-safe acceptance experiment.
 - [Workbench water-surface sampling research](research/workbench-water-surface-research.md):
   primary API evidence, live acceptance findings, and the boundary between
   engine-registered water and editor-authored water generators.

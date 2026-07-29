@@ -75,6 +75,40 @@ Use evidence in this order:
 Never infer Enfusion behavior from C#, Unity, Unreal, Arma 3, SQF, or generic
 language conventions.
 
+## Workbench Development Loop
+
+For every change that affects Workbench bridge scripts, editor behavior, or an
+Enfusion Script workflow, follow this continuous evidence loop. Do not treat a
+passing validation run as proof that Workbench is running the new behavior.
+
+1. Search the official wiki/documentation for the relevant editor behavior and
+   API surface.
+2. Search verified game-data and game-source examples. Read the relevant
+   examples to establish the correct API, expected behavior, and the most
+   useful result for an AI caller.
+3. Make the smallest change. Add targeted `PrintFormat` or `Print` diagnostics
+   when they will prove the handler reached the expected state or isolate a
+   failure. Do not leave noisy exploratory logging in the finished workflow.
+4. Run the Workbench validation script and review its output. This establishes
+   that the scripts compile, but does not activate them in a running
+   Workbench.
+5. Reload Workbench scripts using the Workbench reload command when ready for
+   live testing. Restart Workbench if reloading is unavailable or the editor
+   reports that it cannot reload the affected scripts.
+6. Review Workbench logs and confirm that the scripts related to the change
+   compiled and loaded without errors.
+7. Test the changed behavior through the real Workbench/API workflow.
+8. Review Workbench logs again when needed, capture relevant `PrintFormat` or
+   `Print` output, and use that output to confirm success or drive the next
+   iteration.
+9. Remove temporary debugging logs, diagnostic output, and provisional fixes
+   that were only needed to investigate the issue. Keep only intentional,
+   useful production-facing output.
+
+Repeat this loop until the live behavior is verified. Use the Workbench
+commands yourself; do not ask the user to reload, validate, or inspect logs
+when the available tooling can do it.
+
 ## Basic Rules
 
 - Treat user settings as intentional controls; do not expose internal consent

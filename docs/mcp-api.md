@@ -3047,6 +3047,7 @@ List a bounded page of Workbench resources by fixed resource kinds and an option
     "McpWorkbenchResourceKind": {
       "enum": [
         "world",
+        "script",
         "prefab",
         "config",
         "material",
@@ -3055,6 +3056,8 @@ List a bounded page of Workbench resources by fixed resource kinds and an option
         "imageset",
         "audio",
         "animation",
+        "particle",
+        "string",
         "ai"
       ],
       "type": "string"
@@ -4980,7 +4983,7 @@ Workbench tools return structured tool errors with a stable code, operation phas
 
 ## `workbench_inspect_prefab_context`
 
-Inspect one exact World Editor entity or prefab resource's bounded prefab context: resource provenance, contributor add-ons, ancestor chain, prefab-edit state, root components, and scalar direct-override facts. Scene hierarchy and prefab ancestry remain distinct.
+Inspect one exact World Editor entity or prefab resource's compact prefab context. Omit memberId for the root, or use a direct child memberId returned by an earlier inspection. Returns provenance, ancestor chain, effective root/member facts, direct child summaries, and per-component property summaries. Use workbench_inspect_prefab_component for one component's complete typed property set. Scene hierarchy and prefab ancestry remain distinct.
 
 ### Annotations
 
@@ -5002,6 +5005,14 @@ Inspect one exact World Editor entity or prefab resource's bounded prefab contex
     "entityId": {
       "maxLength": 256,
       "minLength": 1,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "memberId": {
+      "maxLength": 256,
+      "minLength": 8,
       "type": [
         "string",
         "null"
@@ -5032,6 +5043,20 @@ Inspect one exact World Editor entity or prefab resource's bounded prefab contex
         },
         "componentId": {
           "type": "string"
+        },
+        "directOverrideCount": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "propertyCount": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         }
       },
       "required": [
@@ -5062,6 +5087,28 @@ Inspect one exact World Editor entity or prefab resource's bounded prefab contex
       ],
       "type": "object"
     },
+    "WorkbenchPrefabMember": {
+      "properties": {
+        "className": {
+          "type": "string"
+        },
+        "memberId": {
+          "description": "Stable only within this one inspected prefab context, not a live entity identity.",
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "memberId",
+        "className"
+      ],
+      "type": "object"
+    },
     "WorkbenchPrefabProperty": {
       "properties": {
         "dataType": {
@@ -5074,6 +5121,16 @@ Inspect one exact World Editor entity or prefab resource's bounded prefab contex
           "type": "string"
         },
         "value": true,
+        "valueOrigin": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchPrefabPropertyOrigin"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "writeDescriptor": {
           "type": [
             "string",
@@ -5088,6 +5145,14 @@ Inspect one exact World Editor entity or prefab resource's bounded prefab contex
         "directlyOverridden"
       ],
       "type": "object"
+    },
+    "WorkbenchPrefabPropertyOrigin": {
+      "enum": [
+        "direct",
+        "inherited",
+        "default"
+      ],
+      "type": "string"
     },
     "WorkbenchSelectedEntity": {
       "properties": {
@@ -5168,9 +5233,9 @@ Inspect one exact World Editor entity or prefab resource's bounded prefab contex
       "type": "integer"
     },
     "children": {
-      "description": "Direct scene/prefab children only; ancestor resources are reported separately.",
+      "description": "Direct stored prefab members only; these are not live scene entity identities.",
       "items": {
-        "$ref": "#/$defs/WorkbenchSelectedEntity"
+        "$ref": "#/$defs/WorkbenchPrefabMember"
       },
       "type": "array"
     },
@@ -5199,6 +5264,12 @@ Inspect one exact World Editor entity or prefab resource's bounded prefab contex
         }
       ]
     },
+    "memberId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "prefabEditMode": {
       "type": "boolean"
     },
@@ -5216,12 +5287,6 @@ Inspect one exact World Editor entity or prefab resource's bounded prefab contex
       "type": "integer"
     },
     "resourceName": {
-      "type": [
-        "string",
-        "null"
-      ]
-    },
-    "resourcePath": {
       "type": [
         "string",
         "null"
@@ -5251,6 +5316,183 @@ Inspect one exact World Editor entity or prefab resource's bounded prefab contex
     "properties",
     "propertiesTruncated",
     "childCount"
+  ],
+  "type": "object"
+}
+```
+
+### Stable failures
+
+Workbench tools return structured tool errors with a stable code, operation phase, retryability, and a unique log reference matching a rotating integration-log record. Raw transport and Workbench payload details are not exposed.
+
+## `workbench_inspect_prefab_component`
+
+Inspect one exact prefab component identified by workbench_inspect_prefab_context. Supply exactly one of resourceName or entityId; entityId is for an open prefab-edit entity and returns property write descriptors, while resourceName is read-only. Supply memberId only when inspecting a stored prefab child. Returns its complete typed effective property set, direct-override facts, and direct/inherited/default value origin.
+
+### Annotations
+
+```json
+{
+  "title": "Inspect Workbench prefab component",
+  "readOnlyHint": true,
+  "openWorldHint": false
+}
+```
+
+### Input schema
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "componentId": {
+      "maxLength": 256,
+      "minLength": 1,
+      "type": "string"
+    },
+    "entityId": {
+      "maxLength": 256,
+      "minLength": 1,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "memberId": {
+      "maxLength": 256,
+      "minLength": 8,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "resourceName": {
+      "maxLength": 1024,
+      "minLength": 1,
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "componentId"
+  ],
+  "type": "object"
+}
+```
+
+### Output schema
+
+```json
+{
+  "$defs": {
+    "WorkbenchPrefabComponent": {
+      "properties": {
+        "className": {
+          "type": "string"
+        },
+        "componentId": {
+          "type": "string"
+        },
+        "properties": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchPrefabProperty"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "componentId",
+        "className",
+        "properties"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabProperty": {
+      "properties": {
+        "dataType": {
+          "type": "string"
+        },
+        "directlyOverridden": {
+          "type": "boolean"
+        },
+        "path": {
+          "type": "string"
+        },
+        "value": true,
+        "valueOrigin": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchPrefabPropertyOrigin"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "writeDescriptor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "path",
+        "dataType",
+        "value",
+        "directlyOverridden"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabPropertyOrigin": {
+      "enum": [
+        "direct",
+        "inherited",
+        "default"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "bridgeVersion": {
+      "type": "string"
+    },
+    "component": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkbenchPrefabComponent"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "memberId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "protocolVersion": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "resourceName": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "bridgeVersion",
+    "protocolVersion",
+    "status",
+    "resourceName"
   ],
   "type": "object"
 }
@@ -5315,6 +5557,35 @@ Preview then explicitly confirm creation of one prefab from one exact scene enti
 ```json
 {
   "$defs": {
+    "WorkbenchComponent": {
+      "properties": {
+        "className": {
+          "type": "string"
+        },
+        "componentId": {
+          "type": "string"
+        },
+        "directOverrideCount": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "propertyCount": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "componentId",
+        "className"
+      ],
+      "type": "object"
+    },
     "WorkbenchEntityPosition": {
       "properties": {
         "x": {
@@ -5336,6 +5607,178 @@ Preview then explicitly confirm creation of one prefab from one exact scene enti
         "z"
       ],
       "type": "object"
+    },
+    "WorkbenchPrefabContext": {
+      "properties": {
+        "ancestorResources": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "ancestorResourcesTruncated": {
+          "type": "boolean"
+        },
+        "bridgeVersion": {
+          "type": "string"
+        },
+        "childCount": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "children": {
+          "description": "Direct stored prefab members only; these are not live scene entity identities.",
+          "items": {
+            "$ref": "#/$defs/WorkbenchPrefabMember"
+          },
+          "type": "array"
+        },
+        "childrenTruncated": {
+          "type": "boolean"
+        },
+        "components": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchComponent"
+          },
+          "type": "array"
+        },
+        "contributorAddons": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "entity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchSelectedEntity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "memberId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "prefabEditMode": {
+          "type": "boolean"
+        },
+        "properties": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchPrefabProperty"
+          },
+          "type": "array"
+        },
+        "propertiesTruncated": {
+          "type": "boolean"
+        },
+        "protocolVersion": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "resourceName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resourceReferenceKind": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "bridgeVersion",
+        "protocolVersion",
+        "status",
+        "contributorAddons",
+        "ancestorResources",
+        "ancestorResourcesTruncated",
+        "prefabEditMode",
+        "components",
+        "children",
+        "childrenTruncated",
+        "properties",
+        "propertiesTruncated",
+        "childCount"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabMember": {
+      "properties": {
+        "className": {
+          "type": "string"
+        },
+        "memberId": {
+          "description": "Stable only within this one inspected prefab context, not a live entity identity.",
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "memberId",
+        "className"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabProperty": {
+      "properties": {
+        "dataType": {
+          "type": "string"
+        },
+        "directlyOverridden": {
+          "type": "boolean"
+        },
+        "path": {
+          "type": "string"
+        },
+        "value": true,
+        "valueOrigin": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchPrefabPropertyOrigin"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "writeDescriptor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "path",
+        "dataType",
+        "value",
+        "directlyOverridden"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabPropertyOrigin": {
+      "enum": [
+        "direct",
+        "inherited",
+        "default"
+      ],
+      "type": "string"
     },
     "WorkbenchSelectedEntity": {
       "properties": {
@@ -5437,12 +5880,461 @@ Preview then explicitly confirm creation of one prefab from one exact scene enti
         }
       ]
     },
+    "inspection": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkbenchPrefabContext"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "persistencePath": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "protocolVersion": {
       "minimum": 0,
       "type": "integer"
     },
+    "resourceName": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "status": {
       "type": "string"
+    },
+    "templateSaved": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "bridgeVersion",
+    "protocolVersion",
+    "status"
+  ],
+  "type": "object"
+}
+```
+
+### Stable failures
+
+Workbench tools return structured tool errors with a stable code, operation phase, retryability, and a unique log reference matching a rotating integration-log record. Raw transport and Workbench payload details are not exposed.
+
+## `workbench_create_generic_prefab`
+
+Preview then explicitly confirm creation of one GenericEntity prefab at a project-relative destination. Workbench creates a temporary GenericEntity in the current unlocked layer, saves it through CreateEntityTemplate, then deletes that temporary source in the same native action; it never edits prefab files directly.
+
+### Annotations
+
+```json
+{
+  "title": "Create GenericEntity prefab",
+  "readOnlyHint": false,
+  "destructiveHint": false,
+  "idempotentHint": false,
+  "openWorldHint": false
+}
+```
+
+### Input schema
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "confirmationToken": {
+      "maxLength": 256,
+      "minLength": 1,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "destination": {
+      "maxLength": 512,
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "destination"
+  ],
+  "type": "object"
+}
+```
+
+### Output schema
+
+```json
+{
+  "$defs": {
+    "WorkbenchComponent": {
+      "properties": {
+        "className": {
+          "type": "string"
+        },
+        "componentId": {
+          "type": "string"
+        },
+        "directOverrideCount": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "propertyCount": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "componentId",
+        "className"
+      ],
+      "type": "object"
+    },
+    "WorkbenchEntityPosition": {
+      "properties": {
+        "x": {
+          "format": "float",
+          "type": "number"
+        },
+        "y": {
+          "format": "float",
+          "type": "number"
+        },
+        "z": {
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "z"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabContext": {
+      "properties": {
+        "ancestorResources": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "ancestorResourcesTruncated": {
+          "type": "boolean"
+        },
+        "bridgeVersion": {
+          "type": "string"
+        },
+        "childCount": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "children": {
+          "description": "Direct stored prefab members only; these are not live scene entity identities.",
+          "items": {
+            "$ref": "#/$defs/WorkbenchPrefabMember"
+          },
+          "type": "array"
+        },
+        "childrenTruncated": {
+          "type": "boolean"
+        },
+        "components": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchComponent"
+          },
+          "type": "array"
+        },
+        "contributorAddons": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "entity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchSelectedEntity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "memberId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "prefabEditMode": {
+          "type": "boolean"
+        },
+        "properties": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchPrefabProperty"
+          },
+          "type": "array"
+        },
+        "propertiesTruncated": {
+          "type": "boolean"
+        },
+        "protocolVersion": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "resourceName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resourceReferenceKind": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "bridgeVersion",
+        "protocolVersion",
+        "status",
+        "contributorAddons",
+        "ancestorResources",
+        "ancestorResourcesTruncated",
+        "prefabEditMode",
+        "components",
+        "children",
+        "childrenTruncated",
+        "properties",
+        "propertiesTruncated",
+        "childCount"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabMember": {
+      "properties": {
+        "className": {
+          "type": "string"
+        },
+        "memberId": {
+          "description": "Stable only within this one inspected prefab context, not a live entity identity.",
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "memberId",
+        "className"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabProperty": {
+      "properties": {
+        "dataType": {
+          "type": "string"
+        },
+        "directlyOverridden": {
+          "type": "boolean"
+        },
+        "path": {
+          "type": "string"
+        },
+        "value": true,
+        "valueOrigin": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchPrefabPropertyOrigin"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "writeDescriptor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "path",
+        "dataType",
+        "value",
+        "directlyOverridden"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabPropertyOrigin": {
+      "enum": [
+        "direct",
+        "inherited",
+        "default"
+      ],
+      "type": "string"
+    },
+    "WorkbenchSelectedEntity": {
+      "properties": {
+        "className": {
+          "type": "string"
+        },
+        "entityId": {
+          "type": "string"
+        },
+        "layerId": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "layerName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "position": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchEntityPosition"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "resourceName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "subScene": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "subSceneName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "entityId",
+        "className",
+        "subScene",
+        "layerId"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "activeLayerId": {
+      "format": "int32",
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "bridgeVersion": {
+      "type": "string"
+    },
+    "confirmationToken": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "destination": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "destinationExists": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "entity": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkbenchSelectedEntity"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "inspection": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkbenchPrefabContext"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "persistencePath": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "protocolVersion": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "resourceName": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "status": {
+      "type": "string"
+    },
+    "templateSaved": {
+      "type": [
+        "boolean",
+        "null"
+      ]
     }
   },
   "required": [
@@ -5460,7 +6352,7 @@ Workbench tools return structured tool errors with a stable code, operation phas
 
 ## `workbench_save_prefab`
 
-Preview then explicitly confirm saving the exact prefab currently represented by one World Editor entity in prefab-edit mode.
+Preview then explicitly confirm saving exactly one prefab target. Supply entityId for an open Prefab Editor template, or resourceName for the native resource-loaded template proof path; resourceName never accepts an absolute filesystem path.
 
 ### Annotations
 
@@ -5492,12 +6384,20 @@ Preview then explicitly confirm saving the exact prefab currently represented by
     "entityId": {
       "maxLength": 256,
       "minLength": 1,
-      "type": "string"
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "resourceName": {
+      "maxLength": 1024,
+      "minLength": 19,
+      "type": [
+        "string",
+        "null"
+      ]
     }
   },
-  "required": [
-    "entityId"
-  ],
   "type": "object"
 }
 ```
@@ -5507,6 +6407,35 @@ Preview then explicitly confirm saving the exact prefab currently represented by
 ```json
 {
   "$defs": {
+    "WorkbenchComponent": {
+      "properties": {
+        "className": {
+          "type": "string"
+        },
+        "componentId": {
+          "type": "string"
+        },
+        "directOverrideCount": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "propertyCount": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "componentId",
+        "className"
+      ],
+      "type": "object"
+    },
     "WorkbenchEntityPosition": {
       "properties": {
         "x": {
@@ -5528,6 +6457,178 @@ Preview then explicitly confirm saving the exact prefab currently represented by
         "z"
       ],
       "type": "object"
+    },
+    "WorkbenchPrefabContext": {
+      "properties": {
+        "ancestorResources": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "ancestorResourcesTruncated": {
+          "type": "boolean"
+        },
+        "bridgeVersion": {
+          "type": "string"
+        },
+        "childCount": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "children": {
+          "description": "Direct stored prefab members only; these are not live scene entity identities.",
+          "items": {
+            "$ref": "#/$defs/WorkbenchPrefabMember"
+          },
+          "type": "array"
+        },
+        "childrenTruncated": {
+          "type": "boolean"
+        },
+        "components": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchComponent"
+          },
+          "type": "array"
+        },
+        "contributorAddons": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "entity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchSelectedEntity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "memberId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "prefabEditMode": {
+          "type": "boolean"
+        },
+        "properties": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchPrefabProperty"
+          },
+          "type": "array"
+        },
+        "propertiesTruncated": {
+          "type": "boolean"
+        },
+        "protocolVersion": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "resourceName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resourceReferenceKind": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "bridgeVersion",
+        "protocolVersion",
+        "status",
+        "contributorAddons",
+        "ancestorResources",
+        "ancestorResourcesTruncated",
+        "prefabEditMode",
+        "components",
+        "children",
+        "childrenTruncated",
+        "properties",
+        "propertiesTruncated",
+        "childCount"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabMember": {
+      "properties": {
+        "className": {
+          "type": "string"
+        },
+        "memberId": {
+          "description": "Stable only within this one inspected prefab context, not a live entity identity.",
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "memberId",
+        "className"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabProperty": {
+      "properties": {
+        "dataType": {
+          "type": "string"
+        },
+        "directlyOverridden": {
+          "type": "boolean"
+        },
+        "path": {
+          "type": "string"
+        },
+        "value": true,
+        "valueOrigin": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchPrefabPropertyOrigin"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "writeDescriptor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "path",
+        "dataType",
+        "value",
+        "directlyOverridden"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabPropertyOrigin": {
+      "enum": [
+        "direct",
+        "inherited",
+        "default"
+      ],
+      "type": "string"
     },
     "WorkbenchSelectedEntity": {
       "properties": {
@@ -5629,18 +6730,1484 @@ Preview then explicitly confirm saving the exact prefab currently represented by
         }
       ]
     },
+    "inspection": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkbenchPrefabContext"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "persistencePath": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "protocolVersion": {
       "minimum": 0,
       "type": "integer"
     },
+    "resourceName": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "status": {
       "type": "string"
+    },
+    "templateSaved": {
+      "type": [
+        "boolean",
+        "null"
+      ]
     }
   },
   "required": [
     "bridgeVersion",
     "protocolVersion",
     "status"
+  ],
+  "type": "object"
+}
+```
+
+### Stable failures
+
+Workbench tools return structured tool errors with a stable code, operation phase, retryability, and a unique log reference matching a rotating integration-log record. Raw transport and Workbench payload details are not exposed.
+
+## `workbench_add_prefab_resource_component`
+
+Preview then explicitly confirm adding one component class to one canonical local prefab resource. Workbench loads the resource, creates the component, saves the template, and returns fresh resource inspection; it never edits prefab files or a scene instance.
+
+### Annotations
+
+```json
+{
+  "title": "Add a component to a saved Workbench prefab resource",
+  "readOnlyHint": false,
+  "destructiveHint": false,
+  "idempotentHint": false,
+  "openWorldHint": false
+}
+```
+
+### Input schema
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "className": {
+      "maxLength": 128,
+      "minLength": 1,
+      "type": "string"
+    },
+    "confirmationToken": {
+      "maxLength": 256,
+      "minLength": 1,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "resourceName": {
+      "maxLength": 1024,
+      "minLength": 19,
+      "type": "string"
+    }
+  },
+  "required": [
+    "resourceName",
+    "className"
+  ],
+  "type": "object"
+}
+```
+
+### Output schema
+
+```json
+{
+  "$defs": {
+    "WorkbenchComponent": {
+      "properties": {
+        "className": {
+          "type": "string"
+        },
+        "componentId": {
+          "type": "string"
+        },
+        "directOverrideCount": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "propertyCount": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "componentId",
+        "className"
+      ],
+      "type": "object"
+    },
+    "WorkbenchEntityPosition": {
+      "properties": {
+        "x": {
+          "format": "float",
+          "type": "number"
+        },
+        "y": {
+          "format": "float",
+          "type": "number"
+        },
+        "z": {
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "z"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabComponent": {
+      "properties": {
+        "className": {
+          "type": "string"
+        },
+        "componentId": {
+          "type": "string"
+        },
+        "properties": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchPrefabProperty"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "componentId",
+        "className",
+        "properties"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabComponentInspection": {
+      "properties": {
+        "bridgeVersion": {
+          "type": "string"
+        },
+        "component": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchPrefabComponent"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "memberId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "protocolVersion": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "resourceName": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "bridgeVersion",
+        "protocolVersion",
+        "status",
+        "resourceName"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabContext": {
+      "properties": {
+        "ancestorResources": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "ancestorResourcesTruncated": {
+          "type": "boolean"
+        },
+        "bridgeVersion": {
+          "type": "string"
+        },
+        "childCount": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "children": {
+          "description": "Direct stored prefab members only; these are not live scene entity identities.",
+          "items": {
+            "$ref": "#/$defs/WorkbenchPrefabMember"
+          },
+          "type": "array"
+        },
+        "childrenTruncated": {
+          "type": "boolean"
+        },
+        "components": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchComponent"
+          },
+          "type": "array"
+        },
+        "contributorAddons": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "entity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchSelectedEntity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "memberId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "prefabEditMode": {
+          "type": "boolean"
+        },
+        "properties": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchPrefabProperty"
+          },
+          "type": "array"
+        },
+        "propertiesTruncated": {
+          "type": "boolean"
+        },
+        "protocolVersion": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "resourceName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resourceReferenceKind": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "bridgeVersion",
+        "protocolVersion",
+        "status",
+        "contributorAddons",
+        "ancestorResources",
+        "ancestorResourcesTruncated",
+        "prefabEditMode",
+        "components",
+        "children",
+        "childrenTruncated",
+        "properties",
+        "propertiesTruncated",
+        "childCount"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabMember": {
+      "properties": {
+        "className": {
+          "type": "string"
+        },
+        "memberId": {
+          "description": "Stable only within this one inspected prefab context, not a live entity identity.",
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "memberId",
+        "className"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabProperty": {
+      "properties": {
+        "dataType": {
+          "type": "string"
+        },
+        "directlyOverridden": {
+          "type": "boolean"
+        },
+        "path": {
+          "type": "string"
+        },
+        "value": true,
+        "valueOrigin": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchPrefabPropertyOrigin"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "writeDescriptor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "path",
+        "dataType",
+        "value",
+        "directlyOverridden"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabPropertyOrigin": {
+      "enum": [
+        "direct",
+        "inherited",
+        "default"
+      ],
+      "type": "string"
+    },
+    "WorkbenchSelectedEntity": {
+      "properties": {
+        "className": {
+          "type": "string"
+        },
+        "entityId": {
+          "type": "string"
+        },
+        "layerId": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "layerName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "position": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchEntityPosition"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "resourceName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "subScene": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "subSceneName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "entityId",
+        "className",
+        "subScene",
+        "layerId"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "bridgeVersion": {
+      "type": "string"
+    },
+    "componentClass": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "componentId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "componentInspection": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkbenchPrefabComponentInspection"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "confirmationToken": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "inspection": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkbenchPrefabContext"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "persistencePath": {
+      "type": "string"
+    },
+    "protocolVersion": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "resourceName": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    },
+    "templateSaved": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "bridgeVersion",
+    "protocolVersion",
+    "status",
+    "resourceName",
+    "persistencePath",
+    "templateSaved"
+  ],
+  "type": "object"
+}
+```
+
+### Stable failures
+
+Workbench tools return structured tool errors with a stable code, operation phase, retryability, and a unique log reference matching a rotating integration-log record. Raw transport and Workbench payload details are not exposed.
+
+## `workbench_remove_prefab_resource_component`
+
+Preview then explicitly confirm removing one opaque component identity returned by prefab resource inspection. Workbench verifies the observed index and class, saves the template, and returns fresh inspection; it never edits prefab files or a scene instance.
+
+### Annotations
+
+```json
+{
+  "title": "Remove a component from a saved Workbench prefab resource",
+  "readOnlyHint": false,
+  "destructiveHint": true,
+  "idempotentHint": false,
+  "openWorldHint": false
+}
+```
+
+### Input schema
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "componentId": {
+      "maxLength": 256,
+      "minLength": 8,
+      "type": "string"
+    },
+    "confirmationToken": {
+      "maxLength": 256,
+      "minLength": 1,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "resourceName": {
+      "maxLength": 1024,
+      "minLength": 19,
+      "type": "string"
+    }
+  },
+  "required": [
+    "resourceName",
+    "componentId"
+  ],
+  "type": "object"
+}
+```
+
+### Output schema
+
+```json
+{
+  "$defs": {
+    "WorkbenchComponent": {
+      "properties": {
+        "className": {
+          "type": "string"
+        },
+        "componentId": {
+          "type": "string"
+        },
+        "directOverrideCount": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "propertyCount": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "componentId",
+        "className"
+      ],
+      "type": "object"
+    },
+    "WorkbenchEntityPosition": {
+      "properties": {
+        "x": {
+          "format": "float",
+          "type": "number"
+        },
+        "y": {
+          "format": "float",
+          "type": "number"
+        },
+        "z": {
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "z"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabComponent": {
+      "properties": {
+        "className": {
+          "type": "string"
+        },
+        "componentId": {
+          "type": "string"
+        },
+        "properties": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchPrefabProperty"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "componentId",
+        "className",
+        "properties"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabComponentInspection": {
+      "properties": {
+        "bridgeVersion": {
+          "type": "string"
+        },
+        "component": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchPrefabComponent"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "memberId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "protocolVersion": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "resourceName": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "bridgeVersion",
+        "protocolVersion",
+        "status",
+        "resourceName"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabContext": {
+      "properties": {
+        "ancestorResources": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "ancestorResourcesTruncated": {
+          "type": "boolean"
+        },
+        "bridgeVersion": {
+          "type": "string"
+        },
+        "childCount": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "children": {
+          "description": "Direct stored prefab members only; these are not live scene entity identities.",
+          "items": {
+            "$ref": "#/$defs/WorkbenchPrefabMember"
+          },
+          "type": "array"
+        },
+        "childrenTruncated": {
+          "type": "boolean"
+        },
+        "components": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchComponent"
+          },
+          "type": "array"
+        },
+        "contributorAddons": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "entity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchSelectedEntity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "memberId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "prefabEditMode": {
+          "type": "boolean"
+        },
+        "properties": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchPrefabProperty"
+          },
+          "type": "array"
+        },
+        "propertiesTruncated": {
+          "type": "boolean"
+        },
+        "protocolVersion": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "resourceName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resourceReferenceKind": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "bridgeVersion",
+        "protocolVersion",
+        "status",
+        "contributorAddons",
+        "ancestorResources",
+        "ancestorResourcesTruncated",
+        "prefabEditMode",
+        "components",
+        "children",
+        "childrenTruncated",
+        "properties",
+        "propertiesTruncated",
+        "childCount"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabMember": {
+      "properties": {
+        "className": {
+          "type": "string"
+        },
+        "memberId": {
+          "description": "Stable only within this one inspected prefab context, not a live entity identity.",
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "memberId",
+        "className"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabProperty": {
+      "properties": {
+        "dataType": {
+          "type": "string"
+        },
+        "directlyOverridden": {
+          "type": "boolean"
+        },
+        "path": {
+          "type": "string"
+        },
+        "value": true,
+        "valueOrigin": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchPrefabPropertyOrigin"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "writeDescriptor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "path",
+        "dataType",
+        "value",
+        "directlyOverridden"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabPropertyOrigin": {
+      "enum": [
+        "direct",
+        "inherited",
+        "default"
+      ],
+      "type": "string"
+    },
+    "WorkbenchSelectedEntity": {
+      "properties": {
+        "className": {
+          "type": "string"
+        },
+        "entityId": {
+          "type": "string"
+        },
+        "layerId": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "layerName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "position": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchEntityPosition"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "resourceName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "subScene": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "subSceneName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "entityId",
+        "className",
+        "subScene",
+        "layerId"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "bridgeVersion": {
+      "type": "string"
+    },
+    "componentClass": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "componentId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "componentInspection": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkbenchPrefabComponentInspection"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "confirmationToken": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "inspection": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkbenchPrefabContext"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "persistencePath": {
+      "type": "string"
+    },
+    "protocolVersion": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "resourceName": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    },
+    "templateSaved": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "bridgeVersion",
+    "protocolVersion",
+    "status",
+    "resourceName",
+    "persistencePath",
+    "templateSaved"
+  ],
+  "type": "object"
+}
+```
+
+### Stable failures
+
+Workbench tools return structured tool errors with a stable code, operation phase, retryability, and a unique log reference matching a rotating integration-log record. Raw transport and Workbench payload details are not exposed.
+
+## `workbench_set_prefab_resource_property`
+
+Preview then explicitly confirm a typed root or component property change on one canonical prefab resource. Supply only a write descriptor returned by resource inspection; Workbench rechecks the observed value, saves the template, and returns fresh inspection.
+
+### Annotations
+
+```json
+{
+  "title": "Set a typed property on a saved Workbench prefab resource",
+  "readOnlyHint": false,
+  "destructiveHint": false,
+  "idempotentHint": false,
+  "openWorldHint": false
+}
+```
+
+### Input schema
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "componentId": {
+      "maxLength": 256,
+      "minLength": 8,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "confirmationToken": {
+      "maxLength": 256,
+      "minLength": 1,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "resourceName": {
+      "maxLength": 1024,
+      "minLength": 19,
+      "type": "string"
+    },
+    "value": true,
+    "writeDescriptor": {
+      "maxLength": 256,
+      "minLength": 8,
+      "type": "string"
+    }
+  },
+  "required": [
+    "resourceName",
+    "writeDescriptor",
+    "value"
+  ],
+  "type": "object"
+}
+```
+
+### Output schema
+
+```json
+{
+  "$defs": {
+    "WorkbenchComponent": {
+      "properties": {
+        "className": {
+          "type": "string"
+        },
+        "componentId": {
+          "type": "string"
+        },
+        "directOverrideCount": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "propertyCount": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "componentId",
+        "className"
+      ],
+      "type": "object"
+    },
+    "WorkbenchEntityPosition": {
+      "properties": {
+        "x": {
+          "format": "float",
+          "type": "number"
+        },
+        "y": {
+          "format": "float",
+          "type": "number"
+        },
+        "z": {
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "z"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabComponent": {
+      "properties": {
+        "className": {
+          "type": "string"
+        },
+        "componentId": {
+          "type": "string"
+        },
+        "properties": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchPrefabProperty"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "componentId",
+        "className",
+        "properties"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabComponentInspection": {
+      "properties": {
+        "bridgeVersion": {
+          "type": "string"
+        },
+        "component": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchPrefabComponent"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "memberId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "protocolVersion": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "resourceName": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "bridgeVersion",
+        "protocolVersion",
+        "status",
+        "resourceName"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabContext": {
+      "properties": {
+        "ancestorResources": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "ancestorResourcesTruncated": {
+          "type": "boolean"
+        },
+        "bridgeVersion": {
+          "type": "string"
+        },
+        "childCount": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "children": {
+          "description": "Direct stored prefab members only; these are not live scene entity identities.",
+          "items": {
+            "$ref": "#/$defs/WorkbenchPrefabMember"
+          },
+          "type": "array"
+        },
+        "childrenTruncated": {
+          "type": "boolean"
+        },
+        "components": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchComponent"
+          },
+          "type": "array"
+        },
+        "contributorAddons": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "entity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchSelectedEntity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "memberId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "prefabEditMode": {
+          "type": "boolean"
+        },
+        "properties": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchPrefabProperty"
+          },
+          "type": "array"
+        },
+        "propertiesTruncated": {
+          "type": "boolean"
+        },
+        "protocolVersion": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "resourceName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resourceReferenceKind": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "bridgeVersion",
+        "protocolVersion",
+        "status",
+        "contributorAddons",
+        "ancestorResources",
+        "ancestorResourcesTruncated",
+        "prefabEditMode",
+        "components",
+        "children",
+        "childrenTruncated",
+        "properties",
+        "propertiesTruncated",
+        "childCount"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabMember": {
+      "properties": {
+        "className": {
+          "type": "string"
+        },
+        "memberId": {
+          "description": "Stable only within this one inspected prefab context, not a live entity identity.",
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "memberId",
+        "className"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabProperty": {
+      "properties": {
+        "dataType": {
+          "type": "string"
+        },
+        "directlyOverridden": {
+          "type": "boolean"
+        },
+        "path": {
+          "type": "string"
+        },
+        "value": true,
+        "valueOrigin": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchPrefabPropertyOrigin"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "writeDescriptor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "path",
+        "dataType",
+        "value",
+        "directlyOverridden"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabPropertyOrigin": {
+      "enum": [
+        "direct",
+        "inherited",
+        "default"
+      ],
+      "type": "string"
+    },
+    "WorkbenchSelectedEntity": {
+      "properties": {
+        "className": {
+          "type": "string"
+        },
+        "entityId": {
+          "type": "string"
+        },
+        "layerId": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "layerName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "position": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchEntityPosition"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "resourceName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "subScene": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "subSceneName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "entityId",
+        "className",
+        "subScene",
+        "layerId"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "bridgeVersion": {
+      "type": "string"
+    },
+    "componentClass": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "componentId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "componentInspection": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkbenchPrefabComponentInspection"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "confirmationToken": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "inspection": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkbenchPrefabContext"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "persistencePath": {
+      "type": "string"
+    },
+    "protocolVersion": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "resourceName": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    },
+    "templateSaved": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "bridgeVersion",
+    "protocolVersion",
+    "status",
+    "resourceName",
+    "persistencePath",
+    "templateSaved"
   ],
   "type": "object"
 }
@@ -5699,6 +8266,35 @@ Set one typed prefab property only in prefab-edit mode using a write descriptor 
 ```json
 {
   "$defs": {
+    "WorkbenchComponent": {
+      "properties": {
+        "className": {
+          "type": "string"
+        },
+        "componentId": {
+          "type": "string"
+        },
+        "directOverrideCount": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "propertyCount": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "componentId",
+        "className"
+      ],
+      "type": "object"
+    },
     "WorkbenchEntityPosition": {
       "properties": {
         "x": {
@@ -5720,6 +8316,178 @@ Set one typed prefab property only in prefab-edit mode using a write descriptor 
         "z"
       ],
       "type": "object"
+    },
+    "WorkbenchPrefabContext": {
+      "properties": {
+        "ancestorResources": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "ancestorResourcesTruncated": {
+          "type": "boolean"
+        },
+        "bridgeVersion": {
+          "type": "string"
+        },
+        "childCount": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "children": {
+          "description": "Direct stored prefab members only; these are not live scene entity identities.",
+          "items": {
+            "$ref": "#/$defs/WorkbenchPrefabMember"
+          },
+          "type": "array"
+        },
+        "childrenTruncated": {
+          "type": "boolean"
+        },
+        "components": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchComponent"
+          },
+          "type": "array"
+        },
+        "contributorAddons": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "entity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchSelectedEntity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "memberId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "prefabEditMode": {
+          "type": "boolean"
+        },
+        "properties": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchPrefabProperty"
+          },
+          "type": "array"
+        },
+        "propertiesTruncated": {
+          "type": "boolean"
+        },
+        "protocolVersion": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "resourceName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resourceReferenceKind": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "bridgeVersion",
+        "protocolVersion",
+        "status",
+        "contributorAddons",
+        "ancestorResources",
+        "ancestorResourcesTruncated",
+        "prefabEditMode",
+        "components",
+        "children",
+        "childrenTruncated",
+        "properties",
+        "propertiesTruncated",
+        "childCount"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabMember": {
+      "properties": {
+        "className": {
+          "type": "string"
+        },
+        "memberId": {
+          "description": "Stable only within this one inspected prefab context, not a live entity identity.",
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "memberId",
+        "className"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabProperty": {
+      "properties": {
+        "dataType": {
+          "type": "string"
+        },
+        "directlyOverridden": {
+          "type": "boolean"
+        },
+        "path": {
+          "type": "string"
+        },
+        "value": true,
+        "valueOrigin": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchPrefabPropertyOrigin"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "writeDescriptor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "path",
+        "dataType",
+        "value",
+        "directlyOverridden"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabPropertyOrigin": {
+      "enum": [
+        "direct",
+        "inherited",
+        "default"
+      ],
+      "type": "string"
     },
     "WorkbenchSelectedEntity": {
       "properties": {
@@ -5821,12 +8589,40 @@ Set one typed prefab property only in prefab-edit mode using a write descriptor 
         }
       ]
     },
+    "inspection": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkbenchPrefabContext"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "persistencePath": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "protocolVersion": {
       "minimum": 0,
       "type": "integer"
     },
+    "resourceName": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "status": {
       "type": "string"
+    },
+    "templateSaved": {
+      "type": [
+        "boolean",
+        "null"
+      ]
     }
   },
   "required": [
@@ -5904,6 +8700,20 @@ Set one typed prefab component property only in prefab-edit mode using a descrip
         },
         "componentId": {
           "type": "string"
+        },
+        "directOverrideCount": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "propertyCount": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         }
       },
       "required": [
@@ -5917,10 +8727,26 @@ Set one typed prefab component property only in prefab-edit mode using a descrip
         "dataType": {
           "type": "string"
         },
+        "directlyOverridden": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "name": {
           "type": "string"
         },
         "value": true,
+        "valueOrigin": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchPrefabPropertyOrigin"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "writeDescriptor": {
           "type": [
             "string",
@@ -5956,6 +8782,14 @@ Set one typed prefab component property only in prefab-edit mode using a descrip
         "z"
       ],
       "type": "object"
+    },
+    "WorkbenchPrefabPropertyOrigin": {
+      "enum": [
+        "direct",
+        "inherited",
+        "default"
+      ],
+      "type": "string"
     },
     "WorkbenchSelectedEntity": {
       "properties": {
@@ -6075,7 +8909,7 @@ Workbench tools return structured tool errors with a stable code, operation phas
 
 ## `workbench_inspect_entity`
 
-Inspect one exact stable World Editor entity identity through the compatible managed handler package. It never changes editor selection or world content.
+Inspect one exact stable live World Editor entity: identity, canonical GUID-bearing source resource and reference kind, live hierarchy, compact root facts, and per-component property summaries. Use workbench_inspect_component for one component's complete typed property set. It never changes editor selection or world content.
 
 ### Annotations
 
@@ -6119,6 +8953,20 @@ Inspect one exact stable World Editor entity identity through the compatible man
         },
         "componentId": {
           "type": "string"
+        },
+        "directOverrideCount": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "propertyCount": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         }
       },
       "required": [
@@ -6148,6 +8996,51 @@ Inspect one exact stable World Editor entity identity through the compatible man
         "z"
       ],
       "type": "object"
+    },
+    "WorkbenchPrefabProperty": {
+      "properties": {
+        "dataType": {
+          "type": "string"
+        },
+        "directlyOverridden": {
+          "type": "boolean"
+        },
+        "path": {
+          "type": "string"
+        },
+        "value": true,
+        "valueOrigin": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchPrefabPropertyOrigin"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "writeDescriptor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "path",
+        "dataType",
+        "value",
+        "directlyOverridden"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabPropertyOrigin": {
+      "enum": [
+        "direct",
+        "inherited",
+        "default"
+      ],
+      "type": "string"
     },
     "WorkbenchSelectedEntity": {
       "properties": {
@@ -6233,11 +9126,23 @@ Inspect one exact stable World Editor entity identity through the compatible man
     "childrenTruncated": {
       "type": "boolean"
     },
+    "componentPropertiesTruncated": {
+      "type": "boolean"
+    },
     "components": {
       "items": {
         "$ref": "#/$defs/WorkbenchComponent"
       },
       "type": "array"
+    },
+    "contributorAddons": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "contributorAddonsTruncated": {
+      "type": "boolean"
     },
     "editorAvailable": {
       "type": "boolean",
@@ -6253,28 +9158,28 @@ Inspect one exact stable World Editor entity identity through the compatible man
         }
       ]
     },
-    "originKind": {
-      "type": "string"
+    "properties": {
+      "items": {
+        "$ref": "#/$defs/WorkbenchPrefabProperty"
+      },
+      "type": "array"
     },
-    "originResourceName": {
-      "type": [
-        "string",
-        "null"
-      ]
+    "propertiesTruncated": {
+      "type": "boolean"
     },
     "protocolVersion": {
       "minimum": 0,
       "type": "integer",
       "writeOnly": true
     },
-    "sourceAddons": {
-      "items": {
-        "type": "string"
-      },
-      "type": "array"
+    "resourceName": {
+      "type": [
+        "string",
+        "null"
+      ]
     },
-    "sourceAddonsTruncated": {
-      "type": "boolean"
+    "resourceReferenceKind": {
+      "type": "string"
     },
     "status": {
       "type": "string"
@@ -6285,14 +9190,17 @@ Inspect one exact stable World Editor entity identity through the compatible man
     "protocolVersion",
     "editorAvailable",
     "status",
-    "originKind",
-    "sourceAddons",
-    "sourceAddonsTruncated",
+    "resourceReferenceKind",
+    "contributorAddons",
+    "contributorAddonsTruncated",
     "ancestors",
     "ancestorsTruncated",
     "children",
     "childrenTruncated",
-    "components"
+    "components",
+    "componentPropertiesTruncated",
+    "properties",
+    "propertiesTruncated"
   ],
   "type": "object"
 }
@@ -6727,6 +9635,35 @@ Create one verified entity-template resource or editor entity class at an explic
 ```json
 {
   "$defs": {
+    "WorkbenchComponent": {
+      "properties": {
+        "className": {
+          "type": "string"
+        },
+        "componentId": {
+          "type": "string"
+        },
+        "directOverrideCount": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "propertyCount": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "componentId",
+        "className"
+      ],
+      "type": "object"
+    },
     "WorkbenchEntityPosition": {
       "properties": {
         "x": {
@@ -6748,6 +9685,178 @@ Create one verified entity-template resource or editor entity class at an explic
         "z"
       ],
       "type": "object"
+    },
+    "WorkbenchPrefabContext": {
+      "properties": {
+        "ancestorResources": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "ancestorResourcesTruncated": {
+          "type": "boolean"
+        },
+        "bridgeVersion": {
+          "type": "string"
+        },
+        "childCount": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "children": {
+          "description": "Direct stored prefab members only; these are not live scene entity identities.",
+          "items": {
+            "$ref": "#/$defs/WorkbenchPrefabMember"
+          },
+          "type": "array"
+        },
+        "childrenTruncated": {
+          "type": "boolean"
+        },
+        "components": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchComponent"
+          },
+          "type": "array"
+        },
+        "contributorAddons": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "entity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchSelectedEntity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "memberId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "prefabEditMode": {
+          "type": "boolean"
+        },
+        "properties": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchPrefabProperty"
+          },
+          "type": "array"
+        },
+        "propertiesTruncated": {
+          "type": "boolean"
+        },
+        "protocolVersion": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "resourceName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resourceReferenceKind": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "bridgeVersion",
+        "protocolVersion",
+        "status",
+        "contributorAddons",
+        "ancestorResources",
+        "ancestorResourcesTruncated",
+        "prefabEditMode",
+        "components",
+        "children",
+        "childrenTruncated",
+        "properties",
+        "propertiesTruncated",
+        "childCount"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabMember": {
+      "properties": {
+        "className": {
+          "type": "string"
+        },
+        "memberId": {
+          "description": "Stable only within this one inspected prefab context, not a live entity identity.",
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "memberId",
+        "className"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabProperty": {
+      "properties": {
+        "dataType": {
+          "type": "string"
+        },
+        "directlyOverridden": {
+          "type": "boolean"
+        },
+        "path": {
+          "type": "string"
+        },
+        "value": true,
+        "valueOrigin": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchPrefabPropertyOrigin"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "writeDescriptor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "path",
+        "dataType",
+        "value",
+        "directlyOverridden"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabPropertyOrigin": {
+      "enum": [
+        "direct",
+        "inherited",
+        "default"
+      ],
+      "type": "string"
     },
     "WorkbenchSelectedEntity": {
       "properties": {
@@ -6849,12 +9958,40 @@ Create one verified entity-template resource or editor entity class at an explic
         }
       ]
     },
+    "inspection": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkbenchPrefabContext"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "persistencePath": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "protocolVersion": {
       "minimum": 0,
       "type": "integer"
     },
+    "resourceName": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "status": {
       "type": "string"
+    },
+    "templateSaved": {
+      "type": [
+        "boolean",
+        "null"
+      ]
     }
   },
   "required": [
@@ -6916,6 +10053,35 @@ Rename one exact live World Editor entity identity in one native Workbench undo 
 ```json
 {
   "$defs": {
+    "WorkbenchComponent": {
+      "properties": {
+        "className": {
+          "type": "string"
+        },
+        "componentId": {
+          "type": "string"
+        },
+        "directOverrideCount": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "propertyCount": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "componentId",
+        "className"
+      ],
+      "type": "object"
+    },
     "WorkbenchEntityPosition": {
       "properties": {
         "x": {
@@ -6937,6 +10103,178 @@ Rename one exact live World Editor entity identity in one native Workbench undo 
         "z"
       ],
       "type": "object"
+    },
+    "WorkbenchPrefabContext": {
+      "properties": {
+        "ancestorResources": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "ancestorResourcesTruncated": {
+          "type": "boolean"
+        },
+        "bridgeVersion": {
+          "type": "string"
+        },
+        "childCount": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "children": {
+          "description": "Direct stored prefab members only; these are not live scene entity identities.",
+          "items": {
+            "$ref": "#/$defs/WorkbenchPrefabMember"
+          },
+          "type": "array"
+        },
+        "childrenTruncated": {
+          "type": "boolean"
+        },
+        "components": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchComponent"
+          },
+          "type": "array"
+        },
+        "contributorAddons": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "entity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchSelectedEntity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "memberId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "prefabEditMode": {
+          "type": "boolean"
+        },
+        "properties": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchPrefabProperty"
+          },
+          "type": "array"
+        },
+        "propertiesTruncated": {
+          "type": "boolean"
+        },
+        "protocolVersion": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "resourceName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resourceReferenceKind": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "bridgeVersion",
+        "protocolVersion",
+        "status",
+        "contributorAddons",
+        "ancestorResources",
+        "ancestorResourcesTruncated",
+        "prefabEditMode",
+        "components",
+        "children",
+        "childrenTruncated",
+        "properties",
+        "propertiesTruncated",
+        "childCount"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabMember": {
+      "properties": {
+        "className": {
+          "type": "string"
+        },
+        "memberId": {
+          "description": "Stable only within this one inspected prefab context, not a live entity identity.",
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "memberId",
+        "className"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabProperty": {
+      "properties": {
+        "dataType": {
+          "type": "string"
+        },
+        "directlyOverridden": {
+          "type": "boolean"
+        },
+        "path": {
+          "type": "string"
+        },
+        "value": true,
+        "valueOrigin": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchPrefabPropertyOrigin"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "writeDescriptor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "path",
+        "dataType",
+        "value",
+        "directlyOverridden"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabPropertyOrigin": {
+      "enum": [
+        "direct",
+        "inherited",
+        "default"
+      ],
+      "type": "string"
     },
     "WorkbenchSelectedEntity": {
       "properties": {
@@ -7038,12 +10376,40 @@ Rename one exact live World Editor entity identity in one native Workbench undo 
         }
       ]
     },
+    "inspection": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkbenchPrefabContext"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "persistencePath": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "protocolVersion": {
       "minimum": 0,
       "type": "integer"
     },
+    "resourceName": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "status": {
       "type": "string"
+    },
+    "templateSaved": {
+      "type": [
+        "boolean",
+        "null"
+      ]
     }
   },
   "required": [
@@ -7108,6 +10474,35 @@ Preview or explicitly confirm deletion of one exact live World Editor entity ide
 ```json
 {
   "$defs": {
+    "WorkbenchComponent": {
+      "properties": {
+        "className": {
+          "type": "string"
+        },
+        "componentId": {
+          "type": "string"
+        },
+        "directOverrideCount": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "propertyCount": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "componentId",
+        "className"
+      ],
+      "type": "object"
+    },
     "WorkbenchEntityPosition": {
       "properties": {
         "x": {
@@ -7129,6 +10524,178 @@ Preview or explicitly confirm deletion of one exact live World Editor entity ide
         "z"
       ],
       "type": "object"
+    },
+    "WorkbenchPrefabContext": {
+      "properties": {
+        "ancestorResources": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "ancestorResourcesTruncated": {
+          "type": "boolean"
+        },
+        "bridgeVersion": {
+          "type": "string"
+        },
+        "childCount": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "children": {
+          "description": "Direct stored prefab members only; these are not live scene entity identities.",
+          "items": {
+            "$ref": "#/$defs/WorkbenchPrefabMember"
+          },
+          "type": "array"
+        },
+        "childrenTruncated": {
+          "type": "boolean"
+        },
+        "components": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchComponent"
+          },
+          "type": "array"
+        },
+        "contributorAddons": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "entity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchSelectedEntity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "memberId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "prefabEditMode": {
+          "type": "boolean"
+        },
+        "properties": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchPrefabProperty"
+          },
+          "type": "array"
+        },
+        "propertiesTruncated": {
+          "type": "boolean"
+        },
+        "protocolVersion": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "resourceName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resourceReferenceKind": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "bridgeVersion",
+        "protocolVersion",
+        "status",
+        "contributorAddons",
+        "ancestorResources",
+        "ancestorResourcesTruncated",
+        "prefabEditMode",
+        "components",
+        "children",
+        "childrenTruncated",
+        "properties",
+        "propertiesTruncated",
+        "childCount"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabMember": {
+      "properties": {
+        "className": {
+          "type": "string"
+        },
+        "memberId": {
+          "description": "Stable only within this one inspected prefab context, not a live entity identity.",
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "memberId",
+        "className"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabProperty": {
+      "properties": {
+        "dataType": {
+          "type": "string"
+        },
+        "directlyOverridden": {
+          "type": "boolean"
+        },
+        "path": {
+          "type": "string"
+        },
+        "value": true,
+        "valueOrigin": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchPrefabPropertyOrigin"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "writeDescriptor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "path",
+        "dataType",
+        "value",
+        "directlyOverridden"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabPropertyOrigin": {
+      "enum": [
+        "direct",
+        "inherited",
+        "default"
+      ],
+      "type": "string"
     },
     "WorkbenchSelectedEntity": {
       "properties": {
@@ -7230,12 +10797,40 @@ Preview or explicitly confirm deletion of one exact live World Editor entity ide
         }
       ]
     },
+    "inspection": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkbenchPrefabContext"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "persistencePath": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "protocolVersion": {
       "minimum": 0,
       "type": "integer"
     },
+    "resourceName": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "status": {
       "type": "string"
+    },
+    "templateSaved": {
+      "type": [
+        "boolean",
+        "null"
+      ]
     }
   },
   "required": [
@@ -7320,6 +10915,35 @@ Move one exact live World Editor entity to an explicit position in one native Wo
 ```json
 {
   "$defs": {
+    "WorkbenchComponent": {
+      "properties": {
+        "className": {
+          "type": "string"
+        },
+        "componentId": {
+          "type": "string"
+        },
+        "directOverrideCount": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "propertyCount": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "componentId",
+        "className"
+      ],
+      "type": "object"
+    },
     "WorkbenchEntityPosition": {
       "properties": {
         "x": {
@@ -7341,6 +10965,178 @@ Move one exact live World Editor entity to an explicit position in one native Wo
         "z"
       ],
       "type": "object"
+    },
+    "WorkbenchPrefabContext": {
+      "properties": {
+        "ancestorResources": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "ancestorResourcesTruncated": {
+          "type": "boolean"
+        },
+        "bridgeVersion": {
+          "type": "string"
+        },
+        "childCount": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "children": {
+          "description": "Direct stored prefab members only; these are not live scene entity identities.",
+          "items": {
+            "$ref": "#/$defs/WorkbenchPrefabMember"
+          },
+          "type": "array"
+        },
+        "childrenTruncated": {
+          "type": "boolean"
+        },
+        "components": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchComponent"
+          },
+          "type": "array"
+        },
+        "contributorAddons": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "entity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchSelectedEntity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "memberId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "prefabEditMode": {
+          "type": "boolean"
+        },
+        "properties": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchPrefabProperty"
+          },
+          "type": "array"
+        },
+        "propertiesTruncated": {
+          "type": "boolean"
+        },
+        "protocolVersion": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "resourceName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resourceReferenceKind": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "bridgeVersion",
+        "protocolVersion",
+        "status",
+        "contributorAddons",
+        "ancestorResources",
+        "ancestorResourcesTruncated",
+        "prefabEditMode",
+        "components",
+        "children",
+        "childrenTruncated",
+        "properties",
+        "propertiesTruncated",
+        "childCount"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabMember": {
+      "properties": {
+        "className": {
+          "type": "string"
+        },
+        "memberId": {
+          "description": "Stable only within this one inspected prefab context, not a live entity identity.",
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "memberId",
+        "className"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabProperty": {
+      "properties": {
+        "dataType": {
+          "type": "string"
+        },
+        "directlyOverridden": {
+          "type": "boolean"
+        },
+        "path": {
+          "type": "string"
+        },
+        "value": true,
+        "valueOrigin": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchPrefabPropertyOrigin"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "writeDescriptor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "path",
+        "dataType",
+        "value",
+        "directlyOverridden"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabPropertyOrigin": {
+      "enum": [
+        "direct",
+        "inherited",
+        "default"
+      ],
+      "type": "string"
     },
     "WorkbenchSelectedEntity": {
       "properties": {
@@ -7442,12 +11238,40 @@ Move one exact live World Editor entity to an explicit position in one native Wo
         }
       ]
     },
+    "inspection": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkbenchPrefabContext"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "persistencePath": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "protocolVersion": {
       "minimum": 0,
       "type": "integer"
     },
+    "resourceName": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "status": {
       "type": "string"
+    },
+    "templateSaved": {
+      "type": [
+        "boolean",
+        "null"
+      ]
     }
   },
   "required": [
@@ -7532,6 +11356,35 @@ Rotate one exact live World Editor entity to explicit angles in one native Workb
 ```json
 {
   "$defs": {
+    "WorkbenchComponent": {
+      "properties": {
+        "className": {
+          "type": "string"
+        },
+        "componentId": {
+          "type": "string"
+        },
+        "directOverrideCount": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "propertyCount": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "componentId",
+        "className"
+      ],
+      "type": "object"
+    },
     "WorkbenchEntityPosition": {
       "properties": {
         "x": {
@@ -7553,6 +11406,178 @@ Rotate one exact live World Editor entity to explicit angles in one native Workb
         "z"
       ],
       "type": "object"
+    },
+    "WorkbenchPrefabContext": {
+      "properties": {
+        "ancestorResources": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "ancestorResourcesTruncated": {
+          "type": "boolean"
+        },
+        "bridgeVersion": {
+          "type": "string"
+        },
+        "childCount": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "children": {
+          "description": "Direct stored prefab members only; these are not live scene entity identities.",
+          "items": {
+            "$ref": "#/$defs/WorkbenchPrefabMember"
+          },
+          "type": "array"
+        },
+        "childrenTruncated": {
+          "type": "boolean"
+        },
+        "components": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchComponent"
+          },
+          "type": "array"
+        },
+        "contributorAddons": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "entity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchSelectedEntity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "memberId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "prefabEditMode": {
+          "type": "boolean"
+        },
+        "properties": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchPrefabProperty"
+          },
+          "type": "array"
+        },
+        "propertiesTruncated": {
+          "type": "boolean"
+        },
+        "protocolVersion": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "resourceName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resourceReferenceKind": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "bridgeVersion",
+        "protocolVersion",
+        "status",
+        "contributorAddons",
+        "ancestorResources",
+        "ancestorResourcesTruncated",
+        "prefabEditMode",
+        "components",
+        "children",
+        "childrenTruncated",
+        "properties",
+        "propertiesTruncated",
+        "childCount"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabMember": {
+      "properties": {
+        "className": {
+          "type": "string"
+        },
+        "memberId": {
+          "description": "Stable only within this one inspected prefab context, not a live entity identity.",
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "memberId",
+        "className"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabProperty": {
+      "properties": {
+        "dataType": {
+          "type": "string"
+        },
+        "directlyOverridden": {
+          "type": "boolean"
+        },
+        "path": {
+          "type": "string"
+        },
+        "value": true,
+        "valueOrigin": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchPrefabPropertyOrigin"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "writeDescriptor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "path",
+        "dataType",
+        "value",
+        "directlyOverridden"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabPropertyOrigin": {
+      "enum": [
+        "direct",
+        "inherited",
+        "default"
+      ],
+      "type": "string"
     },
     "WorkbenchSelectedEntity": {
       "properties": {
@@ -7654,12 +11679,40 @@ Rotate one exact live World Editor entity to explicit angles in one native Workb
         }
       ]
     },
+    "inspection": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkbenchPrefabContext"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "persistencePath": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "protocolVersion": {
       "minimum": 0,
       "type": "integer"
     },
+    "resourceName": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "status": {
       "type": "string"
+    },
+    "templateSaved": {
+      "type": [
+        "boolean",
+        "null"
+      ]
     }
   },
   "required": [
@@ -7722,6 +11775,35 @@ Parent one exact live World Editor entity beneath one exact live parent in one n
 ```json
 {
   "$defs": {
+    "WorkbenchComponent": {
+      "properties": {
+        "className": {
+          "type": "string"
+        },
+        "componentId": {
+          "type": "string"
+        },
+        "directOverrideCount": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "propertyCount": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "componentId",
+        "className"
+      ],
+      "type": "object"
+    },
     "WorkbenchEntityPosition": {
       "properties": {
         "x": {
@@ -7743,6 +11825,178 @@ Parent one exact live World Editor entity beneath one exact live parent in one n
         "z"
       ],
       "type": "object"
+    },
+    "WorkbenchPrefabContext": {
+      "properties": {
+        "ancestorResources": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "ancestorResourcesTruncated": {
+          "type": "boolean"
+        },
+        "bridgeVersion": {
+          "type": "string"
+        },
+        "childCount": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "children": {
+          "description": "Direct stored prefab members only; these are not live scene entity identities.",
+          "items": {
+            "$ref": "#/$defs/WorkbenchPrefabMember"
+          },
+          "type": "array"
+        },
+        "childrenTruncated": {
+          "type": "boolean"
+        },
+        "components": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchComponent"
+          },
+          "type": "array"
+        },
+        "contributorAddons": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "entity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchSelectedEntity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "memberId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "prefabEditMode": {
+          "type": "boolean"
+        },
+        "properties": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchPrefabProperty"
+          },
+          "type": "array"
+        },
+        "propertiesTruncated": {
+          "type": "boolean"
+        },
+        "protocolVersion": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "resourceName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resourceReferenceKind": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "bridgeVersion",
+        "protocolVersion",
+        "status",
+        "contributorAddons",
+        "ancestorResources",
+        "ancestorResourcesTruncated",
+        "prefabEditMode",
+        "components",
+        "children",
+        "childrenTruncated",
+        "properties",
+        "propertiesTruncated",
+        "childCount"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabMember": {
+      "properties": {
+        "className": {
+          "type": "string"
+        },
+        "memberId": {
+          "description": "Stable only within this one inspected prefab context, not a live entity identity.",
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "memberId",
+        "className"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabProperty": {
+      "properties": {
+        "dataType": {
+          "type": "string"
+        },
+        "directlyOverridden": {
+          "type": "boolean"
+        },
+        "path": {
+          "type": "string"
+        },
+        "value": true,
+        "valueOrigin": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchPrefabPropertyOrigin"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "writeDescriptor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "path",
+        "dataType",
+        "value",
+        "directlyOverridden"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabPropertyOrigin": {
+      "enum": [
+        "direct",
+        "inherited",
+        "default"
+      ],
+      "type": "string"
     },
     "WorkbenchSelectedEntity": {
       "properties": {
@@ -7844,12 +12098,40 @@ Parent one exact live World Editor entity beneath one exact live parent in one n
         }
       ]
     },
+    "inspection": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkbenchPrefabContext"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "persistencePath": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "protocolVersion": {
       "minimum": 0,
       "type": "integer"
     },
+    "resourceName": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "status": {
       "type": "string"
+    },
+    "templateSaved": {
+      "type": [
+        "boolean",
+        "null"
+      ]
     }
   },
   "required": [
@@ -7941,6 +12223,35 @@ Duplicate one exact live World Editor entity at an explicit position without cha
 ```json
 {
   "$defs": {
+    "WorkbenchComponent": {
+      "properties": {
+        "className": {
+          "type": "string"
+        },
+        "componentId": {
+          "type": "string"
+        },
+        "directOverrideCount": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "propertyCount": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "componentId",
+        "className"
+      ],
+      "type": "object"
+    },
     "WorkbenchEntityPosition": {
       "properties": {
         "x": {
@@ -7962,6 +12273,178 @@ Duplicate one exact live World Editor entity at an explicit position without cha
         "z"
       ],
       "type": "object"
+    },
+    "WorkbenchPrefabContext": {
+      "properties": {
+        "ancestorResources": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "ancestorResourcesTruncated": {
+          "type": "boolean"
+        },
+        "bridgeVersion": {
+          "type": "string"
+        },
+        "childCount": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "children": {
+          "description": "Direct stored prefab members only; these are not live scene entity identities.",
+          "items": {
+            "$ref": "#/$defs/WorkbenchPrefabMember"
+          },
+          "type": "array"
+        },
+        "childrenTruncated": {
+          "type": "boolean"
+        },
+        "components": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchComponent"
+          },
+          "type": "array"
+        },
+        "contributorAddons": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "entity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchSelectedEntity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "memberId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "prefabEditMode": {
+          "type": "boolean"
+        },
+        "properties": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchPrefabProperty"
+          },
+          "type": "array"
+        },
+        "propertiesTruncated": {
+          "type": "boolean"
+        },
+        "protocolVersion": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "resourceName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resourceReferenceKind": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "bridgeVersion",
+        "protocolVersion",
+        "status",
+        "contributorAddons",
+        "ancestorResources",
+        "ancestorResourcesTruncated",
+        "prefabEditMode",
+        "components",
+        "children",
+        "childrenTruncated",
+        "properties",
+        "propertiesTruncated",
+        "childCount"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabMember": {
+      "properties": {
+        "className": {
+          "type": "string"
+        },
+        "memberId": {
+          "description": "Stable only within this one inspected prefab context, not a live entity identity.",
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "memberId",
+        "className"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabProperty": {
+      "properties": {
+        "dataType": {
+          "type": "string"
+        },
+        "directlyOverridden": {
+          "type": "boolean"
+        },
+        "path": {
+          "type": "string"
+        },
+        "value": true,
+        "valueOrigin": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchPrefabPropertyOrigin"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "writeDescriptor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "path",
+        "dataType",
+        "value",
+        "directlyOverridden"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabPropertyOrigin": {
+      "enum": [
+        "direct",
+        "inherited",
+        "default"
+      ],
+      "type": "string"
     },
     "WorkbenchSelectedEntity": {
       "properties": {
@@ -8063,12 +12546,40 @@ Duplicate one exact live World Editor entity at an explicit position without cha
         }
       ]
     },
+    "inspection": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkbenchPrefabContext"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "persistencePath": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "protocolVersion": {
       "minimum": 0,
       "type": "integer"
     },
+    "resourceName": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "status": {
       "type": "string"
+    },
+    "templateSaved": {
+      "type": [
+        "boolean",
+        "null"
+      ]
     }
   },
   "required": [
@@ -8130,6 +12641,20 @@ List components attached to one exact live World Editor entity using entity-loca
         },
         "componentId": {
           "type": "string"
+        },
+        "directOverrideCount": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "propertyCount": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         }
       },
       "required": [
@@ -8143,10 +12668,26 @@ List components attached to one exact live World Editor entity using entity-loca
         "dataType": {
           "type": "string"
         },
+        "directlyOverridden": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "name": {
           "type": "string"
         },
         "value": true,
+        "valueOrigin": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchPrefabPropertyOrigin"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "writeDescriptor": {
           "type": [
             "string",
@@ -8182,6 +12723,14 @@ List components attached to one exact live World Editor entity using entity-loca
         "z"
       ],
       "type": "object"
+    },
+    "WorkbenchPrefabPropertyOrigin": {
+      "enum": [
+        "direct",
+        "inherited",
+        "default"
+      ],
+      "type": "string"
     },
     "WorkbenchSelectedEntity": {
       "properties": {
@@ -8301,7 +12850,7 @@ Workbench tools return structured tool errors with a stable code, operation phas
 
 ## `workbench_inspect_component`
 
-Inspect one exact entity-local opaque component identity.
+Inspect one exact entity-local opaque component identity and return its complete typed property set.
 
 ### Annotations
 
@@ -8351,6 +12900,20 @@ Inspect one exact entity-local opaque component identity.
         },
         "componentId": {
           "type": "string"
+        },
+        "directOverrideCount": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "propertyCount": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         }
       },
       "required": [
@@ -8364,10 +12927,26 @@ Inspect one exact entity-local opaque component identity.
         "dataType": {
           "type": "string"
         },
+        "directlyOverridden": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "name": {
           "type": "string"
         },
         "value": true,
+        "valueOrigin": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchPrefabPropertyOrigin"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "writeDescriptor": {
           "type": [
             "string",
@@ -8403,6 +12982,14 @@ Inspect one exact entity-local opaque component identity.
         "z"
       ],
       "type": "object"
+    },
+    "WorkbenchPrefabPropertyOrigin": {
+      "enum": [
+        "direct",
+        "inherited",
+        "default"
+      ],
+      "type": "string"
     },
     "WorkbenchSelectedEntity": {
       "properties": {
@@ -8574,6 +13161,20 @@ Add one explicit component class to one exact live World Editor entity.
         },
         "componentId": {
           "type": "string"
+        },
+        "directOverrideCount": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "propertyCount": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         }
       },
       "required": [
@@ -8587,10 +13188,26 @@ Add one explicit component class to one exact live World Editor entity.
         "dataType": {
           "type": "string"
         },
+        "directlyOverridden": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "name": {
           "type": "string"
         },
         "value": true,
+        "valueOrigin": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchPrefabPropertyOrigin"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "writeDescriptor": {
           "type": [
             "string",
@@ -8626,6 +13243,14 @@ Add one explicit component class to one exact live World Editor entity.
         "z"
       ],
       "type": "object"
+    },
+    "WorkbenchPrefabPropertyOrigin": {
+      "enum": [
+        "direct",
+        "inherited",
+        "default"
+      ],
+      "type": "string"
     },
     "WorkbenchSelectedEntity": {
       "properties": {
@@ -8805,6 +13430,20 @@ Set one direct scalar component property using only a typed write descriptor ret
         },
         "componentId": {
           "type": "string"
+        },
+        "directOverrideCount": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "propertyCount": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         }
       },
       "required": [
@@ -8818,10 +13457,26 @@ Set one direct scalar component property using only a typed write descriptor ret
         "dataType": {
           "type": "string"
         },
+        "directlyOverridden": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "name": {
           "type": "string"
         },
         "value": true,
+        "valueOrigin": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchPrefabPropertyOrigin"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "writeDescriptor": {
           "type": [
             "string",
@@ -8857,6 +13512,14 @@ Set one direct scalar component property using only a typed write descriptor ret
         "z"
       ],
       "type": "object"
+    },
+    "WorkbenchPrefabPropertyOrigin": {
+      "enum": [
+        "direct",
+        "inherited",
+        "default"
+      ],
+      "type": "string"
     },
     "WorkbenchSelectedEntity": {
       "properties": {
@@ -9036,6 +13699,20 @@ Preview or explicitly confirm removal of one exact entity-local component identi
         },
         "componentId": {
           "type": "string"
+        },
+        "directOverrideCount": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "propertyCount": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         }
       },
       "required": [
@@ -9049,10 +13726,26 @@ Preview or explicitly confirm removal of one exact entity-local component identi
         "dataType": {
           "type": "string"
         },
+        "directlyOverridden": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "name": {
           "type": "string"
         },
         "value": true,
+        "valueOrigin": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchPrefabPropertyOrigin"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "writeDescriptor": {
           "type": [
             "string",
@@ -9088,6 +13781,14 @@ Preview or explicitly confirm removal of one exact entity-local component identi
         "z"
       ],
       "type": "object"
+    },
+    "WorkbenchPrefabPropertyOrigin": {
+      "enum": [
+        "direct",
+        "inherited",
+        "default"
+      ],
+      "type": "string"
     },
     "WorkbenchSelectedEntity": {
       "properties": {
@@ -9249,10 +13950,26 @@ List direct scalar properties observed on one exact live World Editor entity; va
         "dataType": {
           "type": "string"
         },
+        "directlyOverridden": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "name": {
           "type": "string"
         },
         "value": true,
+        "valueOrigin": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchPrefabPropertyOrigin"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "writeDescriptor": {
           "type": [
             "string",
@@ -9266,6 +13983,14 @@ List direct scalar properties observed on one exact live World Editor entity; va
         "value"
       ],
       "type": "object"
+    },
+    "WorkbenchPrefabPropertyOrigin": {
+      "enum": [
+        "direct",
+        "inherited",
+        "default"
+      ],
+      "type": "string"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -9350,6 +14075,35 @@ Set one direct entity property using only a typed write descriptor returned by w
 ```json
 {
   "$defs": {
+    "WorkbenchComponent": {
+      "properties": {
+        "className": {
+          "type": "string"
+        },
+        "componentId": {
+          "type": "string"
+        },
+        "directOverrideCount": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "propertyCount": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "componentId",
+        "className"
+      ],
+      "type": "object"
+    },
     "WorkbenchEntityPosition": {
       "properties": {
         "x": {
@@ -9371,6 +14125,178 @@ Set one direct entity property using only a typed write descriptor returned by w
         "z"
       ],
       "type": "object"
+    },
+    "WorkbenchPrefabContext": {
+      "properties": {
+        "ancestorResources": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "ancestorResourcesTruncated": {
+          "type": "boolean"
+        },
+        "bridgeVersion": {
+          "type": "string"
+        },
+        "childCount": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "children": {
+          "description": "Direct stored prefab members only; these are not live scene entity identities.",
+          "items": {
+            "$ref": "#/$defs/WorkbenchPrefabMember"
+          },
+          "type": "array"
+        },
+        "childrenTruncated": {
+          "type": "boolean"
+        },
+        "components": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchComponent"
+          },
+          "type": "array"
+        },
+        "contributorAddons": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "entity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchSelectedEntity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "memberId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "prefabEditMode": {
+          "type": "boolean"
+        },
+        "properties": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchPrefabProperty"
+          },
+          "type": "array"
+        },
+        "propertiesTruncated": {
+          "type": "boolean"
+        },
+        "protocolVersion": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "resourceName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resourceReferenceKind": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "bridgeVersion",
+        "protocolVersion",
+        "status",
+        "contributorAddons",
+        "ancestorResources",
+        "ancestorResourcesTruncated",
+        "prefabEditMode",
+        "components",
+        "children",
+        "childrenTruncated",
+        "properties",
+        "propertiesTruncated",
+        "childCount"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabMember": {
+      "properties": {
+        "className": {
+          "type": "string"
+        },
+        "memberId": {
+          "description": "Stable only within this one inspected prefab context, not a live entity identity.",
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "memberId",
+        "className"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabProperty": {
+      "properties": {
+        "dataType": {
+          "type": "string"
+        },
+        "directlyOverridden": {
+          "type": "boolean"
+        },
+        "path": {
+          "type": "string"
+        },
+        "value": true,
+        "valueOrigin": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchPrefabPropertyOrigin"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "writeDescriptor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "path",
+        "dataType",
+        "value",
+        "directlyOverridden"
+      ],
+      "type": "object"
+    },
+    "WorkbenchPrefabPropertyOrigin": {
+      "enum": [
+        "direct",
+        "inherited",
+        "default"
+      ],
+      "type": "string"
     },
     "WorkbenchSelectedEntity": {
       "properties": {
@@ -9472,12 +14398,40 @@ Set one direct entity property using only a typed write descriptor returned by w
         }
       ]
     },
+    "inspection": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkbenchPrefabContext"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "persistencePath": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "protocolVersion": {
       "minimum": 0,
       "type": "integer"
     },
+    "resourceName": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "status": {
       "type": "string"
+    },
+    "templateSaved": {
+      "type": [
+        "boolean",
+        "null"
+      ]
     }
   },
   "required": [
@@ -9493,15 +14447,80 @@ Set one direct entity property using only a typed write descriptor returned by w
 
 Workbench tools return structured tool errors with a stable code, operation phase, retryability, and a unique log reference matching a rotating integration-log record. Raw transport and Workbench payload details are not exposed.
 
-## `workbench_open_world`
+## `workbench_list_editors`
 
-Open one typed World Editor world through the compatible managed Workbench handler package without restarting Workbench.
+List the native Workbench editor modules available through the compatible managed handler package. Use an editor ID returned here with workbench_open_editor; this does not open or focus an editor.
 
 ### Annotations
 
 ```json
 {
-  "title": "Open Workbench world",
+  "title": "List Workbench editors",
+  "readOnlyHint": true,
+  "openWorldHint": false
+}
+```
+
+### Input schema
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {},
+  "type": "object"
+}
+```
+
+### Output schema
+
+```json
+{
+  "$defs": {
+    "WorkbenchEditor": {
+      "properties": {
+        "displayName": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "displayName"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "editors": {
+      "items": {
+        "$ref": "#/$defs/WorkbenchEditor"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "editors"
+  ],
+  "type": "object"
+}
+```
+
+### Stable failures
+
+Workbench tools return structured tool errors with a stable code, operation phase, retryability, and a unique log reference matching a rotating integration-log record. Raw transport and Workbench payload details are not exposed.
+
+## `workbench_open_editor`
+
+Open one native Workbench editor module by an ID returned from workbench_list_editors. This is the same module-opening surface for every supported editor and does not select a resource.
+
+### Annotations
+
+```json
+{
+  "title": "Open Workbench editor",
   "readOnlyHint": false,
   "destructiveHint": false,
   "idempotentHint": true,
@@ -9516,14 +14535,79 @@ Open one typed World Editor world through the compatible managed Workbench handl
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "properties": {
-    "worldPath": {
+    "editorId": {
+      "maxLength": 64,
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "editorId"
+  ],
+  "type": "object"
+}
+```
+
+### Output schema
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "editorId": {
+      "type": "string"
+    },
+    "opened": {
+      "type": "boolean"
+    },
+    "status": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "editorId",
+    "opened",
+    "status"
+  ],
+  "type": "object"
+}
+```
+
+### Stable failures
+
+Workbench tools return structured tool errors with a stable code, operation phase, retryability, and a unique log reference matching a rotating integration-log record. Raw transport and Workbench payload details are not exposed.
+
+## `workbench_open_resource`
+
+Open one canonical Workbench resource through Workbench's native resource routing. Workbench selects the owning editor from the resource type; this includes world, script, particle, animation, audio, and string resources without editor-specific commands.
+
+### Annotations
+
+```json
+{
+  "title": "Open Workbench resource",
+  "readOnlyHint": false,
+  "destructiveHint": false,
+  "idempotentHint": true,
+  "openWorldHint": false
+}
+```
+
+### Input schema
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "resourcePath": {
       "maxLength": 1024,
       "minLength": 1,
       "type": "string"
     }
   },
   "required": [
-    "worldPath"
+    "resourcePath"
   ],
   "type": "object"
 }
@@ -9538,11 +14622,15 @@ Open one typed World Editor world through the compatible managed Workbench handl
     "opened": {
       "type": "boolean"
     },
+    "resourcePath": {
+      "type": "string"
+    },
     "status": {
       "type": "string"
     }
   },
   "required": [
+    "resourcePath",
     "opened",
     "status"
   ],
@@ -9672,7 +14760,7 @@ Workbench tools return structured tool errors with a stable code, operation phas
 
 ## `workbench_reload`
 
-Explicitly focus the one confirmed Workbench window, send only Ctrl+Shift+R, and wait up to 60 seconds for its console log to confirm the full script reload. This fails closed if Workbench focus or the reload evidence cannot be confirmed; it never sends arbitrary keys.
+Save all currently open Workbench tabs and, only when an existing World Editor world has a path, save that world without UI automation; then request Reload WB Scripts through Workbench's in-process Resource Manager action dispatcher with keep-focus enabled. An absent or untitled World Editor world is reported as skipped and never opens a Save As dialog. The tool waits up to 60 seconds for the console log to confirm the full script reload and fails closed if the foreground window changes or save/reload evidence cannot be confirmed.
 
 ### Annotations
 
@@ -9717,13 +14805,157 @@ Explicitly focus the one confirmed Workbench window, send only Ctrl+Shift+R, and
         "type": "string"
       },
       "type": "array"
+    },
+    "workbenchWasMinimized": {
+      "type": "boolean"
+    },
+    "worldSaveStatus": {
+      "type": "string"
+    },
+    "worldSavedBeforeReload": {
+      "type": "boolean"
     }
   },
   "required": [
     "processId",
+    "workbenchWasMinimized",
+    "worldSavedBeforeReload",
+    "worldSaveStatus",
     "reloadVerified",
     "logPath",
     "verificationLines"
+  ],
+  "type": "object"
+}
+```
+
+### Stable failures
+
+Workbench tools return structured tool errors with a stable code, operation phase, retryability, and a unique log reference matching a rotating integration-log record. Raw transport and Workbench payload details are not exposed.
+
+## `workbench_save_all`
+
+Save all currently open Workbench tabs through the fixed in-process Resource Manager Save All action and, only when the active World Editor has an existing world path, save that world through WorldEditor.Save(). An absent or untitled world is reported as skipped; no name is invented and no Save As dialog is opened. The tool never focuses, maximizes, or sends keyboard input, and fails closed if Workbench becomes foreground.
+
+### Annotations
+
+```json
+{
+  "title": "Save all Workbench tabs",
+  "readOnlyHint": false,
+  "destructiveHint": false,
+  "idempotentHint": true,
+  "openWorldHint": false
+}
+```
+
+### Input schema
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {},
+  "type": "object"
+}
+```
+
+### Output schema
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "actionPath": {
+      "type": "string"
+    },
+    "processId": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "saveAllAccepted": {
+      "type": "boolean"
+    },
+    "workbenchWasMinimized": {
+      "type": "boolean"
+    },
+    "worldSaveAccepted": {
+      "type": "boolean"
+    },
+    "worldSaveStatus": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "processId",
+    "workbenchWasMinimized",
+    "saveAllAccepted",
+    "worldSaveAccepted",
+    "worldSaveStatus",
+    "actionPath"
+  ],
+  "type": "object"
+}
+```
+
+### Stable failures
+
+Workbench tools return structured tool errors with a stable code, operation phase, retryability, and a unique log reference matching a rotating integration-log record. Raw transport and Workbench payload details are not exposed.
+
+## `workbench_save_world`
+
+Save the active World Editor document through WorldEditor.Save() only when it already has a world path. An absent or untitled world is reported as skipped; no name is invented and no Save As dialog is opened. It remains separate from workbench_save_all, never focuses, maximizes, or sends keyboard input, and fails closed if Workbench becomes foreground.
+
+### Annotations
+
+```json
+{
+  "title": "Save active World Editor document",
+  "readOnlyHint": false,
+  "destructiveHint": false,
+  "idempotentHint": true,
+  "openWorldHint": false
+}
+```
+
+### Input schema
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {},
+  "type": "object"
+}
+```
+
+### Output schema
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "actionPath": {
+      "type": "string"
+    },
+    "processId": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "workbenchWasMinimized": {
+      "type": "boolean"
+    },
+    "worldSaveAccepted": {
+      "type": "boolean"
+    },
+    "worldSaveStatus": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "processId",
+    "workbenchWasMinimized",
+    "worldSaveAccepted",
+    "worldSaveStatus",
+    "actionPath"
   ],
   "type": "object"
 }
