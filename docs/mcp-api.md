@@ -3899,7 +3899,7 @@ Workbench tools return structured tool errors with a stable code, operation phas
 
 ## `workbench_search_world_entities`
 
-Search authored live World Editor entities by text, exact class, prefab resource, direct component classes, layer, subscene, and one bounded exact-class containment relation. All filters are ANDed; every listed component class must be direct on its candidate. A relation matches an exact-class parent, ancestor, child, or descendant and can require direct components on the related entity; parent/child depth is exactly one and transitive depth is 1–8. Every result carries matched relation evidence. relationTraversalTruncated means a candidate relation walk reached its fixed 1,024-node bound and affected candidates were omitted; use a returned exact entity ID with hierarchy or prefab-context inspection for deeper facts.
+Search authored live World Editor entities by text, exact class, prefab resource, direct component classes, layer, subscene, and one bounded exact-class containment relation. All filters are ANDed; every listed component class must be direct on its candidate. A relation matches an exact-class parent, ancestor, child, or descendant and can require direct components on the related entity; parent/child depth is exactly one and transitive depth is 1–8. The handler stops after the first extra match, so truncated means another page is available and summary counts are exact only when truncated is false. Every result carries matched relation evidence. relationTraversalTruncated means a candidate relation walk reached its fixed 1,024-node bound and affected candidates were omitted; use a returned exact entity ID with hierarchy or prefab-context inspection for deeper facts.
 
 ### Annotations
 
@@ -4186,7 +4186,7 @@ Search authored live World Editor entities by text, exact class, prefab resource
           "type": "integer"
         },
         "totalMatches": {
-          "description": "Exact count across the current loaded World Editor context, not just this page.",
+          "description": "Matches observed through the current page boundary. Exact only when `truncated` is false.",
           "minimum": 0,
           "type": "integer"
         }
