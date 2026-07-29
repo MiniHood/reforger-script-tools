@@ -111,7 +111,9 @@ passing validation run as proof that Workbench is running the new behavior.
    into the same resolved Workbench `.gproj` and addon context; do not treat a
    still-running process with stale handlers as a live acceptance environment.
 6. Review Workbench logs and confirm that the scripts related to the change
-   compiled and loaded without errors.
+   compiled and loaded without errors. The reload action's immediate acceptance
+   response is only a dispatch observation; the fresh log marker sequence is
+   the source of truth for whether a reload actually occurred.
 7. Test the changed behavior through the real Workbench/API workflow.
 8. Review Workbench logs again when needed, capture relevant `PrintFormat` or
    `Print` output, and use that output to confirm success or drive the next

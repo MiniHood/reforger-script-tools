@@ -3899,7 +3899,7 @@ Workbench tools return structured tool errors with a stable code, operation phas
 
 ## `workbench_search_world_entities`
 
-Search a bounded page of authored live World Editor entities by text, class, prefab resource, direct component classes, subscene, and layer. Results expose compact component and match facts; use the returned exact entity ID for inspection or mutation.
+Search authored live World Editor entities by text, class, prefab resource, direct component classes, subscene, and layer. The exact summary describes the full match set and whether names are available; the bounded page supplies compact entity targets, their direct components, and the requested components they satisfied. Use a returned exact entity ID for deeper inspection or mutation.
 
 ### Annotations
 
@@ -4028,6 +4028,13 @@ Search a bounded page of authored live World Editor entities by text, class, pre
         "entity": {
           "$ref": "#/$defs/WorkbenchSelectedEntity"
         },
+        "matchedComponentClasses": {
+          "description": "The requested direct component classes that this entity satisfied.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "matchedFields": {
           "items": {
             "type": "string"
@@ -4044,8 +4051,33 @@ Search a bounded page of authored live World Editor entities by text, class, pre
       "required": [
         "entity",
         "componentClasses",
+        "matchedComponentClasses",
         "matchedFields",
         "childCount"
+      ],
+      "type": "object"
+    },
+    "WorkbenchEntitySearchSummary": {
+      "properties": {
+        "anonymousMatches": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "namedMatches": {
+          "description": "Matches with an authored entity name. The remainder are anonymous authored entities.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "totalMatches": {
+          "description": "Exact count across the current loaded World Editor context, not just this page.",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "totalMatches",
+        "namedMatches",
+        "anonymousMatches"
       ],
       "type": "object"
     },
@@ -4137,6 +4169,9 @@ Search a bounded page of authored live World Editor entities by text, class, pre
     "status": {
       "type": "string"
     },
+    "summary": {
+      "$ref": "#/$defs/WorkbenchEntitySearchSummary"
+    },
     "truncated": {
       "type": "boolean"
     },
@@ -4150,6 +4185,7 @@ Search a bounded page of authored live World Editor entities by text, class, pre
     "worldRevision",
     "status",
     "limit",
+    "summary",
     "results",
     "truncated"
   ],
@@ -15214,7 +15250,7 @@ Workbench tools return structured tool errors with a stable code, operation phas
 
 ## `workbench_reload`
 
-Save all currently open Workbench tabs and, only when an existing World Editor world has a path, save that world without UI automation; then request Reload WB Scripts through Workbench's in-process Resource Manager action dispatcher with keep-focus enabled. An absent or untitled World Editor world is reported as skipped and never opens a Save As dialog. The tool waits up to 60 seconds for the console log to confirm the full script reload and fails closed if the foreground window changes or save/reload evidence cannot be confirmed.
+Save all currently open Workbench tabs and, only when an existing World Editor world has a path, save that world without UI automation; then request Reload WB Scripts through Workbench's in-process Resource Manager action dispatcher with keep-focus enabled. An absent or untitled World Editor world is reported as skipped and never opens a Save As dialog. The dispatcher acknowledgement is not confirmation: the tool waits up to 60 seconds for the console log to prove the full script reload, and fails closed if the foreground window changes or that log evidence is absent.
 
 ### Annotations
 

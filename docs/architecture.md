@@ -127,7 +127,10 @@ and fails closed if the exact foreground window identity changes.
 Bounded Workbench-log reads retain their raw tail and additionally classify only
 the observed reload milestones: reload start, script validation, GameLib
 compilation, Game compilation, and loaded Game module. They do not infer play
-session state or elevate a log marker into a stronger editor fact.
+session state or elevate a log marker into a stronger editor fact. Conversely,
+the reload command's dispatcher acknowledgement is only an attempt to invoke
+the action; a fresh complete marker sequence is the source of truth for whether
+the script reload completed.
 
 The managed state capability reports `mode: "workbench"` as its honest
 baseline. It reports `mode: "world-editor"` and `worldEditorActive: true` only
@@ -150,6 +153,15 @@ current selection index (0 through 31). It returns that entity plus at most 32
 ancestor and 64 direct-child entity identities. Its parent/child traversal is
 bounded with explicit truncation facts, never uses display-name lookup, and never changes the editor
 selection.
+
+The read-only `workbench_search_world_entities` capability filters the loaded
+World Editor context by text, exact class, prefab resource, direct component
+classes, subscene, and layer. Its summary is exact for the full filtered set,
+including named versus anonymous entity counts, while its bounded result page
+supplies stable entity targets, direct component classes, and the requested
+components each target satisfied. This lets an AI decide whether to refine a
+broad search before inspecting an exact entity; it does not enumerate arbitrary
+properties or make a display name an identity.
 
 The read-only `workbench_list_resources` capability accepts only fixed resource
 kinds and an optional bounded text query. Workbench's resource database applies

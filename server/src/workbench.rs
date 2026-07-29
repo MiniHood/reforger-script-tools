@@ -409,10 +409,22 @@ pub struct WorkbenchEntityListPage {
 pub struct WorkbenchEntitySearchHit {
     pub entity: WorkbenchSelectedEntity,
     pub component_classes: Vec<String>,
+    /// The requested direct component classes that this entity satisfied.
+    pub matched_component_classes: Vec<String>,
     pub matched_fields: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_class_name: Option<String>,
     pub child_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkbenchEntitySearchSummary {
+    /// Exact count across the current loaded World Editor context, not just this page.
+    pub total_matches: u32,
+    /// Matches with an authored entity name. The remainder are anonymous authored entities.
+    pub named_matches: u32,
+    pub anonymous_matches: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -423,6 +435,7 @@ pub struct WorkbenchEntitySearchPage {
     pub world_revision: String,
     pub status: String,
     pub limit: usize,
+    pub summary: WorkbenchEntitySearchSummary,
     pub results: Vec<WorkbenchEntitySearchHit>,
     pub truncated: bool,
     pub next_cursor: Option<String>,
@@ -2010,7 +2023,14 @@ impl WorkbenchController {
         if raw.bridge_version != WORKBENCH_BRIDGE_VERSION
             || raw.protocol_version != WORKBENCH_BRIDGE_PROTOCOL_VERSION
             || results.len() > limit
-            || (!available && (!results.is_empty() || workbench_bool(&raw.has_more)))
+            || (available
+                && (raw.named_matches > raw.total_matches
+                    || raw.total_matches < results.len() as u32))
+            || (!available
+                && (!results.is_empty()
+                    || raw.total_matches != 0
+                    || raw.named_matches != 0
+                    || workbench_bool(&raw.has_more)))
         {
             return Err(failure(WorkbenchFailureCode::Protocol));
         }
@@ -2020,6 +2040,11 @@ impl WorkbenchController {
             world_revision: sha256(raw.world_path.as_bytes()),
             status: raw.status,
             limit,
+            summary: WorkbenchEntitySearchSummary {
+                total_matches: raw.total_matches,
+                named_matches: raw.named_matches,
+                anonymous_matches: raw.total_matches.saturating_sub(raw.named_matches),
+            },
             next_cursor: (available && workbench_bool(&raw.has_more))
                 .then(|| format!("wel1:{signature}:{}", offset + results.len())),
             truncated: available && workbench_bool(&raw.has_more),
@@ -3820,8 +3845,9 @@ impl WorkbenchController {
 
     /// Dispatch the fixed Workbench reload action in-process without foregrounding Workbench.
     ///
-    /// The operation succeeds only when the action accepts, foreground focus is unchanged, and
-    /// Workbench writes its complete fresh reload marker sequence.
+    /// The dispatcher response only records whether Workbench reported accepting the action.
+    /// Success is established solely by a complete fresh reload marker sequence in the Workbench
+    /// log, while foreground focus remains unchanged.
     pub fn activate_scripts(&self) -> Result<WorkbenchScriptActivationResult, WorkbenchFailure> {
         const RELOAD_VERIFICATION_DEADLINE: Duration = Duration::from_secs(60);
         const RELOAD_VERIFICATION_POLL: Duration = Duration::from_millis(500);
@@ -3873,30 +3899,16 @@ impl WorkbenchController {
                     json!({"processId": process.id}),
                 )
             })?;
-        let action_path = match self.dispatch_background_reload_action() {
-            Ok(action) if workbench_bool(&action.accepted) => action.action_path,
-            Ok(action) => {
-                return Err(self.correlate_failure_details(
-                    "activate-scripts",
-                    "workbench-reload-action-rejected",
-                    failure(WorkbenchFailureCode::Unavailable),
-                    json!({"processId": process.id, "actionPath": action.action_path}),
-                ));
-            }
-            // Reloading tears down the in-flight script handler before it can return a response.
-            // The fresh console marker sequence below is the authority for whether it succeeded.
-            Err(dispatch_failure) if dispatch_failure.code == WorkbenchFailureCode::Timeout => {
-                "Plugins/Settings/Reload WB Scripts".to_string()
-            }
-            Err(dispatch_failure) => {
-                return Err(self.correlate_failure_details(
+        let action_path = reload_action_path(self.dispatch_background_reload_action()).map_err(
+            |dispatch_failure| {
+                self.correlate_failure_details(
                     "activate-scripts",
                     "workbench-reload-action-unavailable",
                     dispatch_failure,
                     json!({"processId": process.id}),
-                ));
-            }
-        };
+                )
+            },
+        )?;
         if !workbench_was_minimized
             && foreground_window_identity().as_ref() != Ok(&foreground_before)
         {
@@ -5018,9 +5030,26 @@ struct RawBridgeReloadAction {
     #[serde(rename = "protocolVersion")]
     protocol_version: u32,
     #[serde(rename = "reloadActionAccepted")]
-    accepted: Value,
+    _accepted: Value,
     #[serde(rename = "reloadActionPath")]
     action_path: String,
+}
+
+fn reload_action_path(
+    dispatch: Result<RawBridgeReloadAction, WorkbenchFailure>,
+) -> Result<String, WorkbenchFailure> {
+    match dispatch {
+        // A false dispatcher acknowledgement is not a reliable failure signal: Workbench can
+        // begin reloading while its handler still reports false. The caller's log verification
+        // decides whether the reload actually happened.
+        Ok(action) => Ok(action.action_path),
+        // Reloading can tear down the in-flight script handler before it returns a response.
+        // The fresh console marker sequence is likewise authoritative in that case.
+        Err(dispatch_failure) if dispatch_failure.code == WorkbenchFailureCode::Timeout => {
+            Ok("Plugins/Settings/Reload WB Scripts".to_string())
+        }
+        Err(dispatch_failure) => Err(dispatch_failure),
+    }
 }
 
 #[derive(Deserialize)]
@@ -5200,6 +5229,10 @@ struct RawBridgeEntitySearch {
     status: String,
     #[serde(default)]
     results: String,
+    #[serde(rename = "totalMatches", default)]
+    total_matches: u32,
+    #[serde(rename = "namedMatches", default)]
+    named_matches: u32,
     #[serde(rename = "hasMore", default)]
     has_more: Value,
 }
@@ -5911,7 +5944,7 @@ fn parse_entity_search_records(value: &str) -> Result<Vec<WorkbenchEntitySearchH
         .split(';')
         .map(|record| {
             let fields: Vec<_> = record.split('|').collect();
-            if fields.len() != 10 || fields[..4].iter().any(|field| field.is_empty()) {
+            if fields.len() != 11 || fields[..4].iter().any(|field| field.is_empty()) {
                 return Err(());
             }
             let component_classes = if fields[6].is_empty() {
@@ -5923,6 +5956,11 @@ fn parse_entity_search_records(value: &str) -> Result<Vec<WorkbenchEntitySearchH
                 Vec::new()
             } else {
                 fields[7].split(',').map(str::to_owned).collect()
+            };
+            let matched_component_classes = if fields[8].is_empty() {
+                Vec::new()
+            } else {
+                fields[8].split(',').map(str::to_owned).collect()
             };
             Ok(WorkbenchEntitySearchHit {
                 entity: WorkbenchSelectedEntity {
@@ -5937,9 +5975,10 @@ fn parse_entity_search_records(value: &str) -> Result<Vec<WorkbenchEntitySearchH
                     position: None,
                 },
                 component_classes,
+                matched_component_classes,
                 matched_fields,
-                parent_class_name: (!fields[8].is_empty()).then(|| fields[8].to_owned()),
-                child_count: fields[9].parse().map_err(|_| ())?,
+                parent_class_name: (!fields[9].is_empty()).then(|| fields[9].to_owned()),
+                child_count: fields[10].parse().map_err(|_| ())?,
             })
         })
         .collect()
@@ -7953,20 +7992,42 @@ class RST_WorkbenchListEntities : NetApiHandler
 
 const BRIDGE_ENTITY_SEARCH_SOURCE: &str = r#"#ifdef WORKBENCH
 class RST_WorkbenchSearchEntitiesRequest : JsonApiStruct { string query; string className; string resourceQuery; string componentClasses; int subScene; int layerId; int offset; int limit; void RST_WorkbenchSearchEntitiesRequest() { RegAll(); subScene = -1; layerId = -1; } }
-class RST_WorkbenchSearchEntitiesResponse : JsonApiStruct { string bridgeVersion; int protocolVersion; string status; string worldPath; string results; bool hasMore; void RST_WorkbenchSearchEntitiesResponse() { RegAll(); } }
+class RST_WorkbenchSearchEntitiesResponse : JsonApiStruct { string bridgeVersion; int protocolVersion; string status; string worldPath; string results; int totalMatches; int namedMatches; bool hasMore; void RST_WorkbenchSearchEntitiesResponse() { RegAll(); } }
 class RST_WorkbenchSearchEntities : NetApiHandler
 {
 	override JsonApiStruct GetRequest() { return new RST_WorkbenchSearchEntitiesRequest(); }
+	// Authored components are exposed either through the direct component list or
+	// through the `components` container, depending on the World Editor context.
+	int ComponentCount(IEntitySource entity)
+	{
+		int count = entity.GetComponentCount();
+		if (count == 0)
+		{
+			ref BaseContainerList components = entity.GetObjectArray("components");
+			if (components)
+				count = components.Count();
+		}
+		return count;
+	}
+	IEntityComponentSource ComponentAt(IEntitySource entity, int index)
+	{
+		if (entity.GetComponentCount() > 0)
+			return entity.GetComponent(index);
+		ref BaseContainerList components = entity.GetObjectArray("components");
+		if (components)
+			return IEntityComponentSource.Cast(components.Get(index));
+		return null;
+	}
 	protected bool HasComponent(IEntitySource entity, string expected)
 	{
-		for (int index, count = entity.GetComponentCount(); index < count; index++) { IEntityComponentSource component = entity.GetComponent(index); if (component && component.GetClassName() == expected) return true; }
+		for (int index, count = ComponentCount(entity); index < count; index++) { IEntityComponentSource component = ComponentAt(entity, index); if (component && component.GetClassName() == expected) return true; }
 		return false;
 	}
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchSearchEntitiesRequest req = RST_WorkbenchSearchEntitiesRequest.Cast(request); RST_WorkbenchSearchEntitiesResponse response = new RST_WorkbenchSearchEntitiesResponse(); response.bridgeVersion = "1.38.0"; response.protocolVersion = 1;
 		WorldEditor editor = Workbench.GetModule(WorldEditor); if (!editor || !editor.GetApi()) { response.status = "world-editor-unavailable"; return response; } if (req.offset < 0 || req.limit < 1 || req.limit > 100) { response.status = "invalid-request"; return response; }
-		WorldEditorAPI api = editor.GetApi(); response.status = "available"; api.GetWorldPath(response.worldPath); array<string> required = new array<string>(); if (!req.componentClasses.IsEmpty()) req.componentClasses.Split(";", required, true); int matched = 0; int returned = 0;
+		WorldEditorAPI api = editor.GetApi(); response.status = "available"; api.GetWorldPath(response.worldPath); array<string> required = new array<string>(); if (!req.componentClasses.IsEmpty()) req.componentClasses.Split(";", required, true); int matched = 0; int named = 0; int returned = 0;
 		for (int index, count = api.GetEditorEntityCount(); index < count; index++)
 		{
 			IEntitySource entity = api.GetEditorEntity(index);
@@ -7988,20 +8049,20 @@ class RST_WorkbenchSearchEntities : NetApiHandler
 				if (!HasComponent(entity, expected)) allComponents = false;
 			}
 			if (!allComponents) continue;
-			if (matched < req.offset)
-			{
-				matched = matched + 1;
-				continue;
-			}
 			matched = matched + 1;
+			if (!name.IsEmpty()) named = named + 1;
+			if (matched <= req.offset)
+				continue;
 			if (returned >= req.limit)
 			{
 				response.hasMore = true;
-				break;
+				continue;
 			}
-			string components; for (int componentIndex, componentCount = entity.GetComponentCount(); componentIndex < componentCount; componentIndex++) { IEntityComponentSource component = entity.GetComponent(componentIndex); if (!component) continue; if (!components.IsEmpty()) components += ","; components += component.GetClassName(); }
-			string matches; if (nameMatch) matches = "name"; if (classMatch || !req.className.IsEmpty()) { if (!matches.IsEmpty()) matches += ","; matches += "class"; } if (resourceTextMatch || !req.resourceQuery.IsEmpty()) { if (!matches.IsEmpty()) matches += ","; matches += "resource"; } if (!required.IsEmpty()) { if (!matches.IsEmpty()) matches += ","; matches += "components"; } IEntitySource parent = IEntitySource.Cast(entity.GetParent()); string parentClass; if (parent) parentClass = parent.GetClassName(); resource.Replace("|", "/"); resource.Replace(";", "/"); name.Replace("|", "/"); name.Replace(";", "/"); parentClass.Replace("|", "/"); parentClass.Replace(";", "/"); if (!response.results.IsEmpty()) response.results += ";"; response.results += string.Format("%1|%2|%3|%4|%5|%6|%7", entity.GetID().ToString(), className, entity.GetSubScene(), entity.GetLayerID(), resource, name, components) + "|" + matches + "|" + parentClass + "|" + entity.GetNumChildren(); returned = returned + 1;
+			string components; for (int componentIndex, componentCount = ComponentCount(entity); componentIndex < componentCount; componentIndex++) { IEntityComponentSource component = ComponentAt(entity, componentIndex); if (!component) continue; if (!components.IsEmpty()) components += ","; components += string.Format("%1", component.GetClassName()); }
+			string matchedComponents; foreach (string expected : required) { if (!matchedComponents.IsEmpty()) matchedComponents += ","; matchedComponents += expected; }
+			string matches; if (nameMatch) matches = "name"; if (classMatch || !req.className.IsEmpty()) { if (!matches.IsEmpty()) matches += ","; matches += "class"; } if (resourceTextMatch || !req.resourceQuery.IsEmpty()) { if (!matches.IsEmpty()) matches += ","; matches += "resource"; } if (!required.IsEmpty()) { if (!matches.IsEmpty()) matches += ","; matches += "components"; } IEntitySource parent = IEntitySource.Cast(entity.GetParent()); string parentClass; if (parent) parentClass = parent.GetClassName(); resource.Replace("|", "/"); resource.Replace(";", "/"); name.Replace("|", "/"); name.Replace(";", "/"); parentClass.Replace("|", "/"); parentClass.Replace(";", "/"); if (!response.results.IsEmpty()) response.results += ";"; response.results += string.Format("%1|%2|%3|%4|%5|%6|%7", entity.GetID().ToString(), className, entity.GetSubScene(), entity.GetLayerID(), resource, name, components) + "|" + matches + "|" + matchedComponents + "|" + parentClass + "|" + entity.GetNumChildren(); returned = returned + 1;
 		}
+		response.totalMatches = matched; response.namedMatches = named;
 		return response;
 	}
 }
@@ -10966,6 +11027,29 @@ mod tests {
     }
 
     #[test]
+    fn reload_action_dispatch_acknowledgement_does_not_override_log_verification() {
+        let path = super::reload_action_path(Ok(super::RawBridgeReloadAction {
+            bridge_version: "1.38.0".to_string(),
+            protocol_version: 1,
+            _accepted: json!(false),
+            action_path: "Plugins/Settings/Reload WB Scripts".to_string(),
+        }))
+        .unwrap();
+
+        assert_eq!(path, "Plugins/Settings/Reload WB Scripts");
+    }
+
+    #[test]
+    fn reload_action_timeout_defers_to_log_verification() {
+        let path = super::reload_action_path(Err(super::failure(
+            super::WorkbenchFailureCode::Timeout,
+        )))
+        .unwrap();
+
+        assert_eq!(path, "Plugins/Settings/Reload WB Scripts");
+    }
+
+    #[test]
     fn world_selection_summary_returns_bounded_stable_editor_facts() {
         let (port, peer) = start_peer(|request| {
             assert_eq!(request, json!({"APIFunc": "RST_WorkbenchWorldSelection"}));
@@ -11225,7 +11309,7 @@ mod tests {
             assert_eq!(request["APIFunc"], "RST_WorkbenchSearchEntities");
             assert_eq!(request["componentClasses"], "SCR_TriggerEntity");
             assert_eq!(request["resourceQuery"], "Checkpoints");
-            json!({"bridgeVersion":"1.38.0","protocolVersion":1,"status":"available","worldPath":"$Test:worlds/test.ent","results":"0x01|GenericEntity|0|7|{GUID}Prefabs/Checkpoints/West.et|West checkpoint|SCR_TriggerEntity,SCR_BaseGameModeComponent|name,resource,components|GenericEntity|3","hasMore":false})
+            json!({"bridgeVersion":"1.38.0","protocolVersion":1,"status":"available","worldPath":"$Test:worlds/test.ent","results":"0x01|GenericEntity|0|7|{GUID}Prefabs/Checkpoints/West.et|West checkpoint|SCR_TriggerEntity,SCR_BaseGameModeComponent|name,resource,components|SCR_TriggerEntity|GenericEntity|3","totalMatches":2,"namedMatches":1,"hasMore":false})
         });
         let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
             gateway: super::WorkbenchGatewayOptions {
@@ -11256,11 +11340,24 @@ mod tests {
             page.results[0].component_classes,
             ["SCR_TriggerEntity", "SCR_BaseGameModeComponent"]
         );
+        assert_eq!(page.results[0].matched_component_classes, ["SCR_TriggerEntity"]);
         assert_eq!(
             page.results[0].matched_fields,
             ["name", "resource", "components"]
         );
+        assert_eq!(page.summary.total_matches, 2);
+        assert_eq!(page.summary.named_matches, 1);
+        assert_eq!(page.summary.anonymous_matches, 1);
         peer.join().unwrap();
+    }
+
+    #[test]
+    fn entity_search_uses_the_authored_component_container_fallback() {
+        assert!(super::BRIDGE_ENTITY_SEARCH_SOURCE
+            .contains("entity.GetObjectArray(\"components\")"));
+        assert!(super::BRIDGE_ENTITY_SEARCH_SOURCE.contains("ComponentAt(entity, componentIndex)"));
+        assert!(super::BRIDGE_ENTITY_SEARCH_SOURCE
+            .contains("components += string.Format(\"%1\", component.GetClassName())"));
     }
 
     #[test]
@@ -11298,8 +11395,12 @@ mod tests {
 
     #[test]
     fn entity_search_handler_initializes_its_paging_counters() {
-        assert!(super::BRIDGE_ENTITY_SEARCH_SOURCE.contains("int matched = 0; int returned = 0;"));
-        assert!(super::BRIDGE_ENTITY_SEARCH_SOURCE.contains("matched = matched + 1;\n\t\t\tif (returned >= req.limit)"));
+        assert!(super::BRIDGE_ENTITY_SEARCH_SOURCE
+            .contains("int matched = 0; int named = 0; int returned = 0;"));
+        assert!(super::BRIDGE_ENTITY_SEARCH_SOURCE
+            .contains("matched = matched + 1;\n\t\t\tif (!name.IsEmpty()) named = named + 1;"));
+        assert!(super::BRIDGE_ENTITY_SEARCH_SOURCE
+            .contains("response.totalMatches = matched; response.namedMatches = named;"));
         assert!(super::BRIDGE_ENTITY_SEARCH_SOURCE.contains("returned = returned + 1;"));
         assert!(!super::BRIDGE_ENTITY_SEARCH_SOURCE.contains("matched++"));
     }
