@@ -9,7 +9,7 @@ use serde_json::json;
 const OPEN_SYMBOL_LOCATION_COMMAND: &str = "reforger-sript-tools.openSymbolLocation";
 // Keep rich member summaries below VS Code's undocumented hover-payload cutoff.
 // This budget applies only to repeated member entries; a normal hover is unchanged.
-const MAX_HOVER_MEMBER_SUMMARY_BYTES: usize = 16 * 1024;
+const MAX_HOVER_MEMBER_SUMMARY_BYTES: usize = 48 * 1024;
 const ATTRIBUTE_CONSTRUCTOR_SIGNATURE: &str = r#"void Attribute(
 	string defvalue = "",
 	string uiwidget = "auto",
