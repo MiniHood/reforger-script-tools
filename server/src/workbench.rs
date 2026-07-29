@@ -5437,7 +5437,7 @@ struct RawBridgeShapePoints {
     entity: String,
     #[serde(rename = "shapeClass", default)]
     shape_class: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_boolish")]
     closed: bool,
     #[serde(default)]
     points: String,
