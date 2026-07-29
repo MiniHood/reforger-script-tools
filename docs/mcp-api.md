@@ -3899,7 +3899,7 @@ Workbench tools return structured tool errors with a stable code, operation phas
 
 ## `workbench_search_world_entities`
 
-Search authored live World Editor entities by text, exact class, prefab resource, direct component classes, layer, subscene, and one bounded exact-class containment relation. A relation may match a parent, ancestor, child, or descendant and may require direct components on the related entity. Every result carries its matched relation evidence; use a returned exact entity ID for deeper inspection or mutation.
+Search authored live World Editor entities by text, exact class, prefab resource, direct component classes, layer, subscene, and one bounded exact-class containment relation. All filters are ANDed; every listed component class must be direct on its candidate. A relation matches an exact-class parent, ancestor, child, or descendant and can require direct components on the related entity; parent/child depth is exactly one and transitive depth is 1–8. Every result carries matched relation evidence. relationTraversalTruncated means a candidate relation walk reached its fixed 1,024-node bound and affected candidates were omitted; use a returned exact entity ID with hierarchy or prefab-context inspection for deeper facts.
 
 ### Annotations
 
@@ -4277,6 +4277,10 @@ Search authored live World Editor entities by text, exact class, prefab resource
       "minimum": 0,
       "type": "integer"
     },
+    "relationTraversalTruncated": {
+      "description": "A relation traversal hit its fixed per-candidate visit limit; affected candidates are\nomitted rather than searched without a bound.",
+      "type": "boolean"
+    },
     "results": {
       "items": {
         "$ref": "#/$defs/WorkbenchEntitySearchHit"
@@ -4304,7 +4308,8 @@ Search authored live World Editor entities by text, exact class, prefab resource
     "limit",
     "summary",
     "results",
-    "truncated"
+    "truncated",
+    "relationTraversalTruncated"
   ],
   "type": "object"
 }
