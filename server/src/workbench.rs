@@ -1991,6 +1991,12 @@ impl WorkbenchController {
         limit: usize,
     ) -> Result<WorkbenchEntitySearchPage, WorkbenchFailure> {
         let limit = limit.clamp(1, 100);
+        if component_classes
+            .iter()
+            .any(|class_name| !valid_component_class_name(class_name))
+        {
+            return Err(failure(WorkbenchFailureCode::Protocol));
+        }
         let components = component_classes.join(";");
         let signature = sha256(
             format!(
@@ -5982,6 +5988,14 @@ fn parse_entity_search_records(value: &str) -> Result<Vec<WorkbenchEntitySearchH
             })
         })
         .collect()
+}
+
+fn valid_component_class_name(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
 }
 
 fn round_world_coordinate(value: f32) -> f32 {
@@ -11358,6 +11372,19 @@ mod tests {
         assert!(super::BRIDGE_ENTITY_SEARCH_SOURCE.contains("ComponentAt(entity, componentIndex)"));
         assert!(super::BRIDGE_ENTITY_SEARCH_SOURCE
             .contains("components += string.Format(\"%1\", component.GetClassName())"));
+    }
+
+    #[test]
+    fn entity_search_rejects_component_class_transport_delimiters() {
+        let controller = super::WorkbenchController::new(Default::default());
+
+        let failure = controller
+            .search_entities(None, None, None, &["SCR_A;SCR_B"], None, None, None, 1)
+            .unwrap_err();
+
+        assert_eq!(failure.code, super::WorkbenchFailureCode::Protocol);
+        assert!(super::valid_component_class_name("SCR_MapDescriptorComponent"));
+        assert!(!super::valid_component_class_name("SCR_A;SCR_B"));
     }
 
     #[test]
