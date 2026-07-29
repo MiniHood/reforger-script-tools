@@ -7,6 +7,9 @@ use crate::symbol_display::{documentation_display, DocumentationDisplay, SymbolD
 use serde_json::json;
 
 const OPEN_SYMBOL_LOCATION_COMMAND: &str = "reforger-sript-tools.openSymbolLocation";
+// Keep rich member summaries below VS Code's undocumented hover-payload cutoff.
+// This budget applies only to repeated member entries; a normal hover is unchanged.
+const MAX_HOVER_MEMBER_SUMMARY_BYTES: usize = 16 * 1024;
 const ATTRIBUTE_CONSTRUCTOR_SIGNATURE: &str = r#"void Attribute(
 	string defvalue = "",
 	string uiwidget = "auto",
@@ -229,9 +232,16 @@ fn render_class_members(
         .collect::<Vec<_>>();
 
     let mut lines = Vec::new();
-    push_member_group(&mut lines, "Constructors", &constructors, context);
-    push_member_group(&mut lines, "Functions", &methods, context);
-    push_member_group(&mut lines, "Fields", &fields, context);
+    let mut budget = HoverMemberSummaryBudget::new();
+    push_member_group(
+        &mut lines,
+        "Constructors",
+        &constructors,
+        context,
+        &mut budget,
+    );
+    push_member_group(&mut lines, "Functions", &methods, context, &mut budget);
+    push_member_group(&mut lines, "Fields", &fields, context, &mut budget);
     if lines.is_empty() {
         None
     } else {
@@ -265,15 +275,21 @@ fn push_member_group(
     label: &str,
     members: &[&EditorCompletionCandidate],
     context: Option<&HoverRenderContext<'_, '_>>,
+    budget: &mut HoverMemberSummaryBudget,
 ) {
     if members.is_empty() {
         return;
     }
-    let rendered_members = members
-        .iter()
-        .map(|candidate| render_member_line(candidate, context))
-        .collect::<Vec<_>>()
-        .join("<br>");
+    let mut rendered_members = Vec::new();
+    for (index, candidate) in members.iter().enumerate() {
+        let member = render_member_line(candidate, context);
+        if !budget.try_add(&member, !rendered_members.is_empty()) {
+            rendered_members.push(format!("and {} more", members.len() - index));
+            break;
+        }
+        rendered_members.push(member);
+    }
+    let rendered_members = rendered_members.join("<br>");
     let block = format!("{}\n\n{rendered_members}", render_section_header(label));
     lines.push(block);
 }
@@ -291,9 +307,10 @@ fn render_enum_members(
     if members.is_empty() {
         return None;
     }
-    let sample = members
-        .iter()
-        .map(|candidate| {
+    let mut budget = HoverMemberSummaryBudget::new();
+    let mut sample = Vec::new();
+    for (index, candidate) in members.iter().enumerate() {
+        let member = {
             let mut rendered = linked_symbol_text(
                 &candidate.display.label,
                 hover_semantic_token_type(candidate.display.kind),
@@ -312,13 +329,38 @@ fn render_enum_members(
                 rendered.push_str(&render_lexical_text(value));
             }
             rendered
-        })
-        .collect::<Vec<_>>()
-        .join("<br>");
+        };
+        if !budget.try_add(&member, !sample.is_empty()) {
+            sample.push(format!("and {} more", members.len() - index));
+            break;
+        }
+        sample.push(member);
+    }
+    let sample = sample.join("<br>");
     Some(format!(
         "{}\n\n{sample}",
         render_section_header("Enum Values")
     ))
+}
+
+struct HoverMemberSummaryBudget {
+    bytes_used: usize,
+}
+
+impl HoverMemberSummaryBudget {
+    fn new() -> Self {
+        Self { bytes_used: 0 }
+    }
+
+    fn try_add(&mut self, entry: &str, has_separator: bool) -> bool {
+        let separator_bytes = usize::from(has_separator) * "<br>".len();
+        let entry_bytes = separator_bytes + entry.len();
+        if self.bytes_used + entry_bytes > MAX_HOVER_MEMBER_SUMMARY_BYTES {
+            return false;
+        }
+        self.bytes_used += entry_bytes;
+        true
+    }
 }
 
 fn render_metadata(display: &SymbolDisplayInfo) -> Option<String> {
@@ -1671,6 +1713,48 @@ class Child : Base
         assert!(markdown.contains("Fifth"));
         assert_theme_owned_foreground(&markdown);
         assert!(!markdown.contains(" // value"));
+    }
+
+    #[test]
+    fn bounds_large_enum_member_summaries_at_complete_entries() {
+        let values = (0..300)
+            .map(|index| format!("\tValue{index:03} = {index},"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let source = format!("enum ExampleEnum\n{{\n{values}\n}}\n");
+        let index = index(&source);
+        let query = IndexQuery::new(&index);
+        let display = query
+            .symbol_display(find(&index, SymbolKind::Enum, "ExampleEnum"))
+            .unwrap();
+
+        let markdown = render_hover_markdown(
+            &display,
+            Some(HoverRenderContext {
+                query: &query,
+                member_summary_query: None,
+                links: Some(HoverLinkContext {
+                    current_uri: "file:///current.c",
+                    external_query: None,
+                }),
+            }),
+        );
+
+        let displayed = (0..300)
+            .filter(|index| markdown.contains(&format!(">Value{index:03}</span>")))
+            .count();
+        let omitted = 300 - displayed;
+        assert!(omitted > 0);
+        assert!(markdown.contains(&format!("and {omitted} more")));
+        assert!(markdown.len() <= MAX_HOVER_MEMBER_SUMMARY_BYTES + 1024);
+        assert_eq!(
+            markdown.matches("<a ").count(),
+            markdown.matches("</a>").count()
+        );
+        assert_eq!(
+            markdown.matches("<span").count(),
+            markdown.matches("</span>").count()
+        );
     }
 
     #[test]

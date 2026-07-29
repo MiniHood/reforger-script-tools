@@ -57,6 +57,9 @@ policy is in [Key input routing](key-input-routing.md).
 - Preserve one language model across LSP and MCP projections.
 - Keep request results bounded and revision-correct rather than guessing from
   stale or partial text.
+- Keep hover payloads valid and bounded at complete presentation entries; when
+  a repeated member summary exceeds its budget, report the exact omitted count
+  instead of allowing the client to truncate markup.
 - Keep presentation, storage, configuration, and process lifecycle outside the
   engine.
 
