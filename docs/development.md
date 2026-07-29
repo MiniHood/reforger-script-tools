@@ -185,6 +185,11 @@ The full `npm test` gate remains required before completion.
 Automated peers do not replace live Workbench acceptance. With NET API enabled
 in Workbench, open the same addon folder in VS Code and verify the configured
 endpoint (default `127.0.0.1:5775`) before relying on protocol assumptions.
+When launching a project manually, preserve every path containing spaces as a
+single argument: quote both the `-gproj` path and the base-game `-addonsDir`
+path, and use the Workbench installation directory as the working directory.
+Otherwise Workbench can truncate a path at its first space, fail to load base
+addon `58D0FB3206B6F859` (Arma Reforger), and cannot initialize the project.
 Run a clean `WORKBENCH` validation, introduce and save a deliberate compiler
 error, and confirm the reported file and line. Then edit again to observe a
 stale finding and fix the error to observe atomic replacement. Also verify

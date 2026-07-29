@@ -103,7 +103,7 @@ pub struct WorkbenchGateway {
     request_lock: Arc<Mutex<()>>,
 }
 
-pub const WORKBENCH_BRIDGE_VERSION: &str = "1.41.0";
+pub const WORKBENCH_BRIDGE_VERSION: &str = "1.47.0";
 pub const WORKBENCH_BRIDGE_PROTOCOL_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -7372,7 +7372,7 @@ class RST_WorkbenchCapabilities : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchCapabilitiesResponse response = new RST_WorkbenchCapabilitiesResponse();
-        response.bridgeVersion = "1.41.0";
+        response.bridgeVersion = "1.47.0";
 	response.protocolVersion = 1;
 	response.capabilities = "state;editors;open-resource;play-session;project-context;inspect-resource;world-selection;entity-hierarchy;list-resources;list-entities;layer-state;inspect-entity;set-selection;clear-selection;entity-position;entity-details;create-entity;rename-entity;delete-entity;move-entity;rotate-entity;reparent-entity;duplicate-entity;entity-properties;components;component-properties;reload-action";
 		return response;
@@ -7432,7 +7432,7 @@ class RST_WorkbenchState : NetApiHandler
 	{
 		RST_WorkbenchStateRequest typedRequest = RST_WorkbenchStateRequest.Cast(request);
 		RST_WorkbenchStateResponse response = new RST_WorkbenchStateResponse();
-	response.bridgeVersion = "1.41.0";
+	response.bridgeVersion = "1.47.0";
 		response.protocolVersion = 1;
 		response.mode = "workbench";
 		response.playSession = "unavailable";
@@ -7795,7 +7795,7 @@ class RST_WorkbenchProjectContext : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchProjectContextResponse response = new RST_WorkbenchProjectContextResponse();
-		response.bridgeVersion = "1.41.0";
+		response.bridgeVersion = "1.47.0";
 		response.protocolVersion = 1;
 		array<string> addonGuids = new array<string>();
 		GameProject.GetLoadedAddons(addonGuids);
@@ -7913,7 +7913,7 @@ class RST_WorkbenchWorldSelection : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchWorldSelectionResponse response = new RST_WorkbenchWorldSelectionResponse();
-		response.bridgeVersion = "1.41.0";
+		response.bridgeVersion = "1.47.0";
 		response.protocolVersion = 1;
 		WorldEditor worldEditor = Workbench.GetModule(WorldEditor);
 		if (!worldEditor)
@@ -7991,7 +7991,7 @@ class RST_WorkbenchSelectedEntityHierarchy : NetApiHandler
 	{
 		RST_WorkbenchSelectedEntityHierarchyRequest typedRequest = RST_WorkbenchSelectedEntityHierarchyRequest.Cast(request);
 		RST_WorkbenchSelectedEntityHierarchyResponse response = new RST_WorkbenchSelectedEntityHierarchyResponse();
-		response.bridgeVersion = "1.41.0";
+		response.bridgeVersion = "1.47.0";
 		response.protocolVersion = 1;
 		WorldEditor worldEditor = Workbench.GetModule(WorldEditor);
 		if (!worldEditor)
@@ -8076,7 +8076,7 @@ class RST_WorkbenchListEntities : NetApiHandler
 	{
 		RST_WorkbenchListEntitiesRequest typedRequest = RST_WorkbenchListEntitiesRequest.Cast(request);
 		RST_WorkbenchListEntitiesResponse response = new RST_WorkbenchListEntitiesResponse();
-		response.bridgeVersion = "1.41.0";
+		response.bridgeVersion = "1.47.0";
 		response.protocolVersion = 1;
 		WorldEditor worldEditor = Workbench.GetModule(WorldEditor);
 		if (!worldEditor) return response;
@@ -8113,14 +8113,22 @@ class RST_WorkbenchSearchEntitiesRequest : JsonApiStruct { string query; string 
 class RST_WorkbenchSearchEntitiesResponse : JsonApiStruct { string bridgeVersion; int protocolVersion; string status; string worldPath; string results; int totalMatches; int namedMatches; bool hasMore; bool relationTraversalTruncated; void RST_WorkbenchSearchEntitiesResponse() { RegAll(); } }
 class RST_WorkbenchSearchEntities : NetApiHandler
 {
+	static const int MAX_RELATION_CANDIDATES = 4096;
+	static const int MAX_RESULT_CHARACTERS = 262144;
+	static const int MAX_RESULT_FIELD_CHARACTERS = 4096;
 	override JsonApiStruct GetRequest() { return new RST_WorkbenchSearchEntitiesRequest(); }
+	protected string BoundResultField(string value)
+	{
+		if (value.Length() > MAX_RESULT_FIELD_CHARACTERS) return value.Substring(0, MAX_RESULT_FIELD_CHARACTERS);
+		return value;
+	}
 	int ComponentCount(IEntitySource entity)
 	{
 		int count = entity.GetComponentCount();
 		if (count == 0)
 		{
 			ref BaseContainerList components = entity.GetObjectArray("components");
-			if (components) count = components.Count(); else count = entity.GetNumChildren();
+			if (components) count = components.Count();
 		}
 		return count;
 	}
@@ -8129,7 +8137,7 @@ class RST_WorkbenchSearchEntities : NetApiHandler
 		if (entity.GetComponentCount() > 0) return entity.GetComponent(index);
 		ref BaseContainerList components = entity.GetObjectArray("components");
 		if (components) return IEntityComponentSource.Cast(components.Get(index));
-		return IEntityComponentSource.Cast(entity.GetChild(index));
+		return null;
 	}
 	protected bool HasComponent(IEntitySource entity, string expected)
 	{
@@ -8140,6 +8148,17 @@ class RST_WorkbenchSearchEntities : NetApiHandler
 	{
 		foreach (string expected : required) if (!HasComponent(entity, expected)) return false;
 		return true;
+	}
+	protected bool MatchesCandidate(IEntitySource entity, RST_WorkbenchSearchEntitiesRequest request, array<string> required)
+	{
+		if (!entity) return false;
+		if (request.subScene >= 0 && entity.GetSubScene() != request.subScene) return false;
+		if (request.layerId >= 0 && entity.GetLayerID() != request.layerId) return false;
+		string name = entity.GetName(); string resource = string.Format("%1", entity.GetResourceName()); string className = entity.GetClassName();
+		if (!request.query.IsEmpty() && !name.Contains(request.query) && !className.Contains(request.query) && !resource.Contains(request.query)) return false;
+		if (!request.className.IsEmpty() && className != request.className) return false;
+		if (!request.resourceQuery.IsEmpty() && !resource.Contains(request.resourceQuery)) return false;
+		return HasRequiredComponents(entity, required);
 	}
 	protected bool MatchesRelationTarget(IEntitySource entity, RST_WorkbenchSearchEntitiesRequest request, array<string> required)
 	{
@@ -8179,7 +8198,8 @@ class RST_WorkbenchSearchEntities : NetApiHandler
 	}
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
-		RST_WorkbenchSearchEntitiesRequest req = RST_WorkbenchSearchEntitiesRequest.Cast(request); RST_WorkbenchSearchEntitiesResponse response = new RST_WorkbenchSearchEntitiesResponse(); response.bridgeVersion = "1.41.0"; response.protocolVersion = 1;
+		RST_WorkbenchSearchEntitiesRequest req = RST_WorkbenchSearchEntitiesRequest.Cast(request); RST_WorkbenchSearchEntitiesResponse response = new RST_WorkbenchSearchEntitiesResponse(); response.bridgeVersion = "1.47.0"; response.protocolVersion = 1;
+		PrintFormat("RST entity search: begin limit=%1 offset=%2 relation=%3", req.limit, req.offset, req.relationDirection);
 		WorldEditor editor = Workbench.GetModule(WorldEditor); if (!editor || !editor.GetApi()) { response.status = "world-editor-unavailable"; return response; }
 		bool hasRelation = !req.relationDirection.IsEmpty();
 		bool validDirection = req.relationDirection == "parent" || req.relationDirection == "ancestor" || req.relationDirection == "child" || req.relationDirection == "descendant";
@@ -8191,29 +8211,45 @@ class RST_WorkbenchSearchEntities : NetApiHandler
 		else if ((req.relationDirection == "parent" || req.relationDirection == "child") && req.relationMaxDepth != 1)
 			invalidRelation = true;
 		if (req.offset < 0 || req.limit < 1 || req.limit > 100 || invalidRelation) { response.status = "invalid-request"; return response; }
-		WorldEditorAPI api = editor.GetApi(); response.status = "available"; api.GetWorldPath(response.worldPath); array<string> required = new array<string>(); if (!req.componentClasses.IsEmpty()) req.componentClasses.Split(";", required, true); array<string> relationRequired = new array<string>(); if (!req.relationComponentClasses.IsEmpty()) req.relationComponentClasses.Split(";", relationRequired, true); int matched = 0; int named = 0; int returned = 0;
-		for (int index, count = api.GetEditorEntityCount(); index < count; index++)
+		WorldEditorAPI api = editor.GetApi(); response.status = "available"; api.GetWorldPath(response.worldPath); array<string> required = new array<string>(); if (!req.componentClasses.IsEmpty()) req.componentClasses.Split(";", required, true); array<string> relationRequired = new array<string>(); if (!req.relationComponentClasses.IsEmpty()) req.relationComponentClasses.Split(";", relationRequired, true); int matched = 0; int named = 0; int returned = 0; int relationCandidates = 0; int entityCount = api.GetEditorEntityCount();
+		PrintFormat("RST entity search: world=%1 entities=%2 candidateComponents=%3 relationComponents=%4", response.worldPath, entityCount, required.Count(), relationRequired.Count());
+		for (int index; index < entityCount; index++)
 		{
-			IEntitySource entity = api.GetEditorEntity(index); if (!entity) continue;
-			if (req.subScene >= 0 && entity.GetSubScene() != req.subScene) continue; if (req.layerId >= 0 && entity.GetLayerID() != req.layerId) continue;
+			if (index > 0 && index % 1000 == 0) PrintFormat("RST entity search: scanned=%1 matched=%2 returned=%3", index, matched, returned);
+			IEntitySource entity = api.GetEditorEntity(index);
+			if (MatchesCandidate(entity, req, required))
+			{
 			string name = entity.GetName(); string resource = string.Format("%1", entity.GetResourceName()); string className = entity.GetClassName();
 			bool nameMatch = !req.query.IsEmpty() && name.Contains(req.query); bool classMatch = !req.query.IsEmpty() && className.Contains(req.query); bool resourceTextMatch = !req.query.IsEmpty() && resource.Contains(req.query);
-			if (!req.query.IsEmpty() && !nameMatch && !classMatch && !resourceTextMatch) continue; if (!req.className.IsEmpty() && className != req.className) continue; if (!req.resourceQuery.IsEmpty() && !resource.Contains(req.resourceQuery)) continue; if (!HasRequiredComponents(entity, required)) continue;
-			IEntitySource related; int relationDepth; bool relationTruncated; if (hasRelation && !FindRelation(entity, req, relationRequired, related, relationDepth, relationTruncated)) { if (relationTruncated) response.relationTraversalTruncated = true; continue; }
-			matched = matched + 1; if (!name.IsEmpty()) named = named + 1; if (matched <= req.offset) continue; if (returned >= req.limit) { response.hasMore = true; break; }
-			string components; int componentCount = ComponentCount(entity); for (int componentIndex; componentIndex < componentCount; componentIndex++) { IEntityComponentSource component = ComponentAt(entity, componentIndex); if (!component) continue; if (!components.IsEmpty()) components += ","; components += string.Format("%1", component.GetClassName()); }
+			IEntitySource related; int relationDepth; bool relationTruncated = false;
+			if (hasRelation && relationCandidates >= MAX_RELATION_CANDIDATES) { response.relationTraversalTruncated = true; response.totalMatches = matched; response.namedMatches = named; PrintFormat("RST entity search: relation candidate cap=%1", MAX_RELATION_CANDIDATES); return response; }
+			if (hasRelation) relationCandidates++;
+			bool relationMatches = !hasRelation || FindRelation(entity, req, relationRequired, related, relationDepth, relationTruncated);
+			if (relationTruncated) { response.relationTraversalTruncated = true; PrintFormat("RST entity search: relation traversal capped entity=%1", entity.GetID().ToString()); }
+			if (relationMatches)
+			{
+			matched = matched + 1; if (!name.IsEmpty()) named = named + 1;
+			if (matched > req.offset)
+			{
+			if (matched > req.offset + req.limit) { response.hasMore = true; response.totalMatches = matched; response.namedMatches = named; PrintFormat("RST entity search: page boundary matched=%1 returned=%2", matched, returned); return response; }
+			string components; int componentCount = ComponentCount(entity); PrintFormat("RST entity search: record entity=%1 components=%2", entity.GetID().ToString(), componentCount); for (int componentIndex; componentIndex < componentCount; componentIndex++) { IEntityComponentSource component = ComponentAt(entity, componentIndex); if (!component) continue; if (!components.IsEmpty()) components += ","; components += string.Format("%1", component.GetClassName()); }
 			string matchedComponents; foreach (string expected : required) { if (!matchedComponents.IsEmpty()) matchedComponents += ","; matchedComponents += expected; }
 			string matches; if (nameMatch) matches = "name"; if (classMatch || !req.className.IsEmpty()) { if (!matches.IsEmpty()) matches += ","; matches += "class"; } if (resourceTextMatch || !req.resourceQuery.IsEmpty()) { if (!matches.IsEmpty()) matches += ","; matches += "resource"; } if (!required.IsEmpty()) { if (!matches.IsEmpty()) matches += ","; matches += "components"; } if (hasRelation) { if (!matches.IsEmpty()) matches += ","; matches += "relation"; }
 			IEntitySource parent = IEntitySource.Cast(entity.GetParent()); string parentClass; if (parent) parentClass = parent.GetClassName(); string relationDirection; string relationDepthText; string relationId; string relationClass; string relationSubScene; string relationLayer; string relationComponents;
 			if (hasRelation) { relationDirection = req.relationDirection; relationDepthText = relationDepth.ToString(); relationId = related.GetID().ToString(); relationClass = related.GetClassName(); relationSubScene = related.GetSubScene().ToString(); relationLayer = related.GetLayerID().ToString(); foreach (string expected : relationRequired) { if (!relationComponents.IsEmpty()) relationComponents += ","; relationComponents += expected; } }
+			className = BoundResultField(className); resource = BoundResultField(resource); name = BoundResultField(name); components = BoundResultField(components); matchedComponents = BoundResultField(matchedComponents); parentClass = BoundResultField(parentClass); relationId = BoundResultField(relationId); relationClass = BoundResultField(relationClass); relationComponents = BoundResultField(relationComponents);
 			resource.Replace("|", "/"); resource.Replace(";", "/"); name.Replace("|", "/"); name.Replace(";", "/"); parentClass.Replace("|", "/"); parentClass.Replace(";", "/"); relationId.Replace("|", "/"); relationId.Replace(";", "/"); relationClass.Replace("|", "/"); relationClass.Replace(";", "/");
 			string record = string.Format("%1|%2|%3|%4|%5|%6|%7", entity.GetID().ToString(), className, entity.GetSubScene(), entity.GetLayerID(), resource, name, components);
 			record += "|" + matches; record += "|" + matchedComponents; record += "|" + parentClass; record += "|" + entity.GetNumChildren();
 			record += "|" + relationDirection; record += "|" + relationDepthText; record += "|" + relationId; record += "|" + relationClass;
 			record += "|" + relationSubScene; record += "|" + relationLayer; record += "|" + relationComponents;
+			if (response.results.Length() + record.Length() + 1 > MAX_RESULT_CHARACTERS) { response.hasMore = true; response.totalMatches = matched; response.namedMatches = named; PrintFormat("RST entity search: response cap=%1 returned=%2", MAX_RESULT_CHARACTERS, returned); return response; }
 			if (!response.results.IsEmpty()) response.results += ";"; response.results += record; returned = returned + 1;
+			}
+			}
+			}
 		}
-		response.totalMatches = matched; response.namedMatches = named; return response;
+		response.totalMatches = matched; response.namedMatches = named; PrintFormat("RST entity search: complete matched=%1 returned=%2 hasMore=%3 relationCapped=%4", matched, returned, response.hasMore, response.relationTraversalTruncated); return response;
 	}
 }
 #endif
@@ -8246,7 +8282,7 @@ class RST_WorkbenchLayerState : NetApiHandler
 	{
 		RST_WorkbenchLayerStateRequest typedRequest = RST_WorkbenchLayerStateRequest.Cast(request);
 		RST_WorkbenchLayerStateResponse response = new RST_WorkbenchLayerStateResponse();
-		response.bridgeVersion = "1.41.0";
+		response.bridgeVersion = "1.47.0";
 		response.protocolVersion = 1;
 		response.subScene = typedRequest.subScene;
 		response.layerId = typedRequest.layerId;
@@ -8318,7 +8354,6 @@ class RST_WorkbenchInspectEntity : NetApiHandler
 		{
 			ref BaseContainerList components = entity.GetObjectArray("components");
 			if (components) count = components.Count();
-			else count = entity.GetNumChildren();
 		}
 		return count;
 	}
@@ -8331,7 +8366,6 @@ class RST_WorkbenchInspectEntity : NetApiHandler
 		{
 			ref BaseContainerList components = entity.GetObjectArray("components");
 			if (components) component = IEntityComponentSource.Cast(components.Get(index));
-			else component = IEntityComponentSource.Cast(entity.GetChild(index));
 		}
 		return component;
 	}
@@ -8500,7 +8534,7 @@ class RST_WorkbenchInspectEntity : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchInspectEntityRequest typedRequest = RST_WorkbenchInspectEntityRequest.Cast(request);
-		RST_WorkbenchInspectEntityResponse response = new RST_WorkbenchInspectEntityResponse(); response.bridgeVersion = "1.41.0"; response.protocolVersion = 1;
+		RST_WorkbenchInspectEntityResponse response = new RST_WorkbenchInspectEntityResponse(); response.bridgeVersion = "1.47.0"; response.protocolVersion = 1;
 		WorldEditor worldEditor = Workbench.GetModule(WorldEditor); if (!worldEditor) { response.status = "world-editor-unavailable"; return response; }
 		WorldEditorAPI api = worldEditor.GetApi(); if (!api) { response.status = "world-editor-api-unavailable"; return response; }
 		response.editorAvailable = true;
@@ -8617,7 +8651,7 @@ class RST_WorkbenchSetSelection : NetApiHandler
 	{
 		RST_WorkbenchSetSelectionRequest typedRequest = RST_WorkbenchSetSelectionRequest.Cast(request);
 		RST_WorkbenchSetSelectionResponse response = new RST_WorkbenchSetSelectionResponse();
-		response.bridgeVersion = "1.41.0";
+		response.bridgeVersion = "1.47.0";
 		response.protocolVersion = 1;
 		WorldEditor editor = Workbench.GetModule(WorldEditor);
 		if (!editor) { response.status = "world-editor-unavailable"; return response; }
@@ -8676,7 +8710,7 @@ class RST_WorkbenchFindEntitiesByRadius : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchFindEntitiesByRadiusRequest typedRequest = RST_WorkbenchFindEntitiesByRadiusRequest.Cast(request);
-		RST_WorkbenchFindEntitiesByRadiusResponse response = new RST_WorkbenchFindEntitiesByRadiusResponse(); response.bridgeVersion = "1.41.0"; response.protocolVersion = 1;
+		RST_WorkbenchFindEntitiesByRadiusResponse response = new RST_WorkbenchFindEntitiesByRadiusResponse(); response.bridgeVersion = "1.47.0"; response.protocolVersion = 1;
 		response.centerX = typedRequest.centerX; response.centerY = typedRequest.centerY; response.centerZ = typedRequest.centerZ; response.radiusMeters = typedRequest.radiusMeters; response.queryScope = typedRequest.queryScope; response.requireObject = typedRequest.requireObject; response.excludeProxies = typedRequest.excludeProxies;
 		if (typedRequest.radiusMeters < 0.01 || typedRequest.radiusMeters > 50000 || typedRequest.limit < 1 || typedRequest.limit > 100) { response.status = "invalid-query"; return response; }
 		WorldEditor editor = Workbench.GetModule(WorldEditor); if (!editor) { response.status = "world-editor-unavailable"; return response; }
@@ -8720,7 +8754,7 @@ class RST_WorkbenchSampleTerrain : NetApiHandler
 	{
 		RST_WorkbenchSampleTerrainRequest typedRequest = RST_WorkbenchSampleTerrainRequest.Cast(request);
 		RST_WorkbenchSampleTerrainResponse response = new RST_WorkbenchSampleTerrainResponse();
-		response.bridgeVersion = "1.41.0"; response.protocolVersion = 1;
+		response.bridgeVersion = "1.47.0"; response.protocolVersion = 1;
 		response.centerX = typedRequest.centerX; response.centerZ = typedRequest.centerZ; response.halfExtentMeters = typedRequest.halfExtentMeters; response.requestedSpacingMeters = typedRequest.spacingMeters;
 		if (typedRequest.halfExtentMeters < 0.01 || typedRequest.halfExtentMeters > 500 || typedRequest.spacingMeters < 0 || typedRequest.spacingMeters > 500) { response.status = "invalid-query"; return response; }
 		WorldEditor editor = Workbench.GetModule(WorldEditor); if (!editor) { response.status = "world-editor-unavailable"; return response; }
@@ -8814,7 +8848,7 @@ class RST_WorkbenchViewportContext : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchViewportContextResponse response = new RST_WorkbenchViewportContextResponse();
-		response.bridgeVersion = "1.41.0"; response.protocolVersion = 1;
+		response.bridgeVersion = "1.47.0"; response.protocolVersion = 1;
 		WorldEditor e = Workbench.GetModule(WorldEditor);
 		if (!e || !e.GetApi() || !e.GetApi().GetWorld()) { response.status = "world-editor-unavailable"; return response; }
 		WorldEditorAPI a = e.GetApi(); BaseWorld world = a.GetWorld(); vector cameraTransform[4];
@@ -8854,7 +8888,7 @@ class RST_WorkbenchTrace : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchTraceRequest q = RST_WorkbenchTraceRequest.Cast(request); RST_WorkbenchTraceResponse response = new RST_WorkbenchTraceResponse();
-		response.bridgeVersion = "1.41.0"; response.protocolVersion = 1;
+		response.bridgeVersion = "1.47.0"; response.protocolVersion = 1;
 		WorldEditor e = Workbench.GetModule(WorldEditor);
 		if (!e || !e.GetApi() || !e.GetApi().GetWorld()) { response.status = "world-editor-unavailable"; return response; }
 		TraceParam p;
@@ -8906,7 +8940,7 @@ class RST_WorkbenchClearSelection : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchClearSelectionResponse response = new RST_WorkbenchClearSelectionResponse();
-		response.bridgeVersion = "1.41.0";
+		response.bridgeVersion = "1.47.0";
 		response.protocolVersion = 1;
 		WorldEditor editor = Workbench.GetModule(WorldEditor);
 		if (!editor)
@@ -9152,7 +9186,7 @@ class RST_WorkbenchEntityMutationBase : NetApiHandler
 	RST_WorkbenchEntityMutationResponse Response()
 	{
 		RST_WorkbenchEntityMutationResponse response = new RST_WorkbenchEntityMutationResponse();
-		response.bridgeVersion = "1.41.0";
+		response.bridgeVersion = "1.47.0";
 		response.protocolVersion = 1;
 		response.activeLayerId = -1;
 		return response;
@@ -9552,11 +9586,11 @@ class RST_WorkbenchComponentsResponse : JsonApiStruct { string bridgeVersion; in
 class RST_WorkbenchComponentsBase : NetApiHandler
 {
 	IEntitySource Find(WorldEditorAPI api, string id) { for (int i = 0, count = api.GetEditorEntityCount(); i < count; i++) { IEntitySource candidate = api.GetEditorEntity(i); if (candidate && candidate.GetID().ToString() == id) return candidate; } return null; }
-	RST_WorkbenchComponentsResponse Response() { RST_WorkbenchComponentsResponse response = new RST_WorkbenchComponentsResponse(); response.bridgeVersion = "1.41.0"; response.protocolVersion = 1; return response; }
+	RST_WorkbenchComponentsResponse Response() { RST_WorkbenchComponentsResponse response = new RST_WorkbenchComponentsResponse(); response.bridgeVersion = "1.47.0"; response.protocolVersion = 1; return response; }
 	// Workbench exposes authored direct components through the `components` container in
 	// some editor contexts, even when IEntitySource.GetComponentCount() is zero.
-	int ComponentCount(IEntitySource entity) { int count = entity.GetComponentCount(); if (count == 0) { ref BaseContainerList components = entity.GetObjectArray("components"); if (components) count = components.Count(); else count = entity.GetNumChildren(); } return count; }
-	IEntityComponentSource ComponentAt(IEntitySource entity, int index) { IEntityComponentSource component; int count = entity.GetComponentCount(); if (count > 0) component = entity.GetComponent(index); else { ref BaseContainerList components = entity.GetObjectArray("components"); if (components) component = IEntityComponentSource.Cast(components.Get(index)); else component = IEntityComponentSource.Cast(entity.GetChild(index)); } return component; }
+	int ComponentCount(IEntitySource entity) { int count = entity.GetComponentCount(); if (count == 0) { ref BaseContainerList components = entity.GetObjectArray("components"); if (components) count = components.Count(); } return count; }
+	IEntityComponentSource ComponentAt(IEntitySource entity, int index) { IEntityComponentSource component; int count = entity.GetComponentCount(); if (count > 0) component = entity.GetComponent(index); else { ref BaseContainerList components = entity.GetObjectArray("components"); if (components) component = IEntityComponentSource.Cast(components.Get(index)); } return component; }
 	void List(IEntitySource entity, RST_WorkbenchComponentsResponse response)
 	{
 		int count = ComponentCount(entity);
@@ -9827,7 +9861,7 @@ class RST_WorkbenchListEntityProperties : RST_WorkbenchEntityMutationBase
 	{
 		RST_WorkbenchPropertiesRequest r = RST_WorkbenchPropertiesRequest.Cast(request);
 		RST_WorkbenchPropertiesResponse response = new RST_WorkbenchPropertiesResponse();
-		response.bridgeVersion = "1.41.0";
+		response.bridgeVersion = "1.47.0";
 		response.protocolVersion = 1;
 
 		WorldEditor editor = Workbench.GetModule(WorldEditor);
@@ -10116,7 +10150,7 @@ class RST_WorkbenchInspectPrefab : NetApiHandler
 	}
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
-		RST_WorkbenchPrefabRequest r = RST_WorkbenchPrefabRequest.Cast(request); RST_WorkbenchPrefabResponse response = new RST_WorkbenchPrefabResponse(); response.bridgeVersion = "1.41.0"; response.protocolVersion = 1;
+		RST_WorkbenchPrefabRequest r = RST_WorkbenchPrefabRequest.Cast(request); RST_WorkbenchPrefabResponse response = new RST_WorkbenchPrefabResponse(); response.bridgeVersion = "1.47.0"; response.protocolVersion = 1;
 		WorldEditor editor = Workbench.GetModule(WorldEditor); if (!editor || !editor.GetApi()) { response.status = "world-editor-unavailable"; return response; }
 		WorldEditorAPI api = editor.GetApi();
 		// Keep the resource handle alive while any source/container derived from it is read.
@@ -10473,7 +10507,7 @@ class RST_WorkbenchPrefabResourceProof : NetApiHandler
 	{
 		RST_WorkbenchPrefabResourceProofRequest r = RST_WorkbenchPrefabResourceProofRequest.Cast(request);
 		RST_WorkbenchPrefabResourceProofResponse response = new RST_WorkbenchPrefabResourceProofResponse();
-		response.bridgeVersion = "1.41.0";
+		response.bridgeVersion = "1.47.0";
 		response.protocolVersion = 1;
 		response.resourceName = r.resourceName;
 
@@ -10611,7 +10645,7 @@ class RST_WorkbenchAddPrefabResourceComponent : NetApiHandler
 	{
 		RST_WorkbenchPrefabResourceComponentRequest r = RST_WorkbenchPrefabResourceComponentRequest.Cast(request);
 		RST_WorkbenchPrefabResourceComponentResponse response = new RST_WorkbenchPrefabResourceComponentResponse();
-		response.bridgeVersion = "1.41.0";
+		response.bridgeVersion = "1.47.0";
 		response.protocolVersion = 1;
 		response.resourceName = r.resourceName;
 		response.componentIndex = -1;
@@ -10712,7 +10746,7 @@ class RST_WorkbenchRemovePrefabResourceComponent : NetApiHandler
 	{
 		RST_WorkbenchPrefabResourceComponentRemovalRequest r = RST_WorkbenchPrefabResourceComponentRemovalRequest.Cast(request);
 		RST_WorkbenchPrefabResourceComponentResponse response = new RST_WorkbenchPrefabResourceComponentResponse();
-		response.bridgeVersion = "1.41.0";
+		response.bridgeVersion = "1.47.0";
 		response.protocolVersion = 1;
 		response.resourceName = r.resourceName;
 		response.componentIndex = r.componentIndex;
@@ -10833,7 +10867,7 @@ class RST_WorkbenchSetPrefabResourceProperty : RST_WorkbenchEntityMutationBase
 	{
 		RST_WorkbenchPrefabResourcePropertyRequest r = RST_WorkbenchPrefabResourcePropertyRequest.Cast(request);
 		RST_WorkbenchPrefabResourcePropertyResponse response = new RST_WorkbenchPrefabResourcePropertyResponse();
-		response.bridgeVersion = "1.41.0";
+		response.bridgeVersion = "1.47.0";
 		response.protocolVersion = 1;
 		response.resourceName = r.resourceName;
 
@@ -10987,7 +11021,7 @@ class RST_WorkbenchListResources : NetApiHandler
 	{
 		RST_WorkbenchListResourcesRequest typedRequest = RST_WorkbenchListResourcesRequest.Cast(request);
 		RST_WorkbenchListResourcesResponse response = new RST_WorkbenchListResourcesResponse();
-		response.bridgeVersion = "1.41.0";
+		response.bridgeVersion = "1.47.0";
 		response.protocolVersion = 1;
 		array<string> addonGuids = new array<string>();
 		GameProject.GetLoadedAddons(addonGuids);
@@ -11179,7 +11213,7 @@ mod tests {
     #[test]
     fn reload_action_dispatch_acknowledgement_does_not_override_log_verification() {
         let path = super::reload_action_path(Ok(super::RawBridgeReloadAction {
-            bridge_version: "1.41.0".to_string(),
+            bridge_version: "1.47.0".to_string(),
             protocol_version: 1,
             _accepted: json!(false),
             action_path: "Plugins/Settings/Reload WB Scripts".to_string(),
@@ -11308,7 +11342,7 @@ mod tests {
             assert_eq!(request["offset"], 0);
             assert_eq!(request["limit"], 3);
             json!({
-                "bridgeVersion": "1.41.0",
+                "bridgeVersion": "1.47.0",
                 "protocolVersion": 1,
                 "loadedAddons": "ArmaReforger;TestBullshit",
                 "resources": "{00B6CAF6E4A5BAB4}Prefabs/Props/Test.et",
@@ -11354,7 +11388,7 @@ mod tests {
             assert_eq!(request["subScene"], 2);
             assert_eq!(request["layerId"], 7);
             json!({
-                "bridgeVersion": "1.41.0",
+                "bridgeVersion": "1.47.0",
                 "protocolVersion": 1,
                 "worldPath": "$TestBullshit:worlds/test/arland_test.ent",
                 "entities": "0x0000000000000001 {}|GenericWorldEntity|0|0",
@@ -11390,7 +11424,7 @@ mod tests {
         let (port, peer) = start_peer(|request| {
             assert_eq!(request["APIFunc"], "RST_WorkbenchListEntities");
             json!({
-                "bridgeVersion": "1.41.0",
+                "bridgeVersion": "1.47.0",
                 "protocolVersion": 1,
                 "worldPath": "$Test:worlds/test.ent",
                 "entities": "0x0000000000000001 {}|TestEntity|2|7",
@@ -11430,7 +11464,7 @@ mod tests {
             assert_eq!(request["subScene"], -1);
             assert_eq!(request["layerId"], -1);
             json!({
-                "bridgeVersion": "1.41.0",
+                "bridgeVersion": "1.47.0",
                 "protocolVersion": 1,
                 "worldPath": "$Test:worlds/test.ent",
                 "entities": "",
@@ -11460,7 +11494,7 @@ mod tests {
             assert_eq!(request["APIFunc"], "RST_WorkbenchSearchEntities");
             assert_eq!(request["componentClasses"], "SCR_TriggerEntity");
             assert_eq!(request["resourceQuery"], "Checkpoints");
-            json!({"bridgeVersion":"1.41.0","protocolVersion":1,"status":"available","worldPath":"$Test:worlds/test.ent","results":"0x01|GenericEntity|0|7|{GUID}Prefabs/Checkpoints/West.et|West checkpoint|SCR_TriggerEntity,SCR_BaseGameModeComponent|name,resource,components|SCR_TriggerEntity|GenericEntity|3|||||||","totalMatches":2,"namedMatches":1,"hasMore":false})
+            json!({"bridgeVersion":"1.47.0","protocolVersion":1,"status":"available","worldPath":"$Test:worlds/test.ent","results":"0x01|GenericEntity|0|7|{GUID}Prefabs/Checkpoints/West.et|West checkpoint|SCR_TriggerEntity,SCR_BaseGameModeComponent|name,resource,components|SCR_TriggerEntity|GenericEntity|3|||||||","totalMatches":2,"namedMatches":1,"hasMore":false})
         });
         let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
             gateway: super::WorkbenchGatewayOptions {
@@ -11516,7 +11550,7 @@ mod tests {
                 "SCR_BaseGameModeComponent"
             );
             assert_eq!(request["relationMaxDepth"], 3);
-            json!({"bridgeVersion":"1.41.0","protocolVersion":1,"status":"available","worldPath":"$Test:worlds/test.ent","results":"0x01|GenericEntity|0|7|{GUID}Prefabs/Checkpoints/West.et|West checkpoint|SCR_TriggerEntity|relation||GenericEntity|3|descendant|2|0x02|SCR_TriggerEntity|0|7|SCR_BaseGameModeComponent","totalMatches":1,"namedMatches":1,"hasMore":false,"relationTraversalTruncated":true})
+            json!({"bridgeVersion":"1.47.0","protocolVersion":1,"status":"available","worldPath":"$Test:worlds/test.ent","results":"0x01|GenericEntity|0|7|{GUID}Prefabs/Checkpoints/West.et|West checkpoint|SCR_TriggerEntity|relation||GenericEntity|3|descendant|2|0x02|SCR_TriggerEntity|0|7|SCR_BaseGameModeComponent","totalMatches":1,"namedMatches":1,"hasMore":false,"relationTraversalTruncated":true})
         });
         let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
             gateway: super::WorkbenchGatewayOptions {
@@ -11557,9 +11591,17 @@ mod tests {
             super::BRIDGE_ENTITY_SEARCH_SOURCE.contains("entity.GetObjectArray(\"components\")")
         );
         assert!(super::BRIDGE_ENTITY_SEARCH_SOURCE.contains("entity.GetNumChildren()"));
+        assert!(
+            !super::BRIDGE_ENTITY_SEARCH_SOURCE.contains("else count = entity.GetNumChildren()")
+        );
+        assert!(!super::BRIDGE_ENTITY_SEARCH_SOURCE
+            .contains("IEntityComponentSource.Cast(entity.GetChild(index))"));
         assert!(super::BRIDGE_ENTITY_SEARCH_SOURCE.contains("visited > 1024"));
+        assert!(super::BRIDGE_ENTITY_SEARCH_SOURCE.contains("MAX_RELATION_CANDIDATES = 4096"));
+        assert!(super::BRIDGE_ENTITY_SEARCH_SOURCE.contains("MAX_RESULT_CHARACTERS = 262144"));
+        assert!(super::BRIDGE_ENTITY_SEARCH_SOURCE.contains("bool relationTruncated = false"));
         assert!(super::BRIDGE_ENTITY_SEARCH_SOURCE.contains("relationTraversalTruncated"));
-        assert!(super::BRIDGE_ENTITY_SEARCH_SOURCE.contains("entity.GetChild(index)"));
+        assert!(super::BRIDGE_ENTITY_SEARCH_SOURCE.contains("parent.GetChild(index)"));
         assert!(super::BRIDGE_ENTITY_SEARCH_SOURCE.contains("ComponentAt(entity, componentIndex)"));
         assert!(super::BRIDGE_ENTITY_SEARCH_SOURCE
             .contains("int componentCount = ComponentCount(entity);"));
@@ -11624,7 +11666,7 @@ mod tests {
         let (port, peer) = start_peer(|request| {
             assert_eq!(request["relationDirection"], "descendant");
             assert_eq!(request["relationClassName"], "SCR_TriggerEntity");
-            json!({"bridgeVersion":"1.41.0","protocolVersion":1,"status":"available","worldPath":"$Test:worlds/test.ent","results":"0x01|GenericEntity|0|7||||||GenericEntity|1|descendant|1|0x02|SCR_TriggerEntity|0|7|","totalMatches":2,"namedMatches":0,"hasMore":true})
+            json!({"bridgeVersion":"1.47.0","protocolVersion":1,"status":"available","worldPath":"$Test:worlds/test.ent","results":"0x01|GenericEntity|0|7||||||GenericEntity|1|descendant|1|0x02|SCR_TriggerEntity|0|7|","totalMatches":2,"namedMatches":0,"hasMore":true})
         });
         let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
             gateway: super::WorkbenchGatewayOptions {
@@ -11681,7 +11723,7 @@ mod tests {
         let (port, peer) = start_peer(|request| {
             assert_eq!(request["APIFunc"], "RST_WorkbenchSearchEntities");
             json!({
-                "bridgeVersion": "1.41.0",
+                "bridgeVersion": "1.47.0",
                 "protocolVersion": 1,
                 "status": "world-editor-unavailable",
                 "worldPath": "",
@@ -11716,7 +11758,7 @@ mod tests {
         assert!(super::BRIDGE_ENTITY_SEARCH_SOURCE
             .contains("matched = matched + 1; if (!name.IsEmpty()) named = named + 1;"));
         assert!(super::BRIDGE_ENTITY_SEARCH_SOURCE
-            .contains("if (returned >= req.limit) { response.hasMore = true; break; }"));
+            .contains("if (matched > req.offset + req.limit) { response.hasMore = true;"));
         assert!(super::BRIDGE_ENTITY_SEARCH_SOURCE
             .contains("response.totalMatches = matched; response.namedMatches = named;"));
         assert!(super::BRIDGE_ENTITY_SEARCH_SOURCE.contains("returned = returned + 1;"));
@@ -11731,7 +11773,7 @@ mod tests {
                 json!({"APIFunc":"RST_WorkbenchLayerState","subScene":2,"layerId":7})
             );
             json!({
-                "bridgeVersion":"1.41.0",
+                "bridgeVersion":"1.47.0",
                 "protocolVersion":1,
                 "status":"available",
                 "subScene":2,
@@ -11768,7 +11810,7 @@ mod tests {
                 request,
                 json!({"APIFunc":"RST_WorkbenchInspectPrefab","entityId":"0x01","resourceName":"","memberId":""})
             );
-            json!({"bridgeVersion":"1.41.0","protocolVersion":1,"status":"available","entity":"0x01|TestEntity|0|1","resourceName":"{GUID}Prefabs/Test.et","resourceReferenceKind":"external","contributorAddons":"BaseGame;MyAddon","ancestorResources":"{BASE_GUID}Prefabs/Base.et","prefabEditMode":true,"components":"0|MeshObject","componentProperties":"0|Enabled|bool|1|0|default;0|VisibleDistance|integer|250|1|direct;0|Offset|vector|1 2 3|1|direct;0|Scale|float|1.5|0|inherited;0|Label|string|Test|0|default","children":"0|Wheel|front-left","properties":"Mass|float|2000|1|direct;userScript|string||0|default;constructor|string||0|default;destructor|string||0|default;Name|string|Jeep|0|inherited","childCount":2})
+            json!({"bridgeVersion":"1.47.0","protocolVersion":1,"status":"available","entity":"0x01|TestEntity|0|1","resourceName":"{GUID}Prefabs/Test.et","resourceReferenceKind":"external","contributorAddons":"BaseGame;MyAddon","ancestorResources":"{BASE_GUID}Prefabs/Base.et","prefabEditMode":true,"components":"0|MeshObject","componentProperties":"0|Enabled|bool|1|0|default;0|VisibleDistance|integer|250|1|direct;0|Offset|vector|1 2 3|1|direct;0|Scale|float|1.5|0|inherited;0|Label|string|Test|0|default","children":"0|Wheel|front-left","properties":"Mass|float|2000|1|direct;userScript|string||0|default;constructor|string||0|default;destructor|string||0|default;Name|string|Jeep|0|inherited","childCount":2})
         });
         let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
             gateway: super::WorkbenchGatewayOptions {
@@ -11825,7 +11867,7 @@ mod tests {
                 request,
                 json!({"APIFunc":"RST_WorkbenchInspectPrefab","entityId":"","resourceName":"{GUID}Prefabs/Test.et","memberId":""})
             );
-            json!({"bridgeVersion":"1.41.0","protocolVersion":1,"status":"available","resourceName":"{GUID}Prefabs/Test.et","components":"0|MeshObject;1|Light","componentProperties":"0|Enabled|bool|1|0;0|Offset|vector|1 2 3|1;1|Intensity|float|500.25|0"})
+            json!({"bridgeVersion":"1.47.0","protocolVersion":1,"status":"available","resourceName":"{GUID}Prefabs/Test.et","components":"0|MeshObject;1|Light","componentProperties":"0|Enabled|bool|1|0;0|Offset|vector|1 2 3|1;1|Intensity|float|500.25|0"})
         });
         let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
             gateway: super::WorkbenchGatewayOptions {
@@ -11863,7 +11905,7 @@ mod tests {
     #[test]
     fn prefab_component_inspection_reports_a_missing_component_without_losing_context() {
         let (port, peer) = start_peer(
-            |_| json!({"bridgeVersion":"1.41.0","protocolVersion":1,"status":"available","resourceName":"{GUID}Prefabs/Test.et","components":"0|MeshObject"}),
+            |_| json!({"bridgeVersion":"1.47.0","protocolVersion":1,"status":"available","resourceName":"{GUID}Prefabs/Test.et","components":"0|MeshObject"}),
         );
         let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
             gateway: super::WorkbenchGatewayOptions {
@@ -11890,7 +11932,7 @@ mod tests {
                 request,
                 json!({"APIFunc":"RST_WorkbenchInspectPrefab","entityId":"0x01 {}","resourceName":"","memberId":""})
             );
-            json!({"bridgeVersion":"1.41.0","protocolVersion":1,"status":"available","resourceName":"{GUID}Prefabs/Test.et","components":"0|MeshObject","componentProperties":"0|Enabled|bool|1|0|default"})
+            json!({"bridgeVersion":"1.47.0","protocolVersion":1,"status":"available","resourceName":"{GUID}Prefabs/Test.et","components":"0|MeshObject","componentProperties":"0|Enabled|bool|1|0|default"})
         });
         let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
             gateway: super::WorkbenchGatewayOptions {
@@ -11920,7 +11962,7 @@ mod tests {
                 request,
                 json!({"APIFunc":"RST_WorkbenchInspectPrefab","entityId":"","resourceName":"{GUID}Prefabs/Test.et","memberId":"member:0"})
             );
-            json!({"bridgeVersion":"1.41.0","protocolVersion":1,"status":"available","resourceName":"{GUID}Prefabs/Test.et","memberId":"member:0","components":"0|MeshObject","componentProperties":"0|Enabled|bool|1|0|default","children":"0|Wheel|","properties":"coords|vector|1 2 3|1|direct","childCount":1})
+            json!({"bridgeVersion":"1.47.0","protocolVersion":1,"status":"available","resourceName":"{GUID}Prefabs/Test.et","memberId":"member:0","components":"0|MeshObject","componentProperties":"0|Enabled|bool|1|0|default","children":"0|Wheel|","properties":"coords|vector|1 2 3|1|direct","childCount":1})
         });
         let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
             gateway: super::WorkbenchGatewayOptions {
@@ -11951,7 +11993,7 @@ mod tests {
                 request,
                 json!({"APIFunc":"RST_WorkbenchCreatePrefab","entityId":"0x01","name":"Prefabs/New.et","confirm":false})
             );
-            json!({"bridgeVersion":"1.41.0","protocolVersion":1,"status":"confirmation-required","entity":"0x01|TestEntity|0|1","destination":"Prefabs/New.et","destinationExists":false})
+            json!({"bridgeVersion":"1.47.0","protocolVersion":1,"status":"confirmation-required","entity":"0x01|TestEntity|0|1","destination":"Prefabs/New.et","destinationExists":false})
         });
         let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
             gateway: super::WorkbenchGatewayOptions {
@@ -11983,7 +12025,7 @@ mod tests {
                 })
             );
             json!({
-                "bridgeVersion":"1.41.0",
+                "bridgeVersion":"1.47.0",
                 "protocolVersion":1,
                 "status":"confirmation-required",
                 "destination":"Prefabs/Generated/RST_Test.et",
@@ -12026,7 +12068,7 @@ mod tests {
                 })
             );
             json!({
-                "bridgeVersion":"1.41.0",
+                "bridgeVersion":"1.47.0",
                 "protocolVersion":1,
                 "status":"confirmation-required",
                 "destinationExists":0
@@ -12065,7 +12107,7 @@ mod tests {
                 })
             );
             json!({
-                "bridgeVersion":"1.41.0",
+                "bridgeVersion":"1.47.0",
                 "protocolVersion":1,
                 "status":"confirmation-required",
                 "resourceName":resource_name,
@@ -12108,7 +12150,7 @@ mod tests {
                 })
             );
             json!({
-                "bridgeVersion":"1.41.0",
+                "bridgeVersion":"1.47.0",
                 "protocolVersion":1,
                 "status":"confirmation-required",
                 "resourceName":resource_name,
@@ -12157,7 +12199,7 @@ mod tests {
                 })
             );
             json!({
-                "bridgeVersion":"1.41.0",
+                "bridgeVersion":"1.47.0",
                 "protocolVersion":1,
                 "status":"confirmation-required",
                 "resourceName":resource_name,
@@ -12202,7 +12244,7 @@ mod tests {
     fn viewport_context_keeps_compact_cursor_result_separate_from_optional_ray_diagnostics() {
         let response = || {
             json!({
-                "bridgeVersion":"1.41.0", "protocolVersion":1, "status":"available",
+                "bridgeVersion":"1.47.0", "protocolVersion":1, "status":"available",
                 "width":1920, "height":1080, "mouseX":960, "mouseY":540, "mouseInside":true,
                 "cameraX":10.0, "cameraY":20.0, "cameraZ":30.0,
                 "cameraDirectionX":0.0, "cameraDirectionY":0.0, "cameraDirectionZ":1.0,
@@ -12262,7 +12304,7 @@ mod tests {
                 })
             );
             json!({
-                "bridgeVersion":"1.41.0", "protocolVersion":1, "status":"available", "hit":true,
+                "bridgeVersion":"1.47.0", "protocolVersion":1, "status":"available", "hit":true,
                 "fraction":0.5, "distance":10.0, "hitX":0.0, "hitY":0.0, "hitZ":0.0,
                 "normalX":0.0, "normalY":1.0, "normalZ":0.0, "kind":"ocean"
             })
@@ -12374,7 +12416,7 @@ mod tests {
                 })
             );
             json!({
-                "bridgeVersion": "1.41.0",
+                "bridgeVersion": "1.47.0",
                 "protocolVersion": 1,
                 "status": "available",
                 "centerX": 100.0,
@@ -12684,7 +12726,7 @@ mod tests {
                 request,
                 json!({"APIFunc":"RST_WorkbenchMoveEntity","entityId":"0x01 {}","x":10.0,"y":20.0,"z":30.0})
             );
-            json!({"bridgeVersion":"1.41.0","protocolVersion":1,"status":"moved","entity":"0x01 {}|TestEntity|0|7|10|20|30"})
+            json!({"bridgeVersion":"1.47.0","protocolVersion":1,"status":"moved","entity":"0x01 {}|TestEntity|0|7|10|20|30"})
         });
         let root = test_root("move-entity");
         fs::create_dir_all(&root).unwrap();
@@ -12720,7 +12762,7 @@ mod tests {
                 request,
                 json!({"APIFunc":"RST_WorkbenchDuplicateEntity","entityId":"0x01 {}","x":11.0,"y":22.0,"z":33.0,"name":"Copy"})
             );
-            json!({"bridgeVersion":"1.41.0","protocolVersion":1,"status":"duplicated","entity":"0x02 {}|TestEntity|0|7|11|22|33"})
+            json!({"bridgeVersion":"1.47.0","protocolVersion":1,"status":"duplicated","entity":"0x02 {}|TestEntity|0|7|11|22|33"})
         });
         let root = test_root("duplicate-entity");
         fs::create_dir_all(&root).unwrap();
@@ -13479,7 +13521,7 @@ mod tests {
     #[test]
     fn mutation_audit_records_identify_the_action_without_recording_values() {
         let entity_result = super::WorkbenchEntityMutationResult {
-            bridge_version: "1.41.0".to_string(),
+            bridge_version: "1.47.0".to_string(),
             protocol_version: 1,
             status: "available".to_string(),
             active_layer_id: Some(3),
@@ -13532,7 +13574,7 @@ mod tests {
                 "value": 40,
             }),
             &super::WorkbenchComponentResult {
-                bridge_version: "1.41.0".to_string(),
+                bridge_version: "1.47.0".to_string(),
                 protocol_version: 1,
                 status: "available".to_string(),
                 entity: None,
@@ -14227,7 +14269,7 @@ mod tests {
                     "value": "3.75",
                 })
             );
-            json!({"bridgeVersion":"1.41.0","protocolVersion":1,"status":"property-set","activeLayerId":7,"entity":""})
+            json!({"bridgeVersion":"1.47.0","protocolVersion":1,"status":"property-set","activeLayerId":7,"entity":""})
         });
         let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
             gateway: super::WorkbenchGatewayOptions {
@@ -14266,7 +14308,7 @@ mod tests {
                 request,
                 json!({"APIFunc":"RST_WorkbenchInspectComponent","entityId":"0x01 {}","componentId":"cmp1:0:TestComponent"})
             );
-            json!({"bridgeVersion":"1.41.0","protocolVersion":1,"status":"available","entity":"","components":"0|TestComponent","properties":"m_fRadius|float|2.5|1"})
+            json!({"bridgeVersion":"1.47.0","protocolVersion":1,"status":"available","entity":"","components":"0|TestComponent","properties":"m_fRadius|float|2.5|1"})
         });
         let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
             gateway: super::WorkbenchGatewayOptions {
