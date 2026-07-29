@@ -75,6 +75,17 @@ Use evidence in this order:
 Never infer Enfusion behavior from C#, Unity, Unreal, Arma 3, SQF, or generic
 language conventions.
 
+### Exploratory evidence standard
+
+Treat searches of official Reforger documentation, extracted game data, and
+game-source examples as curious exploratory work. Do not stop at the first
+plausible API, wiki page, or example. Search broadly enough to identify the
+most useful supported surfaces, alternative implementation patterns, and
+constraints before selecting an approach. Narrow to the smallest relevant
+evidence set only after that exploration establishes which route is most
+appropriate; record material uncertainty or coverage gaps rather than treating
+an early match as exhaustive proof.
+
 ## Workbench Development Loop
 
 For every change that affects Workbench bridge scripts, editor behavior, or an
