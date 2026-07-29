@@ -1929,10 +1929,11 @@ impl WorkbenchController {
             serde_json::from_value(value).map_err(|_| failure(WorkbenchFailureCode::Protocol))?;
         let results = parse_entity_search_records(&raw.results)
             .map_err(|_| failure(WorkbenchFailureCode::Protocol))?;
-        if raw.status != "available"
-            || raw.bridge_version != WORKBENCH_BRIDGE_VERSION
+        let available = raw.status == "available";
+        if raw.bridge_version != WORKBENCH_BRIDGE_VERSION
             || raw.protocol_version != WORKBENCH_BRIDGE_PROTOCOL_VERSION
             || results.len() > limit
+            || (!available && (!results.is_empty() || workbench_bool(&raw.has_more)))
         {
             return Err(failure(WorkbenchFailureCode::Protocol));
         }
@@ -1942,9 +1943,9 @@ impl WorkbenchController {
             world_revision: sha256(raw.world_path.as_bytes()),
             status: raw.status,
             limit,
-            next_cursor: workbench_bool(&raw.has_more)
+            next_cursor: (available && workbench_bool(&raw.has_more))
                 .then(|| format!("wel1:{signature}:{}", offset + results.len())),
-            truncated: workbench_bool(&raw.has_more),
+            truncated: available && workbench_bool(&raw.has_more),
             results,
         })
     }
@@ -10999,6 +11000,39 @@ mod tests {
             page.results[0].matched_fields,
             ["name", "resource", "components"]
         );
+        peer.join().unwrap();
+    }
+
+    #[test]
+    fn entity_search_returns_a_structured_unavailable_world_status() {
+        let (port, peer) = start_peer(|request| {
+            assert_eq!(request["APIFunc"], "RST_WorkbenchSearchEntities");
+            json!({
+                "bridgeVersion": "1.38.0",
+                "protocolVersion": 1,
+                "status": "world-editor-unavailable",
+                "worldPath": "",
+                "results": "",
+                "hasMore": false
+            })
+        });
+        let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
+            gateway: super::WorkbenchGatewayOptions {
+                port,
+                status_deadline: Duration::from_secs(1),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+
+        let page = controller
+            .search_entities(None, None, None, &[], None, None, None, 5)
+            .unwrap();
+
+        assert_eq!(page.status, "world-editor-unavailable");
+        assert!(page.results.is_empty());
+        assert!(!page.truncated);
+        assert!(page.next_cursor.is_none());
         peer.join().unwrap();
     }
 

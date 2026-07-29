@@ -105,7 +105,11 @@ passing validation run as proof that Workbench is running the new behavior.
    Workbench.
 5. Reload Workbench scripts using the Workbench reload command when ready for
    live testing. Restart Workbench if reloading is unavailable or the editor
-   reports that it cannot reload the affected scripts.
+   reports that it cannot reload the affected scripts. In particular, if a
+   managed handler script fails compilation and therefore prevents its own
+   reload or execution, perform a complete graceful restart into the same
+   resolved Workbench `.gproj` and addon context; do not treat a still-running
+   process with stale handlers as a live acceptance environment.
 6. Review Workbench logs and confirm that the scripts related to the change
    compiled and loaded without errors.
 7. Test the changed behavior through the real Workbench/API workflow.
