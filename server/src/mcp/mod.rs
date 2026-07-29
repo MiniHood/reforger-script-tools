@@ -3166,8 +3166,8 @@ fn regular_polygon_points(
     if !(3..=256).contains(&sides) {
         return Err("sides must be between 3 and 256.");
     }
-    if !radius.is_finite() || !(0.0..=100_000.0).contains(&radius) {
-        return Err("radius must be finite and greater than zero, up to 100000 metres.");
+    if !radius.is_finite() || !(0.001..=100_000.0).contains(&radius) {
+        return Err("radius must be finite and between 0.001 and 100000 metres.");
     }
     if !center.x.is_finite() || !center.y.is_finite() || !center.z.is_finite() {
         return Err("center coordinates must be finite.");
