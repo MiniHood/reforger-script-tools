@@ -7835,14 +7835,41 @@ class RST_WorkbenchSearchEntities : NetApiHandler
 	{
 		RST_WorkbenchSearchEntitiesRequest req = RST_WorkbenchSearchEntitiesRequest.Cast(request); RST_WorkbenchSearchEntitiesResponse response = new RST_WorkbenchSearchEntitiesResponse(); response.bridgeVersion = "1.38.0"; response.protocolVersion = 1;
 		WorldEditor editor = Workbench.GetModule(WorldEditor); if (!editor || !editor.GetApi()) { response.status = "world-editor-unavailable"; return response; } if (req.offset < 0 || req.limit < 1 || req.limit > 100) { response.status = "invalid-request"; return response; }
-		WorldEditorAPI api = editor.GetApi(); response.status = "available"; api.GetWorldPath(response.worldPath); array<string> required = new array<string>(); if (!req.componentClasses.IsEmpty()) req.componentClasses.Split(";", required, true); int matched; int returned;
+		WorldEditorAPI api = editor.GetApi(); response.status = "available"; api.GetWorldPath(response.worldPath); array<string> required = new array<string>(); if (!req.componentClasses.IsEmpty()) req.componentClasses.Split(";", required, true); int matched = 0; int returned = 0;
 		for (int index, count = api.GetEditorEntityCount(); index < count; index++)
 		{
-			IEntitySource entity = api.GetEditorEntity(index); if (!entity || (req.subScene >= 0 && entity.GetSubScene() != req.subScene) || (req.layerId >= 0 && entity.GetLayerID() != req.layerId)) continue;
-			string name = entity.GetName(); string resource = string.Format("%1", entity.GetResourceName()); string className = entity.GetClassName(); bool nameMatch = !req.query.IsEmpty() && name.IndexOf(req.query) != -1; bool classMatch = !req.query.IsEmpty() && className.IndexOf(req.query) != -1; bool resourceTextMatch = !req.query.IsEmpty() && resource.IndexOf(req.query) != -1; if (!req.query.IsEmpty() && !nameMatch && !classMatch && !resourceTextMatch) continue; if (!req.className.IsEmpty() && className.IndexOf(req.className) == -1) continue; if (!req.resourceQuery.IsEmpty() && resource.IndexOf(req.resourceQuery) == -1) continue;
-			bool allComponents = true; foreach (string expected : required) if (!HasComponent(entity, expected)) allComponents = false; if (!allComponents) continue; if (matched++ < req.offset) continue; if (returned >= req.limit) { response.hasMore = true; break; }
+			IEntitySource entity = api.GetEditorEntity(index);
+			if (!entity) continue;
+			if (req.subScene >= 0 && entity.GetSubScene() != req.subScene) continue;
+			if (req.layerId >= 0 && entity.GetLayerID() != req.layerId) continue;
+			string name = entity.GetName();
+			string resource = string.Format("%1", entity.GetResourceName());
+			string className = entity.GetClassName();
+			bool nameMatch = !req.query.IsEmpty() && name.Contains(req.query);
+			bool classMatch = !req.query.IsEmpty() && className.Contains(req.query);
+			bool resourceTextMatch = !req.query.IsEmpty() && resource.Contains(req.query);
+			if (!req.query.IsEmpty() && !nameMatch && !classMatch && !resourceTextMatch) continue;
+			if (!req.className.IsEmpty() && className != req.className) continue;
+			if (!req.resourceQuery.IsEmpty() && !resource.Contains(req.resourceQuery)) continue;
+			bool allComponents = true;
+			foreach (string expected : required)
+			{
+				if (!HasComponent(entity, expected)) allComponents = false;
+			}
+			if (!allComponents) continue;
+			if (matched < req.offset)
+			{
+				matched = matched + 1;
+				continue;
+			}
+			matched = matched + 1;
+			if (returned >= req.limit)
+			{
+				response.hasMore = true;
+				break;
+			}
 			string components; for (int componentIndex, componentCount = entity.GetComponentCount(); componentIndex < componentCount; componentIndex++) { IEntityComponentSource component = entity.GetComponent(componentIndex); if (!component) continue; if (!components.IsEmpty()) components += ","; components += component.GetClassName(); }
-			string matches; if (nameMatch) matches = "name"; if (classMatch || !req.className.IsEmpty()) { if (!matches.IsEmpty()) matches += ","; matches += "class"; } if (resourceTextMatch || !req.resourceQuery.IsEmpty()) { if (!matches.IsEmpty()) matches += ","; matches += "resource"; } if (!required.IsEmpty()) { if (!matches.IsEmpty()) matches += ","; matches += "components"; } IEntitySource parent = IEntitySource.Cast(entity.GetParent()); string parentClass; if (parent) parentClass = parent.GetClassName(); resource.Replace("|", "/"); resource.Replace(";", "/"); name.Replace("|", "/"); name.Replace(";", "/"); parentClass.Replace("|", "/"); parentClass.Replace(";", "/"); if (!response.results.IsEmpty()) response.results += ";"; response.results += string.Format("%1|%2|%3|%4|%5|%6|%7", entity.GetID().ToString(), className, entity.GetSubScene(), entity.GetLayerID(), resource, name, components) + "|" + matches + "|" + parentClass + "|" + entity.GetNumChildren(); returned++;
+			string matches; if (nameMatch) matches = "name"; if (classMatch || !req.className.IsEmpty()) { if (!matches.IsEmpty()) matches += ","; matches += "class"; } if (resourceTextMatch || !req.resourceQuery.IsEmpty()) { if (!matches.IsEmpty()) matches += ","; matches += "resource"; } if (!required.IsEmpty()) { if (!matches.IsEmpty()) matches += ","; matches += "components"; } IEntitySource parent = IEntitySource.Cast(entity.GetParent()); string parentClass; if (parent) parentClass = parent.GetClassName(); resource.Replace("|", "/"); resource.Replace(";", "/"); name.Replace("|", "/"); name.Replace(";", "/"); parentClass.Replace("|", "/"); parentClass.Replace(";", "/"); if (!response.results.IsEmpty()) response.results += ";"; response.results += string.Format("%1|%2|%3|%4|%5|%6|%7", entity.GetID().ToString(), className, entity.GetSubScene(), entity.GetLayerID(), resource, name, components) + "|" + matches + "|" + parentClass + "|" + entity.GetNumChildren(); returned = returned + 1;
 		}
 		return response;
 	}
@@ -11034,6 +11061,14 @@ mod tests {
         assert!(!page.truncated);
         assert!(page.next_cursor.is_none());
         peer.join().unwrap();
+    }
+
+    #[test]
+    fn entity_search_handler_initializes_its_paging_counters() {
+        assert!(super::BRIDGE_ENTITY_SEARCH_SOURCE.contains("int matched = 0; int returned = 0;"));
+        assert!(super::BRIDGE_ENTITY_SEARCH_SOURCE.contains("matched = matched + 1;\n\t\t\tif (returned >= req.limit)"));
+        assert!(super::BRIDGE_ENTITY_SEARCH_SOURCE.contains("returned = returned + 1;"));
+        assert!(!super::BRIDGE_ENTITY_SEARCH_SOURCE.contains("matched++"));
     }
 
     #[test]
