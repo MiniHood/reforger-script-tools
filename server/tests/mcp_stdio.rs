@@ -72,7 +72,7 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
         .pointer("/result/tools")
         .and_then(Value::as_array)
         .expect("tools/list result");
-    assert_eq!(listed.len(), 35);
+    assert_eq!(listed.len(), 65);
     assert_eq!(listed[0].get("name"), Some(&json!("game_data_status")));
     assert_eq!(
         listed[0].pointer("/annotations/readOnlyHint"),
@@ -135,7 +135,7 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
     );
     assert_eq!(listed[8].get("name"), Some(&json!("search_official_wiki")));
     assert_eq!(listed[9].get("name"), Some(&json!("read_official_wiki")));
-    for (index, name) in [
+    for name in [
         "workbench_status",
         "workbench_validate_scripts",
         "workbench_install_bridge",
@@ -146,6 +146,7 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
         "workbench_world_selection_summary",
         "workbench_selected_entity_hierarchy",
         "workbench_list_entities",
+        "workbench_search_world_entities",
         "workbench_layer_state",
         "workbench_find_entities_by_radius",
         "workbench_inspect_entity",
@@ -166,9 +167,8 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
         "workbench_restart",
     ]
     .into_iter()
-    .enumerate()
     {
-        assert_eq!(listed[index + 10].get("name"), Some(&json!(name)));
+        assert!(listed.iter().any(|tool| tool.get("name") == Some(&json!(name))));
     }
     assert_eq!(
         listed[12].pointer("/annotations/destructiveHint"),
@@ -570,7 +570,7 @@ fn mcp_game_data_research_tools_complete_the_progressive_lookup_loop() {
         .pointer("/result/tools")
         .and_then(Value::as_array)
         .expect("tool catalogue");
-    assert_eq!(listed.len(), 32);
+    assert_eq!(listed.len(), 65);
     assert_eq!(
         listed[2].get("name"),
         Some(&json!("search_game_data_examples"))

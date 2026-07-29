@@ -3707,6 +3707,270 @@ List one bounded page of live World Editor entities, optionally constrained to a
 
 Workbench tools return structured tool errors with a stable code, operation phase, retryability, and a unique log reference matching a rotating integration-log record. Raw transport and Workbench payload details are not exposed.
 
+## `workbench_search_world_entities`
+
+Search a bounded page of authored live World Editor entities by text, class, prefab resource, direct component classes, subscene, and layer. Results expose compact component and match facts; use the returned exact entity ID for inspection or mutation.
+
+### Annotations
+
+```json
+{
+  "title": "Search Workbench world entities",
+  "readOnlyHint": true,
+  "openWorldHint": false
+}
+```
+
+### Input schema
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "className": {
+      "maxLength": 128,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "componentClasses": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 32,
+      "type": [
+        "array",
+        "null"
+      ]
+    },
+    "cursor": {
+      "maxLength": 256,
+      "minLength": 1,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "layerId": {
+      "format": "int32",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "limit": {
+      "maximum": 100,
+      "minimum": 1,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "query": {
+      "maxLength": 128,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "resourceQuery": {
+      "maxLength": 512,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "subScene": {
+      "format": "int32",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    }
+  },
+  "type": "object"
+}
+```
+
+### Output schema
+
+```json
+{
+  "$defs": {
+    "WorkbenchEntityPosition": {
+      "properties": {
+        "x": {
+          "format": "float",
+          "type": "number"
+        },
+        "y": {
+          "format": "float",
+          "type": "number"
+        },
+        "z": {
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "z"
+      ],
+      "type": "object"
+    },
+    "WorkbenchEntitySearchHit": {
+      "properties": {
+        "childCount": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "componentClasses": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "entity": {
+          "$ref": "#/$defs/WorkbenchSelectedEntity"
+        },
+        "matchedFields": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "parentClassName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "entity",
+        "componentClasses",
+        "matchedFields",
+        "childCount"
+      ],
+      "type": "object"
+    },
+    "WorkbenchSelectedEntity": {
+      "properties": {
+        "className": {
+          "type": "string"
+        },
+        "entityId": {
+          "type": "string"
+        },
+        "layerId": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "layerName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "position": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchEntityPosition"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "resourceName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "subScene": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "subSceneName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "entityId",
+        "className",
+        "subScene",
+        "layerId"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "bridgeVersion": {
+      "type": "string"
+    },
+    "limit": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "nextCursor": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "protocolVersion": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "results": {
+      "items": {
+        "$ref": "#/$defs/WorkbenchEntitySearchHit"
+      },
+      "type": "array"
+    },
+    "status": {
+      "type": "string"
+    },
+    "truncated": {
+      "type": "boolean"
+    },
+    "worldRevision": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "bridgeVersion",
+    "protocolVersion",
+    "worldRevision",
+    "status",
+    "limit",
+    "results",
+    "truncated"
+  ],
+  "type": "object"
+}
+```
+
+### Stable failures
+
+Workbench tools return structured tool errors with a stable code, operation phase, retryability, and a unique log reference matching a rotating integration-log record. Raw transport and Workbench payload details are not exposed.
+
 ## `workbench_layer_state`
 
 Read one exact World Editor layer's canonical path, visibility, explicit lock state, and effective hierarchical lock state without changing the world or editor.

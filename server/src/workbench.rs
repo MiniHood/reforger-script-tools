@@ -380,6 +380,30 @@ pub struct WorkbenchEntityListPage {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
+pub struct WorkbenchEntitySearchHit {
+    pub entity: WorkbenchSelectedEntity,
+    pub component_classes: Vec<String>,
+    pub matched_fields: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_class_name: Option<String>,
+    pub child_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkbenchEntitySearchPage {
+    pub bridge_version: String,
+    pub protocol_version: u32,
+    pub world_revision: String,
+    pub status: String,
+    pub limit: usize,
+    pub results: Vec<WorkbenchEntitySearchHit>,
+    pub truncated: bool,
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct WorkbenchLayerState {
     pub bridge_version: String,
     pub protocol_version: u32,
@@ -1862,6 +1886,66 @@ impl WorkbenchController {
                 .then(|| format!("wel1:{signature}:{}", offset + entities.len())),
             truncated: workbench_bool(&raw.has_more),
             entities,
+        })
+    }
+
+    pub fn search_entities(
+        &self,
+        query: Option<&str>,
+        class_name: Option<&str>,
+        resource_query: Option<&str>,
+        component_classes: &[&str],
+        sub_scene: Option<i32>,
+        layer_id: Option<i32>,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<WorkbenchEntitySearchPage, WorkbenchFailure> {
+        let limit = limit.clamp(1, 100);
+        let components = component_classes.join(";");
+        let signature = sha256(
+            format!(
+                "{}\n{}\n{}\n{}\n{}\n{}",
+                query.unwrap_or_default(),
+                class_name.unwrap_or_default(),
+                resource_query.unwrap_or_default(),
+                components,
+                sub_scene.map_or(String::new(), |v| v.to_string()),
+                layer_id.map_or(String::new(), |v| v.to_string())
+            )
+            .as_bytes(),
+        );
+        let offset = match cursor {
+            Some(cursor) => {
+                let (found, offset) = parse_entity_list_cursor(cursor)
+                    .ok_or_else(|| failure(WorkbenchFailureCode::Protocol))?;
+                (found == signature)
+                    .then_some(offset)
+                    .ok_or_else(|| failure(WorkbenchFailureCode::Protocol))?
+            }
+            None => 0,
+        };
+        let value = self.gateway.request(json!({"APIFunc":"RST_WorkbenchSearchEntities","query":query.unwrap_or_default(),"className":class_name.unwrap_or_default(),"resourceQuery":resource_query.unwrap_or_default(),"componentClasses":components,"subScene":sub_scene.unwrap_or(-1),"layerId":layer_id.unwrap_or(-1),"offset":offset,"limit":limit}), self.options.gateway.status_deadline)?;
+        let raw: RawBridgeEntitySearch =
+            serde_json::from_value(value).map_err(|_| failure(WorkbenchFailureCode::Protocol))?;
+        let results = parse_entity_search_records(&raw.results)
+            .map_err(|_| failure(WorkbenchFailureCode::Protocol))?;
+        if raw.status != "available"
+            || raw.bridge_version != WORKBENCH_BRIDGE_VERSION
+            || raw.protocol_version != WORKBENCH_BRIDGE_PROTOCOL_VERSION
+            || results.len() > limit
+        {
+            return Err(failure(WorkbenchFailureCode::Protocol));
+        }
+        Ok(WorkbenchEntitySearchPage {
+            bridge_version: raw.bridge_version,
+            protocol_version: raw.protocol_version,
+            world_revision: sha256(raw.world_path.as_bytes()),
+            status: raw.status,
+            limit,
+            next_cursor: workbench_bool(&raw.has_more)
+                .then(|| format!("wel1:{signature}:{}", offset + results.len())),
+            truncated: workbench_bool(&raw.has_more),
+            results,
         })
     }
 
@@ -5025,6 +5109,22 @@ struct RawBridgeEntityList {
 }
 
 #[derive(Deserialize)]
+struct RawBridgeEntitySearch {
+    #[serde(rename = "bridgeVersion")]
+    bridge_version: String,
+    #[serde(rename = "protocolVersion")]
+    protocol_version: u32,
+    #[serde(rename = "worldPath", default)]
+    world_path: String,
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    results: String,
+    #[serde(rename = "hasMore", default)]
+    has_more: Value,
+}
+
+#[derive(Deserialize)]
 struct RawBridgeLayerState {
     #[serde(rename = "bridgeVersion")]
     bridge_version: String,
@@ -5718,6 +5818,48 @@ fn parse_world_selection_records(value: &str) -> Result<Vec<WorkbenchSelectedEnt
                 sub_scene_name,
                 layer_name,
                 position,
+            })
+        })
+        .collect()
+}
+
+fn parse_entity_search_records(value: &str) -> Result<Vec<WorkbenchEntitySearchHit>, ()> {
+    if value.is_empty() {
+        return Ok(Vec::new());
+    }
+    value
+        .split(';')
+        .map(|record| {
+            let fields: Vec<_> = record.split('|').collect();
+            if fields.len() != 10 || fields[..4].iter().any(|field| field.is_empty()) {
+                return Err(());
+            }
+            let component_classes = if fields[6].is_empty() {
+                Vec::new()
+            } else {
+                fields[6].split(',').map(str::to_owned).collect()
+            };
+            let matched_fields = if fields[7].is_empty() {
+                Vec::new()
+            } else {
+                fields[7].split(',').map(str::to_owned).collect()
+            };
+            Ok(WorkbenchEntitySearchHit {
+                entity: WorkbenchSelectedEntity {
+                    entity_id: fields[0].to_owned(),
+                    class_name: fields[1].to_owned(),
+                    sub_scene: fields[2].parse().map_err(|_| ())?,
+                    layer_id: fields[3].parse().map_err(|_| ())?,
+                    resource_name: (!fields[4].is_empty()).then(|| fields[4].to_owned()),
+                    name: (!fields[5].is_empty()).then(|| fields[5].to_owned()),
+                    sub_scene_name: None,
+                    layer_name: None,
+                    position: None,
+                },
+                component_classes,
+                matched_fields,
+                parent_class_name: (!fields[8].is_empty()).then(|| fields[8].to_owned()),
+                child_count: fields[9].parse().map_err(|_| ())?,
             })
         })
         .collect()
@@ -6881,6 +7023,7 @@ fn bridge_payload() -> &'static [(&'static str, &'static str)] {
             BRIDGE_SELECTED_ENTITY_HIERARCHY_SOURCE,
         ),
         ("RST_WorkbenchListEntities.c", BRIDGE_ENTITY_LIST_SOURCE),
+        ("RST_WorkbenchSearchEntities.c", BRIDGE_ENTITY_SEARCH_SOURCE),
         ("RST_WorkbenchLayerState.c", BRIDGE_LAYER_STATE_SOURCE),
         ("RST_WorkbenchInspectEntity.c", BRIDGE_ENTITY_INSPECT_SOURCE),
         ("RST_WorkbenchSetSelection.c", BRIDGE_SET_SELECTION_SOURCE),
@@ -7669,6 +7812,37 @@ class RST_WorkbenchListEntities : NetApiHandler
 			if (!runtimeEntity) response.entities += string.Format("%1|%2|%3|%4", entity.GetID().ToString(), entity.GetClassName(), entity.GetSubScene(), entity.GetLayerID());
 			else { vector transform[4]; runtimeEntity.GetTransform(transform); string resourceName = string.Format("%1", entity.GetResourceName()); string authoredName = entity.GetName(); string subSceneName = runtimeEntity.GetWorld().GetSubSceneName(entity.GetSubScene()); string layerName = api.GetEntitySubsceneLayer(entity.GetSubScene(), entity); if (authoredName == resourceName) authoredName = string.Empty; resourceName.Replace("|", "/"); resourceName.Replace(";", "/"); authoredName.Replace("|", "/"); authoredName.Replace(";", "/"); subSceneName.Replace("|", "/"); subSceneName.Replace(";", "/"); layerName.Replace("|", "/"); layerName.Replace(";", "/"); response.entities += string.Format("%1|%2|%3|%4|%5|%6|%7", entity.GetID().ToString(), entity.GetClassName(), entity.GetSubScene(), entity.GetLayerID(), transform[3][0], transform[3][1], transform[3][2]) + "|" + resourceName + "|" + authoredName + "|" + subSceneName + "|" + layerName; }
 			returned++;
+		}
+		return response;
+	}
+}
+#endif
+"#;
+
+const BRIDGE_ENTITY_SEARCH_SOURCE: &str = r#"#ifdef WORKBENCH
+class RST_WorkbenchSearchEntitiesRequest : JsonApiStruct { string query; string className; string resourceQuery; string componentClasses; int subScene; int layerId; int offset; int limit; void RST_WorkbenchSearchEntitiesRequest() { RegAll(); subScene = -1; layerId = -1; } }
+class RST_WorkbenchSearchEntitiesResponse : JsonApiStruct { string bridgeVersion; int protocolVersion; string status; string worldPath; string results; bool hasMore; void RST_WorkbenchSearchEntitiesResponse() { RegAll(); } }
+class RST_WorkbenchSearchEntities : NetApiHandler
+{
+	override JsonApiStruct GetRequest() { return new RST_WorkbenchSearchEntitiesRequest(); }
+	protected bool HasComponent(IEntitySource entity, string expected)
+	{
+		for (int index, count = entity.GetComponentCount(); index < count; index++) { IEntityComponentSource component = entity.GetComponent(index); if (component && component.GetClassName() == expected) return true; }
+		return false;
+	}
+	protected void AppendMatch(inout string matches, string value) { if (!matches.IsEmpty()) matches += ","; matches += value; }
+	override JsonApiStruct GetResponse(JsonApiStruct request)
+	{
+		RST_WorkbenchSearchEntitiesRequest req = RST_WorkbenchSearchEntitiesRequest.Cast(request); RST_WorkbenchSearchEntitiesResponse response = new RST_WorkbenchSearchEntitiesResponse(); response.bridgeVersion = "1.38.0"; response.protocolVersion = 1;
+		WorldEditor editor = Workbench.GetModule(WorldEditor); if (!editor || !editor.GetApi()) { response.status = "world-editor-unavailable"; return response; } if (req.offset < 0 || req.limit < 1 || req.limit > 100) { response.status = "invalid-request"; return response; }
+		WorldEditorAPI api = editor.GetApi(); response.status = "available"; api.GetWorldPath(response.worldPath); array<string> required = new array<string>(); if (!req.componentClasses.IsEmpty()) req.componentClasses.Split(";", required, true); int matched; int returned;
+		for (int index, count = api.GetEditorEntityCount(); index < count; index++)
+		{
+			IEntitySource entity = api.GetEditorEntity(index); if (!entity || (req.subScene >= 0 && entity.GetSubScene() != req.subScene) || (req.layerId >= 0 && entity.GetLayerID() != req.layerId)) continue;
+			string name = entity.GetName(); string resource = string.Format("%1", entity.GetResourceName()); string className = entity.GetClassName(); bool nameMatch = !req.query.IsEmpty() && name.IndexOf(req.query) != -1; bool classMatch = !req.query.IsEmpty() && className.IndexOf(req.query) != -1; bool resourceTextMatch = !req.query.IsEmpty() && resource.IndexOf(req.query) != -1; if (!req.query.IsEmpty() && !nameMatch && !classMatch && !resourceTextMatch) continue; if (!req.className.IsEmpty() && className.IndexOf(req.className) == -1) continue; if (!req.resourceQuery.IsEmpty() && resource.IndexOf(req.resourceQuery) == -1) continue;
+			bool allComponents = true; foreach (string expected : required) if (!HasComponent(entity, expected)) allComponents = false; if (!allComponents) continue; if (matched++ < req.offset) continue; if (returned >= req.limit) { response.hasMore = true; break; }
+			string components; for (int componentIndex, componentCount = entity.GetComponentCount(); componentIndex < componentCount; componentIndex++) { IEntityComponentSource component = entity.GetComponent(componentIndex); if (!component) continue; if (!components.IsEmpty()) components += ","; components += component.GetClassName(); }
+			string matches; if (nameMatch) AppendMatch(matches, "name"); if (classMatch || !req.className.IsEmpty()) AppendMatch(matches, "class"); if (resourceTextMatch || !req.resourceQuery.IsEmpty()) AppendMatch(matches, "resource"); if (!required.IsEmpty()) AppendMatch(matches, "components"); IEntitySource parent = IEntitySource.Cast(entity.GetParent()); string parentClass; if (parent) parentClass = parent.GetClassName(); resource.Replace("|", "/"); resource.Replace(";", "/"); name.Replace("|", "/"); name.Replace(";", "/"); parentClass.Replace("|", "/"); parentClass.Replace(";", "/"); response.results += (response.results.IsEmpty() ? string.Empty : ";") + string.Format("%1|%2|%3|%4|%5|%6|%7|%8|%9|%10", entity.GetID().ToString(), className, entity.GetSubScene(), entity.GetLayerID(), resource, name, components, matches, parentClass, entity.GetNumChildren()); returned++;
 		}
 		return response;
 	}
@@ -10782,6 +10956,50 @@ mod tests {
             .unwrap();
 
         assert!(page.entities.is_empty());
+        peer.join().unwrap();
+    }
+
+    #[test]
+    fn entity_search_returns_component_and_match_facts_from_the_handler() {
+        let (port, peer) = start_peer(|request| {
+            assert_eq!(request["APIFunc"], "RST_WorkbenchSearchEntities");
+            assert_eq!(request["componentClasses"], "SCR_TriggerEntity");
+            assert_eq!(request["resourceQuery"], "Checkpoints");
+            json!({"bridgeVersion":"1.38.0","protocolVersion":1,"status":"available","worldPath":"$Test:worlds/test.ent","results":"0x01|GenericEntity|0|7|{GUID}Prefabs/Checkpoints/West.et|West checkpoint|SCR_TriggerEntity,SCR_BaseGameModeComponent|name,resource,components|GenericEntity|3","hasMore":false})
+        });
+        let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
+            gateway: super::WorkbenchGatewayOptions {
+                port,
+                status_deadline: Duration::from_secs(1),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let page = controller
+            .search_entities(
+                Some("checkpoint"),
+                None,
+                Some("Checkpoints"),
+                &["SCR_TriggerEntity"],
+                None,
+                None,
+                None,
+                20,
+            )
+            .unwrap();
+        assert_eq!(page.results.len(), 1);
+        assert_eq!(
+            page.results[0].entity.name.as_deref(),
+            Some("West checkpoint")
+        );
+        assert_eq!(
+            page.results[0].component_classes,
+            ["SCR_TriggerEntity", "SCR_BaseGameModeComponent"]
+        );
+        assert_eq!(
+            page.results[0].matched_fields,
+            ["name", "resource", "components"]
+        );
         peer.join().unwrap();
     }
 
