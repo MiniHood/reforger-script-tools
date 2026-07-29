@@ -3922,27 +3922,24 @@ impl WorkbenchController {
                 )
             })?;
         let working_directory = executable.parent().map(std::path::Path::to_path_buf);
+        let arguments =
+            workbench_launch_arguments(project, paths.game.as_deref()).ok_or_else(|| {
+                self.correlate_failure_details(
+                    "launch",
+                    "base-game-addon-directory-unavailable",
+                    failure(WorkbenchFailureCode::Unavailable),
+                    json!({
+                        "project": project,
+                        "gameDirectoryDiscovered": paths.game.is_some(),
+                    }),
+                )
+            })?;
         let mut command = std::process::Command::new(executable);
         command
+            .args(arguments)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
-        if let Some(project) = project {
-            command.arg("-gproj").arg(project);
-            let game_addons =
-                base_game_addons_directory(paths.game.as_deref()).ok_or_else(|| {
-                    self.correlate_failure_details(
-                        "launch",
-                        "base-game-addon-directory-unavailable",
-                        failure(WorkbenchFailureCode::Unavailable),
-                        json!({
-                            "project": project,
-                            "gameDirectoryDiscovered": paths.game.is_some(),
-                        }),
-                    )
-                })?;
-            command.arg("-addonsDir").arg(game_addons);
-        }
         if let Some(working_directory) = working_directory {
             command.current_dir(working_directory);
         }
@@ -6772,6 +6769,25 @@ fn base_game_addons_directory(game_directory: Option<&std::path::Path>) -> Optio
         .join("ArmaReforger.gproj")
         .is_file()
         .then_some(addons)
+}
+
+fn workbench_launch_arguments(
+    project: Option<&std::path::Path>,
+    game_directory: Option<&std::path::Path>,
+) -> Option<Vec<std::ffi::OsString>> {
+    let mut arguments = vec![std::ffi::OsString::from("-noThrow")];
+    let project = match project {
+        Some(project) => project,
+        None => return Some(arguments),
+    };
+    let game_addons = base_game_addons_directory(game_directory)?;
+    arguments.extend([
+        std::ffi::OsString::from("-gproj"),
+        project.as_os_str().to_os_string(),
+        std::ffi::OsString::from("-addonsDir"),
+        game_addons.into_os_string(),
+    ]);
+    Some(arguments)
 }
 
 fn discover_steam_app(app_id: &str, default_folder: &str) -> Option<PathBuf> {
@@ -12659,6 +12675,36 @@ mod tests {
         )
         .unwrap();
         assert_eq!(super::base_game_addons_directory(Some(&root)), Some(addons));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn workbench_launch_arguments_always_disable_error_dialogs() {
+        let root = test_root("launch-arguments");
+        let game = root.join("game");
+        let project = root.join("project").join("Example.gproj");
+        fs::create_dir_all(game.join("addons").join("data")).unwrap();
+        fs::create_dir_all(project.parent().unwrap()).unwrap();
+        fs::write(
+            game.join("addons").join("data").join("ArmaReforger.gproj"),
+            "{}",
+        )
+        .unwrap();
+
+        assert_eq!(
+            super::workbench_launch_arguments(None, None),
+            Some(vec![std::ffi::OsString::from("-noThrow")]),
+        );
+        assert_eq!(
+            super::workbench_launch_arguments(Some(&project), Some(&game)),
+            Some(vec![
+                std::ffi::OsString::from("-noThrow"),
+                std::ffi::OsString::from("-gproj"),
+                project.into_os_string(),
+                std::ffi::OsString::from("-addonsDir"),
+                game.join("addons").into_os_string(),
+            ]),
+        );
         fs::remove_dir_all(root).unwrap();
     }
 

@@ -15079,7 +15079,7 @@ Workbench tools return structured tool errors with a stable code, operation phas
 
 ## `workbench_launch`
 
-Explicitly launch the discovered Workbench executable from its normal Steam working directory, or reuse the exact existing Workbench process. Returns success only after bounded native NET API readiness and never chooses a project.
+Explicitly launch the discovered Workbench executable from its normal Steam working directory with -noThrow, or reuse the exact existing Workbench process. Returns success only after bounded native NET API readiness and never chooses a project.
 
 ### Annotations
 
@@ -15220,7 +15220,7 @@ Workbench tools return structured tool errors with a stable code, operation phas
 
 ## `workbench_restart`
 
-Gracefully close one exact observed Workbench process and relaunch its one resolved Enfusion Workbench project with -gproj plus the installed base-game addons directory only after the original exits. It refuses to close Workbench if the visible project window, exact local project descriptor, or installed base-game project cannot be resolved.
+Gracefully close one exact observed Workbench process and relaunch its one resolved Enfusion Workbench project with -noThrow, -gproj, and the installed base-game addons directory only after the original exits. It refuses to close Workbench if the visible project window, exact local project descriptor, or installed base-game project cannot be resolved.
 
 ### Annotations
 
