@@ -35,10 +35,10 @@ use crate::workbench::{
     WorkbenchPrefabResourceMutationResult, WorkbenchProcessResult, WorkbenchProjectContext,
     WorkbenchPropertyList, WorkbenchResourceInspection, WorkbenchResourceListPage,
     WorkbenchResourceSearchPage, WorkbenchSaveAllResult, WorkbenchSaveWorldResult,
-    WorkbenchScriptActivationResult, WorkbenchSelectedEntityHierarchy, WorkbenchTerrainSample,
-    WorkbenchTerrainSampleOptions, WorkbenchTraceOptions, WorkbenchTraceResult,
-    WorkbenchTraceShape, WorkbenchValidationPage, WorkbenchViewportContext,
-    WorkbenchViewportContextOptions, WorkbenchWorldSelectionSummary,
+    WorkbenchScriptActivationResult, WorkbenchSelectedEntityHierarchy, WorkbenchShapePointEdit,
+    WorkbenchShapePoints, WorkbenchTerrainSample, WorkbenchTerrainSampleOptions,
+    WorkbenchTraceOptions, WorkbenchTraceResult, WorkbenchTraceShape, WorkbenchValidationPage,
+    WorkbenchViewportContext, WorkbenchViewportContextOptions, WorkbenchWorldSelectionSummary,
 };
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, ContentBlock, Implementation, ListToolsResult,
@@ -113,6 +113,8 @@ pub const WORKBENCH_SET_COMPONENT_PROPERTIES_TOOL_NAME: &str = "workbench_set_co
 pub const WORKBENCH_REMOVE_COMPONENT_TOOL_NAME: &str = "workbench_remove_component";
 pub const WORKBENCH_LIST_ENTITY_PROPERTIES_TOOL_NAME: &str = "workbench_list_entity_properties";
 pub const WORKBENCH_SET_ENTITY_PROPERTY_TOOL_NAME: &str = "workbench_set_entity_properties";
+pub const WORKBENCH_GET_SHAPE_POINTS_TOOL_NAME: &str = "workbench_get_shape_points";
+pub const WORKBENCH_EDIT_SHAPE_POINTS_TOOL_NAME: &str = "workbench_edit_shape_points";
 pub const WORKBENCH_LIST_EDITORS_TOOL_NAME: &str = "workbench_list_editors";
 pub const WORKBENCH_OPEN_EDITOR_TOOL_NAME: &str = "workbench_open_editor";
 pub const WORKBENCH_OPEN_RESOURCE_TOOL_NAME: &str = "workbench_open_resource";
@@ -193,6 +195,8 @@ const WORKBENCH_REMOVE_COMPONENT_DESCRIPTION: &str =
     "Preview or explicitly confirm removal of one exact entity-local component identity.";
 const WORKBENCH_LIST_ENTITY_PROPERTIES_DESCRIPTION: &str = "List direct scalar properties observed on one exact live World Editor entity; values are inspection facts, not arbitrary write paths.";
 const WORKBENCH_SET_ENTITY_PROPERTY_DESCRIPTION: &str = "Set one direct entity property using only a typed write descriptor returned by workbench_list_entity_properties.";
+const WORKBENCH_GET_SHAPE_POINTS_DESCRIPTION: &str = "Read the ordered local point positions of one exact live PolylineShapeEntity or SplineShapeEntity. Points are shape-local authored coordinates; the returned entity position remains separate. This never changes selection or world content.";
+const WORKBENCH_EDIT_SHAPE_POINTS_DESCRIPTION: &str = "Set, insert, or delete ordered local point positions on one exact live PolylineShapeEntity or SplineShapeEntity. The edit is applied through ShapeEntity.SetPoints in one native Workbench undo action. Use workbench_get_shape_points first; no display-name or current-selection targeting is accepted.";
 const WORKBENCH_LIST_EDITORS_DESCRIPTION: &str = "List the native Workbench editor modules available through the compatible managed handler package. Use an editor ID returned here with workbench_open_editor; this does not open or focus an editor.";
 const WORKBENCH_OPEN_EDITOR_DESCRIPTION: &str = "Open one native Workbench editor module by an ID returned from workbench_list_editors. This is the same module-opening surface for every supported editor and does not select a resource.";
 const WORKBENCH_OPEN_RESOURCE_DESCRIPTION: &str = "Open one canonical Workbench resource through Workbench's native resource routing. Workbench selects the owning editor from the resource type; this includes world, script, particle, animation, audio, and string resources without editor-specific commands.";
@@ -377,6 +381,28 @@ struct McpWorkbenchLayerStateInput {
 struct McpWorkbenchEntityInput {
     #[schemars(length(min = 1, max = 256))]
     entity_id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+enum McpWorkbenchShapePointEdit {
+    Set,
+    Insert,
+    Delete,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct McpWorkbenchEditShapePointsInput {
+    #[schemars(length(min = 1, max = 256))]
+    entity_id: String,
+    operation: McpWorkbenchShapePointEdit,
+    #[schemars(range(min = 0, max = 4096))]
+    index: Option<usize>,
+    #[schemars(range(min = 1, max = 4096))]
+    count: Option<usize>,
+    #[schemars(length(max = 4096))]
+    points: Option<Vec<WorkbenchEntityPosition>>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1582,6 +1608,8 @@ impl ServerHandler for ReforgerMcpServer {
             workbench_remove_component_tool(),
             workbench_list_entity_properties_tool(),
             workbench_set_entity_property_tool(),
+            workbench_get_shape_points_tool(),
+            workbench_edit_shape_points_tool(),
             workbench_list_editors_tool(),
             workbench_open_editor_tool(),
             workbench_open_resource_tool(),
@@ -1681,6 +1709,8 @@ impl ServerHandler for ReforgerMcpServer {
                 Some(workbench_list_entity_properties_tool())
             }
             WORKBENCH_SET_ENTITY_PROPERTY_TOOL_NAME => Some(workbench_set_entity_property_tool()),
+            WORKBENCH_GET_SHAPE_POINTS_TOOL_NAME => Some(workbench_get_shape_points_tool()),
+            WORKBENCH_EDIT_SHAPE_POINTS_TOOL_NAME => Some(workbench_edit_shape_points_tool()),
             WORKBENCH_LIST_EDITORS_TOOL_NAME => Some(workbench_list_editors_tool()),
             WORKBENCH_OPEN_EDITOR_TOOL_NAME => Some(workbench_open_editor_tool()),
             WORKBENCH_OPEN_RESOURCE_TOOL_NAME => Some(workbench_open_resource_tool()),
@@ -2518,6 +2548,49 @@ impl ServerHandler for ReforgerMcpServer {
                         .set_entity_property(&input.entity_id, &input.write_descriptor, input.value)
                         .map_err(|failure| {
                             workbench.correlate_failure("set_entity_property", failure)
+                        })
+                },
+            )
+            .await;
+        }
+        if request.name == WORKBENCH_GET_SHAPE_POINTS_TOOL_NAME {
+            let input = parse_workbench_input::<McpWorkbenchEntityInput>(&request)?;
+            let workbench = self.workbench.clone();
+            return blocking_workbench_call(
+                self.admission.clone(),
+                context,
+                "get_shape_points",
+                move || {
+                    workbench
+                        .shape_points(&input.entity_id)
+                        .map_err(|failure| workbench.correlate_failure("get_shape_points", failure))
+                },
+            )
+            .await;
+        }
+        if request.name == WORKBENCH_EDIT_SHAPE_POINTS_TOOL_NAME {
+            let input = parse_workbench_input::<McpWorkbenchEditShapePointsInput>(&request)?;
+            let edit = match input.operation {
+                McpWorkbenchShapePointEdit::Set => WorkbenchShapePointEdit::Set,
+                McpWorkbenchShapePointEdit::Insert => WorkbenchShapePointEdit::Insert,
+                McpWorkbenchShapePointEdit::Delete => WorkbenchShapePointEdit::Delete,
+            };
+            let workbench = self.workbench.clone();
+            return blocking_workbench_call(
+                self.admission.clone(),
+                context,
+                "edit_shape_points",
+                move || {
+                    workbench
+                        .edit_shape_points(
+                            &input.entity_id,
+                            edit,
+                            input.index,
+                            input.count,
+                            input.points.as_deref().unwrap_or_default(),
+                        )
+                        .map_err(|failure| {
+                            workbench.correlate_failure("edit_shape_points", failure)
                         })
                 },
             )
@@ -3384,6 +3457,8 @@ Copy a hit's `inspectInput` unchanged to `inspect_game_data_symbol`, or its `rea
         workbench_remove_component_tool(),
         workbench_list_entity_properties_tool(),
         workbench_set_entity_property_tool(),
+        workbench_get_shape_points_tool(),
+        workbench_edit_shape_points_tool(),
         workbench_list_editors_tool(),
         workbench_open_editor_tool(),
         workbench_open_resource_tool(),
@@ -4167,6 +4242,30 @@ fn workbench_set_entity_property_tool() -> Tool {
         WORKBENCH_SET_ENTITY_PROPERTY_DESCRIPTION,
         "Set Workbench entity property",
         ToolAnnotations::with_title("Set Workbench entity property")
+            .read_only(false)
+            .destructive(false)
+            .idempotent(false)
+            .open_world(false),
+    )
+}
+
+fn workbench_get_shape_points_tool() -> Tool {
+    workbench_input_tool::<McpWorkbenchEntityInput, WorkbenchShapePoints>(
+        WORKBENCH_GET_SHAPE_POINTS_TOOL_NAME,
+        WORKBENCH_GET_SHAPE_POINTS_DESCRIPTION,
+        "Read Workbench shape points",
+        ToolAnnotations::with_title("Read Workbench shape points")
+            .read_only(true)
+            .open_world(false),
+    )
+}
+
+fn workbench_edit_shape_points_tool() -> Tool {
+    workbench_input_tool::<McpWorkbenchEditShapePointsInput, WorkbenchShapePoints>(
+        WORKBENCH_EDIT_SHAPE_POINTS_TOOL_NAME,
+        WORKBENCH_EDIT_SHAPE_POINTS_DESCRIPTION,
+        "Edit Workbench shape points",
+        ToolAnnotations::with_title("Edit Workbench shape points")
             .read_only(false)
             .destructive(false)
             .idempotent(false)

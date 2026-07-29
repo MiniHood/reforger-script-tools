@@ -103,7 +103,7 @@ pub struct WorkbenchGateway {
     request_lock: Arc<Mutex<()>>,
 }
 
-pub const WORKBENCH_BRIDGE_VERSION: &str = "1.47.0";
+pub const WORKBENCH_BRIDGE_VERSION: &str = "1.50.0";
 pub const WORKBENCH_BRIDGE_PROTOCOL_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -343,6 +343,27 @@ pub struct WorkbenchEntityPosition {
     pub x: f32,
     pub y: f32,
     pub z: f32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkbenchShapePoints {
+    pub bridge_version: String,
+    pub protocol_version: u32,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entity: Option<WorkbenchSelectedEntity>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shape_class: Option<String>,
+    pub closed: bool,
+    pub points: Vec<WorkbenchEntityPosition>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkbenchShapePointEdit {
+    Set,
+    Insert,
+    Delete,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -2503,6 +2524,40 @@ impl WorkbenchController {
         self.selection_mutation("RST_WorkbenchClearSelection", json!({}))
     }
 
+    pub fn shape_points(&self, entity_id: &str) -> Result<WorkbenchShapePoints, WorkbenchFailure> {
+        self.shape_points_request("RST_WorkbenchShapePoints", json!({"entityId": entity_id}))
+    }
+
+    pub fn edit_shape_points(
+        &self,
+        entity_id: &str,
+        edit: WorkbenchShapePointEdit,
+        index: Option<usize>,
+        count: Option<usize>,
+        points: &[WorkbenchEntityPosition],
+    ) -> Result<WorkbenchShapePoints, WorkbenchFailure> {
+        let operation = match edit {
+            WorkbenchShapePointEdit::Set => "set",
+            WorkbenchShapePointEdit::Insert => "insert",
+            WorkbenchShapePointEdit::Delete => "delete",
+        };
+        let encoded_points = points
+            .iter()
+            .map(|point| format!("{},{},{}", point.x, point.y, point.z))
+            .collect::<Vec<_>>()
+            .join(";");
+        self.shape_points_request(
+            "RST_WorkbenchEditShapePoints",
+            json!({
+                "entityId": entity_id,
+                "operation": operation,
+                "index": index.unwrap_or(0),
+                "count": count.unwrap_or(1),
+                "points": encoded_points,
+            }),
+        )
+    }
+
     pub fn set_selection(
         &self,
         entity_id: &str,
@@ -2523,6 +2578,39 @@ impl WorkbenchController {
             protocol_version: raw.protocol_version,
             status: raw.status,
             entity,
+        })
+    }
+
+    fn shape_points_request(
+        &self,
+        api_func: &str,
+        request: Value,
+    ) -> Result<WorkbenchShapePoints, WorkbenchFailure> {
+        let mut payload = request
+            .as_object()
+            .cloned()
+            .ok_or_else(|| failure(WorkbenchFailureCode::Protocol))?;
+        payload.insert("APIFunc".to_string(), Value::String(api_func.to_string()));
+        let value = self
+            .gateway
+            .request(Value::Object(payload), self.options.gateway.status_deadline)?;
+        let raw: RawBridgeShapePoints =
+            serde_json::from_value(value).map_err(|_| failure(WorkbenchFailureCode::Protocol))?;
+        if raw.protocol_version != WORKBENCH_BRIDGE_PROTOCOL_VERSION {
+            return Err(failure(WorkbenchFailureCode::Protocol));
+        }
+        let entity = parse_optional_world_selection_record(&raw.entity)
+            .map_err(|_| failure(WorkbenchFailureCode::Protocol))?;
+        let points = parse_shape_points(&raw.points)
+            .ok_or_else(|| failure(WorkbenchFailureCode::Protocol))?;
+        Ok(WorkbenchShapePoints {
+            bridge_version: raw.bridge_version,
+            protocol_version: raw.protocol_version,
+            status: raw.status,
+            entity,
+            shape_class: (!raw.shape_class.is_empty()).then_some(raw.shape_class),
+            closed: raw.closed,
+            points,
         })
     }
 
@@ -3687,8 +3775,9 @@ impl WorkbenchController {
         )?;
         let raw: RawBridgeReloadAction =
             serde_json::from_value(value).map_err(|_| failure(WorkbenchFailureCode::Protocol))?;
-        if raw.bridge_version != WORKBENCH_BRIDGE_VERSION
-            || raw.protocol_version != WORKBENCH_BRIDGE_PROTOCOL_VERSION
+        // Reload is the one recovery action that must remain callable from the
+        // immediately previous compatible handler after its managed package is upgraded.
+        if raw.protocol_version != WORKBENCH_BRIDGE_PROTOCOL_VERSION
             || raw.action_path != "Plugins/Settings/Reload WB Scripts"
         {
             return Err(failure(WorkbenchFailureCode::Protocol));
@@ -3705,8 +3794,7 @@ impl WorkbenchController {
         )?;
         let raw: RawBridgeSaveAllAction =
             serde_json::from_value(value).map_err(|_| failure(WorkbenchFailureCode::Protocol))?;
-        if raw.bridge_version != WORKBENCH_BRIDGE_VERSION
-            || raw.protocol_version != WORKBENCH_BRIDGE_PROTOCOL_VERSION
+        if raw.protocol_version != WORKBENCH_BRIDGE_PROTOCOL_VERSION
             || raw.action_path != "File/Save All"
         {
             return Err(failure(WorkbenchFailureCode::Protocol));
@@ -3723,8 +3811,7 @@ impl WorkbenchController {
         )?;
         let raw: RawBridgeSaveWorldAction =
             serde_json::from_value(value).map_err(|_| failure(WorkbenchFailureCode::Protocol))?;
-        if raw.bridge_version != WORKBENCH_BRIDGE_VERSION
-            || raw.protocol_version != WORKBENCH_BRIDGE_PROTOCOL_VERSION
+        if raw.protocol_version != WORKBENCH_BRIDGE_PROTOCOL_VERSION
             || raw.action_path != "WorldEditor.Save"
         {
             return Err(failure(WorkbenchFailureCode::Protocol));
@@ -4542,6 +4629,14 @@ impl WorkbenchController {
     }
 
     fn write_managed_files(&self, bridge_directory: &std::path::Path) -> std::io::Result<()> {
+        self.write_managed_payload(bridge_directory, bridge_payload())
+    }
+
+    fn write_managed_payload(
+        &self,
+        bridge_directory: &std::path::Path,
+        payload: &[(&str, &str)],
+    ) -> std::io::Result<()> {
         if fs::symlink_metadata(bridge_directory)
             .is_ok_and(|metadata| metadata.file_type().is_symlink())
         {
@@ -4554,10 +4649,10 @@ impl WorkbenchController {
         let previous = fs::read(bridge_directory.join("reforger-script-tools.manifest.json"))
             .ok()
             .and_then(|bytes| serde_json::from_slice::<BridgeManifest>(&bytes).ok());
-        for (name, content) in bridge_payload() {
+        for (name, content) in payload {
             fs::write(bridge_directory.join(name), content)?;
         }
-        let files = bridge_payload()
+        let files = payload
             .iter()
             .map(|(name, content)| BridgeManifestFile {
                 name: (*name).to_string(),
@@ -5076,7 +5171,7 @@ struct RawWorkbenchOpenResource {
 #[derive(Deserialize)]
 struct RawBridgeReloadAction {
     #[serde(rename = "bridgeVersion")]
-    bridge_version: String,
+    _bridge_version: String,
     #[serde(rename = "protocolVersion")]
     protocol_version: u32,
     #[serde(rename = "reloadActionAccepted")]
@@ -5105,7 +5200,7 @@ fn reload_action_path(
 #[derive(Deserialize)]
 struct RawBridgeSaveAllAction {
     #[serde(rename = "bridgeVersion")]
-    bridge_version: String,
+    _bridge_version: String,
     #[serde(rename = "protocolVersion")]
     protocol_version: u32,
     #[serde(rename = "saveAllActionAccepted")]
@@ -5121,7 +5216,7 @@ struct RawBridgeSaveAllAction {
 #[derive(Deserialize)]
 struct RawBridgeSaveWorldAction {
     #[serde(rename = "bridgeVersion")]
-    bridge_version: String,
+    _bridge_version: String,
     #[serde(rename = "protocolVersion")]
     protocol_version: u32,
     #[serde(rename = "worldSaveActionAccepted")]
@@ -5329,6 +5424,23 @@ struct RawBridgeEntitySelection {
         deserialize_with = "deserialize_optional_boolish"
     )]
     destination_exists: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct RawBridgeShapePoints {
+    #[serde(rename = "bridgeVersion")]
+    bridge_version: String,
+    #[serde(rename = "protocolVersion")]
+    protocol_version: u32,
+    status: String,
+    #[serde(default)]
+    entity: String,
+    #[serde(rename = "shapeClass", default)]
+    shape_class: String,
+    #[serde(default)]
+    closed: bool,
+    #[serde(default)]
+    points: String,
 }
 
 #[derive(Deserialize)]
@@ -6562,6 +6674,28 @@ fn parse_optional_world_selection_record(
     Ok(records.pop())
 }
 
+fn parse_shape_points(value: &str) -> Option<Vec<WorkbenchEntityPosition>> {
+    if value.is_empty() {
+        return Some(Vec::new());
+    }
+    value
+        .split(';')
+        .map(|record| {
+            let fields = record.split('|').collect::<Vec<_>>();
+            if fields.len() != 3 {
+                return None;
+            }
+            let x = fields[0].parse::<f32>().ok()?;
+            let y = fields[1].parse::<f32>().ok()?;
+            let z = fields[2].parse::<f32>().ok()?;
+            if !x.is_finite() || !y.is_finite() || !z.is_finite() {
+                return None;
+            }
+            Some(WorkbenchEntityPosition { x, y, z })
+        })
+        .collect()
+}
+
 struct ResolvedWorkbenchPaths {
     workbench_root: PathBuf,
     profile: PathBuf,
@@ -6593,8 +6727,12 @@ fn is_workbench_executable(path: &std::path::Path) -> bool {
 }
 
 fn manifest_matches_payload(manifest: &BridgeManifest) -> bool {
-    manifest.files.len() == bridge_payload().len()
-        && bridge_payload().iter().all(|(name, content)| {
+    manifest_matches_payload_for(manifest, bridge_payload())
+}
+
+fn manifest_matches_payload_for(manifest: &BridgeManifest, payload: &[(&str, &str)]) -> bool {
+    manifest.files.len() == payload.len()
+        && payload.iter().all(|(name, content)| {
             let expected_hash = sha256(content.as_bytes());
             manifest
                 .files
@@ -7334,12 +7472,191 @@ fn bridge_payload() -> &'static [(&'static str, &'static str)] {
             "RST_WorkbenchEntityMutation.c",
             BRIDGE_ENTITY_MUTATION_SOURCE,
         ),
+        ("RST_WorkbenchShapePoints.c", BRIDGE_SHAPE_POINTS_SOURCE),
         ("RST_WorkbenchComponents.c", BRIDGE_COMPONENTS_SOURCE),
         ("RST_WorkbenchProperties.c", BRIDGE_PROPERTIES_SOURCE),
         ("RST_WorkbenchPrefab.c", BRIDGE_PREFAB_SOURCE),
         ("RST_WorkbenchListResources.c", BRIDGE_LIST_RESOURCES_SOURCE),
     ]
 }
+
+/* Retired UI prototypes. Kept out of the compiled bridge pending deletion in
+the next focused Workbench-UI branch. */
+/*
+// UI-only prototype: validate the unified World Editor entry point before
+// implementing source resolution or launching VS Code.
+const BRIDGE_OPEN_DEFINITION_PROTOTYPE_SOURCE: &str = r#"#ifdef WORKBENCH
+class RST_OpenDefinitionPrototypeDialog
+{
+    protected static ref ParamEnumArray s_Targets = new ParamEnumArray();
+
+    [Attribute("", UIWidgets.ComboBox, "Open definition", "Choose the entity class, a component class, or one of the selected entity's component properties.", enums: GetTargets())]
+    protected string m_sTarget;
+
+    [ButtonAttribute("Preview target", true)]
+    protected int ButtonPreviewTarget()
+    {
+        return 1;
+    }
+
+    [ButtonAttribute("Cancel")]
+    protected int ButtonCancel()
+    {
+        return 0;
+    }
+
+    static ParamEnumArray GetTargets()
+    {
+        return s_Targets;
+    }
+
+    static void PopulateTargets(IEntitySource entity)
+    {
+        s_Targets.Clear();
+        s_Targets.Insert(new ParamEnum(string.Format("[Entity] %1", entity.GetClassName()), string.Format("entity:%1", entity.GetClassName())));
+
+        for (int componentIndex, componentCount = entity.GetComponentCount(); componentIndex < componentCount; componentIndex++)
+        {
+            IEntityComponentSource component = entity.GetComponent(componentIndex);
+            if (!component)
+                continue;
+
+            string componentClass = component.GetClassName();
+            string componentTarget = string.Format("component:%1:%2", componentIndex, componentClass);
+            s_Targets.Insert(new ParamEnum(string.Format("  [Component] %1", componentClass), componentTarget));
+
+            for (int propertyIndex, propertyCount = component.GetNumVars(); propertyIndex < propertyCount; propertyIndex++)
+            {
+                string propertyName = component.GetVarName(propertyIndex);
+                if (propertyName.IsEmpty())
+                    continue;
+
+                s_Targets.Insert(new ParamEnum(string.Format("    [Property] %1.%2", componentClass, propertyName), string.Format("property:%1:%2:%3", componentIndex, componentClass, propertyName)));
+            }
+        }
+    }
+
+    string TargetLabel()
+    {
+        foreach (ParamEnum target : s_Targets)
+        {
+            if (target.m_Value == m_sTarget)
+                return target.m_Key;
+        }
+
+        return m_sTarget;
+    }
+}
+
+[WorkbenchPluginAttribute(name: "[Prototype] Open Definition…", description: "UI-only prototype for a unified entity, component, and property definition picker.", category: "Reforger Script Tools", wbModules: { "WorldEditor" }, shortcut: "Ctrl+Alt+O")]
+class RST_OpenDefinitionPrototypePlugin : WorkbenchPlugin
+{
+    override void Run()
+    {
+        WorldEditor worldEditor = Workbench.GetModule(WorldEditor);
+        if (!worldEditor || !worldEditor.GetApi())
+        {
+            Workbench.Dialog("Open Definition (prototype)", "The World Editor API is not available.");
+            return;
+        }
+
+        WorldEditorAPI api = worldEditor.GetApi();
+        if (api.GetSelectedEntitiesCount() < 1)
+        {
+            Workbench.Dialog("Open Definition (prototype)", "Select an entity first, then press Ctrl+Alt+O.");
+            return;
+        }
+
+        IEntitySource selected = api.GetSelectedEntity(0);
+        if (!selected)
+        {
+            Workbench.Dialog("Open Definition (prototype)", "The selected entity is no longer available.");
+            return;
+        }
+
+        RST_OpenDefinitionPrototypeDialog dialog = new RST_OpenDefinitionPrototypeDialog();
+        RST_OpenDefinitionPrototypeDialog.PopulateTargets(selected);
+        string message = string.Format("Selected entity: %1\n\nPick a concrete definition from the list. Components and their properties are included directly under the entity. This prototype intentionally does not open VS Code or Workbench's script editor.", selected.GetClassName());
+        if (!Workbench.ScriptDialog("Open Definition in VS Code (prototype)", message, dialog))
+            return;
+
+        string target = dialog.TargetLabel();
+        PrintFormat("RST open-definition prototype: selected=%1 target=%2", selected.GetClassName(), target);
+        Workbench.Dialog("Open Definition (prototype)", string.Format("Would open the %1 for %2 in VS Code.\n\nNo editor was launched: this is the UX-only prototype.", target, selected.GetClassName()));
+    }
+}
+#endif
+"#;
+
+// UI-only prototype: test the native Custom section before adding VS Code
+// launching or generalized context-menu coverage.
+const BRIDGE_OPEN_DEFINITION_CONTEXT_PROTOTYPE_SOURCE: &str = r#"#ifdef WORKBENCH
+// Workbench only permits an addon to mod classes supplied by that addon. This
+// prototype deliberately targets the Test Bullshit entity to prove the native
+// Custom-menu callback before we introduce project-owned registration.
+modded class GRAY_ENT
+{
+    protected static const int RST_OPEN_DEFINITION_CONTEXT_ID = 17201;
+
+    override array<ref WB_UIMenuItem> _WB_GetContextMenuItems()
+    {
+        return { new WB_UIMenuItem("Open entity definition in VS Code (prototype)", RST_OPEN_DEFINITION_CONTEXT_ID) };
+    }
+
+    override void _WB_OnContextMenu(int id)
+    {
+        if (id != RST_OPEN_DEFINITION_CONTEXT_ID)
+            return;
+
+        WorldEditorAPI api = _WB_GetEditorAPI();
+        if (!api)
+        {
+            Workbench.Dialog("Open Definition (prototype)", "The World Editor API is not available.");
+            return;
+        }
+
+        IEntitySource source = api.EntityToSource(this);
+        if (!source)
+        {
+            Workbench.Dialog("Open Definition (prototype)", "The selected entity source is not available.");
+            return;
+        }
+
+        string className = source.GetClassName();
+        PrintFormat("RST open-definition context prototype: entity=%1", className);
+        Workbench.Dialog("Open Definition (prototype)", string.Format("Would open the entity definition %1 in VS Code.\n\nNo editor was launched: this is the native-context-menu prototype.", className));
+    }
+}
+
+// The component callback appears in the component's own Custom menu.
+modded class GRAY_TEST
+{
+    protected static const int RST_OPEN_COMPONENT_DEFINITION_CONTEXT_ID = 17202;
+
+    override array<ref WB_UIMenuItem> _WB_GetContextMenuItems(IEntity owner)
+    {
+        return { new WB_UIMenuItem("Open component definition in VS Code (prototype)", RST_OPEN_COMPONENT_DEFINITION_CONTEXT_ID) };
+    }
+
+    override void _WB_OnContextMenu(IEntity owner, int id)
+    {
+        if (id != RST_OPEN_COMPONENT_DEFINITION_CONTEXT_ID)
+            return;
+
+        WorldEditorAPI api = GenericEntity.Cast(owner)._WB_GetEditorAPI();
+        IEntitySource source = api.EntityToSource(owner);
+        string ownerClass = "unknown";
+        if (source)
+            ownerClass = source.GetClassName();
+
+        PrintFormat("RST open-definition context prototype: component=GRAY_TEST owner=%1", ownerClass);
+        Workbench.Dialog("Open Definition (prototype)", string.Format("Would open the component definition GRAY_TEST on %1 in VS Code.\n\nNo editor was launched: this is the native-context-menu prototype.", ownerClass));
+    }
+}
+#endif
+"#;
+
+*/
 
 const BRIDGE_CAPABILITIES_SOURCE: &str = r#"#ifdef WORKBENCH
 class RST_WorkbenchCapabilitiesRequest : JsonApiStruct
@@ -7372,7 +7689,7 @@ class RST_WorkbenchCapabilities : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchCapabilitiesResponse response = new RST_WorkbenchCapabilitiesResponse();
-        response.bridgeVersion = "1.47.0";
+	response.bridgeVersion = "1.50.0";
 	response.protocolVersion = 1;
 	response.capabilities = "state;editors;open-resource;play-session;project-context;inspect-resource;world-selection;entity-hierarchy;list-resources;list-entities;layer-state;inspect-entity;set-selection;clear-selection;entity-position;entity-details;create-entity;rename-entity;delete-entity;move-entity;rotate-entity;reparent-entity;duplicate-entity;entity-properties;components;component-properties;reload-action";
 		return response;
@@ -7432,7 +7749,7 @@ class RST_WorkbenchState : NetApiHandler
 	{
 		RST_WorkbenchStateRequest typedRequest = RST_WorkbenchStateRequest.Cast(request);
 		RST_WorkbenchStateResponse response = new RST_WorkbenchStateResponse();
-	response.bridgeVersion = "1.47.0";
+	response.bridgeVersion = "1.50.0";
 		response.protocolVersion = 1;
 		response.mode = "workbench";
 		response.playSession = "unavailable";
@@ -7795,7 +8112,7 @@ class RST_WorkbenchProjectContext : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchProjectContextResponse response = new RST_WorkbenchProjectContextResponse();
-		response.bridgeVersion = "1.47.0";
+		response.bridgeVersion = "1.50.0";
 		response.protocolVersion = 1;
 		array<string> addonGuids = new array<string>();
 		GameProject.GetLoadedAddons(addonGuids);
@@ -7913,7 +8230,7 @@ class RST_WorkbenchWorldSelection : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchWorldSelectionResponse response = new RST_WorkbenchWorldSelectionResponse();
-		response.bridgeVersion = "1.47.0";
+		response.bridgeVersion = "1.50.0";
 		response.protocolVersion = 1;
 		WorldEditor worldEditor = Workbench.GetModule(WorldEditor);
 		if (!worldEditor)
@@ -7991,7 +8308,7 @@ class RST_WorkbenchSelectedEntityHierarchy : NetApiHandler
 	{
 		RST_WorkbenchSelectedEntityHierarchyRequest typedRequest = RST_WorkbenchSelectedEntityHierarchyRequest.Cast(request);
 		RST_WorkbenchSelectedEntityHierarchyResponse response = new RST_WorkbenchSelectedEntityHierarchyResponse();
-		response.bridgeVersion = "1.47.0";
+		response.bridgeVersion = "1.50.0";
 		response.protocolVersion = 1;
 		WorldEditor worldEditor = Workbench.GetModule(WorldEditor);
 		if (!worldEditor)
@@ -8076,7 +8393,7 @@ class RST_WorkbenchListEntities : NetApiHandler
 	{
 		RST_WorkbenchListEntitiesRequest typedRequest = RST_WorkbenchListEntitiesRequest.Cast(request);
 		RST_WorkbenchListEntitiesResponse response = new RST_WorkbenchListEntitiesResponse();
-		response.bridgeVersion = "1.47.0";
+		response.bridgeVersion = "1.50.0";
 		response.protocolVersion = 1;
 		WorldEditor worldEditor = Workbench.GetModule(WorldEditor);
 		if (!worldEditor) return response;
@@ -8198,7 +8515,7 @@ class RST_WorkbenchSearchEntities : NetApiHandler
 	}
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
-		RST_WorkbenchSearchEntitiesRequest req = RST_WorkbenchSearchEntitiesRequest.Cast(request); RST_WorkbenchSearchEntitiesResponse response = new RST_WorkbenchSearchEntitiesResponse(); response.bridgeVersion = "1.47.0"; response.protocolVersion = 1;
+		RST_WorkbenchSearchEntitiesRequest req = RST_WorkbenchSearchEntitiesRequest.Cast(request); RST_WorkbenchSearchEntitiesResponse response = new RST_WorkbenchSearchEntitiesResponse(); response.bridgeVersion = "1.50.0"; response.protocolVersion = 1;
 		PrintFormat("RST entity search: begin limit=%1 offset=%2 relation=%3", req.limit, req.offset, req.relationDirection);
 		WorldEditor editor = Workbench.GetModule(WorldEditor); if (!editor || !editor.GetApi()) { response.status = "world-editor-unavailable"; return response; }
 		bool hasRelation = !req.relationDirection.IsEmpty();
@@ -8282,7 +8599,7 @@ class RST_WorkbenchLayerState : NetApiHandler
 	{
 		RST_WorkbenchLayerStateRequest typedRequest = RST_WorkbenchLayerStateRequest.Cast(request);
 		RST_WorkbenchLayerStateResponse response = new RST_WorkbenchLayerStateResponse();
-		response.bridgeVersion = "1.47.0";
+		response.bridgeVersion = "1.50.0";
 		response.protocolVersion = 1;
 		response.subScene = typedRequest.subScene;
 		response.layerId = typedRequest.layerId;
@@ -8534,7 +8851,7 @@ class RST_WorkbenchInspectEntity : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchInspectEntityRequest typedRequest = RST_WorkbenchInspectEntityRequest.Cast(request);
-		RST_WorkbenchInspectEntityResponse response = new RST_WorkbenchInspectEntityResponse(); response.bridgeVersion = "1.47.0"; response.protocolVersion = 1;
+		RST_WorkbenchInspectEntityResponse response = new RST_WorkbenchInspectEntityResponse(); response.bridgeVersion = "1.50.0"; response.protocolVersion = 1;
 		WorldEditor worldEditor = Workbench.GetModule(WorldEditor); if (!worldEditor) { response.status = "world-editor-unavailable"; return response; }
 		WorldEditorAPI api = worldEditor.GetApi(); if (!api) { response.status = "world-editor-api-unavailable"; return response; }
 		response.editorAvailable = true;
@@ -8651,7 +8968,7 @@ class RST_WorkbenchSetSelection : NetApiHandler
 	{
 		RST_WorkbenchSetSelectionRequest typedRequest = RST_WorkbenchSetSelectionRequest.Cast(request);
 		RST_WorkbenchSetSelectionResponse response = new RST_WorkbenchSetSelectionResponse();
-		response.bridgeVersion = "1.47.0";
+		response.bridgeVersion = "1.50.0";
 		response.protocolVersion = 1;
 		WorldEditor editor = Workbench.GetModule(WorldEditor);
 		if (!editor) { response.status = "world-editor-unavailable"; return response; }
@@ -8710,7 +9027,7 @@ class RST_WorkbenchFindEntitiesByRadius : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchFindEntitiesByRadiusRequest typedRequest = RST_WorkbenchFindEntitiesByRadiusRequest.Cast(request);
-		RST_WorkbenchFindEntitiesByRadiusResponse response = new RST_WorkbenchFindEntitiesByRadiusResponse(); response.bridgeVersion = "1.47.0"; response.protocolVersion = 1;
+		RST_WorkbenchFindEntitiesByRadiusResponse response = new RST_WorkbenchFindEntitiesByRadiusResponse(); response.bridgeVersion = "1.50.0"; response.protocolVersion = 1;
 		response.centerX = typedRequest.centerX; response.centerY = typedRequest.centerY; response.centerZ = typedRequest.centerZ; response.radiusMeters = typedRequest.radiusMeters; response.queryScope = typedRequest.queryScope; response.requireObject = typedRequest.requireObject; response.excludeProxies = typedRequest.excludeProxies;
 		if (typedRequest.radiusMeters < 0.01 || typedRequest.radiusMeters > 50000 || typedRequest.limit < 1 || typedRequest.limit > 100) { response.status = "invalid-query"; return response; }
 		WorldEditor editor = Workbench.GetModule(WorldEditor); if (!editor) { response.status = "world-editor-unavailable"; return response; }
@@ -8754,7 +9071,7 @@ class RST_WorkbenchSampleTerrain : NetApiHandler
 	{
 		RST_WorkbenchSampleTerrainRequest typedRequest = RST_WorkbenchSampleTerrainRequest.Cast(request);
 		RST_WorkbenchSampleTerrainResponse response = new RST_WorkbenchSampleTerrainResponse();
-		response.bridgeVersion = "1.47.0"; response.protocolVersion = 1;
+		response.bridgeVersion = "1.50.0"; response.protocolVersion = 1;
 		response.centerX = typedRequest.centerX; response.centerZ = typedRequest.centerZ; response.halfExtentMeters = typedRequest.halfExtentMeters; response.requestedSpacingMeters = typedRequest.spacingMeters;
 		if (typedRequest.halfExtentMeters < 0.01 || typedRequest.halfExtentMeters > 500 || typedRequest.spacingMeters < 0 || typedRequest.spacingMeters > 500) { response.status = "invalid-query"; return response; }
 		WorldEditor editor = Workbench.GetModule(WorldEditor); if (!editor) { response.status = "world-editor-unavailable"; return response; }
@@ -8848,7 +9165,7 @@ class RST_WorkbenchViewportContext : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchViewportContextResponse response = new RST_WorkbenchViewportContextResponse();
-		response.bridgeVersion = "1.47.0"; response.protocolVersion = 1;
+		response.bridgeVersion = "1.50.0"; response.protocolVersion = 1;
 		WorldEditor e = Workbench.GetModule(WorldEditor);
 		if (!e || !e.GetApi() || !e.GetApi().GetWorld()) { response.status = "world-editor-unavailable"; return response; }
 		WorldEditorAPI a = e.GetApi(); BaseWorld world = a.GetWorld(); vector cameraTransform[4];
@@ -8888,7 +9205,7 @@ class RST_WorkbenchTrace : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchTraceRequest q = RST_WorkbenchTraceRequest.Cast(request); RST_WorkbenchTraceResponse response = new RST_WorkbenchTraceResponse();
-		response.bridgeVersion = "1.47.0"; response.protocolVersion = 1;
+		response.bridgeVersion = "1.50.0"; response.protocolVersion = 1;
 		WorldEditor e = Workbench.GetModule(WorldEditor);
 		if (!e || !e.GetApi() || !e.GetApi().GetWorld()) { response.status = "world-editor-unavailable"; return response; }
 		TraceParam p;
@@ -8940,7 +9257,7 @@ class RST_WorkbenchClearSelection : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchClearSelectionResponse response = new RST_WorkbenchClearSelectionResponse();
-		response.bridgeVersion = "1.47.0";
+		response.bridgeVersion = "1.50.0";
 		response.protocolVersion = 1;
 		WorldEditor editor = Workbench.GetModule(WorldEditor);
 		if (!editor)
@@ -9186,7 +9503,7 @@ class RST_WorkbenchEntityMutationBase : NetApiHandler
 	RST_WorkbenchEntityMutationResponse Response()
 	{
 		RST_WorkbenchEntityMutationResponse response = new RST_WorkbenchEntityMutationResponse();
-		response.bridgeVersion = "1.47.0";
+		response.bridgeVersion = "1.50.0";
 		response.protocolVersion = 1;
 		response.activeLayerId = -1;
 		return response;
@@ -9580,13 +9897,153 @@ class RST_WorkbenchDeleteEntity : RST_WorkbenchEntityMutationBase
 #endif
 "#;
 
+const BRIDGE_SHAPE_POINTS_SOURCE: &str = r#"#ifdef WORKBENCH
+class RST_WorkbenchShapePointsRequest : JsonApiStruct
+{
+	string entityId;
+	string operation;
+	int index;
+	int count;
+	string points;
+
+	void RST_WorkbenchShapePointsRequest() { RegAll(); }
+}
+class RST_WorkbenchShapePointsResponse : JsonApiStruct
+{
+	string bridgeVersion;
+	int protocolVersion;
+	string status;
+	string entity;
+	string shapeClass;
+	bool closed;
+	string points;
+
+	void RST_WorkbenchShapePointsResponse() { RegAll(); }
+}
+class RST_WorkbenchShapePointsBase : NetApiHandler
+{
+	IEntitySource Find(WorldEditorAPI api, string entityId)
+	{
+		for (int i, count = api.GetEditorEntityCount(); i < count; i++)
+		{
+			IEntitySource candidate = api.GetEditorEntity(i);
+			if (candidate && candidate.GetID().ToString() == entityId) return candidate;
+		}
+		return null;
+	}
+	RST_WorkbenchShapePointsResponse Response()
+	{
+		RST_WorkbenchShapePointsResponse response = new RST_WorkbenchShapePointsResponse();
+		response.bridgeVersion = "1.50.0";
+		response.protocolVersion = 1;
+		return response;
+	}
+	bool Setup(WorldEditorAPI api, RST_WorkbenchShapePointsResponse response)
+	{
+		if (!api) { response.status = "world-editor-api-unavailable"; return false; }
+		if (!api.GetWorld()) { response.status = "world-unavailable"; return false; }
+		if (api.IsPrefabEditMode()) { response.status = "prefab-edit-mode"; return false; }
+		if (api.IsDoingEditAction()) { response.status = "editor-action-active"; return false; }
+		return true;
+	}
+	bool ResolveShape(WorldEditorAPI api, string entityId, RST_WorkbenchShapePointsResponse response, out IEntitySource source, out ShapeEntity shape)
+	{
+		source = Find(api, entityId);
+		if (!source) { response.status = "entity-not-found"; return false; }
+		shape = ShapeEntity.Cast(api.SourceToEntity(source));
+		if (!shape) { response.status = "entity-not-shape"; return false; }
+		return true;
+	}
+	void Record(WorldEditorAPI api, IEntitySource source, ShapeEntity shape, RST_WorkbenchShapePointsResponse response)
+	{
+		vector origin = shape.GetOrigin();
+		string resourceName = string.Format("%1", source.GetResourceName());
+		string name = source.GetName();
+		string subSceneName = api.GetWorld().GetSubSceneName(source.GetSubScene());
+		string layerName = api.GetEntitySubsceneLayer(source.GetSubScene(), source);
+		if (name == resourceName) name = string.Empty;
+		resourceName.Replace("|", "/"); resourceName.Replace(";", "/");
+		name.Replace("|", "/"); name.Replace(";", "/");
+		subSceneName.Replace("|", "/"); subSceneName.Replace(";", "/");
+		layerName.Replace("|", "/"); layerName.Replace(";", "/");
+		response.entity = string.Format("%1|%2|%3|%4|%5|%6|%7", source.GetID().ToString(), source.GetClassName(), source.GetSubScene(), source.GetLayerID(), origin[0], origin[1], origin[2]) + "|" + resourceName + "|" + name + "|" + subSceneName + "|" + layerName;
+		response.shapeClass = source.GetClassName();
+		response.closed = shape.IsClosed();
+		array<vector> positions = {};
+		shape.GetPointsPositions(positions);
+		foreach (vector point : positions)
+		{
+			if (!response.points.IsEmpty()) response.points += ";";
+			response.points += string.Format("%1|%2|%3", point[0], point[1], point[2]);
+		}
+	}
+	bool DecodePoints(string encoded, out array<vector> decoded)
+	{
+		if (encoded.IsEmpty()) return true;
+		array<string> records = {};
+		encoded.Split(";", records, true);
+		foreach (string record : records)
+		{
+			array<string> fields = {};
+			record.Split(",", fields, false);
+			if (fields.Count() != 3) return false;
+			decoded.Insert(Vector(fields[0].ToFloat(), fields[1].ToFloat(), fields[2].ToFloat()));
+		}
+		return true;
+	}
+}
+class RST_WorkbenchShapePoints : RST_WorkbenchShapePointsBase
+{
+	override JsonApiStruct GetRequest() { return new RST_WorkbenchShapePointsRequest(); }
+	override JsonApiStruct GetResponse(JsonApiStruct request)
+	{
+		RST_WorkbenchShapePointsRequest r = RST_WorkbenchShapePointsRequest.Cast(request); RST_WorkbenchShapePointsResponse response = Response();
+		WorldEditor editor = Workbench.GetModule(WorldEditor); if (!editor) { response.status = "world-editor-unavailable"; return response; }
+		WorldEditorAPI api = editor.GetApi(); if (!Setup(api, response)) return response;
+		IEntitySource source; ShapeEntity shape; if (!ResolveShape(api, r.entityId, response, source, shape)) return response;
+		Record(api, source, shape, response); response.status = "available"; return response;
+	}
+}
+class RST_WorkbenchEditShapePoints : RST_WorkbenchShapePointsBase
+{
+	override JsonApiStruct GetRequest() { return new RST_WorkbenchShapePointsRequest(); }
+	override JsonApiStruct GetResponse(JsonApiStruct request)
+	{
+		RST_WorkbenchShapePointsRequest r = RST_WorkbenchShapePointsRequest.Cast(request); RST_WorkbenchShapePointsResponse response = Response();
+		WorldEditor editor = Workbench.GetModule(WorldEditor); if (!editor) { response.status = "world-editor-unavailable"; return response; }
+		WorldEditorAPI api = editor.GetApi(); if (!Setup(api, response)) return response;
+		IEntitySource source; ShapeEntity shape; if (!ResolveShape(api, r.entityId, response, source, shape)) return response;
+		if (api.IsEntityLayerLockedHierarchy(source.GetSubScene(), source.GetLayerID())) { response.status = "mutation-rejected"; return response; }
+		array<vector> current = {}; shape.GetPointsPositions(current);
+		array<vector> supplied = {}; if (!DecodePoints(r.points, supplied)) { response.status = "invalid-points"; return response; }
+		if (r.operation == "set") current = supplied;
+		else if (r.operation == "insert")
+		{
+			if (supplied.IsEmpty() || r.index < 0 || r.index > current.Count()) { response.status = "invalid-point-edit"; return response; }
+			foreach (vector point : supplied) { if (r.index == current.Count()) current.Insert(point); else current.InsertAt(point, r.index); r.index++; }
+		}
+		else if (r.operation == "delete")
+		{
+			if (r.count < 1 || r.index < 0 || r.index >= current.Count() || r.count > current.Count() - r.index) { response.status = "invalid-point-edit"; return response; }
+			for (int i; i < r.count; i++) current.RemoveOrdered(r.index);
+		}
+		else { response.status = "invalid-point-edit"; return response; }
+		if (!api.BeginEntityAction("Reforger Script Tools: edit shape points")) { response.status = "mutation-rejected"; return response; }
+		shape.SetPoints(current, source);
+		api.EndEntityAction("Reforger Script Tools: edit shape points");
+		Record(api, source, shape, response); response.status = "points-updated"; return response;
+	}
+}
+#endif
+"#;
+
 const BRIDGE_COMPONENTS_SOURCE: &str = r#"#ifdef WORKBENCH
 class RST_WorkbenchComponentsRequest : JsonApiStruct { string entityId; string componentId; string className; string propertyName; string expectedValue; string value; bool confirm; void RST_WorkbenchComponentsRequest() { RegAll(); } }
 class RST_WorkbenchComponentsResponse : JsonApiStruct { string bridgeVersion; int protocolVersion; string status; string entity; string components; string properties; void RST_WorkbenchComponentsResponse() { RegAll(); } }
 class RST_WorkbenchComponentsBase : NetApiHandler
 {
 	IEntitySource Find(WorldEditorAPI api, string id) { for (int i = 0, count = api.GetEditorEntityCount(); i < count; i++) { IEntitySource candidate = api.GetEditorEntity(i); if (candidate && candidate.GetID().ToString() == id) return candidate; } return null; }
-	RST_WorkbenchComponentsResponse Response() { RST_WorkbenchComponentsResponse response = new RST_WorkbenchComponentsResponse(); response.bridgeVersion = "1.47.0"; response.protocolVersion = 1; return response; }
+	RST_WorkbenchComponentsResponse Response() { RST_WorkbenchComponentsResponse response = new RST_WorkbenchComponentsResponse(); response.bridgeVersion = "1.50.0"; response.protocolVersion = 1; return response; }
 	// Workbench exposes authored direct components through the `components` container in
 	// some editor contexts, even when IEntitySource.GetComponentCount() is zero.
 	int ComponentCount(IEntitySource entity) { int count = entity.GetComponentCount(); if (count == 0) { ref BaseContainerList components = entity.GetObjectArray("components"); if (components) count = components.Count(); } return count; }
@@ -9861,7 +10318,7 @@ class RST_WorkbenchListEntityProperties : RST_WorkbenchEntityMutationBase
 	{
 		RST_WorkbenchPropertiesRequest r = RST_WorkbenchPropertiesRequest.Cast(request);
 		RST_WorkbenchPropertiesResponse response = new RST_WorkbenchPropertiesResponse();
-		response.bridgeVersion = "1.47.0";
+		response.bridgeVersion = "1.50.0";
 		response.protocolVersion = 1;
 
 		WorldEditor editor = Workbench.GetModule(WorldEditor);
@@ -10150,7 +10607,7 @@ class RST_WorkbenchInspectPrefab : NetApiHandler
 	}
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
-		RST_WorkbenchPrefabRequest r = RST_WorkbenchPrefabRequest.Cast(request); RST_WorkbenchPrefabResponse response = new RST_WorkbenchPrefabResponse(); response.bridgeVersion = "1.47.0"; response.protocolVersion = 1;
+		RST_WorkbenchPrefabRequest r = RST_WorkbenchPrefabRequest.Cast(request); RST_WorkbenchPrefabResponse response = new RST_WorkbenchPrefabResponse(); response.bridgeVersion = "1.50.0"; response.protocolVersion = 1;
 		WorldEditor editor = Workbench.GetModule(WorldEditor); if (!editor || !editor.GetApi()) { response.status = "world-editor-unavailable"; return response; }
 		WorldEditorAPI api = editor.GetApi();
 		// Keep the resource handle alive while any source/container derived from it is read.
@@ -10507,7 +10964,7 @@ class RST_WorkbenchPrefabResourceProof : NetApiHandler
 	{
 		RST_WorkbenchPrefabResourceProofRequest r = RST_WorkbenchPrefabResourceProofRequest.Cast(request);
 		RST_WorkbenchPrefabResourceProofResponse response = new RST_WorkbenchPrefabResourceProofResponse();
-		response.bridgeVersion = "1.47.0";
+		response.bridgeVersion = "1.50.0";
 		response.protocolVersion = 1;
 		response.resourceName = r.resourceName;
 
@@ -10645,7 +11102,7 @@ class RST_WorkbenchAddPrefabResourceComponent : NetApiHandler
 	{
 		RST_WorkbenchPrefabResourceComponentRequest r = RST_WorkbenchPrefabResourceComponentRequest.Cast(request);
 		RST_WorkbenchPrefabResourceComponentResponse response = new RST_WorkbenchPrefabResourceComponentResponse();
-		response.bridgeVersion = "1.47.0";
+		response.bridgeVersion = "1.50.0";
 		response.protocolVersion = 1;
 		response.resourceName = r.resourceName;
 		response.componentIndex = -1;
@@ -10746,7 +11203,7 @@ class RST_WorkbenchRemovePrefabResourceComponent : NetApiHandler
 	{
 		RST_WorkbenchPrefabResourceComponentRemovalRequest r = RST_WorkbenchPrefabResourceComponentRemovalRequest.Cast(request);
 		RST_WorkbenchPrefabResourceComponentResponse response = new RST_WorkbenchPrefabResourceComponentResponse();
-		response.bridgeVersion = "1.47.0";
+		response.bridgeVersion = "1.50.0";
 		response.protocolVersion = 1;
 		response.resourceName = r.resourceName;
 		response.componentIndex = r.componentIndex;
@@ -10867,7 +11324,7 @@ class RST_WorkbenchSetPrefabResourceProperty : RST_WorkbenchEntityMutationBase
 	{
 		RST_WorkbenchPrefabResourcePropertyRequest r = RST_WorkbenchPrefabResourcePropertyRequest.Cast(request);
 		RST_WorkbenchPrefabResourcePropertyResponse response = new RST_WorkbenchPrefabResourcePropertyResponse();
-		response.bridgeVersion = "1.47.0";
+		response.bridgeVersion = "1.50.0";
 		response.protocolVersion = 1;
 		response.resourceName = r.resourceName;
 
@@ -11021,7 +11478,7 @@ class RST_WorkbenchListResources : NetApiHandler
 	{
 		RST_WorkbenchListResourcesRequest typedRequest = RST_WorkbenchListResourcesRequest.Cast(request);
 		RST_WorkbenchListResourcesResponse response = new RST_WorkbenchListResourcesResponse();
-		response.bridgeVersion = "1.47.0";
+		response.bridgeVersion = "1.50.0";
 		response.protocolVersion = 1;
 		array<string> addonGuids = new array<string>();
 		GameProject.GetLoadedAddons(addonGuids);
@@ -11213,7 +11670,7 @@ mod tests {
     #[test]
     fn reload_action_dispatch_acknowledgement_does_not_override_log_verification() {
         let path = super::reload_action_path(Ok(super::RawBridgeReloadAction {
-            bridge_version: "1.47.0".to_string(),
+            _bridge_version: "1.50.0".to_string(),
             protocol_version: 1,
             _accepted: json!(false),
             action_path: "Plugins/Settings/Reload WB Scripts".to_string(),
@@ -11342,7 +11799,7 @@ mod tests {
             assert_eq!(request["offset"], 0);
             assert_eq!(request["limit"], 3);
             json!({
-                "bridgeVersion": "1.47.0",
+                "bridgeVersion": "1.50.0",
                 "protocolVersion": 1,
                 "loadedAddons": "ArmaReforger;TestBullshit",
                 "resources": "{00B6CAF6E4A5BAB4}Prefabs/Props/Test.et",
@@ -11388,7 +11845,7 @@ mod tests {
             assert_eq!(request["subScene"], 2);
             assert_eq!(request["layerId"], 7);
             json!({
-                "bridgeVersion": "1.47.0",
+                "bridgeVersion": "1.50.0",
                 "protocolVersion": 1,
                 "worldPath": "$TestBullshit:worlds/test/arland_test.ent",
                 "entities": "0x0000000000000001 {}|GenericWorldEntity|0|0",
@@ -11424,7 +11881,7 @@ mod tests {
         let (port, peer) = start_peer(|request| {
             assert_eq!(request["APIFunc"], "RST_WorkbenchListEntities");
             json!({
-                "bridgeVersion": "1.47.0",
+                "bridgeVersion": "1.50.0",
                 "protocolVersion": 1,
                 "worldPath": "$Test:worlds/test.ent",
                 "entities": "0x0000000000000001 {}|TestEntity|2|7",
@@ -11464,7 +11921,7 @@ mod tests {
             assert_eq!(request["subScene"], -1);
             assert_eq!(request["layerId"], -1);
             json!({
-                "bridgeVersion": "1.47.0",
+                "bridgeVersion": "1.50.0",
                 "protocolVersion": 1,
                 "worldPath": "$Test:worlds/test.ent",
                 "entities": "",
@@ -11494,7 +11951,7 @@ mod tests {
             assert_eq!(request["APIFunc"], "RST_WorkbenchSearchEntities");
             assert_eq!(request["componentClasses"], "SCR_TriggerEntity");
             assert_eq!(request["resourceQuery"], "Checkpoints");
-            json!({"bridgeVersion":"1.47.0","protocolVersion":1,"status":"available","worldPath":"$Test:worlds/test.ent","results":"0x01|GenericEntity|0|7|{GUID}Prefabs/Checkpoints/West.et|West checkpoint|SCR_TriggerEntity,SCR_BaseGameModeComponent|name,resource,components|SCR_TriggerEntity|GenericEntity|3|||||||","totalMatches":2,"namedMatches":1,"hasMore":false})
+            json!({"bridgeVersion":"1.50.0","protocolVersion":1,"status":"available","worldPath":"$Test:worlds/test.ent","results":"0x01|GenericEntity|0|7|{GUID}Prefabs/Checkpoints/West.et|West checkpoint|SCR_TriggerEntity,SCR_BaseGameModeComponent|name,resource,components|SCR_TriggerEntity|GenericEntity|3|||||||","totalMatches":2,"namedMatches":1,"hasMore":false})
         });
         let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
             gateway: super::WorkbenchGatewayOptions {
@@ -11550,7 +12007,7 @@ mod tests {
                 "SCR_BaseGameModeComponent"
             );
             assert_eq!(request["relationMaxDepth"], 3);
-            json!({"bridgeVersion":"1.47.0","protocolVersion":1,"status":"available","worldPath":"$Test:worlds/test.ent","results":"0x01|GenericEntity|0|7|{GUID}Prefabs/Checkpoints/West.et|West checkpoint|SCR_TriggerEntity|relation||GenericEntity|3|descendant|2|0x02|SCR_TriggerEntity|0|7|SCR_BaseGameModeComponent","totalMatches":1,"namedMatches":1,"hasMore":false,"relationTraversalTruncated":true})
+            json!({"bridgeVersion":"1.50.0","protocolVersion":1,"status":"available","worldPath":"$Test:worlds/test.ent","results":"0x01|GenericEntity|0|7|{GUID}Prefabs/Checkpoints/West.et|West checkpoint|SCR_TriggerEntity|relation||GenericEntity|3|descendant|2|0x02|SCR_TriggerEntity|0|7|SCR_BaseGameModeComponent","totalMatches":1,"namedMatches":1,"hasMore":false,"relationTraversalTruncated":true})
         });
         let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
             gateway: super::WorkbenchGatewayOptions {
@@ -11666,7 +12123,7 @@ mod tests {
         let (port, peer) = start_peer(|request| {
             assert_eq!(request["relationDirection"], "descendant");
             assert_eq!(request["relationClassName"], "SCR_TriggerEntity");
-            json!({"bridgeVersion":"1.47.0","protocolVersion":1,"status":"available","worldPath":"$Test:worlds/test.ent","results":"0x01|GenericEntity|0|7||||||GenericEntity|1|descendant|1|0x02|SCR_TriggerEntity|0|7|","totalMatches":2,"namedMatches":0,"hasMore":true})
+            json!({"bridgeVersion":"1.50.0","protocolVersion":1,"status":"available","worldPath":"$Test:worlds/test.ent","results":"0x01|GenericEntity|0|7||||||GenericEntity|1|descendant|1|0x02|SCR_TriggerEntity|0|7|","totalMatches":2,"namedMatches":0,"hasMore":true})
         });
         let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
             gateway: super::WorkbenchGatewayOptions {
@@ -11723,7 +12180,7 @@ mod tests {
         let (port, peer) = start_peer(|request| {
             assert_eq!(request["APIFunc"], "RST_WorkbenchSearchEntities");
             json!({
-                "bridgeVersion": "1.47.0",
+                "bridgeVersion": "1.50.0",
                 "protocolVersion": 1,
                 "status": "world-editor-unavailable",
                 "worldPath": "",
@@ -11773,7 +12230,7 @@ mod tests {
                 json!({"APIFunc":"RST_WorkbenchLayerState","subScene":2,"layerId":7})
             );
             json!({
-                "bridgeVersion":"1.47.0",
+                "bridgeVersion":"1.50.0",
                 "protocolVersion":1,
                 "status":"available",
                 "subScene":2,
@@ -11810,7 +12267,7 @@ mod tests {
                 request,
                 json!({"APIFunc":"RST_WorkbenchInspectPrefab","entityId":"0x01","resourceName":"","memberId":""})
             );
-            json!({"bridgeVersion":"1.47.0","protocolVersion":1,"status":"available","entity":"0x01|TestEntity|0|1","resourceName":"{GUID}Prefabs/Test.et","resourceReferenceKind":"external","contributorAddons":"BaseGame;MyAddon","ancestorResources":"{BASE_GUID}Prefabs/Base.et","prefabEditMode":true,"components":"0|MeshObject","componentProperties":"0|Enabled|bool|1|0|default;0|VisibleDistance|integer|250|1|direct;0|Offset|vector|1 2 3|1|direct;0|Scale|float|1.5|0|inherited;0|Label|string|Test|0|default","children":"0|Wheel|front-left","properties":"Mass|float|2000|1|direct;userScript|string||0|default;constructor|string||0|default;destructor|string||0|default;Name|string|Jeep|0|inherited","childCount":2})
+            json!({"bridgeVersion":"1.50.0","protocolVersion":1,"status":"available","entity":"0x01|TestEntity|0|1","resourceName":"{GUID}Prefabs/Test.et","resourceReferenceKind":"external","contributorAddons":"BaseGame;MyAddon","ancestorResources":"{BASE_GUID}Prefabs/Base.et","prefabEditMode":true,"components":"0|MeshObject","componentProperties":"0|Enabled|bool|1|0|default;0|VisibleDistance|integer|250|1|direct;0|Offset|vector|1 2 3|1|direct;0|Scale|float|1.5|0|inherited;0|Label|string|Test|0|default","children":"0|Wheel|front-left","properties":"Mass|float|2000|1|direct;userScript|string||0|default;constructor|string||0|default;destructor|string||0|default;Name|string|Jeep|0|inherited","childCount":2})
         });
         let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
             gateway: super::WorkbenchGatewayOptions {
@@ -11867,7 +12324,7 @@ mod tests {
                 request,
                 json!({"APIFunc":"RST_WorkbenchInspectPrefab","entityId":"","resourceName":"{GUID}Prefabs/Test.et","memberId":""})
             );
-            json!({"bridgeVersion":"1.47.0","protocolVersion":1,"status":"available","resourceName":"{GUID}Prefabs/Test.et","components":"0|MeshObject;1|Light","componentProperties":"0|Enabled|bool|1|0;0|Offset|vector|1 2 3|1;1|Intensity|float|500.25|0"})
+            json!({"bridgeVersion":"1.50.0","protocolVersion":1,"status":"available","resourceName":"{GUID}Prefabs/Test.et","components":"0|MeshObject;1|Light","componentProperties":"0|Enabled|bool|1|0;0|Offset|vector|1 2 3|1;1|Intensity|float|500.25|0"})
         });
         let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
             gateway: super::WorkbenchGatewayOptions {
@@ -11905,7 +12362,7 @@ mod tests {
     #[test]
     fn prefab_component_inspection_reports_a_missing_component_without_losing_context() {
         let (port, peer) = start_peer(
-            |_| json!({"bridgeVersion":"1.47.0","protocolVersion":1,"status":"available","resourceName":"{GUID}Prefabs/Test.et","components":"0|MeshObject"}),
+            |_| json!({"bridgeVersion":"1.50.0","protocolVersion":1,"status":"available","resourceName":"{GUID}Prefabs/Test.et","components":"0|MeshObject"}),
         );
         let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
             gateway: super::WorkbenchGatewayOptions {
@@ -11932,7 +12389,7 @@ mod tests {
                 request,
                 json!({"APIFunc":"RST_WorkbenchInspectPrefab","entityId":"0x01 {}","resourceName":"","memberId":""})
             );
-            json!({"bridgeVersion":"1.47.0","protocolVersion":1,"status":"available","resourceName":"{GUID}Prefabs/Test.et","components":"0|MeshObject","componentProperties":"0|Enabled|bool|1|0|default"})
+            json!({"bridgeVersion":"1.50.0","protocolVersion":1,"status":"available","resourceName":"{GUID}Prefabs/Test.et","components":"0|MeshObject","componentProperties":"0|Enabled|bool|1|0|default"})
         });
         let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
             gateway: super::WorkbenchGatewayOptions {
@@ -11962,7 +12419,7 @@ mod tests {
                 request,
                 json!({"APIFunc":"RST_WorkbenchInspectPrefab","entityId":"","resourceName":"{GUID}Prefabs/Test.et","memberId":"member:0"})
             );
-            json!({"bridgeVersion":"1.47.0","protocolVersion":1,"status":"available","resourceName":"{GUID}Prefabs/Test.et","memberId":"member:0","components":"0|MeshObject","componentProperties":"0|Enabled|bool|1|0|default","children":"0|Wheel|","properties":"coords|vector|1 2 3|1|direct","childCount":1})
+            json!({"bridgeVersion":"1.50.0","protocolVersion":1,"status":"available","resourceName":"{GUID}Prefabs/Test.et","memberId":"member:0","components":"0|MeshObject","componentProperties":"0|Enabled|bool|1|0|default","children":"0|Wheel|","properties":"coords|vector|1 2 3|1|direct","childCount":1})
         });
         let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
             gateway: super::WorkbenchGatewayOptions {
@@ -11993,7 +12450,7 @@ mod tests {
                 request,
                 json!({"APIFunc":"RST_WorkbenchCreatePrefab","entityId":"0x01","name":"Prefabs/New.et","confirm":false})
             );
-            json!({"bridgeVersion":"1.47.0","protocolVersion":1,"status":"confirmation-required","entity":"0x01|TestEntity|0|1","destination":"Prefabs/New.et","destinationExists":false})
+            json!({"bridgeVersion":"1.50.0","protocolVersion":1,"status":"confirmation-required","entity":"0x01|TestEntity|0|1","destination":"Prefabs/New.et","destinationExists":false})
         });
         let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
             gateway: super::WorkbenchGatewayOptions {
@@ -12025,7 +12482,7 @@ mod tests {
                 })
             );
             json!({
-                "bridgeVersion":"1.47.0",
+                "bridgeVersion":"1.50.0",
                 "protocolVersion":1,
                 "status":"confirmation-required",
                 "destination":"Prefabs/Generated/RST_Test.et",
@@ -12068,7 +12525,7 @@ mod tests {
                 })
             );
             json!({
-                "bridgeVersion":"1.47.0",
+                "bridgeVersion":"1.50.0",
                 "protocolVersion":1,
                 "status":"confirmation-required",
                 "destinationExists":0
@@ -12107,7 +12564,7 @@ mod tests {
                 })
             );
             json!({
-                "bridgeVersion":"1.47.0",
+                "bridgeVersion":"1.50.0",
                 "protocolVersion":1,
                 "status":"confirmation-required",
                 "resourceName":resource_name,
@@ -12150,7 +12607,7 @@ mod tests {
                 })
             );
             json!({
-                "bridgeVersion":"1.47.0",
+                "bridgeVersion":"1.50.0",
                 "protocolVersion":1,
                 "status":"confirmation-required",
                 "resourceName":resource_name,
@@ -12199,7 +12656,7 @@ mod tests {
                 })
             );
             json!({
-                "bridgeVersion":"1.47.0",
+                "bridgeVersion":"1.50.0",
                 "protocolVersion":1,
                 "status":"confirmation-required",
                 "resourceName":resource_name,
@@ -12244,7 +12701,7 @@ mod tests {
     fn viewport_context_keeps_compact_cursor_result_separate_from_optional_ray_diagnostics() {
         let response = || {
             json!({
-                "bridgeVersion":"1.47.0", "protocolVersion":1, "status":"available",
+                "bridgeVersion":"1.50.0", "protocolVersion":1, "status":"available",
                 "width":1920, "height":1080, "mouseX":960, "mouseY":540, "mouseInside":true,
                 "cameraX":10.0, "cameraY":20.0, "cameraZ":30.0,
                 "cameraDirectionX":0.0, "cameraDirectionY":0.0, "cameraDirectionZ":1.0,
@@ -12304,7 +12761,7 @@ mod tests {
                 })
             );
             json!({
-                "bridgeVersion":"1.47.0", "protocolVersion":1, "status":"available", "hit":true,
+                "bridgeVersion":"1.50.0", "protocolVersion":1, "status":"available", "hit":true,
                 "fraction":0.5, "distance":10.0, "hitX":0.0, "hitY":0.0, "hitZ":0.0,
                 "normalX":0.0, "normalY":1.0, "normalZ":0.0, "kind":"ocean"
             })
@@ -12416,7 +12873,7 @@ mod tests {
                 })
             );
             json!({
-                "bridgeVersion": "1.47.0",
+                "bridgeVersion": "1.50.0",
                 "protocolVersion": 1,
                 "status": "available",
                 "centerX": 100.0,
@@ -12726,7 +13183,7 @@ mod tests {
                 request,
                 json!({"APIFunc":"RST_WorkbenchMoveEntity","entityId":"0x01 {}","x":10.0,"y":20.0,"z":30.0})
             );
-            json!({"bridgeVersion":"1.47.0","protocolVersion":1,"status":"moved","entity":"0x01 {}|TestEntity|0|7|10|20|30"})
+            json!({"bridgeVersion":"1.50.0","protocolVersion":1,"status":"moved","entity":"0x01 {}|TestEntity|0|7|10|20|30"})
         });
         let root = test_root("move-entity");
         fs::create_dir_all(&root).unwrap();
@@ -12762,7 +13219,7 @@ mod tests {
                 request,
                 json!({"APIFunc":"RST_WorkbenchDuplicateEntity","entityId":"0x01 {}","x":11.0,"y":22.0,"z":33.0,"name":"Copy"})
             );
-            json!({"bridgeVersion":"1.47.0","protocolVersion":1,"status":"duplicated","entity":"0x02 {}|TestEntity|0|7|11|22|33"})
+            json!({"bridgeVersion":"1.50.0","protocolVersion":1,"status":"duplicated","entity":"0x02 {}|TestEntity|0|7|11|22|33"})
         });
         let root = test_root("duplicate-entity");
         fs::create_dir_all(&root).unwrap();
@@ -13521,7 +13978,7 @@ mod tests {
     #[test]
     fn mutation_audit_records_identify_the_action_without_recording_values() {
         let entity_result = super::WorkbenchEntityMutationResult {
-            bridge_version: "1.47.0".to_string(),
+            bridge_version: "1.50.0".to_string(),
             protocol_version: 1,
             status: "available".to_string(),
             active_layer_id: Some(3),
@@ -13574,7 +14031,7 @@ mod tests {
                 "value": 40,
             }),
             &super::WorkbenchComponentResult {
-                bridge_version: "1.47.0".to_string(),
+                bridge_version: "1.50.0".to_string(),
                 protocol_version: 1,
                 status: "available".to_string(),
                 entity: None,
@@ -14225,6 +14682,77 @@ mod tests {
     }
 
     #[test]
+    fn shape_point_wire_records_require_three_finite_coordinates() {
+        assert_eq!(
+            super::parse_shape_points("1|2|3;-4.5|0|7"),
+            Some(vec![
+                super::WorkbenchEntityPosition {
+                    x: 1.0,
+                    y: 2.0,
+                    z: 3.0,
+                },
+                super::WorkbenchEntityPosition {
+                    x: -4.5,
+                    y: 0.0,
+                    z: 7.0,
+                },
+            ])
+        );
+        assert_eq!(super::parse_shape_points("1|2"), None);
+        assert_eq!(super::parse_shape_points("1|2|NaN"), None);
+    }
+
+    #[test]
+    fn shape_point_edit_uses_the_typed_native_handler() {
+        let (port, peer) = start_peer(|request| {
+            assert_eq!(
+                request,
+                json!({
+                    "APIFunc": "RST_WorkbenchEditShapePoints",
+                    "entityId": "0x01 {}",
+                    "operation": "insert",
+                    "index": 1,
+                    "count": 1,
+                    "points": "1,2,3;4,5,6",
+                })
+            );
+            json!({"bridgeVersion":"1.50.0","protocolVersion":1,"status":"points-updated","entity":"0x01 {}|PolylineShapeEntity|0|1|10|20|30||||","shapeClass":"PolylineShapeEntity","closed":false,"points":"1|2|3;4|5|6"})
+        });
+        let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
+            gateway: super::WorkbenchGatewayOptions {
+                port,
+                status_deadline: Duration::from_secs(1),
+                ..super::WorkbenchGatewayOptions::default()
+            },
+            ..super::WorkbenchControllerOptions::default()
+        });
+        let result = controller
+            .edit_shape_points(
+                "0x01 {}",
+                super::WorkbenchShapePointEdit::Insert,
+                Some(1),
+                None,
+                &[
+                    super::WorkbenchEntityPosition {
+                        x: 1.0,
+                        y: 2.0,
+                        z: 3.0,
+                    },
+                    super::WorkbenchEntityPosition {
+                        x: 4.0,
+                        y: 5.0,
+                        z: 6.0,
+                    },
+                ],
+            )
+            .unwrap();
+        assert_eq!(result.status, "points-updated");
+        assert_eq!(result.points.len(), 2);
+        assert_eq!(result.shape_class.as_deref(), Some("PolylineShapeEntity"));
+        peer.join().unwrap();
+    }
+
+    #[test]
     fn reparent_handler_rejects_a_descendant_parent_before_starting_an_action() {
         assert!(super::BRIDGE_ENTITY_MUTATION_SOURCE
             .contains("bool IsAncestor(IEntitySource entity, IEntitySource candidateParent)",));
@@ -14269,7 +14797,7 @@ mod tests {
                     "value": "3.75",
                 })
             );
-            json!({"bridgeVersion":"1.47.0","protocolVersion":1,"status":"property-set","activeLayerId":7,"entity":""})
+            json!({"bridgeVersion":"1.50.0","protocolVersion":1,"status":"property-set","activeLayerId":7,"entity":""})
         });
         let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
             gateway: super::WorkbenchGatewayOptions {
@@ -14308,7 +14836,7 @@ mod tests {
                 request,
                 json!({"APIFunc":"RST_WorkbenchInspectComponent","entityId":"0x01 {}","componentId":"cmp1:0:TestComponent"})
             );
-            json!({"bridgeVersion":"1.47.0","protocolVersion":1,"status":"available","entity":"","components":"0|TestComponent","properties":"m_fRadius|float|2.5|1"})
+            json!({"bridgeVersion":"1.50.0","protocolVersion":1,"status":"available","entity":"","components":"0|TestComponent","properties":"m_fRadius|float|2.5|1"})
         });
         let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
             gateway: super::WorkbenchGatewayOptions {
