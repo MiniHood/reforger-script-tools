@@ -158,6 +158,14 @@ cursors are opaque and bound to the same kind/query set; results include a
 logical project revision derived from loaded addon identities, never a local
 filesystem path.
 
+The read-only `workbench_search_resources` capability uses that same native
+registered-resource database with fixed resource kinds, native text terms, and
+an optional `$Addon:Path` logical root or exact add-on GUID. Each bounded result carries only the
+canonical `ResourceName`, its add-on GUID, resolved add-on ID when Workbench can
+resolve one, logical path, file name, and extension. It is discovery only:
+inspect a returned resource or prefab for deeper facts. Native resource search
+does not make scripts or arbitrary filesystem files discoverable.
+
 Compiler validation is captured once per invocation and exposed as bounded,
 opaque-cursor pages so an MCP client can retrieve every finding without
 recompiling between pages. Process shutdown is bound to a process identity that

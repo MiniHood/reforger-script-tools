@@ -307,6 +307,32 @@ pub struct WorkbenchResourceListPage {
     pub project_revision: String,
     pub limit: usize,
     pub resources: Vec<String>,
+    #[serde(skip_serializing, skip_deserializing)]
+    #[schemars(skip)]
+    pub(crate) resource_details: Vec<String>,
+    pub truncated: bool,
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkbenchResourceSearchHit {
+    pub resource_name: String,
+    pub addon_guid: String,
+    pub addon_id: Option<String>,
+    pub logical_path: String,
+    pub name: String,
+    pub extension: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkbenchResourceSearchPage {
+    pub bridge_version: String,
+    pub protocol_version: u32,
+    pub project_revision: String,
+    pub limit: usize,
+    pub results: Vec<WorkbenchResourceSearchHit>,
     pub truncated: bool,
     pub next_cursor: Option<String>,
 }
@@ -1595,13 +1621,25 @@ impl WorkbenchController {
         &self,
         kinds: &[&str],
         query: Option<&str>,
+        root_path: Option<&str>,
+        addon_guid: Option<&str>,
         cursor: Option<&str>,
         limit: usize,
     ) -> Result<WorkbenchResourceListPage, WorkbenchFailure> {
         let limit = limit.clamp(1, 200);
         let query = query.unwrap_or("").trim();
+        let root_path = root_path.unwrap_or("").trim();
+        let addon_guid = addon_guid.unwrap_or("").trim();
+        if !valid_resource_root_path(root_path) {
+            return Err(failure(WorkbenchFailureCode::Protocol));
+        }
+        if !addon_guid.is_empty()
+            && (addon_guid.len() != 16 || !addon_guid.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        {
+            return Err(failure(WorkbenchFailureCode::Protocol));
+        }
         let kinds = kinds.join(";");
-        let signature = sha256(format!("{kinds}\n{query}").as_bytes());
+        let signature = sha256(format!("{kinds}\n{query}\n{root_path}\n{addon_guid}").as_bytes());
         let offset = if let Some(cursor) = cursor {
             let (cursor_signature, offset) = parse_resource_list_cursor(cursor)
                 .ok_or_else(|| failure(WorkbenchFailureCode::Protocol))?;
@@ -1614,7 +1652,7 @@ impl WorkbenchController {
         };
         let started = Instant::now();
         let value = self.gateway.request(
-            json!({"APIFunc": "RST_WorkbenchListResources", "extensions": kinds, "query": query, "offset": offset, "limit": limit}),
+            json!({"APIFunc": "RST_WorkbenchListResources", "extensions": kinds, "query": query, "rootPath": root_path, "addonGuid": addon_guid, "offset": offset, "limit": limit}),
             self.options.gateway.status_deadline,
         ).map_err(|failure| self.correlate_failure_details(
             "list_resources", failure_code(failure.code), failure, json!({"handler": "RST_WorkbenchListResources"}),
@@ -1628,7 +1666,11 @@ impl WorkbenchController {
             )
         })?;
         let resources = split_bounded_list(&raw.resources, limit, 256 * 1024).0;
-        if raw.protocol_version != WORKBENCH_BRIDGE_PROTOCOL_VERSION || resources.len() > limit {
+        let resource_details = split_bounded_list(&raw.resource_details, limit, 256 * 1024).0;
+        if raw.protocol_version != WORKBENCH_BRIDGE_PROTOCOL_VERSION
+            || resources.len() > limit
+            || (!resource_details.is_empty() && resource_details.len() != resources.len())
+        {
             return Err(self.correlate_failure_details(
                 "list_resources",
                 "workbench_protocol_error",
@@ -1646,6 +1688,7 @@ impl WorkbenchController {
             project_revision,
             limit,
             resources,
+            resource_details,
             truncated: has_more,
             next_cursor,
         };
@@ -1656,6 +1699,40 @@ impl WorkbenchController {
             json!({"returned": result.resources.len(), "hasMore": result.next_cursor.is_some()}),
         );
         Ok(result)
+    }
+
+    pub fn search_resources(
+        &self,
+        kinds: &[&str],
+        query: Option<&str>,
+        root_path: Option<&str>,
+        addon_guid: Option<&str>,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<WorkbenchResourceSearchPage, WorkbenchFailure> {
+        let page = self.list_resources(kinds, query, root_path, addon_guid, cursor, limit)?;
+        if page.resource_details.len() != page.resources.len() {
+            return Err(self.correlate_failure_details(
+                "search_resources",
+                "workbench_protocol_error",
+                failure(WorkbenchFailureCode::Protocol),
+                json!({"handler": "RST_WorkbenchListResources"}),
+            ));
+        }
+        let results = page
+            .resource_details
+            .iter()
+            .map(|resource_name| parse_resource_search_hit(resource_name))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(WorkbenchResourceSearchPage {
+            bridge_version: page.bridge_version,
+            protocol_version: page.protocol_version,
+            project_revision: page.project_revision,
+            limit: page.limit,
+            results,
+            truncated: page.truncated,
+            next_cursor: page.next_cursor,
+        })
     }
 
     pub fn world_selection_summary(
@@ -5038,6 +5115,8 @@ struct RawBridgeResourceList {
     loaded_addons: String,
     #[serde(rename = "resources", default)]
     resources: String,
+    #[serde(rename = "resourceDetails", default)]
+    resource_details: String,
     #[serde(rename = "hasMore", default)]
     has_more: Value,
 }
@@ -6558,6 +6637,58 @@ fn parse_resource_list_cursor(cursor: &str) -> Option<(String, usize)> {
     let signature = parts.next()?.to_string();
     let offset = parts.next()?.parse().ok()?;
     parts.next().is_none().then_some((signature, offset))
+}
+
+fn valid_resource_root_path(value: &str) -> bool {
+    if value.is_empty() {
+        return true;
+    }
+    let Some((addon, logical_path)) = value.strip_prefix('$').and_then(|value| value.split_once(':')) else {
+        return false;
+    };
+    !addon.is_empty()
+        && !addon.contains([':', ';', '|', '/', '\\'])
+        && !logical_path.starts_with('/')
+        && !logical_path.contains("..")
+        && !logical_path.contains([';', '|', '\\'])
+}
+
+fn parse_resource_search_hit(value: &str) -> Result<WorkbenchResourceSearchHit, WorkbenchFailure> {
+    let mut fields = value.split('|');
+    let resource_name = fields.next().unwrap_or_default();
+    let addon_guid = fields.next().unwrap_or_default();
+    let addon_id = fields.next().unwrap_or_default();
+    let logical_path = fields.next().unwrap_or_default();
+    let extension = fields.next().unwrap_or_default();
+    if fields.next().is_some()
+        || resource_name.is_empty()
+        || addon_guid.is_empty()
+        || logical_path.is_empty()
+        || extension.is_empty()
+        || !resource_name.starts_with('{')
+        || !resource_name.contains('}')
+        || logical_path.contains("..")
+        || logical_path.contains([';', '|', '\\'])
+        || logical_path.starts_with('/')
+    {
+        return Err(failure(WorkbenchFailureCode::Protocol));
+    }
+    let (stem, observed_extension) = logical_path
+        .rsplit_once('.')
+        .filter(|(_, observed_extension)| !observed_extension.is_empty())
+        .ok_or_else(|| failure(WorkbenchFailureCode::Protocol))?;
+    if observed_extension != extension {
+        return Err(failure(WorkbenchFailureCode::Protocol));
+    }
+    let name = stem.rsplit('/').next().filter(|name| !name.is_empty()).ok_or_else(|| failure(WorkbenchFailureCode::Protocol))?;
+    Ok(WorkbenchResourceSearchHit {
+        resource_name: resource_name.to_owned(),
+        addon_guid: addon_guid.to_owned(),
+        addon_id: (!addon_id.is_empty()).then(|| addon_id.to_owned()),
+        logical_path: logical_path.to_owned(),
+        name: name.to_owned(),
+        extension: extension.to_owned(),
+    })
 }
 
 fn parse_entity_list_cursor(cursor: &str) -> Option<(String, usize)> {
@@ -10622,6 +10753,8 @@ class RST_WorkbenchListResourcesRequest : JsonApiStruct
 {
 	string extensions;
 	string query;
+	string rootPath;
+	string addonGuid;
 	int offset;
 	int limit;
 	void RST_WorkbenchListResourcesRequest() { RegAll(); }
@@ -10632,6 +10765,7 @@ class RST_WorkbenchListResourcesResponse : JsonApiStruct
 	int protocolVersion;
 	string loadedAddons;
 	string resources;
+	string resourceDetails;
 	bool hasMore;
 	void RST_WorkbenchListResourcesResponse() { RegAll(); }
 }
@@ -10664,8 +10798,20 @@ class RST_WorkbenchListResources : NetApiHandler
 		SearchResourcesFilter filter = new SearchResourcesFilter();
 		filter.fileExtensions = extensions;
 		filter.searchStr = searchStrings;
+		filter.rootPath = typedRequest.rootPath;
 		array<ResourceName> allResources = new array<ResourceName>();
 		ResourceDatabase.SearchResources(filter, allResources.Insert);
+		if (!typedRequest.addonGuid.IsEmpty())
+		{
+			array<ResourceName> matchingResources = new array<ResourceName>();
+			foreach (ResourceName resource : allResources)
+			{
+				string resourceName = string.Format("%1", resource);
+				if (resourceName.Contains("{" + typedRequest.addonGuid + "}"))
+					matchingResources.Insert(resource);
+			}
+			allResources = matchingResources;
+		}
 		allResources.Sort();
 		int start = typedRequest.offset;
 		if (start < 0)
@@ -10678,11 +10824,28 @@ class RST_WorkbenchListResources : NetApiHandler
 		int returnedCount = 0;
 		for (int index = start; index < allResources.Count() && returnedCount < limit; index++)
 		{
-			string resourceName = string.Format("%1", allResources[index]);
+			ResourceName resource = allResources[index];
+			string resourceName = string.Format("%1", resource);
 			resourceName.Replace(";", "/");
+			int addonGuidEnd = resourceName.IndexOf("}");
+			if (!resourceName.StartsWith("{") || addonGuidEnd <= 1)
+				continue;
+			string addonGuid = resourceName.Substring(1, addonGuidEnd - 1);
+			string addonId = GameProject.GetAddonID(addonGuid);
+			if (addonId.IsEmpty())
+				addonId = GameProject.GetAddonID(resourceName.Substring(0, addonGuidEnd + 1));
+			string logicalPath = resource.GetPath();
+			string extension;
+			FilePath.StripExtension(logicalPath, extension);
+			if (logicalPath.IsEmpty() || extension.IsEmpty())
+				continue;
 			if (!response.resources.IsEmpty())
+			{
 				response.resources += ";";
+				response.resourceDetails += ";";
+			}
 			response.resources += resourceName;
+			response.resourceDetails += resourceName + "|" + addonGuid + "|" + addonId + "|" + logicalPath + "|" + extension;
 			returnedCount++;
 		}
 		response.hasMore = start + returnedCount < allResources.Count();
@@ -10843,6 +11006,8 @@ mod tests {
             assert_eq!(request["APIFunc"], "RST_WorkbenchListResources");
             assert_eq!(request["extensions"], "ent");
             assert_eq!(request["query"], "test");
+            assert_eq!(request["rootPath"], "");
+            assert_eq!(request["addonGuid"], "");
             assert_eq!(request["offset"], 0);
             assert_eq!(request["limit"], 2);
             json!({
@@ -10865,7 +11030,7 @@ mod tests {
         });
 
         let page = controller
-            .list_resources(&["ent"], Some("test"), None, 2)
+            .list_resources(&["ent"], Some("test"), None, None, None, 2)
             .unwrap();
 
         assert_eq!(page.resources.len(), 1);
@@ -10874,6 +11039,74 @@ mod tests {
         assert!(page.next_cursor.is_some());
         assert!(super::parse_resource_list_cursor(page.next_cursor.as_deref().unwrap()).is_some());
         assert_ne!(page.project_revision, "ArmaReforger;TestBullshit");
+        peer.join().unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn resource_search_projects_only_canonical_resource_facts() {
+        let hit = super::parse_resource_search_hit(
+            "{00B6CAF6E4A5BAB4}Prefabs/Props/Test.et|00B6CAF6E4A5BAB4|TestBullshit|Prefabs/Props/Test.et|et",
+        )
+        .unwrap();
+        assert_eq!(hit.addon_guid, "00B6CAF6E4A5BAB4");
+        assert_eq!(hit.addon_id.as_deref(), Some("TestBullshit"));
+        assert_eq!(hit.logical_path, "Prefabs/Props/Test.et");
+        assert_eq!(hit.name, "Test");
+        assert_eq!(hit.extension, "et");
+        assert!(super::parse_resource_search_hit("C:/absolute/Test.et").is_err());
+        assert!(super::parse_resource_search_hit("{GUID}../Test.et|GUID||../Test.et|et").is_err());
+        assert!(super::valid_resource_root_path("$TestBullshit:Prefabs/Props"));
+        assert!(super::valid_resource_root_path("$TestBullshit:"));
+        assert!(!super::valid_resource_root_path("C:/absolute"));
+        assert!(!super::valid_resource_root_path("$TestBullshit:../Prefabs"));
+    }
+
+    #[test]
+    fn resource_search_binds_root_and_projects_bridge_facts() {
+        let (port, peer) = start_peer(|request| {
+            assert_eq!(request["APIFunc"], "RST_WorkbenchListResources");
+            assert_eq!(request["extensions"], "et");
+            assert_eq!(request["query"], "test");
+            assert_eq!(request["rootPath"], "$TestBullshit:Prefabs");
+            assert_eq!(request["addonGuid"], "00B6CAF6E4A5BAB4");
+            assert_eq!(request["offset"], 0);
+            assert_eq!(request["limit"], 3);
+            json!({
+                "bridgeVersion": "1.38.0",
+                "protocolVersion": 1,
+                "loadedAddons": "ArmaReforger;TestBullshit",
+                "resources": "{00B6CAF6E4A5BAB4}Prefabs/Props/Test.et",
+                "resourceDetails": "{00B6CAF6E4A5BAB4}Prefabs/Props/Test.et|00B6CAF6E4A5BAB4|TestBullshit|Prefabs/Props/Test.et|et",
+                "hasMore": false
+            })
+        });
+        let root = test_root("resource-search");
+        let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
+            gateway: super::WorkbenchGatewayOptions {
+                port,
+                status_deadline: Duration::from_secs(1),
+                ..super::WorkbenchGatewayOptions::default()
+            },
+            user_directory: Some(root.clone()),
+            ..super::WorkbenchControllerOptions::default()
+        });
+
+        let page = controller
+            .search_resources(
+                &["et"],
+                Some("test"),
+                Some("$TestBullshit:Prefabs"),
+                Some("00B6CAF6E4A5BAB4"),
+                None,
+                3,
+            )
+            .unwrap();
+
+        assert_eq!(page.results.len(), 1);
+        assert_eq!(page.results[0].name, "Test");
+        assert_eq!(page.results[0].addon_id.as_deref(), Some("TestBullshit"));
+        assert!(!page.truncated);
         peer.join().unwrap();
         fs::remove_dir_all(root).unwrap();
     }

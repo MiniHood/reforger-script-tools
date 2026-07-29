@@ -3027,7 +3027,7 @@ Workbench tools return structured tool errors with a stable code, operation phas
 
 ## `workbench_list_resources`
 
-List a bounded page of Workbench resources by fixed resource kinds and an optional text query. Continue with the opaque cursor while preserving the same kinds and query; filesystem paths and arbitrary extensions are not accepted.
+List a bounded page of Workbench resources by fixed resource kinds, an optional text query, and an optional canonical logical $Addon:Path root. Continue with the opaque cursor while preserving the same filters; filesystem paths and arbitrary extensions are not accepted.
 
 ### Annotations
 
@@ -3094,6 +3094,14 @@ List a bounded page of Workbench resources by fixed resource kinds and an option
         "string",
         "null"
       ]
+    },
+    "rootPath": {
+      "maxLength": 512,
+      "minLength": 1,
+      "type": [
+        "string",
+        "null"
+      ]
     }
   },
   "required": [
@@ -3145,6 +3153,188 @@ List a bounded page of Workbench resources by fixed resource kinds and an option
     "projectRevision",
     "limit",
     "resources",
+    "truncated"
+  ],
+  "type": "object"
+}
+```
+
+### Stable failures
+
+Workbench tools return structured tool errors with a stable code, operation phase, retryability, and a unique log reference matching a rotating integration-log record. Raw transport and Workbench payload details are not exposed.
+
+## `workbench_search_resources`
+
+Search registered Workbench resources by fixed kinds, native text terms, an optional canonical logical $Addon:Path root, and an optional exact add-on GUID. Results expose canonical resource identity, add-on, logical path, and extension only; use exact resource inspection or prefab inspection for deeper facts.
+
+### Annotations
+
+```json
+{
+  "title": "Search Workbench resources",
+  "readOnlyHint": true,
+  "openWorldHint": false
+}
+```
+
+### Input schema
+
+```json
+{
+  "$defs": {
+    "McpWorkbenchResourceKind": {
+      "enum": [
+        "world",
+        "script",
+        "prefab",
+        "config",
+        "material",
+        "layout",
+        "texture",
+        "imageset",
+        "audio",
+        "animation",
+        "particle",
+        "string",
+        "ai"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "addonGuid": {
+      "maxLength": 16,
+      "minLength": 16,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "cursor": {
+      "maxLength": 256,
+      "minLength": 1,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "kinds": {
+      "items": {
+        "$ref": "#/$defs/McpWorkbenchResourceKind"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "limit": {
+      "maximum": 100,
+      "minimum": 1,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "query": {
+      "maxLength": 256,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "rootPath": {
+      "maxLength": 512,
+      "minLength": 1,
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "kinds"
+  ],
+  "type": "object"
+}
+```
+
+### Output schema
+
+```json
+{
+  "$defs": {
+    "WorkbenchResourceSearchHit": {
+      "properties": {
+        "addonGuid": {
+          "type": "string"
+        },
+        "addonId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "extension": {
+          "type": "string"
+        },
+        "logicalPath": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "resourceName": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "resourceName",
+        "addonGuid",
+        "logicalPath",
+        "name",
+        "extension"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "bridgeVersion": {
+      "type": "string"
+    },
+    "limit": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "nextCursor": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "projectRevision": {
+      "type": "string"
+    },
+    "protocolVersion": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "results": {
+      "items": {
+        "$ref": "#/$defs/WorkbenchResourceSearchHit"
+      },
+      "type": "array"
+    },
+    "truncated": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "bridgeVersion",
+    "protocolVersion",
+    "projectRevision",
+    "limit",
+    "results",
     "truncated"
   ],
   "type": "object"
