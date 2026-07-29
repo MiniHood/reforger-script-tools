@@ -115,6 +115,8 @@ pub const WORKBENCH_LIST_ENTITY_PROPERTIES_TOOL_NAME: &str = "workbench_list_ent
 pub const WORKBENCH_SET_ENTITY_PROPERTY_TOOL_NAME: &str = "workbench_set_entity_properties";
 pub const WORKBENCH_GET_SHAPE_POINTS_TOOL_NAME: &str = "workbench_get_shape_points";
 pub const WORKBENCH_EDIT_SHAPE_POINTS_TOOL_NAME: &str = "workbench_edit_shape_points";
+pub const WORKBENCH_SET_POLYLINE_REGULAR_POLYGON_TOOL_NAME: &str =
+    "workbench_set_polyline_regular_polygon";
 pub const WORKBENCH_LIST_EDITORS_TOOL_NAME: &str = "workbench_list_editors";
 pub const WORKBENCH_OPEN_EDITOR_TOOL_NAME: &str = "workbench_open_editor";
 pub const WORKBENCH_OPEN_RESOURCE_TOOL_NAME: &str = "workbench_open_resource";
@@ -197,6 +199,7 @@ const WORKBENCH_LIST_ENTITY_PROPERTIES_DESCRIPTION: &str = "List direct scalar p
 const WORKBENCH_SET_ENTITY_PROPERTY_DESCRIPTION: &str = "Set one direct entity property using only a typed write descriptor returned by workbench_list_entity_properties.";
 const WORKBENCH_GET_SHAPE_POINTS_DESCRIPTION: &str = "Read the ordered local point positions of one exact live PolylineShapeEntity or SplineShapeEntity. Points are shape-local authored coordinates; the returned entity position remains separate. This never changes selection or world content.";
 const WORKBENCH_EDIT_SHAPE_POINTS_DESCRIPTION: &str = "Set, insert, or delete ordered local point positions on one exact live PolylineShapeEntity or SplineShapeEntity. The edit is applied through ShapeEntity.SetPoints in one native Workbench undo action. Use workbench_get_shape_points first; no display-name or current-selection targeting is accepted.";
+const WORKBENCH_SET_POLYLINE_REGULAR_POLYGON_DESCRIPTION: &str = "Replace points on one exact live PolylineShapeEntity with a deterministic regular polygon in local XZ coordinates. radius is the circumradius in metres; sides is 3 through 256; center defaults to local (0, 0, 0); startAngleDegrees defaults to 0, placing the first vertex on local +X and advancing counter-clockwise. This preserves the entity's existing closed state and uses one native Workbench undo action. It rejects SplineShapeEntity targets and never targets current selection implicitly.";
 const WORKBENCH_LIST_EDITORS_DESCRIPTION: &str = "List the native Workbench editor modules available through the compatible managed handler package. Use an editor ID returned here with workbench_open_editor; this does not open or focus an editor.";
 const WORKBENCH_OPEN_EDITOR_DESCRIPTION: &str = "Open one native Workbench editor module by an ID returned from workbench_list_editors. This is the same module-opening surface for every supported editor and does not select a resource.";
 const WORKBENCH_OPEN_RESOURCE_DESCRIPTION: &str = "Open one canonical Workbench resource through Workbench's native resource routing. Workbench selects the owning editor from the resource type; this includes world, script, particle, animation, audio, and string resources without editor-specific commands.";
@@ -403,6 +406,19 @@ struct McpWorkbenchEditShapePointsInput {
     count: Option<usize>,
     #[schemars(length(max = 4096))]
     points: Option<Vec<WorkbenchEntityPosition>>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct McpWorkbenchPolylineRegularPolygonInput {
+    #[schemars(length(min = 1, max = 256))]
+    entity_id: String,
+    #[schemars(range(min = 3, max = 256))]
+    sides: i32,
+    #[schemars(range(min = 0.001, max = 100000.0))]
+    radius: f32,
+    center: Option<WorkbenchEntityPosition>,
+    start_angle_degrees: Option<f32>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1610,6 +1626,7 @@ impl ServerHandler for ReforgerMcpServer {
             workbench_set_entity_property_tool(),
             workbench_get_shape_points_tool(),
             workbench_edit_shape_points_tool(),
+            workbench_set_polyline_regular_polygon_tool(),
             workbench_list_editors_tool(),
             workbench_open_editor_tool(),
             workbench_open_resource_tool(),
@@ -1711,6 +1728,9 @@ impl ServerHandler for ReforgerMcpServer {
             WORKBENCH_SET_ENTITY_PROPERTY_TOOL_NAME => Some(workbench_set_entity_property_tool()),
             WORKBENCH_GET_SHAPE_POINTS_TOOL_NAME => Some(workbench_get_shape_points_tool()),
             WORKBENCH_EDIT_SHAPE_POINTS_TOOL_NAME => Some(workbench_edit_shape_points_tool()),
+            WORKBENCH_SET_POLYLINE_REGULAR_POLYGON_TOOL_NAME => {
+                Some(workbench_set_polyline_regular_polygon_tool())
+            }
             WORKBENCH_LIST_EDITORS_TOOL_NAME => Some(workbench_list_editors_tool()),
             WORKBENCH_OPEN_EDITOR_TOOL_NAME => Some(workbench_open_editor_tool()),
             WORKBENCH_OPEN_RESOURCE_TOOL_NAME => Some(workbench_open_resource_tool()),
@@ -2596,6 +2616,60 @@ impl ServerHandler for ReforgerMcpServer {
             )
             .await;
         }
+        if request.name == WORKBENCH_SET_POLYLINE_REGULAR_POLYGON_TOOL_NAME {
+            let input = parse_workbench_input::<McpWorkbenchPolylineRegularPolygonInput>(&request)?;
+            let points = match regular_polygon_points(
+                input.sides,
+                input.radius,
+                input.center.unwrap_or(WorkbenchEntityPosition {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                }),
+                input.start_angle_degrees.unwrap_or(0.0),
+            ) {
+                Ok(points) => points,
+                Err(message) => {
+                    return Ok(tool_error("invalid_input", message, "Correct the input and retry."));
+                }
+            };
+            let workbench = self.workbench.clone();
+            return blocking_workbench_call(
+                self.admission.clone(),
+                context,
+                "set_polyline_regular_polygon",
+                move || {
+                    let current = workbench.shape_points(&input.entity_id).map_err(|failure| {
+                        workbench.correlate_failure("set_polyline_regular_polygon", failure)
+                    })?;
+                    if current.status != "available"
+                        || current.shape_class.as_deref() != Some("PolylineShapeEntity")
+                    {
+                        let status = if current.status == "available" {
+                            "entity-not-polyline".to_string()
+                        } else {
+                            current.status.clone()
+                        };
+                        return Ok(WorkbenchShapePoints {
+                            status,
+                            ..current
+                        });
+                    }
+                    workbench
+                        .edit_shape_points(
+                            &input.entity_id,
+                            WorkbenchShapePointEdit::Set,
+                            None,
+                            None,
+                            &points,
+                        )
+                        .map_err(|failure| {
+                            workbench.correlate_failure("set_polyline_regular_polygon", failure)
+                        })
+                },
+            )
+            .await;
+        }
         if request.name == WORKBENCH_LIST_EDITORS_TOOL_NAME {
             require_empty_tool_request(&request, WORKBENCH_LIST_EDITORS_TOOL_NAME)?;
             let workbench = self.workbench.clone();
@@ -3083,6 +3157,38 @@ fn parse_workbench_input<T: for<'de> Deserialize<'de>>(
     )
 }
 
+fn regular_polygon_points(
+    sides: i32,
+    radius: f32,
+    center: WorkbenchEntityPosition,
+    start_angle_degrees: f32,
+) -> Result<Vec<WorkbenchEntityPosition>, &'static str> {
+    if !(3..=256).contains(&sides) {
+        return Err("sides must be between 3 and 256.");
+    }
+    if !radius.is_finite() || !(0.0..=100_000.0).contains(&radius) {
+        return Err("radius must be finite and greater than zero, up to 100000 metres.");
+    }
+    if !center.x.is_finite() || !center.y.is_finite() || !center.z.is_finite() {
+        return Err("center coordinates must be finite.");
+    }
+    if !start_angle_degrees.is_finite() {
+        return Err("startAngleDegrees must be finite.");
+    }
+    let start_angle = start_angle_degrees.to_radians();
+    let step = std::f32::consts::TAU / sides as f32;
+    Ok((0..sides)
+        .map(|index| {
+            let angle = start_angle + step * index as f32;
+            WorkbenchEntityPosition {
+                x: center.x + radius * angle.cos(),
+                y: center.y,
+                z: center.z + radius * angle.sin(),
+            }
+        })
+        .collect())
+}
+
 async fn blocking_workbench_call<T: Serialize + Send + 'static>(
     admission: Arc<Semaphore>,
     context: RequestContext<RoleServer>,
@@ -3459,6 +3565,7 @@ Copy a hit's `inspectInput` unchanged to `inspect_game_data_symbol`, or its `rea
         workbench_set_entity_property_tool(),
         workbench_get_shape_points_tool(),
         workbench_edit_shape_points_tool(),
+        workbench_set_polyline_regular_polygon_tool(),
         workbench_list_editors_tool(),
         workbench_open_editor_tool(),
         workbench_open_resource_tool(),
@@ -4273,6 +4380,19 @@ fn workbench_edit_shape_points_tool() -> Tool {
     )
 }
 
+fn workbench_set_polyline_regular_polygon_tool() -> Tool {
+    workbench_input_tool::<McpWorkbenchPolylineRegularPolygonInput, WorkbenchShapePoints>(
+        WORKBENCH_SET_POLYLINE_REGULAR_POLYGON_TOOL_NAME,
+        WORKBENCH_SET_POLYLINE_REGULAR_POLYGON_DESCRIPTION,
+        "Set a regular polygon on a Workbench polyline",
+        ToolAnnotations::with_title("Set Workbench polyline regular polygon")
+            .read_only(false)
+            .destructive(false)
+            .idempotent(false)
+            .open_world(false),
+    )
+}
+
 fn workbench_list_editors_tool() -> Tool {
     workbench_empty_tool::<WorkbenchEditorList>(
         WORKBENCH_LIST_EDITORS_TOOL_NAME,
@@ -4518,7 +4638,8 @@ fn tool_error(code: &str, cause: &str, recovery: &str) -> CallToolResult {
 #[cfg(test)]
 mod tests {
     use super::{
-        game_data_status_tool, inspect_game_data_symbol_tool, render_api_reference,
+        game_data_status_tool, inspect_game_data_symbol_tool, regular_polygon_points,
+        render_api_reference,
         workbench_add_component_tool, workbench_create_prefab_tool,
         workbench_duplicate_entity_tool, workbench_inspect_component_tool,
         workbench_inspect_prefab_component_tool, workbench_inspect_prefab_context_tool,
@@ -4532,6 +4653,7 @@ mod tests {
         workbench_save_world_tool, workbench_search_resources_tool,
         workbench_search_world_entities_tool, workbench_selected_entity_hierarchy_tool,
         workbench_set_component_properties_tool, workbench_set_entity_property_tool,
+        workbench_set_polyline_regular_polygon_tool,
         workbench_set_prefab_component_property_tool, workbench_set_prefab_property_tool,
         workbench_start_play_session_tool, workbench_status_tool, workbench_stop_play_session_tool,
         workbench_trace_tool, workbench_validate_scripts_tool, workbench_viewport_context_tool,
@@ -4551,6 +4673,7 @@ mod tests {
         WORKBENCH_SAVE_WORLD_TOOL_NAME, WORKBENCH_SEARCH_RESOURCES_TOOL_NAME,
         WORKBENCH_SEARCH_WORLD_ENTITIES_TOOL_NAME, WORKBENCH_SELECTED_ENTITY_HIERARCHY_TOOL_NAME,
         WORKBENCH_SET_COMPONENT_PROPERTIES_TOOL_NAME, WORKBENCH_SET_ENTITY_PROPERTY_TOOL_NAME,
+        WORKBENCH_SET_POLYLINE_REGULAR_POLYGON_TOOL_NAME,
         WORKBENCH_SET_PREFAB_COMPONENT_PROPERTY_TOOL_NAME, WORKBENCH_SET_PREFAB_PROPERTY_TOOL_NAME,
         WORKBENCH_START_PLAY_SESSION_TOOL_NAME, WORKBENCH_STATUS_TOOL_NAME,
         WORKBENCH_STOP_PLAY_SESSION_TOOL_NAME, WORKBENCH_TRACE_TOOL_NAME,
@@ -4558,6 +4681,28 @@ mod tests {
         WORKBENCH_WORLD_SELECTION_SUMMARY_TOOL_NAME,
     };
     use serde_json::Value;
+
+    #[test]
+    fn regular_polygon_uses_local_xz_circumradius_vertices() {
+        let points = regular_polygon_points(
+            4,
+            10.0,
+            crate::workbench::WorkbenchEntityPosition {
+                x: 2.0,
+                y: 3.0,
+                z: 4.0,
+            },
+            0.0,
+        )
+        .expect("valid square");
+
+        assert_eq!(points.len(), 4);
+        assert!((points[0].x - 12.0).abs() < 0.0001);
+        assert!((points[0].z - 4.0).abs() < 0.0001);
+        assert!((points[1].x - 2.0).abs() < 0.0001);
+        assert!((points[1].z - 14.0).abs() < 0.0001);
+        assert!(points.iter().all(|point| point.y == 3.0));
+    }
 
     #[test]
     fn generated_reference_uses_the_live_tool_descriptor() {
@@ -4643,6 +4788,7 @@ mod tests {
         let remove_component = workbench_remove_component_tool();
         let entity_properties = workbench_list_entity_properties_tool();
         let set_entity_properties = workbench_set_entity_property_tool();
+        let regular_polygon = workbench_set_polyline_regular_polygon_tool();
         let prefab_context = workbench_inspect_prefab_context_tool();
         let prefab_component = workbench_inspect_prefab_component_tool();
         let create_prefab = workbench_create_prefab_tool();
@@ -4670,6 +4816,10 @@ mod tests {
         assert_eq!(
             world_selection.name,
             WORKBENCH_WORLD_SELECTION_SUMMARY_TOOL_NAME
+        );
+        assert_eq!(
+            regular_polygon.name,
+            WORKBENCH_SET_POLYLINE_REGULAR_POLYGON_TOOL_NAME
         );
         assert_eq!(
             hierarchy.name,
@@ -4827,6 +4977,7 @@ mod tests {
         assert!(reference.contains("## `workbench_status`"));
         assert!(reference.contains("## `workbench_validate_scripts`"));
         assert!(reference.contains("## `workbench_world_selection_summary`"));
+        assert!(reference.contains("## `workbench_set_polyline_regular_polygon`"));
         assert!(reference.contains("## `workbench_selected_entity_hierarchy`"));
         assert!(reference.contains("## `workbench_inspect_prefab_context`"));
         assert!(reference.contains("## `workbench_create_prefab`"));
