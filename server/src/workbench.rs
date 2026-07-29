@@ -8074,7 +8074,17 @@ class RST_WorkbenchSearchEntities : NetApiHandler
 				response.hasMore = true;
 				continue;
 			}
-			string components; for (int componentIndex, componentCount = ComponentCount(entity); componentIndex < componentCount; componentIndex++) { IEntityComponentSource component = ComponentAt(entity, componentIndex); if (!component) continue; if (!components.IsEmpty()) components += ","; components += string.Format("%1", component.GetClassName()); }
+			string components;
+			int componentCount = ComponentCount(entity);
+			for (int componentIndex; componentIndex < componentCount; componentIndex++)
+			{
+				IEntityComponentSource component = ComponentAt(entity, componentIndex);
+				if (!component)
+					continue;
+				if (!components.IsEmpty())
+					components += ",";
+				components += string.Format("%1", component.GetClassName());
+			}
 			string matchedComponents; foreach (string expected : required) { if (!matchedComponents.IsEmpty()) matchedComponents += ","; matchedComponents += expected; }
 			string matches; if (nameMatch) matches = "name"; if (classMatch || !req.className.IsEmpty()) { if (!matches.IsEmpty()) matches += ","; matches += "class"; } if (resourceTextMatch || !req.resourceQuery.IsEmpty()) { if (!matches.IsEmpty()) matches += ","; matches += "resource"; } if (!required.IsEmpty()) { if (!matches.IsEmpty()) matches += ","; matches += "components"; } IEntitySource parent = IEntitySource.Cast(entity.GetParent()); string parentClass; if (parent) parentClass = parent.GetClassName(); resource.Replace("|", "/"); resource.Replace(";", "/"); name.Replace("|", "/"); name.Replace(";", "/"); parentClass.Replace("|", "/"); parentClass.Replace(";", "/"); if (!response.results.IsEmpty()) response.results += ";"; response.results += string.Format("%1|%2|%3|%4|%5|%6|%7", entity.GetID().ToString(), className, entity.GetSubScene(), entity.GetLayerID(), resource, name, components) + "|" + matches + "|" + matchedComponents + "|" + parentClass + "|" + entity.GetNumChildren(); returned = returned + 1;
 		}
@@ -11374,6 +11384,10 @@ mod tests {
         assert!(super::BRIDGE_ENTITY_SEARCH_SOURCE.contains("entity.GetNumChildren()"));
         assert!(super::BRIDGE_ENTITY_SEARCH_SOURCE.contains("entity.GetChild(index)"));
         assert!(super::BRIDGE_ENTITY_SEARCH_SOURCE.contains("ComponentAt(entity, componentIndex)"));
+        assert!(super::BRIDGE_ENTITY_SEARCH_SOURCE
+            .contains("int componentCount = ComponentCount(entity);"));
+        assert!(super::BRIDGE_ENTITY_SEARCH_SOURCE
+            .contains("for (int componentIndex; componentIndex < componentCount; componentIndex++)"));
         assert!(super::BRIDGE_ENTITY_SEARCH_SOURCE
             .contains("components += string.Format(\"%1\", component.GetClassName())"));
     }
