@@ -58,6 +58,12 @@ compiler integration invokes the packaged Rust executable through its private
 than a second codec. Detailed protocol evidence and compiler-validation
 acceptance remain in the relevant research journals.
 
+Shape geometry follows the same boundary: point coordinate conversion, named
+whole-shape transforms, and polyline resampling are separate typed capabilities,
+not a generic method or expression evaluator. The handler owns full
+parent-aware local/world conversion and native undo actions; MCP owns bounded
+schemas, explicit coordinate spaces, and result framing.
+
 The optional managed handler package lives under the current Windows user's
 `Documents\My Games\ArmaReforgerWorkbench\profile\scripts\WorkbenchGame\reforger-script-tools`
 directory. Its manifest is both file ownership and continuing-maintenance

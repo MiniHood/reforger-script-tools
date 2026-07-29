@@ -15702,6 +15702,720 @@ Replace points on one exact live PolylineShapeEntity with a deterministic regula
 
 Workbench tools return structured tool errors with a stable code, operation phase, retryability, and a unique log reference matching a rotating integration-log record. Raw transport and Workbench payload details are not exposed.
 
+## `workbench_convert_shape_points`
+
+Convert up to 4096 finite points between local authored coordinates and world coordinates for one exact live PolylineShapeEntity or SplineShapeEntity. Workbench applies the complete entity transform, including rotation, scale, and parent hierarchy; this is read-only.
+
+### Annotations
+
+```json
+{
+  "title": "Convert Workbench shape point coordinates",
+  "readOnlyHint": true,
+  "openWorldHint": false
+}
+```
+
+### Input schema
+
+```json
+{
+  "$defs": {
+    "McpWorkbenchShapePointSpace": {
+      "enum": [
+        "local",
+        "world"
+      ],
+      "type": "string"
+    },
+    "WorkbenchEntityPosition": {
+      "properties": {
+        "x": {
+          "format": "float",
+          "type": "number"
+        },
+        "y": {
+          "format": "float",
+          "type": "number"
+        },
+        "z": {
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "z"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "entityId": {
+      "maxLength": 256,
+      "minLength": 1,
+      "type": "string"
+    },
+    "fromSpace": {
+      "$ref": "#/$defs/McpWorkbenchShapePointSpace"
+    },
+    "points": {
+      "items": {
+        "$ref": "#/$defs/WorkbenchEntityPosition"
+      },
+      "maxItems": 4096,
+      "type": "array"
+    },
+    "toSpace": {
+      "$ref": "#/$defs/McpWorkbenchShapePointSpace"
+    }
+  },
+  "required": [
+    "entityId",
+    "fromSpace",
+    "toSpace",
+    "points"
+  ],
+  "type": "object"
+}
+```
+
+### Output schema
+
+```json
+{
+  "$defs": {
+    "WorkbenchEntityPosition": {
+      "properties": {
+        "x": {
+          "format": "float",
+          "type": "number"
+        },
+        "y": {
+          "format": "float",
+          "type": "number"
+        },
+        "z": {
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "z"
+      ],
+      "type": "object"
+    },
+    "WorkbenchSelectedEntity": {
+      "properties": {
+        "className": {
+          "type": "string"
+        },
+        "entityId": {
+          "type": "string"
+        },
+        "layerId": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "layerName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "position": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchEntityPosition"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "resourceName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "subScene": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "subSceneName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "entityId",
+        "className",
+        "subScene",
+        "layerId"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "bridgeVersion": {
+      "type": "string"
+    },
+    "entity": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkbenchSelectedEntity"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "fromSpace": {
+      "type": "string"
+    },
+    "points": {
+      "items": {
+        "$ref": "#/$defs/WorkbenchEntityPosition"
+      },
+      "type": "array"
+    },
+    "protocolVersion": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "shapeClass": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "status": {
+      "type": "string"
+    },
+    "toSpace": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "bridgeVersion",
+    "protocolVersion",
+    "status",
+    "fromSpace",
+    "toSpace",
+    "points"
+  ],
+  "type": "object"
+}
+```
+
+### Stable failures
+
+Workbench tools return structured tool errors with a stable code, operation phase, retryability, and a unique log reference matching a rotating integration-log record. Raw transport and Workbench payload details are not exposed.
+
+## `workbench_transform_shape_points`
+
+Apply exactly one named transform—translate, rotateXZ, scale, mirror, or reverse—to all authored points on one exact live PolylineShapeEntity or SplineShapeEntity in one native Workbench undo action. Choose local or world space explicitly; world transforms preserve parent-aware coordinates through Workbench conversion.
+
+### Annotations
+
+```json
+{
+  "title": "Transform Workbench shape points",
+  "readOnlyHint": false,
+  "destructiveHint": false,
+  "idempotentHint": false,
+  "openWorldHint": false
+}
+```
+
+### Input schema
+
+```json
+{
+  "$defs": {
+    "McpWorkbenchShapePointSpace": {
+      "enum": [
+        "local",
+        "world"
+      ],
+      "type": "string"
+    },
+    "McpWorkbenchShapeTransformOperation": {
+      "enum": [
+        "translate",
+        "rotateXz",
+        "scale",
+        "mirror",
+        "reverse"
+      ],
+      "type": "string"
+    },
+    "WorkbenchEntityPosition": {
+      "properties": {
+        "x": {
+          "format": "float",
+          "type": "number"
+        },
+        "y": {
+          "format": "float",
+          "type": "number"
+        },
+        "z": {
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "z"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "degrees": {
+      "format": "float",
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "entityId": {
+      "maxLength": 256,
+      "minLength": 1,
+      "type": "string"
+    },
+    "mirrorAxis": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "offset": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkbenchEntityPosition"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "operation": {
+      "$ref": "#/$defs/McpWorkbenchShapeTransformOperation"
+    },
+    "pivot": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkbenchEntityPosition"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "scale": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkbenchEntityPosition"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "space": {
+      "$ref": "#/$defs/McpWorkbenchShapePointSpace"
+    }
+  },
+  "required": [
+    "entityId",
+    "space",
+    "operation"
+  ],
+  "type": "object"
+}
+```
+
+### Output schema
+
+```json
+{
+  "$defs": {
+    "WorkbenchEntityPosition": {
+      "properties": {
+        "x": {
+          "format": "float",
+          "type": "number"
+        },
+        "y": {
+          "format": "float",
+          "type": "number"
+        },
+        "z": {
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "z"
+      ],
+      "type": "object"
+    },
+    "WorkbenchSelectedEntity": {
+      "properties": {
+        "className": {
+          "type": "string"
+        },
+        "entityId": {
+          "type": "string"
+        },
+        "layerId": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "layerName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "position": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchEntityPosition"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "resourceName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "subScene": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "subSceneName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "entityId",
+        "className",
+        "subScene",
+        "layerId"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "bridgeVersion": {
+      "type": "string"
+    },
+    "closed": {
+      "type": "boolean"
+    },
+    "entity": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkbenchSelectedEntity"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "points": {
+      "items": {
+        "$ref": "#/$defs/WorkbenchEntityPosition"
+      },
+      "type": "array"
+    },
+    "protocolVersion": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "shapeClass": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "status": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "bridgeVersion",
+    "protocolVersion",
+    "status",
+    "closed",
+    "points"
+  ],
+  "type": "object"
+}
+```
+
+### Stable failures
+
+Workbench tools return structured tool errors with a stable code, operation phase, retryability, and a unique log reference matching a rotating integration-log record. Raw transport and Workbench payload details are not exposed.
+
+## `workbench_resample_polyline`
+
+Replace one exact live PolylineShapeEntity's authored path with evenly spaced piecewise-linear samples in explicit local or world space, in one native Workbench undo action. Open paths retain their exact endpoints; closed paths include the closing segment without duplicating the first point. SplineShapeEntity is rejected.
+
+### Annotations
+
+```json
+{
+  "title": "Resample Workbench polyline",
+  "readOnlyHint": false,
+  "destructiveHint": false,
+  "idempotentHint": false,
+  "openWorldHint": false
+}
+```
+
+### Input schema
+
+```json
+{
+  "$defs": {
+    "McpWorkbenchShapePointSpace": {
+      "enum": [
+        "local",
+        "world"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "entityId": {
+      "maxLength": 256,
+      "minLength": 1,
+      "type": "string"
+    },
+    "space": {
+      "$ref": "#/$defs/McpWorkbenchShapePointSpace"
+    },
+    "spacingMeters": {
+      "format": "float",
+      "maximum": 100000.0,
+      "minimum": 0.0001,
+      "type": "number"
+    }
+  },
+  "required": [
+    "entityId",
+    "space",
+    "spacingMeters"
+  ],
+  "type": "object"
+}
+```
+
+### Output schema
+
+```json
+{
+  "$defs": {
+    "WorkbenchEntityPosition": {
+      "properties": {
+        "x": {
+          "format": "float",
+          "type": "number"
+        },
+        "y": {
+          "format": "float",
+          "type": "number"
+        },
+        "z": {
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "z"
+      ],
+      "type": "object"
+    },
+    "WorkbenchSelectedEntity": {
+      "properties": {
+        "className": {
+          "type": "string"
+        },
+        "entityId": {
+          "type": "string"
+        },
+        "layerId": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "layerName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "position": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchEntityPosition"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "resourceName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "subScene": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "subSceneName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "entityId",
+        "className",
+        "subScene",
+        "layerId"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "bridgeVersion": {
+      "type": "string"
+    },
+    "closed": {
+      "type": "boolean"
+    },
+    "entity": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkbenchSelectedEntity"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "originalPointCount": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "pathLength": {
+      "format": "float",
+      "type": "number"
+    },
+    "points": {
+      "items": {
+        "$ref": "#/$defs/WorkbenchEntityPosition"
+      },
+      "type": "array"
+    },
+    "protocolVersion": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "resultPointCount": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "shapeClass": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "skippedZeroLengthSegments": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "spacingMeters": {
+      "format": "float",
+      "type": "number"
+    },
+    "status": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "bridgeVersion",
+    "protocolVersion",
+    "status",
+    "closed",
+    "points",
+    "spacingMeters",
+    "originalPointCount",
+    "resultPointCount",
+    "pathLength",
+    "skippedZeroLengthSegments"
+  ],
+  "type": "object"
+}
+```
+
+### Stable failures
+
+Workbench tools return structured tool errors with a stable code, operation phase, retryability, and a unique log reference matching a rotating integration-log record. Raw transport and Workbench payload details are not exposed.
+
 ## `workbench_list_editors`
 
 List the native Workbench editor modules available through the compatible managed handler package. Use an editor ID returned here with workbench_open_editor; this does not open or focus an editor.

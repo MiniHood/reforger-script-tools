@@ -72,8 +72,17 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
         .pointer("/result/tools")
         .and_then(Value::as_array)
         .expect("tools/list result");
-    assert_eq!(listed.len(), 65);
+    assert_eq!(listed.len(), 72);
     assert_eq!(listed[0].get("name"), Some(&json!("game_data_status")));
+    assert!(listed
+        .iter()
+        .any(|tool| tool.get("name") == Some(&json!("workbench_convert_shape_points"))));
+    assert!(listed
+        .iter()
+        .any(|tool| tool.get("name") == Some(&json!("workbench_transform_shape_points"))));
+    assert!(listed
+        .iter()
+        .any(|tool| tool.get("name") == Some(&json!("workbench_resample_polyline"))));
     assert_eq!(
         listed[0].pointer("/annotations/readOnlyHint"),
         Some(&json!(true))
@@ -572,7 +581,7 @@ fn mcp_game_data_research_tools_complete_the_progressive_lookup_loop() {
         .pointer("/result/tools")
         .and_then(Value::as_array)
         .expect("tool catalogue");
-    assert_eq!(listed.len(), 65);
+    assert_eq!(listed.len(), 72);
     assert_eq!(
         listed[2].get("name"),
         Some(&json!("search_game_data_examples"))

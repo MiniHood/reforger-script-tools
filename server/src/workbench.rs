@@ -366,6 +366,55 @@ pub enum WorkbenchShapePointEdit {
     Delete,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkbenchShapePointSpace {
+    Local,
+    World,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkbenchShapeTransformOperation {
+    Translate,
+    RotateXz,
+    Scale,
+    Mirror,
+    Reverse,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkbenchShapePointConversion {
+    pub bridge_version: String,
+    pub protocol_version: u32,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entity: Option<WorkbenchSelectedEntity>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shape_class: Option<String>,
+    pub from_space: String,
+    pub to_space: String,
+    pub points: Vec<WorkbenchEntityPosition>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkbenchPolylineResample {
+    pub bridge_version: String,
+    pub protocol_version: u32,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entity: Option<WorkbenchSelectedEntity>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shape_class: Option<String>,
+    pub closed: bool,
+    pub points: Vec<WorkbenchEntityPosition>,
+    pub spacing_meters: f32,
+    pub original_point_count: usize,
+    pub result_point_count: usize,
+    pub path_length: f32,
+    pub skipped_zero_length_segments: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkbenchSelectedEntity {
@@ -2558,6 +2607,64 @@ impl WorkbenchController {
         )
     }
 
+    pub fn convert_shape_points(
+        &self,
+        entity_id: &str,
+        from_space: WorkbenchShapePointSpace,
+        to_space: WorkbenchShapePointSpace,
+        points: &[WorkbenchEntityPosition],
+    ) -> Result<WorkbenchShapePointConversion, WorkbenchFailure> {
+        self.shape_geometry_request(
+            "RST_WorkbenchShapeGeometry",
+            json!({
+                "entityId": entity_id,
+                "operation": "convert",
+                "fromSpace": shape_point_space_name(from_space),
+                "toSpace": shape_point_space_name(to_space),
+                "points": encode_shape_points(points),
+            }),
+        )
+        .map(RawBridgeShapeGeometry::into_conversion)
+    }
+
+    pub fn transform_shape_points(
+        &self,
+        entity_id: &str,
+        space: WorkbenchShapePointSpace,
+        operation: WorkbenchShapeTransformOperation,
+        offset: WorkbenchEntityPosition,
+        pivot: WorkbenchEntityPosition,
+        degrees: f32,
+        scale: WorkbenchEntityPosition,
+        mirror_axis: &str,
+    ) -> Result<WorkbenchShapePoints, WorkbenchFailure> {
+        let raw = self.shape_geometry_request(
+            "RST_WorkbenchShapeGeometry",
+            json!({
+                "entityId": entity_id, "operation": "transform", "space": shape_point_space_name(space),
+                "transformOperation": shape_transform_operation_name(operation),
+                "offsetX": offset.x, "offsetY": offset.y, "offsetZ": offset.z,
+                "pivotX": pivot.x, "pivotY": pivot.y, "pivotZ": pivot.z,
+                "degrees": degrees, "scaleX": scale.x, "scaleY": scale.y, "scaleZ": scale.z,
+                "mirrorAxis": mirror_axis,
+            }),
+        )?;
+        Ok(raw.into_shape_points())
+    }
+
+    pub fn resample_polyline(
+        &self,
+        entity_id: &str,
+        space: WorkbenchShapePointSpace,
+        spacing_meters: f32,
+    ) -> Result<WorkbenchPolylineResample, WorkbenchFailure> {
+        let raw = self.shape_geometry_request(
+            "RST_WorkbenchShapeGeometry",
+            json!({"entityId": entity_id, "operation": "resample", "space": shape_point_space_name(space), "spacingMeters": spacing_meters}),
+        )?;
+        Ok(raw.into_resample())
+    }
+
     pub fn set_selection(
         &self,
         entity_id: &str,
@@ -2612,6 +2719,29 @@ impl WorkbenchController {
             closed: raw.closed,
             points,
         })
+    }
+
+    fn shape_geometry_request(
+        &self,
+        api_func: &str,
+        request: Value,
+    ) -> Result<RawBridgeShapeGeometry, WorkbenchFailure> {
+        let mut payload = request
+            .as_object()
+            .cloned()
+            .ok_or_else(|| failure(WorkbenchFailureCode::Protocol))?;
+        payload.insert("APIFunc".to_string(), Value::String(api_func.to_string()));
+        let raw: RawBridgeShapeGeometry = serde_json::from_value(
+            self.gateway
+                .request(Value::Object(payload), self.options.gateway.status_deadline)?,
+        )
+        .map_err(|_| failure(WorkbenchFailureCode::Protocol))?;
+        if raw.bridge_version != WORKBENCH_BRIDGE_VERSION
+            || raw.protocol_version != WORKBENCH_BRIDGE_PROTOCOL_VERSION
+        {
+            return Err(failure(WorkbenchFailureCode::Protocol));
+        }
+        raw.validate()
     }
 
     pub fn create_entity(
@@ -5444,6 +5574,98 @@ struct RawBridgeShapePoints {
 }
 
 #[derive(Deserialize)]
+struct RawBridgeShapeGeometry {
+    #[serde(rename = "bridgeVersion")]
+    bridge_version: String,
+    #[serde(rename = "protocolVersion")]
+    protocol_version: u32,
+    status: String,
+    #[serde(default)]
+    entity: String,
+    #[serde(rename = "shapeClass", default)]
+    shape_class: String,
+    #[serde(default, deserialize_with = "deserialize_boolish")]
+    closed: bool,
+    #[serde(default)]
+    points: String,
+    #[serde(rename = "fromSpace", default)]
+    from_space: String,
+    #[serde(rename = "toSpace", default)]
+    to_space: String,
+    #[serde(rename = "spacingMeters", default)]
+    spacing_meters: f32,
+    #[serde(rename = "originalPointCount", default)]
+    original_point_count: usize,
+    #[serde(rename = "resultPointCount", default)]
+    result_point_count: usize,
+    #[serde(rename = "pathLength", default)]
+    path_length: f32,
+    #[serde(rename = "skippedZeroLengthSegments", default)]
+    skipped_zero_length_segments: usize,
+}
+
+impl RawBridgeShapeGeometry {
+    fn validate(self) -> Result<Self, WorkbenchFailure> {
+        parse_optional_world_selection_record(&self.entity)
+            .map_err(|_| failure(WorkbenchFailureCode::Protocol))?;
+        parse_shape_points(&self.points).ok_or_else(|| failure(WorkbenchFailureCode::Protocol))?;
+        Ok(self)
+    }
+    fn entity(&self) -> Result<Option<WorkbenchSelectedEntity>, WorkbenchFailure> {
+        parse_optional_world_selection_record(&self.entity)
+            .map_err(|_| failure(WorkbenchFailureCode::Protocol))
+    }
+    fn points(&self) -> Result<Vec<WorkbenchEntityPosition>, WorkbenchFailure> {
+        parse_shape_points(&self.points).ok_or_else(|| failure(WorkbenchFailureCode::Protocol))
+    }
+    fn into_shape_points(self) -> WorkbenchShapePoints {
+        let entity = self.entity().expect("validated shape geometry entity");
+        let points = self.points().expect("validated shape geometry points");
+        WorkbenchShapePoints {
+            bridge_version: self.bridge_version,
+            protocol_version: self.protocol_version,
+            status: self.status,
+            entity,
+            shape_class: (!self.shape_class.is_empty()).then_some(self.shape_class),
+            closed: self.closed,
+            points,
+        }
+    }
+    fn into_conversion(self) -> WorkbenchShapePointConversion {
+        let entity = self.entity().expect("validated shape geometry entity");
+        let points = self.points().expect("validated shape geometry points");
+        WorkbenchShapePointConversion {
+            bridge_version: self.bridge_version,
+            protocol_version: self.protocol_version,
+            status: self.status,
+            entity,
+            shape_class: (!self.shape_class.is_empty()).then_some(self.shape_class),
+            from_space: self.from_space,
+            to_space: self.to_space,
+            points,
+        }
+    }
+    fn into_resample(self) -> WorkbenchPolylineResample {
+        let entity = self.entity().expect("validated shape geometry entity");
+        let points = self.points().expect("validated shape geometry points");
+        WorkbenchPolylineResample {
+            bridge_version: self.bridge_version,
+            protocol_version: self.protocol_version,
+            status: self.status,
+            entity,
+            shape_class: (!self.shape_class.is_empty()).then_some(self.shape_class),
+            closed: self.closed,
+            points,
+            spacing_meters: self.spacing_meters,
+            original_point_count: self.original_point_count,
+            result_point_count: self.result_point_count,
+            path_length: self.path_length,
+            skipped_zero_length_segments: self.skipped_zero_length_segments,
+        }
+    }
+}
+
+#[derive(Deserialize)]
 struct RawBridgePrefabResourceComponentMutation {
     #[serde(rename = "bridgeVersion")]
     bridge_version: String,
@@ -6696,6 +6918,31 @@ fn parse_shape_points(value: &str) -> Option<Vec<WorkbenchEntityPosition>> {
         .collect()
 }
 
+fn encode_shape_points(points: &[WorkbenchEntityPosition]) -> String {
+    points
+        .iter()
+        .map(|point| format!("{},{},{}", point.x, point.y, point.z))
+        .collect::<Vec<_>>()
+        .join(";")
+}
+
+fn shape_point_space_name(space: WorkbenchShapePointSpace) -> &'static str {
+    match space {
+        WorkbenchShapePointSpace::Local => "local",
+        WorkbenchShapePointSpace::World => "world",
+    }
+}
+
+fn shape_transform_operation_name(operation: WorkbenchShapeTransformOperation) -> &'static str {
+    match operation {
+        WorkbenchShapeTransformOperation::Translate => "translate",
+        WorkbenchShapeTransformOperation::RotateXz => "rotateXZ",
+        WorkbenchShapeTransformOperation::Scale => "scale",
+        WorkbenchShapeTransformOperation::Mirror => "mirror",
+        WorkbenchShapeTransformOperation::Reverse => "reverse",
+    }
+}
+
 struct ResolvedWorkbenchPaths {
     workbench_root: PathBuf,
     profile: PathBuf,
@@ -7473,6 +7720,7 @@ fn bridge_payload() -> &'static [(&'static str, &'static str)] {
             BRIDGE_ENTITY_MUTATION_SOURCE,
         ),
         ("RST_WorkbenchShapePoints.c", BRIDGE_SHAPE_POINTS_SOURCE),
+        ("RST_WorkbenchShapeGeometry.c", BRIDGE_SHAPE_GEOMETRY_SOURCE),
         ("RST_WorkbenchComponents.c", BRIDGE_COMPONENTS_SOURCE),
         ("RST_WorkbenchProperties.c", BRIDGE_PROPERTIES_SOURCE),
         ("RST_WorkbenchPrefab.c", BRIDGE_PREFAB_SOURCE),
@@ -10033,6 +10281,110 @@ class RST_WorkbenchEditShapePoints : RST_WorkbenchShapePointsBase
 		api.EndEntityAction("Reforger Script Tools: edit shape points");
 		if (!ResolveShape(api, r.entityId, response, source, shape)) return response;
 		Record(api, source, shape, response); response.status = "points-updated"; return response;
+	}
+}
+#endif
+"#;
+
+const BRIDGE_SHAPE_GEOMETRY_SOURCE: &str = r#"#ifdef WORKBENCH
+class RST_WorkbenchShapeGeometryRequest : JsonApiStruct
+{
+	string entityId; string operation; string fromSpace; string toSpace; string space; string points;
+	string transformOperation; float offsetX; float offsetY; float offsetZ; float pivotX; float pivotY; float pivotZ;
+	float degrees; float scaleX; float scaleY; float scaleZ; string mirrorAxis; float spacingMeters;
+	void RST_WorkbenchShapeGeometryRequest() { RegAll(); }
+}
+class RST_WorkbenchShapeGeometryResponse : JsonApiStruct
+{
+	string bridgeVersion; int protocolVersion; string status; string entity; string shapeClass; bool closed; string points;
+	string fromSpace; string toSpace; float spacingMeters; int originalPointCount; int resultPointCount; float pathLength; int skippedZeroLengthSegments;
+	void RST_WorkbenchShapeGeometryResponse() { RegAll(); }
+}
+class RST_WorkbenchShapeGeometry : NetApiHandler
+{
+	IEntitySource Find(WorldEditorAPI api, string entityId)
+	{
+		for (int i, count = api.GetEditorEntityCount(); i < count; i++) { IEntitySource candidate = api.GetEditorEntity(i); if (candidate && candidate.GetID().ToString() == entityId) return candidate; }
+		return null;
+	}
+	RST_WorkbenchShapeGeometryResponse Response() { RST_WorkbenchShapeGeometryResponse response = new RST_WorkbenchShapeGeometryResponse(); response.bridgeVersion = "1.51.0"; response.protocolVersion = 1; return response; }
+	bool Setup(WorldEditorAPI api, RST_WorkbenchShapeGeometryResponse response)
+	{
+		if (!api) { response.status = "world-editor-api-unavailable"; return false; }
+		if (!api.GetWorld()) { response.status = "world-unavailable"; return false; }
+		if (api.IsPrefabEditMode()) { response.status = "prefab-edit-mode"; return false; }
+		if (api.IsDoingEditAction()) { response.status = "editor-action-active"; return false; }
+		return true;
+	}
+	bool Resolve(WorldEditorAPI api, string entityId, RST_WorkbenchShapeGeometryResponse response, out IEntitySource source, out ShapeEntity shape)
+	{
+		source = Find(api, entityId); if (!source) { response.status = "entity-not-found"; return false; }
+		shape = ShapeEntity.Cast(api.SourceToEntity(source)); if (!shape) { response.status = "entity-not-shape"; return false; }
+		if (source.GetClassName() != "PolylineShapeEntity" && source.GetClassName() != "SplineShapeEntity") { response.status = "unsupported-shape-class"; return false; }
+		return true;
+	}
+	void Record(WorldEditorAPI api, IEntitySource source, ShapeEntity shape, RST_WorkbenchShapeGeometryResponse response)
+	{
+		vector origin = shape.GetOrigin(); string resourceName = string.Format("%1", source.GetResourceName()); string name = source.GetName(); string subSceneName = api.GetWorld().GetSubSceneName(source.GetSubScene()); string layerName = api.GetEntitySubsceneLayer(source.GetSubScene(), source);
+		if (name == resourceName) name = string.Empty; resourceName.Replace("|", "/"); resourceName.Replace(";", "/"); name.Replace("|", "/"); name.Replace(";", "/"); subSceneName.Replace("|", "/"); subSceneName.Replace(";", "/"); layerName.Replace("|", "/"); layerName.Replace(";", "/");
+		response.entity = string.Format("%1|%2|%3|%4|%5|%6|%7", source.GetID().ToString(), source.GetClassName(), source.GetSubScene(), source.GetLayerID(), origin[0], origin[1], origin[2]) + "|" + resourceName + "|" + name + "|" + subSceneName + "|" + layerName; response.shapeClass = source.GetClassName(); response.closed = shape.IsClosed();
+		array<vector> positions = {}; shape.GetPointsPositions(positions); Encode(positions, response.points);
+	}
+	void Encode(array<vector> values, out string encoded) { encoded = string.Empty; foreach (vector point : values) { if (!encoded.IsEmpty()) encoded += ";"; encoded += string.Format("%1|%2|%3", point[0], point[1], point[2]); } }
+	bool Decode(string encoded, out array<vector> decoded)
+	{
+		if (encoded.IsEmpty()) return true; array<string> records = {}; encoded.Split(";", records, true); if (records.Count() > 4096) return false;
+		foreach (string record : records) { array<string> fields = {}; record.Split(",", fields, false); if (fields.Count() != 3) return false; decoded.Insert(Vector(fields[0].ToFloat(), fields[1].ToFloat(), fields[2].ToFloat())); }
+		return true;
+	}
+	float Distance(vector a, vector b) { float x = b[0] - a[0]; float y = b[1] - a[1]; float z = b[2] - a[2]; return Math.Sqrt(x * x + y * y + z * z); }
+	vector Interpolate(vector a, vector b, float t) { return Vector(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t); }
+	void ToSpace(ShapeEntity shape, array<vector> values, string fromSpace, string toSpace)
+	{
+		if (fromSpace == toSpace) return;
+		for (int i; i < values.Count(); i++) { if (fromSpace == "local") values[i] = shape.CoordToParent(values[i]); else values[i] = shape.CoordToLocal(values[i]); }
+	}
+	bool Commit(WorldEditorAPI api, string entityId, IEntitySource source, ShapeEntity shape, array<vector> points, RST_WorkbenchShapeGeometryResponse response, string label)
+	{
+		if (api.IsEntityLayerLockedHierarchy(source.GetSubScene(), source.GetLayerID())) { response.status = "mutation-rejected"; return false; }
+		if (!api.BeginEntityAction(label)) { response.status = "mutation-rejected"; return false; } shape.SetPoints(points, source); api.EndEntityAction(label);
+		if (!Resolve(api, entityId, response, source, shape)) return false; Record(api, source, shape, response); return true;
+	}
+	override JsonApiStruct GetRequest() { return new RST_WorkbenchShapeGeometryRequest(); }
+	override JsonApiStruct GetResponse(JsonApiStruct request)
+	{
+		RST_WorkbenchShapeGeometryRequest r = RST_WorkbenchShapeGeometryRequest.Cast(request); RST_WorkbenchShapeGeometryResponse response = Response(); WorldEditor editor = Workbench.GetModule(WorldEditor); if (!editor) { response.status = "world-editor-unavailable"; return response; } WorldEditorAPI api = editor.GetApi(); if (!Setup(api, response)) return response;
+		IEntitySource source; ShapeEntity shape; if (!Resolve(api, r.entityId, response, source, shape)) return response;
+		if (r.operation == "convert")
+		{
+			if ((r.fromSpace != "local" && r.fromSpace != "world") || (r.toSpace != "local" && r.toSpace != "world")) { response.status = "invalid-input"; return response; }
+			array<vector> responsePoints = {}; if (!Decode(r.points, responsePoints)) { response.status = "invalid-input"; return response; } ToSpace(shape, responsePoints, r.fromSpace, r.toSpace); Encode(responsePoints, response.points); Record(api, source, shape, response); Encode(responsePoints, response.points); response.fromSpace = r.fromSpace; response.toSpace = r.toSpace; response.status = "converted"; return response;
+		}
+		array<vector> points = {}; shape.GetPointsPositions(points);
+		if (r.operation == "transform")
+		{
+			if (r.space != "local" && r.space != "world") { response.status = "invalid-input"; return response; }
+			if (r.transformOperation == "reverse") { array<vector> reversed = {}; for (int i = points.Count() - 1; i >= 0; i--) reversed.Insert(points[i]); points = reversed; }
+			else
+			{
+				ToSpace(shape, points, "local", r.space); float radians = r.degrees * Math.PI / 180.0; float sine = Math.Sin(radians); float cosine = Math.Cos(radians);
+				if (r.transformOperation == "scale" && (r.scaleX == 0 || r.scaleY == 0 || r.scaleZ == 0)) { response.status = "invalid-input"; return response; }
+				if (r.transformOperation == "mirror" && r.mirrorAxis != "x" && r.mirrorAxis != "y" && r.mirrorAxis != "z") { response.status = "invalid-input"; return response; }
+				if (r.transformOperation != "translate" && r.transformOperation != "rotateXZ" && r.transformOperation != "scale" && r.transformOperation != "mirror") { response.status = "invalid-input"; return response; }
+				for (int i; i < points.Count(); i++) { vector p = points[i]; if (r.transformOperation == "translate") p = p + Vector(r.offsetX, r.offsetY, r.offsetZ); else { p = p - Vector(r.pivotX, r.pivotY, r.pivotZ); if (r.transformOperation == "rotateXZ") p = Vector(p[0] * cosine - p[2] * sine, p[1], p[0] * sine + p[2] * cosine); else if (r.transformOperation == "scale") p = Vector(p[0] * r.scaleX, p[1] * r.scaleY, p[2] * r.scaleZ); else if (r.mirrorAxis == "x") p[0] = -p[0]; else if (r.mirrorAxis == "y") p[1] = -p[1]; else p[2] = -p[2]; p = p + Vector(r.pivotX, r.pivotY, r.pivotZ); } points[i] = p; }
+				ToSpace(shape, points, r.space, "local");
+			}
+			if (!Commit(api, r.entityId, source, shape, points, response, "Reforger Script Tools: transform shape points")) return response; response.status = "points-transformed"; return response;
+		}
+		if (r.operation != "resample") { response.status = "invalid-input"; return response; }
+		if (source.GetClassName() != "PolylineShapeEntity") { response.status = "entity-not-polyline"; return response; }
+		if (r.space != "local" && r.space != "world" || r.spacingMeters <= 0) { response.status = "invalid-input"; return response; }
+		int originalCount = points.Count(); if (originalCount < 2) { response.status = "resample-rejected"; return response; } ToSpace(shape, points, "local", r.space); array<vector> sampled = {}; sampled.Insert(points[0]); float total = 0; int skipped = 0; int segments = points.Count() - 1; if (shape.IsClosed()) segments++;
+		for (int i; i < segments; i++) { vector a = points[i]; vector b = points[(i + 1) % points.Count()]; float length = Distance(a, b); if (length <= 0.00001) { skipped++; continue; } total += length; }
+		if (total <= 0.00001) { response.status = "resample-rejected"; return response; } float next = r.spacingMeters; float travelled = 0;
+		for (int i; i < segments; i++) { vector a = points[i]; vector b = points[(i + 1) % points.Count()]; float length = Distance(a, b); if (length <= 0.00001) continue; while (next < travelled + length) { if (sampled.Count() >= 4096) { response.status = "resample-too-many-points"; return response; } sampled.Insert(Interpolate(a, b, (next - travelled) / length)); next += r.spacingMeters; } travelled += length; }
+		if (!shape.IsClosed()) { if (sampled.Count() >= 4096) { response.status = "resample-too-many-points"; return response; } sampled.Insert(points[points.Count() - 1]); }
+		ToSpace(shape, sampled, r.space, "local"); if (!Commit(api, r.entityId, source, shape, sampled, response, "Reforger Script Tools: resample polyline")) return response; response.spacingMeters = r.spacingMeters; response.originalPointCount = originalCount; response.resultPointCount = sampled.Count(); response.pathLength = total; response.skippedZeroLengthSegments = skipped; response.status = "polyline-resampled"; return response;
 	}
 }
 #endif
@@ -14751,6 +15103,58 @@ mod tests {
         assert_eq!(result.points.len(), 2);
         assert_eq!(result.shape_class.as_deref(), Some("PolylineShapeEntity"));
         peer.join().unwrap();
+    }
+
+    #[test]
+    fn shape_geometry_conversion_uses_explicit_spaces_and_typed_handler() {
+        let (port, peer) = start_peer(|request| {
+            assert_eq!(
+                request,
+                json!({
+                    "APIFunc":"RST_WorkbenchShapeGeometry", "entityId":"0x01 {}", "operation":"convert",
+                    "fromSpace":"local", "toSpace":"world", "points":"1,2,3"
+                })
+            );
+            json!({"bridgeVersion":"1.51.0","protocolVersion":1,"status":"converted","entity":"0x01 {}|PolylineShapeEntity|0|1|10|20|30||||","shapeClass":"PolylineShapeEntity","fromSpace":"local","toSpace":"world","points":"11|22|33"})
+        });
+        let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
+            gateway: super::WorkbenchGatewayOptions {
+                port,
+                status_deadline: Duration::from_secs(1),
+                ..super::WorkbenchGatewayOptions::default()
+            },
+            ..super::WorkbenchControllerOptions::default()
+        });
+        let result = controller
+            .convert_shape_points(
+                "0x01 {}",
+                super::WorkbenchShapePointSpace::Local,
+                super::WorkbenchShapePointSpace::World,
+                &[super::WorkbenchEntityPosition {
+                    x: 1.0,
+                    y: 2.0,
+                    z: 3.0,
+                }],
+            )
+            .unwrap();
+        assert_eq!(result.status, "converted");
+        assert_eq!(result.points[0].x, 11.0);
+        assert_eq!(result.from_space, "local");
+        peer.join().unwrap();
+    }
+
+    #[test]
+    fn shape_geometry_bridge_uses_parent_aware_conversion_and_one_action_mutations() {
+        assert!(super::BRIDGE_SHAPE_GEOMETRY_SOURCE.contains("shape.CoordToParent(values[i])"));
+        assert!(super::BRIDGE_SHAPE_GEOMETRY_SOURCE.contains("shape.CoordToLocal(values[i])"));
+        assert!(super::BRIDGE_SHAPE_GEOMETRY_SOURCE
+            .contains("Reforger Script Tools: transform shape points"));
+        assert!(super::BRIDGE_SHAPE_GEOMETRY_SOURCE
+            .contains("Reforger Script Tools: resample polyline"));
+        assert!(super::BRIDGE_SHAPE_GEOMETRY_SOURCE
+            .contains("source.GetClassName() != \"PolylineShapeEntity\""));
+        assert!(super::BRIDGE_SHAPE_GEOMETRY_SOURCE
+            .contains("source.GetClassName() != \"SplineShapeEntity\""));
     }
 
     #[test]

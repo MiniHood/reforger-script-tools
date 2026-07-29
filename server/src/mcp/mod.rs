@@ -31,14 +31,16 @@ use crate::workbench::{
     WorkbenchEntitySelectionResult, WorkbenchFailure, WorkbenchFailureCode,
     WorkbenchInstallAuthorization, WorkbenchLayerState, WorkbenchLiveState, WorkbenchLogRead,
     WorkbenchOpenEditorResult, WorkbenchOpenResourceResult, WorkbenchOverview,
-    WorkbenchPlaySessionResult, WorkbenchPrefabComponentInspection, WorkbenchPrefabContext,
-    WorkbenchPrefabResourceMutationResult, WorkbenchProcessResult, WorkbenchProjectContext,
-    WorkbenchPropertyList, WorkbenchResourceInspection, WorkbenchResourceListPage,
-    WorkbenchResourceSearchPage, WorkbenchSaveAllResult, WorkbenchSaveWorldResult,
-    WorkbenchScriptActivationResult, WorkbenchSelectedEntityHierarchy, WorkbenchShapePointEdit,
-    WorkbenchShapePoints, WorkbenchTerrainSample, WorkbenchTerrainSampleOptions,
-    WorkbenchTraceOptions, WorkbenchTraceResult, WorkbenchTraceShape, WorkbenchValidationPage,
-    WorkbenchViewportContext, WorkbenchViewportContextOptions, WorkbenchWorldSelectionSummary,
+    WorkbenchPlaySessionResult, WorkbenchPolylineResample, WorkbenchPrefabComponentInspection,
+    WorkbenchPrefabContext, WorkbenchPrefabResourceMutationResult, WorkbenchProcessResult,
+    WorkbenchProjectContext, WorkbenchPropertyList, WorkbenchResourceInspection,
+    WorkbenchResourceListPage, WorkbenchResourceSearchPage, WorkbenchSaveAllResult,
+    WorkbenchSaveWorldResult, WorkbenchScriptActivationResult, WorkbenchSelectedEntityHierarchy,
+    WorkbenchShapePointConversion, WorkbenchShapePointEdit, WorkbenchShapePointSpace,
+    WorkbenchShapePoints, WorkbenchShapeTransformOperation, WorkbenchTerrainSample,
+    WorkbenchTerrainSampleOptions, WorkbenchTraceOptions, WorkbenchTraceResult,
+    WorkbenchTraceShape, WorkbenchValidationPage, WorkbenchViewportContext,
+    WorkbenchViewportContextOptions, WorkbenchWorldSelectionSummary,
 };
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, ContentBlock, Implementation, ListToolsResult,
@@ -117,6 +119,9 @@ pub const WORKBENCH_GET_SHAPE_POINTS_TOOL_NAME: &str = "workbench_get_shape_poin
 pub const WORKBENCH_EDIT_SHAPE_POINTS_TOOL_NAME: &str = "workbench_edit_shape_points";
 pub const WORKBENCH_SET_POLYLINE_REGULAR_POLYGON_TOOL_NAME: &str =
     "workbench_set_polyline_regular_polygon";
+pub const WORKBENCH_CONVERT_SHAPE_POINTS_TOOL_NAME: &str = "workbench_convert_shape_points";
+pub const WORKBENCH_TRANSFORM_SHAPE_POINTS_TOOL_NAME: &str = "workbench_transform_shape_points";
+pub const WORKBENCH_RESAMPLE_POLYLINE_TOOL_NAME: &str = "workbench_resample_polyline";
 pub const WORKBENCH_LIST_EDITORS_TOOL_NAME: &str = "workbench_list_editors";
 pub const WORKBENCH_OPEN_EDITOR_TOOL_NAME: &str = "workbench_open_editor";
 pub const WORKBENCH_OPEN_RESOURCE_TOOL_NAME: &str = "workbench_open_resource";
@@ -200,6 +205,9 @@ const WORKBENCH_SET_ENTITY_PROPERTY_DESCRIPTION: &str = "Set one direct entity p
 const WORKBENCH_GET_SHAPE_POINTS_DESCRIPTION: &str = "Read the ordered local point positions of one exact live PolylineShapeEntity or SplineShapeEntity. Points are shape-local authored coordinates; the returned entity position remains separate. This never changes selection or world content.";
 const WORKBENCH_EDIT_SHAPE_POINTS_DESCRIPTION: &str = "Set, insert, or delete ordered local point positions on one exact live PolylineShapeEntity or SplineShapeEntity. The edit is applied through ShapeEntity.SetPoints in one native Workbench undo action. Use workbench_get_shape_points first; no display-name or current-selection targeting is accepted.";
 const WORKBENCH_SET_POLYLINE_REGULAR_POLYGON_DESCRIPTION: &str = "Replace points on one exact live PolylineShapeEntity with a deterministic regular polygon in local XZ coordinates. radius is the circumradius in metres; sides is 3 through 256; center defaults to local (0, 0, 0); startAngleDegrees defaults to 0, placing the first vertex on local +X and advancing counter-clockwise. This preserves the entity's existing closed state and uses one native Workbench undo action. It rejects SplineShapeEntity targets and never targets current selection implicitly.";
+const WORKBENCH_CONVERT_SHAPE_POINTS_DESCRIPTION: &str = "Convert up to 4096 finite points between local authored coordinates and world coordinates for one exact live PolylineShapeEntity or SplineShapeEntity. Workbench applies the complete entity transform, including rotation, scale, and parent hierarchy; this is read-only.";
+const WORKBENCH_TRANSFORM_SHAPE_POINTS_DESCRIPTION: &str = "Apply exactly one named transform—translate, rotateXZ, scale, mirror, or reverse—to all authored points on one exact live PolylineShapeEntity or SplineShapeEntity in one native Workbench undo action. Choose local or world space explicitly; world transforms preserve parent-aware coordinates through Workbench conversion.";
+const WORKBENCH_RESAMPLE_POLYLINE_DESCRIPTION: &str = "Replace one exact live PolylineShapeEntity's authored path with evenly spaced piecewise-linear samples in explicit local or world space, in one native Workbench undo action. Open paths retain their exact endpoints; closed paths include the closing segment without duplicating the first point. SplineShapeEntity is rejected.";
 const WORKBENCH_LIST_EDITORS_DESCRIPTION: &str = "List the native Workbench editor modules available through the compatible managed handler package. Use an editor ID returned here with workbench_open_editor; this does not open or focus an editor.";
 const WORKBENCH_OPEN_EDITOR_DESCRIPTION: &str = "Open one native Workbench editor module by an ID returned from workbench_list_editors. This is the same module-opening surface for every supported editor and does not select a resource.";
 const WORKBENCH_OPEN_RESOURCE_DESCRIPTION: &str = "Open one canonical Workbench resource through Workbench's native resource routing. Workbench selects the owning editor from the resource type; this includes world, script, particle, animation, audio, and string resources without editor-specific commands.";
@@ -419,6 +427,58 @@ struct McpWorkbenchPolylineRegularPolygonInput {
     radius: f32,
     center: Option<WorkbenchEntityPosition>,
     start_angle_degrees: Option<f32>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+enum McpWorkbenchShapePointSpace {
+    Local,
+    World,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct McpWorkbenchConvertShapePointsInput {
+    #[schemars(length(min = 1, max = 256))]
+    entity_id: String,
+    from_space: McpWorkbenchShapePointSpace,
+    to_space: McpWorkbenchShapePointSpace,
+    #[schemars(length(max = 4096))]
+    points: Vec<WorkbenchEntityPosition>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+enum McpWorkbenchShapeTransformOperation {
+    Translate,
+    RotateXz,
+    Scale,
+    Mirror,
+    Reverse,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct McpWorkbenchTransformShapePointsInput {
+    #[schemars(length(min = 1, max = 256))]
+    entity_id: String,
+    space: McpWorkbenchShapePointSpace,
+    operation: McpWorkbenchShapeTransformOperation,
+    offset: Option<WorkbenchEntityPosition>,
+    pivot: Option<WorkbenchEntityPosition>,
+    degrees: Option<f32>,
+    scale: Option<WorkbenchEntityPosition>,
+    mirror_axis: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct McpWorkbenchResamplePolylineInput {
+    #[schemars(length(min = 1, max = 256))]
+    entity_id: String,
+    space: McpWorkbenchShapePointSpace,
+    #[schemars(range(min = 0.0001, max = 100000.0))]
+    spacing_meters: f32,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1627,6 +1687,9 @@ impl ServerHandler for ReforgerMcpServer {
             workbench_get_shape_points_tool(),
             workbench_edit_shape_points_tool(),
             workbench_set_polyline_regular_polygon_tool(),
+            workbench_convert_shape_points_tool(),
+            workbench_transform_shape_points_tool(),
+            workbench_resample_polyline_tool(),
             workbench_list_editors_tool(),
             workbench_open_editor_tool(),
             workbench_open_resource_tool(),
@@ -1731,6 +1794,11 @@ impl ServerHandler for ReforgerMcpServer {
             WORKBENCH_SET_POLYLINE_REGULAR_POLYGON_TOOL_NAME => {
                 Some(workbench_set_polyline_regular_polygon_tool())
             }
+            WORKBENCH_CONVERT_SHAPE_POINTS_TOOL_NAME => Some(workbench_convert_shape_points_tool()),
+            WORKBENCH_TRANSFORM_SHAPE_POINTS_TOOL_NAME => {
+                Some(workbench_transform_shape_points_tool())
+            }
+            WORKBENCH_RESAMPLE_POLYLINE_TOOL_NAME => Some(workbench_resample_polyline_tool()),
             WORKBENCH_LIST_EDITORS_TOOL_NAME => Some(workbench_list_editors_tool()),
             WORKBENCH_OPEN_EDITOR_TOOL_NAME => Some(workbench_open_editor_tool()),
             WORKBENCH_OPEN_RESOURCE_TOOL_NAME => Some(workbench_open_resource_tool()),
@@ -2630,7 +2698,11 @@ impl ServerHandler for ReforgerMcpServer {
             ) {
                 Ok(points) => points,
                 Err(message) => {
-                    return Ok(tool_error("invalid_input", message, "Correct the input and retry."));
+                    return Ok(tool_error(
+                        "invalid_input",
+                        message,
+                        "Correct the input and retry.",
+                    ));
                 }
             };
             let workbench = self.workbench.clone();
@@ -2639,9 +2711,11 @@ impl ServerHandler for ReforgerMcpServer {
                 context,
                 "set_polyline_regular_polygon",
                 move || {
-                    let current = workbench.shape_points(&input.entity_id).map_err(|failure| {
-                        workbench.correlate_failure("set_polyline_regular_polygon", failure)
-                    })?;
+                    let current = workbench
+                        .shape_points(&input.entity_id)
+                        .map_err(|failure| {
+                            workbench.correlate_failure("set_polyline_regular_polygon", failure)
+                        })?;
                     if current.status != "available"
                         || current.shape_class.as_deref() != Some("PolylineShapeEntity")
                     {
@@ -2650,10 +2724,7 @@ impl ServerHandler for ReforgerMcpServer {
                         } else {
                             current.status.clone()
                         };
-                        return Ok(WorkbenchShapePoints {
-                            status,
-                            ..current
-                        });
+                        return Ok(WorkbenchShapePoints { status, ..current });
                     }
                     workbench
                         .edit_shape_points(
@@ -2665,6 +2736,157 @@ impl ServerHandler for ReforgerMcpServer {
                         )
                         .map_err(|failure| {
                             workbench.correlate_failure("set_polyline_regular_polygon", failure)
+                        })
+                },
+            )
+            .await;
+        }
+        if request.name == WORKBENCH_CONVERT_SHAPE_POINTS_TOOL_NAME {
+            let input = parse_workbench_input::<McpWorkbenchConvertShapePointsInput>(&request)?;
+            if !finite_points(&input.points) {
+                return Ok(tool_error(
+                    "invalid_input",
+                    "points must contain only finite coordinates.",
+                    "Correct the input and retry.",
+                ));
+            }
+            let workbench = self.workbench.clone();
+            return blocking_workbench_call(
+                self.admission.clone(),
+                context,
+                "convert_shape_points",
+                move || {
+                    workbench
+                        .convert_shape_points(
+                            &input.entity_id,
+                            to_shape_point_space(input.from_space),
+                            to_shape_point_space(input.to_space),
+                            &input.points,
+                        )
+                        .map_err(|failure| {
+                            workbench.correlate_failure("convert_shape_points", failure)
+                        })
+                },
+            )
+            .await;
+        }
+        if request.name == WORKBENCH_TRANSFORM_SHAPE_POINTS_TOOL_NAME {
+            let input = parse_workbench_input::<McpWorkbenchTransformShapePointsInput>(&request)?;
+            let zero = WorkbenchEntityPosition {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            };
+            let one = WorkbenchEntityPosition {
+                x: 1.0,
+                y: 1.0,
+                z: 1.0,
+            };
+            let has_irrelevant = match input.operation {
+                McpWorkbenchShapeTransformOperation::Translate => {
+                    input.pivot.is_some()
+                        || input.degrees.is_some()
+                        || input.scale.is_some()
+                        || input.mirror_axis.is_some()
+                        || input.offset.is_none()
+                }
+                McpWorkbenchShapeTransformOperation::RotateXz => {
+                    input.offset.is_some()
+                        || input.scale.is_some()
+                        || input.mirror_axis.is_some()
+                        || input.degrees.is_none()
+                }
+                McpWorkbenchShapeTransformOperation::Scale => {
+                    input.offset.is_some()
+                        || input.degrees.is_some()
+                        || input.mirror_axis.is_some()
+                        || input.scale.is_none()
+                }
+                McpWorkbenchShapeTransformOperation::Mirror => {
+                    input.offset.is_some()
+                        || input.degrees.is_some()
+                        || input.scale.is_some()
+                        || input.mirror_axis.is_none()
+                }
+                McpWorkbenchShapeTransformOperation::Reverse => {
+                    input.offset.is_some()
+                        || input.pivot.is_some()
+                        || input.degrees.is_some()
+                        || input.scale.is_some()
+                        || input.mirror_axis.is_some()
+                }
+            };
+            if has_irrelevant {
+                return Ok(tool_error(
+                    "invalid_input",
+                    "Each transform operation accepts only its relevant fields.",
+                    "Correct the input and retry.",
+                ));
+            }
+            let operation = to_shape_transform_operation(input.operation);
+            let offset = input.offset.unwrap_or(zero.clone());
+            let pivot = input.pivot.unwrap_or(zero);
+            let degrees = input.degrees.unwrap_or(0.0);
+            let scale = input.scale.unwrap_or(one);
+            let mirror_axis = input.mirror_axis.unwrap_or_default();
+            let entity_id = input.entity_id;
+            let space = input.space;
+            if !finite_points(&[offset.clone(), pivot.clone(), scale.clone()])
+                || !degrees.is_finite()
+                || (operation == WorkbenchShapeTransformOperation::Scale
+                    && (scale.x == 0.0 || scale.y == 0.0 || scale.z == 0.0))
+                || (operation == WorkbenchShapeTransformOperation::Mirror
+                    && !matches!(mirror_axis.as_str(), "x" | "y" | "z"))
+            {
+                return Ok(tool_error("invalid_input", "transform parameters are invalid; scale components must be nonzero and mirrorAxis must be x, y, or z.", "Correct the input and retry."));
+            }
+            let workbench = self.workbench.clone();
+            return blocking_workbench_call(
+                self.admission.clone(),
+                context,
+                "transform_shape_points",
+                move || {
+                    workbench
+                        .transform_shape_points(
+                            &entity_id,
+                            to_shape_point_space(space),
+                            operation,
+                            offset,
+                            pivot,
+                            degrees,
+                            scale,
+                            &mirror_axis,
+                        )
+                        .map_err(|failure| {
+                            workbench.correlate_failure("transform_shape_points", failure)
+                        })
+                },
+            )
+            .await;
+        }
+        if request.name == WORKBENCH_RESAMPLE_POLYLINE_TOOL_NAME {
+            let input = parse_workbench_input::<McpWorkbenchResamplePolylineInput>(&request)?;
+            if !input.spacing_meters.is_finite() {
+                return Ok(tool_error(
+                    "invalid_input",
+                    "spacingMeters must be finite.",
+                    "Correct the input and retry.",
+                ));
+            }
+            let workbench = self.workbench.clone();
+            return blocking_workbench_call(
+                self.admission.clone(),
+                context,
+                "resample_polyline",
+                move || {
+                    workbench
+                        .resample_polyline(
+                            &input.entity_id,
+                            to_shape_point_space(input.space),
+                            input.spacing_meters,
+                        )
+                        .map_err(|failure| {
+                            workbench.correlate_failure("resample_polyline", failure)
                         })
                 },
             )
@@ -3189,6 +3411,33 @@ fn regular_polygon_points(
         .collect())
 }
 
+fn finite_points(points: &[WorkbenchEntityPosition]) -> bool {
+    points
+        .iter()
+        .all(|point| point.x.is_finite() && point.y.is_finite() && point.z.is_finite())
+}
+
+fn to_shape_point_space(space: McpWorkbenchShapePointSpace) -> WorkbenchShapePointSpace {
+    match space {
+        McpWorkbenchShapePointSpace::Local => WorkbenchShapePointSpace::Local,
+        McpWorkbenchShapePointSpace::World => WorkbenchShapePointSpace::World,
+    }
+}
+
+fn to_shape_transform_operation(
+    operation: McpWorkbenchShapeTransformOperation,
+) -> WorkbenchShapeTransformOperation {
+    match operation {
+        McpWorkbenchShapeTransformOperation::Translate => {
+            WorkbenchShapeTransformOperation::Translate
+        }
+        McpWorkbenchShapeTransformOperation::RotateXz => WorkbenchShapeTransformOperation::RotateXz,
+        McpWorkbenchShapeTransformOperation::Scale => WorkbenchShapeTransformOperation::Scale,
+        McpWorkbenchShapeTransformOperation::Mirror => WorkbenchShapeTransformOperation::Mirror,
+        McpWorkbenchShapeTransformOperation::Reverse => WorkbenchShapeTransformOperation::Reverse,
+    }
+}
+
 async fn blocking_workbench_call<T: Serialize + Send + 'static>(
     admission: Arc<Semaphore>,
     context: RequestContext<RoleServer>,
@@ -3566,6 +3815,9 @@ Copy a hit's `inspectInput` unchanged to `inspect_game_data_symbol`, or its `rea
         workbench_get_shape_points_tool(),
         workbench_edit_shape_points_tool(),
         workbench_set_polyline_regular_polygon_tool(),
+        workbench_convert_shape_points_tool(),
+        workbench_transform_shape_points_tool(),
+        workbench_resample_polyline_tool(),
         workbench_list_editors_tool(),
         workbench_open_editor_tool(),
         workbench_open_resource_tool(),
@@ -4393,6 +4645,43 @@ fn workbench_set_polyline_regular_polygon_tool() -> Tool {
     )
 }
 
+fn workbench_convert_shape_points_tool() -> Tool {
+    workbench_input_tool::<McpWorkbenchConvertShapePointsInput, WorkbenchShapePointConversion>(
+        WORKBENCH_CONVERT_SHAPE_POINTS_TOOL_NAME,
+        WORKBENCH_CONVERT_SHAPE_POINTS_DESCRIPTION,
+        "Convert Workbench shape point coordinates",
+        ToolAnnotations::with_title("Convert Workbench shape point coordinates")
+            .read_only(true)
+            .open_world(false),
+    )
+}
+
+fn workbench_transform_shape_points_tool() -> Tool {
+    workbench_input_tool::<McpWorkbenchTransformShapePointsInput, WorkbenchShapePoints>(
+        WORKBENCH_TRANSFORM_SHAPE_POINTS_TOOL_NAME,
+        WORKBENCH_TRANSFORM_SHAPE_POINTS_DESCRIPTION,
+        "Transform Workbench shape points",
+        ToolAnnotations::with_title("Transform Workbench shape points")
+            .read_only(false)
+            .destructive(false)
+            .idempotent(false)
+            .open_world(false),
+    )
+}
+
+fn workbench_resample_polyline_tool() -> Tool {
+    workbench_input_tool::<McpWorkbenchResamplePolylineInput, WorkbenchPolylineResample>(
+        WORKBENCH_RESAMPLE_POLYLINE_TOOL_NAME,
+        WORKBENCH_RESAMPLE_POLYLINE_DESCRIPTION,
+        "Resample Workbench polyline",
+        ToolAnnotations::with_title("Resample Workbench polyline")
+            .read_only(false)
+            .destructive(false)
+            .idempotent(false)
+            .open_world(false),
+    )
+}
+
 fn workbench_list_editors_tool() -> Tool {
     workbench_empty_tool::<WorkbenchEditorList>(
         WORKBENCH_LIST_EDITORS_TOOL_NAME,
@@ -4639,26 +4928,27 @@ fn tool_error(code: &str, cause: &str, recovery: &str) -> CallToolResult {
 mod tests {
     use super::{
         game_data_status_tool, inspect_game_data_symbol_tool, regular_polygon_points,
-        render_api_reference,
-        workbench_add_component_tool, workbench_create_prefab_tool,
-        workbench_duplicate_entity_tool, workbench_inspect_component_tool,
-        workbench_inspect_prefab_component_tool, workbench_inspect_prefab_context_tool,
-        workbench_install_bridge_tool, workbench_layer_state_tool, workbench_list_components_tool,
-        workbench_list_editors_tool, workbench_list_entities_tool,
-        workbench_list_entity_properties_tool, workbench_list_resources_tool,
-        workbench_move_entity_tool, workbench_open_editor_tool, workbench_open_resource_tool,
-        workbench_project_context_tool, workbench_reload_tool, workbench_remove_component_tool,
-        workbench_reparent_entity_tool, workbench_rotate_entity_tool,
+        render_api_reference, workbench_add_component_tool, workbench_convert_shape_points_tool,
+        workbench_create_prefab_tool, workbench_duplicate_entity_tool,
+        workbench_inspect_component_tool, workbench_inspect_prefab_component_tool,
+        workbench_inspect_prefab_context_tool, workbench_install_bridge_tool,
+        workbench_layer_state_tool, workbench_list_components_tool, workbench_list_editors_tool,
+        workbench_list_entities_tool, workbench_list_entity_properties_tool,
+        workbench_list_resources_tool, workbench_move_entity_tool, workbench_open_editor_tool,
+        workbench_open_resource_tool, workbench_project_context_tool, workbench_reload_tool,
+        workbench_remove_component_tool, workbench_reparent_entity_tool,
+        workbench_resample_polyline_tool, workbench_rotate_entity_tool,
         workbench_sample_terrain_tool, workbench_save_all_tool, workbench_save_prefab_tool,
         workbench_save_world_tool, workbench_search_resources_tool,
         workbench_search_world_entities_tool, workbench_selected_entity_hierarchy_tool,
         workbench_set_component_properties_tool, workbench_set_entity_property_tool,
-        workbench_set_polyline_regular_polygon_tool,
-        workbench_set_prefab_component_property_tool, workbench_set_prefab_property_tool,
-        workbench_start_play_session_tool, workbench_status_tool, workbench_stop_play_session_tool,
-        workbench_trace_tool, workbench_validate_scripts_tool, workbench_viewport_context_tool,
-        workbench_world_selection_summary_tool, DEADLINE_EXCEEDED_CODE, GAME_DATA_STATUS_TOOL_NAME,
-        RESPONSE_TOO_LARGE_CODE, WORKBENCH_ADD_COMPONENT_TOOL_NAME,
+        workbench_set_polyline_regular_polygon_tool, workbench_set_prefab_component_property_tool,
+        workbench_set_prefab_property_tool, workbench_start_play_session_tool,
+        workbench_status_tool, workbench_stop_play_session_tool, workbench_trace_tool,
+        workbench_transform_shape_points_tool, workbench_validate_scripts_tool,
+        workbench_viewport_context_tool, workbench_world_selection_summary_tool,
+        DEADLINE_EXCEEDED_CODE, GAME_DATA_STATUS_TOOL_NAME, RESPONSE_TOO_LARGE_CODE,
+        WORKBENCH_ADD_COMPONENT_TOOL_NAME, WORKBENCH_CONVERT_SHAPE_POINTS_TOOL_NAME,
         WORKBENCH_CREATE_PREFAB_TOOL_NAME, WORKBENCH_DUPLICATE_ENTITY_TOOL_NAME,
         WORKBENCH_INSPECT_COMPONENT_TOOL_NAME, WORKBENCH_INSPECT_PREFAB_COMPONENT_TOOL_NAME,
         WORKBENCH_INSPECT_PREFAB_CONTEXT_TOOL_NAME, WORKBENCH_LAYER_STATE_TOOL_NAME,
@@ -4668,17 +4958,18 @@ mod tests {
         WORKBENCH_OPEN_EDITOR_TOOL_NAME, WORKBENCH_OPEN_RESOURCE_TOOL_NAME,
         WORKBENCH_PROJECT_CONTEXT_TOOL_NAME, WORKBENCH_RELOAD_TOOL_NAME,
         WORKBENCH_REMOVE_COMPONENT_TOOL_NAME, WORKBENCH_REPARENT_ENTITY_TOOL_NAME,
-        WORKBENCH_ROTATE_ENTITY_TOOL_NAME, WORKBENCH_SAMPLE_TERRAIN_TOOL_NAME,
-        WORKBENCH_SAVE_ALL_TOOL_NAME, WORKBENCH_SAVE_PREFAB_TOOL_NAME,
-        WORKBENCH_SAVE_WORLD_TOOL_NAME, WORKBENCH_SEARCH_RESOURCES_TOOL_NAME,
-        WORKBENCH_SEARCH_WORLD_ENTITIES_TOOL_NAME, WORKBENCH_SELECTED_ENTITY_HIERARCHY_TOOL_NAME,
+        WORKBENCH_RESAMPLE_POLYLINE_TOOL_NAME, WORKBENCH_ROTATE_ENTITY_TOOL_NAME,
+        WORKBENCH_SAMPLE_TERRAIN_TOOL_NAME, WORKBENCH_SAVE_ALL_TOOL_NAME,
+        WORKBENCH_SAVE_PREFAB_TOOL_NAME, WORKBENCH_SAVE_WORLD_TOOL_NAME,
+        WORKBENCH_SEARCH_RESOURCES_TOOL_NAME, WORKBENCH_SEARCH_WORLD_ENTITIES_TOOL_NAME,
+        WORKBENCH_SELECTED_ENTITY_HIERARCHY_TOOL_NAME,
         WORKBENCH_SET_COMPONENT_PROPERTIES_TOOL_NAME, WORKBENCH_SET_ENTITY_PROPERTY_TOOL_NAME,
         WORKBENCH_SET_POLYLINE_REGULAR_POLYGON_TOOL_NAME,
         WORKBENCH_SET_PREFAB_COMPONENT_PROPERTY_TOOL_NAME, WORKBENCH_SET_PREFAB_PROPERTY_TOOL_NAME,
         WORKBENCH_START_PLAY_SESSION_TOOL_NAME, WORKBENCH_STATUS_TOOL_NAME,
         WORKBENCH_STOP_PLAY_SESSION_TOOL_NAME, WORKBENCH_TRACE_TOOL_NAME,
-        WORKBENCH_VALIDATE_SCRIPTS_TOOL_NAME, WORKBENCH_VIEWPORT_CONTEXT_TOOL_NAME,
-        WORKBENCH_WORLD_SELECTION_SUMMARY_TOOL_NAME,
+        WORKBENCH_TRANSFORM_SHAPE_POINTS_TOOL_NAME, WORKBENCH_VALIDATE_SCRIPTS_TOOL_NAME,
+        WORKBENCH_VIEWPORT_CONTEXT_TOOL_NAME, WORKBENCH_WORLD_SELECTION_SUMMARY_TOOL_NAME,
     };
     use serde_json::Value;
 
@@ -4702,6 +4993,25 @@ mod tests {
         assert!((points[1].x - 2.0).abs() < 0.0001);
         assert!((points[1].z - 14.0).abs() < 0.0001);
         assert!(points.iter().all(|point| point.y == 3.0));
+    }
+
+    #[test]
+    fn shape_geometry_tools_expose_typed_spaces_and_bounded_resampling_contracts() {
+        let convert = workbench_convert_shape_points_tool();
+        let transform = workbench_transform_shape_points_tool();
+        let resample = workbench_resample_polyline_tool();
+        assert_eq!(convert.name, WORKBENCH_CONVERT_SHAPE_POINTS_TOOL_NAME);
+        assert_eq!(transform.name, WORKBENCH_TRANSFORM_SHAPE_POINTS_TOOL_NAME);
+        assert_eq!(resample.name, WORKBENCH_RESAMPLE_POLYLINE_TOOL_NAME);
+        let convert_schema = serde_json::to_value(&convert.input_schema).unwrap();
+        assert!(convert_schema.to_string().contains("fromSpace"));
+        assert!(convert_schema.to_string().contains("toSpace"));
+        let resample_schema = serde_json::to_value(&resample.input_schema).unwrap();
+        assert!(resample_schema.to_string().contains("spacingMeters"));
+        assert_eq!(
+            convert.annotations.and_then(|value| value.read_only_hint),
+            Some(true)
+        );
     }
 
     #[test]
