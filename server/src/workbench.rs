@@ -8020,6 +8020,8 @@ class RST_WorkbenchSearchEntities : NetApiHandler
 			ref BaseContainerList components = entity.GetObjectArray("components");
 			if (components)
 				count = components.Count();
+			else
+				count = entity.GetNumChildren();
 		}
 		return count;
 	}
@@ -8030,7 +8032,7 @@ class RST_WorkbenchSearchEntities : NetApiHandler
 		ref BaseContainerList components = entity.GetObjectArray("components");
 		if (components)
 			return IEntityComponentSource.Cast(components.Get(index));
-		return null;
+		return IEntityComponentSource.Cast(entity.GetChild(index));
 	}
 	protected bool HasComponent(IEntitySource entity, string expected)
 	{
@@ -11369,6 +11371,8 @@ mod tests {
     fn entity_search_uses_the_authored_component_container_fallback() {
         assert!(super::BRIDGE_ENTITY_SEARCH_SOURCE
             .contains("entity.GetObjectArray(\"components\")"));
+        assert!(super::BRIDGE_ENTITY_SEARCH_SOURCE.contains("entity.GetNumChildren()"));
+        assert!(super::BRIDGE_ENTITY_SEARCH_SOURCE.contains("entity.GetChild(index)"));
         assert!(super::BRIDGE_ENTITY_SEARCH_SOURCE.contains("ComponentAt(entity, componentIndex)"));
         assert!(super::BRIDGE_ENTITY_SEARCH_SOURCE
             .contains("components += string.Format(\"%1\", component.GetClassName())"));
