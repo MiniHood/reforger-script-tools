@@ -146,12 +146,16 @@ selection.
 
 The read-only `workbench_search_world_entities` capability filters the loaded
 World Editor context by text, exact class, prefab resource, direct component
-classes, subscene, and layer. Its summary is exact for the full filtered set,
-including named versus anonymous entity counts, while its bounded result page
-supplies stable entity targets, direct component classes, and the requested
-components each target satisfied. This lets an AI decide whether to refine a
-broad search before inspecting an exact entity; it does not enumerate arbitrary
-properties or make a display name an identity.
+classes, subscene, layer, and one bounded parent/ancestor/child/descendant
+predicate. Its bounded page supplies stable entity targets, direct component
+classes, and the first matching relation evidence. `truncated` means another
+page is available and summary counts are exact only when it is false;
+`relationTraversalTruncated` records bounded relation walks whose affected
+candidates were omitted. This lets an AI decide whether to refine a broad
+search before exact entity, hierarchy, or prefab-context inspection; it does
+not enumerate arbitrary properties, prove every relative, or make a display
+name an identity. The reusable AI workflow is documented in
+[Workbench world-entity relation search](workbench-world-entity-search.md).
 
 The read-only `workbench_list_resources` capability accepts only fixed resource
 kinds and an optional bounded text query. Workbench's resource database applies

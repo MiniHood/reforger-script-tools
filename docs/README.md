@@ -35,6 +35,9 @@ implementation slice is progress, not a completed ticket.
 - [Development](development.md): build, test, and local development workflow.
 - [MCP API Reference](mcp-api.md): generated public tool descriptors, schemas,
   workflows, limits, and stable failures.
+- [Workbench world-entity relation search](workbench-world-entity-search.md):
+  AI-facing discovery, paging, relation-evidence, and follow-up-inspection
+  workflow for live World Editor entities.
 - [Key input routing](key-input-routing.md): VS Code key-routing boundary and
   the ownership policy for atomic typing assists.
 
