@@ -631,6 +631,7 @@ fn log_loaded_addon_index_diagnostics(logger: &LspLogger, result: &LoadedAddonIn
             "timingsMs": {
                 "graphRead": result.timings.graph_read.as_millis(),
                 "workspaceRootResolution": result.timings.workspace_root_resolution.as_millis(),
+                "cachePrune": result.timings.cache_prune.as_millis(),
                 "layerCompose": result.timings.layer_compose.as_millis(),
                 "total": result.timings.total.as_millis(),
             }

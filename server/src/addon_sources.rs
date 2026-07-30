@@ -43,6 +43,7 @@ pub struct LoadedAddonIndexResult {
 pub struct LoadedAddonIndexTimings {
     pub graph_read: Duration,
     pub workspace_root_resolution: Duration,
+    pub cache_prune: Duration,
     pub layer_compose: Duration,
     pub total: Duration,
 }
@@ -298,7 +299,9 @@ pub fn load_or_build_loaded_addon_indexes(
         .collect::<Vec<_>>();
     let workspace_root_resolution = workspace_root_start.elapsed();
     let mut addons = graph.addons;
+    let cache_prune_start = Instant::now();
     prune_unloaded_addon_caches(storage_root, &addons)?;
+    let cache_prune = cache_prune_start.elapsed();
     addons.sort_by(|left, right| {
         (&left.guid, &left.source_root, &left.id).cmp(&(&right.guid, &right.source_root, &right.id))
     });
@@ -433,6 +436,7 @@ pub fn load_or_build_loaded_addon_indexes(
         timings: LoadedAddonIndexTimings {
             graph_read,
             workspace_root_resolution,
+            cache_prune,
             layer_compose: layer_compose_start.elapsed(),
             total: total_start.elapsed(),
         },
