@@ -8,7 +8,8 @@ decisions.
 
 PAC1 archive inspection is also Rust-owned. Its pack module builds a bounded
 logical file catalogue and reads only caller-selected entries. The add-on
-source module receives the Workbench-loaded graph, composes that
+source module receives the Workbench-loaded graph, reads loose source only
+from each add-on's top-level `Scripts` directory, and composes that
 mechanism with canonical `(GUID, source-root)` instance identity, pack-set and
 loose-source fingerprints, one persisted current cache revision per instance,
 and virtual source

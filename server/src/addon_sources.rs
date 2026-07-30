@@ -559,7 +559,22 @@ fn remove_workspace_addon_cache(
 
 fn loose_script_paths(root: &Path) -> Result<Vec<PathBuf>, String> {
     let mut paths = Vec::new();
-    collect_loose_script_paths(root, &mut paths)?;
+    let entries = fs::read_dir(root).map_err(|error| {
+        format!(
+            "Failed to read Workbench add-on root {}: {error}",
+            root.display()
+        )
+    })?;
+    for entry in entries {
+        let path = entry.map_err(|error| error.to_string())?.path();
+        if path.is_dir()
+            && path
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("scripts"))
+        {
+            collect_loose_script_paths(&path, &mut paths)?;
+        }
+    }
     paths.sort();
     Ok(paths)
 }
@@ -1360,6 +1375,22 @@ mod tests {
         let inventory = root.join("inventory.json");
         fs::write(&inventory, r#"{"schema":"unknown","roots":[]}"#).unwrap();
         assert!(build_base_game_index(&inventory, &IndexBuildControl::default()).is_err());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn discovers_loose_scripts_only_from_the_addon_scripts_directory() {
+        let root = test_root("loose_script_paths");
+        let scripts = root.join("Scripts").join("Game");
+        let assets = root.join("Assets");
+        fs::create_dir_all(&scripts).unwrap();
+        fs::create_dir_all(&assets).unwrap();
+        fs::write(scripts.join("Listed.c"), "class Listed {}").unwrap();
+        fs::write(assets.join("Ignored.c"), "class Ignored {}").unwrap();
+        fs::write(root.join("Ignored.c"), "class Ignored {}").unwrap();
+
+        assert_eq!(loose_script_paths(&root).unwrap(), vec![scripts.join("Listed.c")]);
+
         let _ = fs::remove_dir_all(root);
     }
 
