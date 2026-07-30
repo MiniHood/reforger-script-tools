@@ -608,7 +608,7 @@ fn run_external_index_thread(
                 });
                 error_messages.push(error);
                 // The Workbench graph is the only acquisition authority. A
-                // failed refresh therefore makes this entire external layer
+                // failed refresh therefore makes the Workbench-sourced layer
                 // unavailable; retaining the previous graph would be a
                 // stale, second acquisition path.
                 (None, None, None, None, None)
@@ -1076,6 +1076,51 @@ mod tests {
             saw_progress,
             "index phases must wake the runtime before publication"
         );
+    }
+
+    #[test]
+    fn unavailable_workbench_graph_does_not_hide_workspace_facts() {
+        let root = std::env::temp_dir().join(format!(
+            "reforger-external-overlay-unavailable-graph-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(workspace.join("Workspace.c"), "class WorkspaceOnly {}\n").unwrap();
+        let missing_inventory = root.join("missing-graph.json");
+        let (sender, receiver) = mpsc::channel();
+        let handle = start_external_index(
+            &LspServerOptions {
+                addon_source_inventory: Some(missing_inventory),
+                addon_index_storage: Some(root.join("indexes")),
+                workspace_scripts: vec![workspace],
+                ..LspServerOptions::default()
+            },
+            LspLogger::new(None, None),
+            Some(sender.into()),
+        );
+
+        loop {
+            match receiver.recv_timeout(Duration::from_secs(5)) {
+                Ok(ServerEvent::ExternalIndexChanged) => break,
+                Ok(_) => {}
+                Err(error) => panic!("external index did not publish: {error}"),
+            }
+        }
+
+        let snapshot = handle.snapshot();
+        assert!(snapshot.game_data.is_none(), "the Workbench layer must be unavailable");
+        assert!(snapshot.workspace.is_some(), "workspace facts remain independently available");
+        let status = handle.status_summary();
+        assert_eq!(status.game_data_files, 0);
+        assert_eq!(status.workspace_files, 1);
+        assert!(status.error.is_some(), "the graph failure must remain observable");
+        handle.cancel();
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
