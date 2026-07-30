@@ -31,3 +31,5 @@ yarn-error.log*
 !.env.example
 /.codex
 /server/.vscode-test
+/server/target-validation
+/server/.cache
