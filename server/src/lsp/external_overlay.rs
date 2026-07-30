@@ -619,7 +619,7 @@ fn log_loaded_addon_index_diagnostics(logger: &LspLogger, result: &LoadedAddonIn
             "timingsMs": {
                 "graphRead": result.timings.graph_read.as_millis(),
                 "workspaceRootResolution": result.timings.workspace_root_resolution.as_millis(),
-                "merge": result.timings.merge.as_millis(),
+                "layerCompose": result.timings.layer_compose.as_millis(),
                 "total": result.timings.total.as_millis(),
             }
         })
@@ -755,7 +755,7 @@ fn run_external_index_thread(
                 );
                 log_loaded_addon_index_diagnostics(&logger, &result);
                 logger.log_lazy(|| format!(
-                    "externalIndex gameData ready cache_status={} cache_detail={} files={} symbols={} parse_diagnostics={} graph_read_ms={} workspace_root_resolution_ms={} merge_ms={} game_data_total_ms={} elapsed_ms={}",
+                    "externalIndex gameData ready cache_status={} cache_detail={} files={} symbols={} parse_diagnostics={} graph_read_ms={} workspace_root_resolution_ms={} layer_compose_ms={} game_data_total_ms={} elapsed_ms={}",
                     cache_status,
                     cache_detail.as_deref().unwrap_or("<none>"),
                     result.summary.files,
@@ -763,7 +763,7 @@ fn run_external_index_thread(
                     result.summary.parse_diagnostics,
                     result.timings.graph_read.as_millis(),
                     result.timings.workspace_root_resolution.as_millis(),
-                    result.timings.merge.as_millis(),
+                    result.timings.layer_compose.as_millis(),
                     result.timings.total.as_millis(),
                     start.elapsed().as_millis()
                 ));
@@ -820,7 +820,7 @@ fn run_external_index_thread(
     };
 
     // Merge startup and live workspace files before aggregation, then publish only if no live
-    // edit raced the snapshot. SymbolIndex::merged never runs while the overlay lock is held.
+    // edit raced the snapshot. Layer composition never runs while the overlay lock is held.
     let (status, summary, workspace_summary, published_game_data_summary) = loop {
         let (live_changes, workspace_generation) = {
             let state = state.lock().unwrap();

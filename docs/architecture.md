@@ -47,10 +47,13 @@ A cancelled or
 failed authoritative graph refresh makes the Workbench-sourced layer
 unavailable; it never reuses an earlier graph or scans for a substitute.
 
-The immutable per-instance indexes are merged by stable instance identity into
-one LSP snapshot. GitHub downloads, user add-on folder scans, and loose source
-materialization are not runtime acquisition paths. The selected PAC payload and
-loose script content establish the revision rather than trusting timestamps.
+The immutable per-instance indexes form one layered LSP snapshot through
+stable, rebased symbol identities and combined lookup maps. The snapshot never
+copies all add-on symbol records into an eagerly merged index; lookups route to
+their originating immutable instance. GitHub downloads, user add-on folder
+scans, and loose source materialization are not runtime acquisition paths. The
+selected PAC payload and loose script content establish the revision rather
+than trusting timestamps.
 
 Pack-backed definitions use typed, revision-qualified `reforger-pak:` document
 identities. The

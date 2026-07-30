@@ -42,10 +42,13 @@ Open documents are immutable, revisioned snapshots. The analysis runtime owns
 their admission, cancellation, and publication. A request may use local facts
 only when they match the snapshot it captured.
 
-Workspace and game-data indexes are separate immutable external layers. A
-request captures one layer generation, so background indexing cannot change
-the meaning of an in-flight response. Do not introduce per-feature revision
-tables or mutable shared feature state that bypasses this model.
+Workspace and game-data indexes are separate immutable external layers. The
+game-data layer retains its per-loaded-add-on indexes and composes only their
+stable lookup identities; it never eagerly copies all symbol records into a
+second merged index. A request captures one layer generation, so background
+indexing cannot change the meaning of an in-flight response. Do not introduce
+per-feature revision tables or mutable shared feature state that bypasses this
+model.
 
 The base-game layer is published only after its complete GUID-scoped cache has
 loaded or rebuilt. Unchanged startup inspects bounded PAC catalogues and hashes
@@ -71,7 +74,7 @@ update cannot apply an old symbol span to newer bytes.
 
 The language-server diagnostic log records each external-index startup as a
 bounded performance trace: end-to-end game-data, workspace, and publication
-durations; graph-read and merge durations; and one record per non-workspace
+durations; graph-read and layer-composition durations; and one record per non-workspace
 loaded add-on. An add-on record identifies its cache outcome and rebuild
 reason, source and cache sizes, and inspection, cache read/decode/validation,
 runtime-map reconstruction, rebuild, and cache-write durations. It contains no

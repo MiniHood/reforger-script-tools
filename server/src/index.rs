@@ -96,6 +96,10 @@ pub struct MemberShadowGroup {
 pub struct SymbolIndex {
     files: Vec<IndexedFile>,
     symbols: Vec<IndexedSymbol>,
+    /// Immutable child indexes retained by a runtime-only layered projection.
+    /// The parent owns shared lookup maps but never duplicates child symbols.
+    layers: Vec<SymbolIndex>,
+    file_id_base: usize,
     by_name: BTreeMap<String, Vec<GlobalSymbolId>>,
     top_level_by_name: BTreeMap<String, Vec<GlobalSymbolId>>,
     top_level_by_folded_name: BTreeMap<String, Vec<GlobalSymbolId>>,
@@ -322,6 +326,8 @@ impl From<SymbolIndexSnapshot> for SymbolIndex {
         Self {
             files: snapshot.files,
             symbols: snapshot.symbols,
+            layers: Vec::new(),
+            file_id_base: 0,
             by_name: snapshot.by_name.into_iter().collect(),
             top_level_by_name,
             top_level_by_folded_name,
@@ -423,6 +429,76 @@ impl SymbolIndex {
 
         merged.rebuild_lookup_maps();
         merged
+    }
+
+    /// Composes immutable indexes without flattening their symbol records. The
+    /// resulting index owns only combined lookup maps and shallow file metadata;
+    /// symbol identity remains routed to the originating layer.
+    pub fn layered(indexes: impl IntoIterator<Item = SymbolIndex>) -> Self {
+        let mut layered = Self::default();
+        let mut next_file_id = 0;
+        for mut index in indexes {
+            debug_assert!(index.layers.is_empty(), "layers must be composed once");
+            index.rebase_file_ids(next_file_id);
+            next_file_id += index.files.len();
+            layered.files.extend(index.files.iter().cloned());
+            layered.append_lookup_maps_from(&index);
+            layered.layers.push(index);
+        }
+        layered
+    }
+
+    fn rebase_file_ids(&mut self, file_id_base: usize) {
+        if file_id_base == 0 {
+            self.file_id_base = 0;
+            return;
+        }
+        let rebase = |id: GlobalSymbolId| GlobalSymbolId {
+            file_id: SourceFileId(id.file_id.0 + file_id_base),
+            symbol_id: id.symbol_id,
+        };
+        for file in &mut self.files {
+            file.id = SourceFileId(file.id.0 + file_id_base);
+        }
+        for symbol in &mut self.symbols {
+            symbol.id = rebase(symbol.id);
+            symbol.parent = symbol.parent.map(rebase);
+        }
+        rebase_lookup_map_ids(&mut self.by_name, rebase);
+        rebase_lookup_map_ids(&mut self.top_level_by_name, rebase);
+        rebase_lookup_map_ids(&mut self.top_level_by_folded_name, rebase);
+        rebase_lookup_map_ids(&mut self.by_kind, rebase);
+        let children = std::mem::take(&mut self.children);
+        self.children = children
+            .into_iter()
+            .map(|(parent, mut children)| {
+                for child in &mut children {
+                    *child = rebase(*child);
+                }
+                (rebase(parent), children)
+            })
+            .collect();
+        rebase_lookup_map_ids(&mut self.classes_by_name, rebase);
+        rebase_lookup_map_ids(&mut self.typedefs_by_name, rebase);
+        rebase_lookup_map_ids(&mut self.functions_by_name, rebase);
+        rebase_lookup_map_ids(&mut self.methods_by_owner_name, rebase);
+        rebase_lookup_map_ids(&mut self.fields_by_owner_name, rebase);
+        rebase_lookup_map_ids(&mut self.members_by_owner, rebase);
+        self.file_id_base = file_id_base;
+    }
+
+    fn append_lookup_maps_from(&mut self, index: &Self) {
+        append_lookup_map(&mut self.by_name, &index.by_name);
+        append_lookup_map(&mut self.top_level_by_name, &index.top_level_by_name);
+        append_lookup_map(&mut self.top_level_by_folded_name, &index.top_level_by_folded_name);
+        append_lookup_map(&mut self.by_kind, &index.by_kind);
+        append_lookup_map(&mut self.children, &index.children);
+        append_lookup_map(&mut self.classes_by_name, &index.classes_by_name);
+        append_lookup_map(&mut self.typedefs_by_name, &index.typedefs_by_name);
+        append_lookup_map(&mut self.functions_by_name, &index.functions_by_name);
+        append_lookup_map(&mut self.methods_by_owner_name, &index.methods_by_owner_name);
+        append_lookup_map(&mut self.fields_by_owner_name, &index.fields_by_owner_name);
+        append_lookup_map(&mut self.members_by_owner, &index.members_by_owner);
     }
 
     pub fn add_catalog<'source>(&mut self, catalog: &SymbolCatalog<'source>) -> SourceFileId {
@@ -964,10 +1040,18 @@ impl SymbolIndex {
     }
 
     pub fn file(&self, id: SourceFileId) -> Option<&IndexedFile> {
-        self.files.get(id.0)
+        if !self.layers.is_empty() {
+            return self.layers.iter().find_map(|layer| layer.file(id));
+        }
+        id.0
+            .checked_sub(self.file_id_base)
+            .and_then(|local_id| self.files.get(local_id))
     }
 
     pub fn symbol(&self, id: GlobalSymbolId) -> Option<&IndexedSymbol> {
+        if !self.layers.is_empty() {
+            return self.layers.iter().find_map(|layer| layer.symbol(id));
+        }
         let file = self.file(id.file_id)?;
         let local_index = id.symbol_id.0;
         if local_index >= file.symbol_count {
@@ -1303,6 +1387,17 @@ impl SymbolIndex {
     }
 
     pub(crate) fn symbols_for_file(&self, file: &IndexedFile) -> &[IndexedSymbol] {
+        if !self.layers.is_empty() {
+            return self
+                .layers
+                .iter()
+                .find_map(|layer| {
+                    layer
+                        .file(file.id)
+                        .map(|layer_file| layer.symbols_for_file(layer_file))
+                })
+                .unwrap_or(&[]);
+        }
         &self.symbols[file.symbol_start..file.symbol_start + file.symbol_count]
     }
 
@@ -1812,6 +1907,26 @@ fn folded_top_level_names(
             .extend(ids.iter().copied());
     }
     folded
+}
+
+fn rebase_lookup_map_ids<K: Ord>(
+    map: &mut BTreeMap<K, Vec<GlobalSymbolId>>,
+    rebase: impl Fn(GlobalSymbolId) -> GlobalSymbolId + Copy,
+) {
+    for ids in map.values_mut() {
+        for id in ids {
+            *id = rebase(*id);
+        }
+    }
+}
+
+fn append_lookup_map<K: Ord + Clone>(
+    target: &mut BTreeMap<K, Vec<GlobalSymbolId>>,
+    source: &BTreeMap<K, Vec<GlobalSymbolId>>,
+) {
+    for (key, ids) in source {
+        target.entry(key.clone()).or_default().extend(ids.iter().copied());
+    }
 }
 
 fn map_entry_count<K>(map: &BTreeMap<K, Vec<GlobalSymbolId>>) -> usize {
@@ -3624,6 +3739,48 @@ class FactionKey : string
             vec!["SecondMethod"]
         );
         assert_no_dangling_symbol_references(&merged);
+    }
+
+    #[test]
+    fn layered_indexes_route_global_ids_without_copying_symbols() {
+        let first = SymbolIndex::from_catalogs([&catalog(
+            "class First { void FirstMethod(); }",
+            game_metadata("Game/First.c"),
+        )]);
+        let second = SymbolIndex::from_catalogs([&catalog(
+            "class Second { void SecondMethod(); }",
+            game_metadata("Game/Second.c"),
+        )]);
+        let first_symbol_count = first.symbols.len();
+        let second_symbol_count = second.symbols.len();
+
+        let layered = SymbolIndex::layered([first, second]);
+
+        assert_eq!(layered.symbols.len(), 0, "layers retain symbol records");
+        assert_eq!(layered.files().len(), 2);
+        assert_eq!(layered.symbols_for_name("First").len(), 1);
+        assert_eq!(layered.symbols_for_name("Second").len(), 1);
+        assert_eq!(
+            layered
+                .completion_members_for_preferred_class("Second")
+                .members
+                .len(),
+            1
+        );
+        assert_eq!(
+            layered
+                .symbol(layered.symbols_for_name("Second")[0])
+                .and_then(|symbol| symbol.name.as_deref()),
+            Some("Second")
+        );
+        assert_eq!(
+            layered
+                .layers
+                .iter()
+                .map(|layer| layer.symbols.len())
+                .sum::<usize>(),
+            first_symbol_count + second_symbol_count
+        );
     }
 
     #[test]

@@ -41,7 +41,7 @@ pub struct LoadedAddonIndexResult {
 pub struct LoadedAddonIndexTimings {
     pub graph_read: Duration,
     pub workspace_root_resolution: Duration,
-    pub merge: Duration,
+    pub layer_compose: Duration,
     pub total: Duration,
 }
 
@@ -263,8 +263,9 @@ pub fn load_or_build_base_game_index(
 }
 
 /// Builds an independent compact index for every packed add-on that the live
-/// Workbench graph names, then merges those immutable indexes by stable
-/// instance identity. A graph entry is never inferred from a directory scan.
+/// Workbench graph names, then composes those immutable indexes by stable
+/// instance identity without copying their symbol records. A graph entry is
+/// never inferred from a directory scan.
 pub fn load_or_build_loaded_addon_indexes(
     inventory_path: &Path,
     storage_root: &Path,
@@ -342,8 +343,8 @@ pub fn load_or_build_loaded_addon_indexes(
         });
         indexes.push(result.index);
     }
-    let merge_start = Instant::now();
-    let index = SymbolIndex::merged(indexes.iter());
+    let layer_compose_start = Instant::now();
+    let index = SymbolIndex::layered(indexes);
     Ok(LoadedAddonIndexResult {
         index,
         summary,
@@ -353,7 +354,7 @@ pub fn load_or_build_loaded_addon_indexes(
         timings: LoadedAddonIndexTimings {
             graph_read,
             workspace_root_resolution,
-            merge: merge_start.elapsed(),
+            layer_compose: layer_compose_start.elapsed(),
             total: total_start.elapsed(),
         },
         instances,
