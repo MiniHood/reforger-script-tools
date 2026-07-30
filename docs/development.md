@@ -77,6 +77,12 @@ To extract only `.c` entries, pass `--extract-scripts <output-root>` before the
 archives. The archive's logical `scripts/` path is retained below that root;
 the command refuses to overwrite an existing extracted file.
 
+For archive-reader performance evidence without filesystem extraction, pass
+`--profile-scripts`. It reports catalogue and selection time, read/decode time,
+compressed and original byte totals, throughput, compression distribution, and
+the ten slowest selected entries. These are local diagnostics, not portable
+benchmark thresholds.
+
 The bundled executable selects a protocol before either protocol starts:
 
 ```powershell
