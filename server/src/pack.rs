@@ -389,11 +389,6 @@ fn parse_entry(
             take(bytes, cursor, 4)?;
             let compression = u32::from_be_bytes(take(bytes, cursor, 4)?.try_into().unwrap());
             take(bytes, cursor, 4)?;
-            if original_length > MAX_ENTRY_BYTES {
-                return Err(PackError::Limit(format!(
-                    "PAC1 entry exceeds limit: {path}"
-                )));
-            }
             if offset
                 .checked_add(compressed_length)
                 .is_none_or(|end| end > file_length)
