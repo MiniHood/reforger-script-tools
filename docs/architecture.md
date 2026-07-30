@@ -61,6 +61,12 @@ compiler integration invokes the packaged Rust executable through its private
 than a second codec. Detailed protocol evidence and compiler-validation
 acceptance remain in the relevant research journals.
 
+`workbench_launch`, `workbench_stop`, and `workbench_restart` are the explicit
+exception: they are host-process controls, so they use exact Windows process
+identity and filesystem launch context. They are not Workbench Capabilities or
+sources of live editor truth; once Workbench is running, normal MCP operations
+use only the typed Gateway route.
+
 Shape geometry follows the same boundary: point coordinate conversion, named
 whole-shape transforms, and polyline resampling are separate typed capabilities,
 not a generic method or expression evaluator. The handler owns full
@@ -76,8 +82,11 @@ user accepts. Public MCP cannot create that first manifest; its explicit
 installer may maintain an existing consented installation. A prior
 manifest-owned flat-profile package is migrated to this `WorkbenchGame` module
 path without touching unknown files. `workbench_status` is read-only: it
-determines live availability only through the native NET API and never
-enumerates processes, migrates, repairs, or validates the handler package.
+returns only the native NET API's Workbench Availability State and never
+inspects local installation files, enumerates processes, migrates, repairs, or
+validates the handler package. The explicit installer is the only MCP
+capability that maintains the consented package; state and compiler validation
+perform only their named NET operation.
 Writing that profile package and running native compiler validation does not
 register its `NetApiHandler`s in the already-running Workbench. Native
 `ValidateScripts` proves compilation; it
@@ -111,12 +120,14 @@ cannot be proven.
 
 The explicit MCP `workbench_reload` operation first performs the composite save described below, then invokes Workbench's own Resource
 Manager action dispatcher with the fixed menu path `Plugins → Settings → Reload
-WB Scripts`. It does not simulate keyboard input. Because the reload
-tears down the in-flight script handler before it can respond, the host treats
-that request timeout as pending verification—not success—and waits up to 60
-seconds for the newly appended console-log sequence: reload, validation,
-GameLib compile, Game compile, then the loaded WorkbenchGame module. A missing
-terminal sequence is a failed operation.
+WB Scripts`. It does not simulate keyboard input. Because reload tears down
+the in-flight script handler before it can respond, the operation accepts that
+dispatch timeout only as an incomplete observation, then waits up to 60 seconds
+for the replacement handler to report a different compatible typed runtime
+generation. That generation is captured from Workbench's monotonic tick counter
+when the handler class is instantiated, so a reload occurring after the
+baseline observation must have a different value. It does not turn a timeout
+or local console-log text into a verified-success claim.
 
 The explicit MCP `workbench_save_all` operation uses the same in-process
 Resource Manager dispatcher with the fixed path `File → Save All` and
@@ -141,11 +152,8 @@ after an accepted save action before returning.
 
 Bounded Workbench-log reads retain their raw tail and additionally classify only
 the observed reload milestones: reload start, script validation, GameLib
-compilation, Game compilation, and loaded Game module. They do not infer play
-session state or elevate a log marker into a stronger editor fact. Conversely,
-the reload command's dispatcher acknowledgement is only an attempt to invoke
-the action; a fresh complete marker sequence is the source of truth for whether
-the script reload completed.
+compilation, Game compilation, and loaded Game module. They are diagnostic
+history, not a source of live editor facts or reload completion.
 
 The managed state capability reports `mode: "workbench"` as its honest
 baseline. It reports `mode: "world-editor"` and `worldEditorActive: true` only

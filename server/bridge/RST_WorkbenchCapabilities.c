@@ -11,6 +11,7 @@ class RST_WorkbenchCapabilitiesResponse : JsonApiStruct
 {
 	string bridgeVersion;
 	int protocolVersion;
+	int runtimeGeneration;
 	string capabilities;
 
 	void RST_WorkbenchCapabilitiesResponse()
@@ -21,6 +22,17 @@ class RST_WorkbenchCapabilitiesResponse : JsonApiStruct
 
 class RST_WorkbenchCapabilities : NetApiHandler
 {
+	static int s_RuntimeGeneration;
+
+	void RST_WorkbenchCapabilities()
+	{
+		if (s_RuntimeGeneration == 0)
+			s_RuntimeGeneration = System.GetTickCount();
+
+		if (s_RuntimeGeneration == 0)
+			s_RuntimeGeneration = 1;
+	}
+
 	override JsonApiStruct GetRequest()
 	{
 		return new RST_WorkbenchCapabilitiesRequest();
@@ -31,6 +43,7 @@ class RST_WorkbenchCapabilities : NetApiHandler
 		RST_WorkbenchCapabilitiesResponse response = new RST_WorkbenchCapabilitiesResponse();
 		response.bridgeVersion = "1.51.0";
 		response.protocolVersion = 1;
+		response.runtimeGeneration = s_RuntimeGeneration;
 		response.capabilities = "state;editors;open-resource;play-session;project-context;inspect-resource;world-selection;entity-hierarchy;list-resources;list-entities;layer-state;inspect-entity;set-selection;clear-selection;entity-position;entity-details;create-entity;rename-entity;delete-entity;move-entity;rotate-entity;reparent-entity;duplicate-entity;entity-properties;components;component-properties;reload-action";
 		return response;
 	}

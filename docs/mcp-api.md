@@ -2372,14 +2372,14 @@ Copy `continuation` unchanged to retrieve the next bounded passage. Citation met
 
 ## `workbench_status`
 
-Read Reforger game, Tools, executable, profile, native loopback NET API, managed-handler installation, first-install availability, and support-log status. Native availability is determined solely by the NET API; this read-only operation never enumerates Workbench processes, writes or migrates handler files, launches Workbench, or validates scripts.
+Read Workbench Availability State through the configured loopback NET API. Returns only Workbench-authored running and script-compilation facts; a failed request means the configured endpoint is unavailable. It never inspects local installation files, enumerates processes, writes handler files, launches Workbench, or validates scripts.
 
 ### Annotations
 
 ```json
 {
   "title": "Read Workbench status",
-  "readOnlyHint": false,
+  "readOnlyHint": true,
   "destructiveHint": false,
   "idempotentHint": true,
   "openWorldHint": false
@@ -2400,145 +2400,18 @@ Read Reforger game, Tools, executable, profile, native loopback NET API, managed
 
 ```json
 {
-  "$defs": {
-    "ManagedBridgeStatus": {
-      "properties": {
-        "activationRequired": {
-          "type": "boolean"
-        },
-        "activeVersion": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "capabilities": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "capabilitiesTruncated": {
-          "type": "boolean"
-        },
-        "compatible": {
-          "type": "boolean"
-        },
-        "installationAvailable": {
-          "type": "boolean"
-        },
-        "installed": {
-          "type": "boolean"
-        },
-        "installedVersion": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "protocolVersion": {
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "installed",
-        "installationAvailable",
-        "compatible",
-        "activationRequired",
-        "capabilities",
-        "capabilitiesTruncated"
-      ],
-      "type": "object"
-    },
-    "WorkbenchPathStatus": {
-      "properties": {
-        "exists": {
-          "type": "boolean"
-        },
-        "path": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "source": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "exists",
-        "source"
-      ],
-      "type": "object"
-    },
-    "WorkbenchStatus": {
-      "properties": {
-        "isRunning": {
-          "type": "boolean"
-        },
-        "scriptsCompiled": {
-          "type": "boolean"
-        }
-      },
-      "required": [
-        "isRunning",
-        "scriptsCompiled"
-      ],
-      "type": "object"
-    }
-  },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
-    "bridge": {
-      "$ref": "#/$defs/ManagedBridgeStatus"
+    "isRunning": {
+      "type": "boolean"
     },
-    "bridgeDirectory": {
-      "type": "string"
-    },
-    "executable": {
-      "$ref": "#/$defs/WorkbenchPathStatus"
-    },
-    "game": {
-      "$ref": "#/$defs/WorkbenchPathStatus"
-    },
-    "native": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/WorkbenchStatus"
-        },
-        {
-          "type": "null"
-        }
-      ]
-    },
-    "nativeFailure": {
-      "type": [
-        "string",
-        "null"
-      ]
-    },
-    "profile": {
-      "$ref": "#/$defs/WorkbenchPathStatus"
-    },
-    "supportLog": {
-      "$ref": "#/$defs/WorkbenchPathStatus"
-    },
-    "tools": {
-      "$ref": "#/$defs/WorkbenchPathStatus"
+    "scriptsCompiled": {
+      "type": "boolean"
     }
   },
   "required": [
-    "game",
-    "tools",
-    "executable",
-    "profile",
-    "bridgeDirectory",
-    "bridge",
-    "supportLog"
+    "isRunning",
+    "scriptsCompiled"
   ],
   "type": "object"
 }
@@ -16728,7 +16601,7 @@ Workbench tools return structured tool errors with a stable code, operation phas
 
 ## `workbench_reload`
 
-Confirm Save All for currently open Workbench tabs and save the active World Editor world when it already has a path, then request Reload WB Scripts through Workbench's in-process Resource Manager action dispatcher. An absent or untitled World Editor world is reported as skipped and never opens a Save As dialog. The dispatcher acknowledgement is not confirmation: the tool waits up to 60 seconds for fresh console-log evidence of the full script reload.
+Confirm Save All for currently open Workbench tabs and save the active World Editor world when it already has a path, then request Reload WB Scripts through Workbench's in-process Resource Manager action dispatcher. An absent or untitled World Editor world is reported as skipped and never opens a Save As dialog. Because reload tears down the handler before it can respond, the tool waits up to 60 seconds for the replacement handler to report a changed compatible typed runtime generation before returning success.
 
 ### Annotations
 
@@ -16758,24 +16631,12 @@ Confirm Save All for currently open Workbench tabs and save the active World Edi
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
-    "logPath": {
-      "type": "string"
+    "reloadDispatched": {
+      "type": "boolean"
     },
-    "processId": {
-      "minimum": 0,
+    "runtimeGeneration": {
+      "format": "int32",
       "type": "integer"
-    },
-    "reloadVerified": {
-      "type": "boolean"
-    },
-    "verificationLines": {
-      "items": {
-        "type": "string"
-      },
-      "type": "array"
-    },
-    "workbenchWasMinimized": {
-      "type": "boolean"
     },
     "worldSaveStatus": {
       "type": "string"
@@ -16785,13 +16646,10 @@ Confirm Save All for currently open Workbench tabs and save the active World Edi
     }
   },
   "required": [
-    "processId",
-    "workbenchWasMinimized",
     "worldSavedBeforeReload",
     "worldSaveStatus",
-    "reloadVerified",
-    "logPath",
-    "verificationLines"
+    "reloadDispatched",
+    "runtimeGeneration"
   ],
   "type": "object"
 }
@@ -16836,14 +16694,7 @@ Save all currently open Workbench tabs through the fixed in-process Resource Man
     "actionPath": {
       "type": "string"
     },
-    "processId": {
-      "minimum": 0,
-      "type": "integer"
-    },
     "saveAllAccepted": {
-      "type": "boolean"
-    },
-    "workbenchWasMinimized": {
       "type": "boolean"
     },
     "worldSaveAccepted": {
@@ -16854,8 +16705,6 @@ Save all currently open Workbench tabs through the fixed in-process Resource Man
     }
   },
   "required": [
-    "processId",
-    "workbenchWasMinimized",
     "saveAllAccepted",
     "worldSaveAccepted",
     "worldSaveStatus",
@@ -16904,13 +16753,6 @@ Save the active World Editor document through WorldEditor.Save() only when it al
     "actionPath": {
       "type": "string"
     },
-    "processId": {
-      "minimum": 0,
-      "type": "integer"
-    },
-    "workbenchWasMinimized": {
-      "type": "boolean"
-    },
     "worldSaveAccepted": {
       "type": "boolean"
     },
@@ -16919,8 +16761,6 @@ Save the active World Editor document through WorldEditor.Save() only when it al
     }
   },
   "required": [
-    "processId",
-    "workbenchWasMinimized",
     "worldSaveAccepted",
     "worldSaveStatus",
     "actionPath"
@@ -16935,7 +16775,7 @@ Workbench tools return structured tool errors with a stable code, operation phas
 
 ## `workbench_read_logs`
 
-Read a bounded tail from either the integration support log or the latest known Workbench console log. Arbitrary paths are not accepted.
+Read a bounded tail from either the integration support log or the latest known Workbench console log. This is diagnostic history, not live Workbench state or reload-success evidence; arbitrary paths are not accepted.
 
 ### Annotations
 
@@ -17047,7 +16887,7 @@ Workbench tools return structured tool errors with a stable code, operation phas
 
 ## `workbench_launch`
 
-Explicitly launch the discovered Workbench executable from its normal Steam working directory with -noThrow, or reuse the exact existing Workbench process. Returns success only after bounded native NET API readiness and never chooses a project.
+Explicit host-process control: launch the discovered Workbench executable or reuse the exact existing Workbench process, then wait for native NET API readiness. This is not a Workbench Capability or source of live editor truth.
 
 ### Annotations
 
@@ -17113,7 +16953,7 @@ Workbench tools return structured tool errors with a stable code, operation phas
 
 ## `workbench_stop`
 
-Request graceful closure of one exact observed Workbench process. This never force-kills Workbench and may require user interaction.
+Explicit host-process control: request graceful closure of one exact observed Workbench process. This is not a Workbench Capability or source of live editor truth.
 
 ### Annotations
 
@@ -17188,7 +17028,7 @@ Workbench tools return structured tool errors with a stable code, operation phas
 
 ## `workbench_restart`
 
-Confirm Save All for one exact running Workbench process, force-close that still-matching process, and relaunch its one resolved Enfusion Workbench project with -noThrow, -gproj, and the installed base-game addons directory only after the original exits. It refuses to force-close if the visible project window, exact local project descriptor, or installed base-game project cannot be resolved, or if saving is not accepted.
+Explicit host-process control: save through the typed Workbench Gateway, force-close one exact observed Workbench process, and relaunch its resolved project. This is not a Workbench Capability or source of live editor truth.
 
 ### Annotations
 

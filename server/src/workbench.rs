@@ -211,20 +211,15 @@ pub enum WorkbenchPlaySession {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkbenchScriptActivationResult {
-    pub process_id: u32,
-    pub workbench_was_minimized: bool,
     pub world_saved_before_reload: bool,
     pub world_save_status: String,
-    pub reload_verified: bool,
-    pub log_path: PathBuf,
-    pub verification_lines: Vec<String>,
+    pub reload_dispatched: bool,
+    pub runtime_generation: i32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkbenchSaveAllResult {
-    pub process_id: u32,
-    pub workbench_was_minimized: bool,
     pub save_all_accepted: bool,
     pub world_save_accepted: bool,
     pub world_save_status: String,
@@ -234,8 +229,6 @@ pub struct WorkbenchSaveAllResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkbenchSaveWorldResult {
-    pub process_id: u32,
-    pub workbench_was_minimized: bool,
     pub world_save_accepted: bool,
     pub world_save_status: String,
     pub action_path: String,
@@ -1307,12 +1300,6 @@ impl WorkbenchController {
     }
 
     pub fn validate_scripts(&self) -> Result<WorkbenchValidation, WorkbenchFailure> {
-        let paths = self.paths();
-        if self.bridge_disk_status(&paths.bridge_directory).installed
-            && self.gateway.status().is_ok()
-        {
-            let _ = self.maintain_existing_bridge(&paths.bridge_directory);
-        }
         self.native_validate_scripts()
     }
 
@@ -1380,12 +1367,6 @@ impl WorkbenchController {
 
     pub fn state(&self) -> Result<WorkbenchLiveState, WorkbenchFailure> {
         let started = Instant::now();
-        let paths = self.paths();
-        if self.gateway.status().is_ok()
-            && self.bridge_disk_status(&paths.bridge_directory).installed
-        {
-            let _ = self.maintain_existing_bridge(&paths.bridge_directory);
-        }
         let value = self
             .gateway
             .request(
@@ -3941,24 +3922,6 @@ impl WorkbenchController {
         const POST_SAVE_ACTION_DELAY: Duration = Duration::from_millis(750);
 
         let started = Instant::now();
-        let processes = workbench_processes();
-        let [process] = processes.as_slice() else {
-            return Err(self.correlate_failure_details(
-                "save-all",
-                "ambiguous-workbench-process",
-                failure(WorkbenchFailureCode::Unavailable),
-                json!({"processCount": processes.len()}),
-            ));
-        };
-        let workbench_was_minimized =
-            workbench_has_minimized_window(process.id).map_err(|outcome| {
-                self.correlate_failure_details(
-                    "save-all",
-                    outcome,
-                    failure(WorkbenchFailureCode::Unavailable),
-                    json!({"processId": process.id}),
-                )
-            })?;
         let action = self
             .dispatch_background_save_all_action()
             .map_err(|dispatch_failure| {
@@ -3966,7 +3929,7 @@ impl WorkbenchController {
                     "save-all",
                     "workbench-save-all-action-unavailable",
                     dispatch_failure,
-                    json!({"processId": process.id}),
+                    json!({"handler": "RST_WorkbenchState"}),
                 )
             })?;
         if !workbench_bool(&action.accepted)
@@ -3981,7 +3944,6 @@ impl WorkbenchController {
                 "workbench-save-all-or-world-save-rejected",
                 failure(WorkbenchFailureCode::Unavailable),
                 json!({
-                    "processId": process.id,
                     "actionPath": action.action_path,
                     "saveAllAccepted": workbench_bool(&action.accepted),
                     "worldSaveAccepted": workbench_bool(&action.world_save_accepted),
@@ -3991,8 +3953,6 @@ impl WorkbenchController {
         }
         std::thread::sleep(POST_SAVE_ACTION_DELAY);
         let result = WorkbenchSaveAllResult {
-            process_id: process.id,
-            workbench_was_minimized,
             save_all_accepted: true,
             world_save_accepted: workbench_bool(&action.world_save_accepted),
             world_save_status: action.world_save_status,
@@ -4003,8 +3963,6 @@ impl WorkbenchController {
             "accepted",
             started,
             json!({
-                "processId": result.process_id,
-                "workbenchWasMinimized": result.workbench_was_minimized,
                 "actionPath": result.action_path,
                 "worldSaveAccepted": result.world_save_accepted,
                 "worldSaveStatus": result.world_save_status,
@@ -4019,24 +3977,6 @@ impl WorkbenchController {
         const POST_SAVE_ACTION_DELAY: Duration = Duration::from_millis(750);
 
         let started = Instant::now();
-        let processes = workbench_processes();
-        let [process] = processes.as_slice() else {
-            return Err(self.correlate_failure_details(
-                "save-world",
-                "ambiguous-workbench-process",
-                failure(WorkbenchFailureCode::Unavailable),
-                json!({"processCount": processes.len()}),
-            ));
-        };
-        let workbench_was_minimized =
-            workbench_has_minimized_window(process.id).map_err(|outcome| {
-                self.correlate_failure_details(
-                    "save-world",
-                    outcome,
-                    failure(WorkbenchFailureCode::Unavailable),
-                    json!({"processId": process.id}),
-                )
-            })?;
         let action = self
             .dispatch_background_save_world_action()
             .map_err(|dispatch_failure| {
@@ -4044,7 +3984,7 @@ impl WorkbenchController {
                     "save-world",
                     "world-editor-save-unavailable",
                     dispatch_failure,
-                    json!({"processId": process.id}),
+                    json!({"handler": "RST_WorkbenchState"}),
                 )
             })?;
         if !workbench_bool(&action.accepted)
@@ -4058,7 +3998,6 @@ impl WorkbenchController {
                 "world-editor-save-unavailable",
                 failure(WorkbenchFailureCode::Unavailable),
                 json!({
-                    "processId": process.id,
                     "actionPath": action.action_path,
                     "worldSaveStatus": action.world_save_status,
                 }),
@@ -4066,8 +4005,6 @@ impl WorkbenchController {
         }
         std::thread::sleep(POST_SAVE_ACTION_DELAY);
         let result = WorkbenchSaveWorldResult {
-            process_id: process.id,
-            workbench_was_minimized,
             world_save_accepted: workbench_bool(&action.accepted),
             world_save_status: action.world_save_status,
             action_path: action.action_path,
@@ -4077,8 +4014,6 @@ impl WorkbenchController {
             "accepted",
             started,
             json!({
-                "processId": result.process_id,
-                "workbenchWasMinimized": result.workbench_was_minimized,
                 "actionPath": result.action_path,
                 "worldSaveStatus": result.world_save_status,
             }),
@@ -4088,101 +4023,68 @@ impl WorkbenchController {
 
     /// Dispatch the fixed Workbench reload action in-process after a confirmed Save All action.
     ///
-    /// The dispatcher response only records whether Workbench reported accepting the action.
-    /// Success is established solely by a complete fresh reload marker sequence in the Workbench
-    /// log.
+    /// Reload destroys this handler before it can report completion. The versioned capability
+    /// handshake supplies the typed runtime generation used to prove the replacement loaded.
     pub fn activate_scripts(&self) -> Result<WorkbenchScriptActivationResult, WorkbenchFailure> {
         const RELOAD_VERIFICATION_DEADLINE: Duration = Duration::from_secs(60);
         const RELOAD_VERIFICATION_POLL: Duration = Duration::from_millis(500);
 
         let started = Instant::now();
-        let processes = workbench_processes();
-        let [process] = processes.as_slice() else {
-            return Err(self.correlate_failure_details(
-                "activate-scripts",
-                "ambiguous-workbench-process",
-                failure(WorkbenchFailureCode::Unavailable),
-                json!({"processCount": processes.len()}),
-            ));
-        };
+        let before = self.capabilities_handshake()?;
+        if before.bridge_version != WORKBENCH_BRIDGE_VERSION
+            || before.protocol_version != WORKBENCH_BRIDGE_PROTOCOL_VERSION
+            || before.runtime_generation == 0
+        {
+            return Err(failure(WorkbenchFailureCode::Protocol));
+        }
         let save_result = self.save_all().map_err(|save_failure| {
             self.correlate_failure_details(
                 "activate-scripts",
                 "workbench-save-all-before-reload-failed",
                 save_failure,
-                json!({"processId": process.id}),
+                json!({"handler": "RST_WorkbenchState"}),
             )
         })?;
-        let workbench_was_minimized = save_result.workbench_was_minimized;
         let world_saved_before_reload = save_result.world_save_accepted;
         let world_save_status = save_result.world_save_status;
-        let log_before = latest_workbench_log(&self.paths().workbench_root)
-            .and_then(|path| log_cursor(&path).ok())
-            .ok_or_else(|| {
-                self.correlate_failure_details(
-                    "activate-scripts",
-                    "workbench-log-unavailable",
-                    failure(WorkbenchFailureCode::Unavailable),
-                    json!({"processId": process.id}),
-                )
-            })?;
         reload_action_path(self.dispatch_background_reload_action()).map_err(
             |dispatch_failure| {
                 self.correlate_failure_details(
                     "activate-scripts",
                     "workbench-reload-action-unavailable",
                     dispatch_failure,
-                    json!({"processId": process.id}),
+                    json!({"handler": "RST_WorkbenchState"}),
                 )
             },
         )?;
         while started.elapsed() < RELOAD_VERIFICATION_DEADLINE {
-            if let Some(verification) = latest_workbench_log(&self.paths().workbench_root)
-                .and_then(|path| reload_verification_since(&path, Some(&log_before)).ok())
-                .flatten()
-            {
-                if !workbench_processes().contains(process) {
-                    return Err(self.correlate_failure_details(
-                        "activate-scripts",
-                        "workbench-process-changed",
-                        failure(WorkbenchFailureCode::Unavailable),
-                        json!({"processId": process.id}),
-                    ));
-                }
-                let result = WorkbenchScriptActivationResult {
-                    process_id: process.id,
-                    workbench_was_minimized,
-                    world_saved_before_reload,
-                    world_save_status,
-                    reload_verified: true,
-                    log_path: verification.path,
-                    verification_lines: verification.lines,
-                };
-                self.log_event_timed(
-                    "activate-scripts",
-                    "verified",
-                    started,
-                    json!({
-                        "processId": result.process_id,
-                        "workbenchWasMinimized": result.workbench_was_minimized,
+            if let Ok(after) = self.capabilities_handshake() {
+                if after.protocol_version == WORKBENCH_BRIDGE_PROTOCOL_VERSION
+                    && after.bridge_version == WORKBENCH_BRIDGE_VERSION
+                    && after.runtime_generation != 0
+                    && after.runtime_generation != before.runtime_generation
+                {
+                    let result = WorkbenchScriptActivationResult {
+                        world_saved_before_reload,
+                        world_save_status,
+                        reload_dispatched: true,
+                        runtime_generation: after.runtime_generation,
+                    };
+                    self.log_event_timed("activate-scripts", "verified", started, json!({
                         "worldSavedBeforeReload": result.world_saved_before_reload,
                         "worldSaveStatus": result.world_save_status,
-                        "logPath": result.log_path,
-                        "verificationLineCount": result.verification_lines.len(),
-                    }),
-                );
-                return Ok(result);
+                        "runtimeGeneration": result.runtime_generation,
+                    }));
+                    return Ok(result);
+                }
             }
             std::thread::sleep(RELOAD_VERIFICATION_POLL);
         }
         Err(self.correlate_failure_details(
             "activate-scripts",
-            "reload-not-verified",
+            "typed-generation-not-observed",
             failure(WorkbenchFailureCode::Timeout),
-            json!({
-                "processId": process.id,
-                "verificationDeadlineMs": RELOAD_VERIFICATION_DEADLINE.as_millis(),
-            }),
+            json!({"previousRuntimeGeneration": before.runtime_generation}),
         ))
     }
 
@@ -4562,6 +4464,14 @@ impl WorkbenchController {
         ))
     }
 
+    fn capabilities_handshake(&self) -> Result<RawBridgeCapabilities, WorkbenchFailure> {
+        let value = self.gateway.request(
+            json!({"APIFunc": "RST_WorkbenchCapabilities"}),
+            self.options.gateway.status_deadline,
+        )?;
+        serde_json::from_value(value).map_err(|_| failure(WorkbenchFailureCode::Protocol))
+    }
+
     fn active_bridge_status(
         &self,
         bridge_directory: &std::path::Path,
@@ -4573,18 +4483,7 @@ impl WorkbenchController {
                 .ok()
                 .and_then(|bytes| serde_json::from_slice::<BridgeManifest>(&bytes).ok())
                 .map(|manifest| manifest.protocol_version);
-        let call = || {
-            self.gateway.request(
-                json!({"APIFunc": "RST_WorkbenchCapabilities"}),
-                self.options.gateway.status_deadline,
-            )
-        };
-        let decode = |value: Result<Value, WorkbenchFailure>| {
-            value
-                .ok()
-                .and_then(|value| serde_json::from_value::<RawBridgeCapabilities>(value).ok())
-        };
-        let mut raw = decode(call());
+        let mut raw = self.capabilities_handshake().ok();
         let handshake_matches = |raw: &RawBridgeCapabilities| {
             disk.installed_version
                 .as_deref()
@@ -4593,7 +4492,7 @@ impl WorkbenchController {
         };
         if retry_activation && raw.as_ref().is_none_or(|raw| !handshake_matches(raw)) {
             let _ = self.gateway.validate_scripts();
-            raw = decode(call());
+            raw = self.capabilities_handshake().ok();
         }
         let Some(raw) = raw else {
             return ManagedBridgeStatus {
@@ -4635,6 +4534,7 @@ impl WorkbenchController {
         }
     }
 
+    #[cfg(test)]
     fn maintain_existing_bridge(&self, bridge_directory: &std::path::Path) -> ManagedBridgeStatus {
         let started = Instant::now();
         let Ok(_maintenance) = self.maintenance_lock.lock() else {
@@ -4689,6 +4589,7 @@ impl WorkbenchController {
         status
     }
 
+    #[cfg(test)]
     fn repair_managed_files(&self, bridge_directory: &std::path::Path) -> std::io::Result<bool> {
         let manifest_path = bridge_directory.join("reforger-script-tools.manifest.json");
         let manifest = fs::read(&manifest_path)
@@ -4927,10 +4828,6 @@ impl WorkbenchController {
         let started = std::time::Instant::now();
         while started.elapsed() < deadline {
             if self.gateway.status().is_ok() {
-                let paths = self.paths();
-                if self.bridge_disk_status(&paths.bridge_directory).installed {
-                    let _ = self.maintain_existing_bridge(&paths.bridge_directory);
-                }
                 return true;
             }
             std::thread::sleep(Duration::from_millis(500));
@@ -5260,6 +5157,8 @@ struct RawBridgeCapabilities {
     bridge_version: String,
     #[serde(rename = "protocolVersion")]
     protocol_version: u32,
+    #[serde(rename = "runtimeGeneration")]
+    runtime_generation: i32,
     capabilities: String,
 }
 
@@ -5302,11 +5201,11 @@ fn reload_action_path(
 ) -> Result<String, WorkbenchFailure> {
     match dispatch {
         // A false dispatcher acknowledgement is not a reliable failure signal: Workbench can
-        // begin reloading while its handler still reports false. The caller's log verification
-        // decides whether the reload actually happened.
+        // begin reloading while its handler still reports false. The result remains a dispatch
+        // observation; a changed typed runtime generation is required for success.
         Ok(action) => Ok(action.action_path),
-        // Reloading can tear down the in-flight script handler before it returns a response.
-        // The fresh console marker sequence is likewise authoritative in that case.
+        // Reload can tear down the in-flight handler before it returns. Continue only because
+        // the caller will require a changed typed runtime generation before returning success.
         Err(dispatch_failure) if dispatch_failure.code == WorkbenchFailureCode::Timeout => {
             Ok("Plugins/Settings/Reload WB Scripts".to_string())
         }
@@ -7158,104 +7057,6 @@ fn workbench_log_markers(source: &str, lines: &[String]) -> Vec<WorkbenchLogMark
         .collect()
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct WorkbenchLogCursor {
-    path: PathBuf,
-    length: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ReloadLogVerification {
-    path: PathBuf,
-    lines: Vec<String>,
-}
-
-fn log_cursor(path: &std::path::Path) -> std::io::Result<WorkbenchLogCursor> {
-    Ok(WorkbenchLogCursor {
-        path: path.to_path_buf(),
-        length: fs::metadata(path)?.len(),
-    })
-}
-
-fn reload_verification_since(
-    path: &std::path::Path,
-    before: Option<&WorkbenchLogCursor>,
-) -> std::io::Result<Option<ReloadLogVerification>> {
-    let Some(before) = before.filter(|cursor| cursor.path == path) else {
-        return Ok(None);
-    };
-    let offset = before.length;
-    let mut file = fs::File::open(path)?;
-    let length = file.metadata()?.len();
-    if length <= offset || length - offset > MAX_LOG_READ_BYTES {
-        return Ok(None);
-    }
-    file.seek(SeekFrom::Start(offset))?;
-    let mut text = String::new();
-    file.read_to_string(&mut text)?;
-    let lines = text.lines().map(str::to_string).collect::<Vec<_>>();
-    let required_markers = [
-        "Reloading game scripts",
-        "Script validation",
-        "Compiling GameLib scripts",
-        "Compiling Game scripts",
-        "Module: WorkbenchGame; loaded",
-    ];
-    let mut next_marker = 0;
-    let mut matched = Vec::new();
-    for line in &lines {
-        if line.contains(required_markers[next_marker]) {
-            matched.push(line.clone());
-            next_marker += 1;
-            if next_marker == required_markers.len() {
-                return Ok(Some(ReloadLogVerification {
-                    path: path.to_path_buf(),
-                    lines: matched,
-                }));
-            }
-        }
-    }
-    Ok(None)
-}
-
-fn workbench_has_minimized_window(process_id: u32) -> Result<bool, &'static str> {
-    let script = format!(
-        r#"
-Add-Type @'
-using System;
-using System.Runtime.InteropServices;
-public static class RSTWorkbenchWindowState {{
-    [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
-}}
-'@
-$process = Get-Process -Id {process_id} -ErrorAction Stop
-[pscustomobject]@{{minimized = [RSTWorkbenchWindowState]::IsIconic($process.MainWindowHandle)}} | ConvertTo-Json -Compress
-"#
-    );
-    let output = std::process::Command::new("powershell.exe")
-        .args([
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            &script,
-        ])
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .map_err(|_| "workbench-window-state-unavailable")?;
-    if !output.status.success() {
-        return Err("workbench-window-state-unavailable");
-    }
-    #[derive(Deserialize)]
-    struct WindowState {
-        minimized: bool,
-    }
-    serde_json::from_slice::<WindowState>(&output.stdout)
-        .map(|state| state.minimized)
-        .map_err(|_| "workbench-window-state-unavailable")
-}
-
 const MAX_LOG_READ_BYTES: u64 = 512 * 1024;
 
 fn bounded_log_tail(
@@ -7895,7 +7696,7 @@ mod tests {
     }
 
     #[test]
-    fn reload_action_dispatch_acknowledgement_does_not_override_log_verification() {
+    fn reload_action_dispatch_is_only_a_precondition_for_typed_verification() {
         let path = super::reload_action_path(Ok(super::RawBridgeReloadAction {
             _bridge_version: "1.51.0".to_string(),
             protocol_version: 1,
@@ -7908,12 +7709,171 @@ mod tests {
     }
 
     #[test]
-    fn reload_action_timeout_defers_to_log_verification() {
-        let path =
+    fn reload_action_timeout_can_proceed_to_typed_verification() {
+        assert_eq!(
             super::reload_action_path(Err(super::failure(super::WorkbenchFailureCode::Timeout)))
-                .unwrap();
+                .unwrap(),
+            "Plugins/Settings/Reload WB Scripts"
+        );
+    }
 
-        assert_eq!(path, "Plugins/Settings/Reload WB Scripts");
+    #[test]
+    fn activation_requires_a_changed_typed_runtime_generation() {
+        let (port, peer) = start_peer_sequence(vec![
+            (
+                json!({"APIFunc": "RST_WorkbenchCapabilities"}),
+                json!({
+                    "bridgeVersion": "1.51.0",
+                    "protocolVersion": 1,
+                    "runtimeGeneration": 7,
+                    "capabilities": "state"
+                }),
+            ),
+            (
+                json!({"APIFunc": "RST_WorkbenchState", "executeSaveAllAction": true}),
+                json!({
+                    "bridgeVersion": "1.51.0",
+                    "protocolVersion": 1,
+                    "saveAllActionAccepted": true,
+                    "saveAllActionPath": "File/Save All",
+                    "worldSaveActionAccepted": false,
+                    "worldSaveStatus": "skipped-no-open-world"
+                }),
+            ),
+            (
+                json!({"APIFunc": "RST_WorkbenchState", "executeReloadAction": true}),
+                json!({
+                    "bridgeVersion": "1.51.0",
+                    "protocolVersion": 1,
+                    "reloadActionAccepted": false,
+                    "reloadActionPath": "Plugins/Settings/Reload WB Scripts"
+                }),
+            ),
+            (
+                json!({"APIFunc": "RST_WorkbenchCapabilities"}),
+                json!({
+                    "bridgeVersion": "1.51.0",
+                    "protocolVersion": 1,
+                    "runtimeGeneration": 8,
+                    "capabilities": "state"
+                }),
+            ),
+        ]);
+        let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
+            gateway: super::WorkbenchGatewayOptions {
+                port,
+                status_deadline: Duration::from_secs(1),
+                ..super::WorkbenchGatewayOptions::default()
+            },
+            ..super::WorkbenchControllerOptions::default()
+        });
+
+        let result = controller.activate_scripts().unwrap();
+
+        assert!(result.reload_dispatched);
+        assert_eq!(result.runtime_generation, 8);
+        peer.join().unwrap();
+    }
+
+    #[test]
+    fn activation_rejects_a_handler_without_a_typed_runtime_generation() {
+        let (port, peer) = start_peer(|request| {
+            assert_eq!(request, json!({"APIFunc": "RST_WorkbenchCapabilities"}));
+            json!({
+                "bridgeVersion": "1.51.0",
+                "protocolVersion": 1,
+                "runtimeGeneration": 0,
+                "capabilities": "state"
+            })
+        });
+        let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
+            gateway: super::WorkbenchGatewayOptions {
+                port,
+                status_deadline: Duration::from_secs(1),
+                ..super::WorkbenchGatewayOptions::default()
+            },
+            ..super::WorkbenchControllerOptions::default()
+        });
+
+        assert_eq!(
+            controller.activate_scripts().unwrap_err().code,
+            WorkbenchFailureCode::Protocol
+        );
+        peer.join().unwrap();
+    }
+
+    #[test]
+    fn capability_handshake_requires_the_runtime_generation_field() {
+        assert!(serde_json::from_value::<super::RawBridgeCapabilities>(json!({
+            "bridgeVersion": "1.51.0",
+            "protocolVersion": 1,
+            "capabilities": "state"
+        }))
+        .is_err());
+    }
+
+    #[test]
+    fn activation_ignores_a_changed_generation_from_an_incompatible_bridge() {
+        let (port, peer) = start_peer_sequence(vec![
+            (
+                json!({"APIFunc": "RST_WorkbenchCapabilities"}),
+                json!({
+                    "bridgeVersion": "1.51.0",
+                    "protocolVersion": 1,
+                    "runtimeGeneration": 7,
+                    "capabilities": "state"
+                }),
+            ),
+            (
+                json!({"APIFunc": "RST_WorkbenchState", "executeSaveAllAction": true}),
+                json!({
+                    "bridgeVersion": "1.51.0",
+                    "protocolVersion": 1,
+                    "saveAllActionAccepted": true,
+                    "saveAllActionPath": "File/Save All",
+                    "worldSaveActionAccepted": false,
+                    "worldSaveStatus": "skipped-no-open-world"
+                }),
+            ),
+            (
+                json!({"APIFunc": "RST_WorkbenchState", "executeReloadAction": true}),
+                json!({
+                    "bridgeVersion": "1.51.0",
+                    "protocolVersion": 1,
+                    "reloadActionAccepted": true,
+                    "reloadActionPath": "Plugins/Settings/Reload WB Scripts"
+                }),
+            ),
+            (
+                json!({"APIFunc": "RST_WorkbenchCapabilities"}),
+                json!({
+                    "bridgeVersion": "1.50.0",
+                    "protocolVersion": 1,
+                    "runtimeGeneration": 8,
+                    "capabilities": "state"
+                }),
+            ),
+            (
+                json!({"APIFunc": "RST_WorkbenchCapabilities"}),
+                json!({
+                    "bridgeVersion": "1.51.0",
+                    "protocolVersion": 1,
+                    "runtimeGeneration": 9,
+                    "capabilities": "state"
+                }),
+            ),
+        ]);
+        let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
+            gateway: super::WorkbenchGatewayOptions {
+                port,
+                status_deadline: Duration::from_secs(1),
+                ..super::WorkbenchGatewayOptions::default()
+            },
+            ..super::WorkbenchControllerOptions::default()
+        });
+
+        assert_eq!(controller.activate_scripts().unwrap().runtime_generation, 9);
+        peer.join().unwrap();
     }
 
     #[test]
@@ -9634,6 +9594,127 @@ mod tests {
     }
 
     #[test]
+    fn state_uses_its_typed_handler_without_profile_maintenance() {
+        let (port, peer) = start_peer(|request| {
+            assert_eq!(request, json!({"APIFunc": "RST_WorkbenchState"}));
+            json!({
+                "bridgeVersion": "1.51.0",
+                "protocolVersion": 1,
+                "mode": "workbench",
+                "playSession": "unavailable",
+                "loadedAddons": "ArmaReforger"
+            })
+        });
+        let root = test_root("state-net-only");
+        let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
+            gateway: super::WorkbenchGatewayOptions {
+                port,
+                status_deadline: Duration::from_secs(1),
+                ..super::WorkbenchGatewayOptions::default()
+            },
+            user_directory: Some(root.clone()),
+            ..super::WorkbenchControllerOptions::default()
+        });
+        let bridge_file = controller.paths().bridge_directory.join("RST_WorkbenchState.c");
+        controller.write_managed_files(&controller.paths().bridge_directory).unwrap();
+        fs::write(&bridge_file, "stale-state-handler").unwrap();
+
+        assert_eq!(controller.state().unwrap().mode, "workbench");
+        assert_eq!(fs::read_to_string(bridge_file).unwrap(), "stale-state-handler");
+        peer.join().unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn validation_uses_native_compiler_without_profile_maintenance() {
+        let (port, peer) = start_peer(|request| {
+            assert_eq!(
+                request,
+                json!({"APIFunc": "ValidateScripts", "Configuration": "WORKBENCH"})
+            );
+            json!({"Success": true, "Errors": [], "Warnings": []})
+        });
+        let root = test_root("validation-net-only");
+        let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
+            gateway: super::WorkbenchGatewayOptions {
+                port,
+                status_deadline: Duration::from_secs(1),
+                ..super::WorkbenchGatewayOptions::default()
+            },
+            user_directory: Some(root.clone()),
+            ..super::WorkbenchControllerOptions::default()
+        });
+        let bridge_file = controller.paths().bridge_directory.join("RST_WorkbenchState.c");
+        controller.write_managed_files(&controller.paths().bridge_directory).unwrap();
+        fs::write(&bridge_file, "stale-validation-handler").unwrap();
+
+        assert!(controller.validate_scripts().unwrap().success);
+        assert_eq!(
+            fs::read_to_string(bridge_file).unwrap(),
+            "stale-validation-handler"
+        );
+        peer.join().unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn save_actions_use_only_the_typed_handler() {
+        let (port, peer) = start_peer(|request| {
+            assert_eq!(
+                request,
+                json!({"APIFunc": "RST_WorkbenchState", "executeSaveAllAction": true})
+            );
+            json!({
+                "bridgeVersion": "1.51.0",
+                "protocolVersion": 1,
+                "saveAllActionAccepted": true,
+                "saveAllActionPath": "File/Save All",
+                "worldSaveActionAccepted": false,
+                "worldSaveStatus": "skipped-no-open-world"
+            })
+        });
+        let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
+            gateway: super::WorkbenchGatewayOptions {
+                port,
+                status_deadline: Duration::from_secs(1),
+                ..super::WorkbenchGatewayOptions::default()
+            },
+            ..super::WorkbenchControllerOptions::default()
+        });
+
+        assert!(controller.save_all().unwrap().save_all_accepted);
+        peer.join().unwrap();
+    }
+
+    #[test]
+    fn save_world_uses_only_the_typed_handler() {
+        let (port, peer) = start_peer(|request| {
+            assert_eq!(
+                request,
+                json!({"APIFunc": "RST_WorkbenchState", "executeSaveWorldAction": true})
+            );
+            json!({
+                "bridgeVersion": "1.51.0",
+                "protocolVersion": 1,
+                "worldSaveActionAccepted": true,
+                "worldSaveStatus": "saved",
+                "worldSaveActionPath": "WorldEditor.Save"
+            })
+        });
+        let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
+            gateway: super::WorkbenchGatewayOptions {
+                port,
+                status_deadline: Duration::from_secs(1),
+                ..super::WorkbenchGatewayOptions::default()
+            },
+            ..super::WorkbenchControllerOptions::default()
+        });
+
+        assert!(controller.save_world().unwrap().world_save_accepted);
+        peer.join().unwrap();
+    }
+
+    #[test]
     fn native_validation_uses_the_fixed_workbench_profile_and_normalizes_duplicates() {
         let (port, peer) = start_peer(|request| {
             assert_eq!(
@@ -10376,73 +10457,6 @@ mod tests {
                 game.join("addons").into_os_string(),
             ]),
         );
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn reload_verification_requires_the_complete_ordered_reload_sequence_after_baseline() {
-        let root = test_root("reload-log-verification");
-        fs::create_dir_all(&root).unwrap();
-        let path = root.join("console.log");
-        fs::write(
-            &path,
-            "SCRIPT        : Reloading game scripts\nSCRIPT        : Script validation\nSCRIPT        : Compiling GameLib scripts\nSCRIPT        : Compiling Game scripts\nModule: WorkbenchGame; loaded 171x files\n",
-        )
-        .unwrap();
-        let cursor = super::log_cursor(&path).unwrap();
-
-        fs::write(
-            &path,
-            format!(
-                "{}Game destroyed.\nSCRIPT        : Reloading game scripts\nSCRIPT        : Script validation\nSCRIPT        : Compiling GameLib scripts\nSCRIPT        : Compiling Game scripts\nModule: WorkbenchGame; loaded 171x files\n",
-                fs::read_to_string(&path).unwrap()
-            ),
-        )
-        .unwrap();
-        let verification = super::reload_verification_since(&path, Some(&cursor))
-            .unwrap()
-            .expect("complete new reload sequence");
-
-        assert_eq!(verification.path, path);
-        assert_eq!(verification.lines.len(), 5);
-        assert!(verification.lines[0].contains("Reloading game scripts"));
-        assert!(verification.lines[4].contains("Module: WorkbenchGame; loaded"));
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn reload_verification_rejects_incomplete_or_preexisting_reload_lines() {
-        let root = test_root("reload-log-incomplete");
-        fs::create_dir_all(&root).unwrap();
-        let path = root.join("console.log");
-        fs::write(
-            &path,
-            "SCRIPT        : Reloading game scripts\nSCRIPT        : Script validation\nSCRIPT        : Compiling GameLib scripts\nSCRIPT        : Compiling Game scripts\nModule: WorkbenchGame; loaded 171x files\n",
-        )
-        .unwrap();
-        let cursor = super::log_cursor(&path).unwrap();
-        fs::write(
-            &path,
-            format!(
-                "{}SCRIPT        : Reloading game scripts\nSCRIPT        : Script validation\n",
-                fs::read_to_string(&path).unwrap()
-            ),
-        )
-        .unwrap();
-
-        assert!(super::reload_verification_since(&path, Some(&cursor))
-            .unwrap()
-            .is_none());
-        let rotated = root.join("rotated-console.log");
-        fs::rename(&path, &rotated).unwrap();
-        fs::write(
-            &path,
-            "SCRIPT        : Reloading game scripts\nSCRIPT        : Script validation\nSCRIPT        : Compiling GameLib scripts\nSCRIPT        : Compiling Game scripts\nModule: WorkbenchGame; loaded 171x files\n",
-        )
-        .unwrap();
-        assert!(super::reload_verification_since(&path, Some(&cursor))
-            .unwrap()
-            .is_none());
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -11256,6 +11270,30 @@ mod tests {
             let payload = response(payload);
             write_string(&mut stream, "Ok");
             write_string(&mut stream, &payload.to_string());
+        });
+        (port, peer)
+    }
+
+    fn start_peer_sequence(
+        responses: Vec<(Value, Value)>,
+    ) -> (u16, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let peer = thread::spawn(move || {
+            for (expected_request, response) in responses {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut version = [0_u8; 4];
+                stream.read_exact(&mut version).unwrap();
+                assert_eq!(i32::from_le_bytes(version), 1);
+                assert_eq!(read_string(&mut stream), "ReforgerScriptTools");
+                assert_eq!(read_string(&mut stream), "JsonRPC");
+                assert_eq!(
+                    serde_json::from_str::<Value>(&read_string(&mut stream)).unwrap(),
+                    expected_request
+                );
+                write_string(&mut stream, "Ok");
+                write_string(&mut stream, &response.to_string());
+            }
         });
         (port, peer)
     }

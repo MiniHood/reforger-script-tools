@@ -30,9 +30,9 @@ use crate::workbench::{
     WorkbenchEntityRelationDirection, WorkbenchEntityRelationFilter, WorkbenchEntitySearchPage,
     WorkbenchEntitySelectionResult, WorkbenchFailure, WorkbenchFailureCode,
     WorkbenchInstallAuthorization, WorkbenchLayerState, WorkbenchLiveState, WorkbenchLogRead,
-    WorkbenchOpenEditorResult, WorkbenchOpenResourceResult, WorkbenchOverview,
-    WorkbenchPlaySessionResult, WorkbenchPolylineResample, WorkbenchPrefabComponentInspection,
-    WorkbenchPrefabContext, WorkbenchPrefabResourceMutationResult, WorkbenchProcessResult,
+    WorkbenchOpenEditorResult, WorkbenchOpenResourceResult, WorkbenchPlaySessionResult,
+    WorkbenchPolylineResample, WorkbenchPrefabComponentInspection, WorkbenchPrefabContext,
+    WorkbenchPrefabResourceMutationResult, WorkbenchProcessResult,
     WorkbenchProjectContext, WorkbenchPropertyList, WorkbenchResourceInspection,
     WorkbenchResourceListPage, WorkbenchResourceSearchPage, WorkbenchSaveAllResult,
     WorkbenchSaveWorldResult, WorkbenchScriptActivationResult, WorkbenchSelectedEntityHierarchy,
@@ -153,7 +153,7 @@ const READ_GAME_DATA_SOURCE_DESCRIPTION: &str =
 const OFFICIAL_WIKI_STATUS_DESCRIPTION: &str = "Validate and report the packaged Official Wiki Corpus. The copied Markdown files remain the source of truth; this reports their immutable revision, usable coverage, bounded exclusions, malformed-page facts, limits, and recovery without physical paths.";
 const SEARCH_OFFICIAL_WIKI_DESCRIPTION: &str = "Search validated packaged Official Wiki Markdown directly for deterministic, section-local passages. Results carry canonical source URLs, exact line ranges, and copy-ready read inputs; this never searches wiki-index.md or exposes an installed path.";
 const READ_OFFICIAL_WIKI_DESCRIPTION: &str = "Read bounded, validated verbatim Markdown from the packaged Official Wiki Corpus. Copy the corpus revision and logical path from search; results retain citation metadata and a continuation without exposing installation paths.";
-const WORKBENCH_STATUS_DESCRIPTION: &str = "Read Reforger game, Tools, executable, profile, native loopback NET API, managed-handler installation, first-install availability, and support-log status. Native availability is determined solely by the NET API; this read-only operation never enumerates Workbench processes, writes or migrates handler files, launches Workbench, or validates scripts.";
+const WORKBENCH_STATUS_DESCRIPTION: &str = "Read Workbench Availability State through the configured loopback NET API. Returns only Workbench-authored running and script-compilation facts; a failed request means the configured endpoint is unavailable. It never inspects local installation files, enumerates processes, writes handler files, launches Workbench, or validates scripts.";
 const WORKBENCH_VALIDATE_SCRIPTS_DESCRIPTION: &str = "Validate the currently loaded Workbench project with Workbench's native compiler using the fixed WORKBENCH configuration. Returns a bounded page of normalized Workbench-authored errors and warnings; continue with the opaque cursor without recompiling.";
 const WORKBENCH_INSTALL_BRIDGE_DESCRIPTION: &str = "Maintain the versioned Reforger Script Tools handler package after the VS Code extension has recorded first-install consent and compile it through the connected native NET API. A newly written profile handler package becomes available after the user refreshes Workbench; the installer deliberately does not probe the handler before that refresh. If no managed manifest exists, this tool returns workbench_installation_consent_required without writing profile files.";
 const WORKBENCH_STATE_DESCRIPTION: &str =
@@ -213,13 +213,13 @@ const WORKBENCH_OPEN_EDITOR_DESCRIPTION: &str = "Open one native Workbench edito
 const WORKBENCH_OPEN_RESOURCE_DESCRIPTION: &str = "Open one canonical Workbench resource through Workbench's native resource routing. Workbench selects the owning editor from the resource type; this includes world, script, particle, animation, audio, and string resources without editor-specific commands.";
 const WORKBENCH_START_PLAY_SESSION_DESCRIPTION: &str = "Explicitly request that World Editor starts a play session. Acceptance confirms the command was issued, not that a world has finished loading.";
 const WORKBENCH_STOP_PLAY_SESSION_DESCRIPTION: &str = "Explicitly request that World Editor returns to edit mode. This is distinct from stopping the Workbench process.";
-const WORKBENCH_RELOAD_DESCRIPTION: &str = "Confirm Save All for currently open Workbench tabs and save the active World Editor world when it already has a path, then request Reload WB Scripts through Workbench's in-process Resource Manager action dispatcher. An absent or untitled World Editor world is reported as skipped and never opens a Save As dialog. The dispatcher acknowledgement is not confirmation: the tool waits up to 60 seconds for fresh console-log evidence of the full script reload.";
+const WORKBENCH_RELOAD_DESCRIPTION: &str = "Confirm Save All for currently open Workbench tabs and save the active World Editor world when it already has a path, then request Reload WB Scripts through Workbench's in-process Resource Manager action dispatcher. An absent or untitled World Editor world is reported as skipped and never opens a Save As dialog. Because reload tears down the handler before it can respond, the tool waits up to 60 seconds for the replacement handler to report a changed compatible typed runtime generation before returning success.";
 const WORKBENCH_SAVE_ALL_DESCRIPTION: &str = "Save all currently open Workbench tabs through the fixed in-process Resource Manager Save All action and, only when the active World Editor has an existing world path, save that world through WorldEditor.Save(). An absent or untitled world is reported as skipped; no name is invented and no Save As dialog is opened. The tool uses in-process actions only and waits briefly after an accepted save action before returning.";
 const WORKBENCH_SAVE_WORLD_DESCRIPTION: &str = "Save the active World Editor document through WorldEditor.Save() only when it already has a world path. An absent or untitled world is reported as skipped; no name is invented and no Save As dialog is opened. It remains separate from workbench_save_all, uses no UI automation, and waits briefly after a successful save action before returning.";
-const WORKBENCH_READ_LOGS_DESCRIPTION: &str = "Read a bounded tail from either the integration support log or the latest known Workbench console log. Arbitrary paths are not accepted.";
-const WORKBENCH_LAUNCH_DESCRIPTION: &str = "Explicitly launch the discovered Workbench executable from its normal Steam working directory with -noThrow, or reuse the exact existing Workbench process. Returns success only after bounded native NET API readiness and never chooses a project.";
-const WORKBENCH_STOP_DESCRIPTION: &str = "Request graceful closure of one exact observed Workbench process. This never force-kills Workbench and may require user interaction.";
-const WORKBENCH_RESTART_DESCRIPTION: &str = "Confirm Save All for one exact running Workbench process, force-close that still-matching process, and relaunch its one resolved Enfusion Workbench project with -noThrow, -gproj, and the installed base-game addons directory only after the original exits. It refuses to force-close if the visible project window, exact local project descriptor, or installed base-game project cannot be resolved, or if saving is not accepted.";
+const WORKBENCH_READ_LOGS_DESCRIPTION: &str = "Read a bounded tail from either the integration support log or the latest known Workbench console log. This is diagnostic history, not live Workbench state or reload-success evidence; arbitrary paths are not accepted.";
+const WORKBENCH_LAUNCH_DESCRIPTION: &str = "Explicit host-process control: launch the discovered Workbench executable or reuse the exact existing Workbench process, then wait for native NET API readiness. This is not a Workbench Capability or source of live editor truth.";
+const WORKBENCH_STOP_DESCRIPTION: &str = "Explicit host-process control: request graceful closure of one exact observed Workbench process. This is not a Workbench Capability or source of live editor truth.";
+const WORKBENCH_RESTART_DESCRIPTION: &str = "Explicit host-process control: save through the typed Workbench Gateway, force-close one exact observed Workbench process, and relaunch its resolved project. This is not a Workbench Capability or source of live editor truth.";
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -3090,7 +3090,9 @@ impl ServerHandler for ReforgerMcpServer {
             require_empty_tool_request(&request, WORKBENCH_STATUS_TOOL_NAME)?;
             let workbench = self.workbench.clone();
             return blocking_workbench_call(self.admission.clone(), context, "status", move || {
-                Ok(workbench.overview())
+                workbench
+                    .native_status()
+                    .map_err(|failure| workbench.correlate_failure("status", failure))
             })
             .await;
         }
@@ -4100,10 +4102,10 @@ fn workbench_status_tool() -> Tool {
         empty_object_schema(),
     )
     .with_title("Read Workbench status")
-    .with_output_schema::<WorkbenchOverview>()
+    .with_output_schema::<crate::workbench::WorkbenchStatus>()
     .with_annotations(
         ToolAnnotations::with_title("Read Workbench status")
-            .read_only(false)
+            .read_only(true)
             .destructive(false)
             .idempotent(true)
             .open_world(false),
@@ -5281,8 +5283,17 @@ mod tests {
                 .annotations
                 .as_ref()
                 .and_then(|annotations| annotations.read_only_hint),
-            Some(false)
+            Some(true)
         );
+        let status_schema = status.output_schema.as_ref().expect("status schema");
+        let status_properties = status_schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .expect("status properties");
+        assert!(status_properties.contains_key("isRunning"));
+        assert!(status_properties.contains_key("scriptsCompiled"));
+        assert!(!status_properties.contains_key("game"));
+        assert!(!status_properties.contains_key("bridge"));
         assert_eq!(
             validation
                 .input_schema
