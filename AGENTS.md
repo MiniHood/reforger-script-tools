@@ -128,6 +128,27 @@ when the available tooling can do it.
 
 ## Basic Rules
 
+- Keep release inputs, test inputs, developer tooling, and generated artifacts
+  separate. The release build may consume only its explicit runtime assets; it
+  must never discover test fixtures, reports, debug binaries, coverage, or
+  Cargo build output by directory traversal or a broad include.
+- `server/` contains the shipped Rust package and its source. Put standalone
+  test fixtures, test drivers, reports, benchmarks, and debugging utilities
+  under `tools/` (or another explicit development-only root), never in a
+  release-output directory such as `dist/`. Rust unit tests may stay beside the
+  code they exercise when guarded by `#[cfg(test)]`.
+- Generated build and test artifacts must be outside source and release-output
+  trees, and ignored by Git. In particular, direct Cargo test, example, or
+  validation commands must use an external or explicitly ignored target
+  directory; do not create ad-hoc `server/target-*` directories. `dist/` is
+  reserved for the explicitly selected packaged runtime assets.
+- Test-only behavior must not be present in a release binary. Prefer
+  `#[cfg(test)]`; when a spawned integration-test process genuinely needs a
+  hook, put it behind an explicit non-default Cargo feature used only by that
+  test build, never behind an ambient environment variable in a normal build.
+- Package verification must inspect the final VSIX file list and confirm that
+  it contains no test, report, debug, source, or build-cache material beyond
+  the deliberately bundled runtime assets.
 - Treat user settings as intentional controls; do not expose internal consent
   or bookkeeping as settings.
 - Runtime state belongs under `globalStorageUri`; `globalState` is for small,
