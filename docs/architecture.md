@@ -72,12 +72,15 @@ The optional managed handler package lives under the current Windows user's
 directory. Its manifest is both file ownership and continuing-maintenance
 consent: after a successful native connection, the VS Code extension owns the
 one-time first-install prompt and invokes a private Rust installer only when the
-user accepts. Public MCP cannot create that first manifest; it may maintain an
-existing consented installation. A prior manifest-owned flat-profile package is
-migrated to this `WorkbenchGame` module path without touching unknown files. A successful later connection may likewise
-repair or upgrade only manifest-owned files. Writing that profile package and
-running native compiler validation does not register its `NetApiHandler`s in
-the already-running Workbench. Native `ValidateScripts` proves compilation; it
+user accepts. Public MCP cannot create that first manifest; its explicit
+installer may maintain an existing consented installation. A prior
+manifest-owned flat-profile package is migrated to this `WorkbenchGame` module
+path without touching unknown files. `workbench_status` is read-only: it
+determines live availability only through the native NET API and never
+enumerates processes, migrates, repairs, or validates the handler package.
+Writing that profile package and running native compiler validation does not
+register its `NetApiHandler`s in the already-running Workbench. Native
+`ValidateScripts` proves compilation; it
 does not hot-reload a newly registered handler class. The extension reports
 successful installation and asks the user to refresh Workbench with
 `Ctrl+Shift+R` or restart it. It deliberately

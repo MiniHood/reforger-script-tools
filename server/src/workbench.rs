@@ -164,7 +164,6 @@ pub struct WorkbenchOverview {
     pub executable: WorkbenchPathStatus,
     pub profile: WorkbenchPathStatus,
     pub bridge_directory: PathBuf,
-    pub process_ids: Vec<u32>,
     pub native: Option<WorkbenchStatus>,
     pub native_failure: Option<String>,
     pub bridge: ManagedBridgeStatus,
@@ -1109,28 +1108,16 @@ impl WorkbenchController {
         let native = native_result.ok();
         let mut bridge = self.bridge_disk_status(&paths.bridge_directory);
         if native.is_some() {
-            if !bridge.installed
-                && self
-                    .migrate_legacy_bridge(&paths.legacy_bridge_directory, &paths.bridge_directory)
-                    .unwrap_or(false)
-            {
-                bridge = self.bridge_disk_status(&paths.bridge_directory);
-            }
-            if bridge.installed {
-                bridge = self.maintain_existing_bridge(&paths.bridge_directory);
-            } else {
+            if !bridge.installed {
                 bridge.installation_available = paths.profile.is_dir();
             }
         }
-        let processes = workbench_processes();
-        self.observe_processes(&processes);
         let mut overview = WorkbenchOverview {
             game: path_status(paths.game, &paths.game_source),
             tools: path_status(paths.tools, &paths.tools_source),
             executable: path_status(paths.executable, &paths.executable_source),
             profile: path_status(Some(paths.profile), "windows-user"),
             bridge_directory: paths.bridge_directory,
-            process_ids: processes.iter().map(|process| process.id).collect(),
             native,
             native_failure,
             bridge,
@@ -1145,7 +1132,6 @@ impl WorkbenchController {
             },
             started,
             json!({
-                "processCount": overview.process_ids.len(),
                 "gameFound": overview.game.exists,
                 "toolsFound": overview.tools.exists,
                 "executableFound": overview.executable.exists,

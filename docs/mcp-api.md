@@ -2372,7 +2372,7 @@ Copy `continuation` unchanged to retrieve the next bounded passage. Citation met
 
 ## `workbench_status`
 
-Diagnose Reforger game, Tools, executable, profile, exact Workbench processes, native loopback NET API, managed handler, first-install availability, and support-log availability. If a consent manifest already exists, this may repair or upgrade only its owned files; it never performs a first install or launches Workbench.
+Read Reforger game, Tools, executable, profile, native loopback NET API, managed-handler installation, first-install availability, and support-log status. Native availability is determined solely by the NET API; this read-only operation never enumerates Workbench processes, writes or migrates handler files, launches Workbench, or validates scripts.
 
 ### Annotations
 
@@ -2521,13 +2521,6 @@ Diagnose Reforger game, Tools, executable, profile, exact Workbench processes, n
         "null"
       ]
     },
-    "processIds": {
-      "items": {
-        "minimum": 0,
-        "type": "integer"
-      },
-      "type": "array"
-    },
     "profile": {
       "$ref": "#/$defs/WorkbenchPathStatus"
     },
@@ -2544,7 +2537,6 @@ Diagnose Reforger game, Tools, executable, profile, exact Workbench processes, n
     "executable",
     "profile",
     "bridgeDirectory",
-    "processIds",
     "bridge",
     "supportLog"
   ],
