@@ -52,7 +52,6 @@ suite('Workbench loaded add-on inventory', () => {
 					}],
 				},
 			);
-<<<<<<< HEAD
 			await Promise.all(retiredFiles.map(async retiredFile => {
 				assert.equal(await fs.readFile(retiredFile, 'utf8'), 'retired');
 			}));
