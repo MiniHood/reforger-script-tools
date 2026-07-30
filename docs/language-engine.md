@@ -75,6 +75,11 @@ An empty add-on cache store is a cold build. Instances without a compatible
 current pointer are omitted from optimistic delivery and joined by the
 validation build. After authoritative inspection has measured each loaded
 instance's script count, at most four workers rebuild the largest sets first.
+Within a sufficiently large add-on, source parsing and semantic modelling use
+that add-on's bounded share of the same logical-CPU budget; small add-ons keep
+the lower-overhead sequential path. The outer worker count and each inner
+source-build share multiply to no more than the available logical CPUs, so a
+large base-game add-on can use idle cores without an unbounded nested pool.
 Completed instances are restored to canonical graph order before immutable
 layering and publication. Authoritative source inspection is bounded to four
 independent workers. A compact manifest header validates cache format, exact

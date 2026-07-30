@@ -307,7 +307,12 @@ pub fn build_base_game_index(
 ) -> Result<IndexBuildResult, String> {
     let inspection = inspect_base_game(inventory_path, control)?;
     let sources = packed_source_revision(&inspection);
-    build_inspected_base_game(inspection, &sources, control)
+    build_inspected_base_game(
+        inspection,
+        &sources,
+        control,
+        standalone_source_build_worker_count(),
+    )
 }
 
 pub fn load_or_build_base_game_index(
@@ -322,6 +327,7 @@ pub fn load_or_build_base_game_index(
         storage_root,
         control,
         inspection_started.elapsed(),
+        standalone_source_build_worker_count(),
     )
 }
 
@@ -442,6 +448,7 @@ pub fn load_or_build_loaded_addon_indexes(
     let (completed_sender, completed_receiver) = mpsc::channel();
     let index_load_or_build_start = Instant::now();
     let worker_count = addon_index_worker_count(storage_root, task_count)?;
+    let source_build_worker_count = source_build_worker_count(worker_count);
     let mut workers = Vec::with_capacity(worker_count);
     for _ in 0..worker_count {
         let tasks = tasks.clone();
@@ -459,6 +466,7 @@ pub fn load_or_build_loaded_addon_indexes(
                     &storage_root,
                     &control,
                     task.inspection_elapsed,
+                    source_build_worker_count,
                 )
             });
             let _ = completed_sender.send(CompletedAddonTask {
@@ -766,6 +774,17 @@ fn addon_index_worker_count_for(logical_cpus: usize, task_count: usize) -> usize
         .min(task_count)
 }
 
+fn source_build_worker_count(addon_worker_count: usize) -> usize {
+    let logical_cpus = thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(1);
+    (logical_cpus / addon_worker_count.max(1)).max(1)
+}
+
+fn standalone_source_build_worker_count() -> usize {
+    source_build_worker_count(1)
+}
+
 fn addon_inspection_worker_count(task_count: usize) -> usize {
     if task_count == 0 {
         return 0;
@@ -921,6 +940,7 @@ fn load_or_build_inspected_addon(
     storage_root: &Path,
     control: &IndexBuildControl,
     inspection_elapsed: std::time::Duration,
+    source_build_worker_count: usize,
 ) -> Result<GameDataIndexCacheResult, String> {
     let source_root = inspection.root.clone();
     let inspection_source_root = inspection.root.clone();
@@ -969,7 +989,14 @@ fn load_or_build_inspected_addon(
         artifact_digest.clone(),
         manifest_reusable,
         rebuild_reason,
-        || build_inspected_base_game(inspection, &build_sources, control),
+        || {
+            build_inspected_base_game(
+                inspection,
+                &build_sources,
+                control,
+                source_build_worker_count,
+            )
+        },
     )?;
     result.timings.fingerprint = inspection_elapsed;
     result.timings.total += inspection_elapsed;
@@ -1324,6 +1351,7 @@ fn build_inspected_base_game(
     inspection: BaseGameInspection,
     source_revision: &PackedSourceRevision,
     control: &IndexBuildControl,
+    source_build_worker_count: usize,
 ) -> Result<IndexBuildResult, String> {
     let source_acquisition_start = Instant::now();
     let revision = inspection.artifact_digest.clone();
@@ -1399,7 +1427,7 @@ fn build_inspected_base_game(
         });
     }
     let source_acquisition = source_acquisition_start.elapsed();
-    let mut result = build_index_from_sources(sources, control)?;
+    let mut result = build_index_from_sources(sources, control, source_build_worker_count)?;
     result.summary.timings.source_acquisition = source_acquisition;
     result.summary.timings.total += source_acquisition;
     Ok(result)
