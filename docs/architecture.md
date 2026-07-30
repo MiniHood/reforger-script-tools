@@ -19,7 +19,7 @@ VS Code editor
 ```
 
 At language-server startup, the extension asks the running Workbench for its
-ordered loaded-add-on graph and atomically records that exact graph under
+loaded-add-on graph and atomically records that exact graph under
 `globalStorageUri/addon-sources`. Workbench is the sole scope authority: the
 extension does not scan, configure, or choose add-on folders. The graph carries
 GUID, display identity, and the exact source root for every loaded instance.
@@ -29,17 +29,23 @@ property of the live loaded project, not installation discovery.
 
 Rust is the only owner of PAC inspection and Enfusion analysis. It indexes each
 listed add-on independently, selecting only script catalogue entries from its
-direct pack files while retaining loose source files as physical documents.
+direct pack files while retaining loose source files as physical documents. A
+loaded instance whose source root contains a VS Code workspace root is supplied
+only by the live workspace layer: Rust removes that instance's packed cache and
+does not index it again. This lets the workspace add-on change continuously
+without duplicate or stale external facts.
 The durable cache key is canonical `(GUID, absolute source root)`, so a local
 source add-on and a downloaded copy with the same GUID never share a cache or
 virtual source revision. Completed indexes live beneath
 `globalStorageUri/addon-indexes/<instance-key>/revisions/<revision>`; an
-atomically replaced `current.json` selects a completed revision. A cancelled or
+atomically replaced `current.json` selects a completed revision and stale
+revision directories are removed, leaving one persisted revision per instance.
+A cancelled or
 failed authoritative graph refresh makes the Workbench-sourced layer
 unavailable; it never reuses an earlier graph or scans for a substitute.
 
-The immutable per-instance indexes are merged in Workbench order into one LSP
-snapshot. GitHub downloads, user add-on folder scans, and loose source
+The immutable per-instance indexes are merged by stable instance identity into
+one LSP snapshot. GitHub downloads, user add-on folder scans, and loose source
 materialization are not runtime acquisition paths. The selected PAC payload and
 loose script content establish the revision rather than trusting timestamps.
 

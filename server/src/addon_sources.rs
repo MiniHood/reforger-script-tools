@@ -64,7 +64,6 @@ struct WorkbenchLoadedAddonGraphInventory {
     schema: String,
     bridge_version: String,
     protocol_version: u32,
-    current_project_file: PathBuf,
     addons: Vec<WorkbenchLoadedAddonInventory>,
 }
 
@@ -89,7 +88,6 @@ struct LoadedAddonSource {
 #[derive(Debug)]
 struct LoadedAddonGraph {
     addons: Vec<LoadedAddonSource>,
-    active_source_root: PathBuf,
 }
 
 struct BaseGameInspection {
@@ -238,8 +236,8 @@ pub fn load_or_build_base_game_index(
 }
 
 /// Builds an independent compact index for every packed add-on that the live
-/// Workbench graph names, then merges those immutable indexes in Workbench
-/// order. A graph entry is never inferred from a directory scan.
+/// Workbench graph names, then merges those immutable indexes by stable
+/// instance identity. A graph entry is never inferred from a directory scan.
 pub fn load_or_build_loaded_addon_indexes(
     inventory_path: &Path,
     storage_root: &Path,
@@ -247,19 +245,29 @@ pub fn load_or_build_loaded_addon_indexes(
     control: &IndexBuildControl,
 ) -> Result<LoadedAddonIndexResult, String> {
     let graph = read_loaded_addon_graph(inventory_path)?;
-    let active_workspace = workspace_roots
+    let workspace_roots = workspace_roots
         .iter()
         .filter_map(|root| fs::canonicalize(root).ok())
-        .any(|root| root.starts_with(&graph.active_source_root));
-    let active_source_root = graph.active_source_root;
-    let addons = graph.addons;
+        .collect::<Vec<_>>();
+    let mut addons = graph.addons;
+    addons.sort_by(|left, right| {
+        (&left.guid, &left.source_root, &left.id).cmp(&(
+            &right.guid,
+            &right.source_root,
+            &right.id,
+        ))
+    });
     let mut indexes = Vec::with_capacity(addons.len());
     let mut summary = RuntimeIndexSummary::default();
     let mut rebuilt_instances = 0;
     let mut loaded_instances = 0;
     for addon in addons {
         control.check()?;
-        if active_workspace && addon.source_root == active_source_root {
+        if workspace_roots
+            .iter()
+            .any(|workspace_root| workspace_root.starts_with(&addon.source_root))
+        {
+            remove_workspace_addon_cache(storage_root, &addon)?;
             continue;
         }
         let archives = addon_archive_paths(&addon.source_root)?;
@@ -413,6 +421,23 @@ fn prune_stale_revisions(addon_root: &Path, current_revision: &str) -> Result<()
         }
     }
     Ok(())
+}
+
+/// Workspace scripts are live inputs, so their matching Workbench instance
+/// must never retain a packed cache that can shadow or duplicate that source.
+fn remove_workspace_addon_cache(
+    storage_root: &Path,
+    addon: &LoadedAddonSource,
+) -> Result<(), String> {
+    let addon_root = storage_root.join(addon_instance_key(&addon.guid, &addon.source_root));
+    match fs::remove_dir_all(&addon_root) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!(
+            "Failed to remove obsolete workspace add-on cache {}: {error}",
+            addon_root.display()
+        )),
+    }
 }
 
 fn loose_script_paths(root: &Path) -> Result<Vec<PathBuf>, String> {
@@ -858,23 +883,7 @@ fn read_loaded_addon_graph(inventory_path: &Path) -> Result<LoadedAddonGraph, St
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
-    let active_source_root = fs::canonicalize(&graph.current_project_file)
-        .map_err(|_| "Workbench current project file is inaccessible".to_string())?
-        .parent()
-        .map(Path::to_path_buf)
-        .ok_or_else(|| "Workbench current project file has no add-on root".to_string())?;
-    if !addons
-        .iter()
-        .any(|addon| addon.source_root == active_source_root)
-    {
-        return Err(
-            "Workbench current project does not match a loaded add-on instance".to_string(),
-        );
-    }
-    Ok(LoadedAddonGraph {
-        addons,
-        active_source_root,
-    })
+    Ok(LoadedAddonGraph { addons })
 }
 
 fn modified_unix_ms(metadata: &fs::Metadata) -> u128 {
@@ -1247,8 +1256,7 @@ mod tests {
         fs::write(
             &graph,
             format!(
-                r#"{{"schema":"reforger-workbench-loaded-addon-graph-v1","bridgeVersion":"1.52.0","protocolVersion":1,"currentProjectFile":{},"addons":[{{"guid":"{BASE_GAME_GUID}","id":"ArmaReforger","title":"Arma Reforger","sourceRoot":{}}}]}}"#,
-                serde_json::to_string(&data_root.join("ArmaReforger.gproj")).unwrap(),
+                r#"{{"schema":"reforger-workbench-loaded-addon-graph-v1","bridgeVersion":"1.52.0","protocolVersion":1,"addons":[{{"guid":"{BASE_GAME_GUID}","id":"ArmaReforger","title":"Arma Reforger","sourceRoot":{}}}]}}"#,
                 serde_json::to_string(&data_root).unwrap(),
             ),
         )
@@ -1272,7 +1280,7 @@ mod tests {
     }
 
     #[test]
-    fn separates_same_guid_instances_and_rebuilds_only_the_changed_loaded_root() {
+    fn indexes_workspace_addons_only_through_live_sources_and_removes_their_cache() {
         let root = test_root("loaded_addon_instances");
         let packed = root.join("packed");
         let loose = root.join("loose");
@@ -1282,18 +1290,21 @@ mod tests {
             &packed.join("data.pak"),
             &[("Packed.c", b"class Packed {}")],
         );
+        write_fixture_pak(
+            &loose.join("data.pak"),
+            &[("LoosePacked.c", b"class LoosePacked {}")],
+        );
         fs::write(loose.join("scripts/Loose.c"), "class Loose {}").unwrap();
         let graph = root.join("graph.json");
         fs::write(&graph, format!(
-            r#"{{"schema":"reforger-workbench-loaded-addon-graph-v1","bridgeVersion":"1.52.0","protocolVersion":1,"currentProjectFile":{},"addons":[{{"guid":"1111111111111111","id":"Packed","title":"Packed","sourceRoot":{}}},{{"guid":"1111111111111111","id":"Loose","title":"Loose","sourceRoot":{}}}]}}"#,
-            serde_json::to_string(&loose.join("addon.gproj")).unwrap(),
+            r#"{{"schema":"reforger-workbench-loaded-addon-graph-v1","bridgeVersion":"1.52.0","protocolVersion":1,"addons":[{{"guid":"1111111111111111","id":"Packed","title":"Packed","sourceRoot":{}}},{{"guid":"1111111111111111","id":"Loose","title":"Loose","sourceRoot":{}}}]}}"#,
             serde_json::to_string(&packed).unwrap(),
             serde_json::to_string(&loose).unwrap(),
         )).unwrap();
         fs::write(loose.join("addon.gproj"), "{}").unwrap();
         let storage = root.join("indexes");
 
-        let workspace_roots = vec![loose.join("scripts")];
+        let workspace_roots = Vec::new();
         let first = load_or_build_loaded_addon_indexes(
             &graph,
             &storage,
@@ -1301,9 +1312,10 @@ mod tests {
             &IndexBuildControl::default(),
         )
         .unwrap();
-        assert_eq!(first.summary.files, 1);
-        assert_eq!(first.rebuilt_instances, 1);
-        assert_eq!(fs::read_dir(&storage).unwrap().count(), 1);
+        assert_eq!(first.summary.files, 3);
+        assert_eq!(first.rebuilt_instances, 2);
+        assert_eq!(fs::read_dir(&storage).unwrap().count(), 2);
+        let workspace_roots = vec![loose.join("scripts")];
         let second = load_or_build_loaded_addon_indexes(
             &graph,
             &storage,
@@ -1312,6 +1324,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(second.loaded_instances, 1);
+        assert_eq!(fs::read_dir(&storage).unwrap().count(), 1);
         write_fixture_pak(
             &packed.join("data.pak"),
             &[("Packed.c", b"class ChangedPacked {}")],
@@ -1347,8 +1360,7 @@ mod tests {
         assert_eq!(changed.loaded_instances, 1);
         assert_eq!(changed.rebuilt_instances, 0);
         fs::write(&graph, format!(
-            r#"{{"schema":"reforger-workbench-loaded-addon-graph-v1","bridgeVersion":"1.52.0","protocolVersion":1,"currentProjectFile":{},"addons":[{{"guid":"1111111111111111","id":"Packed","title":"Packed","sourceRoot":{}}}]}}"#,
-            serde_json::to_string(&packed.join("addon.gproj")).unwrap(),
+            r#"{{"schema":"reforger-workbench-loaded-addon-graph-v1","bridgeVersion":"1.52.0","protocolVersion":1,"addons":[{{"guid":"1111111111111111","id":"Packed","title":"Packed","sourceRoot":{}}}]}}"#,
             serde_json::to_string(&packed).unwrap(),
         )).unwrap();
         fs::write(packed.join("addon.gproj"), "{}").unwrap();
@@ -1648,8 +1660,7 @@ mod tests {
         fs::write(
             path,
             format!(
-                r#"{{"schema":"reforger-workbench-loaded-addon-graph-v1","bridgeVersion":"1.52.0","protocolVersion":1,"currentProjectFile":{},"addons":[{{"guid":"{BASE_GAME_GUID}","id":"ArmaReforger","title":"Arma Reforger","sourceRoot":{}}}]}}"#,
-                serde_json::to_string(&data_root.join("ArmaReforger.gproj")).unwrap(),
+                r#"{{"schema":"reforger-workbench-loaded-addon-graph-v1","bridgeVersion":"1.52.0","protocolVersion":1,"addons":[{{"guid":"{BASE_GAME_GUID}","id":"ArmaReforger","title":"Arma Reforger","sourceRoot":{}}}]}}"#,
                 serde_json::to_string(data_root).unwrap(),
             ),
         )

@@ -8,9 +8,10 @@ decisions.
 
 PAC1 archive inspection is also Rust-owned. Its pack module builds a bounded
 logical file catalogue and reads only caller-selected entries. The add-on
-source module receives the ordered Workbench-loaded graph, composes that
+source module receives the Workbench-loaded graph, composes that
 mechanism with canonical `(GUID, source-root)` instance identity, pack-set and
-loose-source fingerprints, independently revisioned caches, and virtual source
+loose-source fingerprints, one persisted current cache revision per instance,
+and virtual source
 reads. The pack module itself does not infer add-on identity, load order, cache
 keys, or indexing policy.
 
@@ -52,7 +53,10 @@ only the selected compressed script payloads, not the full multi-gigabyte
 archives. The resulting strong revision identity detects same-size script
 changes. A changed artifact decodes only selected `.c` entries. The semantic
 cache and locator-rich manifest are written beneath a new immutable revision
-before an atomic current-pointer publication. If the authoritative Workbench
+before an atomic current-pointer publication, after which stale persisted
+revisions are removed. A loaded add-on whose graph source root contains a
+workspace root is supplied only through the live workspace layer; any packed
+cache for that exact instance is removed. If the authoritative Workbench
 graph is unavailable, malformed, cancelled, or fails to acquire an instance,
 the Workbench-sourced layer is unavailable; the engine never reuses an earlier
 graph or substitutes a local source.

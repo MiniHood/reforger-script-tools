@@ -67,7 +67,6 @@ export interface WorkbenchLoadedAddon {
 export interface WorkbenchLoadedAddonGraph {
 	bridgeVersion: string;
 	protocolVersion: 1;
-	currentProjectFile: string;
 	addons: WorkbenchLoadedAddon[];
 }
 
@@ -321,8 +320,6 @@ function decodeLoadedAddonGraph(value: unknown): WorkbenchGatewayResult<Workbenc
 	if (!isRecord(value)
 		|| typeof value.bridgeVersion !== 'string'
 		|| value.protocolVersion !== 1
-		|| typeof value.currentProjectFile !== 'string'
-		|| !path.isAbsolute(value.currentProjectFile)
 		|| !Array.isArray(value.addons)
 		|| !value.addons.every(isLoadedAddon)) {
 		return failure('protocol', 'Reload Workbench scripts and verify the Reforger Script Tools bridge version.');
@@ -340,7 +337,6 @@ function decodeLoadedAddonGraph(value: unknown): WorkbenchGatewayResult<Workbenc
 		value: {
 			bridgeVersion: value.bridgeVersion,
 			protocolVersion: 1,
-			currentProjectFile: value.currentProjectFile,
 			addons: value.addons.map(addon => ({ ...addon })),
 		},
 	};

@@ -1079,7 +1079,7 @@ mod tests {
     }
 
     #[test]
-    fn unavailable_workbench_graph_does_not_hide_workspace_facts() {
+    fn failed_workbench_graph_refresh_clears_prior_game_data_without_hiding_workspace_facts() {
         let root = std::env::temp_dir().join(format!(
             "reforger-external-overlay-unavailable-graph-{}-{}",
             std::process::id(),
@@ -1091,13 +1091,29 @@ mod tests {
         let workspace = root.join("workspace");
         fs::create_dir_all(&workspace).unwrap();
         fs::write(workspace.join("Workspace.c"), "class WorkspaceOnly {}\n").unwrap();
+        let addon = root.join("addon");
+        fs::create_dir_all(&addon).unwrap();
+        write_fixture_pak(
+            &addon.join("data.pak"),
+            &[("Feature.c", b"class ExternalFeature {}")],
+        );
+        let inventory = root.join("graph.json");
+        fs::write(
+            &inventory,
+            format!(
+                r#"{{"schema":"reforger-workbench-loaded-addon-graph-v1","bridgeVersion":"1.52.0","protocolVersion":1,"addons":[{{"guid":"1111111111111111","id":"External","title":"External","sourceRoot":{}}}]}}"#,
+                serde_json::to_string(&addon).unwrap(),
+            ),
+        )
+        .unwrap();
         let missing_inventory = root.join("missing-graph.json");
+        let storage = root.join("indexes");
         let (sender, receiver) = mpsc::channel();
         let handle = start_external_index(
             &LspServerOptions {
-                addon_source_inventory: Some(missing_inventory),
-                addon_index_storage: Some(root.join("indexes")),
-                workspace_scripts: vec![workspace],
+                addon_source_inventory: Some(inventory),
+                addon_index_storage: Some(storage.clone()),
+                workspace_scripts: vec![workspace.clone()],
                 ..LspServerOptions::default()
             },
             LspLogger::new(None, None),
@@ -1111,6 +1127,20 @@ mod tests {
                 Err(error) => panic!("external index did not publish: {error}"),
             }
         }
+
+        let snapshot = handle.snapshot();
+        assert!(snapshot.game_data.is_some(), "the initial graph must publish game data");
+        assert!(snapshot.workspace.is_some(), "workspace facts remain independently available");
+
+        run_external_index_thread(
+            handle.state.clone(),
+            Some(missing_inventory),
+            Some(storage),
+            vec![workspace],
+            LspLogger::new(None, None),
+            None,
+            handle.control.clone(),
+        );
 
         let snapshot = handle.snapshot();
         assert!(snapshot.game_data.is_none(), "the Workbench layer must be unavailable");
@@ -1149,8 +1179,7 @@ mod tests {
         fs::write(
             &inventory,
             format!(
-                r#"{{"schema":"reforger-workbench-loaded-addon-graph-v1","bridgeVersion":"1.52.0","protocolVersion":1,"currentProjectFile":{},"addons":[{{"guid":"58D0FB3206B6F859","id":"ArmaReforger","title":"Arma Reforger","sourceRoot":{}}},{{"guid":"5614BBCCBB55ED1C","id":"core","title":"core","sourceRoot":{}}}]}}"#,
-                serde_json::to_string(&addons.join("data/ArmaReforger.gproj")).unwrap(),
+                r#"{{"schema":"reforger-workbench-loaded-addon-graph-v1","bridgeVersion":"1.52.0","protocolVersion":1,"addons":[{{"guid":"58D0FB3206B6F859","id":"ArmaReforger","title":"Arma Reforger","sourceRoot":{}}},{{"guid":"5614BBCCBB55ED1C","id":"core","title":"core","sourceRoot":{}}}]}}"#,
                 serde_json::to_string(&addons.join("data")).unwrap(),
                 serde_json::to_string(&addons.join("core")).unwrap(),
             ),

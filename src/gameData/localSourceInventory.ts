@@ -9,7 +9,6 @@ export interface LoadedAddonSourceInventory {
 	schema: 'reforger-workbench-loaded-addon-graph-v1';
 	bridgeVersion: string;
 	protocolVersion: 1;
-	currentProjectFile: string;
 	addons: WorkbenchLoadedAddonGraph['addons'];
 }
 
@@ -27,7 +26,6 @@ export async function writeLoadedAddonSourceInventory(
 		schema: 'reforger-workbench-loaded-addon-graph-v1',
 		bridgeVersion: graph.bridgeVersion,
 		protocolVersion: graph.protocolVersion,
-		currentProjectFile: graph.currentProjectFile,
 		addons: graph.addons.map(addon => ({ ...addon })),
 	};
 	const contents = `${JSON.stringify(inventory, null, 2)}\n`;

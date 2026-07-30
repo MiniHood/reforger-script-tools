@@ -11,7 +11,6 @@ class RST_WorkbenchLoadedAddonGraphResponse : JsonApiStruct
 {
 	string bridgeVersion;
 	int protocolVersion;
-	string currentProjectFile;
 	string graphJson;
 
 	void RST_WorkbenchLoadedAddonGraphResponse()
@@ -32,7 +31,6 @@ class RST_WorkbenchLoadedAddonGraph : NetApiHandler
 		RST_WorkbenchLoadedAddonGraphResponse response = new RST_WorkbenchLoadedAddonGraphResponse();
 		response.bridgeVersion = "1.52.0";
 		response.protocolVersion = 1;
-		response.currentProjectFile = Workbench.GetCurrentGameProjectFile();
 		array<string> addonGuids = new array<string>();
 		GameProject.GetLoadedAddons(addonGuids);
 		response.graphJson = "[";
