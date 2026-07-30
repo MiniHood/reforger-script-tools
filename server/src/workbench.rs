@@ -7592,14 +7592,14 @@ fn workbench_launch_arguments(
     game_directory: Option<&std::path::Path>,
 ) -> Option<Vec<std::ffi::OsString>> {
     let mut arguments = vec![std::ffi::OsString::from("-noThrow")];
-    let project = match project {
-        Some(project) => project,
-        None => return Some(arguments),
-    };
     let game_addons = base_game_addons_directory(game_directory)?;
+    if let Some(project) = project {
+        arguments.extend([
+            std::ffi::OsString::from("-gproj"),
+            project.as_os_str().to_os_string(),
+        ]);
+    }
     arguments.extend([
-        std::ffi::OsString::from("-gproj"),
-        project.as_os_str().to_os_string(),
         std::ffi::OsString::from("-addonsDir"),
         game_addons.into_os_string(),
     ]);
@@ -10333,8 +10333,18 @@ class RST_WorkbenchShapeGeometry : NetApiHandler
 	void Encode(array<vector> values, out string encoded) { encoded = string.Empty; foreach (vector point : values) { if (!encoded.IsEmpty()) encoded += ";"; encoded += string.Format("%1|%2|%3", point[0], point[1], point[2]); } }
 	bool Decode(string encoded, out array<vector> decoded)
 	{
-		if (encoded.IsEmpty()) return true; array<string> records = {}; encoded.Split(";", records, true); if (records.Count() > 4096) return false;
-		foreach (string record : records) { array<string> fields = {}; record.Split(",", fields, false); if (fields.Count() != 3) return false; decoded.Insert(Vector(fields[0].ToFloat(), fields[1].ToFloat(), fields[2].ToFloat())); }
+		array<string> records = {};
+		array<string> fields = {};
+		if (encoded.IsEmpty()) return true;
+		encoded.Split(";", records, true);
+		if (records.Count() > 4096) return false;
+		foreach (string record : records)
+		{
+			fields.Clear();
+			record.Split(",", fields, false);
+			if (fields.Count() != 3) return false;
+			decoded.Insert(Vector(fields[0].ToFloat(), fields[1].ToFloat(), fields[2].ToFloat()));
+		}
 		return true;
 	}
 	float Distance(vector a, vector b) { float x = b[0] - a[0]; float y = b[1] - a[1]; float z = b[2] - a[2]; return Math.Sqrt(x * x + y * y + z * z); }
@@ -10363,6 +10373,7 @@ class RST_WorkbenchShapeGeometry : NetApiHandler
 		array<vector> points = {}; shape.GetPointsPositions(points);
 		if (r.operation == "transform")
 		{
+			PrintFormat("RST shape geometry transform: entity=%1 operation=%2", r.entityId, r.transformOperation);
 			if (r.space != "local" && r.space != "world") { response.status = "invalid-input"; return response; }
 			if (r.transformOperation == "reverse") { array<vector> reversed = {}; for (int i = points.Count() - 1; i >= 0; i--) reversed.Insert(points[i]); points = reversed; }
 			else
@@ -10374,7 +10385,8 @@ class RST_WorkbenchShapeGeometry : NetApiHandler
 				for (int i; i < points.Count(); i++) { vector p = points[i]; if (r.transformOperation == "translate") p = p + Vector(r.offsetX, r.offsetY, r.offsetZ); else { p = p - Vector(r.pivotX, r.pivotY, r.pivotZ); if (r.transformOperation == "rotateXZ") p = Vector(p[0] * cosine - p[2] * sine, p[1], p[0] * sine + p[2] * cosine); else if (r.transformOperation == "scale") p = Vector(p[0] * r.scaleX, p[1] * r.scaleY, p[2] * r.scaleZ); else if (r.mirrorAxis == "x") p[0] = -p[0]; else if (r.mirrorAxis == "y") p[1] = -p[1]; else p[2] = -p[2]; p = p + Vector(r.pivotX, r.pivotY, r.pivotZ); } points[i] = p; }
 				ToSpace(shape, points, r.space, "local");
 			}
-			if (!Commit(api, r.entityId, source, shape, points, response, "Reforger Script Tools: transform shape points")) return response; response.status = "points-transformed"; return response;
+			Print("RST shape geometry transform: committing points");
+			if (!Commit(api, r.entityId, source, shape, points, response, "Reforger Script Tools: transform shape points")) return response; response.status = "points-transformed"; Print("RST shape geometry transform: complete"); return response;
 		}
 		if (r.operation != "resample") { response.status = "invalid-input"; return response; }
 		if (source.GetClassName() != "PolylineShapeEntity") { response.status = "entity-not-polyline"; return response; }
@@ -14482,9 +14494,14 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            super::workbench_launch_arguments(None, None),
-            Some(vec![std::ffi::OsString::from("-noThrow")]),
+            super::workbench_launch_arguments(None, Some(&game)),
+            Some(vec![
+                std::ffi::OsString::from("-noThrow"),
+                std::ffi::OsString::from("-addonsDir"),
+                game.join("addons").into_os_string(),
+            ]),
         );
+        assert_eq!(super::workbench_launch_arguments(None, None), None);
         assert_eq!(
             super::workbench_launch_arguments(Some(&project), Some(&game)),
             Some(vec![
