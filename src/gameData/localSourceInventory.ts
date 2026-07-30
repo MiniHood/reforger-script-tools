@@ -12,6 +12,17 @@ export interface LoadedAddonSourceInventory {
 	addons: WorkbenchLoadedAddonGraph['addons'];
 }
 
+export interface PublishedLoadedAddonSourceInventory {
+	path: string;
+	timingsMs: {
+		retiredStorageCleanup: number;
+		serializeAndHash: number;
+		publish: number;
+		total: number;
+	};
+	bytes: number;
+}
+
 /**
  * Publishes the exact graph which Workbench reports for this process. This
  * module deliberately never discovers add-on folders: a path not present in
@@ -20,8 +31,12 @@ export interface LoadedAddonSourceInventory {
 export async function writeLoadedAddonSourceInventory(
 	context: vscode.ExtensionContext,
 	graph: WorkbenchLoadedAddonGraph,
-): Promise<string> {
+): Promise<PublishedLoadedAddonSourceInventory> {
+	const startedAt = Date.now();
+	const cleanupStartedAt = Date.now();
 	await removePreWorkbenchRuntimeStorage(context.globalStorageUri.fsPath);
+	const retiredStorageCleanup = Date.now() - cleanupStartedAt;
+	const serializeStartedAt = Date.now();
 	const inventory: LoadedAddonSourceInventory = {
 		schema: 'reforger-workbench-loaded-addon-graph-v1',
 		bridgeVersion: graph.bridgeVersion,
@@ -35,8 +50,19 @@ export async function writeLoadedAddonSourceInventory(
 		gameDataStorage.rootFolder,
 		`${gameDataStorage.inventoryPrefix}${digest}.json`,
 	);
+	const serializeAndHash = Date.now() - serializeStartedAt;
+	const publishStartedAt = Date.now();
 	await publishContentAddressedFile(inventoryPath, contents);
-	return inventoryPath;
+	return {
+		path: inventoryPath,
+		timingsMs: {
+			retiredStorageCleanup,
+			serializeAndHash,
+			publish: Date.now() - publishStartedAt,
+			total: Date.now() - startedAt,
+		},
+		bytes: Buffer.byteLength(contents, 'utf8'),
+	};
 }
 
 export async function publishContentAddressedFile(targetPath: string, contents: string): Promise<void> {

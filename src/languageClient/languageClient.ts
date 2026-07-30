@@ -454,15 +454,20 @@ async function resolveWorkbenchLoadedAddonInventory(
 		});
 		return undefined;
 	}
-	const inventoryPath = await writeLoadedAddonSourceInventory(context, result.value);
+	const inventory = await writeLoadedAddonSourceInventory(context, result.value);
 	outputChannel.appendLine(
 		`Workbench-loaded add-ons: ${result.value.addons.length} (bridge ${result.value.bridgeVersion})`,
 	);
 	logLanguageClientStartupTiming(context, 'workbenchLoadedAddonGraphReady', {
 		addons: result.value.addons.length,
 		protocolVersion: result.value.protocolVersion,
+		inventoryBytes: inventory.bytes,
+		retiredStorageCleanupMs: inventory.timingsMs.retiredStorageCleanup,
+		inventorySerializeAndHashMs: inventory.timingsMs.serializeAndHash,
+		inventoryPublishMs: inventory.timingsMs.publish,
+		inventoryTotalMs: inventory.timingsMs.total,
 	});
-	return inventoryPath;
+	return inventory.path;
 }
 
 function logFirstSemanticTokenResponse(
