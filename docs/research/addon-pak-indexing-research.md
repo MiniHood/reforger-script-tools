@@ -87,6 +87,100 @@ provide add-on identity/version semantics. Treat it as a useful compatibility
 fixture/reference, not as an LSP runtime dependency or authoritative format
 specification.
 
+### Installed RHS Content Pack 01 case study (local primary evidence)
+
+The user-provided installed add-on directory,
+`C:\\Users\\Gray\\Documents\\My Games\\ArmaReforger\\addons\\RHS-ContentPack01_1337C0DE5DABBEEF`,
+was inspected read-only on 2026-07-30. This is a concrete Workshop-installed
+package shape, not a claim that every add-on has every one of these files.
+
+`addon.gproj` supplies the project-local identity facts:
+
+```text
+ID            RHS_Content_01
+GUID          1337C0DE5DABBEEF
+TITLE         RHS: Status Quo - Content Pack 01
+Dependencies  58D0FB3206B6F859
+```
+
+The directory name repeats the GUID but is not used as evidence for identity.
+The `GUID` field agrees with the separate installed metadata files: `meta` has
+`meta.id = 1337C0DE5DABBEEF` and `ServerData.json` has the same `id`. The
+stable cache key should consequently remain the `.gproj`/Workbench GUID, with
+the project ID and directory name kept only as display/locator context.
+
+`meta` selects revision `0` and records version `0.15.5089`, creation time
+`2025-04-25T13:01:00.0Z`, and update time `2026-07-22T09:46:03.0Z`.
+`ServerData.json` independently reports revision version `0.15.5089`,
+`corrupted = false`, and an empty `gameVersion`. That establishes an installed
+published-version hint, but **not** a sufficient source-content identity.
+Notably, `ServerData.json` reports no dependencies while `addon.gproj` reports
+one GUID. This disagreement means neither sidecar metadata nor a local project
+file can replace Workbench's loaded graph as the authority for dependencies or
+effective order.
+
+The selected `meta` package lists seven payload artifacts in this observed
+order: `data.pak`, `data002.pak`, `data001.pak`, `data003.pak`, `addon.gproj`,
+`thumbnail.png`, and `resourceDatabase.rdb`. Four are PAKs, not one:
+
+| PAK | Actual and manifest-declared bytes | Local PAK header | Companion manifest |
+| --- | ---: | --- | --- |
+| `data.pak` | 1,992,553,453 | `FORM` … `PAC1HEAD` | `data.pak_0.15.5089_manifest.json` |
+| `data001.pak` | 1,995,096,661 | `FORM` … `PAC1HEAD` | `data001.pak_0.15.5089_manifest.json` |
+| `data002.pak` | 1,992,529,274 | `FORM` … `PAC1HEAD` | `data002.pak_0.15.5089_manifest.json` |
+| `data003.pak` | 358,932,853 | `FORM` … `PAC1HEAD` | `data003.pak_0.15.5089_manifest.json` |
+
+The four PAK byte counts sum to 6,339,112,241; `meta` declares package
+`totalSize = 6,339,694,012`, which is exactly that PAK total plus the other
+three listed artifacts. The approximately 2-GB first three archives and a
+smaller fourth are evidence that an inspector must enumerate a **set** of PAKs
+per add-on. They do not establish a universal split-size rule or a lexical
+archive precedence rule. Preserve the package/Workbench ordering as observed;
+do not assume `data`, `data001`, … order is the effective resource overlay
+order until the live Workbench experiment proves it.
+
+Every listed payload artifact has a same-version companion
+`<artifact>_0.15.5089_manifest.json`. Each observed manifest has schema
+`version = 1`, exact byte `size`, a full-file `sha512`, and fragment records;
+the four PAK manifests contain 1,300, 1,935, 1,867, and 533 fragments
+respectively. Thus this installation supplies an unusually cheap strong
+artifact signature without reading 6.34 GB of archives: canonicalize the
+selected revision plus the package artifact sequence and, for each PAK, record
+its name, declared size, full SHA-512, and the SHA-512 of its manifest bytes.
+Before trusting that fast path, require that the manifest filename/version,
+payload filename, and payload size agree with the selected `meta` entry and
+with the local file metadata. If any sidecar is missing, malformed,
+inconsistent, or unavailable for another install source, fall back to the
+bounded PAK inspection/content-digest path already proposed above. Never use
+only the visible version or mtime as a cache correctness key.
+
+The header reads establish that each of the four payloads is a PAC1 container;
+they do not enumerate its files or prove which archive contains `.c` sources.
+This case study deliberately did not run PakInspector against the 6.34-GB set:
+its documented whole-archive memory behavior is inappropriate as the evidence
+tool for a performance-sensitive runtime design. The first extractor fixture
+experiment must instead list the file tables of all four PAKs with bounded I/O,
+then record script count, logical paths, duplicate paths, compression modes,
+and the contributing PAK for every `.c` entry.
+
+The following read-only PowerShell probe reproduces the identity, package, and
+manifest observations without hashing or extracting the PAK payloads:
+
+```powershell
+$addon = 'C:\\Users\\Gray\\Documents\\My Games\\ArmaReforger\\addons\\RHS-ContentPack01_1337C0DE5DABBEEF'
+$meta = Get-Content -Raw -LiteralPath "$addon\\meta" | ConvertFrom-Json
+$project = Get-Content -Raw -LiteralPath "$addon\\addon.gproj"
+$meta.meta.versions[$meta.meta.selectedRev].package.files |
+  Select-Object name, size, updatedAt, filePath
+Get-ChildItem -LiteralPath $addon -Filter '*_manifest.json' |
+  Sort-Object Name | ForEach-Object {
+    $manifest = Get-Content -Raw -LiteralPath $_.FullName | ConvertFrom-Json
+    [pscustomobject]@{ manifest = $_.Name; schema = $manifest.version
+      bytes = $manifest.size; sha512 = $manifest.sha512
+      fragments = @($manifest.fragments).Count }
+  }
+```
+
 ## Design consequences
 
 1. **Discover the loaded graph before inspecting archives.** The authoritative
