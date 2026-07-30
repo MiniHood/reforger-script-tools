@@ -29,7 +29,6 @@ export interface LocalAddonInventoryEntry {
 	path: string;
 	projectFile?: string;
 	packFiles: string[];
-	artifactIdentity: string;
 }
 
 const rootKinds: readonly AddonRootKind[] = ['base-game', 'workbench', 'user-addons'];
@@ -187,22 +186,9 @@ async function discoverAddons(root: ResolvedAddonRoot): Promise<LocalAddonInvent
 				path: addonPath,
 				...(projectFile ? { projectFile } : {}),
 				packFiles,
-				artifactIdentity: await artifactIdentity([...(projectFile ? [projectFile] : []), ...packFiles]),
 			};
 		}));
 	return addons;
-}
-
-async function artifactIdentity(files: string[]): Promise<string> {
-	const identities = await Promise.all(files.map(async file => {
-		try {
-			const stat = await fs.stat(file);
-			return `${file}\0${stat.size}\0${stat.mtimeMs}`;
-		} catch {
-			return `${file}\0missing`;
-		}
-	}));
-	return createHash('sha256').update(identities.join('\0')).digest('hex');
 }
 
 function addonKey(addon: LocalAddonInventoryEntry): string {

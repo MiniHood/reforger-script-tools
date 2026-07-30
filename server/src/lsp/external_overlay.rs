@@ -533,10 +533,7 @@ fn run_external_index_thread(
 
     let game_data_start = Instant::now();
     let game_data_result = addon_source_inventory.map(|inventory_path| {
-        for phase in [
-            "inventory-load-start",
-            "pac-inspect-start",
-        ] {
+        for phase in ["inventory-load-start", "pac-inspect-start"] {
             if let Some(sender) = &event_sender {
                 let _ = sender.send(ServerEvent::ExternalIndexProgress {
                     phase: phase.to_string(),
@@ -547,10 +544,7 @@ fn run_external_index_thread(
             .ok_or_else(|| "add-on index storage is unavailable".to_string())
             .and_then(|storage| load_or_build_base_game_index(&inventory_path, &storage, &control));
         if let Some(sender) = &event_sender {
-            for phase in [
-                "inventory-load-end",
-                "pac-inspect-end",
-            ] {
+            for phase in ["inventory-load-end", "pac-inspect-end"] {
                 let _ = sender.send(ServerEvent::ExternalIndexProgress {
                     phase: phase.to_string(),
                 });
@@ -1127,6 +1121,121 @@ mod tests {
             saw_progress,
             "index phases must wake the runtime before publication"
         );
+    }
+
+    #[test]
+    fn compact_pac_inventory_publishes_symbols_and_virtual_sources_without_loose_files() {
+        let root = std::env::temp_dir().join(format!(
+            "reforger-external-pac-inventory-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let addons = root.join("addons");
+        fs::create_dir_all(addons.join("data")).unwrap();
+        fs::create_dir_all(addons.join("core")).unwrap();
+        write_fixture_pak(
+            &addons.join("data/data007.pak"),
+            &[("Feature.c", b"class Feature {}")],
+        );
+        write_fixture_pak(
+            &addons.join("core/data.pak"),
+            &[("CoreFeature.c", b"class CoreFeature {}")],
+        );
+        let inventory = root.join("inventory.json");
+        fs::write(
+            &inventory,
+            format!(
+                r#"{{"schema":"reforger-addon-source-inventory-v1","roots":[{{"kind":"base-game","path":{}}}]}}"#,
+                serde_json::to_string(&addons).unwrap()
+            ),
+        )
+        .unwrap();
+        let storage = root.join("indexes");
+        let (sender, receiver) = mpsc::channel();
+        let handle = start_external_index(
+            &LspServerOptions {
+                addon_source_inventory: Some(inventory),
+                addon_index_storage: Some(storage.clone()),
+                ..LspServerOptions::default()
+            },
+            LspLogger::new(None, None),
+            Some(sender.into()),
+        );
+        loop {
+            match receiver.recv_timeout(Duration::from_secs(5)) {
+                Ok(ServerEvent::ExternalIndexChanged) => break,
+                Ok(_) => {}
+                Err(error) => panic!("PAC external index did not publish: {error}"),
+            }
+        }
+
+        let snapshot = handle.snapshot();
+        assert_eq!(snapshot.status, "ready");
+        let index = snapshot.game_data.expect("base PAC index");
+        assert_eq!(index.files().len(), 2);
+        let feature = index.preferred_top_level_symbols_for_name("Feature");
+        assert_eq!(feature.len(), 1);
+        let metadata = &index.file(feature[0].file_id).unwrap().metadata;
+        let virtual_source = metadata.virtual_source.as_ref().expect("PAC locator");
+        assert_eq!(
+            crate::addon_sources::read_virtual_source(&virtual_source.uri).unwrap(),
+            "class Feature {}"
+        );
+        assert!(!storage
+            .join(crate::addon_sources::BASE_GAME_GUID)
+            .join("scripts")
+            .exists());
+        handle.cancel();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn write_fixture_pak(path: &Path, entries: &[(&str, &[u8])]) {
+        let mut table = vec![0, 4];
+        table.extend_from_slice(b"Root");
+        table.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+        let table_length = 1
+            + 1
+            + 4
+            + 4
+            + entries
+                .iter()
+                .map(|(logical, _)| 1 + 1 + logical.len() + 24)
+                .sum::<usize>();
+        let mut offset = 12 + 8 + 28 + 8 + table_length + 8;
+        for (logical, content) in entries {
+            table.push(1);
+            table.push(logical.len() as u8);
+            table.extend_from_slice(logical.as_bytes());
+            table.extend_from_slice(&(offset as u32).to_le_bytes());
+            table.extend_from_slice(&(content.len() as u32).to_le_bytes());
+            table.extend_from_slice(&(content.len() as u32).to_le_bytes());
+            table.extend_from_slice(&[0; 8]);
+            table.extend_from_slice(&0_u32.to_be_bytes());
+            offset += content.len();
+        }
+        let data_length = entries
+            .iter()
+            .map(|(_, content)| content.len())
+            .sum::<usize>();
+        let mut bytes = b"FORM".to_vec();
+        bytes.extend_from_slice(
+            &((4 + 8 + 28 + 8 + table.len() + 8 + data_length) as u32).to_be_bytes(),
+        );
+        bytes.extend_from_slice(b"PAC1HEAD");
+        bytes.extend_from_slice(&28_u32.to_be_bytes());
+        bytes.extend_from_slice(&[0; 28]);
+        bytes.extend_from_slice(b"FILE");
+        bytes.extend_from_slice(&(table.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(&table);
+        bytes.extend_from_slice(b"DATA");
+        bytes.extend_from_slice(&(data_length as u32).to_be_bytes());
+        for (_, content) in entries {
+            bytes.extend_from_slice(content);
+        }
+        fs::write(path, bytes).unwrap();
     }
 
     #[test]

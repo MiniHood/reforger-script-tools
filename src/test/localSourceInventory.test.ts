@@ -5,6 +5,7 @@ import * as path from 'path';
 import {
 	publishContentAddressedFile,
 	resolveRootFrom,
+	settingName,
 } from '../gameData/localSourceInventory';
 
 suite('local source inventory', () => {
@@ -50,6 +51,37 @@ suite('local source inventory', () => {
 		assert.equal(result.origin, 'discovered');
 		assert.equal(result.path, 'D:\\second');
 		assert.deepEqual(result.candidates, ['C:\\first', 'D:\\second', 'E:\\third']);
+	});
+
+	test('keeps independent manual settings and validation for all three roots', async () => {
+		const roots = ['base-game', 'workbench', 'user-addons'] as const;
+		assert.equal(new Set(roots.map(settingName)).size, roots.length);
+		for (const kind of roots) {
+			const configured = `D:\\Configured\\${kind}\\addons`;
+			const result = await resolveRootFrom(
+				kind,
+				configured,
+				['C:\\discovered'],
+				async candidate => candidate === configured,
+			);
+			assert.equal(result.kind, kind);
+			assert.equal(result.status, 'ready');
+			assert.equal(result.origin, 'configured');
+			assert.equal(result.path, configured);
+		}
+	});
+
+	test('reports a missing root with its discovery candidates', async () => {
+		const result = await resolveRootFrom(
+			'user-addons',
+			undefined,
+			['C:\\missing', 'D:\\also-missing'],
+			async () => false,
+		);
+		assert.equal(result.status, 'missing');
+		assert.equal(result.origin, 'missing');
+		assert.deepEqual(result.candidates, ['C:\\missing', 'D:\\also-missing']);
+		assert.match(result.diagnostic, /No user add-ons folder/);
 	});
 
 	test('publishes one complete inventory under concurrent writers', async () => {

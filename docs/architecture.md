@@ -36,9 +36,12 @@ GUIDs are rejected. GitHub downloads and loose-script source folders are not
 runtime acquisition paths.
 
 Non-semantic add-on manifest maintenance runs independently from base-game
-semantic readiness. Its aggregate publication revision makes unchanged
-inventories cheap to validate, while a first or changed inventory can publish
-GUID manifests in parallel without delaying the base API layer.
+semantic readiness. Rust derives its aggregate publication revision from each
+project descriptor and either the available Reforger manifest hash or selected
+script catalogue/payload identity of every PAC rather than trusting
+extension-side timestamps. A matching aggregate revision is reused only after
+every GUID manifest is byte-for-byte validated; a first, changed, missing, or
+corrupt manifest is republished without delaying the base API layer.
 
 Pack-backed definitions use typed, revision-qualified `reforger-pak:` document
 identities. The

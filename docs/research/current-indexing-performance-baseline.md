@@ -133,16 +133,24 @@ physical extraction step.
 The representative final cold log attributed 39 ms to PAC catalogue plus
 selected-payload identity, 1,065 ms to verified selective decode/parse/index
 build, and 174 ms to the 26.7 MB semantic-cache write; external publication was
-ready at 1,532 ms inside the process. The 517-add-on inventory manifests
-finished independently before that base layer. A representative warm log
+ready at 1,532 ms inside the process. The 517-add-on inventory-manifest worker
+ran independently from that base layer. A representative warm log
 attributed 36 ms to PAC identity, 4 ms to cache file read, 50 ms to binary
 decode, and 49 ms to lookup map reconstruction; external publication was ready
-at 191 ms inside the process. The extension-side artifact identity pass for
-all 517 discovered add-ons measured 15 ms. The table includes process launch
-and client-observed notification latency.
+at 191 ms inside the process. An earlier extension-side size/mtime inventory
+pass for all 517 discovered add-ons measured 15 ms, but that weak signal is no
+longer trusted for reuse: the final implementation validates non-base projects
+and PAC identity in Rust on an independent worker. It uses an available
+Reforger manifest hash and falls back to selected-script content identity,
+never a full multi-gigabyte payload scan. The base readiness table includes
+process launch and client-observed notification latency; it does not treat
+completion of deferred, non-semantic add-on manifests as part of base API
+readiness.
 
 These are local wall-clock observations rather than portable budgets. Fixture
 acceptance tests separately verify cache reuse, immutable revision and
 current-pointer publication, cancellation safety, same-size source-change
 detection, on-demand virtual-source reading, GUID-keyed inventory manifests,
-and absence of an extracted script tree.
+repair of missing/corrupt GUID manifests, duplicate-GUID rejection,
+byte-identical Workbench-core exclusion, and absence of an extracted script
+tree.

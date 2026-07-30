@@ -46,8 +46,6 @@ struct InventoryAddon {
     project_file: Option<PathBuf>,
     #[serde(default)]
     pack_files: Vec<PathBuf>,
-    #[serde(default)]
-    artifact_identity: Option<String>,
 }
 
 struct BaseGameInspection {
@@ -575,7 +573,10 @@ fn selected_payload_digest(
     for entry in entries {
         control.check()?;
         hasher.update(entry.logical_path().as_bytes());
+        hasher.update(entry.offset().to_le_bytes());
         hasher.update(entry.compressed_length().to_le_bytes());
+        hasher.update(entry.original_length().to_le_bytes());
+        hasher.update(entry.compression().to_le_bytes());
         let mut entry_hasher = Sha256::new();
         file.seek(SeekFrom::Start(entry.offset()))
             .map_err(|error| error.to_string())?;
@@ -664,18 +665,8 @@ fn publish_inventory_addon_manifests(
     control: &IndexBuildControl,
 ) -> Result<(), String> {
     control.check()?;
-    let revision = inventory_publication_revision(inventory)?;
+    let revision = inventory_publication_revision(inventory, control)?;
     let publication_path = storage_root.join("inventory-current.json");
-    if fs::read(&publication_path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<InventoryPublication>(&bytes).ok())
-        .is_some_and(|publication| {
-            publication.schema == "reforger-addon-inventory-publication-v1"
-                && publication.revision == revision
-        })
-    {
-        return Ok(());
-    }
     let mut identities = BTreeMap::<String, PathBuf>::new();
     let mut manifests = Vec::new();
     for addon in inventory
@@ -699,13 +690,11 @@ fn publish_inventory_addon_manifests(
             ));
         }
         if let Some(existing) = identities.insert(guid.clone(), addon.path.clone()) {
-            if existing != addon.path {
-                return Err(format!(
-                    "Duplicate add-on GUID {guid}: {} and {}",
-                    existing.display(),
-                    addon.path.display()
-                ));
-            }
+            return Err(format!(
+                "Duplicate add-on GUID {guid}: {} and {}",
+                existing.display(),
+                addon.path.display()
+            ));
         }
         let display_id = extract_project_property(&project, "ID")
             .or_else(|| extract_project_property(&project, "TITLE"))
@@ -737,6 +726,26 @@ fn publish_inventory_addon_manifests(
                 pack_artifacts,
             },
         ));
+    }
+    let publication_reusable = fs::read(&publication_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<InventoryPublication>(&bytes).ok())
+        .is_some_and(|publication| {
+            publication.schema == "reforger-addon-inventory-publication-v1"
+                && publication.revision == revision
+        })
+        && manifests.iter().all(|(path, expected)| {
+            serde_json::to_vec_pretty(expected)
+                .ok()
+                .is_some_and(|mut expected_bytes| {
+                    expected_bytes.push(b'\n');
+                    fs::read(path)
+                        .ok()
+                        .is_some_and(|actual_bytes| actual_bytes == expected_bytes)
+                })
+        });
+    if publication_reusable {
+        return Ok(());
     }
     let workers = std::thread::available_parallelism()
         .map(usize::from)
@@ -772,27 +781,47 @@ fn publish_inventory_addon_manifests(
     Ok(())
 }
 
-fn inventory_publication_revision(inventory: &Inventory) -> Result<String, String> {
+fn inventory_publication_revision(
+    inventory: &Inventory,
+    control: &IndexBuildControl,
+) -> Result<String, String> {
     let mut hasher = Sha256::new();
-    hasher.update(b"reforger-addon-inventory-publication-v1");
+    hasher.update(b"reforger-addon-inventory-publication-v2");
     for addon in inventory
         .addons
         .iter()
         .filter(|addon| addon.root_kind != "base-game")
     {
+        control.check()?;
         hasher.update(addon.root_kind.as_bytes());
         hasher.update(addon.directory_name.as_bytes());
         hasher.update(addon.path.to_string_lossy().as_bytes());
-        if let Some(identity) = &addon.artifact_identity {
-            hasher.update(identity.as_bytes());
-            continue;
+        if let Some(project_file) = &addon.project_file {
+            hasher.update(project_file.to_string_lossy().as_bytes());
+            hasher.update(
+                fs::read(project_file).map_err(|error| {
+                    format!("Failed to read {}: {error}", project_file.display())
+                })?,
+            );
         }
-        for path in addon.project_file.iter().chain(addon.pack_files.iter()) {
+        for path in &addon.pack_files {
+            control.check()?;
             let metadata = fs::metadata(path)
                 .map_err(|error| format!("Failed to stat {}: {error}", path.display()))?;
             hasher.update(path.to_string_lossy().as_bytes());
             hasher.update(metadata.len().to_le_bytes());
-            hasher.update(modified_unix_ms(&metadata).to_le_bytes());
+            if let Some(strong_manifest) = adjacent_manifest_sha512(path) {
+                hasher.update(b"reforger-manifest-sha512");
+                hasher.update(strong_manifest.as_bytes());
+                continue;
+            }
+            let archive = PakArchive::inspect_with_cancel(path, || control.is_cancelled())
+                .map_err(|error| format!("Failed to inspect {}: {error}", path.display()))?;
+            let entries = archive.select(PakSelection::scripts()).map_err(|error| {
+                format!("Failed to select scripts from {}: {error}", path.display())
+            })?;
+            let (selected_digest, _) = selected_payload_digest(path, &entries, control)?;
+            hasher.update(selected_digest.as_bytes());
         }
     }
     Ok(format!("{:x}", hasher.finalize()))
@@ -892,12 +921,17 @@ mod tests {
             &core.join("data.pak"),
             &[("CoreFeature.c", b"class CoreFeature {}")],
         );
+        let workbench_addons = root.join("workbench-addons");
+        let workbench_core = workbench_addons.join("core");
+        fs::create_dir_all(&workbench_core).unwrap();
+        fs::copy(core.join("data.pak"), workbench_core.join("data.pak")).unwrap();
         let inventory = root.join("inventory.json");
         fs::write(
             &inventory,
             format!(
-                r#"{{"schema":"reforger-addon-source-inventory-v1","roots":[{{"kind":"base-game","path":{}}}]}}"#,
-                serde_json::to_string(&addons).unwrap()
+                r#"{{"schema":"reforger-addon-source-inventory-v1","roots":[{{"kind":"base-game","path":{}}},{{"kind":"workbench","path":{}}}]}}"#,
+                serde_json::to_string(&addons).unwrap(),
+                serde_json::to_string(&workbench_addons).unwrap(),
             ),
         )
         .unwrap();
@@ -1047,15 +1081,17 @@ mod tests {
             "GameProject {\n GUID \"1337C0DE5DABBEEF\"\n ID \"Duplicate\"\n}",
         )
         .unwrap();
-        fs::write(first.join("data.pak"), b"fixture").unwrap();
-        fs::write(second.join("data.pak"), b"fixture").unwrap();
+        write_fixture_pak(&first.join("data.pak"), &[("First.c", b"class First {}")]);
+        write_fixture_pak(
+            &second.join("data.pak"),
+            &[("Second.c", b"class Second {}")],
+        );
         let addon = |path: &Path, name: &str| InventoryAddon {
             root_kind: "user-addons".to_string(),
             directory_name: name.to_string(),
             path: path.to_path_buf(),
             project_file: Some(path.join("addon.gproj")),
             pack_files: vec![path.join("data.pak")],
-            artifact_identity: None,
         };
         let one = Inventory {
             schema: "reforger-addon-source-inventory-v1".to_string(),
@@ -1063,7 +1099,13 @@ mod tests {
             addons: vec![addon(&first, "First")],
         };
         publish_inventory_addon_manifests(&one, &storage, &IndexBuildControl::default()).unwrap();
-        assert!(storage.join("1337C0DE5DABBEEF/inventory.json").is_file());
+        let manifest_path = storage.join("1337C0DE5DABBEEF/inventory.json");
+        assert!(manifest_path.is_file());
+        fs::write(&manifest_path, b"corrupt").unwrap();
+        publish_inventory_addon_manifests(&one, &storage, &IndexBuildControl::default()).unwrap();
+        assert!(
+            serde_json::from_slice::<serde_json::Value>(&fs::read(&manifest_path).unwrap()).is_ok()
+        );
 
         let duplicate = Inventory {
             schema: "reforger-addon-source-inventory-v1".to_string(),
@@ -1075,8 +1117,62 @@ mod tests {
             &storage,
             &IndexBuildControl::default()
         )
-            .unwrap_err()
-            .contains("Duplicate add-on GUID"));
+        .unwrap_err()
+        .contains("Duplicate add-on GUID"));
+        let same_path_duplicate = Inventory {
+            schema: "reforger-addon-source-inventory-v1".to_string(),
+            roots: Vec::new(),
+            addons: vec![addon(&first, "First"), addon(&first, "FirstAgain")],
+        };
+        assert!(publish_inventory_addon_manifests(
+            &same_path_duplicate,
+            &storage,
+            &IndexBuildControl::default()
+        )
+        .unwrap_err()
+        .contains("Duplicate add-on GUID"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn inventory_publication_detects_same_length_script_content_changes() {
+        let root = test_root("inventory_content_identity");
+        let storage = root.join("indexes");
+        let addon_root = root.join("Addon");
+        fs::create_dir_all(&addon_root).unwrap();
+        fs::write(
+            addon_root.join("addon.gproj"),
+            "GameProject {\n GUID \"1337C0DE5DABBEEF\"\n ID \"ContentIdentity\"\n}",
+        )
+        .unwrap();
+        let pack = addon_root.join("data.pak");
+        write_fixture_pak(&pack, &[("Feature.c", b"class First {}")]);
+        let inventory = Inventory {
+            schema: "reforger-addon-source-inventory-v1".to_string(),
+            roots: Vec::new(),
+            addons: vec![InventoryAddon {
+                root_kind: "user-addons".to_string(),
+                directory_name: "Addon".to_string(),
+                path: addon_root.clone(),
+                project_file: Some(addon_root.join("addon.gproj")),
+                pack_files: vec![pack.clone()],
+            }],
+        };
+        let control = IndexBuildControl::default();
+        publish_inventory_addon_manifests(&inventory, &storage, &control).unwrap();
+        let first: InventoryPublication =
+            serde_json::from_slice(&fs::read(storage.join("inventory-current.json")).unwrap())
+                .unwrap();
+        let first_pack_bytes = fs::metadata(&pack).unwrap().len();
+
+        write_fixture_pak(&pack, &[("Feature.c", b"class Other {}")]);
+        publish_inventory_addon_manifests(&inventory, &storage, &control).unwrap();
+        let second: InventoryPublication =
+            serde_json::from_slice(&fs::read(storage.join("inventory-current.json")).unwrap())
+                .unwrap();
+
+        assert_eq!(first_pack_bytes, fs::metadata(&pack).unwrap().len());
+        assert_ne!(first.revision, second.revision);
         let _ = fs::remove_dir_all(root);
     }
 
