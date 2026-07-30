@@ -59,8 +59,7 @@ The first call loads the parser-owned derived Game Data cache; it does not inspe
     },
     "GameDataAcquisition": {
       "enum": [
-        "downloaded",
-        "manual"
+        "localpack"
       ],
       "type": "string"
     },

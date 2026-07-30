@@ -53,8 +53,8 @@ export const languageClientLogs = {
 } as const;
 
 export const languageClientIndexCache = {
-	rootFolder: 'index-cache',
-	gameDataIndexFile: 'game-data-symbol-index.v12.bin',
+	rootFolder: 'addon-indexes',
+	baseGameIndexFile: '58D0FB3206B6F859/current/symbols.bin',
 } as const;
 
 export const languageClientLanguage = {
@@ -67,6 +67,7 @@ export const languageClientRequests = {
 	inputRoute: 'reforger/inputRoute',
 	blockCommentPair: 'reforger/blockCommentPair',
 	activeScopeDelimiters: 'reforger/activeScopeDelimiters',
+	readPackSource: 'reforger/readPackSource',
 } as const;
 
 export const languageClientNotifications = {
@@ -78,4 +79,5 @@ export const languageClientNotifications = {
 
 export const languageClientDocumentSelector = [
 	{ scheme: 'file', language: languageClientLanguage.id },
+	{ scheme: 'reforger-pak', language: languageClientLanguage.id },
 ] as const;

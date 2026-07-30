@@ -69,7 +69,7 @@ export function registerMcpConfigurationCommand(
 				indexCache: path.join(
 					context.globalStorageUri.fsPath,
 					languageClientIndexCache.rootFolder,
-					languageClientIndexCache.gameDataIndexFile,
+					languageClientIndexCache.baseGameIndexFile,
 				),
 			});
 			const configuration = format === 'codex'

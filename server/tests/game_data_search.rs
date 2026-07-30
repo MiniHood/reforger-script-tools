@@ -3,6 +3,9 @@ use reforger_language_server::game_data_search::{search, GameDataSearchRequest, 
 use reforger_language_server::index_build::{
     build_index, IndexBuildConfig, IndexBuildControl, IndexSourceRoot,
 };
+use reforger_language_server::index_cache::{
+    load_or_build_game_data_index, GameDataIndexCacheConfig,
+};
 use reforger_language_server::model::{SourceKind, SOURCE_PRIORITY_GAME_DATA};
 use std::collections::BTreeMap;
 use std::fs;
@@ -103,10 +106,15 @@ fn catalogue_search_keeps_source_lines_from_its_initialized_snapshot() {
     fs::create_dir_all(&scripts).expect("create scripts");
     let source = scripts.join("Snapshot.c");
     fs::write(&source, "\nclass SnapshotTarget {}\n").expect("write source");
-    let catalogue = GameDataCatalogue::new(GameDataCatalogueConfig {
-        scripts_root: Some(fixture.path.clone()),
+    let cache_path = fixture.path.join("cache.bin");
+    load_or_build_game_data_index(&GameDataIndexCacheConfig {
+        scripts_root: fixture.path.clone(),
         metadata_path: None,
-        cache_path: Some(fixture.path.join("cache.bin")),
+        cache_path: cache_path.clone(),
+    })
+    .expect("create cache fixture");
+    let catalogue = GameDataCatalogue::new(GameDataCatalogueConfig {
+        cache_path: Some(cache_path),
     });
     catalogue
         .status(&IndexBuildControl::default())

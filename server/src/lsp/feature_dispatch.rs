@@ -25,7 +25,8 @@ use super::{
     DocumentRuntime, ExternalIndexHandle, HoverSelectionSource, LspPositionIndex, QueryQuality,
     RuntimeEffect, TextSpan, ACTIVE_SCOPE_DELIMITERS_METHOD, BLOCK_COMMENT_PAIR_METHOD,
     CONTROL_HEADER_ENTER_METHOD, DEBUG_COMPLETION_METHOD, DEBUG_HOVER_METHOD,
-    RANGE_FORMATTING_METHOD, WORKSPACE_FILE_CHANGED_METHOD, WORKSPACE_FILE_DELETED_METHOD,
+    RANGE_FORMATTING_METHOD, READ_PACK_SOURCE_METHOD, WORKSPACE_FILE_CHANGED_METHOD,
+    WORKSPACE_FILE_DELETED_METHOD,
 };
 use serde_json::{json, Value};
 use std::path::Path;
@@ -146,6 +147,22 @@ impl FeatureDispatcher<'_> {
         let mut semantic_generation_preservation = None;
         match method {
             "$/cancelRequest" => {}
+            READ_PACK_SOURCE_METHOD => {
+                if let Some(id) = message.id {
+                    let RequestCommand::Feature(FeatureCommand::ReadPackSource(params)) = &command
+                    else {
+                        unreachable!("pack source method has a typed command");
+                    };
+                    match params
+                        .as_ref()
+                        .ok_or_else(|| "Pack source URI is required".to_string())
+                        .and_then(|params| crate::addon_sources::read_virtual_source(&params.uri))
+                    {
+                        Ok(source) => self.respond(id, Value::String(source))?,
+                        Err(error) => self.respond_error(id, -32002, &error)?,
+                    }
+                }
+            }
             WORKSPACE_FILE_CHANGED_METHOD => {
                 let RequestCommand::WorkspaceIndex(WorkspaceIndexCommand::Changed(params)) =
                     &command

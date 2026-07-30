@@ -48,10 +48,8 @@ import {
 
 suite('extension activation', () => {
 	test('presents external index phases as user-facing progress', () => {
-		assert.equal(externalIndexProgressMessage('fingerprint-start'), 'Checking for game-data changes');
-		assert.equal(externalIndexProgressMessage('cache-load-hit'), 'Loading saved script index');
-		assert.equal(externalIndexProgressMessage('source-rebuild-start'), 'Indexing game-data scripts');
-		assert.equal(externalIndexProgressMessage('cache-write-start'), 'Saving script index');
+		assert.equal(externalIndexProgressMessage('pac-inspect-start'), 'Inspecting installed add-on packs');
+		assert.equal(externalIndexProgressMessage('pac-index-end'), 'Loading installed add-on index');
 		assert.equal(externalIndexProgressMessage('workspace-rebuild-start'), 'Indexing workspace scripts');
 		assert.equal(externalIndexProgressMessage('complete', 'ready'), 'Script index ready');
 		assert.equal(externalIndexProgressMessage('complete', 'failed'), 'Script indexing failed');
@@ -194,7 +192,9 @@ suite('extension activation', () => {
 		assert.ok(commands.includes(languageClientCommands.debugCompletionAtCursor));
 		assert.ok(commands.includes(languageClientCommands.triggerSuggestAtSnippetPlaceholder));
 		assert.ok(commands.includes(languageClientCommands.advanceSnippetPlaceholderAfterAccept));
-		assert.ok(commands.includes(gameDataCommands.selectManualFolder));
+		assert.ok(commands.includes(gameDataCommands.selectBaseGameAddonsFolder));
+		assert.ok(commands.includes(gameDataCommands.selectWorkbenchAddonsFolder));
+		assert.ok(commands.includes(gameDataCommands.selectUserAddonsFolder));
 		assert.ok(commands.includes(mcpCommands.copyConfiguration));
 		const contributedCommands = extension.packageJSON.contributes.commands as Array<{ command: string }>;
 		assert.ok(contributedCommands.some(command =>
@@ -239,11 +239,11 @@ suite('extension activation', () => {
 			properties[`${workbenchConfig.section}.compilerValidationProfile`],
 			undefined,
 		);
-		const manualFolderSetting = properties['reforgerScriptTools.gameData.manualFolder'] as {
+		const manualFolderSetting = properties['reforgerScriptTools.gameData.baseGameAddonsFolder'] as {
 			markdownDescription?: string;
 		};
 		assert.ok(manualFolderSetting.markdownDescription?.includes(
-			`command:${gameDataCommands.selectManualFolder}`,
+			`command:${gameDataCommands.selectBaseGameAddonsFolder}`,
 		));
 	});
 

@@ -67,8 +67,6 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
 
     let mut client = McpClient::spawn(&[
         "mcp",
-        "--game-data-scripts",
-        scripts_root.to_str().expect("utf-8 scripts path"),
         "--index-cache",
         cache_path.to_str().expect("utf-8 cache path"),
     ]);
@@ -230,7 +228,7 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
     assert_eq!(structured.get("available"), Some(&json!(true)));
     assert_eq!(
         structured.pointer("/source/acquisition"),
-        Some(&json!("manual"))
+        Some(&json!("localpack"))
     );
     assert_eq!(
         structured.pointer("/authorities/sourceEvidence"),
@@ -367,8 +365,6 @@ fn mcp_inspection_and_source_read_reject_stale_and_changed_handoffs() {
     build_game_data_cache(&scripts_root, &cache_path);
     let mut client = McpClient::spawn(&[
         "mcp",
-        "--game-data-scripts",
-        scripts_root.to_str().expect("utf-8 scripts path"),
         "--index-cache",
         cache_path.to_str().expect("utf-8 cache path"),
     ]);
@@ -448,8 +444,6 @@ fn mcp_progressive_retrieval_enforces_member_documentation_and_source_bounds() {
     build_game_data_cache(&scripts_root, &cache_path);
     let mut client = McpClient::spawn(&[
         "mcp",
-        "--game-data-scripts",
-        scripts_root.to_str().expect("utf-8 scripts path"),
         "--index-cache",
         cache_path.to_str().expect("utf-8 cache path"),
     ]);
@@ -576,8 +570,6 @@ fn mcp_game_data_research_tools_complete_the_progressive_lookup_loop() {
     build_game_data_cache(&scripts_root, &cache_path);
     let mut client = McpClient::spawn(&[
         "mcp",
-        "--game-data-scripts",
-        scripts_root.to_str().expect("utf-8 scripts path"),
         "--index-cache",
         cache_path.to_str().expect("utf-8 cache path"),
     ]);
@@ -958,8 +950,6 @@ fn game_data_research_handoffs_reject_stale_references_and_cursors() {
     build_game_data_cache(&scripts_root, &cache_path);
     let arguments = [
         "mcp",
-        "--game-data-scripts",
-        scripts_root.to_str().expect("utf-8 scripts path"),
         "--index-cache",
         cache_path.to_str().expect("utf-8 cache path"),
     ];
@@ -1061,8 +1051,6 @@ fn lossy_utf8_game_data_remains_searchable_and_readable() {
     build_game_data_cache(&scripts_root, &cache_path);
     let mut client = McpClient::spawn(&[
         "mcp",
-        "--game-data-scripts",
-        scripts_root.to_str().expect("utf-8 scripts path"),
         "--index-cache",
         cache_path.to_str().expect("utf-8 cache path"),
     ]);
@@ -1126,8 +1114,6 @@ fn game_data_revision_is_immutable_per_process_and_shared_cache_loads_warm() {
     build_game_data_cache(&scripts_root, &cache_path);
     let arguments = [
         "mcp",
-        "--game-data-scripts",
-        scripts_root.to_str().expect("utf-8 scripts path"),
         "--index-cache",
         cache_path.to_str().expect("utf-8 cache path"),
     ];
@@ -1671,8 +1657,6 @@ fn cancellation_and_eof_with_in_flight_initialization_shutdown_cleanly() {
     let mut client = McpClient::spawn_with_env(
         &[
             "mcp",
-            "--game-data-scripts",
-            scripts_root.to_str().expect("utf-8 scripts path"),
             "--index-cache",
             cache_path.to_str().expect("utf-8 cache path"),
         ],
@@ -1741,8 +1725,6 @@ fn initialization_deadline_cancels_work_and_returns_stable_tool_error() {
     let mut client = McpClient::spawn_with_env(
         &[
             "mcp",
-            "--game-data-scripts",
-            scripts_root.to_str().expect("utf-8 scripts path"),
             "--index-cache",
             cache_path.to_str().expect("utf-8 cache path"),
         ],
@@ -1799,8 +1781,6 @@ fn ready_game_data_operations_use_their_own_five_second_deadline() {
     let mut client = McpClient::spawn_with_env(
         &[
             "mcp",
-            "--game-data-scripts",
-            scripts_root.to_str().expect("utf-8 scripts path"),
             "--index-cache",
             cache_path.to_str().expect("utf-8 cache path"),
         ],
@@ -1846,8 +1826,6 @@ fn first_game_data_search_uses_the_cold_initialization_deadline() {
     let mut client = McpClient::spawn_with_env(
         &[
             "mcp",
-            "--game-data-scripts",
-            scripts_root.to_str().expect("utf-8 scripts path"),
             "--index-cache",
             cache_path.to_str().expect("utf-8 cache path"),
         ],
@@ -1880,8 +1858,6 @@ fn request_admission_bounds_in_flight_tool_calls() {
     let mut client = McpClient::spawn_with_env(
         &[
             "mcp",
-            "--game-data-scripts",
-            scripts_root.to_str().expect("utf-8 scripts path"),
             "--index-cache",
             cache_path.to_str().expect("utf-8 cache path"),
         ],
@@ -1931,8 +1907,6 @@ fn timed_out_research_workers_retain_admission_until_they_exit() {
     let mut client = McpClient::spawn_with_env(
         &[
             "mcp",
-            "--game-data-scripts",
-            scripts_root.to_str().expect("utf-8 scripts path"),
             "--index-cache",
             cache_path.to_str().expect("utf-8 cache path"),
         ],
@@ -1997,8 +1971,6 @@ fn cancelled_example_searches_release_admission_for_the_next_request() {
     let mut client = McpClient::spawn_with_env(
         &[
             "mcp",
-            "--game-data-scripts",
-            scripts_root.to_str().expect("utf-8 scripts path"),
             "--index-cache",
             cache_path.to_str().expect("utf-8 cache path"),
         ],

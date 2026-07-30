@@ -103,5 +103,28 @@ individual definition target is a separate on-demand measurement.
   decision.
 - The LSP test has no VS Code client, extension activation, workspace index,
   or Game Data arguments.
-- A PAC-backed implementation has not been benchmarked yet. This document is
-  the acceptance baseline, not evidence that virtual sources are faster.
+- The pre-change measurements remain the comparison baseline. The implemented
+  PAC-backed acceptance results are recorded below.
+
+## PAC-backed acceptance snapshot
+
+The issue #40 implementation was measured on 2026-07-30 against the installed
+base-game `data/data007.pak` and `core/data.pak` using the development server
+and the real LSP publication path.
+
+| Measurement | Process to external index ready | Files |
+| --- | ---: | ---: |
+| First PAC-backed build and cache publication | **1,802 ms** | 6,495 |
+| Unchanged PAC catalogue validation and cache load | **146 ms** | 6,495 |
+
+The first run includes PAC catalogue inspection, selective decode and parse,
+semantic-cache write, immutable external-index publication, and LSP
+notifications. The warm run includes process launch, catalogue fingerprinting,
+cache validation/deserialization, lookup-map reconstruction, and publication.
+Neither run creates physical source files. Compared with the earlier local
+measurements, unchanged readiness fell from 454 ms to 146 ms, while the cold
+path avoided the separate 3.2–3.6 second physical extraction step.
+
+These are local wall-clock observations rather than portable budgets. The
+fixture acceptance test separately verifies cache reuse, manifest publication,
+on-demand virtual-source reading, and absence of an extracted script tree.

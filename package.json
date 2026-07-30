@@ -118,16 +118,24 @@
         "title": "Reforger Script Tools: Insert Space"
       },
       {
-        "command": "reforger-sript-tools.gameData.checkForUpdates",
-        "title": "Reforger Script Tools: Check Game Data Updates"
+        "command": "reforger-sript-tools.gameData.refreshSources",
+        "title": "Reforger Script Tools: Refresh Local Add-on Sources"
       },
       {
         "command": "reforger-sript-tools.gameData.openStorageFolder",
         "title": "Reforger Script Tools: Open Game Data Storage Folder"
       },
       {
-        "command": "reforger-sript-tools.gameData.selectManualFolder",
-        "title": "Reforger Script Tools: Select Manual Game Data Folder"
+        "command": "reforger-sript-tools.gameData.selectBaseGameAddonsFolder",
+        "title": "Reforger Script Tools: Select Base Game Add-ons Folder"
+      },
+      {
+        "command": "reforger-sript-tools.gameData.selectWorkbenchAddonsFolder",
+        "title": "Reforger Script Tools: Select Workbench Add-ons Folder"
+      },
+      {
+        "command": "reforger-sript-tools.gameData.selectUserAddonsFolder",
+        "title": "Reforger Script Tools: Select User Add-ons Folder"
       },
       {
         "command": "reforger-sript-tools.mcp.copyConfiguration",
@@ -143,11 +151,23 @@
     "configuration": {
       "title": "Reforger Script Tools",
       "properties": {
-        "reforgerScriptTools.gameData.manualFolder": {
+        "reforgerScriptTools.gameData.baseGameAddonsFolder": {
           "type": "string",
           "default": "",
-          "title": "Game Data: Manual Folder",
-          "markdownDescription": "Optional manual Reforger game data folder. [Select Folder](command:reforger-sript-tools.gameData.selectManualFolder) opens the native folder picker. You may also enter the folder containing `scripts/` or the `scripts/` folder itself. When set, GitHub game-data checks and downloads are skipped."
+          "title": "Game Data: Base Game Add-ons Folder",
+          "markdownDescription": "Optional explicit Arma Reforger `addons` folder. [Select Folder](command:reforger-sript-tools.gameData.selectBaseGameAddonsFolder) opens the native folder picker."
+        },
+        "reforgerScriptTools.gameData.workbenchAddonsFolder": {
+          "type": "string",
+          "default": "",
+          "title": "Game Data: Workbench Add-ons Folder",
+          "markdownDescription": "Optional explicit Arma Reforger Tools Workbench `addons` folder. [Select Folder](command:reforger-sript-tools.gameData.selectWorkbenchAddonsFolder) opens the native folder picker."
+        },
+        "reforgerScriptTools.gameData.userAddonsFolder": {
+          "type": "string",
+          "default": "",
+          "title": "Game Data: User Add-ons Folder",
+          "markdownDescription": "Optional explicit `My Games/ArmaReforger/addons` folder. [Select Folder](command:reforger-sript-tools.gameData.selectUserAddonsFolder) opens the native folder picker."
         },
         "reforgerScriptTools.diagnostics.enabled": {
           "type": "boolean",
@@ -297,6 +317,7 @@
     "@vscode/vsce": "3.9.2",
     "esbuild": "^0.28.1",
     "eslint": "^10.5.0",
+    "fflate": "^0.8.3",
     "npm-run-all": "^4.1.5",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.61.1"
@@ -306,7 +327,6 @@
     "serialize-javascript": "^7.0.6"
   },
   "dependencies": {
-    "fflate": "^0.8.3",
     "vscode-languageclient": "^10.1.0"
   }
 }

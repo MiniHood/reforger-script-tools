@@ -1,34 +1,21 @@
-export const gameDataRepository = {
-	owner: 'BohemiaInteractive',
-	name: 'Arma-Reforger-Script-Diff',
-	branch: 'main',
-} as const;
-
 export const gameDataCommands = {
-	checkForUpdates: 'reforger-sript-tools.gameData.checkForUpdates',
+	refreshSources: 'reforger-sript-tools.gameData.refreshSources',
 	openStorageFolder: 'reforger-sript-tools.gameData.openStorageFolder',
-	selectManualFolder: 'reforger-sript-tools.gameData.selectManualFolder',
+	selectBaseGameAddonsFolder: 'reforger-sript-tools.gameData.selectBaseGameAddonsFolder',
+	selectWorkbenchAddonsFolder: 'reforger-sript-tools.gameData.selectWorkbenchAddonsFolder',
+	selectUserAddonsFolder: 'reforger-sript-tools.gameData.selectUserAddonsFolder',
 } as const;
 
 export const gameDataConfig = {
 	section: 'reforgerScriptTools.gameData',
 	settings: {
-		manualFolder: 'manualFolder',
+		baseGameAddonsFolder: 'baseGameAddonsFolder',
+		workbenchAddonsFolder: 'workbenchAddonsFolder',
+		userAddonsFolder: 'userAddonsFolder',
 	},
 } as const;
 
-export const gameDataStateKeys = {
-	downloadAllowed: 'reforgerScriptTools.gameData.downloadAllowed',
-	warnedLowScriptCountManualFolders: 'reforgerScriptTools.gameData.warnedLowScriptCountManualFolders',
-} as const;
-
 export const gameDataStorage = {
-	rootFolder: 'game-data',
-	scriptsFolder: 'scripts',
-	metadataFile: 'metadata.json',
-	stagingPrefix: 'staging-',
-} as const;
-
-export const gameDataThresholds = {
-	lowScriptCount: 5000,
+	rootFolder: 'addon-sources',
+	inventoryPrefix: 'inventory-v1-',
 } as const;

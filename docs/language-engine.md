@@ -7,9 +7,11 @@ applies editor-only behaviour; it does not duplicate parsing or semantic
 decisions.
 
 PAC1 archive inspection is also Rust-owned. Its pack module builds a bounded
-logical file catalogue and reads only caller-selected entries; it does not
-infer add-on identity, load order, cache keys, or indexing policy. Those
-composition decisions remain with the future resolved-game-data pipeline.
+logical file catalogue and reads only caller-selected entries. The add-on
+source module composes that mechanism with GUID identity, pack-set
+fingerprints, one durable cache per add-on, and virtual source reads. The pack
+module itself does not infer add-on identity, load order, cache keys, or
+indexing policy.
 
 ## Contract
 
@@ -42,6 +44,12 @@ Workspace and game-data indexes are separate immutable external layers. A
 request captures one layer generation, so background indexing cannot change
 the meaning of an in-flight response. Do not introduce per-feature revision
 tables or mutable shared feature state that bypasses this model.
+
+The base-game layer is published only after its complete GUID-scoped cache has
+loaded or rebuilt. Unchanged startup validates bounded PAC catalogue metadata
+and loads the semantic cache; it does not walk extracted files or hash the full
+multi-gigabyte archives. A changed artifact decodes only selected `.c` entries.
+Failed or cancelled rebuilds do not replace the previously complete cache.
 
 ## Boundaries and Evidence
 

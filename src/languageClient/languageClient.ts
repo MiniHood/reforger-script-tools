@@ -34,7 +34,7 @@ import {
 	languageClientNotifications,
 	languageClientRequests,
 } from '../extensionConfig/languageClient';
-import { resolveGameDataPaths } from '../gameData/gameData';
+import { resolveLocalSourceInventoryPath } from '../gameData/gameData';
 import { registerHtmlHoverBridge } from './hoverBridge';
 import {
 	discoverWorkspaceScriptRoots,
@@ -140,6 +140,20 @@ export function registerLanguageClientFeatures(context: vscode.ExtensionContext)
 		(args: unknown) => openSymbolLocation(args),
 	));
 	context.subscriptions.push(registerFirstDocumentOpenTiming(context));
+	context.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider(
+		'reforger-pak',
+		{
+			provideTextDocumentContent: async uri => {
+				if (!client) {
+					throw new Error('Reforger language server is not ready.');
+				}
+				return client.sendRequest<string>(
+					languageClientRequests.readPackSource,
+					{ uri: uri.toString() },
+				);
+			},
+		},
+	));
 	context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(event => {
 		const setting = `${bracketColoringConfig.section}.${bracketColoringConfig.setting}`;
 		if (event.affectsConfiguration(setting)) {
@@ -263,9 +277,11 @@ async function startLanguageClient(
 		},
 	);
 
+	const sourceInventoryPath = await resolveLocalSourceInventoryPath(context);
 	const serverArgs = [
-		'--index-cache',
-		path.join(context.globalStorageUri.fsPath, languageClientIndexCache.rootFolder, languageClientIndexCache.gameDataIndexFile),
+		'--addon-index-storage',
+		path.join(context.globalStorageUri.fsPath, languageClientIndexCache.rootFolder),
+		'--addon-source-inventory', sourceInventoryPath,
 		...bracketColoringServerArguments(bracketColoring),
 	];
 	if (diagnosticsEnabled()) {
@@ -280,20 +296,12 @@ async function startLanguageClient(
 	if (diagnosticPath) {
 		serverArgs.push('--diagnostic-log', diagnosticPath);
 	}
-	const gameDataPaths = resolveGameDataPaths(context);
-	if (gameDataPaths.scripts) {
-		serverArgs.push('--game-data-scripts', gameDataPaths.scripts);
-	}
-	if (gameDataPaths.metadata) {
-		serverArgs.push('--game-data-metadata', gameDataPaths.metadata);
-	}
 	const workspaceScriptRoots = await discoverWorkspaceScriptRoots();
 	for (const root of workspaceScriptRoots) {
 		serverArgs.push('--workspace-scripts', root);
 	}
 	logLanguageClientStartupTiming(context, 'languageServerArgumentsReady', {
-		hasGameDataScripts: Boolean(gameDataPaths.scripts),
-		hasGameDataMetadata: Boolean(gameDataPaths.metadata),
+		hasAddonSourceInventory: true,
 		workspaceScriptRoots: workspaceScriptRoots.length,
 		serverArgs: serverArgs.length,
 		bracketColoring,
@@ -518,26 +526,10 @@ function monitorExternalIndexProgress(
 
 export function externalIndexProgressMessage(phase: string, status?: string): string {
 	switch (phase) {
-		case 'validate-scripts-root-start':
-		case 'validate-scripts-root-end':
-			return 'Checking game-data scripts';
-		case 'fingerprint-start':
-		case 'fingerprint-end':
-			return 'Checking for game-data changes';
-		case 'cache-load-start':
-		case 'cache-load-hit':
-			return 'Loading saved script index';
-		case 'cache-load-miss':
-		case 'source-rebuild-start':
-			return 'Indexing game-data scripts';
-		case 'source-rebuild-end':
-			return 'Finalizing game-data index';
-		case 'map-rebuild-start':
-		case 'map-rebuild-end':
-			return 'Preparing symbol lookups';
-		case 'cache-write-start':
-		case 'cache-write-end':
-			return 'Saving script index';
+		case 'pac-inspect-start':
+			return 'Inspecting installed add-on packs';
+		case 'pac-index-end':
+			return 'Loading installed add-on index';
 		case 'workspace-rebuild-start':
 		case 'workspace-rebuild-end':
 			return 'Indexing workspace scripts';

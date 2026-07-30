@@ -1,6 +1,6 @@
 use crate::index::SymbolIndex;
 use crate::lexer::TextSpan;
-use crate::model::{SourceFileMetadata, SourceKind, source_category_for_path};
+use crate::model::{source_category_for_path, SourceFileMetadata, SourceKind};
 use crate::parser::parse_source;
 use crate::semantic_file::{FileContribution, SemanticFile};
 use crate::syntax::ParseDiagnostic;
@@ -9,8 +9,8 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{
-    Arc,
     atomic::{AtomicBool, Ordering},
+    Arc,
 };
 use std::time::{Duration, Instant};
 
@@ -36,6 +36,15 @@ pub struct IndexSourceRoot {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexBuildConfig {
     pub roots: Vec<IndexSourceRoot>,
+}
+
+/// One already-resolved source input. Archive-backed callers provide bytes here
+/// instead of materializing a temporary filesystem tree.
+#[derive(Debug, Clone)]
+pub struct IndexSourceText {
+    pub display_path: PathBuf,
+    pub bytes: Vec<u8>,
+    pub metadata: SourceFileMetadata,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -140,6 +149,50 @@ pub fn build_index(config: &IndexBuildConfig) -> Result<IndexBuildResult, String
     build_index_with_control(config, &IndexBuildControl::default())
 }
 
+pub fn build_index_from_sources(
+    sources: impl IntoIterator<Item = IndexSourceText>,
+    control: &IndexBuildControl,
+) -> Result<IndexBuildResult, String> {
+    let total_start = Instant::now();
+    let mut summary = IndexBuildSummary {
+        totals: IndexBuildCounts::default(),
+        by_source_kind: BTreeMap::new(),
+        timings: IndexBuildTimings::default(),
+    };
+    let mut pending = Vec::new();
+    for source in sources {
+        control.check()?;
+        pending.push(build_source(
+            &source.display_path,
+            source.bytes,
+            source.metadata,
+            &mut summary,
+            control,
+        )?);
+    }
+    let index_build_start = Instant::now();
+    let mut index = SymbolIndex::default();
+    index
+        .add_file_contributions(
+            pending
+                .iter()
+                .map(|file| (&file.contribution, file.metadata.clone())),
+        )
+        .map_err(|error| {
+            format!("Invalid semantic contribution during index aggregation: {error:?}")
+        })?;
+    summary.timings.index_build = index_build_start.elapsed();
+    summary.timings.total = total_start.elapsed();
+    Ok(IndexBuildResult {
+        index,
+        summary,
+        source_line_starts: pending
+            .into_iter()
+            .map(|file| file.source_line_starts)
+            .collect(),
+    })
+}
+
 pub fn build_index_with_control(
     config: &IndexBuildConfig,
     control: &IndexBuildControl,
@@ -205,16 +258,36 @@ fn build_file(
     summary: &mut IndexBuildSummary,
     control: &IndexBuildControl,
 ) -> Result<PendingFileContribution, String> {
-    control.check()?;
-    let semantic_file_build_start = Instant::now();
     let read_decode_start = Instant::now();
     let bytes =
         fs::read(file).map_err(|error| format!("Failed to read {}: {error}", file.display()))?;
+    let file_read = read_decode_start.elapsed();
+    summary.timings.read_decode += file_read;
+    summary.timings.catalog_build += file_read;
+    build_source(
+        file,
+        bytes,
+        source_metadata(&root.root_path, file, root.kind, root.priority),
+        summary,
+        control,
+    )
+}
+
+fn build_source(
+    file: &Path,
+    bytes: Vec<u8>,
+    metadata: SourceFileMetadata,
+    summary: &mut IndexBuildSummary,
+    control: &IndexBuildControl,
+) -> Result<PendingFileContribution, String> {
+    control.check()?;
+    let semantic_file_build_start = Instant::now();
     let byte_count = bytes.len();
+    let decode_started = Instant::now();
     let source = decode_source(&bytes);
     let lossy = matches!(source, Cow::Owned(_));
     let source = source.into_owned();
-    summary.timings.read_decode += read_decode_start.elapsed();
+    summary.timings.read_decode += decode_started.elapsed();
 
     control.check()?;
     let parse_start = Instant::now();
@@ -239,7 +312,7 @@ fn build_file(
     control.check()?;
     record_file_counts(
         summary,
-        root.kind,
+        metadata.kind,
         file,
         byte_count,
         lossy,
@@ -253,7 +326,7 @@ fn build_file(
 
     Ok(PendingFileContribution {
         contribution: semantic_file.contribution().clone(),
-        metadata: source_metadata(&root.root_path, file, root.kind, root.priority),
+        metadata,
         source_line_starts: line_starts(&source),
     })
 }
@@ -481,7 +554,7 @@ fn collect_script_files(
 mod tests {
     use super::*;
     use crate::model::{
-        SOURCE_PRIORITY_GAME_DATA, SOURCE_PRIORITY_WORKSPACE, SourceCategory, SymbolKind,
+        SourceCategory, SymbolKind, SOURCE_PRIORITY_GAME_DATA, SOURCE_PRIORITY_WORKSPACE,
     };
     use crate::semantic_file::SemanticFile;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -711,14 +784,12 @@ mod tests {
         assert!(!diagnostic_detail.message.is_empty());
         assert!(diagnostic_detail.line > 0);
         assert!(diagnostic_detail.column > 0);
-        assert!(
-            result
-                .summary
-                .totals
-                .parse_diagnostic_details
-                .iter()
-                .any(|detail| detail.snippet.contains("class Broken"))
-        );
+        assert!(result
+            .summary
+            .totals
+            .parse_diagnostic_details
+            .iter()
+            .any(|detail| detail.snippet.contains("class Broken")));
 
         cleanup(&root);
     }

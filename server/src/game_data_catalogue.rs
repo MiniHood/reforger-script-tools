@@ -380,8 +380,7 @@ pub struct GameDataSourceStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum GameDataAcquisition {
-    Downloaded,
-    Manual,
+    LocalPack,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -569,20 +568,12 @@ fn unavailable_state(
 }
 
 fn source_status(fingerprint: Option<&SourceFingerprint>) -> GameDataSourceStatus {
-    let acquisition = match fingerprint {
-        Some(SourceFingerprint::Downloaded { .. }) => GameDataAcquisition::Downloaded,
-        Some(SourceFingerprint::Manual { .. }) => GameDataAcquisition::Manual,
-        None => GameDataAcquisition::Manual,
-    };
-    let fingerprint_commit = match fingerprint {
-        Some(SourceFingerprint::Downloaded { commit_sha, .. }) => Some(commit_sha.clone()),
-        _ => None,
-    };
+    let _ = fingerprint;
 
     GameDataSourceStatus {
-        acquisition,
+        acquisition: GameDataAcquisition::LocalPack,
         branch: None,
-        commit_sha: fingerprint_commit,
+        commit_sha: None,
         commit_date: None,
         downloaded_at: None,
     }

@@ -184,13 +184,13 @@ fn parse_lsp_args(mut args: impl Iterator<Item = String>) -> Result<LspServerOpt
             "--diagnostic-log" => {
                 options.diagnostic_log_path = Some(path_value(&mut args, "--diagnostic-log")?)
             }
-            "--game-data-scripts" => {
-                options.game_data_scripts = Some(path_value(&mut args, "--game-data-scripts")?)
+            "--addon-source-inventory" => {
+                options.addon_source_inventory =
+                    Some(path_value(&mut args, "--addon-source-inventory")?)
             }
-            "--game-data-metadata" => {
-                options.game_data_metadata = Some(path_value(&mut args, "--game-data-metadata")?)
+            "--addon-index-storage" => {
+                options.addon_index_storage = Some(path_value(&mut args, "--addon-index-storage")?)
             }
-            "--index-cache" => options.index_cache = Some(path_value(&mut args, "--index-cache")?),
             "--workspace-scripts" => {
                 options
                     .workspace_scripts
@@ -221,14 +221,6 @@ fn parse_mcp_args(mut args: impl Iterator<Item = String>) -> Result<McpServerOpt
 
     while let Some(argument) = args.next() {
         match argument.as_str() {
-            // Older copied configurations may still contain source inputs.
-            // MCP consumes the parser-owned index cache and does not inspect them.
-            "--game-data-scripts" => {
-                path_value(&mut args, "--game-data-scripts")?;
-            }
-            "--game-data-metadata" => {
-                path_value(&mut args, "--game-data-metadata")?;
-            }
             "--index-cache" => game_data.cache_path = Some(path_value(&mut args, "--index-cache")?),
             "--official-wiki-root" => {
                 official_wiki_root = Some(path_value(&mut args, "--official-wiki-root")?)
@@ -283,7 +275,7 @@ fn string_value(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<S
 
 fn print_help() {
     println!(
-        "Usage:\n  reforger_language_server [LSP options]\n  reforger_language_server mcp [MCP options]\n  reforger_language_server mcp-api\n  reforger_language_server workbench-api <status|validate|integration-status|install-bridge> [--host <loopback>] [--port <port>]\n\nLSP options:\n  --log <path>\n  --diagnostic-log <path>\n  --game-data-scripts <path>\n  --game-data-metadata <path>\n  --index-cache <path>\n  --workspace-scripts <path> (repeatable)\n  --bracket-coloring <semantic|punctuation|vscode>\n\nMCP options:\n  --index-cache <path>\n  --official-wiki-root <development/test path>\n  --workbench-host <loopback host>\n  --workbench-port <port>\n  --workbench-executable <path>\n  --reforger-game-directory <path>\n  --reforger-tools-directory <path>\n  --workbench-user-directory <test/development override>"
+        "Usage:\n  reforger_language_server [LSP options]\n  reforger_language_server mcp [MCP options]\n  reforger_language_server mcp-api\n  reforger_language_server workbench-api <status|validate|integration-status|install-bridge> [--host <loopback>] [--port <port>]\n\nLSP options:\n  --log <path>\n  --diagnostic-log <path>\n  --addon-source-inventory <path>\n  --addon-index-storage <path>\n  --workspace-scripts <path> (repeatable)\n  --bracket-coloring <semantic|punctuation|vscode>\n\nMCP options:\n  --index-cache <path>\n  --official-wiki-root <development/test path>\n  --workbench-host <loopback host>\n  --workbench-port <port>\n  --workbench-executable <path>\n  --reforger-game-directory <path>\n  --reforger-tools-directory <path>\n  --workbench-user-directory <test/development override>"
     );
 }
 
@@ -311,12 +303,10 @@ mod tests {
     }
 
     #[test]
-    fn explicit_mcp_mode_is_separate_from_legacy_lsp_mode() {
+    fn explicit_mcp_mode_accepts_only_the_parser_owned_cache() {
         let mode = parse_args_from(
             [
                 "mcp".to_string(),
-                "--game-data-scripts".to_string(),
-                "scripts".to_string(),
                 "--index-cache".to_string(),
                 "cache.bin".to_string(),
             ]

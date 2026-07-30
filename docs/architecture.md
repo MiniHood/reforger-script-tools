@@ -18,10 +18,23 @@ VS Code editor
   -> VS Code editor
 ```
 
-Game data and workspace scripts enter through resolved paths and document/file
-notifications. Rust turns them into immutable language facts; the client
-transports or presents the resulting editor behaviour. Game-data acquisition
-only resolves source material—it does not analyse Enfusion.
+The extension discovers or accepts explicit paths for the base-game,
+Workbench, and user add-on roots, then atomically writes a deterministic source
+inventory under `globalStorageUri/addon-sources`. Rust is the only owner of PAC
+inspection and Enfusion analysis. It selects script catalogue entries without
+extracting a loose source tree and persists one semantic cache beneath
+`globalStorageUri/addon-indexes/<guid>/current`.
+
+The base-game cache is built from `data/data007.pak` and `core/data.pak`.
+Workbench and user roots are recorded in the inventory so future add-on
+indexing can use the same contract; they are not merged into the semantic
+snapshot until load ordering is defined. GitHub downloads and loose-script
+source folders are not runtime acquisition paths.
+
+Pack-backed definitions use stable `reforger-pak:` document identities. The
+extension provides those documents by asking Rust to decode exactly one PAC
+entry on demand, preserving logical file boundaries without materializing
+6,495 physical files.
 
 The packaged executable also has an independent MCP mode. An MCP client starts
 its own local `stdio` process; it neither attaches to the editor-owned LSP nor
@@ -230,7 +243,7 @@ raw NET API payloads, property values, confirmation tokens, or source text.
 | --- | --- | --- |
 | `src/extension.ts` | Activation and top-level wiring | Language behaviour or game-data workflows |
 | `src/extensionConfig/` | Extension-facing names, defaults, and limits | Runtime logic |
-| `src/gameData/` | Game-data acquisition and source resolution | Parsing or semantic analysis |
+| `src/gameData/` | Installed add-on root discovery, deterministic inventory publication, and source-refresh UI | PAC parsing or semantic analysis |
 | `src/languageClient/` | Server lifecycle, transport, file notifications, and thin editor bridges | Syntax, lookup, completion ranking, or type reasoning |
 | `src/mcp/` | MCP client configuration from the packaged runtime and stable source/cache inputs | Protocol serving, indexing, or semantic queries |
 | `src/workbenchNetApi/gateway/` | Thin TypeScript process bridge from editor compiler features to the bundled Rust Workbench Gateway | NET API framing, VS Code UI, raw endpoint dispatch, or Enfusion language decisions |

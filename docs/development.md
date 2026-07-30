@@ -194,11 +194,25 @@ also stops repository-owned running language-server processes before replacing
 them, so verify the active development session after a server rebuild rather
 than assuming a previous process reflects the change.
 
-When game data is installed or a manual game-data folder is chosen, the client
-restarts the language server so its external index uses the new source. The
-**Reforger game data** progress notification remains visible through the index
-phases and closes when the replacement index is published; wait for it to close
-before judging game-API language features.
+On first activation the extension discovers the conventional Arma Reforger,
+Workbench, and user add-on roots. Set the three `gameData.*AddonsFolder`
+settings or use their folder-picker commands when an installation is elsewhere.
+Refreshing local add-on sources atomically replaces the source inventory and
+restarts the language server. The **Reforger game data** progress notification
+remains visible through PAC inspection and index publication; wait for it to
+close before judging game-API language features.
+
+The active base-game artifacts are:
+
+```text
+<global storage>/addon-sources/inventory-v1-<content-digest>.json
+<global storage>/addon-indexes/58D0FB3206B6F859/current/manifest.json
+<global storage>/addon-indexes/58D0FB3206B6F859/current/symbols.bin
+```
+
+No extracted script tree is part of the runtime contract. Go-to-definition
+opens a read-only `reforger-pak:` document whose single source entry is decoded
+by the Rust server on demand.
 
 ## Workbench Integration Verification
 

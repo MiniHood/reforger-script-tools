@@ -158,6 +158,7 @@ const DEBUG_COMPLETION_METHOD: &str = "reforger/debugCompletion";
 const BLOCK_COMMENT_PAIR_METHOD: &str = "reforger/blockCommentPair";
 const CONTROL_HEADER_ENTER_METHOD: &str = "reforger/inputRoute";
 const ACTIVE_SCOPE_DELIMITERS_METHOD: &str = "reforger/activeScopeDelimiters";
+const READ_PACK_SOURCE_METHOD: &str = "reforger/readPackSource";
 const RANGE_FORMATTING_METHOD: &str = "textDocument/rangeFormatting";
 const WORKSPACE_FILE_CHANGED_METHOD: &str = "reforger/workspaceFileChanged";
 const WORKSPACE_FILE_DELETED_METHOD: &str = "reforger/workspaceFileDeleted";
@@ -174,9 +175,8 @@ const MAX_BACKGROUND_RUNTIME_WORKERS: usize = 1;
 pub struct LspServerOptions {
     pub log_path: Option<PathBuf>,
     pub diagnostic_log_path: Option<PathBuf>,
-    pub game_data_scripts: Option<PathBuf>,
-    pub game_data_metadata: Option<PathBuf>,
-    pub index_cache: Option<PathBuf>,
+    pub addon_source_inventory: Option<PathBuf>,
+    pub addon_index_storage: Option<PathBuf>,
     pub workspace_scripts: Vec<PathBuf>,
     pub bracket_coloring: BracketColoringMode,
 }
@@ -473,6 +473,12 @@ struct ActiveScopeDelimiterParams {
     text_document: TextDocumentIdentifier,
     version: i32,
     positions: Vec<LspPosition>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReadPackSourceParams {
+    uri: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -821,14 +827,14 @@ impl<W: Write> LspServer<W> {
             shutdown_requested: false,
         };
         server.log_lazy(|| format!(
-            "startup server={SERVER_NAME} version={SERVER_VERSION} game_data_scripts={} index_cache={} workspace_roots={} bracket_coloring={:?} external_index_status={}",
+            "startup server={SERVER_NAME} version={SERVER_VERSION} addon_source_inventory={} addon_index_storage={} workspace_roots={} bracket_coloring={:?} external_index_status={}",
             options
-                .game_data_scripts
+                .addon_source_inventory
                 .as_ref()
                 .map(|path| path.display().to_string())
                 .unwrap_or_else(|| "<unset>".to_string()),
             options
-                .index_cache
+                .addon_index_storage
                 .as_ref()
                 .map(|path| path.display().to_string())
                 .unwrap_or_else(|| "<unset>".to_string()),
@@ -838,9 +844,9 @@ impl<W: Write> LspServer<W> {
         ));
         server.logger.diagnostic_lazy("startup", || {
             json!({
-                "gameDataConfigured": options.game_data_scripts.is_some(),
+                "gameDataConfigured": options.addon_source_inventory.is_some(),
                 "workspaceRoots": options.workspace_scripts.len(),
-                "indexCacheConfigured": options.index_cache.is_some(),
+                "indexCacheConfigured": options.addon_index_storage.is_some(),
                 "bracketColoring": format!("{:?}", options.bracket_coloring),
             })
         });
@@ -1298,6 +1304,7 @@ fn validate_message_params(method: &str, params: &Option<Value>) -> Result<(), S
         ACTIVE_SCOPE_DELIMITERS_METHOD => {
             validate_params::<ActiveScopeDelimiterParams>(params, method)
         }
+        READ_PACK_SOURCE_METHOD => validate_params::<ReadPackSourceParams>(params, method),
         _ => Ok(()),
     }
 }

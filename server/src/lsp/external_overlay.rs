@@ -3,10 +3,9 @@ use super::file_uri_path_identity;
 use super::{
     file_path_identity, format_paths, LspLogger, LspServerOptions, ServerEvent, ServerEventSender,
 };
+use crate::addon_sources::load_or_build_base_game_index;
 use crate::index::SymbolIndex;
-use crate::index_cache::{
-    load_or_build_game_data_index_with_progress, GameDataIndexCacheConfig, RuntimeIndexSummary,
-};
+use crate::index_cache::RuntimeIndexSummary;
 use crate::model::{
     source_category_for_path, SourceFileMetadata, SourceKind, SOURCE_PRIORITY_WORKSPACE,
 };
@@ -393,15 +392,13 @@ pub(crate) fn start_external_index(
     logger: LspLogger,
     event_sender: Option<ServerEventSender>,
 ) -> ExternalIndexHandle {
-    if (options.game_data_scripts.is_none() || options.index_cache.is_none())
-        && options.workspace_scripts.is_empty()
-    {
+    if options.addon_source_inventory.is_none() && options.workspace_scripts.is_empty() {
         return ExternalIndexHandle::missing();
     }
 
     logger.diagnostic_lazy("externalIndex.started", || {
         json!({
-            "gameDataConfigured": options.game_data_scripts.is_some(),
+            "gameDataConfigured": options.addon_source_inventory.is_some(),
             "workspaceRoots": options.workspace_scripts.len(),
         })
     });
@@ -431,9 +428,8 @@ pub(crate) fn start_external_index(
     };
 
     let state = handle.state.clone();
-    let scripts_root = options.game_data_scripts.clone();
-    let cache_path = options.index_cache.clone();
-    let metadata_path = options.game_data_metadata.clone();
+    let addon_source_inventory = options.addon_source_inventory.clone();
+    let addon_index_storage = options.addon_index_storage.clone();
     let workspace_roots = options.workspace_scripts.clone();
     thread::spawn(move || {
         let thread_logger = logger.clone();
@@ -442,9 +438,8 @@ pub(crate) fn start_external_index(
         if let Err(payload) = catch_unwind(AssertUnwindSafe(|| {
             run_external_index_thread(
                 state,
-                scripts_root,
-                cache_path,
-                metadata_path,
+                addon_source_inventory,
+                addon_index_storage,
                 workspace_roots,
                 logger,
                 progress_sender,
@@ -473,9 +468,8 @@ pub(crate) fn start_external_index(
 
 fn run_external_index_thread(
     state: Arc<Mutex<ExternalIndexState>>,
-    scripts_root: Option<PathBuf>,
-    cache_path: Option<PathBuf>,
-    metadata_path: Option<PathBuf>,
+    addon_source_inventory: Option<PathBuf>,
+    addon_index_storage: Option<PathBuf>,
     workspace_roots: Vec<PathBuf>,
     logger: LspLogger,
     event_sender: Option<ServerEventSender>,
@@ -483,8 +477,8 @@ fn run_external_index_thread(
     let start = Instant::now();
     logger.log_lazy(|| {
         format!(
-            "externalIndex start game_data_scripts={} workspace_roots={}",
-            scripts_root
+            "externalIndex start addon_source_inventory={} workspace_roots={}",
+            addon_source_inventory
                 .as_ref()
                 .map(|path| path.display().to_string())
                 .unwrap_or_else(|| "<unset>".to_string()),
@@ -493,41 +487,28 @@ fn run_external_index_thread(
     });
 
     let game_data_start = Instant::now();
-    let game_data_result = match (scripts_root, cache_path) {
-        (Some(scripts_root), Some(cache_path)) => {
-            logger.log_lazy(|| {
-                format!(
-                    "externalIndex gameData start scripts={} cache={}",
-                    scripts_root.display(),
-                    cache_path.display()
-                )
-            });
-            let phase_logger = logger.clone();
-            let phase_start = Instant::now();
-            Some(load_or_build_game_data_index_with_progress(
-                &GameDataIndexCacheConfig {
-                    scripts_root,
-                    cache_path,
-                    metadata_path,
-                },
-                |phase| {
-                    phase_logger.log_lazy(|| {
-                        format!(
-                            "externalIndex gameData phase={} elapsed_ms={}",
-                            phase,
-                            phase_start.elapsed().as_millis()
-                        )
-                    });
-                    if let Some(sender) = &event_sender {
-                        let _ = sender.send(ServerEvent::ExternalIndexProgress {
-                            phase: phase.to_string(),
-                        });
-                    }
-                },
-            ))
-        }
-        _ => None,
-    };
+    let game_data_result = addon_source_inventory.map(|inventory_path| {
+            if let Some(sender) = &event_sender {
+                let _ = sender.send(ServerEvent::ExternalIndexProgress {
+                    phase: "pac-inspect-start".to_string(),
+                });
+            }
+            let result = addon_index_storage
+                .ok_or_else(|| "add-on index storage is unavailable".to_string())
+                .and_then(|storage| {
+                    load_or_build_base_game_index(
+                        &inventory_path,
+                        &storage,
+                        &crate::index_build::IndexBuildControl::default(),
+                    )
+                });
+            if let Some(sender) = &event_sender {
+                let _ = sender.send(ServerEvent::ExternalIndexProgress {
+                    phase: "pac-index-end".to_string(),
+                });
+            }
+            result
+        });
     let game_data_ready_ms = game_data_start.elapsed().as_millis();
     logger.log_lazy(|| {
         format!(
@@ -1049,14 +1030,16 @@ mod tests {
 
     #[test]
     fn external_index_publication_wakes_the_runtime_without_polling() {
-        let missing_scripts =
-            std::env::temp_dir().join(format!("reforger-missing-game-data-{}", std::process::id()));
-        let cache = missing_scripts.with_extension("bin");
+        let missing_inventory = std::env::temp_dir().join(format!(
+            "reforger-missing-addon-inventory-{}",
+            std::process::id()
+        ));
+        let storage = missing_inventory.with_extension("indexes");
         let (sender, receiver) = mpsc::channel();
         let _handle = start_external_index(
             &LspServerOptions {
-                game_data_scripts: Some(missing_scripts),
-                index_cache: Some(cache),
+                addon_source_inventory: Some(missing_inventory),
+                addon_index_storage: Some(storage),
                 ..LspServerOptions::default()
             },
             LspLogger::new(None, None),

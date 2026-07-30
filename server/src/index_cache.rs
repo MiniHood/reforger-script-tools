@@ -1,26 +1,26 @@
 use crate::ast::DocCommentKind;
 use crate::index::{
+    indexed_callable_form, indexed_conditional_kind, indexed_symbol_kind, semantic_attribute_name,
     GlobalSymbolId, IndexedAttribute, IndexedConditionalBranch, IndexedDocComment, IndexedFile,
-    IndexedSymbol, IndexedSymbolDetail, SourceFileId, SymbolIndex, indexed_callable_form,
-    indexed_conditional_kind, indexed_symbol_kind, semantic_attribute_name,
+    IndexedSymbol, IndexedSymbolDetail, SourceFileId, SymbolIndex,
 };
 use crate::index_build::{
-    IndexBuildConfig, IndexBuildControl, IndexBuildResult, IndexSourceRoot,
-    build_index_with_control,
+    build_index_with_control, IndexBuildConfig, IndexBuildControl, IndexBuildResult,
+    IndexSourceRoot,
 };
 use crate::lexer::TextSpan;
 use crate::model::{
-    CallableForm, PreprocessorBranchKind, SOURCE_PRIORITY_GAME_DATA, SourceCategory,
-    SourceFileMetadata, SourceKind, SymbolId, SymbolKind,
-};
-#[cfg(test)]
-use crate::semantic_file::{
-    FILE_CONTRIBUTION_SCHEMA_VERSION, FILE_CONTRIBUTION_SOURCE_MANIFEST_VERSION, PublicSymbol,
-    PublicSymbolDetail, PublicText, SemanticConditionalBranch, SemanticDocComment, SemanticText,
+    CallableForm, PreprocessorBranchKind, SourceCategory, SourceFileMetadata, SourceKind, SymbolId,
+    SymbolKind, SOURCE_PRIORITY_GAME_DATA,
 };
 use crate::semantic_file::{
     FileContribution, SemanticCallableForm, SemanticConditionalBranchKind, SemanticDeclarationId,
     SemanticDeclarationKind, SemanticDocCommentKind,
+};
+#[cfg(test)]
+use crate::semantic_file::{
+    PublicSymbol, PublicSymbolDetail, PublicText, SemanticConditionalBranch, SemanticDocComment,
+    SemanticText, FILE_CONTRIBUTION_SCHEMA_VERSION, FILE_CONTRIBUTION_SOURCE_MANIFEST_VERSION,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -31,10 +31,10 @@ use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
-const CACHE_FORMAT_VERSION: u32 = 13;
+const CACHE_FORMAT_VERSION: u32 = 14;
 const CACHE_SCHEMA: &str = "reforger-symbol-index";
-const CACHE_MAGIC: &[u8; 8] = b"RSTIDX13";
-const CACHE_INDEX_SHAPE: &str = "runtime-pruned:no-local-variables:detail-spans-stripped:layered-external-v1:binary-v6:string-table-v1:canonical-public-facts-v1:parser-source-line-map-v1:source-content-digest-v1";
+const CACHE_MAGIC: &[u8; 8] = b"RSTIDX14";
+const CACHE_INDEX_SHAPE: &str = "runtime-pruned:no-local-variables:detail-spans-stripped:layered-external-v1:binary-v7:string-table-v1:canonical-public-facts-v1:parser-source-line-map-v1:source-content-digest-v1:addon-fingerprint-v1";
 const LEGACY_CACHE_FORMAT_VERSION: u32 = 9;
 const LEGACY_CACHE_MAGIC: &[u8; 8] = b"RSTIDX09";
 const V10_CACHE_FORMAT_VERSION: u32 = 10;
@@ -69,6 +69,76 @@ pub struct GameDataIndexCacheResult {
     pub catalogue_digest: String,
     pub timings: IndexCacheTimings,
     pub cache_file_bytes: Option<u64>,
+}
+
+/// Reuses the canonical compact semantic-cache format for one archive-backed
+/// add-on. The caller owns archive identity and source acquisition; this
+/// function never walks a source directory.
+pub fn load_or_build_archive_index(
+    cache_path: &Path,
+    fingerprint: SourceFingerprint,
+    source_digest: String,
+    build: impl FnOnce() -> Result<IndexBuildResult, String>,
+) -> Result<GameDataIndexCacheResult, String> {
+    let total_start = Instant::now();
+    let mut timings = IndexCacheTimings::default();
+    let load_start = Instant::now();
+    if let Ok(Some(CacheLoad::Current(cached))) =
+        load_cached_index(cache_path, &fingerprint, &source_digest, &mut timings)
+    {
+        timings.cache_read_deserialize_validate = load_start.elapsed();
+        let summary: RuntimeIndexSummary = cached.summary.clone().into();
+        let map_start = Instant::now();
+        let (index, source_line_starts) = cached.into_index_and_line_starts();
+        timings.map_rebuild = map_start.elapsed();
+        timings.total = total_start.elapsed();
+        return Ok(GameDataIndexCacheResult {
+            index,
+            source_line_starts,
+            summary,
+            cache_status: IndexCacheStatus::Loaded,
+            fingerprint,
+            source_digest: source_digest.clone(),
+            catalogue_digest: source_digest,
+            timings,
+            cache_file_bytes: cache_file_bytes(cache_path),
+        });
+    }
+    timings.cache_read_deserialize_validate = load_start.elapsed();
+    let build_start = Instant::now();
+    let built = build()?;
+    timings.rebuild = build_start.elapsed();
+    let cached_index = built.index.compact_for_runtime_cache();
+    let summary = summary_from_build_with_cached_index(&built, &cached_index);
+    let payload = CachedGameDataIndex::from_index(
+        &cached_index,
+        &built.source_line_starts,
+        fingerprint.clone(),
+        source_digest.clone(),
+        CachedIndexSummary::from(&summary),
+    );
+    let write_start = Instant::now();
+    write_cached_payload(cache_path, &payload)?;
+    timings.cache_write = write_start.elapsed();
+    timings.total = total_start.elapsed();
+    Ok(GameDataIndexCacheResult {
+        index: cached_index,
+        source_line_starts: built
+            .source_line_starts
+            .into_iter()
+            .enumerate()
+            .map(|(index, starts)| (SourceFileId(index), starts))
+            .collect(),
+        summary,
+        cache_status: IndexCacheStatus::Rebuilt {
+            reason: "archive-identity-changed".to_string(),
+        },
+        fingerprint,
+        source_digest: source_digest.clone(),
+        catalogue_digest: source_digest,
+        timings,
+        cache_file_bytes: cache_file_bytes(cache_path),
+    })
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -127,6 +197,12 @@ pub enum SourceFingerprint {
         file_count: usize,
         byte_count: u64,
         latest_modified_unix_ms: u128,
+    },
+    Addon {
+        guid: String,
+        artifact_digest: String,
+        pack_count: usize,
+        catalogue_entry_count: usize,
     },
 }
 
@@ -1706,6 +1782,14 @@ impl CacheStringTable {
             SourceFingerprint::Manual { scripts_root, .. } => {
                 self.insert(scripts_root)?;
             }
+            SourceFingerprint::Addon {
+                guid,
+                artifact_digest,
+                ..
+            } => {
+                self.insert(guid)?;
+                self.insert(artifact_digest)?;
+            }
         }
         Ok(())
     }
@@ -1933,6 +2017,18 @@ impl BinaryWriter {
                 self.write_usize(*file_count)?;
                 self.write_u64(*byte_count);
                 self.write_u128(*latest_modified_unix_ms);
+            }
+            SourceFingerprint::Addon {
+                guid,
+                artifact_digest,
+                pack_count,
+                catalogue_entry_count,
+            } => {
+                self.write_u8(2);
+                self.write_string(guid)?;
+                self.write_string(artifact_digest)?;
+                self.write_usize(*pack_count)?;
+                self.write_usize(*catalogue_entry_count)?;
             }
         }
         Ok(())
@@ -2258,6 +2354,12 @@ impl<'a> BinaryReader<'a> {
                 file_count: self.read_usize()?,
                 byte_count: self.read_u64()?,
                 latest_modified_unix_ms: self.read_u128()?,
+            }),
+            2 => Ok(SourceFingerprint::Addon {
+                guid: self.read_string()?,
+                artifact_digest: self.read_string()?,
+                pack_count: self.read_usize()?,
+                catalogue_entry_count: self.read_usize()?,
             }),
             tag => Err(format!("invalid fingerprint tag {tag}")),
         }
@@ -2918,6 +3020,14 @@ impl SourceFingerprint {
             } => format!(
                 "manual:files={file_count}:bytes={byte_count}:modified={latest_modified_unix_ms}"
             ),
+            Self::Addon {
+                guid,
+                artifact_digest,
+                pack_count,
+                catalogue_entry_count,
+            } => format!(
+                "addon:{guid}:packs={pack_count}:entries={catalogue_entry_count}:artifact={artifact_digest}"
+            ),
         }
     }
 }
@@ -3002,24 +3112,20 @@ mod tests {
             .expect("parser-owned cache is available");
 
         assert!(matches!(loaded.cache_status, IndexCacheStatus::Loaded));
-        assert!(
-            loaded
-                .index
-                .symbols()
-                .iter()
-                .any(|symbol| symbol.name.as_deref() == Some("CachedExample"))
-        );
+        assert!(loaded
+            .index
+            .symbols()
+            .iter()
+            .any(|symbol| symbol.name.as_deref() == Some("CachedExample")));
         assert_eq!(
             loaded.source_line_starts.get(&SourceFileId(0)),
             Some(&vec![0, 23])
         );
-        assert!(
-            !loaded
-                .index
-                .symbols()
-                .iter()
-                .any(|symbol| symbol.name.as_deref() == Some("ChangedAfterIndexBuild"))
-        );
+        assert!(!loaded
+            .index
+            .symbols()
+            .iter()
+            .any(|symbol| symbol.name.as_deref() == Some("ChangedAfterIndexBuild")));
         cleanup(&root);
     }
 
@@ -3197,12 +3303,10 @@ mod tests {
             result.cache_status,
             IndexCacheStatus::Rebuilt { .. }
         ));
-        assert!(
-            result
-                .index
-                .symbols_for_kind(SymbolKind::LocalVariable)
-                .is_empty()
-        );
+        assert!(result
+            .index
+            .symbols_for_kind(SymbolKind::LocalVariable)
+            .is_empty());
         assert_eq!(
             result.index.symbols_for_kind(SymbolKind::Parameter).len(),
             1
@@ -3235,12 +3339,10 @@ mod tests {
         })
         .unwrap();
         assert_eq!(loaded.cache_status, IndexCacheStatus::Loaded);
-        assert!(
-            loaded
-                .index
-                .symbols_for_kind(SymbolKind::LocalVariable)
-                .is_empty()
-        );
+        assert!(loaded
+            .index
+            .symbols_for_kind(SymbolKind::LocalVariable)
+            .is_empty());
         assert_eq!(
             loaded.index.symbols_for_kind(SymbolKind::Parameter).len(),
             1
@@ -3715,12 +3817,10 @@ class BaseGameModeClass : GenericEntityClass
         .unwrap();
 
         assert_eq!(loaded.cache_status, IndexCacheStatus::Loaded);
-        assert!(
-            loaded
-                .index
-                .symbols_for_kind(SymbolKind::LocalVariable)
-                .is_empty()
-        );
+        assert!(loaded
+            .index
+            .symbols_for_kind(SymbolKind::LocalVariable)
+            .is_empty());
 
         let base_class_ids = loaded.index.classes_by_name("BaseGameModeClass");
         assert_eq!(base_class_ids.len(), 1);

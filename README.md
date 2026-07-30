@@ -39,7 +39,7 @@ trademarks or registered trademarks of Bohemia Interactive a.s.
 - Range formatting plus experimental automatic formatting while typing,
   including indentation, comment pairs, and preprocessor separators.
 - Semantic, punctuation-colored, or native VS Code bracket presentation.
-- Automatic game-data updates, with an optional local game-data folder.
+- Automatic installed add-on discovery and PAC-backed base-game indexing.
 - Automatic and manual script validation through the Workbench NET API.
 
 The extension recognizes `.c` files under `Scripts` or `scripts` directories as
@@ -80,7 +80,9 @@ Tools`, or add the keys to `settings.json`.
 
 | Setting | Default | Description |
 | --- | --- | --- |
-| `reforgerScriptTools.gameData.manualFolder` | `""` | Optional local Reforger game-data folder. Select either the folder containing `scripts/` or the `scripts/` folder itself. This disables GitHub game-data checks and downloads. |
+| `reforgerScriptTools.gameData.baseGameAddonsFolder` | `""` | Optional explicit Arma Reforger `addons` folder when automatic discovery does not find it. |
+| `reforgerScriptTools.gameData.workbenchAddonsFolder` | `""` | Optional explicit Reforger Tools `Workbench/addons` folder. |
+| `reforgerScriptTools.gameData.userAddonsFolder` | `""` | Optional explicit `Documents/My Games/ArmaReforger/addons` folder. |
 | `reforgerScriptTools.experimentalAutoFormatting` | `true` | Apply experimental automatic source edits, including typing assists and preprocessor directive separators. |
 | `reforgerScriptTools.bracketColoring` | `"semantic"` | Use `"semantic"` owner colors, `"punctuation"` palette color, or native `"vscode"` bracket coloring and matching. This setting applies across VS Code windows. |
 | `reforgerScriptTools.workbench.enabled` | `true` | Enable Workbench NET API status checks and compiler validation. |
