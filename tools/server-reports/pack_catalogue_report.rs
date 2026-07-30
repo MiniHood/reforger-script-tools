@@ -61,6 +61,7 @@ fn parse_options() -> Options {
 }
 
 fn run(options: Options) {
+    let run_started = Instant::now();
     for path in options.archives {
         let inspect_started = Instant::now();
         let (archive, inspection) = match PakArchive::inspect_with_metrics(&path) {
@@ -93,8 +94,13 @@ fn run(options: Options) {
         print_inspection_metrics(&inspection);
 
         if let Some(root) = &options.extraction_root {
+            let extraction_started = Instant::now();
             match extract_scripts(&archive, &scripts, root) {
-                Ok(count) => println!("  extraction: files={count} output={}", root.display()),
+                Ok(count) => println!(
+                    "  extraction: files={count} elapsed={} output={}",
+                    format_duration(extraction_started.elapsed()),
+                    root.display()
+                ),
                 Err(error) => eprintln!("  extraction failed: {error}"),
             }
         }
@@ -106,6 +112,10 @@ fn run(options: Options) {
             }
         }
     }
+    println!(
+        "total command runtime: {}",
+        format_duration(run_started.elapsed())
+    );
 }
 
 fn print_inspection_metrics(metrics: &PakInspectionMetrics) {
