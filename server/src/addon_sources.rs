@@ -14,7 +14,7 @@ use crate::model::{
 use crate::pack::{PakArchive, PakEntry, PakSelection};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -283,6 +283,7 @@ pub fn load_or_build_loaded_addon_indexes(
         .collect::<Vec<_>>();
     let workspace_root_resolution = workspace_root_start.elapsed();
     let mut addons = graph.addons;
+    prune_unloaded_addon_caches(storage_root, &addons)?;
     addons.sort_by(|left, right| {
         (&left.guid, &left.source_root, &left.id).cmp(&(&right.guid, &right.source_root, &right.id))
     });
@@ -359,6 +360,54 @@ pub fn load_or_build_loaded_addon_indexes(
         },
         instances,
     })
+}
+
+/// Removes cache roots which are not physical instances in the current
+/// Workbench graph. A GUID can move from an unpacked workspace copy to a
+/// packed copy (or vice versa), but only the root currently selected by
+/// Workbench may remain persisted.
+fn prune_unloaded_addon_caches(
+    storage_root: &Path,
+    loaded_addons: &[LoadedAddonSource],
+) -> Result<(), String> {
+    let active = loaded_addons
+        .iter()
+        .map(|addon| addon_instance_key(&addon.guid, &addon.source_root))
+        .collect::<HashSet<_>>();
+    let entries = match fs::read_dir(storage_root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(format!(
+                "Failed to read add-on index storage {}: {error}",
+                storage_root.display()
+            ))
+        }
+    };
+    for entry in entries {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let key = entry.file_name();
+        let key = key.to_string_lossy();
+        if !active.contains(key.as_ref())
+            && is_addon_instance_key(&key)
+            && entry.file_type().map_err(|error| error.to_string())?.is_dir()
+        {
+            fs::remove_dir_all(entry.path()).map_err(|error| {
+                format!("Failed to remove inactive add-on cache {}: {error}", entry.path().display())
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn is_addon_instance_key(value: &str) -> bool {
+    let Some((guid, digest)) = value.split_once('-') else {
+        return false;
+    };
+    guid.len() == 16
+        && guid.bytes().all(|byte| byte.is_ascii_hexdigit())
+        && digest.len() == 64
+        && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn load_or_build_inspected_addon(
@@ -923,7 +972,7 @@ fn read_loaded_addon_graph(inventory_path: &Path) -> Result<LoadedAddonGraph, St
     if graph.bridge_version.is_empty() || graph.addons.is_empty() {
         return Err("Workbench loaded add-on graph is empty or malformed".to_string());
     }
-    let mut identities = BTreeSet::new();
+    let mut loaded_guids = BTreeSet::new();
     let addons = graph
         .addons
         .into_iter()
@@ -936,7 +985,7 @@ fn read_loaded_addon_graph(inventory_path: &Path) -> Result<LoadedAddonGraph, St
                 || !guid.bytes().all(|byte| byte.is_ascii_hexdigit())
                 || addon.id.is_empty()
                 || addon.title.is_empty()
-                || !identities.insert((guid.clone(), source_root.clone()))
+                || !loaded_guids.insert(guid.clone())
             {
                 return Err(
                     "Workbench loaded add-on graph contains an invalid or duplicate instance"
@@ -1365,7 +1414,7 @@ mod tests {
         fs::write(loose.join("scripts/Loose.c"), "class Loose {}").unwrap();
         let graph = root.join("graph.json");
         fs::write(&graph, format!(
-            r#"{{"schema":"reforger-workbench-loaded-addon-graph-v1","bridgeVersion":"1.52.0","protocolVersion":1,"addons":[{{"guid":"1111111111111111","id":"Packed","title":"Packed","sourceRoot":{}}},{{"guid":"1111111111111111","id":"Loose","title":"Loose","sourceRoot":{}}}]}}"#,
+            r#"{{"schema":"reforger-workbench-loaded-addon-graph-v1","bridgeVersion":"1.52.0","protocolVersion":1,"addons":[{{"guid":"1111111111111111","id":"Packed","title":"Packed","sourceRoot":{}}},{{"guid":"2222222222222222","id":"Loose","title":"Loose","sourceRoot":{}}}]}}"#,
             serde_json::to_string(&packed).unwrap(),
             serde_json::to_string(&loose).unwrap(),
         )).unwrap();
@@ -1453,6 +1502,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(removed.index.files().len(), 1);
+        assert_eq!(fs::read_dir(&storage).unwrap().count(), 1);
         let _ = fs::remove_dir_all(root);
     }
 

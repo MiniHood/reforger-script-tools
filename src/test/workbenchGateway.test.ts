@@ -1,390 +1,443 @@
-import * as assert from 'node:assert';
-import { WorkbenchGateway } from '../workbenchNetApi/gateway/workbenchGateway';
-import { encodeNetApiString, startNetApiPeer } from './netApiPeer';
+import * as assert from "node:assert";
+import { WorkbenchGateway } from "../workbenchNetApi/gateway/workbenchGateway";
+import { encodeNetApiString, startNetApiPeer } from "./netApiPeer";
 
-suite('Workbench Gateway', () => {
-	test('gets compiler readiness through the documented NET API framing', async () => {
-		const peer = await startNetApiPeer(request => {
-			assert.strictEqual(request.protocolVersion, 1);
-			assert.strictEqual(request.clientId, 'ReforgerScriptTools');
-			assert.strictEqual(request.contentType, 'JsonRPC');
-			assert.deepStrictEqual(request.payload, { APIFunc: 'IsWorkbenchRunning' });
-			return {
-				errorCode: 'Ok',
-				payload: { IsRunning: true, ScriptsCompiled: true },
-			};
-		});
-		try {
-			const gateway = new WorkbenchGateway({
-				enabled: true,
-				endpoint: { host: '127.0.0.1', port: peer.port },
-			});
+suite("Workbench Gateway", () => {
+  test("gets compiler readiness through the documented NET API framing", async () => {
+    const peer = await startNetApiPeer((request) => {
+      assert.strictEqual(request.protocolVersion, 1);
+      assert.strictEqual(request.clientId, "ReforgerScriptTools");
+      assert.strictEqual(request.contentType, "JsonRPC");
+      assert.deepStrictEqual(request.payload, {
+        APIFunc: "IsWorkbenchRunning",
+      });
+      return {
+        errorCode: "Ok",
+        payload: { IsRunning: true, ScriptsCompiled: true },
+      };
+    });
+    try {
+      const gateway = new WorkbenchGateway({
+        enabled: true,
+        endpoint: { host: "127.0.0.1", port: peer.port },
+      });
 
-			assert.deepStrictEqual(await gateway.getStatus(), {
-				ok: true,
-				value: { isRunning: true, scriptsCompiled: true },
-			});
-			assert.deepStrictEqual(gateway.availability, { kind: 'ready' });
-		} finally {
-			await peer.close();
-		}
-	});
+      assert.deepStrictEqual(await gateway.getStatus(), {
+        ok: true,
+        value: { isRunning: true, scriptsCompiled: true },
+      });
+      assert.deepStrictEqual(gateway.availability, { kind: "ready" });
+    } finally {
+      await peer.close();
+    }
+  });
 
-	test('gets the exact ordered loaded add-on graph from the bridge', async () => {
-		const peer = await startNetApiPeer(request => {
-			assert.deepStrictEqual(request.payload, { APIFunc: 'RST_WorkbenchLoadedAddonGraph' });
-			return {
-				errorCode: 'Ok',
-				payload: {
-					bridgeVersion: '1.52.0',
-					protocolVersion: 1,
-					graphJson: JSON.stringify([{
-						guid: '684CE8AA3B1D6573',
-						id: 'GCSuppression',
-						title: 'GC Suppression',
-						sourceRoot: 'C:\\Users\\Gray\\Documents\\My Games\\ArmaReforgerWorkbench\\addons\\GC-Suppression',
-					}]),
-				},
-			};
-		});
-		try {
-			const gateway = new WorkbenchGateway({
-				enabled: true,
-				endpoint: { host: '127.0.0.1', port: peer.port },
-			});
+  test("gets the exact ordered loaded add-on graph from the bridge", async () => {
+    const peer = await startNetApiPeer((request) => {
+      assert.deepStrictEqual(request.payload, {
+        APIFunc: "RST_WorkbenchLoadedAddonGraph",
+      });
+      return {
+        errorCode: "Ok",
+        payload: {
+          bridgeVersion: "1.52.0",
+          protocolVersion: 1,
+          graphJson: JSON.stringify([
+            {
+              guid: "684CE8AA3B1D6573",
+              id: "GCSuppression",
+              title: "GC Suppression",
+              sourceRoot:
+                "C:\\Users\\Gray\\Documents\\My Games\\ArmaReforgerWorkbench\\addons\\GC-Suppression",
+            },
+          ]),
+        },
+      };
+    });
+    try {
+      const gateway = new WorkbenchGateway({
+        enabled: true,
+        endpoint: { host: "127.0.0.1", port: peer.port },
+      });
 
-			assert.deepStrictEqual(await gateway.getLoadedAddonGraph(), {
-				ok: true,
-				value: {
-					bridgeVersion: '1.52.0',
-					protocolVersion: 1,
-					addons: [{
-						guid: '684CE8AA3B1D6573',
-						id: 'GCSuppression',
-						title: 'GC Suppression',
-						sourceRoot: 'C:\\Users\\Gray\\Documents\\My Games\\ArmaReforgerWorkbench\\addons\\GC-Suppression',
-					}],
-				},
-			});
-		} finally {
-			await peer.close();
-		}
-	});
+      assert.deepStrictEqual(await gateway.getLoadedAddonGraph(), {
+        ok: true,
+        value: {
+          bridgeVersion: "1.52.0",
+          protocolVersion: 1,
+          addons: [
+            {
+              guid: "684CE8AA3B1D6573",
+              id: "GCSuppression",
+              title: "GC Suppression",
+              sourceRoot:
+                "C:\\Users\\Gray\\Documents\\My Games\\ArmaReforgerWorkbench\\addons\\GC-Suppression",
+            },
+          ],
+        },
+      });
+    } finally {
+      await peer.close();
+    }
+  });
 
-	test('validates the named WORKBENCH profile and normalizes compiler diagnostics', async () => {
-		const peer = await startNetApiPeer(request => {
-			assert.deepStrictEqual(request.payload, {
-				APIFunc: 'ValidateScripts',
-				Configuration: 'WORKBENCH',
-			});
-			return {
-				errorCode: 'Ok',
-				payload: {
-					Errors: [{
-						error: "Broken expression (missing ';'?)",
-						file: 'scripts/Game/Example.c',
-						fileAbs: 'C:\\Addon\\scripts\\Game\\Example.c',
-						addon: 'ExampleAddon',
-						line: 12,
-					}, {
-						error: "Broken expression (missing ';'?)",
-						file: 'scripts/Game/Example.c',
-						fileAbs: 'C:\\Addon\\scripts\\Game\\Example.c',
-						addon: 'ExampleAddon',
-						line: 12,
-					}, {
-						error: "Assign operator '=' not allowed here",
-						file: 'scripts/Game/Example.c',
-						fileAbs: 'C:\\Addon\\scripts\\Game\\Example.c',
-						addon: 'ExampleAddon',
-						line: 12,
-					}],
-					Warnings: [{
-						error: "Broken expression (missing ';'?)",
-						file: 'scripts/Game/Example.c',
-						fileAbs: 'C:\\Addon\\scripts\\Game\\Example.c',
-						addon: 'ExampleAddon',
-						line: 12,
-					}, {
-						error: "Variable 'unused' is not used",
-						file: 'scripts/Game/Other.c',
-						line: 4,
-					}],
-					Success: false,
-				},
-			};
-		});
-		try {
-			const gateway = new WorkbenchGateway({
-				enabled: true,
-				endpoint: { host: '127.0.0.1', port: peer.port },
-			});
+  test("rejects an incomplete loaded add-on graph", async () => {
+    const peer = await startNetApiPeer(() => ({
+      errorCode: "Ok",
+      payload: {
+        bridgeVersion: "1.52.0",
+        protocolVersion: 1,
+        graphJson: JSON.stringify([
+          {
+            guid: "5614BBCCBB55ED1C",
+            id: "core",
+            title: "Enfusion core data",
+            sourceRoot: "",
+          },
+        ]),
+      },
+    }));
+    try {
+      const gateway = new WorkbenchGateway({
+        enabled: true,
+        endpoint: { host: "127.0.0.1", port: peer.port },
+      });
+      const result = await gateway.getLoadedAddonGraph();
+      assert.equal(result.ok, false);
+    } finally {
+      await peer.close();
+    }
+  });
 
-			assert.deepStrictEqual(await gateway.validateScripts('WORKBENCH'), {
-				ok: true,
-				value: {
-					profile: 'WORKBENCH',
-					success: false,
-					diagnostics: [{
-						severity: 'error',
-						message: "Broken expression (missing ';'?)",
-						location: {
-							file: 'scripts/Game/Example.c',
-							fileAbs: 'C:\\Addon\\scripts\\Game\\Example.c',
-							addon: 'ExampleAddon',
-							line: 12,
-						},
-					}, {
-						severity: 'error',
-						message: "Assign operator '=' not allowed here",
-						location: {
-							file: 'scripts/Game/Example.c',
-							fileAbs: 'C:\\Addon\\scripts\\Game\\Example.c',
-							addon: 'ExampleAddon',
-							line: 12,
-						},
-					}, {
-						severity: 'warning',
-						message: "Variable 'unused' is not used",
-						location: {
-							file: 'scripts/Game/Other.c',
-							line: 4,
-						},
-					}],
-				},
-			});
-		} finally {
-			await peer.close();
-		}
-	});
+  test("validates the named WORKBENCH profile and normalizes compiler diagnostics", async () => {
+    const peer = await startNetApiPeer((request) => {
+      assert.deepStrictEqual(request.payload, {
+        APIFunc: "ValidateScripts",
+        Configuration: "WORKBENCH",
+      });
+      return {
+        errorCode: "Ok",
+        payload: {
+          Errors: [
+            {
+              error: "Broken expression (missing ';'?)",
+              file: "scripts/Game/Example.c",
+              fileAbs: "C:\\Addon\\scripts\\Game\\Example.c",
+              addon: "ExampleAddon",
+              line: 12,
+            },
+            {
+              error: "Broken expression (missing ';'?)",
+              file: "scripts/Game/Example.c",
+              fileAbs: "C:\\Addon\\scripts\\Game\\Example.c",
+              addon: "ExampleAddon",
+              line: 12,
+            },
+            {
+              error: "Assign operator '=' not allowed here",
+              file: "scripts/Game/Example.c",
+              fileAbs: "C:\\Addon\\scripts\\Game\\Example.c",
+              addon: "ExampleAddon",
+              line: 12,
+            },
+          ],
+          Warnings: [
+            {
+              error: "Broken expression (missing ';'?)",
+              file: "scripts/Game/Example.c",
+              fileAbs: "C:\\Addon\\scripts\\Game\\Example.c",
+              addon: "ExampleAddon",
+              line: 12,
+            },
+            {
+              error: "Variable 'unused' is not used",
+              file: "scripts/Game/Other.c",
+              line: 4,
+            },
+          ],
+          Success: false,
+        },
+      };
+    });
+    try {
+      const gateway = new WorkbenchGateway({
+        enabled: true,
+        endpoint: { host: "127.0.0.1", port: peer.port },
+      });
 
-	test('reports only a sanitized named-capability outcome to its host', async () => {
-		const records: unknown[] = [];
-		const peer = await startNetApiPeer(() => ({
-			errorCode: 'Ok',
-			payload: { IsRunning: true, ScriptsCompiled: true },
-		}));
-		try {
-			const gateway = new WorkbenchGateway({
-				enabled: true,
-				endpoint: { host: '127.0.0.1', port: peer.port },
-				record: record => records.push(record),
-			});
+      assert.deepStrictEqual(await gateway.validateScripts("WORKBENCH"), {
+        ok: true,
+        value: {
+          profile: "WORKBENCH",
+          success: false,
+          diagnostics: [
+            {
+              severity: "error",
+              message: "Broken expression (missing ';'?)",
+              location: {
+                file: "scripts/Game/Example.c",
+                fileAbs: "C:\\Addon\\scripts\\Game\\Example.c",
+                addon: "ExampleAddon",
+                line: 12,
+              },
+            },
+            {
+              severity: "error",
+              message: "Assign operator '=' not allowed here",
+              location: {
+                file: "scripts/Game/Example.c",
+                fileAbs: "C:\\Addon\\scripts\\Game\\Example.c",
+                addon: "ExampleAddon",
+                line: 12,
+              },
+            },
+            {
+              severity: "warning",
+              message: "Variable 'unused' is not used",
+              location: {
+                file: "scripts/Game/Other.c",
+                line: 4,
+              },
+            },
+          ],
+        },
+      });
+    } finally {
+      await peer.close();
+    }
+  });
 
-			await gateway.getStatus();
+  test("reports only a sanitized named-capability outcome to its host", async () => {
+    const records: unknown[] = [];
+    const peer = await startNetApiPeer(() => ({
+      errorCode: "Ok",
+      payload: { IsRunning: true, ScriptsCompiled: true },
+    }));
+    try {
+      const gateway = new WorkbenchGateway({
+        enabled: true,
+        endpoint: { host: "127.0.0.1", port: peer.port },
+        record: (record) => records.push(record),
+      });
 
-			assert.strictEqual(records.length, 1);
-			assert.deepStrictEqual(records[0], {
-				capability: 'getStatus',
-				outcome: 'success',
-				durationMs: (records[0] as { durationMs: number }).durationMs,
-				timing: (records[0] as { timing: unknown }).timing,
-			});
-			assert.ok(Number.isFinite((records[0] as { durationMs: number }).durationMs));
-			const timing = (records[0] as { timing?: { request?: { totalMs?: number } } }).timing;
-			assert.ok(Number.isFinite(timing?.request?.totalMs));
-			const serialized = JSON.stringify(records[0]);
-			assert.ok(!serialized.includes(String(peer.port)));
-			assert.ok(!serialized.includes('IsWorkbenchRunning'));
-			assert.ok(!serialized.includes('127.0.0.1'));
-		} finally {
-			await peer.close();
-		}
-	});
+      await gateway.getStatus();
 
-	test('rejects a non-loopback endpoint without network discovery', async () => {
-		const gateway = new WorkbenchGateway({
-			enabled: true,
-			endpoint: { host: '192.0.2.10', port: 5775 },
-		});
+      assert.strictEqual(records.length, 1);
+      assert.deepStrictEqual(records[0], {
+        capability: "getStatus",
+        outcome: "success",
+        durationMs: (records[0] as { durationMs: number }).durationMs,
+        timing: (records[0] as { timing: unknown }).timing,
+      });
+      assert.ok(
+        Number.isFinite((records[0] as { durationMs: number }).durationMs),
+      );
+      const timing = (
+        records[0] as { timing?: { request?: { totalMs?: number } } }
+      ).timing;
+      assert.ok(Number.isFinite(timing?.request?.totalMs));
+      const serialized = JSON.stringify(records[0]);
+      assert.ok(!serialized.includes(String(peer.port)));
+      assert.ok(!serialized.includes("IsWorkbenchRunning"));
+      assert.ok(!serialized.includes("127.0.0.1"));
+    } finally {
+      await peer.close();
+    }
+  });
 
-		assert.deepStrictEqual(await gateway.getStatus(), {
-			ok: false,
-			failure: {
-				category: 'unsupported',
-				recoveryHint: 'Configure a loopback Workbench host such as 127.0.0.1.',
-			},
-		});
-	});
+  test("rejects a non-loopback endpoint without network discovery", async () => {
+    const gateway = new WorkbenchGateway({
+      enabled: true,
+      endpoint: { host: "192.0.2.10", port: 5775 },
+    });
 
-	test('performs no transaction while the Gateway is disabled', async () => {
-		const gateway = new WorkbenchGateway({
-			enabled: false,
-			endpoint: { host: '127.0.0.1', port: 1 },
-		});
+    assert.deepStrictEqual(await gateway.getStatus(), {
+      ok: false,
+      failure: {
+        category: "unsupported",
+        recoveryHint: "Configure a loopback Workbench host such as 127.0.0.1.",
+      },
+    });
+  });
 
-		const result = await gateway.getStatus();
+  test("performs no transaction while the Gateway is disabled", async () => {
+    const gateway = new WorkbenchGateway({
+      enabled: false,
+      endpoint: { host: "127.0.0.1", port: 1 },
+    });
 
-		assert.strictEqual(result.ok, false);
-		assert.deepStrictEqual(gateway.availability, { kind: 'disabled' });
-	});
+    const result = await gateway.getStatus();
 
-	test('rejects an unnamed validation profile before opening a connection', async () => {
-		const gateway = new WorkbenchGateway({
-			enabled: true,
-			endpoint: { host: '127.0.0.1', port: 1 },
-		});
+    assert.strictEqual(result.ok, false);
+    assert.deepStrictEqual(gateway.availability, { kind: "disabled" });
+  });
 
-		assert.deepStrictEqual(
-			await gateway.validateScripts('PC' as never),
-			{
-				ok: false,
-				failure: {
-					category: 'unsupported',
-					recoveryHint: 'Select the supported WORKBENCH validation profile.',
-				},
-			},
-		);
-	});
+  test("rejects an unnamed validation profile before opening a connection", async () => {
+    const gateway = new WorkbenchGateway({
+      enabled: true,
+      endpoint: { host: "127.0.0.1", port: 1 },
+    });
 
-	test('categorizes a Workbench error code separately from compiler findings', async () => {
-		const peer = await startNetApiPeer(() => ({
-			errorCode: 'InvalidRequest',
-			payload: {},
-		}));
-		try {
-			const gateway = new WorkbenchGateway({
-				enabled: true,
-				endpoint: { host: '127.0.0.1', port: peer.port },
-			});
+    assert.deepStrictEqual(await gateway.validateScripts("PC" as never), {
+      ok: false,
+      failure: {
+        category: "unsupported",
+        recoveryHint: "Select the supported WORKBENCH validation profile.",
+      },
+    });
+  });
 
-			const result = await gateway.validateScripts('WORKBENCH');
+  test("categorizes a Workbench error code separately from compiler findings", async () => {
+    const peer = await startNetApiPeer(() => ({
+      errorCode: "InvalidRequest",
+      payload: {},
+    }));
+    try {
+      const gateway = new WorkbenchGateway({
+        enabled: true,
+        endpoint: { host: "127.0.0.1", port: peer.port },
+      });
 
-			assert.strictEqual(result.ok, false);
-			if (!result.ok) {
-				assert.strictEqual(result.failure.category, 'workbench-error');
-			}
-		} finally {
-			await peer.close();
-		}
-	});
+      const result = await gateway.validateScripts("WORKBENCH");
 
-	test('categorizes a truncated response as a protocol failure', async () => {
-		const peer = await startNetApiPeer(() => ({
-			errorCode: 'Ok',
-			payload: {},
-			raw: encodeNetApiString('Ok'),
-		}));
-		try {
-			const gateway = new WorkbenchGateway({
-				enabled: true,
-				endpoint: { host: '127.0.0.1', port: peer.port },
-			});
+      assert.strictEqual(result.ok, false);
+      if (!result.ok) {
+        assert.strictEqual(result.failure.category, "workbench-error");
+      }
+    } finally {
+      await peer.close();
+    }
+  });
 
-			const result = await gateway.getStatus();
+  test("categorizes a truncated response as a protocol failure", async () => {
+    const peer = await startNetApiPeer(() => ({
+      errorCode: "Ok",
+      payload: {},
+      raw: encodeNetApiString("Ok"),
+    }));
+    try {
+      const gateway = new WorkbenchGateway({
+        enabled: true,
+        endpoint: { host: "127.0.0.1", port: peer.port },
+      });
 
-			assert.strictEqual(result.ok, false);
-			if (!result.ok) {
-				assert.strictEqual(result.failure.category, 'protocol');
-			}
-		} finally {
-			await peer.close();
-		}
-	});
+      const result = await gateway.getStatus();
 
-	test('categorizes malformed JSON as a protocol failure', async () => {
-		const peer = await startNetApiPeer(() => ({
-			errorCode: 'Ok',
-			payload: {},
-			raw: Buffer.concat([encodeNetApiString('Ok'), encodeNetApiString('{not-json')]),
-		}));
-		try {
-			const gateway = new WorkbenchGateway({
-				enabled: true,
-				endpoint: { host: '127.0.0.1', port: peer.port },
-			});
+      assert.strictEqual(result.ok, false);
+      if (!result.ok) {
+        assert.strictEqual(result.failure.category, "protocol");
+      }
+    } finally {
+      await peer.close();
+    }
+  });
 
-			const result = await gateway.getStatus();
+  test("categorizes malformed JSON as a protocol failure", async () => {
+    const peer = await startNetApiPeer(() => ({
+      errorCode: "Ok",
+      payload: {},
+      raw: Buffer.concat([
+        encodeNetApiString("Ok"),
+        encodeNetApiString("{not-json"),
+      ]),
+    }));
+    try {
+      const gateway = new WorkbenchGateway({
+        enabled: true,
+        endpoint: { host: "127.0.0.1", port: peer.port },
+      });
 
-			assert.strictEqual(result.ok, false);
-			if (!result.ok) {
-				assert.strictEqual(result.failure.category, 'protocol');
-			}
-		} finally {
-			await peer.close();
-		}
-	});
+      const result = await gateway.getStatus();
 
-	test('reports the Workbench API ready even when scripts did not compile', async () => {
-		const peer = await startNetApiPeer(() => ({
-			errorCode: 'Ok',
-			payload: { IsRunning: true, ScriptsCompiled: false },
-		}));
-		try {
-			const gateway = new WorkbenchGateway({
-				enabled: true,
-				endpoint: { host: '127.0.0.1', port: peer.port },
-			});
+      assert.strictEqual(result.ok, false);
+      if (!result.ok) {
+        assert.strictEqual(result.failure.category, "protocol");
+      }
+    } finally {
+      await peer.close();
+    }
+  });
 
-			assert.strictEqual((await gateway.getStatus()).ok, true);
-			assert.deepStrictEqual(gateway.availability, { kind: 'ready' });
-		} finally {
-			await peer.close();
-		}
-	});
+  test("reports the Workbench API ready even when scripts did not compile", async () => {
+    const peer = await startNetApiPeer(() => ({
+      errorCode: "Ok",
+      payload: { IsRunning: true, ScriptsCompiled: false },
+    }));
+    try {
+      const gateway = new WorkbenchGateway({
+        enabled: true,
+        endpoint: { host: "127.0.0.1", port: peer.port },
+      });
 
-	test('categorizes an unresponsive endpoint as a timeout', async () => {
-		const peer = await startNetApiPeer(() => ({ silent: true }));
-		try {
-			const gateway = new WorkbenchGateway({
-				enabled: true,
-				endpoint: { host: '127.0.0.1', port: peer.port },
-				deadlines: { getStatusMs: 30 },
-			});
+      assert.strictEqual((await gateway.getStatus()).ok, true);
+      assert.deepStrictEqual(gateway.availability, { kind: "ready" });
+    } finally {
+      await peer.close();
+    }
+  });
 
-			const result = await gateway.getStatus();
+  test("categorizes an unresponsive endpoint as a timeout", async () => {
+    const peer = await startNetApiPeer(() => ({ silent: true }));
+    try {
+      const gateway = new WorkbenchGateway({
+        enabled: true,
+        endpoint: { host: "127.0.0.1", port: peer.port },
+        deadlines: { getStatusMs: 30 },
+      });
 
-			assert.strictEqual(result.ok, false);
-			if (!result.ok) {
-				assert.strictEqual(result.failure.category, 'timeout');
-			}
-		} finally {
-			await peer.close();
-		}
-	});
+      const result = await gateway.getStatus();
 
-	test('enforces a wall-clock deadline while a peer trickles response bytes', async () => {
-		const peer = await startNetApiPeer(() => ({
-			rawChunks: [
-				Buffer.from([20]),
-				Buffer.from([0]),
-				Buffer.from([0]),
-				Buffer.from([0]),
-			],
-			intervalMs: 20,
-		}));
-		try {
-			const gateway = new WorkbenchGateway({
-				enabled: true,
-				endpoint: { host: '127.0.0.1', port: peer.port },
-				deadlines: { getStatusMs: 35 },
-			});
-			const result = await gateway.getStatus();
+      assert.strictEqual(result.ok, false);
+      if (!result.ok) {
+        assert.strictEqual(result.failure.category, "timeout");
+      }
+    } finally {
+      await peer.close();
+    }
+  });
 
-			assert.strictEqual(result.ok, false);
-			if (!result.ok) {
-				assert.strictEqual(result.failure.category, 'timeout');
-			}
-		} finally {
-			await peer.close();
-		}
-	});
+  test("enforces a wall-clock deadline while a peer trickles response bytes", async () => {
+    const peer = await startNetApiPeer(() => ({
+      rawChunks: [
+        Buffer.from([20]),
+        Buffer.from([0]),
+        Buffer.from([0]),
+        Buffer.from([0]),
+      ],
+      intervalMs: 20,
+    }));
+    try {
+      const gateway = new WorkbenchGateway({
+        enabled: true,
+        endpoint: { host: "127.0.0.1", port: peer.port },
+        deadlines: { getStatusMs: 35 },
+      });
+      const result = await gateway.getStatus();
 
-	test('categorizes a refused configured endpoint as unavailable', async () => {
-		const peer = await startNetApiPeer(() => ({ silent: true }));
-		const port = peer.port;
-		await peer.close();
-		const gateway = new WorkbenchGateway({
-			enabled: true,
-			endpoint: { host: '127.0.0.1', port },
-			deadlines: { getStatusMs: 100 },
-		});
+      assert.strictEqual(result.ok, false);
+      if (!result.ok) {
+        assert.strictEqual(result.failure.category, "timeout");
+      }
+    } finally {
+      await peer.close();
+    }
+  });
 
-		const result = await gateway.getStatus();
+  test("categorizes a refused configured endpoint as unavailable", async () => {
+    const peer = await startNetApiPeer(() => ({ silent: true }));
+    const port = peer.port;
+    await peer.close();
+    const gateway = new WorkbenchGateway({
+      enabled: true,
+      endpoint: { host: "127.0.0.1", port },
+      deadlines: { getStatusMs: 100 },
+    });
 
-		assert.strictEqual(result.ok, false);
-		if (!result.ok) {
-			assert.strictEqual(result.failure.category, 'unavailable');
-		}
-	});
+    const result = await gateway.getStatus();
+
+    assert.strictEqual(result.ok, false);
+    if (!result.ok) {
+      assert.strictEqual(result.failure.category, "unavailable");
+    }
+  });
 });

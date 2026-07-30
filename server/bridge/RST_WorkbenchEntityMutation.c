@@ -197,7 +197,7 @@ class RST_WorkbenchEntityMutationBase : NetApiHandler
 	RST_WorkbenchEntityMutationResponse Response()
 	{
 		RST_WorkbenchEntityMutationResponse response = new RST_WorkbenchEntityMutationResponse();
-		response.bridgeVersion = "1.52.0";
+		response.bridgeVersion = "1.52.12";
 		response.protocolVersion = 1;
 		response.activeLayerId = -1;
 		return response;

@@ -49,7 +49,7 @@ class RST_WorkbenchState : NetApiHandler
 	{
 		RST_WorkbenchStateRequest typedRequest = RST_WorkbenchStateRequest.Cast(request);
 		RST_WorkbenchStateResponse response = new RST_WorkbenchStateResponse();
-		response.bridgeVersion = "1.52.0";
+		response.bridgeVersion = "1.52.12";
 		response.protocolVersion = 1;
 		response.mode = "workbench";
 		response.playSession = "unavailable";

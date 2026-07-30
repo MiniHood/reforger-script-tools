@@ -98,7 +98,7 @@ class RST_WorkbenchFindEntitiesByRadius : NetApiHandler
 	{
 		RST_WorkbenchFindEntitiesByRadiusRequest typedRequest = RST_WorkbenchFindEntitiesByRadiusRequest.Cast(request);
 		RST_WorkbenchFindEntitiesByRadiusResponse response = new RST_WorkbenchFindEntitiesByRadiusResponse();
-		response.bridgeVersion = "1.52.0";
+		response.bridgeVersion = "1.52.12";
 		response.protocolVersion = 1;
 		response.centerX = typedRequest.centerX;
 		response.centerY = typedRequest.centerY;

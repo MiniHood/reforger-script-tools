@@ -25,10 +25,12 @@ path to Rust over a typed LSP notification. Workbench is the sole scope
 authority: the extension does not scan, configure, or choose add-on folders.
 Rust begins add-on indexing only after that delivery; a newer delivered graph
 supersedes an older in-flight rebuild. The graph carries GUID, display identity,
-and the exact source root for every loaded instance.
-For the default packed entries, the bridge derives the base root directly from
-Workbench's current project file and core as its exact sibling; this is a
-property of the live loaded project, not installation discovery.
+and one exact source root for every loaded GUID. The typed Workbench gateway
+uses the active Workbench Tools project registry to resolve packed entries and
+the current Workbench project only for its project-bound base entries. Mounted
+roots arrive directly from Workbench. An absent or ambiguous registered root
+makes the graph unavailable; there is no configured-root, default-path, or
+name-based alternative.
 
 Rust is the only owner of PAC inspection and Enfusion analysis. It indexes each
 listed add-on independently, selecting only script catalogue entries from its
@@ -37,9 +39,10 @@ loaded instance whose source root contains a VS Code workspace root is supplied
 only by the live workspace layer: Rust removes that instance's packed cache and
 does not index it again. This lets the workspace add-on change continuously
 without duplicate or stale external facts.
-The durable cache key is canonical `(GUID, absolute source root)`, so a local
-source add-on and a downloaded copy with the same GUID never share a cache or
-virtual source revision. Completed indexes live beneath
+The durable cache key is canonical `(GUID, absolute source root)`. Workbench
+selects one root per GUID, and cache directories not named by the current graph
+are removed before indexing, so an old packed or workspace copy cannot coexist
+with the selected instance. Completed indexes live beneath
 `globalStorageUri/addon-indexes/<instance-key>/revisions/<revision>`; an
 atomically replaced `current.json` selects a completed revision and stale
 revision directories are removed, leaving one persisted revision per instance.

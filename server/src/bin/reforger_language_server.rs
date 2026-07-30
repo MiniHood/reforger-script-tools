@@ -28,6 +28,7 @@ enum WorkbenchApiCommand {
     LoadedAddonGraph,
     IntegrationStatus,
     InstallBridge,
+    ReloadBridge,
 }
 
 fn main() {
@@ -101,6 +102,7 @@ fn parse_workbench_api_args(mut args: impl Iterator<Item = String>) -> Result<Se
         Some("loaded-addon-graph") => WorkbenchApiCommand::LoadedAddonGraph,
         Some("integration-status") => WorkbenchApiCommand::IntegrationStatus,
         Some("install-bridge") => WorkbenchApiCommand::InstallBridge,
+        Some("reload-bridge") => WorkbenchApiCommand::ReloadBridge,
         Some(value) => return Err(format!("unknown workbench-api command '{value}'")),
         None => return Err("missing workbench-api command".to_string()),
     };
@@ -174,6 +176,11 @@ fn run_workbench_api(
                     .map(|value| (value, None))
                     .map_err(|_| unreachable!())
             }),
+        WorkbenchApiCommand::ReloadBridge => controller.activate_scripts().and_then(|value| {
+            serde_json::to_value(value)
+                .map(|value| (value, None))
+                .map_err(|_| unreachable!())
+        }),
     };
     match result {
         Ok((value, request_timing)) => {
@@ -311,7 +318,7 @@ fn string_value(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<S
 
 fn print_help() {
     println!(
-        "Usage:\n  reforger_language_server [LSP options]\n  reforger_language_server mcp [MCP options]\n  reforger_language_server mcp-api\n  reforger_language_server workbench-api <status|validate|loaded-addon-graph|integration-status|install-bridge> [--host <loopback>] [--port <port>]\n\nLSP options:\n  --log <path>\n  --diagnostic-log <path>\n  --addon-source-inventory <path>\n  --addon-index-storage <path>\n  --workspace-scripts <path> (repeatable)\n  --bracket-coloring <semantic|punctuation|vscode>\n\nMCP options:\n  --index-cache <path>\n  --official-wiki-root <development/test path>\n  --workbench-host <loopback host>\n  --workbench-port <port>\n  --workbench-executable <path>\n  --reforger-game-directory <path>\n  --reforger-tools-directory <path>\n  --workbench-user-directory <test/development override>"
+        "Usage:\n  reforger_language_server [LSP options]\n  reforger_language_server mcp [MCP options]\n  reforger_language_server mcp-api\n  reforger_language_server workbench-api <status|validate|loaded-addon-graph|integration-status|install-bridge|reload-bridge> [--host <loopback>] [--port <port>]\n\nLSP options:\n  --log <path>\n  --diagnostic-log <path>\n  --addon-source-inventory <path>\n  --addon-index-storage <path>\n  --workspace-scripts <path> (repeatable)\n  --bracket-coloring <semantic|punctuation|vscode>\n\nMCP options:\n  --index-cache <path>\n  --official-wiki-root <development/test path>\n  --workbench-host <loopback host>\n  --workbench-port <port>\n  --workbench-executable <path>\n  --reforger-game-directory <path>\n  --reforger-tools-directory <path>\n  --workbench-user-directory <test/development override>"
     );
 }
 
@@ -384,6 +391,7 @@ mod tests {
             ("loaded-addon-graph", WorkbenchApiCommand::LoadedAddonGraph),
             ("integration-status", WorkbenchApiCommand::IntegrationStatus),
             ("install-bridge", WorkbenchApiCommand::InstallBridge),
+            ("reload-bridge", WorkbenchApiCommand::ReloadBridge),
         ] {
             let mode = parse_args_from(["workbench-api".to_string(), name.to_string()].into_iter())
                 .expect("valid private Workbench API operation");

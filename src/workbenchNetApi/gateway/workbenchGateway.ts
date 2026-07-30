@@ -1,5 +1,5 @@
-import { execFile } from 'node:child_process';
-import * as path from 'node:path';
+import { execFile } from "node:child_process";
+import * as path from "node:path";
 
 const defaultGetStatusDeadlineMs = 1_500;
 const defaultValidateScriptsDeadlineMs = 120_000;
@@ -7,575 +7,685 @@ const defaultGetLoadedAddonGraphDeadlineMs = 5_000;
 const maximumResponseBytes = 4 * 1024 * 1024;
 
 export interface WorkbenchEndpoint {
-	host: string;
-	port: number;
+  host: string;
+  port: number;
 }
 
 export interface WorkbenchGatewayOptions {
-	enabled: boolean;
-	endpoint: WorkbenchEndpoint;
-	serverPath?: Promise<string | undefined>;
-	deadlines?: Partial<WorkbenchGatewayDeadlines>;
-	record?: (record: WorkbenchGatewayDiagnosticRecord) => void;
+  enabled: boolean;
+  endpoint: WorkbenchEndpoint;
+  serverPath?: Promise<string | undefined>;
+  deadlines?: Partial<WorkbenchGatewayDeadlines>;
+  record?: (record: WorkbenchGatewayDiagnosticRecord) => void;
 }
 
 export interface WorkbenchGatewayDeadlines {
-	getStatusMs: number;
-	validateScriptsMs: number;
-	getLoadedAddonGraphMs: number;
+  getStatusMs: number;
+  validateScriptsMs: number;
+  getLoadedAddonGraphMs: number;
 }
 
 export interface WorkbenchGatewayDiagnosticRecord {
-	capability: 'getStatus' | 'validateScripts' | 'getLoadedAddonGraph';
-	outcome: 'success' | 'compiler-findings' | WorkbenchGatewayFailureCategory;
-	durationMs: number;
-	timing?: WorkbenchPrivateApiTiming;
+  capability: "getStatus" | "validateScripts" | "getLoadedAddonGraph";
+  outcome: "success" | "compiler-findings" | WorkbenchGatewayFailureCategory;
+  durationMs: number;
+  timing?: WorkbenchPrivateApiTiming;
 }
 
 export interface WorkbenchPrivateApiTiming {
-	processSpawnMs?: number;
-	processExitMs?: number;
-	controllerSetupMs?: number;
-	commandMs?: number;
-	request?: {
-		lockWaitMs: number;
-		connectMs: number;
-		writeMs: number;
-		responseHeaderMs: number;
-		responseBodyMs: number;
-		decodeMs: number;
-		totalMs: number;
-	};
+  processSpawnMs?: number;
+  processExitMs?: number;
+  controllerSetupMs?: number;
+  commandMs?: number;
+  request?: {
+    lockWaitMs: number;
+    connectMs: number;
+    writeMs: number;
+    responseHeaderMs: number;
+    responseBodyMs: number;
+    decodeMs: number;
+    totalMs: number;
+  };
 }
 
 export interface WorkbenchStatus {
-	isRunning: boolean;
-	scriptsCompiled: boolean;
+  isRunning: boolean;
+  scriptsCompiled: boolean;
 }
 
-export type WorkbenchValidationProfile = 'WORKBENCH';
+export type WorkbenchValidationProfile = "WORKBENCH";
 
 export interface WorkbenchDiagnosticLocation {
-	file: string;
-	fileAbs?: string;
-	addon?: string;
-	line: number;
+  file: string;
+  fileAbs?: string;
+  addon?: string;
+  line: number;
 }
 
 export interface WorkbenchCompilerDiagnostic {
-	severity: 'error' | 'warning';
-	message: string;
-	location: WorkbenchDiagnosticLocation;
+  severity: "error" | "warning";
+  message: string;
+  location: WorkbenchDiagnosticLocation;
 }
 
 export interface WorkbenchValidationResult {
-	profile: WorkbenchValidationProfile;
-	success: boolean;
-	diagnostics: WorkbenchCompilerDiagnostic[];
+  profile: WorkbenchValidationProfile;
+  success: boolean;
+  diagnostics: WorkbenchCompilerDiagnostic[];
 }
 
 export interface WorkbenchLoadedAddon {
-	guid: string;
-	id: string;
-	title: string;
-	sourceRoot: string;
+  guid: string;
+  id: string;
+  title: string;
+  sourceRoot: string;
 }
 
 export interface WorkbenchLoadedAddonGraph {
-	bridgeVersion: string;
-	protocolVersion: 1;
-	addons: WorkbenchLoadedAddon[];
+  bridgeVersion: string;
+  protocolVersion: 1;
+  currentProjectFile?: string;
+  addons: WorkbenchLoadedAddon[];
 }
 
 export type WorkbenchAvailability =
-	| { kind: 'disabled' }
-	| { kind: 'unavailable'; failure: WorkbenchGatewayFailure }
-	| { kind: 'ready' };
+  | { kind: "disabled" }
+  | { kind: "unavailable"; failure: WorkbenchGatewayFailure }
+  | { kind: "ready" };
 
 export type WorkbenchGatewayFailureCategory =
-	| 'consent-required'
-	| 'unavailable'
-	| 'timeout'
-	| 'protocol'
-	| 'unsupported'
-	| 'workbench-error';
+  | "consent-required"
+  | "unavailable"
+  | "timeout"
+  | "protocol"
+  | "unsupported"
+  | "workbench-error";
 
 export interface WorkbenchGatewayFailure {
-	category: WorkbenchGatewayFailureCategory;
-	recoveryHint: string;
+  category: WorkbenchGatewayFailureCategory;
+  recoveryHint: string;
 }
 
 export type WorkbenchGatewayResult<T> =
-	| { ok: true; value: T }
-	| { ok: false; failure: WorkbenchGatewayFailure };
+  { ok: true; value: T } | { ok: false; failure: WorkbenchGatewayFailure };
 
 type WorkbenchPrivateApiResult<T> =
-	| { ok: true; value: T; timing?: WorkbenchPrivateApiTiming }
-	| { ok: false; failure: WorkbenchGatewayFailure; timing?: WorkbenchPrivateApiTiming };
+  | { ok: true; value: T; timing?: WorkbenchPrivateApiTiming }
+  | {
+      ok: false;
+      failure: WorkbenchGatewayFailure;
+      timing?: WorkbenchPrivateApiTiming;
+    };
 
 export type WorkbenchPrivateApiCommand =
-	| 'status'
-	| 'validate'
-	| 'loaded-addon-graph'
-	| 'integration-status'
-	| 'install-bridge';
+  | "status"
+  | "validate"
+  | "loaded-addon-graph"
+  | "integration-status"
+  | "install-bridge";
 
 export class WorkbenchGateway {
-	private readonly options: WorkbenchGatewayOptions;
-	private currentAvailability: WorkbenchAvailability;
+  private readonly options: WorkbenchGatewayOptions;
+  private currentAvailability: WorkbenchAvailability;
 
-	public constructor(options: WorkbenchGatewayOptions) {
-		this.options = {
-			...options,
-			endpoint: {
-				...options.endpoint,
-				host: options.endpoint.host.trim(),
-			},
-		};
-		this.currentAvailability = options.enabled
-			? { kind: 'unavailable', failure: unavailableFailure() }
-			: { kind: 'disabled' };
-	}
+  public constructor(options: WorkbenchGatewayOptions) {
+    this.options = {
+      ...options,
+      endpoint: {
+        ...options.endpoint,
+        host: options.endpoint.host.trim(),
+      },
+    };
+    this.currentAvailability = options.enabled
+      ? { kind: "unavailable", failure: unavailableFailure() }
+      : { kind: "disabled" };
+  }
 
-	public get availability(): WorkbenchAvailability {
-		return this.currentAvailability.kind === 'unavailable'
-			? {
-				kind: 'unavailable',
-				failure: { ...this.currentAvailability.failure },
-			}
-			: { ...this.currentAvailability };
-	}
+  public get availability(): WorkbenchAvailability {
+    return this.currentAvailability.kind === "unavailable"
+      ? {
+          kind: "unavailable",
+          failure: { ...this.currentAvailability.failure },
+        }
+      : { ...this.currentAvailability };
+  }
 
-	public async getStatus(): Promise<WorkbenchGatewayResult<WorkbenchStatus>> {
-		const startedAt = Date.now();
-		const result = await this.invokeStatus(deadline(
-			this.options.deadlines?.getStatusMs,
-			defaultGetStatusDeadlineMs,
-		));
-		if (!result.ok) {
-			this.currentAvailability = this.options.enabled
-				? { kind: 'unavailable', failure: result.failure }
-				: { kind: 'disabled' };
-			this.record('getStatus', result.failure.category, startedAt, result.timing);
-			return result;
-		}
-		const status = decodeStatus(result.value);
-		if (!status.ok) {
-			this.currentAvailability = { kind: 'unavailable', failure: status.failure };
-			this.record('getStatus', status.failure.category, startedAt, result.timing);
-			return status;
-		}
-		this.currentAvailability = { kind: 'ready' };
-		this.record('getStatus', 'success', startedAt, result.timing);
-		return status;
-	}
+  public async getStatus(): Promise<WorkbenchGatewayResult<WorkbenchStatus>> {
+    const startedAt = Date.now();
+    const result = await this.invokeStatus(
+      deadline(this.options.deadlines?.getStatusMs, defaultGetStatusDeadlineMs),
+    );
+    if (!result.ok) {
+      this.currentAvailability = this.options.enabled
+        ? { kind: "unavailable", failure: result.failure }
+        : { kind: "disabled" };
+      this.record(
+        "getStatus",
+        result.failure.category,
+        startedAt,
+        result.timing,
+      );
+      return result;
+    }
+    const status = decodeStatus(result.value);
+    if (!status.ok) {
+      this.currentAvailability = {
+        kind: "unavailable",
+        failure: status.failure,
+      };
+      this.record(
+        "getStatus",
+        status.failure.category,
+        startedAt,
+        result.timing,
+      );
+      return status;
+    }
+    this.currentAvailability = { kind: "ready" };
+    this.record("getStatus", "success", startedAt, result.timing);
+    return status;
+  }
 
-	public async validateScripts(
-		profile: WorkbenchValidationProfile,
-	): Promise<WorkbenchGatewayResult<WorkbenchValidationResult>> {
-		const startedAt = Date.now();
-		if (profile !== 'WORKBENCH') {
-			const result = failure(
-				'unsupported',
-				'Select the supported WORKBENCH validation profile.',
-			);
-			this.record('validateScripts', 'unsupported', startedAt);
-			return result;
-		}
-		const result = await this.invokeValidation(deadline(
-			this.options.deadlines?.validateScriptsMs,
-			defaultValidateScriptsDeadlineMs,
-		));
-		if (!result.ok) {
-			this.noteFailure(result.failure);
-			this.record('validateScripts', result.failure.category, startedAt, result.timing);
-			return result;
-		}
-		const validation = decodeValidation(profile, result.value);
-		if (!validation.ok) {
-			this.noteFailure(validation.failure);
-			this.record('validateScripts', validation.failure.category, startedAt, result.timing);
-			return validation;
-		}
-		this.currentAvailability = { kind: 'ready' };
-		this.record(
-			'validateScripts',
-			validation.value.success ? 'success' : 'compiler-findings',
-			startedAt,
-			result.timing,
-		);
-		return validation;
-	}
+  public async validateScripts(
+    profile: WorkbenchValidationProfile,
+  ): Promise<WorkbenchGatewayResult<WorkbenchValidationResult>> {
+    const startedAt = Date.now();
+    if (profile !== "WORKBENCH") {
+      const result = failure(
+        "unsupported",
+        "Select the supported WORKBENCH validation profile.",
+      );
+      this.record("validateScripts", "unsupported", startedAt);
+      return result;
+    }
+    const result = await this.invokeValidation(
+      deadline(
+        this.options.deadlines?.validateScriptsMs,
+        defaultValidateScriptsDeadlineMs,
+      ),
+    );
+    if (!result.ok) {
+      this.noteFailure(result.failure);
+      this.record(
+        "validateScripts",
+        result.failure.category,
+        startedAt,
+        result.timing,
+      );
+      return result;
+    }
+    const validation = decodeValidation(profile, result.value);
+    if (!validation.ok) {
+      this.noteFailure(validation.failure);
+      this.record(
+        "validateScripts",
+        validation.failure.category,
+        startedAt,
+        result.timing,
+      );
+      return validation;
+    }
+    this.currentAvailability = { kind: "ready" };
+    this.record(
+      "validateScripts",
+      validation.value.success ? "success" : "compiler-findings",
+      startedAt,
+      result.timing,
+    );
+    return validation;
+  }
 
-	public async getLoadedAddonGraph(): Promise<WorkbenchGatewayResult<WorkbenchLoadedAddonGraph>> {
-		const startedAt = Date.now();
-		if (!this.options.enabled) {
-			const result = failure('unsupported', 'Enable Workbench NET API integration in extension settings.');
-			this.record('getLoadedAddonGraph', 'unsupported', startedAt);
-			return result;
-		}
-		const endpointFailure = validateEndpoint(this.options.endpoint);
-		if (endpointFailure) {
-			this.record('getLoadedAddonGraph', endpointFailure.category, startedAt);
-			return { ok: false, failure: endpointFailure };
-		}
-		const result = await invokeWorkbenchPrivateApi(
-			this.options.serverPath ?? defaultDevelopmentServerPath(),
-			this.options.endpoint,
-			'loaded-addon-graph',
-			deadline(this.options.deadlines?.getLoadedAddonGraphMs, defaultGetLoadedAddonGraphDeadlineMs),
-		);
-		if (!result.ok) {
-			this.noteFailure(result.failure);
-			this.record('getLoadedAddonGraph', result.failure.category, startedAt, result.timing);
-			return result;
-		}
-		const graph = decodeLoadedAddonGraph(result.value);
-		if (!graph.ok) {
-			this.noteFailure(graph.failure);
-			this.record('getLoadedAddonGraph', graph.failure.category, startedAt, result.timing);
-			return graph;
-		}
-		this.currentAvailability = { kind: 'ready' };
-		this.record('getLoadedAddonGraph', 'success', startedAt, result.timing);
-		return graph;
-	}
+  public async getLoadedAddonGraph(): Promise<
+    WorkbenchGatewayResult<WorkbenchLoadedAddonGraph>
+  > {
+    const startedAt = Date.now();
+    if (!this.options.enabled) {
+      const result = failure(
+        "unsupported",
+        "Enable Workbench NET API integration in extension settings.",
+      );
+      this.record("getLoadedAddonGraph", "unsupported", startedAt);
+      return result;
+    }
+    const endpointFailure = validateEndpoint(this.options.endpoint);
+    if (endpointFailure) {
+      this.record("getLoadedAddonGraph", endpointFailure.category, startedAt);
+      return { ok: false, failure: endpointFailure };
+    }
+    const result = await invokeWorkbenchPrivateApi(
+      this.options.serverPath ?? defaultDevelopmentServerPath(),
+      this.options.endpoint,
+      "loaded-addon-graph",
+      deadline(
+        this.options.deadlines?.getLoadedAddonGraphMs,
+        defaultGetLoadedAddonGraphDeadlineMs,
+      ),
+    );
+    if (!result.ok) {
+      this.noteFailure(result.failure);
+      this.record(
+        "getLoadedAddonGraph",
+        result.failure.category,
+        startedAt,
+        result.timing,
+      );
+      return result;
+    }
+    const graph = decodeLoadedAddonGraph(result.value);
+    if (!graph.ok) {
+      this.noteFailure(graph.failure);
+      this.record(
+        "getLoadedAddonGraph",
+        graph.failure.category,
+        startedAt,
+        result.timing,
+      );
+      return graph;
+    }
+    this.currentAvailability = { kind: "ready" };
+    this.record("getLoadedAddonGraph", "success", startedAt, result.timing);
+    return graph;
+  }
 
-	private invokeStatus(deadlineMs: number): Promise<WorkbenchPrivateApiResult<unknown>> {
-		if (!this.options.enabled) {
-			return Promise.resolve(failure(
-				'unsupported',
-				'Enable Workbench NET API integration in extension settings.',
-			));
-		}
-		const endpointFailure = validateEndpoint(this.options.endpoint);
-		if (endpointFailure) {
-			return Promise.resolve({ ok: false, failure: endpointFailure });
-		}
-		return invokeWorkbenchPrivateApi(
-			this.options.serverPath ?? defaultDevelopmentServerPath(),
-			this.options.endpoint,
-			'status',
-			deadlineMs,
-		);
-	}
+  private invokeStatus(
+    deadlineMs: number,
+  ): Promise<WorkbenchPrivateApiResult<unknown>> {
+    if (!this.options.enabled) {
+      return Promise.resolve(
+        failure(
+          "unsupported",
+          "Enable Workbench NET API integration in extension settings.",
+        ),
+      );
+    }
+    const endpointFailure = validateEndpoint(this.options.endpoint);
+    if (endpointFailure) {
+      return Promise.resolve({ ok: false, failure: endpointFailure });
+    }
+    return invokeWorkbenchPrivateApi(
+      this.options.serverPath ?? defaultDevelopmentServerPath(),
+      this.options.endpoint,
+      "status",
+      deadlineMs,
+    );
+  }
 
-	private invokeValidation(deadlineMs: number): Promise<WorkbenchPrivateApiResult<unknown>> {
-		if (!this.options.enabled) {
-			return Promise.resolve(failure(
-				'unsupported',
-				'Enable Workbench NET API integration in extension settings.',
-			));
-		}
-		const endpointFailure = validateEndpoint(this.options.endpoint);
-		if (endpointFailure) {
-			return Promise.resolve({ ok: false, failure: endpointFailure });
-		}
-		return invokeWorkbenchPrivateApi(
-			this.options.serverPath ?? defaultDevelopmentServerPath(),
-			this.options.endpoint,
-			'validate',
-			deadlineMs,
-		);
-	}
+  private invokeValidation(
+    deadlineMs: number,
+  ): Promise<WorkbenchPrivateApiResult<unknown>> {
+    if (!this.options.enabled) {
+      return Promise.resolve(
+        failure(
+          "unsupported",
+          "Enable Workbench NET API integration in extension settings.",
+        ),
+      );
+    }
+    const endpointFailure = validateEndpoint(this.options.endpoint);
+    if (endpointFailure) {
+      return Promise.resolve({ ok: false, failure: endpointFailure });
+    }
+    return invokeWorkbenchPrivateApi(
+      this.options.serverPath ?? defaultDevelopmentServerPath(),
+      this.options.endpoint,
+      "validate",
+      deadlineMs,
+    );
+  }
 
-	private noteFailure(gatewayFailure: WorkbenchGatewayFailure): void {
-		this.currentAvailability = this.options.enabled
-			? { kind: 'unavailable', failure: gatewayFailure }
-			: { kind: 'disabled' };
-	}
+  private noteFailure(gatewayFailure: WorkbenchGatewayFailure): void {
+    this.currentAvailability = this.options.enabled
+      ? { kind: "unavailable", failure: gatewayFailure }
+      : { kind: "disabled" };
+  }
 
-	private record(
-		capability: WorkbenchGatewayDiagnosticRecord['capability'],
-		outcome: WorkbenchGatewayDiagnosticRecord['outcome'],
-		startedAt: number,
-		timing?: WorkbenchPrivateApiTiming,
-	): void {
-		try {
-			this.options.record?.({
-				capability,
-				outcome,
-				durationMs: Date.now() - startedAt,
-				...(timing ? { timing } : {}),
-			});
-		} catch {
-			// Host diagnostics must never affect a Gateway capability outcome.
-		}
-	}
+  private record(
+    capability: WorkbenchGatewayDiagnosticRecord["capability"],
+    outcome: WorkbenchGatewayDiagnosticRecord["outcome"],
+    startedAt: number,
+    timing?: WorkbenchPrivateApiTiming,
+  ): void {
+    try {
+      this.options.record?.({
+        capability,
+        outcome,
+        durationMs: Date.now() - startedAt,
+        ...(timing ? { timing } : {}),
+      });
+    } catch {
+      // Host diagnostics must never affect a Gateway capability outcome.
+    }
+  }
 }
 
 function decodeStatus(value: unknown): WorkbenchGatewayResult<WorkbenchStatus> {
-	if (!isRecord(value)
-		|| typeof value.isRunning !== 'boolean'
-		|| typeof value.scriptsCompiled !== 'boolean') {
-		return failure('protocol', 'Restart Workbench and verify that its NET API is compatible.');
-	}
-	return {
-		ok: true,
-		value: {
-			isRunning: value.isRunning,
-			scriptsCompiled: value.scriptsCompiled,
-		},
-	};
+  if (
+    !isRecord(value) ||
+    typeof value.isRunning !== "boolean" ||
+    typeof value.scriptsCompiled !== "boolean"
+  ) {
+    return failure(
+      "protocol",
+      "Restart Workbench and verify that its NET API is compatible.",
+    );
+  }
+  return {
+    ok: true,
+    value: {
+      isRunning: value.isRunning,
+      scriptsCompiled: value.scriptsCompiled,
+    },
+  };
 }
 
 function decodeValidation(
-	profile: WorkbenchValidationProfile,
-	value: unknown,
+  profile: WorkbenchValidationProfile,
+  value: unknown,
 ): WorkbenchGatewayResult<WorkbenchValidationResult> {
-	if (!isRecord(value)
-		|| value.profile !== profile
-		|| typeof value.success !== 'boolean'
-		|| !Array.isArray(value.diagnostics)
-		|| !value.diagnostics.every(isCompilerDiagnostic)) {
-		return failure('protocol', 'Restart Workbench and verify that its NET API is compatible.');
-	}
-	return {
-		ok: true,
-		value: {
-			profile,
-			success: value.success,
-			diagnostics: value.diagnostics,
-		},
-	};
+  if (
+    !isRecord(value) ||
+    value.profile !== profile ||
+    typeof value.success !== "boolean" ||
+    !Array.isArray(value.diagnostics) ||
+    !value.diagnostics.every(isCompilerDiagnostic)
+  ) {
+    return failure(
+      "protocol",
+      "Restart Workbench and verify that its NET API is compatible.",
+    );
+  }
+  return {
+    ok: true,
+    value: {
+      profile,
+      success: value.success,
+      diagnostics: value.diagnostics,
+    },
+  };
 }
 
-function decodeLoadedAddonGraph(value: unknown): WorkbenchGatewayResult<WorkbenchLoadedAddonGraph> {
-	if (!isRecord(value)
-		|| typeof value.bridgeVersion !== 'string'
-		|| value.protocolVersion !== 1
-		|| !Array.isArray(value.addons)
-		|| !value.addons.every(isLoadedAddon)) {
-		return failure('protocol', 'Reload Workbench scripts and verify the Reforger Script Tools bridge version.');
-	}
-	const identities = new Set<string>();
-	for (const addon of value.addons) {
-		const identity = `${addon.guid.toUpperCase()}\0${addon.sourceRoot.toLowerCase()}`;
-		if (identities.has(identity)) {
-			return failure('protocol', 'Reload Workbench scripts and retry the loaded add-on graph request.');
-		}
-		identities.add(identity);
-	}
-	return {
-		ok: true,
-		value: {
-			bridgeVersion: value.bridgeVersion,
-			protocolVersion: 1,
-			addons: value.addons.map(addon => ({ ...addon })),
-		},
-	};
+function decodeLoadedAddonGraph(
+  value: unknown,
+): WorkbenchGatewayResult<WorkbenchLoadedAddonGraph> {
+  if (
+    !isRecord(value) ||
+    typeof value.bridgeVersion !== "string" ||
+    value.protocolVersion !== 1 ||
+    (value.currentProjectFile !== undefined &&
+      (typeof value.currentProjectFile !== "string" ||
+        !path.isAbsolute(value.currentProjectFile))) ||
+    !Array.isArray(value.addons) ||
+    !value.addons.every(isLoadedAddon)
+  ) {
+    return failure(
+      "protocol",
+      "Reload Workbench scripts and verify the Reforger Script Tools bridge version.",
+    );
+  }
+  const identities = new Set<string>();
+  for (const addon of value.addons) {
+    const identity = addon.guid.toUpperCase();
+    if (identities.has(identity)) {
+      return failure(
+        "protocol",
+        "Reload Workbench scripts and retry the loaded add-on graph request.",
+      );
+    }
+    identities.add(identity);
+  }
+  return {
+    ok: true,
+    value: {
+      bridgeVersion: value.bridgeVersion,
+      protocolVersion: 1,
+      ...(value.currentProjectFile === undefined
+        ? {}
+        : { currentProjectFile: value.currentProjectFile }),
+      addons: value.addons.map((addon) => ({ ...addon })),
+    },
+  };
 }
 
 function isLoadedAddon(value: unknown): value is WorkbenchLoadedAddon {
-	return isRecord(value)
-		&& typeof value.guid === 'string'
-		&& /^[0-9a-f]{16}$/i.test(value.guid)
-		&& typeof value.id === 'string'
-		&& value.id.length > 0
-		&& typeof value.title === 'string'
-		&& value.title.length > 0
-		&& typeof value.sourceRoot === 'string'
-		&& path.isAbsolute(value.sourceRoot);
+  return (
+    isRecord(value) &&
+    typeof value.guid === "string" &&
+    /^[0-9a-f]{16}$/i.test(value.guid) &&
+    typeof value.id === "string" &&
+    value.id.length > 0 &&
+    typeof value.title === "string" &&
+    value.title.length > 0 &&
+    typeof value.sourceRoot === "string" && path.isAbsolute(value.sourceRoot)
+  );
 }
 
-function isCompilerDiagnostic(value: unknown): value is WorkbenchCompilerDiagnostic {
-	if (!isRecord(value)
-		|| (value.severity !== 'error' && value.severity !== 'warning')
-		|| typeof value.message !== 'string'
-		|| !isRecord(value.location)) {
-		return false;
-	}
-	const location = value.location;
-	return typeof location.file === 'string'
-		&& Number.isInteger(location.line)
-		&& (location.fileAbs === undefined || typeof location.fileAbs === 'string')
-		&& (location.addon === undefined || typeof location.addon === 'string');
+function isCompilerDiagnostic(
+  value: unknown,
+): value is WorkbenchCompilerDiagnostic {
+  if (
+    !isRecord(value) ||
+    (value.severity !== "error" && value.severity !== "warning") ||
+    typeof value.message !== "string" ||
+    !isRecord(value.location)
+  ) {
+    return false;
+  }
+  const location = value.location;
+  return (
+    typeof location.file === "string" &&
+    Number.isInteger(location.line) &&
+    (location.fileAbs === undefined || typeof location.fileAbs === "string") &&
+    (location.addon === undefined || typeof location.addon === "string")
+  );
 }
 
 export async function invokeWorkbenchPrivateApi(
-	serverPath: Promise<string | undefined>,
-	endpoint: WorkbenchEndpoint,
-	action: WorkbenchPrivateApiCommand,
-	deadlineMs: number,
+  serverPath: Promise<string | undefined>,
+  endpoint: WorkbenchEndpoint,
+  action: WorkbenchPrivateApiCommand,
+  deadlineMs: number,
 ): Promise<WorkbenchPrivateApiResult<unknown>> {
-	const endpointFailure = validateEndpoint(endpoint);
-	if (endpointFailure) {
-		return { ok: false, failure: endpointFailure };
-	}
-	const executable = await serverPath;
-	if (!executable) {
-		return failure('unavailable', 'Restart the extension and retry.');
-	}
-	return new Promise(resolve => {
-		const invokedAt = Date.now();
-		let spawnedAt: number | undefined;
-		const child = execFile(
-			executable,
-			[
-				'workbench-api',
-				action,
-				'--host',
-				endpoint.host,
-				'--port',
-				String(endpoint.port),
-				'--deadline-ms',
-				String(deadlineMs),
-			],
-			{
-				timeout: deadlineMs + 500,
-				maxBuffer: maximumResponseBytes,
-				windowsHide: true,
-			},
-			(error, stdout) => {
-				const processTiming = {
-					...(spawnedAt === undefined ? {} : { processSpawnMs: spawnedAt - invokedAt }),
-					...(spawnedAt === undefined ? {} : { processExitMs: Date.now() - spawnedAt }),
-				};
-				if (error) {
-					resolve({
-						...failure(
-							error.killed || error.code === 'ETIMEDOUT'
-								? 'timeout'
-								: 'unavailable',
-							'Restart Workbench and retry the request.',
-						),
-						timing: processTiming,
-					});
-					return;
-				}
-				try {
-					const result = JSON.parse(stdout) as {
-						ok: boolean;
-						value?: unknown;
-						failure?: { category?: WorkbenchGatewayFailureCategory };
-						timing?: unknown;
-					};
-					const timing = {
-						...processTiming,
-						...decodePrivateApiTiming(result.timing),
-					};
-					if (result.ok) {
-						resolve({ ok: true, value: result.value, timing });
-						return;
-					}
-					resolve({
-						...failure(
-							result.failure?.category ?? 'protocol',
-							'Review Workbench state and retry the operation.',
-						),
-						timing,
-					});
-				} catch {
-					resolve({
-						...failure('protocol', 'Restart Workbench and retry the request.'),
-						timing: processTiming,
-					});
-				}
-			},
-		);
-		child.once('spawn', () => {
-			spawnedAt = Date.now();
-		});
-	});
+  const endpointFailure = validateEndpoint(endpoint);
+  if (endpointFailure) {
+    return { ok: false, failure: endpointFailure };
+  }
+  const executable = await serverPath;
+  if (!executable) {
+    return failure("unavailable", "Restart the extension and retry.");
+  }
+  return new Promise((resolve) => {
+    const invokedAt = Date.now();
+    let spawnedAt: number | undefined;
+    const child = execFile(
+      executable,
+      [
+        "workbench-api",
+        action,
+        "--host",
+        endpoint.host,
+        "--port",
+        String(endpoint.port),
+        "--deadline-ms",
+        String(deadlineMs),
+      ],
+      {
+        timeout: deadlineMs + 500,
+        maxBuffer: maximumResponseBytes,
+        windowsHide: true,
+      },
+      (error, stdout) => {
+        const processTiming = {
+          ...(spawnedAt === undefined
+            ? {}
+            : { processSpawnMs: spawnedAt - invokedAt }),
+          ...(spawnedAt === undefined
+            ? {}
+            : { processExitMs: Date.now() - spawnedAt }),
+        };
+        if (error) {
+          resolve({
+            ...failure(
+              error.killed || error.code === "ETIMEDOUT"
+                ? "timeout"
+                : "unavailable",
+              "Restart Workbench and retry the request.",
+            ),
+            timing: processTiming,
+          });
+          return;
+        }
+        try {
+          const result = JSON.parse(stdout) as {
+            ok: boolean;
+            value?: unknown;
+            failure?: { category?: WorkbenchGatewayFailureCategory };
+            timing?: unknown;
+          };
+          const timing = {
+            ...processTiming,
+            ...decodePrivateApiTiming(result.timing),
+          };
+          if (result.ok) {
+            resolve({ ok: true, value: result.value, timing });
+            return;
+          }
+          resolve({
+            ...failure(
+              result.failure?.category ?? "protocol",
+              "Review Workbench state and retry the operation.",
+            ),
+            timing,
+          });
+        } catch {
+          resolve({
+            ...failure("protocol", "Restart Workbench and retry the request."),
+            timing: processTiming,
+          });
+        }
+      },
+    );
+    child.once("spawn", () => {
+      spawnedAt = Date.now();
+    });
+  });
 }
 
 function decodePrivateApiTiming(value: unknown): WorkbenchPrivateApiTiming {
-	if (!isRecord(value)) {
-		return {};
-	}
-	const requestValue = isRecord(value.request) ? value.request : undefined;
-	const request = requestValue && [
-		'lockWaitMs',
-		'connectMs',
-		'writeMs',
-		'responseHeaderMs',
-		'responseBodyMs',
-		'decodeMs',
-		'totalMs',
-	].every(key => typeof requestValue[key] === 'number' && Number.isFinite(requestValue[key]))
-		? {
-			lockWaitMs: requestValue.lockWaitMs as number,
-			connectMs: requestValue.connectMs as number,
-			writeMs: requestValue.writeMs as number,
-			responseHeaderMs: requestValue.responseHeaderMs as number,
-			responseBodyMs: requestValue.responseBodyMs as number,
-			decodeMs: requestValue.decodeMs as number,
-			totalMs: requestValue.totalMs as number,
-		}
-		: undefined;
-	return {
-		...(typeof value.controllerSetupMs === 'number' && Number.isFinite(value.controllerSetupMs)
-			? { controllerSetupMs: value.controllerSetupMs }
-			: {}),
-		...(typeof value.commandMs === 'number' && Number.isFinite(value.commandMs)
-			? { commandMs: value.commandMs }
-			: {}),
-		...(request ? { request } : {}),
-	};
+  if (!isRecord(value)) {
+    return {};
+  }
+  const requestValue = isRecord(value.request) ? value.request : undefined;
+  const request =
+    requestValue &&
+    [
+      "lockWaitMs",
+      "connectMs",
+      "writeMs",
+      "responseHeaderMs",
+      "responseBodyMs",
+      "decodeMs",
+      "totalMs",
+    ].every(
+      (key) =>
+        typeof requestValue[key] === "number" &&
+        Number.isFinite(requestValue[key]),
+    )
+      ? {
+          lockWaitMs: requestValue.lockWaitMs as number,
+          connectMs: requestValue.connectMs as number,
+          writeMs: requestValue.writeMs as number,
+          responseHeaderMs: requestValue.responseHeaderMs as number,
+          responseBodyMs: requestValue.responseBodyMs as number,
+          decodeMs: requestValue.decodeMs as number,
+          totalMs: requestValue.totalMs as number,
+        }
+      : undefined;
+  return {
+    ...(typeof value.controllerSetupMs === "number" &&
+    Number.isFinite(value.controllerSetupMs)
+      ? { controllerSetupMs: value.controllerSetupMs }
+      : {}),
+    ...(typeof value.commandMs === "number" && Number.isFinite(value.commandMs)
+      ? { commandMs: value.commandMs }
+      : {}),
+    ...(request ? { request } : {}),
+  };
 }
 
 function defaultDevelopmentServerPath(): Promise<string | undefined> {
-	return Promise.resolve(path.resolve(
-		__dirname,
-		'..',
-		'..',
-		'..',
-		'server',
-		'target',
-		'debug',
-		process.platform === 'win32'
-			? 'reforger_language_server.exe'
-			: 'reforger_language_server',
-	));
+  return Promise.resolve(
+    path.resolve(
+      __dirname,
+      "..",
+      "..",
+      "..",
+      "server",
+      "target",
+      "debug",
+      process.platform === "win32"
+        ? "reforger_language_server.exe"
+        : "reforger_language_server",
+    ),
+  );
 }
 
-function validateEndpoint(endpoint: WorkbenchEndpoint): WorkbenchGatewayFailure | undefined {
-	if (!isLoopbackHost(endpoint.host)) {
-		return {
-			category: 'unsupported',
-			recoveryHint: 'Configure a loopback Workbench host such as 127.0.0.1.',
-		};
-	}
-	if (!Number.isInteger(endpoint.port) || endpoint.port < 1 || endpoint.port > 65_535) {
-		return {
-			category: 'unsupported',
-			recoveryHint: 'Configure a Workbench NET API port from 1 through 65535.',
-		};
-	}
-	return undefined;
+function validateEndpoint(
+  endpoint: WorkbenchEndpoint,
+): WorkbenchGatewayFailure | undefined {
+  if (!isLoopbackHost(endpoint.host)) {
+    return {
+      category: "unsupported",
+      recoveryHint: "Configure a loopback Workbench host such as 127.0.0.1.",
+    };
+  }
+  if (
+    !Number.isInteger(endpoint.port) ||
+    endpoint.port < 1 ||
+    endpoint.port > 65_535
+  ) {
+    return {
+      category: "unsupported",
+      recoveryHint: "Configure a Workbench NET API port from 1 through 65535.",
+    };
+  }
+  return undefined;
 }
 
 function isLoopbackHost(host: string): boolean {
-	const normalized = host.trim().toLowerCase();
-	if (normalized === '::1') {
-		return true;
-	}
-	const parts = normalized.split('.');
-	return parts.length === 4
-		&& parts[0] === '127'
-		&& parts.every(part => /^\d{1,3}$/.test(part) && Number(part) <= 255);
+  const normalized = host.trim().toLowerCase();
+  if (normalized === "::1") {
+    return true;
+  }
+  const parts = normalized.split(".");
+  return (
+    parts.length === 4 &&
+    parts[0] === "127" &&
+    parts.every((part) => /^\d{1,3}$/.test(part) && Number(part) <= 255)
+  );
 }
 
 function deadline(configured: number | undefined, defaultMs: number): number {
-	return configured !== undefined && Number.isFinite(configured) && configured > 0
-		? configured
-		: defaultMs;
+  return configured !== undefined &&
+    Number.isFinite(configured) &&
+    configured > 0
+    ? configured
+    : defaultMs;
 }
 
 function unavailableFailure(): WorkbenchGatewayFailure {
-	return {
-		category: 'unavailable',
-		recoveryHint: 'Start Workbench with NET API enabled, then retry.',
-	};
+  return {
+    category: "unavailable",
+    recoveryHint: "Start Workbench with NET API enabled, then retry.",
+  };
 }
 
 function failure(
-	category: WorkbenchGatewayFailureCategory,
-	recoveryHint: string,
+  category: WorkbenchGatewayFailureCategory,
+  recoveryHint: string,
 ): WorkbenchGatewayResult<never> {
-	return { ok: false, failure: { category, recoveryHint } };
+  return { ok: false, failure: { category, recoveryHint } };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === 'object' && value !== null && !Array.isArray(value);
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

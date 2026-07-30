@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::{IpAddr, Shutdown, SocketAddr, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -116,7 +116,7 @@ pub struct WorkbenchGateway {
     request_lock: Arc<Mutex<()>>,
 }
 
-pub const WORKBENCH_BRIDGE_VERSION: &str = "1.52.0";
+pub const WORKBENCH_BRIDGE_VERSION: &str = "1.52.12";
 pub const WORKBENCH_BRIDGE_PROTOCOL_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -305,6 +305,8 @@ pub struct WorkbenchLoadedAddon {
 pub struct WorkbenchLoadedAddonGraph {
     pub bridge_version: String,
     pub protocol_version: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_project_file: Option<PathBuf>,
     pub addons: Vec<WorkbenchLoadedAddon>,
 }
 
@@ -1726,7 +1728,7 @@ impl WorkbenchController {
                 json!({"handler": "RST_WorkbenchLoadedAddonGraph", "activeBridgeVersion": raw.bridge_version, "activeProtocolVersion": raw.protocol_version}),
             ));
         }
-        let addons: Vec<WorkbenchLoadedAddon> = serde_json::from_str(&raw.graph_json).map_err(|_| {
+        let mut addons: Vec<WorkbenchLoadedAddon> = serde_json::from_str(&raw.graph_json).map_err(|_| {
             self.correlate_failure_details(
                 "loaded_addon_graph",
                 "workbench_protocol_error",
@@ -1734,7 +1736,16 @@ impl WorkbenchController {
                 json!({"handler": "RST_WorkbenchLoadedAddonGraph"}),
             )
         })?;
-        if addons.len() > 256 || addons.iter().any(|addon| !valid_loaded_addon(addon)) {
+        let current_project_file = (!raw.current_project_file.is_empty())
+            .then(|| PathBuf::from(&raw.current_project_file));
+        resolve_loaded_addon_roots(&mut addons, current_project_file.as_deref(), &self.paths().profile)
+            .map_err(|_| self.correlate_failure_details(
+                "loaded_addon_graph",
+                "unresolved-loaded-addon-root",
+                failure(WorkbenchFailureCode::Protocol),
+                json!({"handler": "RST_WorkbenchLoadedAddonGraph"}),
+            ))?;
+        if addons.len() > 256 || addons.iter().any(|addon| !valid_loaded_addon(addon) || !addon.source_root.is_absolute()) {
             return Err(self.correlate_failure_details(
                 "loaded_addon_graph",
                 "workbench_protocol_error",
@@ -1742,9 +1753,9 @@ impl WorkbenchController {
                 json!({"handler": "RST_WorkbenchLoadedAddonGraph"}),
             ));
         }
-        let mut instance_identities = HashSet::new();
+        let mut loaded_guids = HashSet::new();
         if addons.iter().any(|addon| {
-            !instance_identities.insert((addon.guid.clone(), addon.source_root.clone()))
+            !loaded_guids.insert(addon.guid.clone())
         }) {
             return Err(self.correlate_failure_details(
                 "loaded_addon_graph",
@@ -1756,6 +1767,7 @@ impl WorkbenchController {
         let graph = WorkbenchLoadedAddonGraph {
             bridge_version: raw.bridge_version,
             protocol_version: raw.protocol_version,
+            current_project_file,
             addons,
         };
         self.log_event_timed(
@@ -4150,8 +4162,7 @@ impl WorkbenchController {
 
         let started = Instant::now();
         let before = self.capabilities_handshake()?;
-        if before.bridge_version != WORKBENCH_BRIDGE_VERSION
-            || before.protocol_version != WORKBENCH_BRIDGE_PROTOCOL_VERSION
+        if before.protocol_version != WORKBENCH_BRIDGE_PROTOCOL_VERSION
             || before.runtime_generation == 0
         {
             return Err(failure(WorkbenchFailureCode::Protocol));
@@ -5447,6 +5458,8 @@ struct RawWorkbenchLoadedAddonGraph {
     bridge_version: String,
     #[serde(rename = "protocolVersion")]
     protocol_version: u32,
+    #[serde(rename = "currentProjectFile", default)]
+    current_project_file: String,
     #[serde(rename = "graphJson")]
     graph_json: String,
 }
@@ -7141,7 +7154,84 @@ fn valid_loaded_addon(addon: &WorkbenchLoadedAddon) -> bool {
         && addon.guid.bytes().all(|byte| byte.is_ascii_hexdigit())
         && !addon.id.trim().is_empty()
         && !addon.title.trim().is_empty()
-        && addon.source_root.is_absolute()
+        && (addon.source_root.as_os_str().is_empty() || addon.source_root.is_absolute())
+}
+
+/// Resolves the one physical instance Workbench has selected for each loaded
+/// GUID. Mounted add-ons arrive with their root from Workbench itself. Packed
+/// add-ons are resolved only from the active Workbench Tools project registry;
+/// ambiguous or absent instances remain unavailable rather than guessed.
+fn resolve_loaded_addon_roots(
+    addons: &mut [WorkbenchLoadedAddon],
+    current_project: Option<&Path>,
+    profile: &Path,
+) -> Result<(), ()> {
+    let mut candidates = HashMap::<String, HashSet<PathBuf>>::new();
+    let project_list = fs::read_dir(profile)
+        .map_err(|_| ())?
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(".projectList_app1874910_"))
+        })
+        .ok_or(())?;
+    let source = fs::read_to_string(project_list).map_err(|_| ())?;
+    for project in source.lines().filter_map(project_list_file_path) {
+        register_project_candidate(&mut candidates, project)?;
+    }
+    if let Some(project) = current_project {
+        register_project_candidate(&mut candidates, project.to_path_buf())?;
+        if let Some(addons_directory) = project.parent().and_then(Path::parent) {
+            for entry in fs::read_dir(addons_directory).map_err(|_| ())?.flatten() {
+                let directory = entry.path();
+                if directory.is_dir() {
+                    for project in fs::read_dir(directory).map_err(|_| ())?.flatten() {
+                        let project = project.path();
+                        if project.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("gproj")) {
+                            register_project_candidate(&mut candidates, project)?;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for addon in addons {
+        if addon.source_root.is_absolute() {
+            continue;
+        }
+        let roots = candidates.get(&addon.guid.to_ascii_uppercase()).ok_or(())?;
+        if roots.len() != 1 {
+            return Err(());
+        }
+        addon.source_root = roots.iter().next().cloned().ok_or(())?;
+    }
+    Ok(())
+}
+
+fn project_list_file_path(line: &str) -> Option<PathBuf> {
+    let value = line.trim().strip_prefix("FilePath ")?.trim();
+    let value = value.strip_prefix('"')?.strip_suffix('"')?;
+    let path = PathBuf::from(value);
+    (path.is_absolute() && path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("gproj"))).then_some(path)
+}
+
+fn register_project_candidate(
+    candidates: &mut HashMap<String, HashSet<PathBuf>>,
+    project: PathBuf,
+) -> Result<(), ()> {
+    let source = fs::read_to_string(&project).map_err(|_| ())?;
+    let guid = source.lines().find_map(|line| {
+        let value = line.trim().strip_prefix("GUID ")?.trim();
+        value.strip_prefix('"')?.strip_suffix('"')
+    }).ok_or(())?;
+    if guid.len() != 16 || !guid.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(());
+    }
+    let root = project.parent().ok_or(())?.to_path_buf();
+    candidates.entry(guid.to_ascii_uppercase()).or_default().insert(root);
+    Ok(())
 }
 
 fn parse_resource_search_hit(value: &str) -> Result<WorkbenchResourceSearchHit, WorkbenchFailure> {
@@ -7797,7 +7887,7 @@ mod tests {
         let (port, peer) = start_peer(|request| {
             assert_eq!(request, json!({"APIFunc": "RST_WorkbenchLoadedAddonGraph"}));
             json!({
-                "bridgeVersion": "1.52.0",
+                "bridgeVersion": "1.52.12",
                 "protocolVersion": 1,
                 "graphJson": "[{\"guid\":\"58D0FB3206B6F859\",\"id\":\"ArmaReforger\",\"title\":\"Arma Reforger\",\"sourceRoot\":\"C:/Game/addons/data\"},{\"guid\":\"684CE8AA3B1D6573\",\"id\":\"GCSuppression\",\"title\":\"GC Suppression\",\"sourceRoot\":\"C:/Workbench/addons/GC-Suppression\"}]"
             })
@@ -7821,6 +7911,86 @@ mod tests {
             std::path::PathBuf::from("C:/Workbench/addons/GC-Suppression")
         );
         peer.join().unwrap();
+    }
+
+    #[test]
+    fn resolves_packed_roots_from_the_active_workbench_project_registry() {
+        let root = std::env::temp_dir().join(format!(
+            "rst-workbench-project-registry-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let profile = root.join("profile");
+        let addons = root.join("addons");
+        let packed = root.join("downloaded/packed");
+        let data = addons.join("data");
+        let core = addons.join("core");
+        let mounted = addons.join("workspace-mounted");
+        fs::create_dir_all(&profile).unwrap();
+        for directory in [&packed, &data, &core, &mounted] {
+            fs::create_dir_all(directory).unwrap();
+        }
+        fs::write(
+            packed.join("Packed.gproj"),
+            "GameProject {\n GUID \"1111111111111111\"\n}",
+        )
+        .unwrap();
+        fs::write(
+            data.join("ArmaReforger.gproj"),
+            "GameProject {\n GUID \"2222222222222222\"\n}",
+        )
+        .unwrap();
+        fs::write(
+            core.join("core.gproj"),
+            "GameProject {\n GUID \"3333333333333333\"\n}",
+        )
+        .unwrap();
+        fs::write(
+            profile.join(".projectList_app1874910_user.conf"),
+            format!("FilePath \"{}\"", packed.join("Packed.gproj").display()),
+        )
+        .unwrap();
+        let mut addons = vec![
+            super::WorkbenchLoadedAddon {
+                guid: "1111111111111111".to_string(),
+                id: "Packed".to_string(),
+                title: "Packed".to_string(),
+                source_root: std::path::PathBuf::new(),
+            },
+            super::WorkbenchLoadedAddon {
+                guid: "2222222222222222".to_string(),
+                id: "ArmaReforger".to_string(),
+                title: "Arma Reforger".to_string(),
+                source_root: std::path::PathBuf::new(),
+            },
+            super::WorkbenchLoadedAddon {
+                guid: "3333333333333333".to_string(),
+                id: "core".to_string(),
+                title: "Core".to_string(),
+                source_root: std::path::PathBuf::new(),
+            },
+            super::WorkbenchLoadedAddon {
+                guid: "4444444444444444".to_string(),
+                id: "Mounted".to_string(),
+                title: "Mounted".to_string(),
+                source_root: mounted.clone(),
+            },
+        ];
+
+        super::resolve_loaded_addon_roots(
+            &mut addons,
+            Some(&data.join("ArmaReforger.gproj")),
+            &profile,
+        )
+        .unwrap();
+
+        assert_eq!(addons[0].source_root, packed);
+        assert_eq!(addons[1].source_root, data);
+        assert_eq!(addons[2].source_root, core);
+        assert_eq!(addons[3].source_root, mounted);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -7934,12 +8104,12 @@ mod tests {
     }
 
     #[test]
-    fn activation_requires_a_changed_typed_runtime_generation() {
+    fn activation_upgrades_a_protocol_compatible_prior_bridge_generation() {
         let (port, peer) = start_peer_sequence(vec![
             (
                 json!({"APIFunc": "RST_WorkbenchCapabilities"}),
                 json!({
-                    "bridgeVersion": "1.51.0",
+                    "bridgeVersion": "1.52.1",
                     "protocolVersion": 1,
                     "runtimeGeneration": 7,
                     "capabilities": "state"
@@ -7948,7 +8118,7 @@ mod tests {
             (
                 json!({"APIFunc": "RST_WorkbenchState", "executeSaveAllAction": true}),
                 json!({
-                    "bridgeVersion": "1.51.0",
+                    "bridgeVersion": "1.52.1",
                     "protocolVersion": 1,
                     "saveAllActionAccepted": true,
                     "saveAllActionPath": "File/Save All",
@@ -7959,7 +8129,7 @@ mod tests {
             (
                 json!({"APIFunc": "RST_WorkbenchState", "executeReloadAction": true}),
                 json!({
-                    "bridgeVersion": "1.51.0",
+                    "bridgeVersion": "1.52.1",
                     "protocolVersion": 1,
                     "reloadActionAccepted": false,
                     "reloadActionPath": "Plugins/Settings/Reload WB Scripts"
@@ -7968,7 +8138,7 @@ mod tests {
             (
                 json!({"APIFunc": "RST_WorkbenchCapabilities"}),
                 json!({
-                    "bridgeVersion": "1.51.0",
+                    "bridgeVersion": "1.52.12",
                     "protocolVersion": 1,
                     "runtimeGeneration": 8,
                     "capabilities": "state"
@@ -8034,7 +8204,7 @@ mod tests {
             (
                 json!({"APIFunc": "RST_WorkbenchCapabilities"}),
                 json!({
-                    "bridgeVersion": "1.51.0",
+                    "bridgeVersion": "1.52.12",
                     "protocolVersion": 1,
                     "runtimeGeneration": 7,
                     "capabilities": "state"
@@ -8043,7 +8213,7 @@ mod tests {
             (
                 json!({"APIFunc": "RST_WorkbenchState", "executeSaveAllAction": true}),
                 json!({
-                    "bridgeVersion": "1.51.0",
+                    "bridgeVersion": "1.52.12",
                     "protocolVersion": 1,
                     "saveAllActionAccepted": true,
                     "saveAllActionPath": "File/Save All",
@@ -8054,7 +8224,7 @@ mod tests {
             (
                 json!({"APIFunc": "RST_WorkbenchState", "executeReloadAction": true}),
                 json!({
-                    "bridgeVersion": "1.51.0",
+                    "bridgeVersion": "1.52.12",
                     "protocolVersion": 1,
                     "reloadActionAccepted": true,
                     "reloadActionPath": "Plugins/Settings/Reload WB Scripts"
@@ -8072,7 +8242,7 @@ mod tests {
             (
                 json!({"APIFunc": "RST_WorkbenchCapabilities"}),
                 json!({
-                    "bridgeVersion": "1.51.0",
+                    "bridgeVersion": "1.52.12",
                     "protocolVersion": 1,
                     "runtimeGeneration": 9,
                     "capabilities": "state"

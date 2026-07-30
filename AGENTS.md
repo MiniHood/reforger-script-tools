@@ -53,6 +53,11 @@ completion, update the owning document when the change affects its contract.
 - Avoid fallbacks when the authoritative path can serve the request. A
   fallback must be explicitly provisional for a proven unavailable fact, not a
   parallel normal path that can race or diverge.
+- When Workbench is the authority, acquire the complete fact through one
+  Workbench-owned route. Do not combine default installation paths, user
+  settings, name-based discovery, or guessed filesystem locations as normal
+  alternatives. Preserve an unavailable or ambiguous Workbench fact as such
+  rather than selecting a substitute.
 - Do not branch behavior on a feature, API, or owner label when the same
   semantic or structural fact applies generally. Add a special case only for a
   proven distinction that requires different behavior.

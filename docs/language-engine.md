@@ -57,7 +57,8 @@ archives. The resulting strong revision identity detects same-size script
 changes. A changed artifact decodes only selected `.c` entries. The semantic
 cache and locator-rich manifest are written beneath a new immutable revision
 before an atomic current-pointer publication, after which stale persisted
-revisions are removed. A loaded add-on whose graph source root contains a
+revisions are removed. Cache roots not named by the current Workbench graph are
+also removed before indexing. A loaded add-on whose graph source root contains a
 workspace root is supplied only through the live workspace layer; any packed
 cache for that exact instance is removed. If the authoritative Workbench
 graph is unavailable, malformed, cancelled, or fails to acquire an instance,
