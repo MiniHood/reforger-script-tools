@@ -6,11 +6,13 @@ class RST_WorkbenchShapePointsRequest : JsonApiStruct
 	int index;
 	int count;
 	string points;
+
 	void RST_WorkbenchShapePointsRequest()
 	{
 		RegAll();
 	}
 }
+
 class RST_WorkbenchShapePointsResponse : JsonApiStruct
 {
 	string bridgeVersion;
@@ -20,11 +22,13 @@ class RST_WorkbenchShapePointsResponse : JsonApiStruct
 	string shapeClass;
 	bool closed;
 	string points;
+
 	void RST_WorkbenchShapePointsResponse()
 	{
 		RegAll();
 	}
 }
+
 class RST_WorkbenchShapePointsBase : NetApiHandler
 {
 	IEntitySource Find(WorldEditorAPI api, string entityId)
@@ -37,6 +41,7 @@ class RST_WorkbenchShapePointsBase : NetApiHandler
 		}
 		return null;
 	}
+
 	RST_WorkbenchShapePointsResponse Response()
 	{
 		RST_WorkbenchShapePointsResponse response = new RST_WorkbenchShapePointsResponse();
@@ -44,6 +49,7 @@ class RST_WorkbenchShapePointsBase : NetApiHandler
 		response.protocolVersion = 1;
 		return response;
 	}
+
 	bool Setup(WorldEditorAPI api, RST_WorkbenchShapePointsResponse response)
 	{
 		if (!api)
@@ -68,6 +74,7 @@ class RST_WorkbenchShapePointsBase : NetApiHandler
 		}
 		return true;
 	}
+
 	bool ResolveShape(WorldEditorAPI api, string entityId, RST_WorkbenchShapePointsResponse response, out IEntitySource source, out ShapeEntity shape)
 	{
 		source = Find(api, entityId);
@@ -84,6 +91,7 @@ class RST_WorkbenchShapePointsBase : NetApiHandler
 		}
 		return true;
 	}
+
 	void Record(WorldEditorAPI api, IEntitySource source, ShapeEntity shape, RST_WorkbenchShapePointsResponse response)
 	{
 		vector origin = shape.GetOrigin();
@@ -114,6 +122,7 @@ class RST_WorkbenchShapePointsBase : NetApiHandler
 			response.points += string.Format("%1|%2|%3", point[0], point[1], point[2]);
 		}
 	}
+
 	bool DecodePoints(string encoded, out array<vector> decoded)
 	{
 		if (encoded.IsEmpty())
@@ -133,12 +142,14 @@ class RST_WorkbenchShapePointsBase : NetApiHandler
 		return true;
 	}
 }
+
 class RST_WorkbenchShapePoints : RST_WorkbenchShapePointsBase
 {
 	override JsonApiStruct GetRequest()
 	{
 		return new RST_WorkbenchShapePointsRequest();
 	}
+
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchShapePointsRequest r = RST_WorkbenchShapePointsRequest.Cast(request);
@@ -161,12 +172,14 @@ class RST_WorkbenchShapePoints : RST_WorkbenchShapePointsBase
 		return response;
 	}
 }
+
 class RST_WorkbenchEditShapePoints : RST_WorkbenchShapePointsBase
 {
 	override JsonApiStruct GetRequest()
 	{
 		return new RST_WorkbenchShapePointsRequest();
 	}
+
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchShapePointsRequest r = RST_WorkbenchShapePointsRequest.Cast(request);

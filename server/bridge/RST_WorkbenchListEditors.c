@@ -2,11 +2,13 @@
 class RST_WorkbenchListEditorsResponse : JsonApiStruct
 {
 	string editors;
+
 	void RST_WorkbenchListEditorsResponse()
 	{
 		RegAll();
 	}
 }
+
 class RST_WorkbenchListEditors : NetApiHandler
 {
 	override JsonApiStruct GetResponse(JsonApiStruct request)

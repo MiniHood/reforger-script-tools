@@ -6,6 +6,7 @@ class RST_WorkbenchWorldSelectionRequest : JsonApiStruct
 		RegAll();
 	}
 }
+
 class RST_WorkbenchWorldSelectionResponse : JsonApiStruct
 {
 	string bridgeVersion;
@@ -15,17 +16,20 @@ class RST_WorkbenchWorldSelectionResponse : JsonApiStruct
 	int selectedCount;
 	string selectedEntities;
 	bool selectedEntitiesTruncated;
+
 	void RST_WorkbenchWorldSelectionResponse()
 	{
 		RegAll();
 	}
 }
+
 class RST_WorkbenchWorldSelection : NetApiHandler
 {
 	override JsonApiStruct GetRequest()
 	{
 		return new RST_WorkbenchWorldSelectionRequest();
 	}
+
 	protected void AppendEntity(out string records, WorldEditorAPI api, IEntitySource entity)
 	{
 		if (!entity)
@@ -56,6 +60,7 @@ class RST_WorkbenchWorldSelection : NetApiHandler
 		layerName.Replace(";", "/");
 		records += string.Format("%1|%2|%3|%4|%5|%6|%7", entity.GetID().ToString(), entity.GetClassName(), entity.GetSubScene(), entity.GetLayerID(), transform[3][0], transform[3][1], transform[3][2]) + "|" + resourceName + "|" + name + "|" + subSceneName + "|" + layerName;
 	}
+
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchWorldSelectionResponse response = new RST_WorkbenchWorldSelectionResponse();

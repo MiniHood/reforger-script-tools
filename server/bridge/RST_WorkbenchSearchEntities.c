@@ -13,6 +13,7 @@ class RST_WorkbenchSearchEntitiesRequest : JsonApiStruct
 	int layerId;
 	int offset;
 	int limit;
+
 	void RST_WorkbenchSearchEntitiesRequest()
 	{
 		RegAll();
@@ -20,6 +21,7 @@ class RST_WorkbenchSearchEntitiesRequest : JsonApiStruct
 		layerId = -1;
 	}
 }
+
 class RST_WorkbenchSearchEntitiesResponse : JsonApiStruct
 {
 	string bridgeVersion;
@@ -31,26 +33,31 @@ class RST_WorkbenchSearchEntitiesResponse : JsonApiStruct
 	int namedMatches;
 	bool hasMore;
 	bool relationTraversalTruncated;
+
 	void RST_WorkbenchSearchEntitiesResponse()
 	{
 		RegAll();
 	}
 }
+
 class RST_WorkbenchSearchEntities : NetApiHandler
 {
 	static const int MAX_RELATION_CANDIDATES = 4096;
 	static const int MAX_RESULT_CHARACTERS = 262144;
 	static const int MAX_RESULT_FIELD_CHARACTERS = 4096;
+
 	override JsonApiStruct GetRequest()
 	{
 		return new RST_WorkbenchSearchEntitiesRequest();
 	}
+
 	protected string BoundResultField(string value)
 	{
 		if (value.Length() > MAX_RESULT_FIELD_CHARACTERS)
 			return value.Substring(0, MAX_RESULT_FIELD_CHARACTERS);
 		return value;
 	}
+
 	int ComponentCount(IEntitySource entity)
 	{
 		int count = entity.GetComponentCount();
@@ -62,6 +69,7 @@ class RST_WorkbenchSearchEntities : NetApiHandler
 		}
 		return count;
 	}
+
 	IEntityComponentSource ComponentAt(IEntitySource entity, int index)
 	{
 		if (entity.GetComponentCount() > 0)
@@ -71,6 +79,7 @@ class RST_WorkbenchSearchEntities : NetApiHandler
 			return IEntityComponentSource.Cast(components.Get(index));
 		return null;
 	}
+
 	protected bool HasComponent(IEntitySource entity, string expected)
 	{
 		for (int index, count = ComponentCount(entity); index < count; index++)
@@ -81,6 +90,7 @@ class RST_WorkbenchSearchEntities : NetApiHandler
 		}
 		return false;
 	}
+
 	protected bool HasRequiredComponents(IEntitySource entity, array<string> required)
 	{
 		foreach (string expected : required)
@@ -90,6 +100,7 @@ class RST_WorkbenchSearchEntities : NetApiHandler
 		}
 		return true;
 	}
+
 	protected bool MatchesCandidate(IEntitySource entity, RST_WorkbenchSearchEntitiesRequest request, array<string> required)
 	{
 		if (!entity)
@@ -109,10 +120,12 @@ class RST_WorkbenchSearchEntities : NetApiHandler
 			return false;
 		return HasRequiredComponents(entity, required);
 	}
+
 	protected bool MatchesRelationTarget(IEntitySource entity, RST_WorkbenchSearchEntitiesRequest request, array<string> required)
 	{
 		return entity && (request.relationClassName.IsEmpty() || entity.GetClassName() == request.relationClassName) && HasRequiredComponents(entity, required);
 	}
+
 	protected bool FindRelation(IEntitySource entity, RST_WorkbenchSearchEntitiesRequest request, array<string> required, out IEntitySource related, out int depth, out bool truncated)
 	{
 		if (request.relationDirection == "parent" || request.relationDirection == "ancestor")
@@ -163,6 +176,7 @@ class RST_WorkbenchSearchEntities : NetApiHandler
 		}
 		return false;
 	}
+
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchSearchEntitiesRequest req = RST_WorkbenchSearchEntitiesRequest.Cast(request);

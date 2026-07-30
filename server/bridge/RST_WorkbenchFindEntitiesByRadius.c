@@ -10,11 +10,13 @@ class RST_WorkbenchFindEntitiesByRadiusRequest : JsonApiStruct
 	bool excludeProxies;
 	string className;
 	int limit;
+
 	void RST_WorkbenchFindEntitiesByRadiusRequest()
 	{
 		RegAll();
 	}
 }
+
 class RST_WorkbenchFindEntitiesByRadiusResponse : JsonApiStruct
 {
 	string bridgeVersion;
@@ -29,23 +31,27 @@ class RST_WorkbenchFindEntitiesByRadiusResponse : JsonApiStruct
 	bool excludeProxies;
 	string entities;
 	bool truncated;
+
 	void RST_WorkbenchFindEntitiesByRadiusResponse()
 	{
 		RegAll();
 	}
 }
+
 class RST_WorkbenchRadiusCollector
 {
 	WorldEditorAPI m_Api;
 	RST_WorkbenchFindEntitiesByRadiusRequest m_Request;
 	RST_WorkbenchFindEntitiesByRadiusResponse m_Response;
 	int m_Returned;
+
 	void RST_WorkbenchRadiusCollector(WorldEditorAPI api, RST_WorkbenchFindEntitiesByRadiusRequest request, RST_WorkbenchFindEntitiesByRadiusResponse response)
 	{
 		m_Api = api;
 		m_Request = request;
 		m_Response = response;
 	}
+
 	bool AddEntity(IEntity entity)
 	{
 		IEntitySource source = m_Api.EntityToSource(entity);
@@ -80,12 +86,14 @@ class RST_WorkbenchRadiusCollector
 		return true;
 	}
 }
+
 class RST_WorkbenchFindEntitiesByRadius : NetApiHandler
 {
 	override JsonApiStruct GetRequest()
 	{
 		return new RST_WorkbenchFindEntitiesByRadiusRequest();
 	}
+
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchFindEntitiesByRadiusRequest typedRequest = RST_WorkbenchFindEntitiesByRadiusRequest.Cast(request);

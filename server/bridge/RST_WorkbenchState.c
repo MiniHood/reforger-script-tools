@@ -4,11 +4,13 @@ class RST_WorkbenchStateRequest : JsonApiStruct
 	bool executeReloadAction;
 	bool executeSaveAllAction;
 	bool executeSaveWorldAction;
+
 	void RST_WorkbenchStateRequest()
 	{
 		RegAll();
 	}
 }
+
 class RST_WorkbenchStateResponse : JsonApiStruct
 {
 	string bridgeVersion;
@@ -29,17 +31,20 @@ class RST_WorkbenchStateResponse : JsonApiStruct
 	bool worldSaveActionAccepted;
 	string worldSaveActionPath;
 	string worldSaveStatus;
+
 	void RST_WorkbenchStateResponse()
 	{
 		RegAll();
 	}
 }
+
 class RST_WorkbenchState : NetApiHandler
 {
 	override JsonApiStruct GetRequest()
 	{
 		return new RST_WorkbenchStateRequest();
 	}
+
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchStateRequest typedRequest = RST_WorkbenchStateRequest.Cast(request);

@@ -6,6 +6,7 @@ class RST_WorkbenchViewportContextRequest : JsonApiStruct
 		RegAll();
 	}
 }
+
 class RST_WorkbenchViewportContextResponse : JsonApiStruct
 {
 	string bridgeVersion;
@@ -31,17 +32,20 @@ class RST_WorkbenchViewportContextResponse : JsonApiStruct
 	float directionX;
 	float directionY;
 	float directionZ;
+
 	void RST_WorkbenchViewportContextResponse()
 	{
 		RegAll();
 	}
 }
+
 class RST_WorkbenchViewportContext : NetApiHandler
 {
 	override JsonApiStruct GetRequest()
 	{
 		return new RST_WorkbenchViewportContextRequest();
 	}
+
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchViewportContextResponse response = new RST_WorkbenchViewportContextResponse();

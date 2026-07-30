@@ -8451,8 +8451,9 @@ mod tests {
 
     #[test]
     fn entity_search_handler_initializes_its_paging_counters() {
-        assert!(super::BRIDGE_ENTITY_SEARCH_SOURCE
-            .contains("int matched = 0;\n\t\tint named = 0;\n\t\tint returned = 0;"));
+        assert!(super::BRIDGE_ENTITY_SEARCH_SOURCE.contains("int matched = 0;"));
+        assert!(super::BRIDGE_ENTITY_SEARCH_SOURCE.contains("int named = 0;"));
+        assert!(super::BRIDGE_ENTITY_SEARCH_SOURCE.contains("int returned = 0;"));
         assert!(super::BRIDGE_ENTITY_SEARCH_SOURCE.contains("matched = matched + 1;"));
         assert!(super::BRIDGE_ENTITY_SEARCH_SOURCE.contains("named = named + 1;"));
         assert!(super::BRIDGE_ENTITY_SEARCH_SOURCE

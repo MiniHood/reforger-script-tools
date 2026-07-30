@@ -2,27 +2,32 @@
 class RST_WorkbenchOpenResourceRequest : JsonApiStruct
 {
 	string resourcePath;
+
 	void RST_WorkbenchOpenResourceRequest()
 	{
 		RegAll();
 	}
 }
+
 class RST_WorkbenchOpenResourceResponse : JsonApiStruct
 {
 	string resourcePath;
 	bool opened;
 	string status;
+
 	void RST_WorkbenchOpenResourceResponse()
 	{
 		RegAll();
 	}
 }
+
 class RST_WorkbenchOpenResource : NetApiHandler
 {
 	override JsonApiStruct GetRequest()
 	{
 		return new RST_WorkbenchOpenResourceRequest();
 	}
+
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchOpenResourceRequest typedRequest = RST_WorkbenchOpenResourceRequest.Cast(request);

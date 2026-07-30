@@ -5,28 +5,33 @@ class RST_WorkbenchPropertiesRequest : JsonApiStruct
 	string propertyName;
 	string expectedValue;
 	string value;
+
 	void RST_WorkbenchPropertiesRequest()
 	{
 		RegAll();
 	}
 }
+
 class RST_WorkbenchPropertiesResponse : JsonApiStruct
 {
 	string bridgeVersion;
 	int protocolVersion;
 	string status;
 	string properties;
+
 	void RST_WorkbenchPropertiesResponse()
 	{
 		RegAll();
 	}
 }
+
 class RST_WorkbenchListEntityProperties : RST_WorkbenchEntityMutationBase
 {
 	override JsonApiStruct GetRequest()
 	{
 		return new RST_WorkbenchPropertiesRequest();
 	}
+
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchPropertiesRequest r = RST_WorkbenchPropertiesRequest.Cast(request);
@@ -63,12 +68,14 @@ class RST_WorkbenchListEntityProperties : RST_WorkbenchEntityMutationBase
 		return response;
 	}
 }
+
 class RST_WorkbenchSetEntityProperty : RST_WorkbenchEntityMutationBase
 {
 	override JsonApiStruct GetRequest()
 	{
 		return new RST_WorkbenchPropertiesRequest();
 	}
+
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchPropertiesRequest r = RST_WorkbenchPropertiesRequest.Cast(request);

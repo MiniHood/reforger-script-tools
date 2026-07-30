@@ -7,11 +7,13 @@ class RST_WorkbenchListResourcesRequest : JsonApiStruct
 	string addonGuid;
 	int offset;
 	int limit;
+
 	void RST_WorkbenchListResourcesRequest()
 	{
 		RegAll();
 	}
 }
+
 class RST_WorkbenchListResourcesResponse : JsonApiStruct
 {
 	string bridgeVersion;
@@ -20,17 +22,20 @@ class RST_WorkbenchListResourcesResponse : JsonApiStruct
 	string resources;
 	string resourceDetails;
 	bool hasMore;
+
 	void RST_WorkbenchListResourcesResponse()
 	{
 		RegAll();
 	}
 }
+
 class RST_WorkbenchListResources : NetApiHandler
 {
 	override JsonApiStruct GetRequest()
 	{
 		return new RST_WorkbenchListResourcesRequest();
 	}
+
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchListResourcesRequest typedRequest = RST_WorkbenchListResourcesRequest.Cast(request);

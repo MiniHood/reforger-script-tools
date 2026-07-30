@@ -4,26 +4,31 @@ class RST_WorkbenchPlaySessionRequest : JsonApiStruct
 	bool start;
 	bool debugMode;
 	bool fullScreen;
+
 	void RST_WorkbenchPlaySessionRequest()
 	{
 		RegAll();
 	}
 }
+
 class RST_WorkbenchPlaySessionResponse : JsonApiStruct
 {
 	bool accepted;
 	string status;
+
 	void RST_WorkbenchPlaySessionResponse()
 	{
 		RegAll();
 	}
 }
+
 class RST_WorkbenchPlaySession : NetApiHandler
 {
 	override JsonApiStruct GetRequest()
 	{
 		return new RST_WorkbenchPlaySessionRequest();
 	}
+
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchPlaySessionRequest typedRequest = RST_WorkbenchPlaySessionRequest.Cast(request);

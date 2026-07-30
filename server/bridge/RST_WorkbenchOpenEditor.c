@@ -2,27 +2,32 @@
 class RST_WorkbenchOpenEditorRequest : JsonApiStruct
 {
 	string editorId;
+
 	void RST_WorkbenchOpenEditorRequest()
 	{
 		RegAll();
 	}
 }
+
 class RST_WorkbenchOpenEditorResponse : JsonApiStruct
 {
 	string editorId;
 	bool opened;
 	string status;
+
 	void RST_WorkbenchOpenEditorResponse()
 	{
 		RegAll();
 	}
 }
+
 class RST_WorkbenchOpenEditor : NetApiHandler
 {
 	override JsonApiStruct GetRequest()
 	{
 		return new RST_WorkbenchOpenEditorRequest();
 	}
+
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchOpenEditorRequest typedRequest = RST_WorkbenchOpenEditorRequest.Cast(request);

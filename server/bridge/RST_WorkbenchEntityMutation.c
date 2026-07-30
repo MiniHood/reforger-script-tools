@@ -15,6 +15,7 @@ class RST_WorkbenchEntityMutationRequest : JsonApiStruct
 	int layerId;
 	bool targetIsResource;
 	bool confirm;
+
 	void RST_WorkbenchEntityMutationRequest()
 	{
 		RegV("entityId");
@@ -33,6 +34,7 @@ class RST_WorkbenchEntityMutationRequest : JsonApiStruct
 		RegV("confirm");
 	}
 }
+
 class RST_WorkbenchEntityMutationResponse : JsonApiStruct
 {
 	string bridgeVersion;
@@ -42,11 +44,13 @@ class RST_WorkbenchEntityMutationResponse : JsonApiStruct
 	string entity;
 	string destination;
 	bool destinationExists;
+
 	void RST_WorkbenchEntityMutationResponse()
 	{
 		RegAll();
 	}
 }
+
 class RST_WorkbenchEntityMutationBase : NetApiHandler
 {
 	IEntitySource Find(WorldEditorAPI api, string entityId)
@@ -72,6 +76,7 @@ class RST_WorkbenchEntityMutationBase : NetApiHandler
 		}
 		return null;
 	}
+
 	bool IsAncestor(IEntitySource entity, IEntitySource candidateParent)
 	{
 		IEntitySource current = candidateParent;
@@ -83,6 +88,7 @@ class RST_WorkbenchEntityMutationBase : NetApiHandler
 		}
 		return false;
 	}
+
 	bool Setup(WorldEditorAPI api, RST_WorkbenchEntityMutationResponse response)
 	{
 		if (!api)
@@ -107,6 +113,7 @@ class RST_WorkbenchEntityMutationBase : NetApiHandler
 		}
 		return true;
 	}
+
 	void Record(WorldEditorAPI api, RST_WorkbenchEntityMutationResponse response, IEntitySource entity)
 	{
 		IEntity runtimeEntity;
@@ -141,6 +148,7 @@ class RST_WorkbenchEntityMutationBase : NetApiHandler
 		layerName.Replace(";", "/");
 		response.entity = string.Format(    "%1|%2|%3|%4|%5|%6|%7",    entity.GetID().ToString(),    entity.GetClassName(),    entity.GetSubScene(),    entity.GetLayerID(),    p[0],    p[1],    p[2]) + "|" + resourceName + "|" + name + "|" + subSceneName + "|" + layerName;
 	}
+
 	string PropertyTypeName(DataVarType dataType)
 	{
 		switch (dataType)
@@ -154,6 +162,7 @@ class RST_WorkbenchEntityMutationBase : NetApiHandler
 		}
 		return string.Empty;
 	}
+
 	bool ReadPropertyValue(BaseContainer container, string name, DataVarType dataType, out string value)
 	{
 		bool boolValue;
@@ -184,6 +193,7 @@ class RST_WorkbenchEntityMutationBase : NetApiHandler
 		}
 		return false;
 	}
+
 	RST_WorkbenchEntityMutationResponse Response()
 	{
 		RST_WorkbenchEntityMutationResponse response = new RST_WorkbenchEntityMutationResponse();
@@ -193,12 +203,14 @@ class RST_WorkbenchEntityMutationBase : NetApiHandler
 		return response;
 	}
 }
+
 class RST_WorkbenchCreateEntity : RST_WorkbenchEntityMutationBase
 {
 	override JsonApiStruct GetRequest()
 	{
 		return new RST_WorkbenchEntityMutationRequest();
 	}
+
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchEntityMutationRequest r = RST_WorkbenchEntityMutationRequest.Cast(request);
@@ -249,12 +261,14 @@ class RST_WorkbenchCreateEntity : RST_WorkbenchEntityMutationBase
 		return response;
 	}
 }
+
 class RST_WorkbenchRenameEntity : RST_WorkbenchEntityMutationBase
 {
 	override JsonApiStruct GetRequest()
 	{
 		return new RST_WorkbenchEntityMutationRequest();
 	}
+
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchEntityMutationRequest r = RST_WorkbenchEntityMutationRequest.Cast(request);
@@ -291,12 +305,14 @@ class RST_WorkbenchRenameEntity : RST_WorkbenchEntityMutationBase
 		return response;
 	}
 }
+
 class RST_WorkbenchMoveEntity : RST_WorkbenchEntityMutationBase
 {
 	override JsonApiStruct GetRequest()
 	{
 		return new RST_WorkbenchEntityMutationRequest();
 	}
+
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchEntityMutationRequest r = RST_WorkbenchEntityMutationRequest.Cast(request);
@@ -333,12 +349,14 @@ class RST_WorkbenchMoveEntity : RST_WorkbenchEntityMutationBase
 		return response;
 	}
 }
+
 class RST_WorkbenchRotateEntity : RST_WorkbenchEntityMutationBase
 {
 	override JsonApiStruct GetRequest()
 	{
 		return new RST_WorkbenchEntityMutationRequest();
 	}
+
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchEntityMutationRequest r = RST_WorkbenchEntityMutationRequest.Cast(request);
@@ -380,12 +398,14 @@ class RST_WorkbenchRotateEntity : RST_WorkbenchEntityMutationBase
 		return response;
 	}
 }
+
 class RST_WorkbenchReparentEntity : RST_WorkbenchEntityMutationBase
 {
 	override JsonApiStruct GetRequest()
 	{
 		return new RST_WorkbenchEntityMutationRequest();
 	}
+
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchEntityMutationRequest r = RST_WorkbenchEntityMutationRequest.Cast(request);
@@ -428,12 +448,14 @@ class RST_WorkbenchReparentEntity : RST_WorkbenchEntityMutationBase
 		return response;
 	}
 }
+
 class RST_WorkbenchDuplicateEntity : RST_WorkbenchEntityMutationBase
 {
 	override JsonApiStruct GetRequest()
 	{
 		return new RST_WorkbenchEntityMutationRequest();
 	}
+
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchEntityMutationRequest r = RST_WorkbenchEntityMutationRequest.Cast(request);
@@ -471,12 +493,14 @@ class RST_WorkbenchDuplicateEntity : RST_WorkbenchEntityMutationBase
 		return response;
 	}
 }
+
 class RST_WorkbenchDeleteEntity : RST_WorkbenchEntityMutationBase
 {
 	override JsonApiStruct GetRequest()
 	{
 		return new RST_WorkbenchEntityMutationRequest();
 	}
+
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchEntityMutationRequest r = RST_WorkbenchEntityMutationRequest.Cast(request);

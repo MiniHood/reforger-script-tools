@@ -2,11 +2,13 @@
 class RST_WorkbenchInspectEntityRequest : JsonApiStruct
 {
 	string entityId;
+
 	void RST_WorkbenchInspectEntityRequest()
 	{
 		RegAll();
 	}
 }
+
 class RST_WorkbenchInspectEntityResponse : JsonApiStruct
 {
 	string bridgeVersion;
@@ -27,17 +29,20 @@ class RST_WorkbenchInspectEntityResponse : JsonApiStruct
 	bool componentPropertiesTruncated;
 	string properties;
 	bool propertiesTruncated;
+
 	void RST_WorkbenchInspectEntityResponse()
 	{
 		RegAll();
 	}
 }
+
 class RST_WorkbenchInspectEntity : NetApiHandler
 {
 	override JsonApiStruct GetRequest()
 	{
 		return new RST_WorkbenchInspectEntityRequest();
 	}
+
 	protected void AppendEntity(out string records, WorldEditorAPI api, IEntitySource entity)
 	{
 		if (!entity)
@@ -68,6 +73,7 @@ class RST_WorkbenchInspectEntity : NetApiHandler
 		layerName.Replace(";", "/");
 		records += string.Format("%1|%2|%3|%4|%5|%6|%7", entity.GetID().ToString(), entity.GetClassName(), entity.GetSubScene(), entity.GetLayerID(), transform[3][0], transform[3][1], transform[3][2]) + "|" + resourceName + "|" + name + "|" + subSceneName + "|" + layerName;
 	}
+
 	// Workbench exposes authored components through either its direct component
 	// list or the `components` container, depending on the editor context.
 	int ComponentCount(IEntitySource entity)
@@ -81,6 +87,7 @@ class RST_WorkbenchInspectEntity : NetApiHandler
 		}
 		return count;
 	}
+
 	IEntityComponentSource ComponentAt(IEntitySource entity, int index)
 	{
 		IEntityComponentSource component;
@@ -95,10 +102,12 @@ class RST_WorkbenchInspectEntity : NetApiHandler
 		}
 		return component;
 	}
+
 	protected bool IsEngineCallback(string name)
 	{
 		return name.StartsWith("EOn") || name.StartsWith("_WB_") || name == "RplLoad"    || name == "RplSave" || name == "Preload" || name == "OnTransformResetImpl"    || name == "userScript" || name == "constructor" || name == "destructor";
 	}
+
 	protected string PropertyTypeName(DataVarType dataType)
 	{
 		switch (dataType)
@@ -112,6 +121,7 @@ class RST_WorkbenchInspectEntity : NetApiHandler
 		}
 		return string.Empty;
 	}
+
 	protected string PropertyOrigin(BaseContainer container, string name)
 	{
 		if (container.IsVariableSetDirectly(name))
@@ -123,6 +133,7 @@ class RST_WorkbenchInspectEntity : NetApiHandler
 		}
 		return "default";
 	}
+
 	protected string PropertyRecord(int componentIndex, BaseContainer container, string name, string typeName, string value)
 	{
 		name.Replace("|", "/");
@@ -134,6 +145,7 @@ class RST_WorkbenchInspectEntity : NetApiHandler
 			return string.Format("%1|%2|%3|%4|%5|%6", componentIndex, name, typeName, value, container.IsVariableSetDirectly(name), origin);
 		return string.Format("%1|%2|%3|%4|%5", name, typeName, value, container.IsVariableSetDirectly(name), origin);
 	}
+
 	protected bool ReadPropertyRecord(int componentIndex, BaseContainer container, string name, DataVarType dataType, out string record)
 	{
 		bool boolValue;
@@ -168,6 +180,7 @@ class RST_WorkbenchInspectEntity : NetApiHandler
 		}
 		return false;
 	}
+
 	protected void AppendPropertyRecords(int componentIndex, BaseContainer definitionSource, BaseContainer valueSource, out string records, out bool truncated)
 	{
 		array<string> seenNames = new array<string>();
@@ -201,6 +214,7 @@ class RST_WorkbenchInspectEntity : NetApiHandler
 			container = container.GetAncestor();
 		}
 	}
+
 	protected void ResolveOrigin(RST_WorkbenchInspectEntityResponse response, IEntitySource entity, IEntity runtimeEntity)
 	{
 		response.resourceReferenceKind = "unresolved";
@@ -247,6 +261,7 @@ class RST_WorkbenchInspectEntity : NetApiHandler
 			response.contributorAddons += sourceAddon;
 		}
 	}
+
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchInspectEntityRequest typedRequest = RST_WorkbenchInspectEntityRequest.Cast(request);

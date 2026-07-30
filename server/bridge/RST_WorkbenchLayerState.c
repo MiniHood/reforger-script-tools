@@ -3,11 +3,13 @@ class RST_WorkbenchLayerStateRequest : JsonApiStruct
 {
 	int subScene;
 	int layerId;
+
 	void RST_WorkbenchLayerStateRequest()
 	{
 		RegAll();
 	}
 }
+
 class RST_WorkbenchLayerStateResponse : JsonApiStruct
 {
 	string bridgeVersion;
@@ -19,17 +21,20 @@ class RST_WorkbenchLayerStateResponse : JsonApiStruct
 	bool visible;
 	bool explicitlyLocked;
 	bool lockedInHierarchy;
+
 	void RST_WorkbenchLayerStateResponse()
 	{
 		RegAll();
 	}
 }
+
 class RST_WorkbenchLayerState : NetApiHandler
 {
 	override JsonApiStruct GetRequest()
 	{
 		return new RST_WorkbenchLayerStateRequest();
 	}
+
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchLayerStateRequest typedRequest = RST_WorkbenchLayerStateRequest.Cast(request);

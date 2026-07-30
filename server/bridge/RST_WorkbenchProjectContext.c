@@ -6,22 +6,26 @@ class RST_WorkbenchProjectContextRequest : JsonApiStruct
 		RegAll();
 	}
 }
+
 class RST_WorkbenchProjectContextResponse : JsonApiStruct
 {
 	string bridgeVersion;
 	int protocolVersion;
 	string loadedAddons;
+
 	void RST_WorkbenchProjectContextResponse()
 	{
 		RegAll();
 	}
 }
+
 class RST_WorkbenchProjectContext : NetApiHandler
 {
 	override JsonApiStruct GetRequest()
 	{
 		return new RST_WorkbenchProjectContextRequest();
 	}
+
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchProjectContextResponse response = new RST_WorkbenchProjectContextResponse();

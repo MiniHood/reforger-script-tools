@@ -2,11 +2,13 @@
 class RST_WorkbenchSelectedEntityHierarchyRequest : JsonApiStruct
 {
 	int selectionIndex;
+
 	void RST_WorkbenchSelectedEntityHierarchyRequest()
 	{
 		RegAll();
 	}
 }
+
 class RST_WorkbenchSelectedEntityHierarchyResponse : JsonApiStruct
 {
 	string bridgeVersion;
@@ -18,17 +20,20 @@ class RST_WorkbenchSelectedEntityHierarchyResponse : JsonApiStruct
 	bool ancestorsTruncated;
 	string children;
 	bool childrenTruncated;
+
 	void RST_WorkbenchSelectedEntityHierarchyResponse()
 	{
 		RegAll();
 	}
 }
+
 class RST_WorkbenchSelectedEntityHierarchy : NetApiHandler
 {
 	override JsonApiStruct GetRequest()
 	{
 		return new RST_WorkbenchSelectedEntityHierarchyRequest();
 	}
+
 	protected void AppendEntity(out string records, WorldEditorAPI api, IEntitySource entity)
 	{
 		if (!entity)
@@ -59,6 +64,7 @@ class RST_WorkbenchSelectedEntityHierarchy : NetApiHandler
 		layerName.Replace(";", "/");
 		records += string.Format("%1|%2|%3|%4|%5|%6|%7", entity.GetID().ToString(), entity.GetClassName(), entity.GetSubScene(), entity.GetLayerID(), transform[3][0], transform[3][1], transform[3][2]) + "|" + resourceName + "|" + name + "|" + subSceneName + "|" + layerName;
 	}
+
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchSelectedEntityHierarchyRequest typedRequest = RST_WorkbenchSelectedEntityHierarchyRequest.Cast(request);

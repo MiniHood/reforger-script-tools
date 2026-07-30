@@ -7,6 +7,7 @@ class RST_WorkbenchListEntitiesRequest : JsonApiStruct
 	int layerId;
 	int offset;
 	int limit;
+
 	void RST_WorkbenchListEntitiesRequest()
 	{
 		RegAll();
@@ -14,6 +15,7 @@ class RST_WorkbenchListEntitiesRequest : JsonApiStruct
 		layerId = -1;
 	}
 }
+
 class RST_WorkbenchListEntitiesResponse : JsonApiStruct
 {
 	string bridgeVersion;
@@ -21,17 +23,20 @@ class RST_WorkbenchListEntitiesResponse : JsonApiStruct
 	string worldPath;
 	string entities;
 	bool hasMore;
+
 	void RST_WorkbenchListEntitiesResponse()
 	{
 		RegAll();
 	}
 }
+
 class RST_WorkbenchListEntities : NetApiHandler
 {
 	override JsonApiStruct GetRequest()
 	{
 		return new RST_WorkbenchListEntitiesRequest();
 	}
+
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchListEntitiesRequest typedRequest = RST_WorkbenchListEntitiesRequest.Cast(request);

@@ -19,11 +19,13 @@ class RST_WorkbenchTraceRequest : JsonApiStruct
 	bool terrain;
 	bool ocean;
 	int targetLayers;
+
 	void RST_WorkbenchTraceRequest()
 	{
 		RegAll();
 	}
 }
+
 class RST_WorkbenchTraceResponse : JsonApiStruct
 {
 	string bridgeVersion;
@@ -42,17 +44,20 @@ class RST_WorkbenchTraceResponse : JsonApiStruct
 	string entity;
 	string colliderName;
 	string material;
+
 	void RST_WorkbenchTraceResponse()
 	{
 		RegAll();
 	}
 }
+
 class RST_WorkbenchTrace : NetApiHandler
 {
 	override JsonApiStruct GetRequest()
 	{
 		return new RST_WorkbenchTraceRequest();
 	}
+
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchTraceRequest q = RST_WorkbenchTraceRequest.Cast(request);

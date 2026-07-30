@@ -6,6 +6,7 @@ class RST_WorkbenchClearSelectionRequest : JsonApiStruct
 		RegAll();
 	}
 }
+
 class RST_WorkbenchClearSelectionResponse : JsonApiStruct
 {
 	string bridgeVersion;
@@ -15,17 +16,20 @@ class RST_WorkbenchClearSelectionResponse : JsonApiStruct
 	int selectedCount;
 	string selectedEntities;
 	bool selectedEntitiesTruncated;
+
 	void RST_WorkbenchClearSelectionResponse()
 	{
 		RegAll();
 	}
 }
+
 class RST_WorkbenchClearSelection : NetApiHandler
 {
 	override JsonApiStruct GetRequest()
 	{
 		return new RST_WorkbenchClearSelectionRequest();
 	}
+
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchClearSelectionResponse response = new RST_WorkbenchClearSelectionResponse();

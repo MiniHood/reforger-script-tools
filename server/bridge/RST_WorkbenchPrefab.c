@@ -4,11 +4,13 @@ class RST_WorkbenchPrefabRequest : JsonApiStruct
 	string entityId;
 	string resourceName;
 	string memberId;
+
 	void RST_WorkbenchPrefabRequest()
 	{
 		RegAll();
 	}
 }
+
 class RST_WorkbenchPrefabResponse : JsonApiStruct
 {
 	string bridgeVersion;
@@ -29,11 +31,13 @@ class RST_WorkbenchPrefabResponse : JsonApiStruct
 	string properties;
 	bool propertiesTruncated;
 	int childCount;
+
 	void RST_WorkbenchPrefabResponse()
 	{
 		RegAll();
 	}
 }
+
 class RST_WorkbenchInspectPrefab : NetApiHandler
 {
 	IEntitySource Find(WorldEditorAPI api, string id)
@@ -46,6 +50,7 @@ class RST_WorkbenchInspectPrefab : NetApiHandler
 		}
 		return null;
 	}
+
 	// Keep resource and entity inspection on the same authored-component path.
 	int ComponentCount(BaseContainer source)
 	{
@@ -63,6 +68,7 @@ class RST_WorkbenchInspectPrefab : NetApiHandler
 			return components.Count();
 		return 0;
 	}
+
 	IEntityComponentSource ComponentAt(BaseContainer source, int index)
 	{
 		IEntitySource entity = IEntitySource.Cast(source);
@@ -74,6 +80,7 @@ class RST_WorkbenchInspectPrefab : NetApiHandler
 			return IEntityComponentSource.Cast(components.Get(index));
 		return null;
 	}
+
 	BaseContainer FindMember(BaseContainer parent, string memberId, string prefix, int depth)
 	{
 		if (depth >= 16)
@@ -97,16 +104,19 @@ class RST_WorkbenchInspectPrefab : NetApiHandler
 		}
 		return null;
 	}
+
 	BaseContainer ResolveMember(IEntitySource root, string memberId)
 	{
 		if (memberId.IsEmpty())
 			return root;
 		return FindMember(root, memberId, string.Empty, 0);
 	}
+
 	bool IsEngineCallback(string name)
 	{
 		return name.StartsWith("EOn") || name.StartsWith("_WB_") || name == "RplLoad"    || name == "RplSave" || name == "Preload" || name == "OnTransformResetImpl"    || name == "userScript" || name == "constructor" || name == "destructor";
 	}
+
 	string PropertyOrigin(BaseContainer container, string name)
 	{
 		if (container.IsVariableSetDirectly(name))
@@ -118,6 +128,7 @@ class RST_WorkbenchInspectPrefab : NetApiHandler
 		}
 		return "default";
 	}
+
 	string PropertyTypeName(DataVarType dataType)
 	{
 		switch (dataType)
@@ -131,6 +142,7 @@ class RST_WorkbenchInspectPrefab : NetApiHandler
 		}
 		return string.Empty;
 	}
+
 	string PropertyRecord(int componentIndex, BaseContainer container, string name, string typeName, string value)
 	{
 		name.Replace("|", "/");
@@ -142,6 +154,7 @@ class RST_WorkbenchInspectPrefab : NetApiHandler
 			return string.Format("%1|%2|%3|%4|%5|%6", componentIndex, name, typeName, value, container.IsVariableSetDirectly(name), origin);
 		return string.Format("%1|%2|%3|%4|%5", name, typeName, value, container.IsVariableSetDirectly(name), origin);
 	}
+
 	bool ReadPropertyRecord(int componentIndex, BaseContainer container, string name, DataVarType dataType, out string record)
 	{
 		bool boolValue;
@@ -176,10 +189,12 @@ class RST_WorkbenchInspectPrefab : NetApiHandler
 		}
 		return false;
 	}
+
 	override JsonApiStruct GetRequest()
 	{
 		return new RST_WorkbenchPrefabRequest();
 	}
+
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchPrefabRequest r = RST_WorkbenchPrefabRequest.Cast(request);
@@ -341,12 +356,14 @@ class RST_WorkbenchInspectPrefab : NetApiHandler
 		return response;
 	}
 }
+
 class RST_WorkbenchCreatePrefab : RST_WorkbenchEntityMutationBase
 {
 	override JsonApiStruct GetRequest()
 	{
 		return new RST_WorkbenchEntityMutationRequest();
 	}
+
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchEntityMutationRequest r = RST_WorkbenchEntityMutationRequest.Cast(request);
@@ -393,12 +410,14 @@ class RST_WorkbenchCreatePrefab : RST_WorkbenchEntityMutationBase
 		return response;
 	}
 }
+
 class RST_WorkbenchCreateGenericPrefab : RST_WorkbenchEntityMutationBase
 {
 	override JsonApiStruct GetRequest()
 	{
 		return new RST_WorkbenchEntityMutationRequest();
 	}
+
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchEntityMutationRequest r = RST_WorkbenchEntityMutationRequest.Cast(request);
@@ -470,12 +489,14 @@ class RST_WorkbenchCreateGenericPrefab : RST_WorkbenchEntityMutationBase
 		return response;
 	}
 }
+
 class RST_WorkbenchSavePrefab : RST_WorkbenchEntityMutationBase
 {
 	override JsonApiStruct GetRequest()
 	{
 		return new RST_WorkbenchEntityMutationRequest();
 	}
+
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchEntityMutationRequest r = RST_WorkbenchEntityMutationRequest.Cast(request);
@@ -538,15 +559,18 @@ class RST_WorkbenchSavePrefab : RST_WorkbenchEntityMutationBase
 // without using a scene instance or a resource-file writer. The component is
 // created and removed in the same native editor action, so a successful save
 // leaves the resource's effective component count unchanged.
+
 class RST_WorkbenchPrefabResourceProofRequest : JsonApiStruct
 {
 	string resourceName;
 	bool confirm;
+
 	void RST_WorkbenchPrefabResourceProofRequest()
 	{
 		RegAll();
 	}
 }
+
 class RST_WorkbenchPrefabResourceProofResponse : JsonApiStruct
 {
 	string bridgeVersion;
@@ -561,17 +585,20 @@ class RST_WorkbenchPrefabResourceProofResponse : JsonApiStruct
 	bool templateSaved;
 	int componentCountBefore;
 	int componentCountAfterReload;
+
 	void RST_WorkbenchPrefabResourceProofResponse()
 	{
 		RegAll();
 	}
 }
+
 class RST_WorkbenchPrefabResourceProof : NetApiHandler
 {
 	override JsonApiStruct GetRequest()
 	{
 		return new RST_WorkbenchPrefabResourceProofRequest();
 	}
+
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchPrefabResourceProofRequest r = RST_WorkbenchPrefabResourceProofRequest.Cast(request);
@@ -663,16 +690,19 @@ class RST_WorkbenchPrefabResourceProof : NetApiHandler
 		return response;
 	}
 }
+
 class RST_WorkbenchPrefabResourceComponentRequest : JsonApiStruct
 {
 	string resourceName;
 	string className;
 	bool confirm;
+
 	void RST_WorkbenchPrefabResourceComponentRequest()
 	{
 		RegAll();
 	}
 }
+
 class RST_WorkbenchPrefabResourceComponentResponse : JsonApiStruct
 {
 	string bridgeVersion;
@@ -682,17 +712,20 @@ class RST_WorkbenchPrefabResourceComponentResponse : JsonApiStruct
 	int componentIndex;
 	string componentClass;
 	bool templateSaved;
+
 	void RST_WorkbenchPrefabResourceComponentResponse()
 	{
 		RegAll();
 	}
 }
+
 class RST_WorkbenchAddPrefabResourceComponent : NetApiHandler
 {
 	override JsonApiStruct GetRequest()
 	{
 		return new RST_WorkbenchPrefabResourceComponentRequest();
 	}
+
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchPrefabResourceComponentRequest r = RST_WorkbenchPrefabResourceComponentRequest.Cast(request);
@@ -763,23 +796,27 @@ class RST_WorkbenchAddPrefabResourceComponent : NetApiHandler
 		return response;
 	}
 }
+
 class RST_WorkbenchPrefabResourceComponentRemovalRequest : JsonApiStruct
 {
 	string resourceName;
 	string className;
 	int componentIndex;
 	bool confirm;
+
 	void RST_WorkbenchPrefabResourceComponentRemovalRequest()
 	{
 		RegAll();
 	}
 }
+
 class RST_WorkbenchRemovePrefabResourceComponent : NetApiHandler
 {
 	override JsonApiStruct GetRequest()
 	{
 		return new RST_WorkbenchPrefabResourceComponentRemovalRequest();
 	}
+
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchPrefabResourceComponentRemovalRequest r = RST_WorkbenchPrefabResourceComponentRemovalRequest.Cast(request);
@@ -852,6 +889,7 @@ class RST_WorkbenchRemovePrefabResourceComponent : NetApiHandler
 		return response;
 	}
 }
+
 class RST_WorkbenchPrefabResourcePropertyRequest : JsonApiStruct
 {
 	string resourceName;
@@ -861,11 +899,13 @@ class RST_WorkbenchPrefabResourcePropertyRequest : JsonApiStruct
 	string expectedValue;
 	string value;
 	bool confirm;
+
 	void RST_WorkbenchPrefabResourcePropertyRequest()
 	{
 		RegAll();
 	}
 }
+
 class RST_WorkbenchPrefabResourcePropertyResponse : JsonApiStruct
 {
 	string bridgeVersion;
@@ -873,17 +913,20 @@ class RST_WorkbenchPrefabResourcePropertyResponse : JsonApiStruct
 	string status;
 	string resourceName;
 	bool templateSaved;
+
 	void RST_WorkbenchPrefabResourcePropertyResponse()
 	{
 		RegAll();
 	}
 }
+
 class RST_WorkbenchSetPrefabResourceProperty : RST_WorkbenchEntityMutationBase
 {
 	override JsonApiStruct GetRequest()
 	{
 		return new RST_WorkbenchPrefabResourcePropertyRequest();
 	}
+
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchPrefabResourcePropertyRequest r = RST_WorkbenchPrefabResourcePropertyRequest.Cast(request);
@@ -971,23 +1014,27 @@ class RST_WorkbenchSetPrefabResourceProperty : RST_WorkbenchEntityMutationBase
 		return response;
 	}
 }
+
 class RST_WorkbenchPrefabPropertyRequest : JsonApiStruct
 {
 	string entityId;
 	string propertyName;
 	string expectedValue;
 	string value;
+
 	void RST_WorkbenchPrefabPropertyRequest()
 	{
 		RegAll();
 	}
 }
+
 class RST_WorkbenchSetPrefabProperty : RST_WorkbenchEntityMutationBase
 {
 	override JsonApiStruct GetRequest()
 	{
 		return new RST_WorkbenchPrefabPropertyRequest();
 	}
+
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchPrefabPropertyRequest r = RST_WorkbenchPrefabPropertyRequest.Cast(request);

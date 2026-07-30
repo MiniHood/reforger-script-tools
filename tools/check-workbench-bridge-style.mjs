@@ -9,7 +9,7 @@ const failures = [];
 
 for (const sourceFile of sourceFiles) {
   const source = await readFile(resolve(bridgeDirectory, sourceFile), "utf8");
-  const lines = source.split("\n");
+  const lines = source.split(/\r?\n/);
 
   if (!source.endsWith("\n")) {
     failures.push(`${sourceFile}: missing final newline`);
@@ -24,6 +24,7 @@ for (const sourceFile of sourceFiles) {
     if (/[ \t]+$/.test(line)) {
       failures.push(`${sourceFile}:${lineNumber}: trailing whitespace`);
     }
+    assertVerticalSpacing(sourceFile, lines, index);
     assertSingleStatement(sourceFile, lineNumber, line);
     assertControlBody(sourceFile, lines, index);
   }
@@ -37,6 +38,26 @@ if (failures.length > 0) {
   process.exitCode = 1;
 } else {
   console.log(`Workbench bridge style verified for ${sourceFiles.length} files.`);
+}
+
+function assertVerticalSpacing(sourceFile, lines, index) {
+  const line = lines[index];
+  const previous = index > 0 ? lines[index - 1] : undefined;
+  const isMethod = /^\t(?:(?:override|static|protected|private)\s+)*(?:[A-Za-z_][A-Za-z0-9_<>]*\s+)+[A-Za-z_][A-Za-z0-9_]*\(/.test(line);
+  const isMemberComment = /^\t\/\//.test(line);
+
+  if (!line.trim() && previous !== undefined && !previous.trim()) {
+    failures.push(`${sourceFile}:${index + 1}: consecutive blank lines are not allowed`);
+  }
+  if (/^class\s+/.test(line) && previous?.trim() && !previous.trimStart().startsWith("#")) {
+    failures.push(`${sourceFile}:${index + 1}: top-level classes require one separating blank line`);
+  }
+  if (isMethod && previous?.trim() && previous.trim() !== "{" && !previous.trimStart().startsWith("//")) {
+    failures.push(`${sourceFile}:${index + 1}: methods require one separating blank line`);
+  }
+  if (isMemberComment && previous?.trim() && previous.trim() !== "{" && !previous.trimStart().startsWith("//")) {
+    failures.push(`${sourceFile}:${index + 1}: member comments require one separating blank line`);
+  }
 }
 
 function assertSingleStatement(sourceFile, lineNumber, line) {

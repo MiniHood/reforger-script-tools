@@ -6,11 +6,13 @@ class RST_WorkbenchSampleTerrainRequest : JsonApiStruct
 	float halfExtentMeters;
 	float spacingMeters;
 	bool includeWater;
+
 	void RST_WorkbenchSampleTerrainRequest()
 	{
 		RegAll();
 	}
 }
+
 class RST_WorkbenchSampleTerrainResponse : JsonApiStruct
 {
 	string bridgeVersion;
@@ -41,17 +43,20 @@ class RST_WorkbenchSampleTerrainResponse : JsonApiStruct
 	float nativeSpacingMeters;
 	int tileCountX;
 	int tileCountZ;
+
 	void RST_WorkbenchSampleTerrainResponse()
 	{
 		RegAll();
 	}
 }
+
 class RST_WorkbenchSampleTerrain : NetApiHandler
 {
 	override JsonApiStruct GetRequest()
 	{
 		return new RST_WorkbenchSampleTerrainRequest();
 	}
+
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchSampleTerrainRequest typedRequest = RST_WorkbenchSampleTerrainRequest.Cast(request);

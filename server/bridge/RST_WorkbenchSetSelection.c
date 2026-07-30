@@ -2,28 +2,33 @@
 class RST_WorkbenchSetSelectionRequest : JsonApiStruct
 {
 	string entityId;
+
 	void RST_WorkbenchSetSelectionRequest()
 	{
 		RegAll();
 	}
 }
+
 class RST_WorkbenchSetSelectionResponse : JsonApiStruct
 {
 	string bridgeVersion;
 	int protocolVersion;
 	string status;
 	string entity;
+
 	void RST_WorkbenchSetSelectionResponse()
 	{
 		RegAll();
 	}
 }
+
 class RST_WorkbenchSetSelection : NetApiHandler
 {
 	override JsonApiStruct GetRequest()
 	{
 		return new RST_WorkbenchSetSelectionRequest();
 	}
+
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchSetSelectionRequest typedRequest = RST_WorkbenchSetSelectionRequest.Cast(request);

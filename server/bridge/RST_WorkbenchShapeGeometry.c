@@ -20,11 +20,13 @@ class RST_WorkbenchShapeGeometryRequest : JsonApiStruct
 	float scaleZ;
 	string mirrorAxis;
 	float spacingMeters;
+
 	void RST_WorkbenchShapeGeometryRequest()
 	{
 		RegAll();
 	}
 }
+
 class RST_WorkbenchShapeGeometryResponse : JsonApiStruct
 {
 	string bridgeVersion;
@@ -41,11 +43,13 @@ class RST_WorkbenchShapeGeometryResponse : JsonApiStruct
 	int resultPointCount;
 	float pathLength;
 	int skippedZeroLengthSegments;
+
 	void RST_WorkbenchShapeGeometryResponse()
 	{
 		RegAll();
 	}
 }
+
 class RST_WorkbenchShapeGeometry : NetApiHandler
 {
 	IEntitySource Find(WorldEditorAPI api, string entityId)
@@ -58,6 +62,7 @@ class RST_WorkbenchShapeGeometry : NetApiHandler
 		}
 		return null;
 	}
+
 	RST_WorkbenchShapeGeometryResponse Response()
 	{
 		RST_WorkbenchShapeGeometryResponse response = new RST_WorkbenchShapeGeometryResponse();
@@ -65,6 +70,7 @@ class RST_WorkbenchShapeGeometry : NetApiHandler
 		response.protocolVersion = 1;
 		return response;
 	}
+
 	bool Setup(WorldEditorAPI api, RST_WorkbenchShapeGeometryResponse response)
 	{
 		if (!api)
@@ -89,6 +95,7 @@ class RST_WorkbenchShapeGeometry : NetApiHandler
 		}
 		return true;
 	}
+
 	bool Resolve(WorldEditorAPI api, string entityId, RST_WorkbenchShapeGeometryResponse response, out IEntitySource source, out ShapeEntity shape)
 	{
 		source = Find(api, entityId);
@@ -110,6 +117,7 @@ class RST_WorkbenchShapeGeometry : NetApiHandler
 		}
 		return true;
 	}
+
 	void Record(WorldEditorAPI api, IEntitySource source, ShapeEntity shape, RST_WorkbenchShapeGeometryResponse response)
 	{
 		vector origin = shape.GetOrigin();
@@ -135,6 +143,7 @@ class RST_WorkbenchShapeGeometry : NetApiHandler
 		shape.GetPointsPositions(positions);
 		Encode(positions, response.points);
 	}
+
 	void Encode(array<vector> values, out string encoded)
 	{
 		encoded = string.Empty;
@@ -145,6 +154,7 @@ class RST_WorkbenchShapeGeometry : NetApiHandler
 			encoded += string.Format("%1|%2|%3", point[0], point[1], point[2]);
 		}
 	}
+
 	bool Decode(string encoded, out array<vector> decoded)
 	{
 		array<string> records = {
@@ -166,6 +176,7 @@ class RST_WorkbenchShapeGeometry : NetApiHandler
 		}
 		return true;
 	}
+
 	float Distance(vector a, vector b)
 	{
 		float x = b[0] - a[0];
@@ -173,10 +184,12 @@ class RST_WorkbenchShapeGeometry : NetApiHandler
 		float z = b[2] - a[2];
 		return Math.Sqrt(x * x + y * y + z * z);
 	}
+
 	vector Interpolate(vector a, vector b, float t)
 	{
 		return Vector(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t);
 	}
+
 	void ToSpace(ShapeEntity shape, array<vector> values, string fromSpace, string toSpace)
 	{
 		if (fromSpace == toSpace)
@@ -189,6 +202,7 @@ class RST_WorkbenchShapeGeometry : NetApiHandler
 				values[i] = shape.CoordToLocal(values[i]);
 		}
 	}
+
 	bool Commit(WorldEditorAPI api, IEntitySource source, ShapeEntity shape, array<vector> points, string label)
 	{
 		if (api.IsEntityLayerLockedHierarchy(source.GetSubScene(), source.GetLayerID()))
@@ -202,10 +216,12 @@ class RST_WorkbenchShapeGeometry : NetApiHandler
 		api.EndEntityAction(label);
 		return true;
 	}
+
 	override JsonApiStruct GetRequest()
 	{
 		return new RST_WorkbenchShapeGeometryRequest();
 	}
+
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchShapeGeometryRequest r = RST_WorkbenchShapeGeometryRequest.Cast(request);

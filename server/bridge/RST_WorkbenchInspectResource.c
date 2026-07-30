@@ -2,11 +2,13 @@
 class RST_WorkbenchInspectResourceRequest : JsonApiStruct
 {
 	string resourceName;
+
 	void RST_WorkbenchInspectResourceRequest()
 	{
 		RegAll();
 	}
 }
+
 class RST_WorkbenchInspectResourceResponse : JsonApiStruct
 {
 	bool found;
@@ -15,17 +17,20 @@ class RST_WorkbenchInspectResourceResponse : JsonApiStruct
 	string className;
 	string sourceAddons;
 	bool sourceAddonsTruncated;
+
 	void RST_WorkbenchInspectResourceResponse()
 	{
 		RegAll();
 	}
 }
+
 class RST_WorkbenchInspectResource : NetApiHandler
 {
 	override JsonApiStruct GetRequest()
 	{
 		return new RST_WorkbenchInspectResourceRequest();
 	}
+
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchInspectResourceRequest typedRequest = RST_WorkbenchInspectResourceRequest.Cast(request);

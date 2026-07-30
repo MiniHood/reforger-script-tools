@@ -89,8 +89,11 @@ The development-only `tools/check-workbench-bridge-style.mjs` gate enforces the
 local base-game-derived contract: tab indentation, no trailing whitespace, one
 executable statement per physical line (except `for` headers), Allman control
 layout, braced loop bodies, and an immediately-indented single-statement body
-as the only permitted unbraced `if` form. This preserves compiler validation as
-the Workbench authority while making the reviewed source directly inspectable.
+as the only permitted unbraced `if` form. One blank line separates top-level
+classes, field blocks from methods, sibling methods, and their attached member
+comments; consecutive blank lines are not permitted. This preserves compiler
+validation as the Workbench authority while making the reviewed source directly
+inspectable.
 When no consent manifest exists, status reports installation as available only
 if the existing profile and native connection make the approval-bearing
 operation usable; status itself creates nothing.
