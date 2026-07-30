@@ -233,8 +233,11 @@ suite("Workbench Gateway", () => {
         Number.isFinite((records[0] as { durationMs: number }).durationMs),
       );
       const timing = (
-        records[0] as { timing?: { request?: { totalMs?: number } } }
+        records[0] as {
+          timing?: { callbackMs?: number; request?: { totalMs?: number } };
+        }
       ).timing;
+      assert.ok(Number.isFinite(timing?.callbackMs));
       assert.ok(Number.isFinite(timing?.request?.totalMs));
       const serialized = JSON.stringify(records[0]);
       assert.ok(!serialized.includes(String(peer.port)));

@@ -33,8 +33,18 @@ export interface WorkbenchGatewayDiagnosticRecord {
 }
 
 export interface WorkbenchPrivateApiTiming {
-  processSpawnMs?: number;
-  processExitMs?: number;
+  /** Parent launch through Node's child-process spawn notification. */
+  spawnEventMs?: number;
+  /** Parent launch until the gateway begins writing its JSON response. */
+  firstResponseByteMs?: number;
+  /** Parent launch through the child's exit event. */
+  exitEventMs?: number;
+  /** Parent launch through stdio closure. */
+  closeEventMs?: number;
+  /** Spawn notification through child exit; this is the child lifetime seen by Node. */
+  childLifetimeMs?: number;
+  /** Parent launch through the execFile completion callback. */
+  callbackMs?: number;
   controllerSetupMs?: number;
   commandMs?: number;
   request?: {
@@ -496,6 +506,9 @@ export async function invokeWorkbenchPrivateApi(
   return new Promise((resolve) => {
     const invokedAt = Date.now();
     let spawnedAt: number | undefined;
+    let firstResponseByteAt: number | undefined;
+    let exitedAt: number | undefined;
+    let closedAt: number | undefined;
     const child = execFile(
       executable,
       [
@@ -514,14 +527,14 @@ export async function invokeWorkbenchPrivateApi(
         windowsHide: true,
       },
       (error, stdout) => {
-        const processTiming = {
-          ...(spawnedAt === undefined
-            ? {}
-            : { processSpawnMs: spawnedAt - invokedAt }),
-          ...(spawnedAt === undefined
-            ? {}
-            : { processExitMs: Date.now() - spawnedAt }),
-        };
+        const processTiming = childLifecycleTiming(
+          invokedAt,
+          spawnedAt,
+          firstResponseByteAt,
+          exitedAt,
+          closedAt,
+          Date.now(),
+        );
         if (error) {
           resolve({
             ...failure(
@@ -567,7 +580,46 @@ export async function invokeWorkbenchPrivateApi(
     child.once("spawn", () => {
       spawnedAt = Date.now();
     });
+    child.stdout?.once("data", () => {
+      firstResponseByteAt ??= Date.now();
+    });
+    child.once("exit", () => {
+      exitedAt = Date.now();
+    });
+    child.once("close", () => {
+      closedAt = Date.now();
+    });
   });
+}
+
+function childLifecycleTiming(
+  invokedAt: number,
+  spawnedAt: number | undefined,
+  firstResponseByteAt: number | undefined,
+  exitedAt: number | undefined,
+  closedAt: number | undefined,
+  callbackAt: number,
+): Pick<
+  WorkbenchPrivateApiTiming,
+  | "spawnEventMs"
+  | "firstResponseByteMs"
+  | "exitEventMs"
+  | "closeEventMs"
+  | "childLifetimeMs"
+  | "callbackMs"
+> {
+  return {
+    ...(spawnedAt === undefined ? {} : { spawnEventMs: spawnedAt - invokedAt }),
+    ...(firstResponseByteAt === undefined
+      ? {}
+      : { firstResponseByteMs: firstResponseByteAt - invokedAt }),
+    ...(exitedAt === undefined ? {} : { exitEventMs: exitedAt - invokedAt }),
+    ...(closedAt === undefined ? {} : { closeEventMs: closedAt - invokedAt }),
+    ...(spawnedAt === undefined || exitedAt === undefined
+      ? {}
+      : { childLifetimeMs: exitedAt - spawnedAt }),
+    callbackMs: callbackAt - invokedAt,
+  };
 }
 
 function decodePrivateApiTiming(value: unknown): WorkbenchPrivateApiTiming {
