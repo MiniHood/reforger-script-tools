@@ -295,6 +295,10 @@ pub fn read_virtual_source(uri: &str) -> Result<String, String> {
         .next()
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "Pack source URI has no logical path".to_string())?;
+    // VS Code normalizes custom URI authorities (including the GUID's case).
+    // The registry is keyed by the canonical identity emitted during indexing,
+    // never by a client-provided serialization.
+    let canonical_uri = virtual_source_uri(&guid, revision, logical_path)?;
     let key = revision_key(&guid, revision);
     let sources = SOURCE_REVISIONS
         .get_or_init(Default::default)
@@ -306,7 +310,7 @@ pub fn read_virtual_source(uri: &str) -> Result<String, String> {
     sources.validate_artifacts()?;
     let source_entry = sources
         .entries
-        .get(uri)
+        .get(&canonical_uri)
         .ok_or_else(|| format!("Pack source does not exist: {logical_path}"))?;
     let entry = &source_entry.entry;
     let archive = PakArchive::inspect(entry.archive_path()).map_err(|error| error.to_string())?;
@@ -962,6 +966,12 @@ mod tests {
             .clone();
         assert_eq!(
             read_virtual_source(&feature_uri).unwrap(),
+            "class Feature {}"
+        );
+        let editor_normalized_uri =
+            feature_uri.replacen(BASE_GAME_GUID, &BASE_GAME_GUID.to_ascii_lowercase(), 1);
+        assert_eq!(
+            read_virtual_source(&editor_normalized_uri).unwrap(),
             "class Feature {}"
         );
 
