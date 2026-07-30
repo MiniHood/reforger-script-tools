@@ -6,6 +6,7 @@ use crate::index::{
 };
 use crate::index_build::{
     build_index_with_control, IndexBuildConfig, IndexBuildControl, IndexBuildResult,
+    IndexBuildTimings,
     IndexSourceRoot,
 };
 use crate::lexer::TextSpan;
@@ -128,6 +129,8 @@ pub(crate) fn load_or_build_archive_index_with_reuse(
     let build_start = Instant::now();
     let built = build()?;
     timings.rebuild = build_start.elapsed();
+    timings.source_build = built.summary.timings;
+    let cache_prepare_start = Instant::now();
     let cached_index = built.index.compact_for_runtime_cache();
     let summary = summary_from_build_with_cached_index(&built, &cached_index);
     let payload = CachedGameDataIndex::from_index(
@@ -137,6 +140,7 @@ pub(crate) fn load_or_build_archive_index_with_reuse(
         source_digest.clone(),
         CachedIndexSummary::from(&summary),
     );
+    timings.cache_prepare = cache_prepare_start.elapsed();
     let write_start = Instant::now();
     write_cached_payload(cache_path, &payload)?;
     timings.cache_write = write_start.elapsed();
@@ -170,7 +174,17 @@ pub struct IndexCacheTimings {
     pub map_rebuild: Duration,
     pub cache_read_deserialize_validate: Duration,
     pub rebuild: Duration,
+    /// Cold-build stages, retained independently of the enclosing rebuild
+    /// duration so diagnostics can distinguish source acquisition, parsing,
+    /// semantic modelling, and final aggregation.
+    pub source_build: IndexBuildTimings,
+    /// Projection of the completed source index into the compact runtime and
+    /// serialized cache representations before cache encoding begins.
+    pub cache_prepare: Duration,
     pub cache_write: Duration,
+    /// Publication of cache metadata owned by the caller, including immutable
+    /// manifests and current-revision pointers.
+    pub cache_metadata_publish: Duration,
     pub total: Duration,
 }
 

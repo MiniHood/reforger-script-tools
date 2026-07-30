@@ -103,6 +103,9 @@ pub struct ParseDiagnosticDetail {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct IndexBuildTimings {
     pub file_discovery: Duration,
+    /// Acquisition of bytes selected from an archive or loose source root
+    /// before decoding and parsing begin.
+    pub source_acquisition: Duration,
     pub read_decode: Duration,
     pub parse: Duration,
     pub ast_model_catalog: Duration,

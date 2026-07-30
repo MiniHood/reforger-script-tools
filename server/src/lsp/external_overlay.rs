@@ -605,7 +605,19 @@ fn log_loaded_addon_index_diagnostics(logger: &LspLogger, result: &LoadedAddonIn
                     "runtimeMapRebuild": instance.timings.map_rebuild.as_millis(),
                     "cacheReadDeserializeValidate": instance.timings.cache_read_deserialize_validate.as_millis(),
                     "sourceRebuild": instance.timings.rebuild.as_millis(),
+                    "sourceBuild": {
+                        "fileDiscovery": instance.timings.source_build.file_discovery.as_millis(),
+                        "sourceAcquisition": instance.timings.source_build.source_acquisition.as_millis(),
+                        "readDecode": instance.timings.source_build.read_decode.as_millis(),
+                        "parse": instance.timings.source_build.parse.as_millis(),
+                        "semanticModel": instance.timings.source_build.ast_model_catalog.as_millis(),
+                        "catalogBuild": instance.timings.source_build.catalog_build.as_millis(),
+                        "indexAggregation": instance.timings.source_build.index_build.as_millis(),
+                        "total": instance.timings.source_build.total.as_millis(),
+                    },
+                    "cachePrepare": instance.timings.cache_prepare.as_millis(),
                     "cacheWrite": instance.timings.cache_write.as_millis(),
+                    "cacheMetadataPublish": instance.timings.cache_metadata_publish.as_millis(),
                     "total": instance.timings.total.as_millis(),
                 }
             })

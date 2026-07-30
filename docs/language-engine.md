@@ -79,7 +79,11 @@ bounded performance trace: end-to-end game-data, workspace, and publication
 durations; graph-read and layer-composition durations; and one record per non-workspace
 loaded add-on. An add-on record identifies its cache outcome and rebuild
 reason, source and cache sizes, and inspection, cache read/decode/validation,
-runtime-map reconstruction, rebuild, and cache-write durations. It contains no
+runtime-map reconstruction, rebuild, and cache-write durations. Rebuilt
+add-ons further split source rebuilding into file discovery, source acquisition,
+read/decode, parsing, semantic modelling, and index aggregation, and separately
+record runtime-cache preparation before encoding/writing and metadata
+publication after it. It contains no
 source text or filesystem paths, so a fresh and warm start can be compared
 from the same diagnostic-log stream.
 

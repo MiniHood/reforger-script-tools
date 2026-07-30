@@ -487,6 +487,7 @@ fn load_or_build_inspected_addon(
     )?;
     result.timings.fingerprint = inspection_elapsed;
     result.timings.total += inspection_elapsed;
+    let cache_metadata_publish_start = Instant::now();
     control.check()?;
     let manifest = AddonIndexManifest {
         index_bytes: result.cache_file_bytes.unwrap_or(0),
@@ -505,6 +506,8 @@ fn load_or_build_inspected_addon(
     };
     write_json_atomic(&addon_root.join("current.json"), &current)?;
     prune_stale_revisions(&addon_root, &artifact_digest)?;
+    result.timings.cache_metadata_publish = cache_metadata_publish_start.elapsed();
+    result.timings.total += result.timings.cache_metadata_publish;
     register_source_revision(&addon_guid, &artifact_digest, source_revision);
     Ok(result)
 }
@@ -812,6 +815,7 @@ fn build_inspected_base_game(
     source_revision: &PackedSourceRevision,
     control: &IndexBuildControl,
 ) -> Result<IndexBuildResult, String> {
+    let source_acquisition_start = Instant::now();
     let revision = inspection.artifact_digest.clone();
     let mut logical_paths = BTreeSet::new();
     let mut sources = Vec::new();
@@ -884,7 +888,11 @@ fn build_inspected_base_game(
             },
         });
     }
-    build_index_from_sources(sources, control)
+    let source_acquisition = source_acquisition_start.elapsed();
+    let mut result = build_index_from_sources(sources, control)?;
+    result.summary.timings.source_acquisition = source_acquisition;
+    result.summary.timings.total += source_acquisition;
+    Ok(result)
 }
 
 fn virtual_source_uri(guid: &str, revision: &str, logical_path: &str) -> Result<String, String> {
