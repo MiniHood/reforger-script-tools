@@ -57,9 +57,9 @@ not replace the previously complete cache.
 Packed files carry a typed virtual-source identity in semantic metadata rather
 than overloading a filesystem path. The identity includes add-on GUID,
 semantic revision, logical script path, and URI. Definition serving retains
-immutable revision registries and rejects a read when its captured pack
-artifact has changed on disk, so an old symbol span is never applied to newer
-bytes.
+immutable revision registries. Indexing and definition serving hash and decode
+each entry from the same captured compressed bytes, so a concurrent pack
+update cannot apply an old symbol span to newer bytes.
 
 ## Boundaries and Evidence
 

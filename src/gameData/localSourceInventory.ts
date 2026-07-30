@@ -1,6 +1,6 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import * as vscode from 'vscode';
 import { gameDataConfig, gameDataStorage } from '../extensionConfig/gameData';
 
@@ -29,6 +29,7 @@ export interface LocalAddonInventoryEntry {
 	path: string;
 	projectFile?: string;
 	packFiles: string[];
+	artifactIdentity: string;
 }
 
 const rootKinds: readonly AddonRootKind[] = ['base-game', 'workbench', 'user-addons'];
@@ -52,15 +53,36 @@ export async function resolveAndWriteLocalSourceInventory(
 		gameDataStorage.rootFolder,
 		`${gameDataStorage.inventoryPrefix}${digest}.json`,
 	);
-	await fs.mkdir(path.dirname(inventoryPath), { recursive: true });
+	await publishContentAddressedFile(inventoryPath, contents);
+	return { inventory, path: inventoryPath };
+}
+
+export async function publishContentAddressedFile(targetPath: string, contents: string): Promise<void> {
+	await fs.mkdir(path.dirname(targetPath), { recursive: true });
+	const temporaryPath = path.join(
+		path.dirname(targetPath),
+		`.${path.basename(targetPath)}.${process.pid}.${randomUUID()}.tmp`,
+	);
+	const handle = await fs.open(temporaryPath, 'wx');
 	try {
-		await fs.writeFile(inventoryPath, contents, { encoding: 'utf8', flag: 'wx' });
+		await handle.writeFile(contents, { encoding: 'utf8' });
+		await handle.sync();
+	} finally {
+		await handle.close();
+	}
+	try {
+		await fs.link(temporaryPath, targetPath);
 	} catch (error) {
 		if (!isAlreadyExists(error)) {
 			throw error;
 		}
+		const existing = await fs.readFile(targetPath, 'utf8');
+		if (existing !== contents) {
+			throw new Error(`Content-addressed add-on inventory is corrupt: ${targetPath}`);
+		}
+	} finally {
+		await fs.rm(temporaryPath, { force: true });
 	}
-	return { inventory, path: inventoryPath };
 }
 
 async function removeLegacyRuntimeStorage(globalStoragePath: string): Promise<void> {
@@ -154,18 +176,33 @@ async function discoverAddons(root: ResolvedAddonRoot): Promise<LocalAddonInvent
 			const addonPath = path.join(root.path!, child.name);
 			const files = await readDirectory(addonPath);
 			const project = files.find(file => file.isFile() && file.name.toLowerCase() === 'addon.gproj');
+			const projectFile = project ? path.join(addonPath, project.name) : undefined;
+			const packFiles = files
+				.filter(file => file.isFile() && file.name.toLowerCase().endsWith('.pak'))
+				.map(file => path.join(addonPath, file.name))
+				.sort(ordinalCompare);
 			return {
 				rootKind: root.kind,
 				directoryName: child.name,
 				path: addonPath,
-				...(project ? { projectFile: path.join(addonPath, project.name) } : {}),
-				packFiles: files
-					.filter(file => file.isFile() && file.name.toLowerCase().endsWith('.pak'))
-					.map(file => path.join(addonPath, file.name))
-					.sort(ordinalCompare),
+				...(projectFile ? { projectFile } : {}),
+				packFiles,
+				artifactIdentity: await artifactIdentity([...(projectFile ? [projectFile] : []), ...packFiles]),
 			};
 		}));
 	return addons;
+}
+
+async function artifactIdentity(files: string[]): Promise<string> {
+	const identities = await Promise.all(files.map(async file => {
+		try {
+			const stat = await fs.stat(file);
+			return `${file}\0${stat.size}\0${stat.mtimeMs}`;
+		} catch {
+			return `${file}\0missing`;
+		}
+	}));
+	return createHash('sha256').update(identities.join('\0')).digest('hex');
 }
 
 function addonKey(addon: LocalAddonInventoryEntry): string {

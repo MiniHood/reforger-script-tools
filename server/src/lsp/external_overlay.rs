@@ -3,7 +3,9 @@ use super::file_uri_path_identity;
 use super::{
     file_path_identity, format_paths, LspLogger, LspServerOptions, ServerEvent, ServerEventSender,
 };
-use crate::addon_sources::load_or_build_base_game_index;
+use crate::addon_sources::{
+    load_or_build_base_game_index, publish_inventory_addon_manifests_from_path,
+};
 use crate::index::SymbolIndex;
 use crate::index_cache::RuntimeIndexSummary;
 use crate::model::{
@@ -25,6 +27,7 @@ const MAX_DOCUMENT_EXCLUDED_WORKSPACE_INDEXES: usize = 4;
 #[derive(Clone)]
 pub(crate) struct ExternalIndexHandle {
     state: Arc<Mutex<ExternalIndexState>>,
+    control: crate::index_build::IndexBuildControl,
 }
 
 #[derive(Debug)]
@@ -173,6 +176,7 @@ impl ExternalIndexSnapshot {
 impl ExternalIndexHandle {
     fn missing() -> Self {
         Self {
+            control: crate::index_build::IndexBuildControl::default(),
             state: Arc::new(Mutex::new(ExternalIndexState {
                 status: ExternalIndexStatus::Missing,
                 generation: 0,
@@ -224,6 +228,10 @@ impl ExternalIndexHandle {
             fingerprint: state.fingerprint.clone(),
             error: state.error.clone(),
         }
+    }
+
+    pub(crate) fn cancel(&self) {
+        self.control.cancel();
     }
 
     pub(crate) fn snapshot(&self) -> ExternalIndexSnapshot {
@@ -403,7 +411,9 @@ pub(crate) fn start_external_index(
         })
     });
 
+    let control = crate::index_build::IndexBuildControl::default();
     let handle = ExternalIndexHandle {
+        control: control.clone(),
         state: Arc::new(Mutex::new(ExternalIndexState {
             status: ExternalIndexStatus::Building,
             generation: 0,
@@ -431,6 +441,39 @@ pub(crate) fn start_external_index(
     let addon_source_inventory = options.addon_source_inventory.clone();
     let addon_index_storage = options.addon_index_storage.clone();
     let workspace_roots = options.workspace_scripts.clone();
+    if let (Some(inventory), Some(storage)) =
+        (addon_source_inventory.clone(), addon_index_storage.clone())
+    {
+        let inventory_logger = logger.clone();
+        let inventory_sender = event_sender.clone();
+        let inventory_control = control.clone();
+        thread::spawn(move || {
+            if let Some(sender) = &inventory_sender {
+                let _ = sender.send(ServerEvent::ExternalIndexProgress {
+                    phase: "addon-manifest-validate-start".to_string(),
+                });
+            }
+            let result = publish_inventory_addon_manifests_from_path(
+                &inventory,
+                &storage,
+                &inventory_control,
+            );
+            match result {
+                Ok(()) => inventory_logger.log("externalIndex add-on inventory manifests ready"),
+                Err(error) if error == crate::index_build::INDEX_BUILD_CANCELLED => {
+                    inventory_logger.log("externalIndex add-on inventory manifests cancelled")
+                }
+                Err(error) => inventory_logger.log_lazy(|| {
+                    format!("externalIndex add-on inventory manifests failed error={error}")
+                }),
+            }
+            if let Some(sender) = inventory_sender {
+                let _ = sender.send(ServerEvent::ExternalIndexProgress {
+                    phase: "addon-manifest-validate-end".to_string(),
+                });
+            }
+        });
+    }
     thread::spawn(move || {
         let thread_logger = logger.clone();
         let panic_state = state.clone();
@@ -443,6 +486,7 @@ pub(crate) fn start_external_index(
                 workspace_roots,
                 logger,
                 progress_sender,
+                control,
             );
         })) {
             let panic_message = payload
@@ -473,6 +517,7 @@ fn run_external_index_thread(
     workspace_roots: Vec<PathBuf>,
     logger: LspLogger,
     event_sender: Option<ServerEventSender>,
+    control: crate::index_build::IndexBuildControl,
 ) {
     let start = Instant::now();
     logger.log_lazy(|| {
@@ -490,7 +535,6 @@ fn run_external_index_thread(
     let game_data_result = addon_source_inventory.map(|inventory_path| {
         for phase in [
             "inventory-load-start",
-            "addon-manifest-validate-start",
             "pac-inspect-start",
         ] {
             if let Some(sender) = &event_sender {
@@ -501,17 +545,10 @@ fn run_external_index_thread(
         }
         let result = addon_index_storage
             .ok_or_else(|| "add-on index storage is unavailable".to_string())
-            .and_then(|storage| {
-                load_or_build_base_game_index(
-                    &inventory_path,
-                    &storage,
-                    &crate::index_build::IndexBuildControl::default(),
-                )
-            });
+            .and_then(|storage| load_or_build_base_game_index(&inventory_path, &storage, &control));
         if let Some(sender) = &event_sender {
             for phase in [
                 "inventory-load-end",
-                "addon-manifest-validate-end",
                 "pac-inspect-end",
             ] {
                 let _ = sender.send(ServerEvent::ExternalIndexProgress {

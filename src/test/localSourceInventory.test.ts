@@ -1,5 +1,11 @@
 import * as assert from 'assert';
-import { resolveRootFrom } from '../gameData/localSourceInventory';
+import { promises as fs } from 'fs';
+import { tmpdir } from 'os';
+import * as path from 'path';
+import {
+	publishContentAddressedFile,
+	resolveRootFrom,
+} from '../gameData/localSourceInventory';
 
 suite('local source inventory', () => {
 	test('uses a valid explicit root without probing discovery candidates', async () => {
@@ -44,5 +50,37 @@ suite('local source inventory', () => {
 		assert.equal(result.origin, 'discovered');
 		assert.equal(result.path, 'D:\\second');
 		assert.deepEqual(result.candidates, ['C:\\first', 'D:\\second', 'E:\\third']);
+	});
+
+	test('publishes one complete inventory under concurrent writers', async () => {
+		const root = await fs.mkdtemp(path.join(tmpdir(), 'rst-inventory-'));
+		const target = path.join(root, 'inventory-v1-digest.json');
+		const contents = '{"schema":"test"}\n';
+		try {
+			await Promise.all(
+				Array.from({ length: 8 }, () => publishContentAddressedFile(target, contents)),
+			);
+			assert.equal(await fs.readFile(target, 'utf8'), contents);
+			assert.deepEqual(
+				(await fs.readdir(root)).filter(file => file.endsWith('.tmp')),
+				[],
+			);
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	test('rejects a corrupt existing content-addressed inventory', async () => {
+		const root = await fs.mkdtemp(path.join(tmpdir(), 'rst-inventory-corrupt-'));
+		const target = path.join(root, 'inventory-v1-digest.json');
+		try {
+			await fs.writeFile(target, 'truncated');
+			await assert.rejects(
+				publishContentAddressedFile(target, '{"schema":"test"}\n'),
+				/corrupt/,
+			);
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
 	});
 });

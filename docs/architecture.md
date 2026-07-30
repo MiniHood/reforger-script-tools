@@ -35,6 +35,11 @@ merged into the semantic snapshot until load ordering is defined. Duplicate
 GUIDs are rejected. GitHub downloads and loose-script source folders are not
 runtime acquisition paths.
 
+Non-semantic add-on manifest maintenance runs independently from base-game
+semantic readiness. Its aggregate publication revision makes unchanged
+inventories cheap to validate, while a first or changed inventory can publish
+GUID manifests in parallel without delaying the base API layer.
+
 Pack-backed definitions use typed, revision-qualified `reforger-pak:` document
 identities. The
 extension provides those documents by asking Rust to decode exactly one PAC

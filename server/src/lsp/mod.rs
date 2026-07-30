@@ -713,6 +713,7 @@ impl<W: Write> LspServer<W> {
             "shutdown" => {
                 self.log("request shutdown");
                 self.shutdown_requested = true;
+                self.external_index.cancel();
                 if let Some(id) = routed.message.id {
                     self.respond(id, Value::Null)?;
                 }

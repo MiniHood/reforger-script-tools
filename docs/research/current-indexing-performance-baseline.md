@@ -114,8 +114,8 @@ and the real LSP publication path.
 
 | Measurement | Process to external index ready | Files |
 | --- | ---: | ---: |
-| First PAC-backed build and cache publication | **1,781 ms** | 6,495 |
-| Unchanged PAC revision validation and cache load | **188 ms median** (186-194 ms, five runs) | 6,495 |
+| First PAC-backed build and cache publication | **1,770 ms** | 6,495 |
+| Unchanged PAC revision validation and cache load | **198 ms median** (189-199 ms, five runs) | 6,495 |
 
 The first run includes PAC catalogue inspection, selective decode and parse,
 semantic-cache write, immutable external-index publication, and LSP
@@ -127,17 +127,19 @@ The final warm path intentionally does more correctness work than the earlier
 146 ms prototype: it hashes only the 27.6 MB of selected compressed script
 payloads so same-size changes cannot reuse a stale revision. Compared with the
 earlier loose-file measurement, unchanged readiness still fell from 454 ms to
-a 188 ms median, while the cold path avoided the separate 3.2-3.6 second
+a 198 ms median, while the cold path avoided the separate 3.2-3.6 second
 physical extraction step.
 
 The representative final cold log attributed 39 ms to PAC catalogue plus
-selected-payload identity, 1,030 ms to selective decode/parse/index build, and
-178 ms to the 26.7 MB semantic-cache write; external publication was ready at
-1,514 ms inside the process. A representative warm log attributed 36 ms to PAC
-identity, 4 ms to cache file read, 49 ms to binary decode, and 49 ms to lookup
-map reconstruction; external publication was ready at 180 ms inside the
-process. The table includes process launch and client-observed notification
-latency.
+selected-payload identity, 1,065 ms to verified selective decode/parse/index
+build, and 174 ms to the 26.7 MB semantic-cache write; external publication was
+ready at 1,532 ms inside the process. The 517-add-on inventory manifests
+finished independently before that base layer. A representative warm log
+attributed 36 ms to PAC identity, 4 ms to cache file read, 50 ms to binary
+decode, and 49 ms to lookup map reconstruction; external publication was ready
+at 191 ms inside the process. The extension-side artifact identity pass for
+all 517 discovered add-ons measured 15 ms. The table includes process launch
+and client-observed notification latency.
 
 These are local wall-clock observations rather than portable budgets. Fixture
 acceptance tests separately verify cache reuse, immutable revision and

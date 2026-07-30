@@ -2,7 +2,7 @@ use crate::index_build::{
     build_index_from_sources, IndexBuildControl, IndexBuildResult, IndexSourceText,
 };
 use crate::index_cache::{
-    cache_format_identity, load_or_build_archive_index, write_atomic_bytes,
+    cache_format_identity, load_or_build_archive_index_with_reuse, write_atomic_bytes,
     GameDataIndexCacheResult, SourceFingerprint,
 };
 use crate::model::{
@@ -46,6 +46,8 @@ struct InventoryAddon {
     project_file: Option<PathBuf>,
     #[serde(default)]
     pack_files: Vec<PathBuf>,
+    #[serde(default)]
+    artifact_identity: Option<String>,
 }
 
 struct BaseGameInspection {
@@ -133,6 +135,13 @@ struct InventoryPackArtifact {
     strong_manifest_sha512: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InventoryPublication {
+    schema: String,
+    revision: String,
+}
+
 #[derive(Debug)]
 struct PackedSourceRevision {
     artifacts: Vec<ArtifactStamp>,
@@ -162,7 +171,8 @@ pub fn build_base_game_index(
     control: &IndexBuildControl,
 ) -> Result<IndexBuildResult, String> {
     let inspection = inspect_base_game(inventory_path, control)?;
-    build_inspected_base_game(inspection, control)
+    let sources = packed_source_revision(&inspection);
+    build_inspected_base_game(inspection, &sources, control)
 }
 
 pub fn load_or_build_base_game_index(
@@ -170,8 +180,6 @@ pub fn load_or_build_base_game_index(
     storage_root: &Path,
     control: &IndexBuildControl,
 ) -> Result<GameDataIndexCacheResult, String> {
-    let inventory = read_inventory(inventory_path)?;
-    publish_inventory_addon_manifests(&inventory, storage_root)?;
     let inspection_started = std::time::Instant::now();
     let inspection = inspect_base_game(inventory_path, control)?;
     let inspection_elapsed = inspection_started.elapsed();
@@ -192,16 +200,17 @@ pub fn load_or_build_base_game_index(
     let revision_relative = format!("revisions/{artifact_digest}");
     let revision_root = addon_root.join(&revision_relative);
     let cache = revision_root.join("symbols.bin");
-    let source_revision = packed_source_revision(&inspection);
-    let mut result =
-        load_or_build_archive_index(&cache, fingerprint, artifact_digest.clone(), || {
-            build_inspected_base_game(inspection, control)
-        })?;
-    result.timings.fingerprint = inspection_elapsed;
-    result.timings.total += inspection_elapsed;
-    control.check()?;
+    let manifest_path = revision_root.join("manifest.json");
+    let manifest_scripts = scripts
+        .into_iter()
+        .map(|mut script| {
+            script.uri =
+                virtual_source_uri(BASE_GAME_GUID, &artifact_digest, &script.logical_path)?;
+            Ok(script)
+        })
+        .collect::<Result<Vec<_>, String>>()?;
     let (cache_schema, cache_format_version, cache_index_shape) = cache_format_identity();
-    let manifest = AddonIndexManifest {
+    let expected_manifest = AddonIndexManifest {
         schema: "reforger-addon-index-manifest-v2".to_string(),
         cache_schema: cache_schema.to_string(),
         cache_format_version,
@@ -217,18 +226,31 @@ pub fn load_or_build_base_game_index(
         pack_count,
         script_count,
         pack_artifacts,
-        scripts: scripts
-            .into_iter()
-            .map(|mut script| {
-                script.uri =
-                    virtual_source_uri(BASE_GAME_GUID, &artifact_digest, &script.logical_path)?;
-                Ok(script)
-            })
-            .collect::<Result<Vec<_>, String>>()?,
+        scripts: manifest_scripts,
         index_file: "symbols.bin".to_string(),
-        index_bytes: result.cache_file_bytes.unwrap_or(0),
+        index_bytes: cache.metadata().map(|metadata| metadata.len()).unwrap_or(0),
     };
-    write_json_atomic(&revision_root.join("manifest.json"), &manifest)?;
+    let manifest_reusable = fs::read(&manifest_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<AddonIndexManifest>(&bytes).ok())
+        .is_some_and(|manifest| manifest == expected_manifest);
+    let source_revision = packed_source_revision(&inspection);
+    let build_sources = source_revision.clone();
+    let mut result = load_or_build_archive_index_with_reuse(
+        &cache,
+        fingerprint,
+        artifact_digest.clone(),
+        manifest_reusable,
+        || build_inspected_base_game(inspection, &build_sources, control),
+    )?;
+    result.timings.fingerprint = inspection_elapsed;
+    result.timings.total += inspection_elapsed;
+    control.check()?;
+    let manifest = AddonIndexManifest {
+        index_bytes: result.cache_file_bytes.unwrap_or(0),
+        ..expected_manifest
+    };
+    write_json_atomic(&manifest_path, &manifest)?;
     control.check()?;
     let current = CurrentRevision {
         schema: "reforger-addon-current-revision-v1".to_string(),
@@ -240,6 +262,16 @@ pub fn load_or_build_base_game_index(
     write_json_atomic(&addon_root.join("current.json"), &current)?;
     register_source_revision(BASE_GAME_GUID, &artifact_digest, source_revision);
     Ok(result)
+}
+
+pub fn publish_inventory_addon_manifests_from_path(
+    inventory_path: &Path,
+    storage_root: &Path,
+    control: &IndexBuildControl,
+) -> Result<(), String> {
+    control.check()?;
+    let inventory = read_inventory(inventory_path)?;
+    publish_inventory_addon_manifests(&inventory, storage_root, control)
 }
 
 /// Resolves one immutable virtual document from its PAC catalogue entry. Only
@@ -278,14 +310,18 @@ pub fn read_virtual_source(uri: &str) -> Result<String, String> {
         .entries
         .get(uri)
         .ok_or_else(|| format!("Pack source does not exist: {logical_path}"))?;
-    validate_entry_payload(source_entry)?;
     let entry = &source_entry.entry;
     let archive = PakArchive::inspect(entry.archive_path()).map_err(|error| error.to_string())?;
     let mut bytes = Vec::with_capacity(entry.original_length() as usize);
     archive
         .reader()
         .map_err(|error| error.to_string())?
-        .read_to(entry, &mut bytes)
+        .read_verified_to_with_cancel(
+            entry,
+            &source_entry.compressed_payload_sha256,
+            &mut bytes,
+            || false,
+        )
         .map_err(|error| error.to_string())?;
     String::from_utf8(bytes).map_err(|_| format!("Pack source {logical_path} is not UTF-8"))
 }
@@ -400,6 +436,7 @@ fn inspect_base_game(
 
 fn build_inspected_base_game(
     inspection: BaseGameInspection,
+    source_revision: &PackedSourceRevision,
     control: &IndexBuildControl,
 ) -> Result<IndexBuildResult, String> {
     let revision = inspection.artifact_digest.clone();
@@ -413,17 +450,26 @@ fn build_inspected_base_game(
             if !logical_paths.insert(logical.to_ascii_lowercase()) {
                 return Err(format!("Duplicate base-game script path: {logical}"));
             }
+            let relative = PathBuf::from(&logical);
+            let uri = virtual_source_uri(BASE_GAME_GUID, &revision, &logical)?;
+            let expected = source_revision
+                .entries
+                .get(&uri)
+                .ok_or_else(|| format!("Missing packed source identity for {logical}"))?;
             let mut bytes = Vec::with_capacity(entry.original_length() as usize);
             reader
-                .read_to_with_cancel(&entry, &mut bytes, || control.is_cancelled())
+                .read_verified_to_with_cancel(
+                    &entry,
+                    &expected.compressed_payload_sha256,
+                    &mut bytes,
+                    || control.is_cancelled(),
+                )
                 .map_err(|error| {
                     format!(
                         "Failed to read {logical} from {}: {error}",
                         archive.path().display()
                     )
                 })?;
-            let relative = PathBuf::from(&logical);
-            let uri = virtual_source_uri(BASE_GAME_GUID, &revision, &logical)?;
             sources.push(IndexSourceText {
                 display_path: PathBuf::from(&uri),
                 bytes,
@@ -598,32 +644,6 @@ fn packed_source_revision(inspection: &BaseGameInspection) -> Arc<PackedSourceRe
     Arc::new(PackedSourceRevision { artifacts, entries })
 }
 
-fn validate_entry_payload(source: &PackedSourceEntry) -> Result<(), String> {
-    let entry = &source.entry;
-    let mut file = fs::File::open(entry.archive_path()).map_err(|error| error.to_string())?;
-    file.seek(SeekFrom::Start(entry.offset()))
-        .map_err(|error| error.to_string())?;
-    let mut remaining = entry.compressed_length();
-    let mut hasher = Sha256::new();
-    let mut buffer = vec![0_u8; 64 * 1024];
-    while remaining > 0 {
-        let count = usize::try_from(remaining.min(buffer.len() as u64)).unwrap();
-        file.read_exact(&mut buffer[..count])
-            .map_err(|error| error.to_string())?;
-        hasher.update(&buffer[..count]);
-        remaining -= count as u64;
-    }
-    let actual = format!("{:x}", hasher.finalize());
-    if actual != source.compressed_payload_sha256 {
-        return Err(format!(
-            "Packed source entry changed on disk: {} in {}",
-            entry.logical_path(),
-            entry.archive_path().display()
-        ));
-    }
-    Ok(())
-}
-
 fn revision_key(guid: &str, revision: &str) -> String {
     format!(
         "{}/{}",
@@ -641,13 +661,29 @@ fn register_source_revision(guid: &str, revision: &str, sources: Arc<PackedSourc
 fn publish_inventory_addon_manifests(
     inventory: &Inventory,
     storage_root: &Path,
+    control: &IndexBuildControl,
 ) -> Result<(), String> {
+    control.check()?;
+    let revision = inventory_publication_revision(inventory)?;
+    let publication_path = storage_root.join("inventory-current.json");
+    if fs::read(&publication_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<InventoryPublication>(&bytes).ok())
+        .is_some_and(|publication| {
+            publication.schema == "reforger-addon-inventory-publication-v1"
+                && publication.revision == revision
+        })
+    {
+        return Ok(());
+    }
     let mut identities = BTreeMap::<String, PathBuf>::new();
+    let mut manifests = Vec::new();
     for addon in inventory
         .addons
         .iter()
         .filter(|addon| addon.root_kind != "base-game")
     {
+        control.check()?;
         let Some(project_file) = &addon.project_file else {
             continue;
         };
@@ -688,9 +724,9 @@ fn publish_inventory_addon_manifests(
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
-        write_json_atomic(
-            &storage_root.join(&guid).join("inventory.json"),
-            &InventoryAddonManifest {
+        manifests.push((
+            storage_root.join(&guid).join("inventory.json"),
+            InventoryAddonManifest {
                 schema: "reforger-addon-inventory-manifest-v1",
                 guid,
                 display_id,
@@ -700,22 +736,86 @@ fn publish_inventory_addon_manifests(
                 semantic_status: "inventory-only",
                 pack_artifacts,
             },
-        )?;
+        ));
     }
+    let workers = std::thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(1)
+        .min(8)
+        .min(manifests.len().max(1));
+    std::thread::scope(|scope| {
+        let mut handles = Vec::new();
+        let manifests = &manifests;
+        for worker in 0..workers {
+            handles.push(scope.spawn(move || {
+                for (path, manifest) in manifests.iter().skip(worker).step_by(workers) {
+                    control.check()?;
+                    write_json_atomic(path, manifest)?;
+                }
+                Ok::<(), String>(())
+            }));
+        }
+        for handle in handles {
+            handle
+                .join()
+                .map_err(|_| "Add-on inventory publication worker panicked".to_string())??;
+        }
+        Ok::<(), String>(())
+    })?;
+    write_json_atomic(
+        &publication_path,
+        &InventoryPublication {
+            schema: "reforger-addon-inventory-publication-v1".to_string(),
+            revision,
+        },
+    )?;
     Ok(())
+}
+
+fn inventory_publication_revision(inventory: &Inventory) -> Result<String, String> {
+    let mut hasher = Sha256::new();
+    hasher.update(b"reforger-addon-inventory-publication-v1");
+    for addon in inventory
+        .addons
+        .iter()
+        .filter(|addon| addon.root_kind != "base-game")
+    {
+        hasher.update(addon.root_kind.as_bytes());
+        hasher.update(addon.directory_name.as_bytes());
+        hasher.update(addon.path.to_string_lossy().as_bytes());
+        if let Some(identity) = &addon.artifact_identity {
+            hasher.update(identity.as_bytes());
+            continue;
+        }
+        for path in addon.project_file.iter().chain(addon.pack_files.iter()) {
+            let metadata = fs::metadata(path)
+                .map_err(|error| format!("Failed to stat {}: {error}", path.display()))?;
+            hasher.update(path.to_string_lossy().as_bytes());
+            hasher.update(metadata.len().to_le_bytes());
+            hasher.update(modified_unix_ms(&metadata).to_le_bytes());
+        }
+    }
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 fn extract_project_property(source: &str, property: &str) -> Option<String> {
     source.lines().find_map(|line| {
-        let (left, right) = line.split_once(':')?;
-        (left.trim().trim_matches('"') == property).then(|| {
-            right
-                .trim()
-                .trim_end_matches(',')
-                .trim()
-                .trim_matches('"')
-                .to_string()
-        })
+        let remainder = line.trim().strip_prefix(property)?;
+        if !remainder
+            .chars()
+            .next()
+            .is_some_and(|value| value.is_whitespace() || value == ':')
+        {
+            return None;
+        }
+        let remainder = remainder
+            .trim_start()
+            .strip_prefix(':')
+            .unwrap_or(remainder)
+            .trim_start();
+        let quoted = remainder.strip_prefix('"')?;
+        let end = quoted.find('"')?;
+        (!quoted[..end].is_empty()).then(|| quoted[..end].to_string())
     })
 }
 
@@ -837,6 +937,18 @@ mod tests {
         assert_eq!(loaded.cache_status, IndexCacheStatus::Loaded);
         assert!(storage.join(BASE_GAME_GUID).join("current.json").is_file());
         assert!(storage.join(BASE_GAME_GUID).join(&current.index).is_file());
+        fs::write(
+            storage.join(BASE_GAME_GUID).join(&current.manifest),
+            b"{\"schema\":\"corrupt\"}",
+        )
+        .unwrap();
+        let repaired =
+            load_or_build_base_game_index(&inventory, &storage, &IndexBuildControl::default())
+                .unwrap();
+        assert!(matches!(
+            repaired.cache_status,
+            IndexCacheStatus::Rebuilt { .. }
+        ));
         assert!(!storage.join(BASE_GAME_GUID).join("scripts").exists());
         let _ = fs::remove_dir_all(root);
     }
@@ -927,28 +1039,30 @@ mod tests {
         fs::create_dir_all(&second).unwrap();
         fs::write(
             first.join("addon.gproj"),
-            "GUID : \"1337C0DE5DABBEEF\"\nID : \"RHS\"",
+            "GameProject {\n GUID \"1337C0DE5DABBEEF\"\n ID \"RHS\"\n}",
         )
         .unwrap();
         fs::write(
             second.join("addon.gproj"),
-            "GUID : \"1337C0DE5DABBEEF\"\nID : \"Duplicate\"",
+            "GameProject {\n GUID \"1337C0DE5DABBEEF\"\n ID \"Duplicate\"\n}",
         )
         .unwrap();
         fs::write(first.join("data.pak"), b"fixture").unwrap();
+        fs::write(second.join("data.pak"), b"fixture").unwrap();
         let addon = |path: &Path, name: &str| InventoryAddon {
             root_kind: "user-addons".to_string(),
             directory_name: name.to_string(),
             path: path.to_path_buf(),
             project_file: Some(path.join("addon.gproj")),
             pack_files: vec![path.join("data.pak")],
+            artifact_identity: None,
         };
         let one = Inventory {
             schema: "reforger-addon-source-inventory-v1".to_string(),
             roots: Vec::new(),
             addons: vec![addon(&first, "First")],
         };
-        publish_inventory_addon_manifests(&one, &storage).unwrap();
+        publish_inventory_addon_manifests(&one, &storage, &IndexBuildControl::default()).unwrap();
         assert!(storage.join("1337C0DE5DABBEEF/inventory.json").is_file());
 
         let duplicate = Inventory {
@@ -956,7 +1070,11 @@ mod tests {
             roots: Vec::new(),
             addons: vec![addon(&first, "First"), addon(&second, "Second")],
         };
-        assert!(publish_inventory_addon_manifests(&duplicate, &storage)
+        assert!(publish_inventory_addon_manifests(
+            &duplicate,
+            &storage,
+            &IndexBuildControl::default()
+        )
             .unwrap_err()
             .contains("Duplicate add-on GUID"));
         let _ = fs::remove_dir_all(root);

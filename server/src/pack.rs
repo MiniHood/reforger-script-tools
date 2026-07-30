@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use flate2::read::ZlibDecoder;
+use sha2::{Digest, Sha256};
 
 const MAX_FILE_TABLE_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_ENTRIES: usize = 200_000;
@@ -82,6 +83,7 @@ pub enum PackError {
     Limit(String),
     MissingPath(String),
     ArchiveMismatch { path: String },
+    ContentMismatch { path: String },
     Cancelled,
     UnsupportedCompression { path: String, compression: u32 },
 }
@@ -93,6 +95,9 @@ impl std::fmt::Display for PackError {
             }
             Self::ArchiveMismatch { path } => {
                 write!(f, "PAC1 entry does not belong to this archive: {path}")
+            }
+            Self::ContentMismatch { path } => {
+                write!(f, "PAC1 entry content changed after inspection: {path}")
             }
             Self::Cancelled => f.write_str("PAC1 extraction cancelled"),
             Self::UnsupportedCompression { path, compression } => {
@@ -381,6 +386,85 @@ impl PakReader<'_> {
             DEFLATE_ZLIB_COMPRESSION => {
                 let mut decoder = ZlibDecoder::new((&mut self.file).take(entry.compressed_length));
                 copy_exact(&mut decoder, output, entry.original_length, is_cancelled)
+            }
+            compression => Err(PackError::UnsupportedCompression {
+                path: entry.logical_path.clone(),
+                compression,
+            }),
+        }
+    }
+
+    /// Reads, verifies, and decodes one entry from the same captured compressed
+    /// bytes, preventing a pack update from racing identity validation.
+    pub fn read_verified_to_with_cancel(
+        &mut self,
+        entry: &PakEntry,
+        expected_compressed_sha256: &str,
+        output: &mut impl Write,
+        mut is_cancelled: impl FnMut() -> bool,
+    ) -> Result<u64, PackError> {
+        if entry.archive_path != self.archive.path {
+            return Err(PackError::ArchiveMismatch {
+                path: entry.logical_path.clone(),
+            });
+        }
+        if entry.original_length > MAX_ENTRY_BYTES || entry.compressed_length > MAX_ENTRY_BYTES {
+            return Err(PackError::Limit(format!(
+                "PAC1 entry exceeds extraction limit: {}",
+                entry.logical_path
+            )));
+        }
+        if (entry.compressed_length == 0 && entry.original_length != 0)
+            || entry.original_length > entry.compressed_length.saturating_mul(MAX_EXPANSION_RATIO)
+        {
+            return Err(PackError::Limit(format!(
+                "PAC1 entry expansion ratio exceeds limit: {}",
+                entry.logical_path
+            )));
+        }
+        entry
+            .offset
+            .checked_add(entry.compressed_length)
+            .filter(|end| *end <= self.archive.file_length)
+            .ok_or_else(|| {
+                PackError::Invalid(format!(
+                    "PAC1 entry is outside archive: {}",
+                    entry.logical_path
+                ))
+            })?;
+        self.file.seek(SeekFrom::Start(entry.offset)).map_err(io)?;
+        let mut compressed = Vec::with_capacity(entry.compressed_length as usize);
+        copy_exact(
+            &mut (&mut self.file).take(entry.compressed_length),
+            &mut compressed,
+            entry.compressed_length,
+            &mut is_cancelled,
+        )?;
+        let actual = format!("{:x}", Sha256::digest(&compressed));
+        if actual != expected_compressed_sha256 {
+            return Err(PackError::ContentMismatch {
+                path: entry.logical_path.clone(),
+            });
+        }
+        match entry.compression {
+            0 => {
+                if entry.compressed_length != entry.original_length {
+                    return Err(PackError::Invalid(format!(
+                        "uncompressed PAC1 entry has mismatched lengths: {}",
+                        entry.logical_path
+                    )));
+                }
+                output.write_all(&compressed).map_err(io)?;
+                Ok(entry.original_length)
+            }
+            DEFLATE_ZLIB_COMPRESSION => {
+                let mut decoder = ZlibDecoder::new(compressed.as_slice());
+                copy_exact(
+                    &mut decoder,
+                    output,
+                    entry.original_length,
+                    &mut is_cancelled,
+                )
             }
             compression => Err(PackError::UnsupportedCompression {
                 path: entry.logical_path.clone(),

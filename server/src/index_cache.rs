@@ -80,29 +80,41 @@ pub fn load_or_build_archive_index(
     source_digest: String,
     build: impl FnOnce() -> Result<IndexBuildResult, String>,
 ) -> Result<GameDataIndexCacheResult, String> {
+    load_or_build_archive_index_with_reuse(cache_path, fingerprint, source_digest, true, build)
+}
+
+pub(crate) fn load_or_build_archive_index_with_reuse(
+    cache_path: &Path,
+    fingerprint: SourceFingerprint,
+    source_digest: String,
+    allow_reuse: bool,
+    build: impl FnOnce() -> Result<IndexBuildResult, String>,
+) -> Result<GameDataIndexCacheResult, String> {
     let total_start = Instant::now();
     let mut timings = IndexCacheTimings::default();
     let load_start = Instant::now();
-    if let Ok(Some(CacheLoad::Current(cached))) =
-        load_cached_index(cache_path, &fingerprint, &source_digest, &mut timings)
-    {
-        timings.cache_read_deserialize_validate = load_start.elapsed();
-        let summary: RuntimeIndexSummary = cached.summary.clone().into();
-        let map_start = Instant::now();
-        let (index, source_line_starts) = cached.into_index_and_line_starts();
-        timings.map_rebuild = map_start.elapsed();
-        timings.total = total_start.elapsed();
-        return Ok(GameDataIndexCacheResult {
-            index,
-            source_line_starts,
-            summary,
-            cache_status: IndexCacheStatus::Loaded,
-            fingerprint,
-            source_digest: source_digest.clone(),
-            catalogue_digest: source_digest,
-            timings,
-            cache_file_bytes: cache_file_bytes(cache_path),
-        });
+    if allow_reuse {
+        if let Ok(Some(CacheLoad::Current(cached))) =
+            load_cached_index(cache_path, &fingerprint, &source_digest, &mut timings)
+        {
+            timings.cache_read_deserialize_validate = load_start.elapsed();
+            let summary: RuntimeIndexSummary = cached.summary.clone().into();
+            let map_start = Instant::now();
+            let (index, source_line_starts) = cached.into_index_and_line_starts();
+            timings.map_rebuild = map_start.elapsed();
+            timings.total = total_start.elapsed();
+            return Ok(GameDataIndexCacheResult {
+                index,
+                source_line_starts,
+                summary,
+                cache_status: IndexCacheStatus::Loaded,
+                fingerprint,
+                source_digest: source_digest.clone(),
+                catalogue_digest: source_digest,
+                timings,
+                cache_file_bytes: cache_file_bytes(cache_path),
+            });
+        }
     }
     timings.cache_read_deserialize_validate = load_start.elapsed();
     let build_start = Instant::now();
