@@ -3,14 +3,13 @@ use crate::game_data_search::{
     logical_path, owner_name, qualify, ReadSourceInput, SourceLineRange, SourceLineStarts,
 };
 use crate::index::{GlobalSymbolId, SourceFileId, SymbolIndex};
-use crate::index_build::{decode_source, IndexBuildControl};
-use crate::index_cache::source_content_digest;
+use crate::index_build::IndexBuildControl;
 use crate::symbol_display::documentation_display;
 use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::sync::Arc;
 
 pub const MAX_SYMBOL_REF_BYTES: usize = 2048;
 const MAX_MEMBERS: usize = 50;
@@ -273,10 +272,12 @@ pub fn read_source(
     index: &SymbolIndex,
     control: &IndexBuildControl,
     revision: &str,
-    root: &Option<PathBuf>,
-    expected_digest: &str,
+    source_texts: &BTreeMap<SourceFileId, Arc<str>>,
     request: GameDataSourceReadRequest,
 ) -> Result<Value, GameDataInspectionError> {
+    control
+        .check()
+        .map_err(|_| GameDataInspectionError::Cancelled)?;
     if request.catalogue_revision != revision {
         return Err(GameDataInspectionError::StaleSymbolRef);
     }
@@ -289,12 +290,6 @@ pub fn read_source(
             "relativePath must be an exact logical catalogue path".to_string(),
         ));
     }
-    let root = root.as_ref().ok_or(GameDataInspectionError::Unavailable)?;
-    if source_content_digest(root, control).map_err(GameDataInspectionError::Initialization)?
-        != expected_digest
-    {
-        return Err(GameDataInspectionError::GameDataChanged);
-    }
     let file = index
         .files()
         .iter()
@@ -304,23 +299,9 @@ pub fn read_source(
                 "relativePath is not in the catalogue".to_string(),
             )
         })?;
-    let path = file.metadata.absolute_path.as_ref().ok_or_else(|| {
+    let source = source_texts.get(&file.id).ok_or_else(|| {
         GameDataInspectionError::InvalidSource("catalogue source is unavailable".to_string())
     })?;
-    let canonical_root = root
-        .canonicalize()
-        .map_err(|_| GameDataInspectionError::GameDataChanged)?;
-    let canonical_path = path
-        .canonicalize()
-        .map_err(|_| GameDataInspectionError::GameDataChanged)?;
-    if !canonical_path.starts_with(&canonical_root) {
-        return Err(GameDataInspectionError::InvalidSource(
-            "relativePath escapes the Game Data root".to_string(),
-        ));
-    }
-    let bytes =
-        std::fs::read(canonical_path).map_err(|_| GameDataInspectionError::GameDataChanged)?;
-    let source = decode_source(&bytes);
     let start = request.start_line.unwrap_or(1);
     if start == 0 {
         return Err(GameDataInspectionError::InvalidSource(

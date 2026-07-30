@@ -64,15 +64,15 @@ dist/server/win32-x64/reforger_language_server.exe
 
 # One MCP stdio session owned by the launching client
 dist/server/win32-x64/reforger_language_server.exe mcp `
-  --game-data-scripts <scripts-path> `
-  --game-data-metadata <optional-metadata-path> `
   --index-cache <global-storage-cache-path>
 ```
 
 In VS Code, run **Reforger Script Tools: Copy MCP Configuration** and choose
 Codex TOML or generic MCP JSON. The copied command contains absolute packaged
-runtime and stable Game Data/cache inputs, so the client does not depend on a
-running VS Code process. Restart that MCP process after Game Data changes.
+runtime and the parser-owned Game Data cache location, so the client does not
+depend on a running VS Code process. MCP only consumes that cache: activate the
+language server to build or refresh it after Game Data changes, then restart
+the MCP process.
 After an extension upgrade, rerun the command and replace the client entry:
 the versioned installed runtime path changes deliberately, and the extension
 does not edit third-party client configuration itself.

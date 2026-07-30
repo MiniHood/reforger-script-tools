@@ -215,21 +215,19 @@ fn parse_lsp_args(mut args: impl Iterator<Item = String>) -> Result<LspServerOpt
 }
 
 fn parse_mcp_args(mut args: impl Iterator<Item = String>) -> Result<McpServerOptions, String> {
-    let mut game_data = GameDataCatalogueConfig {
-        scripts_root: None,
-        metadata_path: None,
-        cache_path: None,
-    };
+    let mut game_data = GameDataCatalogueConfig { cache_path: None };
     let mut official_wiki_root = None;
     let mut workbench = WorkbenchControllerOptions::default();
 
     while let Some(argument) = args.next() {
         match argument.as_str() {
+            // Older copied configurations may still contain source inputs.
+            // MCP consumes the parser-owned index cache and does not inspect them.
             "--game-data-scripts" => {
-                game_data.scripts_root = Some(path_value(&mut args, "--game-data-scripts")?)
+                path_value(&mut args, "--game-data-scripts")?;
             }
             "--game-data-metadata" => {
-                game_data.metadata_path = Some(path_value(&mut args, "--game-data-metadata")?)
+                path_value(&mut args, "--game-data-metadata")?;
             }
             "--index-cache" => game_data.cache_path = Some(path_value(&mut args, "--index-cache")?),
             "--official-wiki-root" => {
@@ -285,7 +283,7 @@ fn string_value(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<S
 
 fn print_help() {
     println!(
-        "Usage:\n  reforger_language_server [LSP options]\n  reforger_language_server mcp [MCP options]\n  reforger_language_server mcp-api\n  reforger_language_server workbench-api <status|validate|integration-status|install-bridge> [--host <loopback>] [--port <port>]\n\nLSP options:\n  --log <path>\n  --diagnostic-log <path>\n  --game-data-scripts <path>\n  --game-data-metadata <path>\n  --index-cache <path>\n  --workspace-scripts <path> (repeatable)\n  --bracket-coloring <semantic|punctuation|vscode>\n\nMCP options:\n  --game-data-scripts <path>\n  --game-data-metadata <path>\n  --index-cache <path>\n  --official-wiki-root <development/test path>\n  --workbench-host <loopback host>\n  --workbench-port <port>\n  --workbench-executable <path>\n  --reforger-game-directory <path>\n  --reforger-tools-directory <path>\n  --workbench-user-directory <test/development override>"
+        "Usage:\n  reforger_language_server [LSP options]\n  reforger_language_server mcp [MCP options]\n  reforger_language_server mcp-api\n  reforger_language_server workbench-api <status|validate|integration-status|install-bridge> [--host <loopback>] [--port <port>]\n\nLSP options:\n  --log <path>\n  --diagnostic-log <path>\n  --game-data-scripts <path>\n  --game-data-metadata <path>\n  --index-cache <path>\n  --workspace-scripts <path> (repeatable)\n  --bracket-coloring <semantic|punctuation|vscode>\n\nMCP options:\n  --index-cache <path>\n  --official-wiki-root <development/test path>\n  --workbench-host <loopback host>\n  --workbench-port <port>\n  --workbench-executable <path>\n  --reforger-game-directory <path>\n  --reforger-tools-directory <path>\n  --workbench-user-directory <test/development override>"
     );
 }
 
@@ -329,10 +327,6 @@ mod tests {
         let ServerMode::Mcp(options) = mode else {
             panic!("expected MCP mode");
         };
-        assert_eq!(
-            options.game_data.scripts_root,
-            Some(PathBuf::from("scripts"))
-        );
         assert_eq!(
             options.game_data.cache_path,
             Some(PathBuf::from("cache.bin"))

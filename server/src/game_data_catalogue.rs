@@ -1,25 +1,24 @@
 use crate::game_data_inspection::{
-    inspect, read_source, GameDataInspectionError, GameDataInspectionOutput,
-    GameDataSourceReadRequest,
+    GameDataInspectionError, GameDataInspectionOutput, GameDataSourceReadRequest, inspect,
+    read_source,
 };
 use crate::game_data_research::{
-    list_members, query_relationships, search_examples, GameDataExamplePage,
-    GameDataExampleSearchRequest, GameDataMemberPage, GameDataMemberRequest,
-    GameDataRelationshipPage, GameDataRelationshipRequest, GameDataResearchError,
+    GameDataExamplePage, GameDataExampleSearchRequest, GameDataMemberPage, GameDataMemberRequest,
+    GameDataRelationshipPage, GameDataRelationshipRequest, GameDataResearchError, list_members,
+    query_relationships, search_examples,
 };
 use crate::game_data_search::{
-    search, GameDataSearchError, GameDataSearchPage, GameDataSearchRequest, SourceLineStarts,
+    GameDataSearchError, GameDataSearchPage, GameDataSearchRequest, SourceLineStarts, search,
 };
 use crate::index::{SourceFileId, SymbolIndex};
-use crate::index_build::{decode_source, IndexBuildControl, INDEX_BUILD_CANCELLED};
+use crate::index_build::{INDEX_BUILD_CANCELLED, IndexBuildControl, decode_source};
 use crate::index_cache::{
-    load_or_build_game_data_index_with_control, GameDataIndexCacheConfig, GameDataIndexCacheResult,
-    IndexCacheStatus, IndexCacheTimings, RuntimeIndexSummary, SourceFingerprint,
+    GameDataIndexCacheResult, IndexCacheStatus, IndexCacheTimings, RuntimeIndexSummary,
+    SourceFingerprint, load_game_data_index_cache_with_control,
 };
 use crate::model::SymbolKind;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
@@ -29,12 +28,9 @@ use std::time::{Duration, Instant};
 
 pub const GAME_DATA_INITIALIZATION_DEADLINE_MS: u64 = 120_000;
 pub const MAX_STRUCTURED_RESULT_BYTES: usize = 256 * 1024;
-const MAX_METADATA_TEXT_CHARS: usize = 512;
 
 #[derive(Debug, Clone)]
 pub struct GameDataCatalogueConfig {
-    pub scripts_root: Option<PathBuf>,
-    pub metadata_path: Option<PathBuf>,
     pub cache_path: Option<PathBuf>,
 }
 
@@ -54,7 +50,6 @@ struct GameDataCatalogueState {
     index: Option<Arc<SymbolIndex>>,
     source_line_starts: Arc<BTreeMap<SourceFileId, SourceLineStarts>>,
     source_texts: Arc<BTreeMap<SourceFileId, Arc<str>>>,
-    source_digest: Option<String>,
 }
 
 impl GameDataCatalogue {
@@ -206,19 +201,9 @@ impl GameDataCatalogue {
             .index
             .clone()
             .ok_or(GameDataInspectionError::Unavailable)?;
-        let digest = snapshot
-            .source_digest
-            .clone()
-            .ok_or(GameDataInspectionError::Unavailable)?;
+        let source_texts = snapshot.source_texts.clone();
         drop(state);
-        read_source(
-            &index,
-            control,
-            revision,
-            &self.config.scripts_root,
-            &digest,
-            request,
-        )
+        read_source(&index, control, revision, &source_texts, request)
     }
 
     fn research_snapshot(
@@ -441,7 +426,6 @@ pub enum GameDataCacheOutcome {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GameDataTimingsMs {
-    pub fingerprint: u64,
     pub cache_file_read: u64,
     pub cache_decode: u64,
     pub cache_validate: u64,
@@ -471,52 +455,40 @@ fn initialize_catalogue(
 ) -> Result<GameDataCatalogueState, String> {
     control.check()?;
     let started = Instant::now();
-    let source = source_status(config, None);
-    let Some(scripts_root) = config.scripts_root.clone() else {
-        return Ok(unavailable_state(
-            source,
-            started.elapsed(),
-            "game_data_not_configured",
-            "Game Data is not configured for this MCP process.",
-            "Regenerate the MCP configuration from the extension after configuring Game Data.",
-        ));
-    };
+    let source = source_status(None);
     let Some(cache_path) = config.cache_path.clone() else {
         return Ok(unavailable_state(
             source,
             started.elapsed(),
-            "cache_not_configured",
-            "The validated Game Data cache location is not configured.",
+            "game_data_index_not_configured",
+            "The language-engine Game Data index location is not configured.",
             "Regenerate the MCP configuration from the extension.",
         ));
     };
 
-    let result = load_or_build_game_data_index_with_control(
-        &GameDataIndexCacheConfig {
-            scripts_root,
-            metadata_path: config.metadata_path.clone(),
-            cache_path,
-        },
-        control,
-    );
+    let result = load_game_data_index_cache_with_control(&cache_path, control);
 
     match result {
-        Ok(result) => Ok(ready_state(config, result)),
+        Ok(Some(result)) => Ok(ready_state(result)),
+        Ok(None) => Ok(unavailable_state(
+            source,
+            started.elapsed(),
+            "game_data_index_unavailable",
+            "The language-engine Game Data index is missing or incompatible.",
+            "Activate the language server so it builds the Game Data index, then restart MCP.",
+        )),
         Err(error) if error == INDEX_BUILD_CANCELLED => Err(error),
         Err(_) => Ok(unavailable_state(
             source,
             started.elapsed(),
             "game_data_initialization_failed",
-            "Game Data could not be validated, loaded, or rebuilt.",
-            "Verify the configured Game Data source, then restart the MCP process.",
+            "The language-engine Game Data index could not be loaded.",
+            "Activate the language server to rebuild the index, then restart MCP.",
         )),
     }
 }
 
-fn ready_state(
-    config: &GameDataCatalogueConfig,
-    result: GameDataIndexCacheResult,
-) -> GameDataCatalogueState {
+fn ready_state(result: GameDataIndexCacheResult) -> GameDataCatalogueState {
     let mut warnings = Vec::new();
     if result.summary.parse_diagnostics > 0 {
         warnings.push(GameDataNotice {
@@ -537,7 +509,7 @@ fn ready_state(
         });
     }
 
-    let source = source_status(config, Some(&result.fingerprint));
+    let source = source_status(Some(&result.fingerprint));
     let status = GameDataStatus {
         available: true,
         catalogue_revision: Some(format!("gd1:{}", result.catalogue_digest)),
@@ -549,7 +521,10 @@ fn ready_state(
         timings_ms: timings_ms(result.timings),
         limits: limits(),
         warnings,
-        recovery: vec!["Restart the MCP process after changing or updating Game Data.".to_string()],
+        recovery: vec![
+            "Activate the language server to refresh the Game Data index, then restart MCP."
+                .to_string(),
+        ],
     };
 
     let mut source_line_starts = BTreeMap::new();
@@ -557,7 +532,7 @@ fn ready_state(
     for file in result.index.files() {
         let Some(path) = file.metadata.absolute_path.as_ref() else {
             return unavailable_state(
-                source_status(config, Some(&result.fingerprint)),
+                source_status(Some(&result.fingerprint)),
                 Duration::ZERO,
                 "game_data_source_snapshot_failed",
                 "Game Data source lines could not be captured for the catalogue snapshot.",
@@ -566,7 +541,7 @@ fn ready_state(
         };
         let Ok(bytes) = fs::read(path) else {
             return unavailable_state(
-                source_status(config, Some(&result.fingerprint)),
+                source_status(Some(&result.fingerprint)),
                 Duration::ZERO,
                 "game_data_source_snapshot_failed",
                 "Game Data source lines could not be captured for the catalogue snapshot.",
@@ -582,7 +557,6 @@ fn ready_state(
         index: Some(Arc::new(result.index)),
         source_line_starts: Arc::new(source_line_starts),
         source_texts: Arc::new(source_texts),
-        source_digest: Some(result.source_digest),
     }
 }
 
@@ -616,24 +590,15 @@ fn unavailable_state(
         index: None,
         source_line_starts: Arc::new(BTreeMap::new()),
         source_texts: Arc::new(BTreeMap::new()),
-        source_digest: None,
     }
 }
 
-fn source_status(
-    config: &GameDataCatalogueConfig,
-    fingerprint: Option<&SourceFingerprint>,
-) -> GameDataSourceStatus {
+fn source_status(fingerprint: Option<&SourceFingerprint>) -> GameDataSourceStatus {
     let acquisition = match fingerprint {
         Some(SourceFingerprint::Downloaded { .. }) => GameDataAcquisition::Downloaded,
         Some(SourceFingerprint::Manual { .. }) => GameDataAcquisition::Manual,
-        None if config.metadata_path.is_some() => GameDataAcquisition::Downloaded,
         None => GameDataAcquisition::Manual,
     };
-    let metadata = config
-        .metadata_path
-        .as_deref()
-        .and_then(read_download_metadata);
     let fingerprint_commit = match fingerprint {
         Some(SourceFingerprint::Downloaded { commit_sha, .. }) => Some(commit_sha.clone()),
         _ => None,
@@ -641,34 +606,11 @@ fn source_status(
 
     GameDataSourceStatus {
         acquisition,
-        branch: metadata
-            .as_ref()
-            .and_then(|value| metadata_text(value, "branch")),
-        commit_sha: fingerprint_commit.or_else(|| {
-            metadata
-                .as_ref()
-                .and_then(|value| metadata_text(value, "commitSha"))
-        }),
-        commit_date: metadata
-            .as_ref()
-            .and_then(|value| metadata_text(value, "commitDate")),
-        downloaded_at: metadata
-            .as_ref()
-            .and_then(|value| metadata_text(value, "downloadedAt")),
+        branch: None,
+        commit_sha: fingerprint_commit,
+        commit_date: None,
+        downloaded_at: None,
     }
-}
-
-fn read_download_metadata(path: &std::path::Path) -> Option<Value> {
-    let raw = fs::read_to_string(path).ok()?;
-    serde_json::from_str(&raw).ok()
-}
-
-fn metadata_text(metadata: &Value, field: &str) -> Option<String> {
-    let value = metadata.get(field)?.as_str()?.trim();
-    if value.is_empty() {
-        return None;
-    }
-    Some(value.chars().take(MAX_METADATA_TEXT_CHARS).collect())
 }
 
 fn coverage(summary: &RuntimeIndexSummary) -> GameDataCoverage {
@@ -746,7 +688,6 @@ fn cache_status(result: &GameDataIndexCacheResult) -> GameDataCacheStatus {
 
 fn timings_ms(timings: IndexCacheTimings) -> GameDataTimingsMs {
     GameDataTimingsMs {
-        fingerprint: duration_ms(timings.fingerprint),
         cache_file_read: duration_ms(timings.cache_file_read),
         cache_decode: duration_ms(timings.cache_decode),
         cache_validate: duration_ms(timings.cache_validate),

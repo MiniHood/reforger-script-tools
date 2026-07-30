@@ -873,6 +873,78 @@ pub fn load_or_build_game_data_index_with_control(
     load_or_build_game_data_index_with_progress_and_control(config, |_| {}, control)
 }
 
+/// Loads the parser-owned Game Data cache without inspecting its source tree.
+///
+/// MCP is a consumer of the index produced by the language-engine indexer. It
+/// must not repeat source fingerprinting or decide when that index is rebuilt.
+/// A missing, incompatible, or malformed cache is therefore unavailable to the
+/// caller rather than a reason to parse or write Game Data here.
+pub fn load_game_data_index_cache_with_control(
+    cache_path: &Path,
+    control: &IndexBuildControl,
+) -> Result<Option<GameDataIndexCacheResult>, String> {
+    let total_start = Instant::now();
+    let mut timings = IndexCacheTimings::default();
+    control.check()?;
+    if !cache_path.is_file() {
+        return Ok(None);
+    }
+
+    let cache_file_bytes = cache_file_bytes(cache_path);
+    let read_start = Instant::now();
+    let bytes = fs::read(cache_path).map_err(|error| {
+        format!(
+            "Failed to read index cache {}: {error}",
+            cache_path.display()
+        )
+    })?;
+    timings.cache_file_read = read_start.elapsed();
+    if !bytes.starts_with(CACHE_MAGIC) {
+        return Ok(None);
+    }
+
+    let decode_start = Instant::now();
+    let cached = decode_cached_index(&bytes).map_err(|error| {
+        format!(
+            "Failed to decode index cache {}: {error}",
+            cache_path.display()
+        )
+    })?;
+    timings.cache_decode = decode_start.elapsed();
+
+    let validate_start = Instant::now();
+    if cached.schema != CACHE_SCHEMA
+        || cached.format_version != CACHE_FORMAT_VERSION
+        || cached.index_shape != CACHE_INDEX_SHAPE
+        || cached.crate_version != env!("CARGO_PKG_VERSION")
+        || cached.validate().is_err()
+    {
+        return Ok(None);
+    }
+    timings.cache_validate = validate_start.elapsed();
+    control.check()?;
+
+    let summary: RuntimeIndexSummary = cached.summary.clone().into();
+    let fingerprint = cached.fingerprint.clone();
+    let source_digest = cached.source_digest.clone();
+    let catalogue_digest = catalogue_digest(&cached)?;
+    let map_rebuild_start = Instant::now();
+    let index = cached.into_index();
+    timings.map_rebuild = map_rebuild_start.elapsed();
+    timings.total = total_start.elapsed();
+
+    Ok(Some(GameDataIndexCacheResult {
+        index,
+        summary,
+        cache_status: IndexCacheStatus::Loaded,
+        fingerprint,
+        source_digest,
+        catalogue_digest,
+        timings,
+        cache_file_bytes,
+    }))
+}
+
 pub fn load_or_build_game_data_index_with_progress(
     config: &GameDataIndexCacheConfig,
     progress: impl FnMut(&str),
@@ -2888,6 +2960,40 @@ mod tests {
         assert_eq!(decoded.files.len(), 1);
         decoded.validate().unwrap();
 
+        cleanup(&root);
+    }
+
+    #[test]
+    fn cache_consumer_loads_the_parser_owned_snapshot_without_source_validation() {
+        let root = test_root("consumer-load");
+        let cache = root.join("cache.bin");
+        let scripts = root.join("scripts");
+        let source = scripts.join("Game/Example.c");
+        write_file(&source, "class CachedExample {}\n");
+
+        load_or_build_game_data_index(&GameDataIndexCacheConfig {
+            scripts_root: scripts,
+            cache_path: cache.clone(),
+            metadata_path: None,
+        })
+        .unwrap();
+        write_file(&source, "class ChangedAfterIndexBuild {}\n");
+
+        let loaded = load_game_data_index_cache_with_control(&cache, &IndexBuildControl::default())
+            .unwrap()
+            .expect("parser-owned cache is available");
+
+        assert!(matches!(loaded.cache_status, IndexCacheStatus::Loaded));
+        assert!(loaded
+            .index
+            .symbols()
+            .iter()
+            .any(|symbol| symbol.name.as_deref() == Some("CachedExample")));
+        assert!(!loaded
+            .index
+            .symbols()
+            .iter()
+            .any(|symbol| symbol.name.as_deref() == Some("ChangedAfterIndexBuild")));
         cleanup(&root);
     }
 

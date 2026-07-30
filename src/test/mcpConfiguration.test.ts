@@ -9,8 +9,6 @@ suite('MCP configuration', () => {
 	test('builds a stable launch independent of a running VS Code process', () => {
 		const launch = buildMcpLaunchConfiguration({
 			serverPath: 'C:\\Extensions\\reforger_language_server.exe',
-			gameDataScripts: 'D:\\Reforger\\scripts',
-			gameDataMetadata: 'C:\\Storage\\metadata.json',
 			indexCache: 'C:\\Storage\\index-cache\\game-data-symbol-index.v12.bin',
 		});
 
@@ -18,21 +16,15 @@ suite('MCP configuration', () => {
 			command: 'C:\\Extensions\\reforger_language_server.exe',
 			args: [
 				'mcp',
-				'--game-data-scripts',
-				'D:\\Reforger\\scripts',
-				'--game-data-metadata',
-				'C:\\Storage\\metadata.json',
 				'--index-cache',
 				'C:\\Storage\\index-cache\\game-data-symbol-index.v12.bin',
 			],
 		});
 	});
 
-	test('omits unavailable optional Game Data inputs without inventing paths', () => {
+	test('uses only the parser-owned Game Data index cache', () => {
 		const launch = buildMcpLaunchConfiguration({
 			serverPath: '/extension/reforger_language_server',
-			gameDataScripts: undefined,
-			gameDataMetadata: undefined,
 			indexCache: '/storage/index-cache/game-data-symbol-index.v12.bin',
 		});
 
@@ -67,14 +59,10 @@ suite('MCP configuration', () => {
 	test('regenerates configuration with the current packaged runtime after an extension upgrade', () => {
 		const previous = renderCodexMcpConfiguration(buildMcpLaunchConfiguration({
 			serverPath: 'C:\\Users\\Gray\\.vscode\\extensions\\burn0ut7.reforger-script-tools-1.0.1\\dist\\server\\win32-x64\\reforger_language_server.exe',
-			gameDataScripts: undefined,
-			gameDataMetadata: undefined,
 			indexCache: 'C:\\Storage\\index-cache.bin',
 		}));
 		const current = renderCodexMcpConfiguration(buildMcpLaunchConfiguration({
 			serverPath: 'C:\\Users\\Gray\\.vscode\\extensions\\burn0ut7.reforger-script-tools-1.0.2\\dist\\server\\win32-x64\\reforger_language_server.exe',
-			gameDataScripts: undefined,
-			gameDataMetadata: undefined,
 			indexCache: 'C:\\Storage\\index-cache.bin',
 		}));
 

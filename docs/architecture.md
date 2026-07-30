@@ -28,8 +28,9 @@ its own local `stdio` process; it neither attaches to the editor-owned LSP nor
 requires VS Code to remain running. LSP and MCP reuse the same Rust language
 and evidence modules, so they do not establish competing semantic authorities.
 The generated [MCP API Reference](mcp-api.md) is the public tool contract.
-The [MCP Runtime guide](mcp-runtime.md) explains its process lifecycle, cache
-validation, semantic-index reuse, and the boundary from the LSP runtime.
+The [MCP Runtime guide](mcp-runtime.md) explains its process lifecycle,
+parser-owned cache consumption, semantic-index reuse, and the boundary from the
+LSP runtime.
 
 ## MCP and Workbench Boundary
 

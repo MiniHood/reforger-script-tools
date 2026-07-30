@@ -2,7 +2,6 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { languageClientIndexCache } from '../extensionConfig/languageClient';
 import { mcpCommands, mcpServer } from '../extensionConfig/mcp';
-import { resolveGameDataPaths } from '../gameData/gameData';
 import { resolveLanguageServerPath } from '../languageClient/serverPath';
 
 export interface McpLaunch {
@@ -12,8 +11,6 @@ export interface McpLaunch {
 
 export interface McpLaunchInputs {
 	serverPath: string;
-	gameDataScripts: string | undefined;
-	gameDataMetadata: string | undefined;
 	indexCache: string;
 }
 
@@ -23,14 +20,7 @@ const genericChoice = 'Generic MCP JSON';
 const codexChoice = 'Codex config.toml';
 
 export function buildMcpLaunchConfiguration(inputs: McpLaunchInputs): McpLaunch {
-	const args = ['mcp'];
-	if (inputs.gameDataScripts) {
-		args.push('--game-data-scripts', inputs.gameDataScripts);
-	}
-	if (inputs.gameDataMetadata) {
-		args.push('--game-data-metadata', inputs.gameDataMetadata);
-	}
-	args.push('--index-cache', inputs.indexCache);
+	const args = ['mcp', '--index-cache', inputs.indexCache];
 	return {
 		command: inputs.serverPath,
 		args,
@@ -74,11 +64,8 @@ export function registerMcpConfigurationCommand(
 			if (!format) {
 				return;
 			}
-			const gameData = resolveGameDataPaths(context);
 			const launch = buildMcpLaunchConfiguration({
 				serverPath,
-				gameDataScripts: gameData.scripts,
-				gameDataMetadata: gameData.metadata,
 				indexCache: path.join(
 					context.globalStorageUri.fsPath,
 					languageClientIndexCache.rootFolder,

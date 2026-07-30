@@ -11,11 +11,11 @@ Use Game Data symbol tools for exact Enfusion declarations, member discovery, an
 
 1. Call `game_data_status` when Game Data availability, version, coverage, or cache health is uncertain.
 2. Preserve its `catalogueRevision` and opaque references or cursors across the progressive Game Data search, inspect, member, relationship, and source-read workflow.
-3. Restart the MCP process after changing or updating Game Data.
+3. After Game Data changes, activate the language server so it refreshes the index cache, then restart MCP.
 
 ## `game_data_status`
 
-Initialize and report the packaged Reforger Game Data Catalogue. Use this first when Game Data availability or coverage is uncertain. Returns the immutable catalogue revision, source acquisition/version facts, semantic coverage and counts, cache outcome, bounded timings, limits, warnings, and recovery guidance without physical paths; it does not search symbols.
+Load and report the parser-owned Reforger Game Data Catalogue cache. Use this first when Game Data availability or coverage is uncertain. Returns the immutable catalogue revision, source provenance, semantic coverage and counts, cache outcome, bounded timings, limits, warnings, and recovery guidance without physical paths; it does not inspect source inputs, parse, rebuild, write the cache, or search symbols.
 
 ### Annotations
 
@@ -27,7 +27,7 @@ Initialize and report the packaged Reforger Game Data Catalogue. Use this first 
 }
 ```
 
-The first call may write the existing derived Game Data cache; it never changes source data or reaches the live web.
+The first call loads the parser-owned derived Game Data cache; it does not inspect source inputs, parse, rebuild, or write that cache.
 
 ### Input schema
 
@@ -275,10 +275,6 @@ The first call may write the existing derived Game Data cache; it never changes 
           "minimum": 0,
           "type": "integer"
         },
-        "fingerprint": {
-          "minimum": 0,
-          "type": "integer"
-        },
         "mapRebuild": {
           "minimum": 0,
           "type": "integer"
@@ -293,7 +289,6 @@ The first call may write the existing derived Game Data cache; it never changes 
         }
       },
       "required": [
-        "fingerprint",
         "cacheFileRead",
         "cacheDecode",
         "cacheValidate",
