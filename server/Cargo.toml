@@ -167,7 +167,12 @@ path = "../tools/server-reports/symbol_debug.rs"
 name = "symbol_report"
 path = "../tools/server-reports/symbol_report.rs"
 
+[[example]]
+name = "pack_catalogue_report"
+path = "../tools/server-reports/pack_catalogue_report.rs"
+
 [dependencies]
+flate2 = "1.0"
 rmcp = { version = "=2.2.0", default-features = false, features = ["server", "macros", "transport-io"] }
 schemars = "1.0"
 semver = "1.0"

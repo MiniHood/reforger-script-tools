@@ -61,6 +61,18 @@ explicit example targets, so existing commands such as
 the supported way to run them. They are developer tooling and never a runtime
 dependency of the extension.
 
+To catalogue one or more PAC1 archives without extracting their contents, run:
+
+```powershell
+$env:CARGO_TARGET_DIR = ".cache/cargo/pack-catalogue-report"
+cargo run --manifest-path server/Cargo.toml --example pack_catalogue_report -- `
+  <archive.pak> [<another-archive.pak> ...]
+```
+
+The report lists catalogue and `.c` entry counts with elapsed time. It is a
+safe inspection aid for add-on research, not an add-on discovery or indexing
+command.
+
 The bundled executable selects a protocol before either protocol starts:
 
 ```powershell

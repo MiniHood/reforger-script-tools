@@ -6,6 +6,11 @@ and MCP projections. The TypeScript extension transports those facts and
 applies editor-only behaviour; it does not duplicate parsing or semantic
 decisions.
 
+PAC1 archive inspection is also Rust-owned. Its pack module builds a bounded
+logical file catalogue and reads only caller-selected entries; it does not
+infer add-on identity, load order, cache keys, or indexing policy. Those
+composition decisions remain with the future resolved-game-data pipeline.
+
 ## Contract
 
 The engine accepts source snapshots and external source layers, then projects

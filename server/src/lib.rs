@@ -20,6 +20,7 @@ pub mod lsp;
 pub mod mcp;
 pub mod model;
 pub mod official_wiki;
+pub mod pack;
 pub mod parser;
 pub mod preprocessor;
 pub mod reference_finder;
