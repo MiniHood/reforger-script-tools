@@ -8,6 +8,11 @@ autoexamples = false
 name = "reforger_language_server"
 path = "src/lib.rs"
 
+[features]
+# Enables fault-injection controls used only by spawned MCP integration tests.
+# It is deliberately non-default and must never be enabled for a shipped binary.
+test-hooks = []
+
 # Developer-only reports and benchmarks live outside this shipped Rust package.
 # Explicit targets retain the existing `cargo run --example <name>` workflow.
 [[example]]

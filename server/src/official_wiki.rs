@@ -532,7 +532,7 @@ impl OfficialWikiCorpus {
     }
 }
 
-#[cfg(debug_assertions)]
+#[cfg(all(feature = "test-hooks", debug_assertions))]
 fn wait_for_test_read_delay(control: &OfficialWikiControl) -> Result<(), OfficialWikiReadError> {
     let Some(delay_ms) = std::env::var("REFORGER_MCP_TEST_OFFICIAL_WIKI_READ_DELAY_MS")
         .ok()
@@ -550,7 +550,7 @@ fn wait_for_test_read_delay(control: &OfficialWikiControl) -> Result<(), Officia
     Ok(())
 }
 
-#[cfg(not(debug_assertions))]
+#[cfg(not(all(feature = "test-hooks", debug_assertions)))]
 fn wait_for_test_read_delay(_control: &OfficialWikiControl) -> Result<(), OfficialWikiReadError> {
     Ok(())
 }

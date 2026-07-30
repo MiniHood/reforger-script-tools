@@ -1562,7 +1562,7 @@ async fn cancel_worker(
 }
 
 fn initialization_deadline_ms() -> u64 {
-    #[cfg(debug_assertions)]
+    #[cfg(all(feature = "test-hooks", debug_assertions))]
     if let Some(value) = std::env::var("REFORGER_MCP_TEST_INITIALIZATION_DEADLINE_MS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
@@ -1573,7 +1573,7 @@ fn initialization_deadline_ms() -> u64 {
 }
 
 fn ready_game_data_operation_deadline_ms() -> u64 {
-    #[cfg(debug_assertions)]
+    #[cfg(all(feature = "test-hooks", debug_assertions))]
     if let Some(value) = std::env::var("REFORGER_MCP_TEST_GAME_DATA_OPERATION_DEADLINE_MS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
@@ -1584,7 +1584,7 @@ fn ready_game_data_operation_deadline_ms() -> u64 {
 }
 
 fn official_wiki_deadline_ms() -> u64 {
-    #[cfg(debug_assertions)]
+    #[cfg(all(feature = "test-hooks", debug_assertions))]
     if let Some(value) = std::env::var("REFORGER_MCP_TEST_OFFICIAL_WIKI_DEADLINE_MS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
@@ -1594,7 +1594,7 @@ fn official_wiki_deadline_ms() -> u64 {
     5_000
 }
 
-#[cfg(debug_assertions)]
+#[cfg(all(feature = "test-hooks", debug_assertions))]
 fn record_debug_admission() {
     use std::io::Write;
 
@@ -1610,10 +1610,10 @@ fn record_debug_admission() {
     }
 }
 
-#[cfg(not(debug_assertions))]
+#[cfg(not(all(feature = "test-hooks", debug_assertions)))]
 fn record_debug_admission() {}
 
-#[cfg(debug_assertions)]
+#[cfg(all(feature = "test-hooks", debug_assertions))]
 fn delay_debug_research_worker() {
     let delay_ms = std::env::var("REFORGER_MCP_TEST_RESEARCH_NONCOOPERATIVE_DELAY_MS")
         .ok()
@@ -1624,7 +1624,7 @@ fn delay_debug_research_worker() {
     }
 }
 
-#[cfg(not(debug_assertions))]
+#[cfg(not(all(feature = "test-hooks", debug_assertions)))]
 fn delay_debug_research_worker() {}
 
 impl ServerHandler for ReforgerMcpServer {

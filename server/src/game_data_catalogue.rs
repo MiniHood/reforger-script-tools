@@ -18,7 +18,7 @@ use crate::model::SymbolKind;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-#[cfg(debug_assertions)]
+#[cfg(all(feature = "test-hooks", debug_assertions))]
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -38,7 +38,7 @@ pub struct GameDataCatalogue {
     config: GameDataCatalogueConfig,
     state: Mutex<Option<GameDataCatalogueState>>,
     initialized: AtomicBool,
-    #[cfg(debug_assertions)]
+    #[cfg(all(feature = "test-hooks", debug_assertions))]
     panic_once: std::sync::atomic::AtomicBool,
 }
 
@@ -56,7 +56,7 @@ impl GameDataCatalogue {
             config,
             state: Mutex::new(None),
             initialized: AtomicBool::new(false),
-            #[cfg(debug_assertions)]
+            #[cfg(all(feature = "test-hooks", debug_assertions))]
             panic_once: std::sync::atomic::AtomicBool::new(
                 std::env::var("REFORGER_MCP_TEST_PANIC_ONCE").as_deref() == Ok("1"),
             ),
@@ -253,7 +253,7 @@ impl GameDataCatalogue {
         }
     }
 
-    #[cfg(debug_assertions)]
+    #[cfg(all(feature = "test-hooks", debug_assertions))]
     fn before_initialization(&self, control: &IndexBuildControl) -> Result<(), String> {
         use std::io::Write;
         use std::sync::atomic::Ordering;
@@ -287,12 +287,12 @@ impl GameDataCatalogue {
         control.check()
     }
 
-    #[cfg(not(debug_assertions))]
+    #[cfg(not(all(feature = "test-hooks", debug_assertions)))]
     fn before_initialization(&self, control: &IndexBuildControl) -> Result<(), String> {
         control.check()
     }
 
-    #[cfg(debug_assertions)]
+    #[cfg(all(feature = "test-hooks", debug_assertions))]
     fn before_operation(&self, control: &IndexBuildControl) -> Result<(), String> {
         let delay_ms = std::env::var("REFORGER_MCP_TEST_GAME_DATA_OPERATION_DELAY_MS")
             .ok()
@@ -306,7 +306,7 @@ impl GameDataCatalogue {
         control.check()
     }
 
-    #[cfg(not(debug_assertions))]
+    #[cfg(not(all(feature = "test-hooks", debug_assertions)))]
     fn before_operation(&self, control: &IndexBuildControl) -> Result<(), String> {
         control.check()
     }

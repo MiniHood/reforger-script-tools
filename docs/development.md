@@ -23,19 +23,24 @@ From the repository root:
 | `npm run mcp-api:generate` | Regenerate the committed MCP API Reference from the live Rust descriptors. |
 | `npm run mcp-api:check` | Fail when the committed MCP API Reference has drifted. |
 
-For Rust-only work, run `cargo test` from `server/` in addition to focused
-tests. For extension-facing TypeScript, language-client, or bundled-server
-changes, run `npm run compile` after the final source edit.
+For Rust-only work, run `npm run test:server` in addition to focused tests. It
+uses the non-default `test-hooks` feature required by spawned-process MCP
+integration tests and writes its Cargo artifacts outside the shipped package.
+For extension-facing TypeScript, language-client, or bundled-server changes,
+run `npm run compile` after the final source edit.
 
 ### Cargo build artifacts
 
-Keep every Cargo build cache beneath the ignored `server/target/` tree. Normal
-Cargo commands use that directory automatically. When an investigation needs
-an isolated cache, set `CARGO_TARGET_DIR` to
-`server/target/tasks/<short-purpose>` instead of creating a sibling
-`server/target-*` directory. These directories contain generated compiler
-artifacts only, can grow by several gigabytes, and may be removed with
-`cargo clean --manifest-path server/Cargo.toml --target-dir <target-path>`.
+The normal development server build uses the ignored `server/target/` tree.
+Test and investigation commands must use a separate ignored cache beneath
+`.cache/cargo/<short-purpose>`; `npm run test:server` uses
+`.cache/cargo/server-tests`. Do not create sibling `server/target-*`
+directories. Cargo artifacts can grow by several gigabytes and may be removed
+with `cargo clean --manifest-path server/Cargo.toml --target-dir <target-path>`.
+
+The non-default `test-hooks` feature exists solely for spawned-process MCP
+integration tests. Never enable it for `npm run compile`, `npm run package`, or
+any distributable binary.
 
 The development extension launches
 `server/target/debug/reforger_language_server.exe`; `npm run compile` rebuilds
