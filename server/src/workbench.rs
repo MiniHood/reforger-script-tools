@@ -293,6 +293,7 @@ pub struct WorkbenchLoadedAddon {
 pub struct WorkbenchLoadedAddonGraph {
     pub bridge_version: String,
     pub protocol_version: u32,
+    pub current_project_file: PathBuf,
     pub addons: Vec<WorkbenchLoadedAddon>,
 }
 
@@ -1709,7 +1710,7 @@ impl WorkbenchController {
                 json!({"handler": "RST_WorkbenchLoadedAddonGraph"}),
             )
         })?;
-        if addons.len() > 256 || addons.iter().any(|addon| !valid_loaded_addon(addon)) {
+        if addons.len() > 256 || !raw.current_project_file.is_absolute() || addons.iter().any(|addon| !valid_loaded_addon(addon)) {
             return Err(self.correlate_failure_details(
                 "loaded_addon_graph",
                 "workbench_protocol_error",
@@ -1731,6 +1732,7 @@ impl WorkbenchController {
         let graph = WorkbenchLoadedAddonGraph {
             bridge_version: raw.bridge_version,
             protocol_version: raw.protocol_version,
+            current_project_file: raw.current_project_file,
             addons,
         };
         self.log_event_timed(
@@ -5378,6 +5380,8 @@ struct RawWorkbenchLoadedAddonGraph {
     bridge_version: String,
     #[serde(rename = "protocolVersion")]
     protocol_version: u32,
+    #[serde(rename = "currentProjectFile")]
+    current_project_file: PathBuf,
     #[serde(rename = "graphJson")]
     graph_json: String,
 }

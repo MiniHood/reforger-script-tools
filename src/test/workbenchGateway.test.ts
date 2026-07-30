@@ -38,6 +38,7 @@ suite('Workbench Gateway', () => {
 				payload: {
 					bridgeVersion: '1.52.0',
 					protocolVersion: 1,
+					currentProjectFile: 'C:\\Users\\Gray\\Documents\\My Games\\ArmaReforgerWorkbench\\addons\\GC-Suppression\\addon.gproj',
 					addons: [{
 						guid: '684CE8AA3B1D6573',
 						id: 'GCSuppression',
@@ -58,6 +59,7 @@ suite('Workbench Gateway', () => {
 				value: {
 					bridgeVersion: '1.52.0',
 					protocolVersion: 1,
+					currentProjectFile: 'C:\\Users\\Gray\\Documents\\My Games\\ArmaReforgerWorkbench\\addons\\GC-Suppression\\addon.gproj',
 					addons: [{
 						guid: '684CE8AA3B1D6573',
 						id: 'GCSuppression',

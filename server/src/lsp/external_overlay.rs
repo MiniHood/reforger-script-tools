@@ -507,7 +507,7 @@ fn run_external_index_thread(
         }
         let result = addon_index_storage
             .ok_or_else(|| "add-on index storage is unavailable".to_string())
-            .and_then(|storage| load_or_build_loaded_addon_indexes(&inventory_path, &storage, &control));
+            .and_then(|storage| load_or_build_loaded_addon_indexes(&inventory_path, &storage, &workspace_roots, &control));
         if let Some(sender) = &event_sender {
             for phase in ["inventory-load-end", "pac-inspect-end"] {
                 let _ = sender.send(ServerEvent::ExternalIndexProgress {
@@ -1136,6 +1136,7 @@ mod tests {
         let addons = root.join("addons");
         fs::create_dir_all(addons.join("data")).unwrap();
         fs::create_dir_all(addons.join("core")).unwrap();
+        fs::write(addons.join("data/ArmaReforger.gproj"), "{}").unwrap();
         write_fixture_pak(
             &addons.join("data/data007.pak"),
             &[("Feature.c", b"class Feature {}")],
@@ -1148,7 +1149,8 @@ mod tests {
         fs::write(
             &inventory,
             format!(
-                r#"{{"schema":"reforger-workbench-loaded-addon-graph-v1","bridgeVersion":"1.52.0","protocolVersion":1,"addons":[{{"guid":"58D0FB3206B6F859","id":"ArmaReforger","title":"Arma Reforger","sourceRoot":{}}},{{"guid":"5614BBCCBB55ED1C","id":"core","title":"core","sourceRoot":{}}}]}}"#,
+                r#"{{"schema":"reforger-workbench-loaded-addon-graph-v1","bridgeVersion":"1.52.0","protocolVersion":1,"currentProjectFile":{},"addons":[{{"guid":"58D0FB3206B6F859","id":"ArmaReforger","title":"Arma Reforger","sourceRoot":{}}},{{"guid":"5614BBCCBB55ED1C","id":"core","title":"core","sourceRoot":{}}}]}}"#,
+                serde_json::to_string(&addons.join("data/ArmaReforger.gproj")).unwrap(),
                 serde_json::to_string(&addons.join("data")).unwrap(),
                 serde_json::to_string(&addons.join("core")).unwrap(),
             ),
