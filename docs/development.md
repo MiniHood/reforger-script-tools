@@ -80,8 +80,9 @@ the command refuses to overwrite an existing extracted file.
 For archive-reader performance evidence without filesystem extraction, pass
 `--profile-scripts`. It reports catalogue and selection time, read/decode time,
 compressed and original byte totals, throughput, compression distribution, and
-the ten slowest selected entries. These are local diagnostics, not portable
-benchmark thresholds.
+the ten slowest selected entries. Catalogue timing is further split into chunk
+scan, metadata-table read, and file-tree parse. These are local diagnostics,
+not portable benchmark thresholds.
 
 The bundled executable selects a protocol before either protocol starts:
 

@@ -1,6 +1,8 @@
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use flate2::read::ZlibDecoder;
 
@@ -12,6 +14,16 @@ const MAX_NESTING: usize = 128;
 const MAX_SELECTED_ENTRIES: usize = 10_000;
 const MAX_EXPANSION_RATIO: u64 = 128;
 const DEFLATE_ZLIB_COMPRESSION: u32 = 0x106;
+
+#[derive(Debug, Clone, Default)]
+pub struct PakInspectionMetrics {
+    pub chunk_count: usize,
+    pub file_table_count: usize,
+    pub file_table_bytes: u64,
+    pub chunk_scan: Duration,
+    pub file_table_read: Duration,
+    pub file_tree_parse: Duration,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PakEntry {
@@ -97,16 +109,38 @@ pub struct PakArchive {
     file_length: u64,
     entries: Vec<PakEntry>,
 }
+
+pub struct PakReader<'a> {
+    archive: &'a PakArchive,
+    file: File,
+}
 impl PakArchive {
     pub fn inspect(path: impl AsRef<Path>) -> Result<Self, PackError> {
-        Self::inspect_with_cancel(path, || false)
+        Self::inspect_internal(path, &mut || false, None)
     }
 
     pub fn inspect_with_cancel(
         path: impl AsRef<Path>,
         mut is_cancelled: impl FnMut() -> bool,
     ) -> Result<Self, PackError> {
-        ensure_not_cancelled(&mut is_cancelled)?;
+        Self::inspect_internal(path, &mut is_cancelled, None)
+    }
+
+    pub fn inspect_with_metrics(
+        path: impl AsRef<Path>,
+    ) -> Result<(Self, PakInspectionMetrics), PackError> {
+        let mut metrics = PakInspectionMetrics::default();
+        let archive = Self::inspect_internal(path, &mut || false, Some(&mut metrics))?;
+        Ok((archive, metrics))
+    }
+
+    fn inspect_internal(
+        path: impl AsRef<Path>,
+        is_cancelled: &mut impl FnMut() -> bool,
+        metrics: Option<&mut PakInspectionMetrics>,
+    ) -> Result<Self, PackError> {
+        let mut metrics = metrics;
+        ensure_not_cancelled(is_cancelled)?;
         let path = path.as_ref().to_path_buf();
         let mut file = File::open(&path).map_err(io)?;
         let file_length = file.metadata().map_err(io)?.len();
@@ -121,9 +155,11 @@ impl PakArchive {
             .filter(|v| *v <= file_length)
             .ok_or_else(|| PackError::Invalid("PAC1 FORM length exceeds archive".into()))?;
         let mut entries = Vec::new();
+        let mut logical_paths = HashSet::new();
         let mut nodes = 0;
         while file.stream_position().map_err(io)? < end {
-            ensure_not_cancelled(&mut is_cancelled)?;
+            ensure_not_cancelled(is_cancelled)?;
+            let chunk_started = std::time::Instant::now();
             let mut chunk = [0; 8];
             read_exact(&mut file, &mut chunk)?;
             let length = u32::from_be_bytes(chunk[4..].try_into().unwrap()) as u64;
@@ -136,25 +172,44 @@ impl PakArchive {
                 if length > MAX_FILE_TABLE_BYTES {
                     return Err(PackError::Limit("PAC1 file table exceeds limit".into()));
                 }
+                if let Some(metrics) = &mut metrics {
+                    metrics.chunk_count += 1;
+                    metrics.file_table_count += 1;
+                    metrics.file_table_bytes += length;
+                    metrics.chunk_scan += chunk_started.elapsed();
+                }
+                let table_read_started = std::time::Instant::now();
                 let mut bytes = vec![0; length as usize];
                 read_exact(&mut file, &mut bytes)?;
+                if let Some(metrics) = &mut metrics {
+                    metrics.file_table_read += table_read_started.elapsed();
+                }
                 let mut cursor = 0;
+                let parse_started = std::time::Instant::now();
                 parse_entry(
                     &bytes,
                     &mut cursor,
                     "",
                     &mut entries,
+                    &mut logical_paths,
                     &path,
                     file_length,
                     0,
                     &mut nodes,
-                    &mut is_cancelled,
+                    is_cancelled,
                 )?;
+                if let Some(metrics) = &mut metrics {
+                    metrics.file_tree_parse += parse_started.elapsed();
+                }
                 if cursor != bytes.len() {
                     return Err(PackError::Invalid("trailing PAC1 file-table data".into()));
                 }
             } else {
                 file.seek(SeekFrom::Start(next)).map_err(io)?;
+                if let Some(metrics) = &mut metrics {
+                    metrics.chunk_count += 1;
+                    metrics.chunk_scan += chunk_started.elapsed();
+                }
             }
         }
         if entries.is_empty() {
@@ -249,7 +304,36 @@ impl PakArchive {
         output: &mut impl Write,
         is_cancelled: impl FnMut() -> bool,
     ) -> Result<u64, PackError> {
-        if entry.archive_path != self.path {
+        self.reader()?
+            .read_to_with_cancel(entry, output, is_cancelled)
+    }
+
+    pub fn reader(&self) -> Result<PakReader<'_>, PackError> {
+        Ok(PakReader {
+            archive: self,
+            file: File::open(&self.path).map_err(io)?,
+        })
+    }
+
+    pub fn read(&self, entry: &PakEntry) -> Result<Vec<u8>, PackError> {
+        let mut bytes = Vec::with_capacity(entry.original_length as usize);
+        self.read_to(entry, &mut bytes)?;
+        Ok(bytes)
+    }
+}
+
+impl PakReader<'_> {
+    pub fn read_to(&mut self, entry: &PakEntry, output: &mut impl Write) -> Result<u64, PackError> {
+        self.read_to_with_cancel(entry, output, || false)
+    }
+
+    pub fn read_to_with_cancel(
+        &mut self,
+        entry: &PakEntry,
+        output: &mut impl Write,
+        is_cancelled: impl FnMut() -> bool,
+    ) -> Result<u64, PackError> {
+        if entry.archive_path != self.archive.path {
             return Err(PackError::ArchiveMismatch {
                 path: entry.logical_path.clone(),
             });
@@ -271,15 +355,14 @@ impl PakArchive {
         let _end = entry
             .offset
             .checked_add(entry.compressed_length)
-            .filter(|v| *v <= self.file_length)
+            .filter(|v| *v <= self.archive.file_length)
             .ok_or_else(|| {
                 PackError::Invalid(format!(
                     "PAC1 entry is outside archive: {}",
                     entry.logical_path
                 ))
             })?;
-        let mut file = File::open(&self.path).map_err(io)?;
-        file.seek(SeekFrom::Start(entry.offset)).map_err(io)?;
+        self.file.seek(SeekFrom::Start(entry.offset)).map_err(io)?;
         match entry.compression {
             0 => {
                 if entry.compressed_length != entry.original_length {
@@ -289,14 +372,14 @@ impl PakArchive {
                     )));
                 }
                 copy_exact(
-                    &mut file.take(entry.compressed_length),
+                    &mut (&mut self.file).take(entry.compressed_length),
                     output,
                     entry.original_length,
                     is_cancelled,
                 )
             }
             DEFLATE_ZLIB_COMPRESSION => {
-                let mut decoder = ZlibDecoder::new(file.take(entry.compressed_length));
+                let mut decoder = ZlibDecoder::new((&mut self.file).take(entry.compressed_length));
                 copy_exact(&mut decoder, output, entry.original_length, is_cancelled)
             }
             compression => Err(PackError::UnsupportedCompression {
@@ -305,12 +388,6 @@ impl PakArchive {
             }),
         }
     }
-
-    pub fn read(&self, entry: &PakEntry) -> Result<Vec<u8>, PackError> {
-        let mut bytes = Vec::with_capacity(entry.original_length as usize);
-        self.read_to(entry, &mut bytes)?;
-        Ok(bytes)
-    }
 }
 
 fn parse_entry(
@@ -318,6 +395,7 @@ fn parse_entry(
     cursor: &mut usize,
     parent: &str,
     entries: &mut Vec<PakEntry>,
+    logical_paths: &mut HashSet<String>,
     archive_path: &Path,
     file_length: u64,
     depth: usize,
@@ -372,6 +450,7 @@ fn parse_entry(
                     cursor,
                     &path,
                     entries,
+                    logical_paths,
                     archive_path,
                     file_length,
                     depth + 1,
@@ -397,7 +476,7 @@ fn parse_entry(
                     "PAC1 entry is outside archive: {path}"
                 )));
             }
-            if entries.iter().any(|entry| entry.logical_path == path) {
+            if !logical_paths.insert(path.clone()) {
                 return Err(PackError::Invalid(format!(
                     "duplicate PAC1 logical path: {path}"
                 )));
@@ -651,6 +730,24 @@ mod tests {
         let archive = PakArchive::inspect(&path).unwrap();
 
         assert_eq!(archive.read(&archive.entries()[0]).unwrap(), b"");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn reader_reuses_one_archive_handle_for_multiple_entries() {
+        let path = fixture_pak(&[
+            ("First.c", b"class First {}", 0, b"class First {}".len()),
+            ("Second.c", b"class Second {}", 0, b"class Second {}".len()),
+        ]);
+        let archive = PakArchive::inspect(&path).unwrap();
+        let mut reader = archive.reader().unwrap();
+        let mut first = Vec::new();
+        let mut second = Vec::new();
+
+        reader.read_to(&archive.entries()[0], &mut first).unwrap();
+        reader.read_to(&archive.entries()[1], &mut second).unwrap();
+        assert_eq!(first, b"class First {}");
+        assert_eq!(second, b"class Second {}");
         let _ = std::fs::remove_file(path);
     }
 

@@ -3,7 +3,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use reforger_language_server::pack::{PakArchive, PakEntry, PakSelection};
+use reforger_language_server::pack::{PakArchive, PakEntry, PakInspectionMetrics, PakSelection};
 
 const SLOWEST_ENTRY_LIMIT: usize = 10;
 
@@ -63,8 +63,8 @@ fn parse_options() -> Options {
 fn run(options: Options) {
     for path in options.archives {
         let inspect_started = Instant::now();
-        let archive = match PakArchive::inspect(&path) {
-            Ok(archive) => archive,
+        let (archive, inspection) = match PakArchive::inspect_with_metrics(&path) {
+            Ok(result) => result,
             Err(error) => {
                 eprintln!("{}: inspection failed: {error}", path.display());
                 continue;
@@ -90,6 +90,7 @@ fn run(options: Options) {
             format_duration(inspect_elapsed),
             format_duration(selection_elapsed),
         );
+        print_inspection_metrics(&inspection);
 
         if let Some(root) = &options.extraction_root {
             match extract_scripts(&archive, &scripts, root) {
@@ -107,12 +108,25 @@ fn run(options: Options) {
     }
 }
 
+fn print_inspection_metrics(metrics: &PakInspectionMetrics) {
+    println!(
+        "  inspection: chunks={} file-tables={} metadata={} chunk-scan={} table-read={} tree-parse={}",
+        metrics.chunk_count,
+        metrics.file_table_count,
+        format_bytes(metrics.file_table_bytes),
+        format_duration(metrics.chunk_scan),
+        format_duration(metrics.file_table_read),
+        format_duration(metrics.file_tree_parse),
+    );
+}
+
 fn extract_scripts(
     archive: &PakArchive,
     scripts: &[PakEntry],
     root: &Path,
 ) -> Result<usize, String> {
     let mut count = 0;
+    let mut reader = archive.reader().map_err(|error| error.to_string())?;
     for entry in scripts {
         let destination = root.join(entry.logical_path());
         let parent = destination
@@ -124,7 +138,7 @@ fn extract_scripts(
             .create_new(true)
             .open(&destination)
             .map_err(|error| format!("{}: {error}", destination.display()))?;
-        archive
+        reader
             .read_to(entry, &mut output)
             .map_err(|error| format!("{}: {error}", entry.logical_path()))?;
         count += 1;
@@ -138,10 +152,11 @@ fn profile_scripts(archive: &PakArchive, scripts: &[PakEntry]) -> Result<ScriptP
     let mut original_bytes = 0;
     let mut compression_counts = std::collections::BTreeMap::new();
     let mut slowest = Vec::with_capacity(scripts.len());
+    let mut reader = archive.reader().map_err(|error| error.to_string())?;
 
     for entry in scripts {
         let entry_started = Instant::now();
-        archive
+        reader
             .read_to(entry, &mut io::sink())
             .map_err(|error| format!("{}: {error}", entry.logical_path()))?;
         compressed_bytes += entry.compressed_length();
