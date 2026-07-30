@@ -173,6 +173,20 @@ before that request. The extension diagnostic log records the corresponding
 edit-to-middleware age and event-loop-turn delay without document paths, source
 text, identifiers, or LSP payloads.
 
+To diagnose the complete extension startup path, temporarily enable
+`reforgerScriptTools.diagnostics.enabled`, reload the VS Code window once, and
+then run:
+
+```powershell
+node tools/lsp-startup-trace.mjs
+```
+
+The report correlates extension activation, Workbench loaded-add-on graph
+acquisition, language-server spawn and initialize response, external-index
+ready notification, first document opening, and first semantic-token response.
+The log is bounded and excludes source text, paths, and LSP payloads. Disable
+the setting after the capture.
+
 ## Ticket Completion
 
 Break a ticket into small, behavior-preserving implementation slices when that

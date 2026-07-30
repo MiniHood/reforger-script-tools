@@ -372,12 +372,12 @@ async function startLanguageClient(
 		clientOptions,
 	);
 	logLanguageClientStartupTiming(context, 'languageClientCreated');
-	const externalIndexMonitor = externalIndexProgress
-		? monitorExternalIndexProgress(client, externalIndexProgress)
-		: undefined;
-	if (externalIndexMonitor) {
-		clientDisposables.push(externalIndexMonitor.disposable);
-	}
+	// The external index is asynchronous, but it is still part of a usable
+	// language-tooling startup. Monitor every launch so support diagnostics can
+	// distinguish server initialization from index readiness. A refresh also
+	// supplies UI progress and waits for this same authoritative completion.
+	const externalIndexMonitor = monitorExternalIndexProgress(context, client, externalIndexProgress);
+	clientDisposables.push(externalIndexMonitor.disposable);
 
 	try {
 		externalIndexProgress?.report({ message: 'Starting language server' });
@@ -399,7 +399,9 @@ async function startLanguageClient(
 		if (usesCustomScopeDelimiterPresentation(bracketColoring)) {
 			clientDisposables.push(registerActiveScopeDelimiterBridge(client));
 		}
-		await externalIndexMonitor?.completion;
+		if (externalIndexProgress) {
+			await externalIndexMonitor.completion;
+		}
 	} catch (error) {
 		externalIndexMonitor?.disposable.dispose();
 		const message = error instanceof Error ? error.message : String(error);
@@ -533,8 +535,9 @@ async function restartLanguageClient(
 }
 
 function monitorExternalIndexProgress(
+	context: vscode.ExtensionContext,
 	activeClient: LanguageClient,
-	progress: ExternalIndexProgress,
+	progress: ExternalIndexProgress | undefined,
 ): { completion: Promise<void>; disposable: vscode.Disposable } {
 	let complete = false;
 	let resolveCompletion: (() => void) | undefined;
@@ -550,8 +553,17 @@ function monitorExternalIndexProgress(
 	const notification = activeClient.onNotification(
 		new NotificationType<ExternalIndexProgressParams>(languageClientNotifications.externalIndexProgress),
 		params => {
-			progress.report({ message: externalIndexProgressMessage(params.phase, params.status) });
+			progress?.report({ message: externalIndexProgressMessage(params.phase, params.status) });
+			logLanguageClientStartupTiming(context, 'externalIndexProgress', {
+				phase: params.phase,
+				status: params.status,
+				gameDataFiles: params.gameDataFiles,
+			});
 			if (params.phase === 'complete') {
+				logLanguageClientStartupTiming(context, 'externalIndexReady', {
+					status: params.status,
+					gameDataFiles: params.gameDataFiles,
+				});
 				finish();
 			}
 		},

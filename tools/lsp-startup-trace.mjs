@@ -9,7 +9,7 @@ const globalStorage = args.globalStorage ?? defaultGlobalStorage();
 const out = args.out ?? join("tools", "reports", "lsp-startup-trace.report.md");
 
 const serverLog = join(globalStorage, "logs", "language-server.log");
-const clientLog = join(globalStorage, "logs", "language-client-startup.log");
+const clientLog = join(globalStorage, "logs", "extension-diagnostics.jsonl");
 const vscodeOutputLog = findLatestVsCodeOutputLog();
 
 const serverLines = readLines(serverLog);
@@ -50,9 +50,9 @@ function parseArgs(rawArgs) {
 
 function defaultGlobalStorage() {
   if (process.platform === "win32") {
-    return join(process.env.APPDATA ?? join(homedir(), "AppData", "Roaming"), "Code", "User", "globalStorage", "undefined_publisher.reforger-sript-tools");
+    return join(process.env.APPDATA ?? join(homedir(), "AppData", "Roaming"), "Code", "User", "globalStorage", "burn0ut7.reforger-script-tools");
   }
-  return join(homedir(), ".config", "Code", "User", "globalStorage", "undefined_publisher.reforger-sript-tools");
+  return join(homedir(), ".config", "Code", "User", "globalStorage", "burn0ut7.reforger-script-tools");
 }
 
 function readLines(path) {
@@ -113,7 +113,7 @@ function renderReport(input) {
   const lines = [];
   lines.push("# LSP Startup Trace");
   lines.push("");
-  lines.push("This report merges the TypeScript startup log, Rust language-server log, and VS Code language-client output so startup stalls can be diagnosed from one file.");
+  lines.push("This report merges the TypeScript extension diagnostic log, Rust language-server log, and VS Code language-client output so startup stalls can be diagnosed from one file.");
   lines.push("");
   lines.push("## Summary");
   lines.push("");
@@ -127,7 +127,7 @@ function renderReport(input) {
   lines.push("");
   lines.push("## Log Files");
   lines.push("");
-  lines.push(`- TypeScript startup: \`${input.clientLog}\`${existsSync(input.clientLog) ? "" : " (missing)"}`);
+  lines.push(`- TypeScript extension diagnostics: \`${input.clientLog}\`${existsSync(input.clientLog) ? "" : " (missing)"}`);
   lines.push(`- Rust server: \`${input.serverLog}\`${existsSync(input.serverLog) ? "" : " (missing)"}`);
   lines.push(`- VS Code output: \`${input.vscodeOutputLog ?? "not found"}\``);
   lines.push("");
@@ -209,19 +209,19 @@ function classifyClientStatus(session) {
     return "No TypeScript startup session found.";
   }
   const events = session.events.map((event) => event.event);
-  if (!events.includes("languageServerProcessSpawnRequested")) {
+  if (!events.includes("startup.languageServerProcessSpawnRequested")) {
     return "Client activated but did not request language-server spawn.";
   }
-  if (!events.includes("languageServerInitializeResponse")) {
+  if (!events.includes("startup.languageServerInitializeResponse")) {
     return "Server spawn requested, but initialize response was not logged.";
   }
-  if (!events.includes("firstDocumentOpened")) {
+  if (!events.includes("startup.firstDocumentOpened")) {
     return "Server initialized, but no Enforce document-open event was logged.";
   }
-  if (!events.includes("firstSemanticTokenResponse")) {
+  if (!events.includes("startup.firstSemanticTokenResponse")) {
     return "Server initialized and saw an open document, but no semantic-token response completed.";
   }
-  const firstSemantic = session.events.find((event) => event.event === "firstSemanticTokenResponse");
+  const firstSemantic = session.events.find((event) => event.event === "startup.firstSemanticTokenResponse");
   return `First semantic-token response completed in ${formatValue(firstSemantic.elapsedMsForRequest)} ms.`;
 }
 
@@ -254,11 +254,17 @@ function interpret(session, serverLines, outputLines) {
   const serverText = serverLines.join("\n");
   const outputText = outputLines.join("\n");
 
-  if (!clientEvents.has("languageServerInitializeResponse")) {
+  if (!clientEvents.has("startup.languageServerInitializeResponse")) {
     notes.push("Focus first on process launch or JSON-RPC initialize. The client never logged initialize completion.");
   }
-  if (clientEvents.has("languageServerInitializeResponse") && !clientEvents.has("firstSemanticTokenResponse")) {
+  if (clientEvents.has("startup.languageServerInitializeResponse") && !clientEvents.has("startup.firstSemanticTokenResponse")) {
     notes.push("The client initialized successfully but did not complete the first semantic-token response in this session.");
+  }
+  const indexReady = session?.events.find((event) => event.event === "startup.externalIndexReady");
+  if (indexReady) {
+    notes.push(`External index reached ${indexReady.status ?? "an unknown state"} at ${formatValue(indexReady.elapsedMs)} ms from extension startup.`);
+  } else if (clientEvents.has("startup.languageServerInitializeResponse")) {
+    notes.push("The server initialized, but the external-index ready notification was not observed.");
   }
   if (serverText.includes("phase=map-rebuild-end") && !serverText.includes("externalIndex gameData ready")) {
     notes.push("The Rust server got through binary cache decode and lookup-map rebuild, then failed or restarted before publishing the ready index.");
