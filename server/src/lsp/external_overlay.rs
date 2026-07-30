@@ -507,7 +507,14 @@ fn run_external_index_thread(
         }
         let result = addon_index_storage
             .ok_or_else(|| "add-on index storage is unavailable".to_string())
-            .and_then(|storage| load_or_build_loaded_addon_indexes(&inventory_path, &storage, &workspace_roots, &control));
+            .and_then(|storage| {
+                load_or_build_loaded_addon_indexes(
+                    &inventory_path,
+                    &storage,
+                    &workspace_roots,
+                    &control,
+                )
+            });
         if let Some(sender) = &event_sender {
             for phase in ["inventory-load-end", "pac-inspect-end"] {
                 let _ = sender.send(ServerEvent::ExternalIndexProgress {
@@ -578,16 +585,74 @@ fn run_external_index_thread(
     let (game_data_index, game_data_summary, cache_status, cache_detail, fingerprint) =
         match game_data_result {
             Some(Ok(result)) => {
-                let cache_status = if result.rebuilt_instances == 0 { "loaded" } else { "rebuilt" }.to_string();
-                let cache_detail = Some(format!("loadedInstances={} rebuiltInstances={}", result.loaded_instances, result.rebuilt_instances));
-                let fingerprint = format!("workbench-loaded-addons:{}", result.loaded_instances + result.rebuilt_instances);
+                let cache_status = if result.rebuilt_instances == 0 {
+                    "loaded"
+                } else {
+                    "rebuilt"
+                }
+                .to_string();
+                let cache_detail = Some(format!(
+                    "loadedInstances={} rebuiltInstances={} workspaceExcludedInstances={}",
+                    result.loaded_instances,
+                    result.rebuilt_instances,
+                    result.workspace_excluded_instances
+                ));
+                let fingerprint = format!(
+                    "workbench-loaded-addons:{}",
+                    result.loaded_instances + result.rebuilt_instances
+                );
+                for instance in &result.instances {
+                    logger.diagnostic_lazy("externalIndex.addonCompleted", || {
+                        json!({
+                            "guid": instance.guid,
+                            "displayId": instance.display_id,
+                            "cacheStatus": instance.cache_status,
+                            "cacheDetail": instance.cache_detail,
+                            "packs": instance.pack_count,
+                            "scripts": instance.script_count,
+                            "files": instance.summary.files,
+                            "bytes": instance.summary.bytes,
+                            "symbols": instance.summary.indexed_symbols,
+                            "parseDiagnostics": instance.summary.parse_diagnostics,
+                            "cacheFileBytes": instance.cache_file_bytes,
+                            "timingsMs": {
+                                "inspection": instance.timings.fingerprint.as_millis(),
+                                "cacheFileRead": instance.timings.cache_file_read.as_millis(),
+                                "cacheDecode": instance.timings.cache_decode.as_millis(),
+                                "cacheValidate": instance.timings.cache_validate.as_millis(),
+                                "runtimeMapRebuild": instance.timings.map_rebuild.as_millis(),
+                                "cacheReadDeserializeValidate": instance.timings.cache_read_deserialize_validate.as_millis(),
+                                "sourceRebuild": instance.timings.rebuild.as_millis(),
+                                "cacheWrite": instance.timings.cache_write.as_millis(),
+                                "total": instance.timings.total.as_millis(),
+                            }
+                        })
+                    });
+                }
+                logger.diagnostic_lazy("externalIndex.gameDataCompleted", || {
+                    json!({
+                        "loadedInstances": result.loaded_instances,
+                        "rebuiltInstances": result.rebuilt_instances,
+                        "workspaceExcludedInstances": result.workspace_excluded_instances,
+                        "timingsMs": {
+                            "graphRead": result.timings.graph_read.as_millis(),
+                            "workspaceRootResolution": result.timings.workspace_root_resolution.as_millis(),
+                            "merge": result.timings.merge.as_millis(),
+                            "total": result.timings.total.as_millis(),
+                        }
+                    })
+                });
                 logger.log_lazy(|| format!(
-                    "externalIndex gameData ready cache_status={} cache_detail={} files={} symbols={} parse_diagnostics={} elapsed_ms={}",
+                    "externalIndex gameData ready cache_status={} cache_detail={} files={} symbols={} parse_diagnostics={} graph_read_ms={} workspace_root_resolution_ms={} merge_ms={} game_data_total_ms={} elapsed_ms={}",
                     cache_status,
                     cache_detail.as_deref().unwrap_or("<none>"),
                     result.summary.files,
                     result.summary.indexed_symbols,
                     result.summary.parse_diagnostics,
+                    result.timings.graph_read.as_millis(),
+                    result.timings.workspace_root_resolution.as_millis(),
+                    result.timings.merge.as_millis(),
+                    result.timings.total.as_millis(),
                     start.elapsed().as_millis()
                 ));
                 (
@@ -721,6 +786,9 @@ fn run_external_index_thread(
             "files": summary.as_ref().map(|summary| summary.files).unwrap_or(0),
             "symbols": summary.as_ref().map(|summary| summary.indexed_symbols).unwrap_or(0),
             "workspaceFiles": workspace_summary.files,
+            "gameDataReadyMs": game_data_ready_ms,
+            "workspaceReadyMs": workspace_ready_ms,
+            "totalMs": start.elapsed().as_millis(),
             "elapsedMs": start.elapsed().as_millis(),
         })
     });

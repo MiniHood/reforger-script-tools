@@ -69,6 +69,15 @@ immutable revision registries. Indexing and definition serving hash and decode
 each entry from the same captured compressed bytes, so a concurrent pack
 update cannot apply an old symbol span to newer bytes.
 
+The language-server diagnostic log records each external-index startup as a
+bounded performance trace: end-to-end game-data, workspace, and publication
+durations; graph-read and merge durations; and one record per non-workspace
+loaded add-on. An add-on record identifies its cache outcome and rebuild
+reason, source and cache sizes, and inspection, cache read/decode/validation,
+runtime-map reconstruction, rebuild, and cache-write durations. It contains no
+source text or filesystem paths, so a fresh and warm start can be compared
+from the same diagnostic-log stream.
+
 ## Boundaries and Evidence
 
 The engine owns language behaviour, not VS Code UI, extension settings, or

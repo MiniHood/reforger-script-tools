@@ -80,7 +80,14 @@ pub fn load_or_build_archive_index(
     source_digest: String,
     build: impl FnOnce() -> Result<IndexBuildResult, String>,
 ) -> Result<GameDataIndexCacheResult, String> {
-    load_or_build_archive_index_with_reuse(cache_path, fingerprint, source_digest, true, build)
+    load_or_build_archive_index_with_reuse(
+        cache_path,
+        fingerprint,
+        source_digest,
+        true,
+        "cache-missing-invalid-or-source-changed",
+        build,
+    )
 }
 
 pub(crate) fn load_or_build_archive_index_with_reuse(
@@ -88,6 +95,7 @@ pub(crate) fn load_or_build_archive_index_with_reuse(
     fingerprint: SourceFingerprint,
     source_digest: String,
     allow_reuse: bool,
+    rebuild_reason: &str,
     build: impl FnOnce() -> Result<IndexBuildResult, String>,
 ) -> Result<GameDataIndexCacheResult, String> {
     let total_start = Instant::now();
@@ -143,7 +151,7 @@ pub(crate) fn load_or_build_archive_index_with_reuse(
             .collect(),
         summary,
         cache_status: IndexCacheStatus::Rebuilt {
-            reason: "archive-identity-changed".to_string(),
+            reason: rebuild_reason.to_string(),
         },
         fingerprint,
         source_digest: source_digest.clone(),
