@@ -3,7 +3,7 @@ use super::file_uri_path_identity;
 use super::{
     file_path_identity, format_paths, LspLogger, LspServerOptions, ServerEvent, ServerEventSender,
 };
-use crate::addon_sources::load_or_build_loaded_addon_indexes;
+use crate::addon_sources::{load_or_build_loaded_addon_indexes, LoadedAddonIndexResult};
 use crate::index::SymbolIndex;
 use crate::index_cache::RuntimeIndexSummary;
 use crate::model::{
@@ -277,6 +277,7 @@ impl ExternalIndexHandle {
             }
             match result {
                 Ok(result) => {
+                    log_loaded_addon_index_diagnostics(&logger, &result);
                     state.game_data_index = Some(Arc::new(result.index));
                     state.game_data_summary = Some(result.summary);
                     state.cache_status = Some(
@@ -578,6 +579,53 @@ pub(crate) fn start_external_index(
     handle
 }
 
+/// Emits the bounded per-add-on cache breakdown for both startup and a graph
+/// delivered after LSP initialization. The latter is the normal editor path,
+/// so it must expose the same evidence as direct startup indexing.
+fn log_loaded_addon_index_diagnostics(logger: &LspLogger, result: &LoadedAddonIndexResult) {
+    for instance in &result.instances {
+        logger.diagnostic_lazy("externalIndex.addonCompleted", || {
+            json!({
+                "guid": instance.guid,
+                "displayId": instance.display_id,
+                "cacheStatus": instance.cache_status,
+                "cacheDetail": instance.cache_detail,
+                "packs": instance.pack_count,
+                "scripts": instance.script_count,
+                "files": instance.summary.files,
+                "bytes": instance.summary.bytes,
+                "symbols": instance.summary.indexed_symbols,
+                "parseDiagnostics": instance.summary.parse_diagnostics,
+                "cacheFileBytes": instance.cache_file_bytes,
+                "timingsMs": {
+                    "inspection": instance.timings.fingerprint.as_millis(),
+                    "cacheFileRead": instance.timings.cache_file_read.as_millis(),
+                    "cacheDecode": instance.timings.cache_decode.as_millis(),
+                    "cacheValidate": instance.timings.cache_validate.as_millis(),
+                    "runtimeMapRebuild": instance.timings.map_rebuild.as_millis(),
+                    "cacheReadDeserializeValidate": instance.timings.cache_read_deserialize_validate.as_millis(),
+                    "sourceRebuild": instance.timings.rebuild.as_millis(),
+                    "cacheWrite": instance.timings.cache_write.as_millis(),
+                    "total": instance.timings.total.as_millis(),
+                }
+            })
+        });
+    }
+    logger.diagnostic_lazy("externalIndex.gameDataCompleted", || {
+        json!({
+            "loadedInstances": result.loaded_instances,
+            "rebuiltInstances": result.rebuilt_instances,
+            "workspaceExcludedInstances": result.workspace_excluded_instances,
+            "timingsMs": {
+                "graphRead": result.timings.graph_read.as_millis(),
+                "workspaceRootResolution": result.timings.workspace_root_resolution.as_millis(),
+                "merge": result.timings.merge.as_millis(),
+                "total": result.timings.total.as_millis(),
+            }
+        })
+    });
+}
+
 fn run_external_index_thread(
     state: Arc<Mutex<ExternalIndexState>>,
     addon_source_inventory: Option<PathBuf>,
@@ -705,47 +753,7 @@ fn run_external_index_thread(
                     "workbench-loaded-addons:{}",
                     result.loaded_instances + result.rebuilt_instances
                 );
-                for instance in &result.instances {
-                    logger.diagnostic_lazy("externalIndex.addonCompleted", || {
-                        json!({
-                            "guid": instance.guid,
-                            "displayId": instance.display_id,
-                            "cacheStatus": instance.cache_status,
-                            "cacheDetail": instance.cache_detail,
-                            "packs": instance.pack_count,
-                            "scripts": instance.script_count,
-                            "files": instance.summary.files,
-                            "bytes": instance.summary.bytes,
-                            "symbols": instance.summary.indexed_symbols,
-                            "parseDiagnostics": instance.summary.parse_diagnostics,
-                            "cacheFileBytes": instance.cache_file_bytes,
-                            "timingsMs": {
-                                "inspection": instance.timings.fingerprint.as_millis(),
-                                "cacheFileRead": instance.timings.cache_file_read.as_millis(),
-                                "cacheDecode": instance.timings.cache_decode.as_millis(),
-                                "cacheValidate": instance.timings.cache_validate.as_millis(),
-                                "runtimeMapRebuild": instance.timings.map_rebuild.as_millis(),
-                                "cacheReadDeserializeValidate": instance.timings.cache_read_deserialize_validate.as_millis(),
-                                "sourceRebuild": instance.timings.rebuild.as_millis(),
-                                "cacheWrite": instance.timings.cache_write.as_millis(),
-                                "total": instance.timings.total.as_millis(),
-                            }
-                        })
-                    });
-                }
-                logger.diagnostic_lazy("externalIndex.gameDataCompleted", || {
-                    json!({
-                        "loadedInstances": result.loaded_instances,
-                        "rebuiltInstances": result.rebuilt_instances,
-                        "workspaceExcludedInstances": result.workspace_excluded_instances,
-                        "timingsMs": {
-                            "graphRead": result.timings.graph_read.as_millis(),
-                            "workspaceRootResolution": result.timings.workspace_root_resolution.as_millis(),
-                            "merge": result.timings.merge.as_millis(),
-                            "total": result.timings.total.as_millis(),
-                        }
-                    })
-                });
+                log_loaded_addon_index_diagnostics(&logger, &result);
                 logger.log_lazy(|| format!(
                     "externalIndex gameData ready cache_status={} cache_detail={} files={} symbols={} parse_diagnostics={} graph_read_ms={} workspace_root_resolution_ms={} merge_ms={} game_data_total_ms={} elapsed_ms={}",
                     cache_status,
