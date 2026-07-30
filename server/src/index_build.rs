@@ -1,6 +1,6 @@
 use crate::index::SymbolIndex;
 use crate::lexer::TextSpan;
-use crate::model::{source_category_for_path, SourceFileMetadata, SourceKind};
+use crate::model::{SourceFileMetadata, SourceKind, source_category_for_path};
 use crate::parser::parse_source;
 use crate::semantic_file::{FileContribution, SemanticFile};
 use crate::syntax::ParseDiagnostic;
@@ -9,8 +9,8 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc,
+    atomic::{AtomicBool, Ordering},
 };
 use std::time::{Duration, Instant};
 
@@ -47,6 +47,7 @@ pub struct IndexBuildControl {
 pub struct IndexBuildResult {
     pub index: SymbolIndex,
     pub summary: IndexBuildSummary,
+    pub source_line_starts: Vec<Vec<usize>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -104,6 +105,7 @@ pub struct IndexBuildTimings {
 struct PendingFileContribution {
     contribution: FileContribution,
     metadata: SourceFileMetadata,
+    source_line_starts: Vec<usize>,
 }
 
 impl IndexSourceRoot {
@@ -187,7 +189,14 @@ pub fn build_index_with_control(
     summary.timings.index_build += index_build_start.elapsed();
 
     summary.timings.total = total_start.elapsed();
-    Ok(IndexBuildResult { index, summary })
+    Ok(IndexBuildResult {
+        index,
+        summary,
+        source_line_starts: pending_contributions
+            .into_iter()
+            .map(|pending| pending.source_line_starts)
+            .collect(),
+    })
 }
 
 fn build_file(
@@ -245,7 +254,19 @@ fn build_file(
     Ok(PendingFileContribution {
         contribution: semantic_file.contribution().clone(),
         metadata: source_metadata(&root.root_path, file, root.kind, root.priority),
+        source_line_starts: line_starts(&source),
     })
+}
+
+fn line_starts(source: &str) -> Vec<usize> {
+    let mut starts = vec![0];
+    starts.extend(
+        source
+            .bytes()
+            .enumerate()
+            .filter_map(|(offset, byte)| (byte == b'\n').then_some(offset + 1)),
+    );
+    starts
 }
 
 fn record_file_counts(
@@ -460,7 +481,7 @@ fn collect_script_files(
 mod tests {
     use super::*;
     use crate::model::{
-        SourceCategory, SymbolKind, SOURCE_PRIORITY_GAME_DATA, SOURCE_PRIORITY_WORKSPACE,
+        SOURCE_PRIORITY_GAME_DATA, SOURCE_PRIORITY_WORKSPACE, SourceCategory, SymbolKind,
     };
     use crate::semantic_file::SemanticFile;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -690,12 +711,14 @@ mod tests {
         assert!(!diagnostic_detail.message.is_empty());
         assert!(diagnostic_detail.line > 0);
         assert!(diagnostic_detail.column > 0);
-        assert!(result
-            .summary
-            .totals
-            .parse_diagnostic_details
-            .iter()
-            .any(|detail| detail.snippet.contains("class Broken")));
+        assert!(
+            result
+                .summary
+                .totals
+                .parse_diagnostic_details
+                .iter()
+                .any(|detail| detail.snippet.contains("class Broken"))
+        );
 
         cleanup(&root);
     }

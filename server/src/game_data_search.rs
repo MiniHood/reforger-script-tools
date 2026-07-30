@@ -30,6 +30,10 @@ impl SourceLineStarts {
         Self(starts)
     }
 
+    pub(crate) fn from_cached_starts(starts: Vec<usize>) -> Self {
+        Self(if starts.is_empty() { vec![0] } else { starts })
+    }
+
     pub(crate) fn range(&self, start: usize, end: usize) -> SourceLineRange {
         SourceLineRange {
             start_line: line_for_offset(&self.0, start),
@@ -376,7 +380,7 @@ fn canonical_kinds(values: Option<&[String]>) -> Result<Vec<String>, GameDataSea
         Some(values) if values.is_empty() => {
             return Err(GameDataSearchError::InvalidRequest(
                 "kinds must be non-empty",
-            ))
+            ));
         }
         Some(values) => values.to_vec(),
         None => default_kinds().into_iter().map(str::to_string).collect(),
@@ -400,7 +404,7 @@ fn canonical_categories(values: Option<&[String]>) -> Result<Vec<String>, GameDa
         Some(values) if values.is_empty() => {
             return Err(GameDataSearchError::InvalidRequest(
                 "sourceCategories must be non-empty",
-            ))
+            ));
         }
         Some(values) => values.to_vec(),
         None => all_categories().into_iter().map(str::to_string).collect(),

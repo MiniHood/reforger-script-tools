@@ -214,7 +214,7 @@ const EXAMPLE_TOPICS: &[ExampleTopic] = &[
 pub fn example_search_description() -> String {
     let supported = supported_example_topics();
     format!(
-        "Search curated, bounded generated and handwritten Reforger Game Data examples by topic and optional subtopic. The current catalogue supports {supported}. Results include code-backed evidence terms, indexed evidence symbols, exact logical source ranges, verification guidance, and copy-ready source-read inputs; comments and strings are not evidence, and this remains separate from semantic symbol search."
+        "Search parser-published curated, bounded generated and handwritten Reforger Game Data examples by topic and optional subtopic. The current catalogue supports {supported}. This operation is unavailable until the parser-owned cache publishes source evidence; MCP never tokenizes or reads Game Data source files itself."
     )
 }
 

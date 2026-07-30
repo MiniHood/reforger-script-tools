@@ -1,26 +1,26 @@
 use crate::ast::DocCommentKind;
 use crate::index::{
-    indexed_callable_form, indexed_conditional_kind, indexed_symbol_kind, semantic_attribute_name,
     GlobalSymbolId, IndexedAttribute, IndexedConditionalBranch, IndexedDocComment, IndexedFile,
-    IndexedSymbol, IndexedSymbolDetail, SourceFileId, SymbolIndex,
+    IndexedSymbol, IndexedSymbolDetail, SourceFileId, SymbolIndex, indexed_callable_form,
+    indexed_conditional_kind, indexed_symbol_kind, semantic_attribute_name,
 };
 use crate::index_build::{
-    build_index_with_control, IndexBuildConfig, IndexBuildControl, IndexBuildResult,
-    IndexSourceRoot,
+    IndexBuildConfig, IndexBuildControl, IndexBuildResult, IndexSourceRoot,
+    build_index_with_control,
 };
 use crate::lexer::TextSpan;
 use crate::model::{
-    CallableForm, PreprocessorBranchKind, SourceCategory, SourceFileMetadata, SourceKind, SymbolId,
-    SymbolKind, SOURCE_PRIORITY_GAME_DATA,
+    CallableForm, PreprocessorBranchKind, SOURCE_PRIORITY_GAME_DATA, SourceCategory,
+    SourceFileMetadata, SourceKind, SymbolId, SymbolKind,
+};
+#[cfg(test)]
+use crate::semantic_file::{
+    FILE_CONTRIBUTION_SCHEMA_VERSION, FILE_CONTRIBUTION_SOURCE_MANIFEST_VERSION, PublicSymbol,
+    PublicSymbolDetail, PublicText, SemanticConditionalBranch, SemanticDocComment, SemanticText,
 };
 use crate::semantic_file::{
     FileContribution, SemanticCallableForm, SemanticConditionalBranchKind, SemanticDeclarationId,
     SemanticDeclarationKind, SemanticDocCommentKind,
-};
-#[cfg(test)]
-use crate::semantic_file::{
-    PublicSymbol, PublicSymbolDetail, PublicText, SemanticConditionalBranch, SemanticDocComment,
-    SemanticText, FILE_CONTRIBUTION_SCHEMA_VERSION, FILE_CONTRIBUTION_SOURCE_MANIFEST_VERSION,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -31,19 +31,16 @@ use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
-const CACHE_FORMAT_VERSION: u32 = 12;
+const CACHE_FORMAT_VERSION: u32 = 13;
 const CACHE_SCHEMA: &str = "reforger-symbol-index";
-const CACHE_MAGIC: &[u8; 8] = b"RSTIDX12";
-const CACHE_INDEX_SHAPE: &str =
-    "runtime-pruned:no-local-variables:detail-spans-stripped:layered-external-v1:binary-v5:string-table-v1:canonical-public-facts-v1:source-content-digest-v1";
+const CACHE_MAGIC: &[u8; 8] = b"RSTIDX13";
+const CACHE_INDEX_SHAPE: &str = "runtime-pruned:no-local-variables:detail-spans-stripped:layered-external-v1:binary-v6:string-table-v1:canonical-public-facts-v1:parser-source-line-map-v1:source-content-digest-v1";
 const LEGACY_CACHE_FORMAT_VERSION: u32 = 9;
 const LEGACY_CACHE_MAGIC: &[u8; 8] = b"RSTIDX09";
 const V10_CACHE_FORMAT_VERSION: u32 = 10;
 const V10_CACHE_MAGIC: &[u8; 8] = b"RSTIDX10";
-const V10_CACHE_INDEX_SHAPE: &str =
-    "runtime-pruned:no-local-variables:detail-spans-stripped:layered-external-v1:binary-v3:string-table-v1:validated-file-contributions-v1";
-const LEGACY_CACHE_INDEX_SHAPE: &str =
-    "runtime-pruned:no-local-variables:detail-spans-stripped:layered-external-v1:binary-v2:string-table-v1";
+const V10_CACHE_INDEX_SHAPE: &str = "runtime-pruned:no-local-variables:detail-spans-stripped:layered-external-v1:binary-v3:string-table-v1:validated-file-contributions-v1";
+const LEGACY_CACHE_INDEX_SHAPE: &str = "runtime-pruned:no-local-variables:detail-spans-stripped:layered-external-v1:binary-v2:string-table-v1";
 const MAX_CACHE_STRING_TABLE_ENTRIES: usize = 1_000_000;
 const MAX_CACHE_RAW_STRING_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CACHE_FILE_RECORDS: usize = 1_000_000;
@@ -64,6 +61,7 @@ pub struct GameDataIndexCacheConfig {
 #[derive(Debug)]
 pub struct GameDataIndexCacheResult {
     pub index: SymbolIndex,
+    pub source_line_starts: BTreeMap<SourceFileId, Vec<usize>>,
     pub summary: RuntimeIndexSummary,
     pub cache_status: IndexCacheStatus,
     pub fingerprint: SourceFingerprint,
@@ -153,6 +151,7 @@ struct CachedGameDataIndex {
 struct CachedFileContribution {
     metadata: SourceFileMetadata,
     non_declaration_callable_fragments: usize,
+    source_line_starts: Vec<usize>,
     symbols: Vec<CachedPublicSymbol>,
 }
 
@@ -284,6 +283,7 @@ impl CachedFileContribution {
         Ok(Self {
             metadata,
             non_declaration_callable_fragments: contribution.non_declaration_callable_fragments,
+            source_line_starts: vec![0],
             symbols,
         }
         .with_contiguous_ids())
@@ -360,6 +360,7 @@ impl CachedFileContribution {
         Self {
             metadata: file.metadata.clone(),
             non_declaration_callable_fragments: file.non_declaration_callable_fragments,
+            source_line_starts: vec![0],
             symbols: public_symbols,
         }
         .with_contiguous_ids()
@@ -544,6 +545,7 @@ impl CachedPublicSymbol {
 impl CachedGameDataIndex {
     fn from_index(
         index: &SymbolIndex,
+        source_line_starts: &[Vec<usize>],
         fingerprint: SourceFingerprint,
         source_digest: String,
         summary: CachedIndexSummary,
@@ -561,10 +563,15 @@ impl CachedGameDataIndex {
                 .iter()
                 .map(|file| {
                     let end = file.symbol_start + file.symbol_count;
-                    CachedFileContribution::from_indexed_file(
+                    let mut cached = CachedFileContribution::from_indexed_file(
                         file,
                         &index.symbols()[file.symbol_start..end],
-                    )
+                    );
+                    cached.source_line_starts = source_line_starts
+                        .get(file.id.0)
+                        .cloned()
+                        .unwrap_or_else(|| vec![0]);
+                    cached
                 })
                 .collect(),
         }
@@ -576,10 +583,11 @@ impl CachedGameDataIndex {
             .try_for_each(CachedFileContribution::validate)
     }
 
-    fn into_index(self) -> SymbolIndex {
+    fn into_index_and_line_starts(self) -> (SymbolIndex, BTreeMap<SourceFileId, Vec<usize>>) {
         let mut files = Vec::with_capacity(self.files.len());
         let mut symbols =
             Vec::with_capacity(self.files.iter().map(|file| file.symbols.len()).sum());
+        let mut source_line_starts = BTreeMap::new();
         for (file_index, file) in self.files.into_iter().enumerate() {
             let file_id = SourceFileId(file_index);
             let symbol_start = symbols.len();
@@ -591,13 +599,22 @@ impl CachedGameDataIndex {
                 symbol_count,
                 non_declaration_callable_fragments: file.non_declaration_callable_fragments,
             });
+            source_line_starts.insert(file_id, file.source_line_starts);
             symbols.extend(
                 file.symbols
                     .into_iter()
                     .map(|symbol| symbol.into_indexed_symbol(file_id)),
             );
         }
-        SymbolIndex::from_indexed_parts(files, symbols)
+        (
+            SymbolIndex::from_indexed_parts(files, symbols),
+            source_line_starts,
+        )
+    }
+
+    #[cfg(test)]
+    fn into_index(self) -> SymbolIndex {
+        self.into_index_and_line_starts().0
     }
 }
 
@@ -607,7 +624,14 @@ impl LegacyCachedGameDataIndex {
     /// facts; they are not used as a fallback query model after migration.
     fn into_current(self, source_digest: String) -> CachedGameDataIndex {
         let index = SymbolIndex::from_indexed_parts(self.index.files, self.index.symbols);
-        CachedGameDataIndex::from_index(&index, self.fingerprint, source_digest, self.summary)
+        let source_line_starts = vec![vec![0]; index.files().len()];
+        CachedGameDataIndex::from_index(
+            &index,
+            &source_line_starts,
+            self.fingerprint,
+            source_digest,
+            self.summary,
+        )
     }
 
     fn validates_for_migration(&self, expected_fingerprint: &SourceFingerprint) -> bool {
@@ -927,14 +951,15 @@ pub fn load_game_data_index_cache_with_control(
     let summary: RuntimeIndexSummary = cached.summary.clone().into();
     let fingerprint = cached.fingerprint.clone();
     let source_digest = cached.source_digest.clone();
-    let catalogue_digest = catalogue_digest(&cached)?;
+    let catalogue_digest = source_digest.clone();
     let map_rebuild_start = Instant::now();
-    let index = cached.into_index();
+    let (index, source_line_starts) = cached.into_index_and_line_starts();
     timings.map_rebuild = map_rebuild_start.elapsed();
     timings.total = total_start.elapsed();
 
     Ok(Some(GameDataIndexCacheResult {
         index,
+        source_line_starts,
         summary,
         cache_status: IndexCacheStatus::Loaded,
         fingerprint,
@@ -1002,14 +1027,15 @@ fn load_or_build_game_data_index_with_progress_and_control(
             progress("map-rebuild-start");
             let map_rebuild_start = Instant::now();
             let summary: RuntimeIndexSummary = cached.summary.clone().into();
-            let catalogue_digest = catalogue_digest(&cached)?;
-            let index = cached.into_index();
+            let catalogue_digest = source_digest.clone();
+            let (index, source_line_starts) = cached.into_index_and_line_starts();
             control.check()?;
             timings.map_rebuild = map_rebuild_start.elapsed();
             progress("map-rebuild-end");
             timings.total = total_start.elapsed();
             return Ok(GameDataIndexCacheResult {
                 index,
+                source_line_starts,
                 summary,
                 cache_status: IndexCacheStatus::Loaded,
                 fingerprint,
@@ -1045,11 +1071,12 @@ fn load_or_build_game_data_index_with_progress_and_control(
     let summary = summary_from_build_with_cached_index(&built, &cached_index);
     let cached_payload = CachedGameDataIndex::from_index(
         &cached_index,
+        &built.source_line_starts,
         fingerprint.clone(),
         source_digest.clone(),
         CachedIndexSummary::from(&summary),
     );
-    let catalogue_digest = catalogue_digest(&cached_payload)?;
+    let catalogue_digest = source_digest.clone();
 
     control.check()?;
     progress("cache-write-start");
@@ -1073,6 +1100,12 @@ fn load_or_build_game_data_index_with_progress_and_control(
 
     Ok(GameDataIndexCacheResult {
         index: cached_index,
+        source_line_starts: built
+            .source_line_starts
+            .into_iter()
+            .enumerate()
+            .map(|(index, starts)| (SourceFileId(index), starts))
+            .collect(),
         summary,
         cache_status: IndexCacheStatus::Rebuilt {
             reason: rebuild_reason,
@@ -1245,32 +1278,6 @@ fn load_cached_index(
     timings.cache_validate = validate_start.elapsed();
 
     Ok(Some(load))
-}
-
-fn catalogue_digest(cached: &CachedGameDataIndex) -> Result<String, String> {
-    let mut logical = cached.clone();
-    let source_digest = std::mem::take(&mut logical.source_digest);
-    // Acquisition metadata describes where the source came from, not the
-    // immutable semantic catalogue. Use one neutral fingerprint so identical
-    // logical facts receive the same identity across installed locations and
-    // acquisition methods.
-    logical.fingerprint = SourceFingerprint::Manual {
-        scripts_root: String::new(),
-        file_count: 0,
-        byte_count: 0,
-        latest_modified_unix_ms: 0,
-    };
-    for file in &mut logical.files {
-        file.metadata.absolute_path = None;
-        file.metadata.root_path = None;
-    }
-    let bytes = encode_cached_index(&logical)?;
-    let mut hasher = Sha256::new();
-    hasher.update(b"reforger-game-data-catalogue-v1\0");
-    hasher.update(source_digest.as_bytes());
-    hasher.update(b"\0");
-    hasher.update(bytes);
-    Ok(hex_digest(hasher.finalize()))
 }
 
 fn hex_digest(digest: impl AsRef<[u8]>) -> String {
@@ -2034,6 +2041,10 @@ impl BinaryWriter {
     ) -> Result<(), String> {
         self.write_metadata(&file.metadata)?;
         self.write_usize(file.non_declaration_callable_fragments)?;
+        self.write_vec_len(file.source_line_starts.len())?;
+        for start in &file.source_line_starts {
+            self.write_usize(*start)?;
+        }
         self.write_vec_len(file.symbols.len())?;
         for symbol in &file.symbols {
             self.write_cached_public_symbol(symbol)?;
@@ -2372,6 +2383,12 @@ impl<'a> BinaryReader<'a> {
     fn read_cached_file_contribution(&mut self) -> Result<CachedFileContribution, String> {
         let metadata = self.read_metadata()?;
         let non_declaration_callable_fragments = self.read_usize()?;
+        let source_line_starts = self.read_list(|reader| reader.read_usize())?;
+        if source_line_starts.first().copied() != Some(0)
+            || source_line_starts.windows(2).any(|pair| pair[0] >= pair[1])
+        {
+            return Err("invalid cached source line starts".to_string());
+        }
         let symbol_count =
             self.read_bounded_len("cached public symbols", MAX_CACHE_SYMBOL_RECORDS)?;
         let mut symbols = Vec::with_capacity(symbol_count);
@@ -2381,6 +2398,7 @@ impl<'a> BinaryReader<'a> {
         Ok(CachedFileContribution {
             metadata,
             non_declaration_callable_fragments,
+            source_line_starts,
             symbols,
         })
     }
@@ -2984,16 +3002,24 @@ mod tests {
             .expect("parser-owned cache is available");
 
         assert!(matches!(loaded.cache_status, IndexCacheStatus::Loaded));
-        assert!(loaded
-            .index
-            .symbols()
-            .iter()
-            .any(|symbol| symbol.name.as_deref() == Some("CachedExample")));
-        assert!(!loaded
-            .index
-            .symbols()
-            .iter()
-            .any(|symbol| symbol.name.as_deref() == Some("ChangedAfterIndexBuild")));
+        assert!(
+            loaded
+                .index
+                .symbols()
+                .iter()
+                .any(|symbol| symbol.name.as_deref() == Some("CachedExample"))
+        );
+        assert_eq!(
+            loaded.source_line_starts.get(&SourceFileId(0)),
+            Some(&vec![0, 23])
+        );
+        assert!(
+            !loaded
+                .index
+                .symbols()
+                .iter()
+                .any(|symbol| symbol.name.as_deref() == Some("ChangedAfterIndexBuild"))
+        );
         cleanup(&root);
     }
 
@@ -3171,10 +3197,12 @@ mod tests {
             result.cache_status,
             IndexCacheStatus::Rebuilt { .. }
         ));
-        assert!(result
-            .index
-            .symbols_for_kind(SymbolKind::LocalVariable)
-            .is_empty());
+        assert!(
+            result
+                .index
+                .symbols_for_kind(SymbolKind::LocalVariable)
+                .is_empty()
+        );
         assert_eq!(
             result.index.symbols_for_kind(SymbolKind::Parameter).len(),
             1
@@ -3207,10 +3235,12 @@ mod tests {
         })
         .unwrap();
         assert_eq!(loaded.cache_status, IndexCacheStatus::Loaded);
-        assert!(loaded
-            .index
-            .symbols_for_kind(SymbolKind::LocalVariable)
-            .is_empty());
+        assert!(
+            loaded
+                .index
+                .symbols_for_kind(SymbolKind::LocalVariable)
+                .is_empty()
+        );
         assert_eq!(
             loaded.index.symbols_for_kind(SymbolKind::Parameter).len(),
             1
@@ -3376,11 +3406,13 @@ mod tests {
         assert_ne!(rebuilt.catalogue_digest, original_revision);
         assert_eq!(rebuilt.index.classes_by_name("Example").len(), 1);
         assert!(fs::read(&cache).unwrap().starts_with(CACHE_MAGIC));
-        assert!(fs::read_dir(&root).unwrap().all(|entry| !entry
-            .unwrap()
-            .file_name()
-            .to_string_lossy()
-            .contains(".tmp")));
+        assert!(fs::read_dir(&root).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains(".tmp")
+        }));
 
         cleanup(&root);
     }
@@ -3616,14 +3648,12 @@ class Example : BaseExample
             loaded.index.methods_by_owner_name("Example", "Run").len(),
             1
         );
-        assert!(loaded
-            .index
-            .members_by_owner("Example")
-            .iter()
-            .any(|id| loaded
+        assert!(loaded.index.members_by_owner("Example").iter().any(|id| {
+            loaded
                 .index
                 .symbol(*id)
-                .is_some_and(|symbol| symbol.name.as_deref() == Some("m_Value"))));
+                .is_some_and(|symbol| symbol.name.as_deref() == Some("m_Value"))
+        }));
 
         let class = loaded.index.classes_by_name("Example")[0];
         assert!(!loaded.index.children(class).is_empty());
@@ -3685,10 +3715,12 @@ class BaseGameModeClass : GenericEntityClass
         .unwrap();
 
         assert_eq!(loaded.cache_status, IndexCacheStatus::Loaded);
-        assert!(loaded
-            .index
-            .symbols_for_kind(SymbolKind::LocalVariable)
-            .is_empty());
+        assert!(
+            loaded
+                .index
+                .symbols_for_kind(SymbolKind::LocalVariable)
+                .is_empty()
+        );
 
         let base_class_ids = loaded.index.classes_by_name("BaseGameModeClass");
         assert_eq!(base_class_ids.len(), 1);

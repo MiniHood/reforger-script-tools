@@ -1,13 +1,13 @@
 use crate::game_data_search::{
-    compact_signature, decode_symbol_ref, documentation_summary, encode_symbol_ref, kind_name,
-    logical_path, owner_name, qualify, ReadSourceInput, SourceLineRange, SourceLineStarts,
+    ReadSourceInput, SourceLineRange, SourceLineStarts, compact_signature, decode_symbol_ref,
+    documentation_summary, encode_symbol_ref, kind_name, logical_path, owner_name, qualify,
 };
 use crate::index::{GlobalSymbolId, SourceFileId, SymbolIndex};
 use crate::index_build::IndexBuildControl;
 use crate::symbol_display::documentation_display;
 use schemars::JsonSchema;
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -22,6 +22,7 @@ const MAX_SOURCE_BYTES: usize = 128 * 1024;
 pub enum GameDataInspectionError {
     Initialization(String),
     Unavailable,
+    SourceEvidenceUnavailable,
     InvalidSymbolRef,
     StaleSymbolRef,
     InvalidSource(String),

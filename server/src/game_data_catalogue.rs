@@ -1,17 +1,15 @@
 use crate::game_data_inspection::{
     GameDataInspectionError, GameDataInspectionOutput, GameDataSourceReadRequest, inspect,
-    read_source,
 };
 use crate::game_data_research::{
     GameDataExamplePage, GameDataExampleSearchRequest, GameDataMemberPage, GameDataMemberRequest,
     GameDataRelationshipPage, GameDataRelationshipRequest, GameDataResearchError, list_members,
-    query_relationships, search_examples,
 };
 use crate::game_data_search::{
     GameDataSearchError, GameDataSearchPage, GameDataSearchRequest, SourceLineStarts, search,
 };
 use crate::index::{SourceFileId, SymbolIndex};
-use crate::index_build::{INDEX_BUILD_CANCELLED, IndexBuildControl, decode_source};
+use crate::index_build::{INDEX_BUILD_CANCELLED, IndexBuildControl};
 use crate::index_cache::{
     GameDataIndexCacheResult, IndexCacheStatus, IndexCacheTimings, RuntimeIndexSummary,
     SourceFingerprint, load_game_data_index_cache_with_control,
@@ -20,6 +18,7 @@ use crate::model::SymbolKind;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+#[cfg(debug_assertions)]
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -49,7 +48,6 @@ struct GameDataCatalogueState {
     // Ticket #17 adds semantic queries over this exact immutable index.
     index: Option<Arc<SymbolIndex>>,
     source_line_starts: Arc<BTreeMap<SourceFileId, SourceLineStarts>>,
-    source_texts: Arc<BTreeMap<SourceFileId, Arc<str>>>,
 }
 
 impl GameDataCatalogue {
@@ -154,9 +152,9 @@ impl GameDataCatalogue {
         control: &IndexBuildControl,
         request: GameDataExampleSearchRequest,
     ) -> Result<GameDataExamplePage, GameDataCatalogueResearchError> {
-        let (revision, index, starts, sources) = self.research_snapshot(control)?;
-        search_examples(&index, &sources, &starts, control, &revision, request)
-            .map_err(GameDataCatalogueResearchError::Research)
+        let _ = request;
+        self.research_snapshot(control)?;
+        Err(GameDataCatalogueResearchError::SourceEvidenceUnavailable)
     }
 
     pub fn list_members(
@@ -164,7 +162,7 @@ impl GameDataCatalogue {
         control: &IndexBuildControl,
         request: GameDataMemberRequest,
     ) -> Result<GameDataMemberPage, GameDataCatalogueResearchError> {
-        let (revision, index, starts, _) = self.research_snapshot(control)?;
+        let (revision, index, starts) = self.research_snapshot(control)?;
         list_members(&index, &starts, control, &revision, request)
             .map_err(GameDataCatalogueResearchError::Research)
     }
@@ -174,9 +172,9 @@ impl GameDataCatalogue {
         control: &IndexBuildControl,
         request: GameDataRelationshipRequest,
     ) -> Result<GameDataRelationshipPage, GameDataCatalogueResearchError> {
-        let (revision, index, starts, sources) = self.research_snapshot(control)?;
-        query_relationships(&index, &sources, &starts, control, &revision, request)
-            .map_err(GameDataCatalogueResearchError::Research)
+        let _ = request;
+        self.research_snapshot(control)?;
+        Err(GameDataCatalogueResearchError::SourceEvidenceUnavailable)
     }
 
     pub fn read_source(
@@ -201,9 +199,9 @@ impl GameDataCatalogue {
             .index
             .clone()
             .ok_or(GameDataInspectionError::Unavailable)?;
-        let source_texts = snapshot.source_texts.clone();
         drop(state);
-        read_source(&index, control, revision, &source_texts, request)
+        let _ = (index, revision, request);
+        Err(GameDataInspectionError::SourceEvidenceUnavailable)
     }
 
     fn research_snapshot(
@@ -214,7 +212,6 @@ impl GameDataCatalogue {
             String,
             Arc<SymbolIndex>,
             Arc<BTreeMap<SourceFileId, SourceLineStarts>>,
-            Arc<BTreeMap<SourceFileId, Arc<str>>>,
         ),
         GameDataCatalogueResearchError,
     > {
@@ -239,7 +236,6 @@ impl GameDataCatalogue {
                 .clone()
                 .ok_or(GameDataCatalogueResearchError::Unavailable)?,
             snapshot.source_line_starts.clone(),
-            snapshot.source_texts.clone(),
         ))
     }
 
@@ -327,6 +323,7 @@ pub enum GameDataCatalogueSearchError {
 pub enum GameDataCatalogueResearchError {
     Initialization(String),
     Unavailable,
+    SourceEvidenceUnavailable,
     Research(GameDataResearchError),
 }
 
@@ -527,36 +524,15 @@ fn ready_state(result: GameDataIndexCacheResult) -> GameDataCatalogueState {
         ],
     };
 
-    let mut source_line_starts = BTreeMap::new();
-    let mut source_texts = BTreeMap::new();
-    for file in result.index.files() {
-        let Some(path) = file.metadata.absolute_path.as_ref() else {
-            return unavailable_state(
-                source_status(Some(&result.fingerprint)),
-                Duration::ZERO,
-                "game_data_source_snapshot_failed",
-                "Game Data source lines could not be captured for the catalogue snapshot.",
-                "Verify the configured Game Data source, then restart the MCP process.",
-            );
-        };
-        let Ok(bytes) = fs::read(path) else {
-            return unavailable_state(
-                source_status(Some(&result.fingerprint)),
-                Duration::ZERO,
-                "game_data_source_snapshot_failed",
-                "Game Data source lines could not be captured for the catalogue snapshot.",
-                "Verify the configured Game Data source, then restart the MCP process.",
-            );
-        };
-        let source = decode_source(&bytes);
-        source_line_starts.insert(file.id, SourceLineStarts::from_source(&source));
-        source_texts.insert(file.id, Arc::<str>::from(source));
-    }
+    let source_line_starts = result
+        .source_line_starts
+        .into_iter()
+        .map(|(file, starts)| (file, SourceLineStarts::from_cached_starts(starts)))
+        .collect();
     GameDataCatalogueState {
         status,
         index: Some(Arc::new(result.index)),
         source_line_starts: Arc::new(source_line_starts),
-        source_texts: Arc::new(source_texts),
     }
 }
 
@@ -589,7 +565,6 @@ fn unavailable_state(
         },
         index: None,
         source_line_starts: Arc::new(BTreeMap::new()),
-        source_texts: Arc::new(BTreeMap::new()),
     }
 }
 

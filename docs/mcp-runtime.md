@@ -46,13 +46,14 @@ On the first Game Data operation, MCP:
 1. Checks that the cache file exists and is a compatible, internally valid
    language-engine cache.
 2. Decodes the semantic index into its own process memory.
-3. Captures the source text referenced by that snapshot for the bounded
-   source-read tool.
+3. Loads parser-published source-line maps with that snapshot so semantic
+   results retain correct source locations.
 4. Uses the immutable snapshot for later Game Data operations.
 
-MCP does not walk the Game Data tree, calculate a source fingerprint, compare a
-source digest, parse source, choose whether an index is stale, rebuild an
-index, or write the cache. If the cache is missing, incompatible, or malformed,
+MCP does not walk the Game Data tree, open or decode Game Data files, calculate
+a source fingerprint, compare a source digest, parse source, choose whether an
+index is stale, rebuild an index, or write the cache. If the cache is missing,
+incompatible, or malformed,
 `game_data_status` returns `available: false` and directs the caller to activate
 the language server so the parser/indexer can publish a fresh cache. Restart
 MCP after that happens.
@@ -119,13 +120,13 @@ Keep these timings distinct:
 1. Process launch to MCP initialization response.
 2. First `game_data_status`: cache read, decode, compatibility validation, and
    in-memory map reconstruction.
-3. Source-text snapshot capture for source-read support, if it is a measurable
-   startup cost on a particular Game Data installation.
-4. Warm Game Data search latency: exact-name, prefix, broad, filtered, and
+3. Warm Game Data search latency: exact-name, prefix, broad, filtered, and
    paginated queries, reported as p50 and p95.
-5. Official Wiki search latency separately from Game Data search.
-6. Workbench queue wait and NET API execution separately from local MCP work.
+4. Official Wiki search latency separately from Game Data search.
+5. Workbench queue wait and NET API execution separately from local MCP work.
 
-Start with these measurements before adding a new lookup structure. The former
-MCP source-fingerprint walk is intentionally absent: source freshness and cache
-publication belong to the parser/indexer, not the MCP process.
+Start with these measurements before adding a new lookup structure. Source
+freshness, source-line maps, and cache publication belong to the parser/indexer,
+not the MCP process. Raw source evidence must likewise be published by the
+parser before MCP can offer a source-evidence operation; MCP does not fall back
+to source-file I/O.
