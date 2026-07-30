@@ -34,7 +34,7 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 const CACHE_FORMAT_VERSION: u32 = 15;
 const CACHE_SCHEMA: &str = "reforger-symbol-index";
 const CACHE_MAGIC: &[u8; 8] = b"RSTIDX15";
-const CACHE_INDEX_SHAPE: &str = "runtime-pruned:no-local-variables:detail-spans-stripped:layered-external-v1:binary-v8:string-table-v1:canonical-public-facts-v1:parser-source-line-map-v1:source-content-digest-v1:addon-fingerprint-v1:typed-virtual-source-v1";
+const CACHE_INDEX_SHAPE: &str = "runtime-pruned:no-local-variables:detail-spans-stripped:layered-external-v1:binary-v8:string-table-v1:canonical-public-facts-v1:parser-source-line-map-v1:source-content-digest-v1:addon-fingerprint-v1:typed-virtual-source-v1:source-category-v2";
 const LEGACY_CACHE_FORMAT_VERSION: u32 = 9;
 const LEGACY_CACHE_MAGIC: &[u8; 8] = b"RSTIDX09";
 const V10_CACHE_FORMAT_VERSION: u32 = 10;

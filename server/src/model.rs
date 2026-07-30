@@ -134,6 +134,10 @@ pub fn source_category_for_path(kind: SourceKind, path: Option<&Path>) -> Source
     let path = path
         .map(|path| path.to_string_lossy().replace('\\', "/").to_lowercase())
         .unwrap_or_default();
+    // Workbench reports loose scripts relative to the add-on root, whereas
+    // packed entries can already be relative to the script catalogue. Both
+    // forms name the same engine source families.
+    let path = path.strip_prefix("scripts/").unwrap_or(&path);
 
     if path.contains("/generated/") || path.starts_with("generated/") {
         SourceCategory::Generated
@@ -1146,6 +1150,22 @@ mod tests {
         assert!(SourceCategory::Generated.is_generated());
         assert!(!SourceCategory::Game.is_generated());
         assert!(!SourceCategory::Workspace.is_generated());
+    }
+
+    #[test]
+    fn classifies_workbench_loose_script_paths_by_their_engine_family() {
+        for (path, category) in [
+            ("scripts/Game/game.c", SourceCategory::Game),
+            ("scripts/GameCode/World.c", SourceCategory::GameCode),
+            ("scripts/GameLib/Ui.c", SourceCategory::GameLib),
+            ("scripts/Core/Math.c", SourceCategory::Core),
+        ] {
+            assert_eq!(
+                source_category_for_path(SourceKind::GameData, Some(Path::new(path))),
+                category,
+                "{path}"
+            );
+        }
     }
 
     #[test]
