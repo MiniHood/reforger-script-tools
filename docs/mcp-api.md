@@ -13,6 +13,10 @@ Use Game Data symbol tools for exact Enfusion declarations and member discovery;
 2. Preserve its `catalogueRevision` and opaque references or cursors across the progressive Game Data search, inspect, member, relationship, and source-read workflow.
 3. After Game Data changes, activate the language server so it refreshes the index cache, then restart MCP.
 
+## Expected tool failures
+
+When a valid tool request cannot complete, every tool family returns a structured error with `ok: false`, stable `code`, caller-facing `message`, actionable `recovery`, and `retryable`. Workbench failures additionally include `phase` and a sanitized `logReference`. Invalid arguments and unknown tool names remain MCP protocol errors.
+
 ## `game_data_status`
 
 Load and report the parser-owned Reforger Game Data Catalogue cache. Use this first when Game Data availability or coverage is uncertain. Returns the immutable catalogue revision, source provenance, semantic coverage and counts, cache outcome, bounded timings, limits, warnings, and recovery guidance without physical paths; it does not inspect source inputs, parse, rebuild, write the cache, or search symbols.
@@ -2887,7 +2891,7 @@ Workbench tools return structured tool errors with a stable code, operation phas
 
 ## `workbench_list_resources`
 
-List a bounded page of Workbench resources by fixed resource kinds, an optional text query, and an optional canonical logical $Addon:Path root. Continue with the opaque cursor while preserving the same filters; filesystem paths and arbitrary extensions are not accepted.
+Compatibility listing surface for existing callers. Prefer workbench_search_resources for all new discovery because it returns canonical resource identity and supports exact add-on filtering. This bounded page accepts fixed resource kinds, an optional text query, and an optional canonical logical $Addon:Path root; filesystem paths and arbitrary extensions are not accepted.
 
 ### Annotations
 
@@ -3025,7 +3029,7 @@ Workbench tools return structured tool errors with a stable code, operation phas
 
 ## `workbench_search_resources`
 
-Search registered Workbench resources by fixed kinds, native text terms, an optional canonical logical $Addon:Path root, and an optional exact add-on GUID. Results expose canonical resource identity, add-on, logical path, and extension only; use exact resource inspection or prefab inspection for deeper facts.
+Canonical Workbench resource-discovery surface. Search registered resources by fixed kinds, native text terms, an optional canonical logical $Addon:Path root, and an optional exact add-on GUID. Results expose canonical resource identity, add-on, logical path, and extension only; use exact resource inspection or prefab inspection for deeper facts.
 
 ### Annotations
 

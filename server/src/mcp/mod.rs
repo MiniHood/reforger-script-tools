@@ -32,10 +32,10 @@ use crate::workbench::{
     WorkbenchInstallAuthorization, WorkbenchLayerState, WorkbenchLiveState, WorkbenchLogRead,
     WorkbenchOpenEditorResult, WorkbenchOpenResourceResult, WorkbenchPlaySessionResult,
     WorkbenchPolylineResample, WorkbenchPrefabComponentInspection, WorkbenchPrefabContext,
-    WorkbenchPrefabResourceMutationResult, WorkbenchProcessResult,
-    WorkbenchProjectContext, WorkbenchPropertyList, WorkbenchResourceInspection,
-    WorkbenchResourceListPage, WorkbenchResourceSearchPage, WorkbenchSaveAllResult,
-    WorkbenchSaveWorldResult, WorkbenchScriptActivationResult, WorkbenchSelectedEntityHierarchy,
+    WorkbenchPrefabResourceMutationResult, WorkbenchProcessResult, WorkbenchProjectContext,
+    WorkbenchPropertyList, WorkbenchResourceInspection, WorkbenchResourceListPage,
+    WorkbenchResourceSearchPage, WorkbenchSaveAllResult, WorkbenchSaveWorldResult,
+    WorkbenchScriptActivationResult, WorkbenchSelectedEntityHierarchy,
     WorkbenchShapePointConversion, WorkbenchShapePointEdit, WorkbenchShapePointSpace,
     WorkbenchShapePoints, WorkbenchShapeTransformOperation, WorkbenchTerrainSample,
     WorkbenchTerrainSampleOptions, WorkbenchTraceOptions, WorkbenchTraceResult,
@@ -43,8 +43,8 @@ use crate::workbench::{
     WorkbenchViewportContextOptions, WorkbenchWorldSelectionSummary,
 };
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, ContentBlock, Implementation, ListToolsResult,
-    PaginatedRequestParams, ServerCapabilities, ServerInfo, Tool, ToolAnnotations,
+    CallToolRequestParams, CallToolResult, Implementation, ListToolsResult, PaginatedRequestParams,
+    ServerCapabilities, ServerInfo, Tool, ToolAnnotations,
 };
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::{ErrorData as McpError, ServerHandler, ServiceExt};
@@ -53,7 +53,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Semaphore;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 pub const GAME_DATA_STATUS_TOOL_NAME: &str = "game_data_status";
 pub const SEARCH_GAME_DATA_SYMBOLS_TOOL_NAME: &str = "search_game_data_symbols";
@@ -160,8 +160,8 @@ const WORKBENCH_STATE_DESCRIPTION: &str =
     "Read bounded live editor state from the compatible managed Workbench handler package.";
 const WORKBENCH_PROJECT_CONTEXT_DESCRIPTION: &str = "Read the loaded Workbench addon identities from the compatible managed handler package. This is live editor context, not a filesystem project scan.";
 const WORKBENCH_INSPECT_RESOURCE_DESCRIPTION: &str = "Inspect one canonical Workbench resource identity through the compatible managed handler package. It returns compact resource metadata only and never accepts filesystem paths.";
-const WORKBENCH_LIST_RESOURCES_DESCRIPTION: &str = "List a bounded page of Workbench resources by fixed resource kinds, an optional text query, and an optional canonical logical $Addon:Path root. Continue with the opaque cursor while preserving the same filters; filesystem paths and arbitrary extensions are not accepted.";
-const WORKBENCH_SEARCH_RESOURCES_DESCRIPTION: &str = "Search registered Workbench resources by fixed kinds, native text terms, an optional canonical logical $Addon:Path root, and an optional exact add-on GUID. Results expose canonical resource identity, add-on, logical path, and extension only; use exact resource inspection or prefab inspection for deeper facts.";
+const WORKBENCH_LIST_RESOURCES_DESCRIPTION: &str = "Compatibility listing surface for existing callers. Prefer workbench_search_resources for all new discovery because it returns canonical resource identity and supports exact add-on filtering. This bounded page accepts fixed resource kinds, an optional text query, and an optional canonical logical $Addon:Path root; filesystem paths and arbitrary extensions are not accepted.";
+const WORKBENCH_SEARCH_RESOURCES_DESCRIPTION: &str = "Canonical Workbench resource-discovery surface. Search registered resources by fixed kinds, native text terms, an optional canonical logical $Addon:Path root, and an optional exact add-on GUID. Results expose canonical resource identity, add-on, logical path, and extension only; use exact resource inspection or prefab inspection for deeper facts.";
 const WORKBENCH_WORLD_SELECTION_SUMMARY_DESCRIPTION: &str = "Read a bounded live World Editor selection summary through the compatible managed handler package. It returns stable entity IDs, classes, subscenes, and layers; it never changes the editor selection.";
 const WORKBENCH_SELECTED_ENTITY_HIERARCHY_DESCRIPTION: &str = "Inspect the bounded parent and direct-child hierarchy for one current World Editor selection index. It uses only stable entity identities, never display-name matching, and never changes the editor selection.";
 const WORKBENCH_LIST_ENTITIES_DESCRIPTION: &str = "List one bounded page of live World Editor entities, optionally constrained to an exact subscene and layer. Entity IDs are stable only for the observed editor context; filters are discovery metadata, never target identities.";
@@ -787,6 +787,15 @@ impl McpWorkbenchResourceKind {
     }
 }
 
+fn resource_extensions(kinds: &[McpWorkbenchResourceKind]) -> Vec<&'static str> {
+    kinds
+        .iter()
+        .flat_map(|kind| kind.extensions().iter().copied())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct McpWorkbenchResourceListInput {
@@ -953,7 +962,6 @@ pub struct ReforgerMcpServer {
     official_wiki: Arc<OfficialWikiCorpus>,
     workbench: Arc<WorkbenchController>,
     admission: Arc<Semaphore>,
-    initialization_admission: Arc<Semaphore>,
 }
 
 impl ReforgerMcpServer {
@@ -966,7 +974,17 @@ impl ReforgerMcpServer {
             }),
             workbench: Arc::new(WorkbenchController::new(options.workbench)),
             admission: Arc::new(Semaphore::new(MAX_CONCURRENT_TOOL_CALLS)),
-            initialization_admission: Arc::new(Semaphore::new(1)),
+        }
+    }
+
+    async fn acquire_request_admission(
+        &self,
+        context: &RequestContext<RoleServer>,
+    ) -> Result<OwnedSemaphorePermit, McpError> {
+        let admission = self.admission.clone().acquire_owned();
+        tokio::select! {
+            _ = context.ct.cancelled() => Err(McpError::internal_error("request cancelled", None)),
+            permit = admission => permit.map_err(|_| McpError::internal_error("MCP request admission is unavailable", None)),
         }
     }
 
@@ -974,11 +992,7 @@ impl ReforgerMcpServer {
         &self,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        let permit = self.admission.clone().acquire_owned();
-        let _permit = tokio::select! {
-            _ = context.ct.cancelled() => return Err(McpError::internal_error("request cancelled", None)),
-            permit = permit => permit.map_err(|_| McpError::internal_error("MCP request admission is unavailable", None))?,
-        };
+        let _permit = self.acquire_request_admission(&context).await?;
         let corpus = self.official_wiki.clone();
         let mut worker = tokio::task::spawn_blocking(move || corpus.status());
         let deadline = tokio::time::sleep(Duration::from_millis(official_wiki_deadline_ms()));
@@ -996,11 +1010,7 @@ impl ReforgerMcpServer {
         request: OfficialWikiSearchRequest,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        let permit = self.admission.clone().acquire_owned();
-        let _permit = tokio::select! {
-            _ = context.ct.cancelled() => return Err(McpError::internal_error("request cancelled", None)),
-            permit = permit => permit.map_err(|_| McpError::internal_error("MCP request admission is unavailable", None))?,
-        };
+        let _permit = self.acquire_request_admission(&context).await?;
         let corpus = self.official_wiki.clone();
         let control = OfficialWikiControl::default();
         let worker_control = control.clone();
@@ -1025,11 +1035,7 @@ impl ReforgerMcpServer {
         request: OfficialWikiReadRequest,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        let permit = self.admission.clone().acquire_owned();
-        let _permit = tokio::select! {
-            _ = context.ct.cancelled() => return Err(McpError::internal_error("request cancelled", None)),
-            permit = permit => permit.map_err(|_| McpError::internal_error("MCP request admission is unavailable", None))?,
-        };
+        let _permit = self.acquire_request_admission(&context).await?;
         let corpus = self.official_wiki.clone();
         let control = OfficialWikiControl::default();
         let worker_control = control.clone();
@@ -1052,41 +1058,16 @@ impl ReforgerMcpServer {
         &self,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        let admission = self.admission.clone().acquire_owned();
-        let _permit = tokio::select! {
-            _ = context.ct.cancelled() => {
-                return Err(McpError::internal_error("request cancelled", None));
-            }
-            permit = admission => permit.map_err(|_| {
-                McpError::internal_error("MCP request admission is unavailable", None)
-            })?,
-        };
+        let _permit = self.acquire_request_admission(&context).await?;
         record_debug_admission();
 
         let deadline = tokio::time::sleep(Duration::from_millis(initialization_deadline_ms()));
         tokio::pin!(deadline);
-        let initialization_permit = tokio::select! {
-            biased;
-            _ = context.ct.cancelled() => {
-                return Err(McpError::internal_error("request cancelled", None));
-            }
-            _ = &mut deadline => {
-                return Ok(deadline_exceeded());
-            }
-            permit = self.initialization_admission.clone().acquire_owned() => {
-                permit.map_err(|_| {
-                    McpError::internal_error("Game Data initialization admission is unavailable", None)
-                })?
-            }
-        };
-
         let catalogue = self.game_data.clone();
         let control = IndexBuildControl::default();
         let worker_control = control.clone();
-        let mut initialization = tokio::task::spawn_blocking(move || {
-            let _permit = initialization_permit;
-            catalogue.status(&worker_control)
-        });
+        let mut initialization =
+            tokio::task::spawn_blocking(move || catalogue.status(&worker_control));
         let status = tokio::select! {
             biased;
             _ = context.ct.cancelled() => {
@@ -1121,11 +1102,7 @@ impl ReforgerMcpServer {
         request: GameDataSearchRequest,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        let admission = self.admission.clone().acquire_owned();
-        let _permit = tokio::select! {
-            _ = context.ct.cancelled() => return Err(McpError::internal_error("request cancelled", None)),
-            permit = admission => permit.map_err(|_| McpError::internal_error("MCP request admission is unavailable", None))?,
-        };
+        let _permit = self.acquire_request_admission(&context).await?;
         let catalogue = self.game_data.clone();
         let cold_initialization = !catalogue.is_initialized();
         let deadline = tokio::time::sleep(Duration::from_millis(if cold_initialization {
@@ -1159,11 +1136,7 @@ impl ReforgerMcpServer {
         request: GameDataExampleSearchRequest,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        let permit = self.admission.clone().acquire_owned();
-        let permit = tokio::select! {
-            _ = context.ct.cancelled() => return Err(McpError::internal_error("request cancelled", None)),
-            permit = permit => permit.map_err(|_| McpError::internal_error("MCP request admission is unavailable", None))?,
-        };
+        let permit = self.acquire_request_admission(&context).await?;
         record_debug_admission();
         let catalogue = self.game_data.clone();
         let cold = !catalogue.is_initialized();
@@ -1197,11 +1170,7 @@ impl ReforgerMcpServer {
         request: GameDataMemberRequest,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        let permit = self.admission.clone().acquire_owned();
-        let permit = tokio::select! {
-            _ = context.ct.cancelled() => return Err(McpError::internal_error("request cancelled", None)),
-            permit = permit => permit.map_err(|_| McpError::internal_error("MCP request admission is unavailable", None))?,
-        };
+        let permit = self.acquire_request_admission(&context).await?;
         record_debug_admission();
         let catalogue = self.game_data.clone();
         let cold = !catalogue.is_initialized();
@@ -1234,11 +1203,7 @@ impl ReforgerMcpServer {
         request: GameDataRelationshipRequest,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        let permit = self.admission.clone().acquire_owned();
-        let permit = tokio::select! {
-            _ = context.ct.cancelled() => return Err(McpError::internal_error("request cancelled", None)),
-            permit = permit => permit.map_err(|_| McpError::internal_error("MCP request admission is unavailable", None))?,
-        };
+        let permit = self.acquire_request_admission(&context).await?;
         record_debug_admission();
         let catalogue = self.game_data.clone();
         let cold = !catalogue.is_initialized();
@@ -1271,8 +1236,7 @@ impl ReforgerMcpServer {
         symbol_ref: String,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        let permit = self.admission.clone().acquire_owned();
-        let _permit = tokio::select! { _ = context.ct.cancelled() => return Err(McpError::internal_error("request cancelled", None)), permit = permit => permit.map_err(|_| McpError::internal_error("MCP request admission is unavailable", None))? };
+        let _permit = self.acquire_request_admission(&context).await?;
         let catalogue = self.game_data.clone();
         let cold_initialization = !catalogue.is_initialized();
         let control = IndexBuildControl::default();
@@ -1302,8 +1266,7 @@ impl ReforgerMcpServer {
         request: GameDataSourceReadRequest,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        let permit = self.admission.clone().acquire_owned();
-        let _permit = tokio::select! { _ = context.ct.cancelled() => return Err(McpError::internal_error("request cancelled", None)), permit = permit => permit.map_err(|_| McpError::internal_error("MCP request admission is unavailable", None))? };
+        let _permit = self.acquire_request_admission(&context).await?;
         let catalogue = self.game_data.clone();
         let cold_initialization = !catalogue.is_initialized();
         let control = IndexBuildControl::default();
@@ -1647,7 +1610,27 @@ impl ServerHandler for ReforgerMcpServer {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
-        Ok(ListToolsResult::with_all_items(vec![
+        Ok(ListToolsResult::with_all_items(Self::tool_catalogue()))
+    }
+
+    fn get_tool(&self, name: &str) -> Option<Tool> {
+        Self::tool_catalogue()
+            .into_iter()
+            .find(|tool| tool.name == name)
+    }
+
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        self.call_tool_by_name(request, context).await
+    }
+}
+
+impl ReforgerMcpServer {
+    fn tool_catalogue() -> Vec<Tool> {
+        vec![
             game_data_status_tool(),
             search_game_data_symbols_tool(),
             search_game_data_examples_tool(),
@@ -1720,120 +1703,10 @@ impl ServerHandler for ReforgerMcpServer {
             workbench_launch_tool(),
             workbench_stop_tool(),
             workbench_restart_tool(),
-        ]))
+        ]
     }
 
-    fn get_tool(&self, name: &str) -> Option<Tool> {
-        match name {
-            GAME_DATA_STATUS_TOOL_NAME => Some(game_data_status_tool()),
-            SEARCH_GAME_DATA_SYMBOLS_TOOL_NAME => Some(search_game_data_symbols_tool()),
-            SEARCH_GAME_DATA_EXAMPLES_TOOL_NAME => Some(search_game_data_examples_tool()),
-            INSPECT_GAME_DATA_SYMBOL_TOOL_NAME => Some(inspect_game_data_symbol_tool()),
-            LIST_GAME_DATA_SYMBOL_MEMBERS_TOOL_NAME => Some(list_game_data_symbol_members_tool()),
-            QUERY_GAME_DATA_SYMBOL_RELATIONSHIPS_TOOL_NAME => {
-                Some(query_game_data_symbol_relationships_tool())
-            }
-            READ_GAME_DATA_SOURCE_TOOL_NAME => Some(read_game_data_source_tool()),
-            OFFICIAL_WIKI_STATUS_TOOL_NAME => Some(official_wiki_status_tool()),
-            SEARCH_OFFICIAL_WIKI_TOOL_NAME => Some(search_official_wiki_tool()),
-            READ_OFFICIAL_WIKI_TOOL_NAME => Some(read_official_wiki_tool()),
-            WORKBENCH_STATUS_TOOL_NAME => Some(workbench_status_tool()),
-            WORKBENCH_VALIDATE_SCRIPTS_TOOL_NAME => Some(workbench_validate_scripts_tool()),
-            WORKBENCH_INSTALL_BRIDGE_TOOL_NAME => Some(workbench_install_bridge_tool()),
-            WORKBENCH_STATE_TOOL_NAME => Some(workbench_state_tool()),
-            WORKBENCH_PROJECT_CONTEXT_TOOL_NAME => Some(workbench_project_context_tool()),
-            WORKBENCH_INSPECT_RESOURCE_TOOL_NAME => Some(workbench_inspect_resource_tool()),
-            WORKBENCH_LIST_RESOURCES_TOOL_NAME => Some(workbench_list_resources_tool()),
-            WORKBENCH_SEARCH_RESOURCES_TOOL_NAME => Some(workbench_search_resources_tool()),
-            WORKBENCH_WORLD_SELECTION_SUMMARY_TOOL_NAME => {
-                Some(workbench_world_selection_summary_tool())
-            }
-            WORKBENCH_SELECTED_ENTITY_HIERARCHY_TOOL_NAME => {
-                Some(workbench_selected_entity_hierarchy_tool())
-            }
-            WORKBENCH_LIST_ENTITIES_TOOL_NAME => Some(workbench_list_entities_tool()),
-            WORKBENCH_SEARCH_WORLD_ENTITIES_TOOL_NAME => {
-                Some(workbench_search_world_entities_tool())
-            }
-            WORKBENCH_LAYER_STATE_TOOL_NAME => Some(workbench_layer_state_tool()),
-            WORKBENCH_FIND_ENTITIES_BY_RADIUS_TOOL_NAME => {
-                Some(workbench_find_entities_by_radius_tool())
-            }
-            WORKBENCH_SAMPLE_TERRAIN_TOOL_NAME => Some(workbench_sample_terrain_tool()),
-            WORKBENCH_VIEWPORT_CONTEXT_TOOL_NAME => Some(workbench_viewport_context_tool()),
-            WORKBENCH_TRACE_TOOL_NAME => Some(workbench_trace_tool()),
-            WORKBENCH_INSPECT_PREFAB_CONTEXT_TOOL_NAME => {
-                Some(workbench_inspect_prefab_context_tool())
-            }
-            WORKBENCH_INSPECT_PREFAB_COMPONENT_TOOL_NAME => {
-                Some(workbench_inspect_prefab_component_tool())
-            }
-            WORKBENCH_CREATE_PREFAB_TOOL_NAME => Some(workbench_create_prefab_tool()),
-            WORKBENCH_CREATE_GENERIC_PREFAB_TOOL_NAME => {
-                Some(workbench_create_generic_prefab_tool())
-            }
-            WORKBENCH_SAVE_PREFAB_TOOL_NAME => Some(workbench_save_prefab_tool()),
-            WORKBENCH_ADD_PREFAB_RESOURCE_COMPONENT_TOOL_NAME => {
-                Some(workbench_add_prefab_resource_component_tool())
-            }
-            WORKBENCH_REMOVE_PREFAB_RESOURCE_COMPONENT_TOOL_NAME => {
-                Some(workbench_remove_prefab_resource_component_tool())
-            }
-            WORKBENCH_SET_PREFAB_RESOURCE_PROPERTY_TOOL_NAME => {
-                Some(workbench_set_prefab_resource_property_tool())
-            }
-            WORKBENCH_SET_PREFAB_PROPERTY_TOOL_NAME => Some(workbench_set_prefab_property_tool()),
-            WORKBENCH_SET_PREFAB_COMPONENT_PROPERTY_TOOL_NAME => {
-                Some(workbench_set_prefab_component_property_tool())
-            }
-            WORKBENCH_INSPECT_ENTITY_TOOL_NAME => Some(workbench_inspect_entity_tool()),
-            WORKBENCH_SET_SELECTION_TOOL_NAME => Some(workbench_set_selection_tool()),
-            WORKBENCH_CLEAR_SELECTION_TOOL_NAME => Some(workbench_clear_selection_tool()),
-            WORKBENCH_CREATE_ENTITY_TOOL_NAME => Some(workbench_create_entity_tool()),
-            WORKBENCH_RENAME_ENTITY_TOOL_NAME => Some(workbench_rename_entity_tool()),
-            WORKBENCH_DELETE_ENTITY_TOOL_NAME => Some(workbench_delete_entity_tool()),
-            WORKBENCH_MOVE_ENTITY_TOOL_NAME => Some(workbench_move_entity_tool()),
-            WORKBENCH_ROTATE_ENTITY_TOOL_NAME => Some(workbench_rotate_entity_tool()),
-            WORKBENCH_REPARENT_ENTITY_TOOL_NAME => Some(workbench_reparent_entity_tool()),
-            WORKBENCH_DUPLICATE_ENTITY_TOOL_NAME => Some(workbench_duplicate_entity_tool()),
-            WORKBENCH_LIST_COMPONENTS_TOOL_NAME => Some(workbench_list_components_tool()),
-            WORKBENCH_INSPECT_COMPONENT_TOOL_NAME => Some(workbench_inspect_component_tool()),
-            WORKBENCH_ADD_COMPONENT_TOOL_NAME => Some(workbench_add_component_tool()),
-            WORKBENCH_SET_COMPONENT_PROPERTIES_TOOL_NAME => {
-                Some(workbench_set_component_properties_tool())
-            }
-            WORKBENCH_REMOVE_COMPONENT_TOOL_NAME => Some(workbench_remove_component_tool()),
-            WORKBENCH_LIST_ENTITY_PROPERTIES_TOOL_NAME => {
-                Some(workbench_list_entity_properties_tool())
-            }
-            WORKBENCH_SET_ENTITY_PROPERTY_TOOL_NAME => Some(workbench_set_entity_property_tool()),
-            WORKBENCH_GET_SHAPE_POINTS_TOOL_NAME => Some(workbench_get_shape_points_tool()),
-            WORKBENCH_EDIT_SHAPE_POINTS_TOOL_NAME => Some(workbench_edit_shape_points_tool()),
-            WORKBENCH_SET_POLYLINE_REGULAR_POLYGON_TOOL_NAME => {
-                Some(workbench_set_polyline_regular_polygon_tool())
-            }
-            WORKBENCH_CONVERT_SHAPE_POINTS_TOOL_NAME => Some(workbench_convert_shape_points_tool()),
-            WORKBENCH_TRANSFORM_SHAPE_POINTS_TOOL_NAME => {
-                Some(workbench_transform_shape_points_tool())
-            }
-            WORKBENCH_RESAMPLE_POLYLINE_TOOL_NAME => Some(workbench_resample_polyline_tool()),
-            WORKBENCH_LIST_EDITORS_TOOL_NAME => Some(workbench_list_editors_tool()),
-            WORKBENCH_OPEN_EDITOR_TOOL_NAME => Some(workbench_open_editor_tool()),
-            WORKBENCH_OPEN_RESOURCE_TOOL_NAME => Some(workbench_open_resource_tool()),
-            WORKBENCH_START_PLAY_SESSION_TOOL_NAME => Some(workbench_start_play_session_tool()),
-            WORKBENCH_STOP_PLAY_SESSION_TOOL_NAME => Some(workbench_stop_play_session_tool()),
-            WORKBENCH_RELOAD_TOOL_NAME => Some(workbench_reload_tool()),
-            WORKBENCH_SAVE_ALL_TOOL_NAME => Some(workbench_save_all_tool()),
-            WORKBENCH_SAVE_WORLD_TOOL_NAME => Some(workbench_save_world_tool()),
-            WORKBENCH_READ_LOGS_TOOL_NAME => Some(workbench_read_logs_tool()),
-            WORKBENCH_LAUNCH_TOOL_NAME => Some(workbench_launch_tool()),
-            WORKBENCH_STOP_TOOL_NAME => Some(workbench_stop_tool()),
-            WORKBENCH_RESTART_TOOL_NAME => Some(workbench_restart_tool()),
-            _ => None,
-        }
-    }
-
-    async fn call_tool(
+    async fn call_tool_by_name(
         &self,
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
@@ -1902,13 +1775,7 @@ impl ServerHandler for ReforgerMcpServer {
                     "Provide one or more fixed resource kinds.",
                 ));
             }
-            let extensions = input
-                .kinds
-                .iter()
-                .flat_map(|kind| kind.extensions().iter().copied())
-                .collect::<std::collections::BTreeSet<_>>()
-                .into_iter()
-                .collect::<Vec<_>>();
+            let extensions = resource_extensions(&input.kinds);
             let workbench = self.workbench.clone();
             return blocking_workbench_call(
                 self.admission.clone(),
@@ -1938,13 +1805,7 @@ impl ServerHandler for ReforgerMcpServer {
                     "Provide one or more fixed resource kinds.",
                 ));
             }
-            let extensions = input
-                .kinds
-                .iter()
-                .flat_map(|kind| kind.extensions().iter().copied())
-                .collect::<std::collections::BTreeSet<_>>()
-                .into_iter()
-                .collect::<Vec<_>>();
+            let extensions = resource_extensions(&input.kinds);
             let workbench = self.workbench.clone();
             return blocking_workbench_call(
                 self.admission.clone(),
@@ -2856,8 +2717,7 @@ impl ServerHandler for ReforgerMcpServer {
                 || !degrees.is_finite()
                 || (operation == WorkbenchShapeTransformOperation::Scale
                     && (scale.x == 0.0 || scale.y == 0.0 || scale.z == 0.0))
-                || (operation == WorkbenchShapeTransformOperation::Mirror
-                    && mirror_axis.is_empty())
+                || (operation == WorkbenchShapeTransformOperation::Mirror && mirror_axis.is_empty())
             {
                 return Ok(tool_error("invalid_input", "transform parameters are invalid; scale components must be nonzero and mirrorAxis must be x, y, or z.", "Correct the input and retry."));
             }
@@ -3337,9 +3197,21 @@ impl ServerHandler for ReforgerMcpServer {
                 )
                 .await;
         }
-        if request.name != GAME_DATA_STATUS_TOOL_NAME {
+        if !Self::tool_catalogue()
+            .iter()
+            .any(|tool| tool.name == request.name)
+        {
             return Err(McpError::invalid_params(
                 format!("Unknown tool '{}'. Use tools/list.", request.name),
+                None,
+            ));
+        }
+        if request.name != GAME_DATA_STATUS_TOOL_NAME {
+            return Err(McpError::internal_error(
+                format!(
+                    "Tool catalogue contains '{}' without a typed call route.",
+                    request.name
+                ),
                 None,
             ));
         }
@@ -3504,26 +3376,49 @@ async fn blocking_workbench_call<T: Serialize + Send + 'static>(
 }
 
 fn workbench_tool_error(failure: WorkbenchFailure, phase: &str) -> CallToolResult {
-    let code = match failure.code {
-        WorkbenchFailureCode::ConsentRequired => "workbench_installation_consent_required",
-        WorkbenchFailureCode::Unavailable => "workbench_unavailable",
-        WorkbenchFailureCode::Timeout => "workbench_timeout",
-        WorkbenchFailureCode::Protocol => "workbench_protocol_error",
-        WorkbenchFailureCode::WorkbenchError => "workbench_error",
+    let (code, message, recovery, retryable) = match failure.code {
+        WorkbenchFailureCode::ConsentRequired => (
+            "workbench_installation_consent_required",
+            "The managed Workbench bridge is not authorized for this request.",
+            "Complete the explicit bridge installation or repair flow, then retry.",
+            false,
+        ),
+        WorkbenchFailureCode::Unavailable => (
+            "workbench_unavailable",
+            "Workbench is unavailable at the configured endpoint.",
+            "Start Workbench or correct the configured endpoint, then retry.",
+            true,
+        ),
+        WorkbenchFailureCode::Timeout => (
+            "workbench_timeout",
+            "Workbench did not respond before the capability deadline.",
+            "Check Workbench activity and retry the operation.",
+            true,
+        ),
+        WorkbenchFailureCode::Protocol => (
+            "workbench_protocol_error",
+            "Workbench returned an incompatible managed-bridge response.",
+            "Repair or upgrade the managed bridge, then retry.",
+            false,
+        ),
+        WorkbenchFailureCode::WorkbenchError => (
+            "workbench_error",
+            "Workbench rejected the requested capability.",
+            "Review the referenced integration log and correct the editor state before retrying.",
+            false,
+        ),
     };
     let log_reference = failure
         .log_reference
         .unwrap_or_else(|| "integration-log-unavailable".to_string());
-    CallToolResult::structured_error(json!({
-        "ok": false,
-        "code": code,
-        "phase": phase,
-        "logReference": log_reference,
-        "retryable": matches!(
-            failure.code,
-            WorkbenchFailureCode::Unavailable | WorkbenchFailureCode::Timeout
-        )
-    }))
+    tool_failure(
+        code,
+        message,
+        recovery,
+        retryable,
+        Some(phase),
+        Some(log_reference),
+    )
 }
 
 pub fn run_stdio(options: McpServerOptions) -> Result<(), String> {
@@ -3547,8 +3442,16 @@ pub fn run_stdio(options: McpServerOptions) -> Result<(), String> {
 }
 
 pub fn render_api_reference() -> String {
-    let tool = game_data_status_tool();
-    let search_tool = search_game_data_symbols_tool();
+    let catalogue = ReforgerMcpServer::tool_catalogue();
+    let descriptor = |name| {
+        catalogue
+            .iter()
+            .find(|tool| tool.name == name)
+            .expect("public tool catalogue contains every referenced tool")
+            .clone()
+    };
+    let tool = descriptor(GAME_DATA_STATUS_TOOL_NAME);
+    let search_tool = descriptor(SEARCH_GAME_DATA_SYMBOLS_TOOL_NAME);
     let input_schema = serde_json::to_string_pretty(tool.input_schema.as_ref())
         .expect("tool input schema serializes");
     let output_schema = serde_json::to_string_pretty(
@@ -3588,14 +3491,14 @@ pub fn render_api_reference() -> String {
             .expect("search annotations"),
     )
     .expect("search annotations serialize");
-    let example_tool = search_game_data_examples_tool();
-    let member_tool = list_game_data_symbol_members_tool();
-    let relationship_tool = query_game_data_symbol_relationships_tool();
-    let inspect_tool = inspect_game_data_symbol_tool();
-    let read_tool = read_game_data_source_tool();
-    let wiki_tool = official_wiki_status_tool();
-    let wiki_search_tool = search_official_wiki_tool();
-    let wiki_read_tool = read_official_wiki_tool();
+    let example_tool = descriptor(SEARCH_GAME_DATA_EXAMPLES_TOOL_NAME);
+    let member_tool = descriptor(LIST_GAME_DATA_SYMBOL_MEMBERS_TOOL_NAME);
+    let relationship_tool = descriptor(QUERY_GAME_DATA_SYMBOL_RELATIONSHIPS_TOOL_NAME);
+    let inspect_tool = descriptor(INSPECT_GAME_DATA_SYMBOL_TOOL_NAME);
+    let read_tool = descriptor(READ_GAME_DATA_SOURCE_TOOL_NAME);
+    let wiki_tool = descriptor(OFFICIAL_WIKI_STATUS_TOOL_NAME);
+    let wiki_search_tool = descriptor(SEARCH_OFFICIAL_WIKI_TOOL_NAME);
+    let wiki_read_tool = descriptor(READ_OFFICIAL_WIKI_TOOL_NAME);
     let inspect_input_schema = serde_json::to_string_pretty(inspect_tool.input_schema.as_ref())
         .expect("inspect input schema serializes");
     let read_input_schema = serde_json::to_string_pretty(read_tool.input_schema.as_ref())
@@ -3626,6 +3529,8 @@ This committed projection exists so maintainers and coding agents can inspect th
 1. Call `game_data_status` when Game Data availability, version, coverage, or cache health is uncertain.\n\
 2. Preserve its `catalogueRevision` and opaque references or cursors across the progressive Game Data search, inspect, member, relationship, and source-read workflow.\n\
 3. After Game Data changes, activate the language server so it refreshes the index cache, then restart MCP.\n\n\
+## Expected tool failures\n\n\
+When a valid tool request cannot complete, every tool family returns a structured error with `ok: false`, stable `code`, caller-facing `message`, actionable `recovery`, and `retryable`. Workbench failures additionally include `phase` and a sanitized `logReference`. Invalid arguments and unknown tool names remain MCP protocol errors.\n\n\
 ## `{GAME_DATA_STATUS_TOOL_NAME}`\n\n\
 {description}\n\n\
 ### Annotations\n\n\
@@ -3798,71 +3703,11 @@ Copy a hit's `inspectInput` unchanged to `inspect_game_data_symbol`, or its `rea
         wiki_read_input_schema,
         wiki_read_output_schema,
     ));
-    append_simple_tool_reference(&mut reference, &workbench_status_tool());
-    append_simple_tool_reference(&mut reference, &workbench_validate_scripts_tool());
-    for tool in [
-        workbench_install_bridge_tool(),
-        workbench_state_tool(),
-        workbench_project_context_tool(),
-        workbench_inspect_resource_tool(),
-        workbench_list_resources_tool(),
-        workbench_search_resources_tool(),
-        workbench_world_selection_summary_tool(),
-        workbench_selected_entity_hierarchy_tool(),
-        workbench_list_entities_tool(),
-        workbench_search_world_entities_tool(),
-        workbench_layer_state_tool(),
-        workbench_find_entities_by_radius_tool(),
-        workbench_sample_terrain_tool(),
-        workbench_viewport_context_tool(),
-        workbench_trace_tool(),
-        workbench_inspect_prefab_context_tool(),
-        workbench_inspect_prefab_component_tool(),
-        workbench_create_prefab_tool(),
-        workbench_create_generic_prefab_tool(),
-        workbench_save_prefab_tool(),
-        workbench_add_prefab_resource_component_tool(),
-        workbench_remove_prefab_resource_component_tool(),
-        workbench_set_prefab_resource_property_tool(),
-        workbench_set_prefab_property_tool(),
-        workbench_set_prefab_component_property_tool(),
-        workbench_inspect_entity_tool(),
-        workbench_set_selection_tool(),
-        workbench_clear_selection_tool(),
-        workbench_create_entity_tool(),
-        workbench_rename_entity_tool(),
-        workbench_delete_entity_tool(),
-        workbench_move_entity_tool(),
-        workbench_rotate_entity_tool(),
-        workbench_reparent_entity_tool(),
-        workbench_duplicate_entity_tool(),
-        workbench_list_components_tool(),
-        workbench_inspect_component_tool(),
-        workbench_add_component_tool(),
-        workbench_set_component_properties_tool(),
-        workbench_remove_component_tool(),
-        workbench_list_entity_properties_tool(),
-        workbench_set_entity_property_tool(),
-        workbench_get_shape_points_tool(),
-        workbench_edit_shape_points_tool(),
-        workbench_set_polyline_regular_polygon_tool(),
-        workbench_convert_shape_points_tool(),
-        workbench_transform_shape_points_tool(),
-        workbench_resample_polyline_tool(),
-        workbench_list_editors_tool(),
-        workbench_open_editor_tool(),
-        workbench_open_resource_tool(),
-        workbench_start_play_session_tool(),
-        workbench_stop_play_session_tool(),
-        workbench_reload_tool(),
-        workbench_save_all_tool(),
-        workbench_save_world_tool(),
-        workbench_read_logs_tool(),
-        workbench_launch_tool(),
-        workbench_stop_tool(),
-        workbench_restart_tool(),
-    ] {
-        append_simple_tool_reference(&mut reference, &tool);
+    for tool in catalogue
+        .iter()
+        .filter(|tool| tool.name.starts_with("workbench_"))
+    {
+        append_simple_tool_reference(&mut reference, tool);
     }
     reference
 }
@@ -4950,50 +4795,82 @@ fn typed_success<T: Serialize>(value: &T) -> Result<CallToolResult, McpError> {
 }
 
 fn tool_error(code: &str, cause: &str, recovery: &str) -> CallToolResult {
-    CallToolResult::error(vec![ContentBlock::text(format!(
-        "{code}: {cause} Recovery: {recovery}"
-    ))])
+    tool_failure(
+        code,
+        cause,
+        recovery,
+        code == DEADLINE_EXCEEDED_CODE,
+        None,
+        None,
+    )
+}
+
+fn tool_failure(
+    code: &str,
+    message: &str,
+    recovery: &str,
+    retryable: bool,
+    phase: Option<&str>,
+    log_reference: Option<String>,
+) -> CallToolResult {
+    let mut failure = json!({
+        "ok": false,
+        "code": code,
+        "message": message,
+        "recovery": recovery,
+        "retryable": retryable,
+    });
+    let object = failure
+        .as_object_mut()
+        .expect("failure envelope is an object");
+    if let Some(phase) = phase {
+        object.insert("phase".to_string(), Value::String(phase.to_string()));
+    }
+    if let Some(log_reference) = log_reference {
+        object.insert("logReference".to_string(), Value::String(log_reference));
+    }
+    CallToolResult::structured_error(failure)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         game_data_status_tool, inspect_game_data_symbol_tool, regular_polygon_points,
-        render_api_reference, workbench_add_component_tool, workbench_convert_shape_points_tool,
-        workbench_create_prefab_tool, workbench_duplicate_entity_tool,
-        workbench_inspect_component_tool, workbench_inspect_prefab_component_tool,
-        workbench_inspect_prefab_context_tool, workbench_install_bridge_tool,
-        workbench_layer_state_tool, workbench_list_components_tool, workbench_list_editors_tool,
-        workbench_list_entities_tool, workbench_list_entity_properties_tool,
-        workbench_list_resources_tool, workbench_move_entity_tool, workbench_open_editor_tool,
-        workbench_open_resource_tool, workbench_project_context_tool, workbench_reload_tool,
-        workbench_remove_component_tool, workbench_reparent_entity_tool,
-        workbench_resample_polyline_tool, workbench_rotate_entity_tool,
-        workbench_sample_terrain_tool, workbench_save_all_tool, workbench_save_prefab_tool,
-        workbench_save_world_tool, workbench_search_resources_tool,
+        render_api_reference, tool_error, workbench_add_component_tool,
+        workbench_convert_shape_points_tool, workbench_create_prefab_tool,
+        workbench_duplicate_entity_tool, workbench_inspect_component_tool,
+        workbench_inspect_prefab_component_tool, workbench_inspect_prefab_context_tool,
+        workbench_install_bridge_tool, workbench_layer_state_tool, workbench_list_components_tool,
+        workbench_list_editors_tool, workbench_list_entities_tool,
+        workbench_list_entity_properties_tool, workbench_list_resources_tool,
+        workbench_move_entity_tool, workbench_open_editor_tool, workbench_open_resource_tool,
+        workbench_project_context_tool, workbench_reload_tool, workbench_remove_component_tool,
+        workbench_reparent_entity_tool, workbench_resample_polyline_tool,
+        workbench_rotate_entity_tool, workbench_sample_terrain_tool, workbench_save_all_tool,
+        workbench_save_prefab_tool, workbench_save_world_tool, workbench_search_resources_tool,
         workbench_search_world_entities_tool, workbench_selected_entity_hierarchy_tool,
         workbench_set_component_properties_tool, workbench_set_entity_property_tool,
         workbench_set_polyline_regular_polygon_tool, workbench_set_prefab_component_property_tool,
         workbench_set_prefab_property_tool, workbench_start_play_session_tool,
-        workbench_status_tool, workbench_stop_play_session_tool, workbench_trace_tool,
-        workbench_transform_shape_points_tool, workbench_validate_scripts_tool,
-        workbench_viewport_context_tool, workbench_world_selection_summary_tool,
-        DEADLINE_EXCEEDED_CODE, GAME_DATA_STATUS_TOOL_NAME, RESPONSE_TOO_LARGE_CODE,
-        WORKBENCH_ADD_COMPONENT_TOOL_NAME, WORKBENCH_CONVERT_SHAPE_POINTS_TOOL_NAME,
-        WORKBENCH_CREATE_PREFAB_TOOL_NAME, WORKBENCH_DUPLICATE_ENTITY_TOOL_NAME,
-        WORKBENCH_INSPECT_COMPONENT_TOOL_NAME, WORKBENCH_INSPECT_PREFAB_COMPONENT_TOOL_NAME,
-        WORKBENCH_INSPECT_PREFAB_CONTEXT_TOOL_NAME, WORKBENCH_LAYER_STATE_TOOL_NAME,
-        WORKBENCH_LIST_COMPONENTS_TOOL_NAME, WORKBENCH_LIST_EDITORS_TOOL_NAME,
-        WORKBENCH_LIST_ENTITIES_TOOL_NAME, WORKBENCH_LIST_ENTITY_PROPERTIES_TOOL_NAME,
-        WORKBENCH_LIST_RESOURCES_TOOL_NAME, WORKBENCH_MOVE_ENTITY_TOOL_NAME,
-        WORKBENCH_OPEN_EDITOR_TOOL_NAME, WORKBENCH_OPEN_RESOURCE_TOOL_NAME,
-        WORKBENCH_PROJECT_CONTEXT_TOOL_NAME, WORKBENCH_RELOAD_TOOL_NAME,
-        WORKBENCH_REMOVE_COMPONENT_TOOL_NAME, WORKBENCH_REPARENT_ENTITY_TOOL_NAME,
-        WORKBENCH_RESAMPLE_POLYLINE_TOOL_NAME, WORKBENCH_ROTATE_ENTITY_TOOL_NAME,
-        WORKBENCH_SAMPLE_TERRAIN_TOOL_NAME, WORKBENCH_SAVE_ALL_TOOL_NAME,
-        WORKBENCH_SAVE_PREFAB_TOOL_NAME, WORKBENCH_SAVE_WORLD_TOOL_NAME,
-        WORKBENCH_SEARCH_RESOURCES_TOOL_NAME, WORKBENCH_SEARCH_WORLD_ENTITIES_TOOL_NAME,
-        WORKBENCH_SELECTED_ENTITY_HIERARCHY_TOOL_NAME,
+        workbench_status_tool, workbench_stop_play_session_tool, workbench_tool_error,
+        workbench_trace_tool, workbench_transform_shape_points_tool,
+        workbench_validate_scripts_tool, workbench_viewport_context_tool,
+        workbench_world_selection_summary_tool, ReforgerMcpServer, DEADLINE_EXCEEDED_CODE,
+        GAME_DATA_STATUS_TOOL_NAME, RESPONSE_TOO_LARGE_CODE, WORKBENCH_ADD_COMPONENT_TOOL_NAME,
+        WORKBENCH_CONVERT_SHAPE_POINTS_TOOL_NAME, WORKBENCH_CREATE_PREFAB_TOOL_NAME,
+        WORKBENCH_DUPLICATE_ENTITY_TOOL_NAME, WORKBENCH_INSPECT_COMPONENT_TOOL_NAME,
+        WORKBENCH_INSPECT_PREFAB_COMPONENT_TOOL_NAME, WORKBENCH_INSPECT_PREFAB_CONTEXT_TOOL_NAME,
+        WORKBENCH_LAYER_STATE_TOOL_NAME, WORKBENCH_LIST_COMPONENTS_TOOL_NAME,
+        WORKBENCH_LIST_EDITORS_TOOL_NAME, WORKBENCH_LIST_ENTITIES_TOOL_NAME,
+        WORKBENCH_LIST_ENTITY_PROPERTIES_TOOL_NAME, WORKBENCH_LIST_RESOURCES_TOOL_NAME,
+        WORKBENCH_MOVE_ENTITY_TOOL_NAME, WORKBENCH_OPEN_EDITOR_TOOL_NAME,
+        WORKBENCH_OPEN_RESOURCE_TOOL_NAME, WORKBENCH_PROJECT_CONTEXT_TOOL_NAME,
+        WORKBENCH_RELOAD_TOOL_NAME, WORKBENCH_REMOVE_COMPONENT_TOOL_NAME,
+        WORKBENCH_REPARENT_ENTITY_TOOL_NAME, WORKBENCH_RESAMPLE_POLYLINE_TOOL_NAME,
+        WORKBENCH_ROTATE_ENTITY_TOOL_NAME, WORKBENCH_SAMPLE_TERRAIN_TOOL_NAME,
+        WORKBENCH_SAVE_ALL_TOOL_NAME, WORKBENCH_SAVE_PREFAB_TOOL_NAME,
+        WORKBENCH_SAVE_WORLD_TOOL_NAME, WORKBENCH_SEARCH_RESOURCES_TOOL_NAME,
+        WORKBENCH_SEARCH_WORLD_ENTITIES_TOOL_NAME, WORKBENCH_SELECTED_ENTITY_HIERARCHY_TOOL_NAME,
         WORKBENCH_SET_COMPONENT_PROPERTIES_TOOL_NAME, WORKBENCH_SET_ENTITY_PROPERTY_TOOL_NAME,
         WORKBENCH_SET_POLYLINE_REGULAR_POLYGON_TOOL_NAME,
         WORKBENCH_SET_PREFAB_COMPONENT_PROPERTY_TOOL_NAME, WORKBENCH_SET_PREFAB_PROPERTY_TOOL_NAME,
@@ -5002,7 +4879,100 @@ mod tests {
         WORKBENCH_TRANSFORM_SHAPE_POINTS_TOOL_NAME, WORKBENCH_VALIDATE_SCRIPTS_TOOL_NAME,
         WORKBENCH_VIEWPORT_CONTEXT_TOOL_NAME, WORKBENCH_WORLD_SELECTION_SUMMARY_TOOL_NAME,
     };
+    use crate::workbench::{WorkbenchFailure, WorkbenchFailureCode};
     use serde_json::Value;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn catalogue_is_unique_and_drives_the_generated_reference() {
+        let catalogue = ReforgerMcpServer::tool_catalogue();
+        let names = catalogue
+            .iter()
+            .map(|tool| tool.name.as_ref())
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(names.len(), catalogue.len(), "tool names must be unique");
+        let reference = render_api_reference();
+        for tool in &catalogue {
+            let name = tool.name.as_ref();
+            assert!(
+                reference.contains(&format!("## `{name}`")),
+                "{name} is undocumented"
+            );
+            assert!(
+                reference.contains(tool.description.as_deref().expect("tool description")),
+                "{name} description drifted"
+            );
+            let input_schema = serde_json::to_string_pretty(tool.input_schema.as_ref())
+                .expect("tool input schema serializes");
+            assert!(
+                reference.contains(&input_schema),
+                "{name} input schema drifted"
+            );
+            let output_schema = serde_json::to_string_pretty(
+                tool.output_schema.as_deref().expect("tool output schema"),
+            )
+            .expect("tool output schema serializes");
+            assert!(
+                reference.contains(&output_schema),
+                "{name} output schema drifted"
+            );
+        }
+    }
+
+    #[test]
+    fn expected_tool_failures_have_a_structured_recovery_envelope() {
+        let result = tool_error(
+            "invalid_input",
+            "The request cannot be executed.",
+            "Correct it and retry.",
+        );
+
+        assert_eq!(result.is_error, Some(true));
+        assert_eq!(
+            result.structured_content,
+            Some(serde_json::json!({
+                "ok": false,
+                "code": "invalid_input",
+                "message": "The request cannot be executed.",
+                "recovery": "Correct it and retry.",
+                "retryable": false,
+            }))
+        );
+    }
+
+    #[test]
+    fn workbench_failures_extend_the_shared_recovery_envelope() {
+        let result = workbench_tool_error(
+            WorkbenchFailure {
+                code: WorkbenchFailureCode::Timeout,
+                log_reference: Some("integration-123".to_string()),
+            },
+            "inspect_resource",
+        );
+        let failure = result.structured_content.expect("structured failure");
+
+        assert_eq!(failure["code"], "workbench_timeout");
+        assert_eq!(failure["phase"], "inspect_resource");
+        assert_eq!(failure["logReference"], "integration-123");
+        assert_eq!(failure["retryable"], true);
+        assert!(failure["message"].is_string());
+        assert!(failure["recovery"].is_string());
+    }
+
+    #[test]
+    fn public_reference_documents_the_catalogue_and_failure_contract() {
+        let reference = render_api_reference();
+
+        assert!(reference.contains("## Expected tool failures"));
+        assert!(reference.contains("`message`"));
+        assert!(reference.contains("`recovery`"));
+        assert!(reference.contains("`retryable`"));
+        assert!(reference.contains("`phase`"));
+        assert!(reference.contains("`logReference`"));
+        assert!(reference.contains("Compatibility listing surface"));
+        assert!(reference.contains("Canonical Workbench resource-discovery surface"));
+    }
 
     #[test]
     fn regular_polygon_uses_local_xz_circumradius_vertices() {

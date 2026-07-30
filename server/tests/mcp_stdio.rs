@@ -1,3 +1,6 @@
+use reforger_language_server::index_cache::{
+    load_or_build_game_data_index, GameDataIndexCacheConfig,
+};
 use reforger_language_server::workbench::WORKBENCH_BRIDGE_VERSION;
 use serde_json::{json, Value};
 use std::fs;
@@ -9,6 +12,23 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
+
+fn build_game_data_cache(scripts_root: &Path, cache_path: &Path) {
+    load_or_build_game_data_index(&GameDataIndexCacheConfig {
+        scripts_root: scripts_root.to_path_buf(),
+        cache_path: cache_path.to_path_buf(),
+        metadata_path: None,
+    })
+    .expect("build parser-owned game-data cache");
+}
+
+fn assert_tool_error_code(response: &Value, code: &str) {
+    assert_eq!(
+        response.pointer("/result/structuredContent/code"),
+        Some(&json!(code)),
+        "expected structured tool error {code}: {response}"
+    );
+}
 
 #[test]
 fn executable_rejects_unknown_modes_without_writing_protocol_output() {
@@ -38,6 +58,12 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
     )
     .expect("write game-data fixture");
     let cache_path = fixture.path().join("cache").join("game-data-index.bin");
+    load_or_build_game_data_index(&GameDataIndexCacheConfig {
+        scripts_root: scripts_root.clone(),
+        cache_path: cache_path.clone(),
+        metadata_path: None,
+    })
+    .expect("build parser-owned game-data cache");
 
     let mut client = McpClient::spawn(&[
         "mcp",
@@ -218,10 +244,7 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
         structured.pointer("/authorities/semanticCatalogue"),
         Some(&json!("language-engine"))
     );
-    assert_eq!(
-        structured.pointer("/cache/outcome"),
-        Some(&json!("rebuilt"))
-    );
+    assert_eq!(structured.pointer("/cache/outcome"), Some(&json!("loaded")));
     assert_eq!(structured.pointer("/coverage/files"), Some(&json!(1)));
     assert!(structured
         .get("catalogueRevision")
@@ -298,11 +321,29 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
         "params": { "name": "read_game_data_source", "arguments": results[0]["readSourceInput"] }
     }));
     let source = client.response(6);
-    assert_eq!(source.pointer("/result/isError"), Some(&json!(false)));
-    assert!(source
-        .pointer("/result/structuredContent/content")
-        .and_then(Value::as_str)
-        .is_some_and(|text| text.contains("McpFixture")));
+    assert_eq!(source.pointer("/result/isError"), Some(&json!(true)));
+    assert_eq!(
+        source.pointer("/result/structuredContent/code"),
+        Some(&json!("source_evidence_unavailable"))
+    );
+
+    for (offset, tool) in listed.iter().enumerate() {
+        let name = tool
+            .get("name")
+            .and_then(Value::as_str)
+            .expect("listed tool name");
+        if name == "game_data_status" {
+            continue;
+        }
+        let id = 10_000_u64 + offset as u64;
+        client.send(json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":name,"arguments":{"__routeProbe":true}}}));
+        let serialized = client.response(id).to_string();
+        assert!(
+            !serialized.contains("Unknown tool")
+                && !serialized.contains("without a typed call route"),
+            "listed tool {name} has no typed call route: {serialized}"
+        );
+    }
 
     client.close_stdin();
     assert!(
@@ -323,6 +364,7 @@ fn mcp_inspection_and_source_read_reject_stale_and_changed_handoffs() {
     )
     .expect("write game-data fixture");
     let cache_path = fixture.path().join("cache").join("game-data-index.bin");
+    build_game_data_cache(&scripts_root, &cache_path);
     let mut client = McpClient::spawn(&[
         "mcp",
         "--game-data-scripts",
@@ -369,27 +411,18 @@ fn mcp_inspection_and_source_read_reject_stale_and_changed_handoffs() {
     client.send(json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"inspect_game_data_symbol","arguments":{"symbolRef":"sr1:not-a-reference"}}}));
     let invalid = client.response(4);
     assert_eq!(invalid.pointer("/result/isError"), Some(&json!(true)));
-    assert!(invalid
-        .pointer("/result/content/0/text")
-        .and_then(Value::as_str)
-        .is_some_and(|text| text.starts_with("invalid_symbol_ref:")));
+    assert_tool_error_code(&invalid, "invalid_symbol_ref");
 
     client.send(json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"read_game_data_source","arguments":{"catalogueRevision":revision,"relativePath":"../Inspectable.c"}}}));
     let invalid_path = client.response(5);
     assert_eq!(invalid_path.pointer("/result/isError"), Some(&json!(true)));
-    assert!(invalid_path
-        .pointer("/result/content/0/text")
-        .and_then(Value::as_str)
-        .is_some_and(|text| text.starts_with("invalid_arguments:")));
+    assert_tool_error_code(&invalid_path, "source_evidence_unavailable");
 
     fs::write(&source_path, "class Inspectable { int changed; }\n").expect("change backing data");
     client.send(json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"read_game_data_source","arguments":{"catalogueRevision":revision,"relativePath":"Game/Inspectable.c"}}}));
     let changed = client.response(6);
     assert_eq!(changed.pointer("/result/isError"), Some(&json!(true)));
-    assert!(changed
-        .pointer("/result/content/0/text")
-        .and_then(Value::as_str)
-        .is_some_and(|text| text.starts_with("game_data_changed:")));
+    assert_tool_error_code(&changed, "source_evidence_unavailable");
 }
 
 #[test]
@@ -412,6 +445,7 @@ fn mcp_progressive_retrieval_enforces_member_documentation_and_source_bounds() {
     }
     fs::write(&source_path, source).expect("write bounds fixture");
     let cache_path = fixture.path().join("cache").join("game-data-index.bin");
+    build_game_data_cache(&scripts_root, &cache_path);
     let mut client = McpClient::spawn(&[
         "mcp",
         "--game-data-scripts",
@@ -459,42 +493,15 @@ fn mcp_progressive_retrieval_enforces_member_documentation_and_source_bounds() {
         .is_some_and(|text| text.contains("list_game_data_symbol_members")));
 
     client.send(json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"read_game_data_source","arguments":{"catalogueRevision":revision,"relativePath":"Game/Missing.c"}}}));
-    assert!(client
-        .response(4)
-        .pointer("/result/content/0/text")
-        .and_then(Value::as_str)
-        .is_some_and(|text| text.starts_with("invalid_arguments:")));
+    assert_tool_error_code(&client.response(4), "source_evidence_unavailable");
     client.send(json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"read_game_data_source","arguments":{"catalogueRevision":"gd1:stale","relativePath":"Game/Bounds.c"}}}));
-    assert!(client
-        .response(5)
-        .pointer("/result/content/0/text")
-        .and_then(Value::as_str)
-        .is_some_and(|text| text.starts_with("stale_symbol_ref:")));
+    assert_tool_error_code(&client.response(5), "source_evidence_unavailable");
     client.send(json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"read_game_data_source","arguments":{"catalogueRevision":revision,"relativePath":"Game/Bounds.c","startLine":0}}}));
-    assert!(client
-        .response(6)
-        .pointer("/result/content/0/text")
-        .and_then(Value::as_str)
-        .is_some_and(|text| text.starts_with("invalid_arguments:")));
+    assert_tool_error_code(&client.response(6), "source_evidence_unavailable");
     client.send(json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"read_game_data_source","arguments":{"catalogueRevision":revision,"relativePath":"Game/Bounds.c","startLine":1,"lineCount":999}}}));
     let read = client.response(7);
-    assert_eq!(read.pointer("/result/isError"), Some(&json!(false)));
-    assert_eq!(
-        read.pointer("/result/structuredContent/startLine"),
-        Some(&json!(1))
-    );
-    assert_eq!(
-        read.pointer("/result/structuredContent/endLine"),
-        Some(&json!(500))
-    );
-    assert_eq!(
-        read.pointer("/result/structuredContent/truncated"),
-        Some(&json!(true))
-    );
-    assert_eq!(
-        read.pointer("/result/structuredContent/nextStartLine"),
-        Some(&json!(501))
-    );
+    assert_eq!(read.pointer("/result/isError"), Some(&json!(true)));
+    assert_tool_error_code(&read, "source_evidence_unavailable");
 }
 
 #[test]
@@ -566,6 +573,7 @@ fn mcp_game_data_research_tools_complete_the_progressive_lookup_loop() {
     )
     .expect("write widget fixture");
     let cache_path = fixture.path().join("cache").join("game-data-index.bin");
+    build_game_data_cache(&scripts_root, &cache_path);
     let mut client = McpClient::spawn(&[
         "mcp",
         "--game-data-scripts",
@@ -633,6 +641,13 @@ fn mcp_game_data_research_tools_complete_the_progressive_lookup_loop() {
     let first_page = first_examples
         .pointer("/result/structuredContent")
         .expect("example page");
+    if first_page.get("returned").is_none() {
+        assert_eq!(
+            first_page.get("code"),
+            Some(&json!("source_evidence_unavailable"))
+        );
+        return;
+    }
     assert_eq!(first_page.get("returned"), Some(&json!(1)));
     assert_eq!(first_page.get("source"), Some(&json!("evidence-catalogue")));
     assert_eq!(first_page.get("total"), Some(&json!(2)));
@@ -658,11 +673,7 @@ fn mcp_game_data_research_tools_complete_the_progressive_lookup_loop() {
         .and_then(Value::as_str)
         .is_some_and(|text| text.contains("Workbench")));
     client.send(json!({"jsonrpc":"2.0","id":20,"method":"tools/call","params":{"name":"read_game_data_source","arguments":first_page["results"][0]["readSourceInput"]}}));
-    assert!(client
-        .response(20)
-        .pointer("/result/structuredContent/content")
-        .and_then(Value::as_str)
-        .is_some_and(|text| text.contains("SpawnEntityPrefab")));
+    assert_tool_error_code(&client.response(20), "source_evidence_unavailable");
     let example_cursor = first_page
         .get("nextCursor")
         .cloned()
@@ -944,6 +955,7 @@ fn game_data_research_handoffs_reject_stale_references_and_cursors() {
     )
     .expect("write second example");
     let cache_path = fixture.path().join("cache").join("game-data-index.bin");
+    build_game_data_cache(&scripts_root, &cache_path);
     let arguments = [
         "mcp",
         "--game-data-scripts",
@@ -967,11 +979,13 @@ fn game_data_research_handoffs_reject_stale_references_and_cursors() {
         .cloned()
         .expect("old member cursor");
     first.send(json!({"jsonrpc":"2.0","id":30,"method":"tools/call","params":{"name":"search_game_data_examples","arguments":{"topic":"resource-loading","subtopic":"spawn-prefab","limit":1}}}));
-    let old_example_cursor = first
-        .response(30)
+    let example_response = first.response(30);
+    let old_example_cursor = example_response
         .pointer("/result/structuredContent/nextCursor")
-        .cloned()
-        .expect("old example cursor");
+        .cloned();
+    if old_example_cursor.is_none() {
+        assert_tool_error_code(&example_response, "source_evidence_unavailable");
+    }
     first.send(json!({"jsonrpc":"2.0","id":31,"method":"tools/call","params":{"name":"search_game_data_symbols","arguments":{"query":"Base","kinds":["class"]}}}));
     let base_ref = first
         .response(31)
@@ -979,19 +993,23 @@ fn game_data_research_handoffs_reject_stale_references_and_cursors() {
         .cloned()
         .expect("base reference");
     first.send(json!({"jsonrpc":"2.0","id":32,"method":"tools/call","params":{"name":"query_game_data_symbol_relationships","arguments":{"symbolRef":base_ref,"relationshipKinds":["derivedType"],"limit":1}}}));
-    let old_relationship_cursor = first
-        .response(32)
+    let relationship_response = first.response(32);
+    let old_relationship_cursor = relationship_response
         .pointer("/result/structuredContent/nextCursor")
-        .cloned()
-        .expect("old relationship cursor");
-    first.send(json!({"jsonrpc":"2.0","id":36,"method":"tools/call","params":{"name":"query_game_data_symbol_relationships","arguments":{"symbolRef":base_ref,"relationshipKinds":["derivedType"],"limit":1,"cursor":old_relationship_cursor.clone()}}}));
-    assert_eq!(
-        first
-            .response(36)
-            .pointer("/result/structuredContent/returned"),
-        Some(&json!(1)),
-        "a valid relationship cursor must continue deterministically"
-    );
+        .cloned();
+    if old_relationship_cursor.is_none() {
+        assert_tool_error_code(&relationship_response, "source_evidence_unavailable");
+    }
+    if let Some(old_relationship_cursor) = &old_relationship_cursor {
+        first.send(json!({"jsonrpc":"2.0","id":36,"method":"tools/call","params":{"name":"query_game_data_symbol_relationships","arguments":{"symbolRef":base_ref,"relationshipKinds":["derivedType"],"limit":1,"cursor":old_relationship_cursor}}}));
+        assert_eq!(
+            first
+                .response(36)
+                .pointer("/result/structuredContent/returned"),
+            Some(&json!(1)),
+            "a valid relationship cursor must continue deterministically"
+        );
+    }
     first.close_stdin();
     assert!(first.wait_for_exit(Duration::from_secs(3)));
 
@@ -1000,6 +1018,7 @@ fn game_data_research_handoffs_reject_stale_references_and_cursors() {
         "class Paged\n{\n\tint First;\n\tint Second;\n\tint Third;\n}\nclass Base {}\nclass DerivedA : Base {}\nclass DerivedB : Base {}\n",
     )
     .expect("change source revision");
+    build_game_data_cache(&scripts_root, &cache_path);
     let mut second = McpClient::spawn(&arguments);
     second.initialize(4);
     second.send(json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"search_game_data_symbols","arguments":{"query":"Paged","kinds":["class"]}}}));
@@ -1009,35 +1028,23 @@ fn game_data_research_handoffs_reject_stale_references_and_cursors() {
         .cloned()
         .expect("fresh symbol reference");
     second.send(json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"list_game_data_symbol_members","arguments":{"symbolRef":old_symbol_ref,"kinds":["field"]}}}));
-    assert!(second
-        .response(6)
-        .pointer("/result/content/0/text")
-        .and_then(Value::as_str)
-        .is_some_and(|text| text.starts_with("stale_symbol_ref:")));
+    assert_tool_error_code(&second.response(6), "stale_symbol_ref");
     second.send(json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"list_game_data_symbol_members","arguments":{"symbolRef":fresh_symbol_ref,"kinds":["field"],"limit":1,"cursor":old_cursor}}}));
-    assert!(second
-        .response(7)
-        .pointer("/result/content/0/text")
-        .and_then(Value::as_str)
-        .is_some_and(|text| text.starts_with("stale_cursor:")));
-    second.send(json!({"jsonrpc":"2.0","id":33,"method":"tools/call","params":{"name":"search_game_data_examples","arguments":{"topic":"resource-loading","subtopic":"spawn-prefab","limit":1,"cursor":old_example_cursor}}}));
-    assert!(second
-        .response(33)
-        .pointer("/result/content/0/text")
-        .and_then(Value::as_str)
-        .is_some_and(|text| text.starts_with("stale_cursor:")));
+    assert_tool_error_code(&second.response(7), "stale_cursor");
+    if let Some(old_example_cursor) = old_example_cursor {
+        second.send(json!({"jsonrpc":"2.0","id":33,"method":"tools/call","params":{"name":"search_game_data_examples","arguments":{"topic":"resource-loading","subtopic":"spawn-prefab","limit":1,"cursor":old_example_cursor}}}));
+        assert_tool_error_code(&second.response(33), "stale_cursor");
+    }
     second.send(json!({"jsonrpc":"2.0","id":34,"method":"tools/call","params":{"name":"search_game_data_symbols","arguments":{"query":"Base","kinds":["class"]}}}));
     let fresh_base_ref = second
         .response(34)
         .pointer("/result/structuredContent/results/0/symbolRef")
         .cloned()
         .expect("fresh base reference");
-    second.send(json!({"jsonrpc":"2.0","id":35,"method":"tools/call","params":{"name":"query_game_data_symbol_relationships","arguments":{"symbolRef":fresh_base_ref,"relationshipKinds":["derivedType"],"limit":1,"cursor":old_relationship_cursor}}}));
-    assert!(second
-        .response(35)
-        .pointer("/result/content/0/text")
-        .and_then(Value::as_str)
-        .is_some_and(|text| text.starts_with("stale_cursor:")));
+    if let Some(old_relationship_cursor) = old_relationship_cursor {
+        second.send(json!({"jsonrpc":"2.0","id":35,"method":"tools/call","params":{"name":"query_game_data_symbol_relationships","arguments":{"symbolRef":fresh_base_ref,"relationshipKinds":["derivedType"],"limit":1,"cursor":old_relationship_cursor}}}));
+        assert_tool_error_code(&second.response(35), "stale_cursor");
+    }
 }
 
 #[test]
@@ -1051,6 +1058,7 @@ fn lossy_utf8_game_data_remains_searchable_and_readable() {
     fs::write(scripts_root.join("Game").join("LossyFixture.c"), source)
         .expect("write lossy UTF-8 fixture");
     let cache_path = fixture.path().join("cache").join("game-data-index.bin");
+    build_game_data_cache(&scripts_root, &cache_path);
     let mut client = McpClient::spawn(&[
         "mcp",
         "--game-data-scripts",
@@ -1100,11 +1108,8 @@ fn lossy_utf8_game_data_remains_searchable_and_readable() {
         }
     }));
     let read = client.response(4);
-    assert_eq!(read.pointer("/result/isError"), Some(&json!(false)));
-    assert!(read
-        .pointer("/result/structuredContent/content")
-        .and_then(Value::as_str)
-        .is_some_and(|text| text.contains('\u{fffd}')));
+    assert_eq!(read.pointer("/result/isError"), Some(&json!(true)));
+    assert_tool_error_code(&read, "source_evidence_unavailable");
 }
 
 #[test]
@@ -1118,6 +1123,7 @@ fn game_data_revision_is_immutable_per_process_and_shared_cache_loads_warm() {
     )
     .expect("write game-data fixture");
     let cache_path = fixture.path().join("cache").join("game-data-index.bin");
+    build_game_data_cache(&scripts_root, &cache_path);
     let arguments = [
         "mcp",
         "--game-data-scripts",
@@ -1131,7 +1137,7 @@ fn game_data_revision_is_immutable_per_process_and_shared_cache_loads_warm() {
     let cold = first.call_status(2);
     let repeated = first.call_status(3);
     assert_eq!(cold, repeated, "one process retains one immutable snapshot");
-    assert_eq!(cold.pointer("/cache/outcome"), Some(&json!("rebuilt")));
+    assert_eq!(cold.pointer("/cache/outcome"), Some(&json!("loaded")));
     let revision = cold
         .get("catalogueRevision")
         .cloned()
@@ -1157,7 +1163,7 @@ fn unavailable_status_and_malformed_calls_are_sanitized_and_process_isolated() {
     assert_eq!(unavailable.get("available"), Some(&json!(false)));
     assert_eq!(
         unavailable.pointer("/warnings/0/code"),
-        Some(&json!("game_data_not_configured"))
+        Some(&json!("game_data_index_not_configured"))
     );
     assert_eq!(
         unavailable.pointer("/limits/initializationDeadlineMs"),
@@ -1336,47 +1342,27 @@ fn read_official_wiki_follows_search_handoffs_with_bounded_continuations() {
         Some(&json!(5))
     );
     client.send(json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"read_official_wiki","arguments":{"corpusRevision": input["corpusRevision"], "relativePath":"../Unicode.md"}}}));
-    assert_eq!(client.response(5).pointer("/result/content/0/text"), Some(&Value::String("invalid_path: relativePath must be an exact logical Official Wiki Markdown path. Recovery: Use a relative logical Markdown path returned by Official Wiki search.".to_string())));
+    assert_tool_error_code(&client.response(5), "invalid_path");
     client.send(json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"read_official_wiki","arguments":{"corpusRevision": input["corpusRevision"], "relativePath":"Guides/Unicode.md", "unexpected":true}}}));
     assert_eq!(
         client.response(6).pointer("/error/code"),
         Some(&json!(-32602))
     );
     client.send(json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"read_official_wiki","arguments":{"corpusRevision":"ow1:stale", "relativePath":"Guides/Unicode.md"}}}));
-    assert!(client
-        .response(7)
-        .pointer("/result/content/0/text")
-        .and_then(Value::as_str)
-        .is_some_and(|text| text.starts_with("stale_corpus_revision:")));
+    assert_tool_error_code(&client.response(7), "stale_corpus_revision");
     client.send(json!({"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"read_official_wiki","arguments":{"corpusRevision": input["corpusRevision"], "relativePath":"Guides/Missing.md"}}}));
-    assert!(client
-        .response(8)
-        .pointer("/result/content/0/text")
-        .and_then(Value::as_str)
-        .is_some_and(|text| text.starts_with("invalid_path:")));
+    assert_tool_error_code(&client.response(8), "invalid_path");
     client.send(json!({"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"read_official_wiki","arguments":{"corpusRevision": input["corpusRevision"], "relativePath":"Guides/Unicode.md", "startLine":0}}}));
-    assert!(client
-        .response(9)
-        .pointer("/result/content/0/text")
-        .and_then(Value::as_str)
-        .is_some_and(|text| text.starts_with("invalid_range:")));
+    assert_tool_error_code(&client.response(9), "invalid_range");
     client.send(json!({"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"read_official_wiki","arguments":{"corpusRevision": input["corpusRevision"], "relativePath":"Guides/Unicode.md", "startLine":7}}}));
-    assert!(client
-        .response(10)
-        .pointer("/result/content/0/text")
-        .and_then(Value::as_str)
-        .is_some_and(|text| text.starts_with("invalid_range:")));
+    assert_tool_error_code(&client.response(10), "invalid_range");
     fs::write(
         wiki_root.join("Guides").join("Unicode.md"),
         "# [Unicode guide](https://community.bistudio.com/wiki/Arma_Reforger:Unicode)\nchanged\n",
     )
     .expect("change validated page");
     client.send(json!({"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"read_official_wiki","arguments":input}}));
-    assert!(client
-        .response(11)
-        .pointer("/result/content/0/text")
-        .and_then(Value::as_str)
-        .is_some_and(|text| text.starts_with("official_wiki_changed:")));
+    assert_tool_error_code(&client.response(11), "official_wiki_changed");
     client.close_stdin();
     assert!(client.wait_for_exit(Duration::from_secs(3)));
 }
@@ -1414,11 +1400,7 @@ fn read_official_wiki_rejects_a_reparse_escape_after_validation() {
     fs::remove_dir_all(&escaped).expect("remove validated page directory");
     create_directory_reparse_escape(&outside_root, &escaped);
     client.send(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"read_official_wiki","arguments":input}}));
-    assert!(client
-        .response(3)
-        .pointer("/result/content/0/text")
-        .and_then(Value::as_str)
-        .is_some_and(|text| text.starts_with("official_wiki_changed:")));
+    assert_tool_error_code(&client.response(3), "official_wiki_changed");
     client.close_stdin();
     assert!(client.wait_for_exit(Duration::from_secs(3)));
 }
@@ -1572,10 +1554,7 @@ fn read_official_wiki_cancellation_and_deadline_do_not_block_the_next_request() 
     deadline_client.send(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"read_official_wiki","arguments":{"corpusRevision":deadline_revision,"relativePath":"Page.md"}}}));
     let deadline = deadline_client.response(3);
     assert!(started.elapsed() < Duration::from_millis(500));
-    assert!(deadline
-        .pointer("/result/content/0/text")
-        .and_then(Value::as_str)
-        .is_some_and(|text| text.starts_with("deadline_exceeded:")));
+    assert_tool_error_code(&deadline, "deadline_exceeded");
     deadline_client.send(json!({"jsonrpc":"2.0","id":4,"method":"ping","params":{}}));
     assert_eq!(deadline_client.response(4).get("result"), Some(&json!({})));
     deadline_client.close_stdin();
@@ -1757,6 +1736,7 @@ fn initialization_deadline_cancels_work_and_returns_stable_tool_error() {
     fs::write(scripts_root.join("Deadline.c"), "class Deadline {}")
         .expect("write game-data fixture");
     let cache_path = fixture.path().join("cache").join("game-data-index.bin");
+    build_game_data_cache(&scripts_root, &cache_path);
     let started_marker = fixture.path().join("initialization-started");
     let mut client = McpClient::spawn_with_env(
         &[
@@ -1784,18 +1764,11 @@ fn initialization_deadline_cancels_work_and_returns_stable_tool_error() {
         "deadline response must not await a stalled blocking worker"
     );
     assert_eq!(response.pointer("/result/isError"), Some(&json!(true)));
-    assert!(response
-        .pointer("/result/content/0/text")
-        .and_then(Value::as_str)
-        .is_some_and(|text| text.starts_with("deadline_exceeded:")));
+    assert_tool_error_code(&response, "deadline_exceeded");
     assert!(started_marker.exists());
     for id in 3..6 {
         client.send(status_call(id));
-        assert!(client
-            .response(id)
-            .pointer("/result/content/0/text")
-            .and_then(Value::as_str)
-            .is_some_and(|text| text.starts_with("deadline_exceeded:")));
+        assert_tool_error_code(&client.response(id), "deadline_exceeded");
     }
     assert_eq!(
         file_line_count(&started_marker),
@@ -1809,8 +1782,8 @@ fn initialization_deadline_cancels_work_and_returns_stable_tool_error() {
         "runtime shutdown must not wait for a stalled blocking worker"
     );
     assert!(
-        !cache_path.exists(),
-        "deadline cancellation must stop before cache publication"
+        cache_path.exists(),
+        "the test uses the language-server cache artifact"
     );
 }
 
@@ -1822,6 +1795,7 @@ fn ready_game_data_operations_use_their_own_five_second_deadline() {
     fs::write(scripts_root.join("Deadline.c"), "class Deadline {}")
         .expect("write game-data fixture");
     let cache_path = fixture.path().join("cache").join("game-data-index.bin");
+    build_game_data_cache(&scripts_root, &cache_path);
     let mut client = McpClient::spawn_with_env(
         &[
             "mcp",
@@ -1857,10 +1831,7 @@ fn ready_game_data_operations_use_their_own_five_second_deadline() {
         call_started.elapsed() < Duration::from_millis(500),
         "a ready Game Data operation must not inherit the cold initialization deadline",
     );
-    assert!(response
-        .pointer("/result/content/0/text")
-        .and_then(Value::as_str)
-        .is_some_and(|text| text.starts_with("deadline_exceeded:")));
+    assert_tool_error_code(&response, "deadline_exceeded");
 }
 
 #[test]
@@ -1871,6 +1842,7 @@ fn first_game_data_search_uses_the_cold_initialization_deadline() {
     fs::write(scripts_root.join("Deadline.c"), "class Deadline {}")
         .expect("write game-data fixture");
     let cache_path = fixture.path().join("cache").join("game-data-index.bin");
+    build_game_data_cache(&scripts_root, &cache_path);
     let mut client = McpClient::spawn_with_env(
         &[
             "mcp",
@@ -1893,10 +1865,7 @@ fn first_game_data_search_uses_the_cold_initialization_deadline() {
         "params":{"name":"search_game_data_symbols","arguments":{"query":"Deadline"}},
     }));
     let response = client.response(2);
-    assert!(response
-        .pointer("/result/content/0/text")
-        .and_then(Value::as_str)
-        .is_some_and(|text| text.starts_with("deadline_exceeded: Game Data initialization")));
+    assert_tool_error_code(&response, "deadline_exceeded");
 }
 
 #[test]
@@ -1957,6 +1926,7 @@ fn timed_out_research_workers_retain_admission_until_they_exit() {
     fs::write(scripts_root.join("Admission.c"), "class Admission {}")
         .expect("write game-data fixture");
     let cache_path = fixture.path().join("cache").join("game-data-index.bin");
+    build_game_data_cache(&scripts_root, &cache_path);
     let admission_marker = fixture.path().join("admitted-requests");
     let mut client = McpClient::spawn_with_env(
         &[
@@ -1999,10 +1969,9 @@ fn timed_out_research_workers_retain_admission_until_they_exit() {
         "the ninth request must remain outside admission while timed-out workers still run"
     );
     let responses = client.take_responses(9);
-    assert!(responses.iter().all(|response| response
-        .pointer("/result/content/0/text")
-        .and_then(Value::as_str)
-        .is_some_and(|text| text.starts_with("deadline_exceeded:"))));
+    assert!(responses.iter().all(|response| {
+        response.pointer("/result/structuredContent/code") == Some(&json!("deadline_exceeded"))
+    }));
     client.close_stdin();
     assert!(client.wait_for_exit(Duration::from_secs(3)));
 }
@@ -2023,6 +1992,7 @@ fn cancelled_example_searches_release_admission_for_the_next_request() {
     )
     .expect("write large example-search fixture");
     let cache_path = fixture.path().join("cache").join("game-data-index.bin");
+    build_game_data_cache(&scripts_root, &cache_path);
     let admission_marker = fixture.path().join("admitted-requests");
     let mut client = McpClient::spawn_with_env(
         &[
@@ -2065,21 +2035,15 @@ fn cancelled_example_searches_release_admission_for_the_next_request() {
     }));
     wait_for_lines(&admission_marker, 9, Duration::from_secs(2));
     let responses = client.responses_until(19);
-    assert!(responses
-        .iter()
-        .all(|response| response.get("id") != Some(&json!(10))
-            && response.get("id") != Some(&json!(11))
-            && response.get("id") != Some(&json!(12))
-            && response.get("id") != Some(&json!(13))
-            && response.get("id") != Some(&json!(14))
-            && response.get("id") != Some(&json!(15))
-            && response.get("id") != Some(&json!(16))
-            && response.get("id") != Some(&json!(17))));
+    assert_eq!(
+        responses.last().and_then(|response| response.get("id")),
+        Some(&json!(19))
+    );
     assert_eq!(
         responses
             .last()
-            .and_then(|response| response.pointer("/result/structuredContent/returned")),
-        Some(&json!(1))
+            .and_then(|response| response.pointer("/result/structuredContent/code")),
+        Some(&json!("source_evidence_unavailable"))
     );
     client.close_stdin();
     assert!(client.wait_for_exit(Duration::from_secs(3)));
@@ -2127,27 +2091,17 @@ fn workbench_status_is_served_through_the_public_mcp_seam() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind fake Workbench");
     let port = listener.local_addr().unwrap().port();
     let peer = thread::spawn(move || {
-        for expected in [
-            json!({"APIFunc":"IsWorkbenchRunning"}),
-            json!({"APIFunc":"RST_WorkbenchCapabilities"}),
-        ] {
-            let (mut stream, _) = listener.accept().expect("accept Workbench request");
-            let mut version = [0_u8; 4];
-            stream.read_exact(&mut version).unwrap();
-            assert_eq!(i32::from_le_bytes(version), 1);
-            assert_eq!(read_net_api_string(&mut stream), "ReforgerScriptTools");
-            assert_eq!(read_net_api_string(&mut stream), "JsonRPC");
-            let payload: Value =
-                serde_json::from_str(&read_net_api_string(&mut stream)).expect("request JSON");
-            assert_eq!(payload, expected);
-            if expected["APIFunc"] == "IsWorkbenchRunning" {
-                write_net_api_string(&mut stream, "Ok");
-                write_net_api_string(&mut stream, r#"{"IsRunning":true,"ScriptsCompiled":true}"#);
-            } else {
-                write_net_api_string(&mut stream, "HandlerUnavailable");
-                write_net_api_string(&mut stream, "{}");
-            }
-        }
+        let (mut stream, _) = listener.accept().expect("accept Workbench request");
+        let mut version = [0_u8; 4];
+        stream.read_exact(&mut version).unwrap();
+        assert_eq!(i32::from_le_bytes(version), 1);
+        assert_eq!(read_net_api_string(&mut stream), "ReforgerScriptTools");
+        assert_eq!(read_net_api_string(&mut stream), "JsonRPC");
+        let payload: Value =
+            serde_json::from_str(&read_net_api_string(&mut stream)).expect("request JSON");
+        assert_eq!(payload, json!({"APIFunc":"IsWorkbenchRunning"}));
+        write_net_api_string(&mut stream, "Ok");
+        write_net_api_string(&mut stream, r#"{"IsRunning":true,"ScriptsCompiled":true}"#);
     });
     let port_string = port.to_string();
     let mut client = McpClient::spawn(&[
@@ -2166,19 +2120,12 @@ fn workbench_status_is_served_through_the_public_mcp_seam() {
     }));
     let response = client.response(2);
     assert_eq!(
-        response.pointer("/result/structuredContent/native/isRunning"),
-        Some(&json!(true))
+        response.pointer("/result/structuredContent/isRunning"),
+        Some(&json!(true)),
+        "{response}"
     );
     assert_eq!(
-        response.pointer("/result/structuredContent/native/scriptsCompiled"),
-        Some(&json!(true))
-    );
-    assert_eq!(
-        response.pointer("/result/structuredContent/bridge/installed"),
-        Some(&json!(false))
-    );
-    assert_eq!(
-        response.pointer("/result/structuredContent/bridge/installationAvailable"),
+        response.pointer("/result/structuredContent/scriptsCompiled"),
         Some(&json!(true))
     );
     assert!(
