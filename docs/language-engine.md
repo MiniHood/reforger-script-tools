@@ -52,8 +52,10 @@ only the selected compressed script payloads, not the full multi-gigabyte
 archives. The resulting strong revision identity detects same-size script
 changes. A changed artifact decodes only selected `.c` entries. The semantic
 cache and locator-rich manifest are written beneath a new immutable revision
-before an atomic current-pointer publication; failed or cancelled rebuilds do
-not replace the previously complete cache.
+before an atomic current-pointer publication. If the authoritative Workbench
+graph is unavailable, malformed, cancelled, or fails to acquire an instance,
+the Workbench-sourced layer is unavailable; the engine never reuses an earlier
+graph or substitutes a local source.
 
 Packed files carry a typed virtual-source identity in semantic metadata rather
 than overloading a filesystem path. The identity includes the loaded add-on

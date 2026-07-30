@@ -35,7 +35,8 @@ source add-on and a downloaded copy with the same GUID never share a cache or
 virtual source revision. Completed indexes live beneath
 `globalStorageUri/addon-indexes/<instance-key>/revisions/<revision>`; an
 atomically replaced `current.json` selects a completed revision. A cancelled or
-failed rebuild never replaces the last published external snapshot.
+failed authoritative graph refresh makes the Workbench-sourced layer
+unavailable; it never reuses an earlier graph or scans for a substitute.
 
 The immutable per-instance indexes are merged in Workbench order into one LSP
 snapshot. GitHub downloads, user add-on folder scans, and loose source

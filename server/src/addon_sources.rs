@@ -673,6 +673,9 @@ fn base_game_archive_paths(root: &Path) -> [PathBuf; 2] {
     ]
 }
 
+/// The Workbench graph authorizes one exact add-on root. The pack reader only
+/// enumerates direct PAC artifacts at that root; it never discovers another
+/// add-on folder or substitutes an installed duplicate.
 fn addon_archive_paths(root: &Path) -> Result<Vec<PathBuf>, String> {
     let entries = fs::read_dir(root)
         .map_err(|error| format!("Failed to read Workbench add-on root {}: {error}", root.display()))?;
@@ -1138,7 +1141,7 @@ mod tests {
     }
 
     #[test]
-    fn builds_independent_packed_and_loose_indexes_from_the_workbench_graph() {
+    fn separates_same_guid_instances_and_rebuilds_only_the_changed_loaded_root() {
         let root = test_root("loaded_addon_instances");
         let packed = root.join("packed");
         let loose = root.join("loose");
@@ -1148,7 +1151,7 @@ mod tests {
         fs::write(loose.join("scripts/Loose.c"), "class Loose {}").unwrap();
         let graph = root.join("graph.json");
         fs::write(&graph, format!(
-            r#"{{"schema":"reforger-workbench-loaded-addon-graph-v1","bridgeVersion":"1.52.0","protocolVersion":1,"addons":[{{"guid":"1111111111111111","id":"Packed","title":"Packed","sourceRoot":{}}},{{"guid":"2222222222222222","id":"Loose","title":"Loose","sourceRoot":{}}}]}}"#,
+            r#"{{"schema":"reforger-workbench-loaded-addon-graph-v1","bridgeVersion":"1.52.0","protocolVersion":1,"addons":[{{"guid":"1111111111111111","id":"Packed","title":"Packed","sourceRoot":{}}},{{"guid":"1111111111111111","id":"Loose","title":"Loose","sourceRoot":{}}}]}}"#,
             serde_json::to_string(&packed).unwrap(),
             serde_json::to_string(&loose).unwrap(),
         )).unwrap();
@@ -1160,6 +1163,16 @@ mod tests {
         assert_eq!(fs::read_dir(&storage).unwrap().count(), 2);
         let second = load_or_build_loaded_addon_indexes(&graph, &storage, &IndexBuildControl::default()).unwrap();
         assert_eq!(second.loaded_instances, 2);
+        fs::write(loose.join("scripts/Loose.c"), "class ChangedLoose {}").unwrap();
+        let changed = load_or_build_loaded_addon_indexes(&graph, &storage, &IndexBuildControl::default()).unwrap();
+        assert_eq!(changed.loaded_instances, 1);
+        assert_eq!(changed.rebuilt_instances, 1);
+        fs::write(&graph, format!(
+            r#"{{"schema":"reforger-workbench-loaded-addon-graph-v1","bridgeVersion":"1.52.0","protocolVersion":1,"addons":[{{"guid":"1111111111111111","id":"Packed","title":"Packed","sourceRoot":{}}}]}}"#,
+            serde_json::to_string(&packed).unwrap(),
+        )).unwrap();
+        let removed = load_or_build_loaded_addon_indexes(&graph, &storage, &IndexBuildControl::default()).unwrap();
+        assert_eq!(removed.index.files().len(), 1);
         let _ = fs::remove_dir_all(root);
     }
 

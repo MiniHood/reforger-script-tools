@@ -575,16 +575,6 @@ fn run_external_index_thread(
         )
     });
     let mut error_messages = Vec::new();
-    let prior_game_data = {
-        let state = state.lock().unwrap();
-        (
-            state.game_data_index.clone(),
-            state.game_data_summary.clone(),
-            state.cache_status.clone(),
-            state.cache_detail.clone(),
-            state.fingerprint.clone(),
-        )
-    };
     let (game_data_index, game_data_summary, cache_status, cache_detail, fingerprint) =
         match game_data_result {
             Some(Ok(result)) => {
@@ -617,7 +607,11 @@ fn run_external_index_thread(
                     )
                 });
                 error_messages.push(error);
-                prior_game_data
+                // The Workbench graph is the only acquisition authority. A
+                // failed refresh therefore makes this entire external layer
+                // unavailable; retaining the previous graph would be a
+                // stale, second acquisition path.
+                (None, None, None, None, None)
             }
             None => (None, None, None, None, None),
         };
