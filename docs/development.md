@@ -84,6 +84,12 @@ the ten slowest selected entries. Catalogue timing is further split into chunk
 scan, metadata-table read, and file-tree parse. These are local diagnostics,
 not portable benchmark thresholds.
 
+For physical-file extraction experiments, `--precreate-directories`,
+`--sort-by-offset`, and `--workers <1-32>` can be combined with
+`--extract-scripts`. Use a fresh output root for every run because extraction
+deliberately refuses to overwrite files. Worker count is a machine-dependent
+experiment, not a production default.
+
 The bundled executable selects a protocol before either protocol starts:
 
 ```powershell

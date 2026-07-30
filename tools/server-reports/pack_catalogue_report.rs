@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs::{create_dir_all, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -10,7 +11,17 @@ const SLOWEST_ENTRY_LIMIT: usize = 10;
 struct Options {
     extraction_root: Option<PathBuf>,
     profile_scripts: bool,
+    precreate_directories: bool,
+    sort_by_offset: bool,
+    workers: usize,
     archives: Vec<PathBuf>,
+}
+
+struct ExtractionMeasurement {
+    files: usize,
+    directory_prepare: Duration,
+    write: Duration,
+    total: Duration,
 }
 
 struct EntryTiming {
@@ -38,6 +49,9 @@ fn parse_options() -> Options {
     let mut options = Options {
         extraction_root: None,
         profile_scripts: false,
+        precreate_directories: false,
+        sort_by_offset: false,
+        workers: 1,
         archives: Vec::new(),
     };
 
@@ -49,6 +63,17 @@ fn parse_options() -> Options {
             });
         } else if argument == "--profile-scripts" {
             options.profile_scripts = true;
+        } else if argument == "--precreate-directories" {
+            options.precreate_directories = true;
+        } else if argument == "--sort-by-offset" {
+            options.sort_by_offset = true;
+        } else if argument == "--workers" {
+            options.workers = arguments
+                .next()
+                .and_then(|value| value.into_string().ok())
+                .and_then(|value| value.parse().ok())
+                .filter(|workers: &usize| *workers > 0 && *workers <= 32)
+                .unwrap_or_else(|| usage());
         } else {
             options.archives.push(PathBuf::from(argument));
         }
@@ -62,7 +87,7 @@ fn parse_options() -> Options {
 
 fn run(options: Options) {
     let run_started = Instant::now();
-    for path in options.archives {
+    for path in &options.archives {
         let inspect_started = Instant::now();
         let (archive, inspection) = match PakArchive::inspect_with_metrics(&path) {
             Ok(result) => result,
@@ -94,12 +119,16 @@ fn run(options: Options) {
         print_inspection_metrics(&inspection);
 
         if let Some(root) = &options.extraction_root {
-            let extraction_started = Instant::now();
-            match extract_scripts(&archive, &scripts, root) {
-                Ok(count) => println!(
-                    "  extraction: files={count} elapsed={} output={}",
-                    format_duration(extraction_started.elapsed()),
-                    root.display()
+            match extract_scripts(&archive, &scripts, root, &options) {
+                Ok(measurement) => println!(
+                    "  extraction: files={} total={} directories={} writes={} workers={} sorted={} output={}",
+                    measurement.files,
+                    format_duration(measurement.total),
+                    format_duration(measurement.directory_prepare),
+                    format_duration(measurement.write),
+                    options.workers,
+                    options.sort_by_offset,
+                    root.display(),
                 ),
                 Err(error) => eprintln!("  extraction failed: {error}"),
             }
@@ -134,15 +163,87 @@ fn extract_scripts(
     archive: &PakArchive,
     scripts: &[PakEntry],
     root: &Path,
+    options: &Options,
+) -> Result<ExtractionMeasurement, String> {
+    let total_started = Instant::now();
+    let mut entries: Vec<&PakEntry> = scripts.iter().collect();
+    if options.sort_by_offset {
+        entries.sort_unstable_by_key(|entry| entry.offset());
+    }
+
+    let directory_started = Instant::now();
+    if options.precreate_directories {
+        let directories: BTreeSet<PathBuf> = entries
+            .iter()
+            .map(|entry| root.join(entry.logical_path()))
+            .filter_map(|destination| destination.parent().map(Path::to_path_buf))
+            .collect();
+        for directory in directories {
+            create_dir_all(directory).map_err(|error| error.to_string())?;
+        }
+    }
+    let directory_prepare = directory_started.elapsed();
+
+    let write_started = Instant::now();
+    let files = write_entries(
+        archive,
+        &entries,
+        root,
+        options.workers,
+        !options.precreate_directories,
+    )?;
+    Ok(ExtractionMeasurement {
+        files,
+        directory_prepare,
+        write: write_started.elapsed(),
+        total: total_started.elapsed(),
+    })
+}
+
+fn write_entries(
+    archive: &PakArchive,
+    entries: &[&PakEntry],
+    root: &Path,
+    workers: usize,
+    create_directories: bool,
 ) -> Result<usize, String> {
-    let mut count = 0;
+    if workers == 1 {
+        return write_partition(archive, entries, root, create_directories);
+    }
+
+    let partition_size = entries.len().div_ceil(workers);
+    std::thread::scope(|scope| {
+        let mut tasks = Vec::new();
+        for partition in entries.chunks(partition_size) {
+            tasks.push(
+                scope.spawn(move || write_partition(archive, partition, root, create_directories)),
+            );
+        }
+        let mut files = 0;
+        for task in tasks {
+            files += task
+                .join()
+                .map_err(|_| "PAC1 extraction worker panicked".to_string())??;
+        }
+        Ok(files)
+    })
+}
+
+fn write_partition(
+    archive: &PakArchive,
+    entries: &[&PakEntry],
+    root: &Path,
+    create_directories: bool,
+) -> Result<usize, String> {
     let mut reader = archive.reader().map_err(|error| error.to_string())?;
-    for entry in scripts {
+    for entry in entries {
         let destination = root.join(entry.logical_path());
         let parent = destination
             .parent()
             .ok_or_else(|| format!("script has no destination parent: {}", entry.logical_path()))?;
-        create_dir_all(parent).map_err(|error| error.to_string())?;
+        if create_directories {
+            create_dir_all(parent).map_err(|error| error.to_string())?;
+        }
         let mut output = OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -151,9 +252,8 @@ fn extract_scripts(
         reader
             .read_to(entry, &mut output)
             .map_err(|error| format!("{}: {error}", entry.logical_path()))?;
-        count += 1;
     }
-    Ok(count)
+    Ok(entries.len())
 }
 
 fn profile_scripts(archive: &PakArchive, scripts: &[PakEntry]) -> Result<ScriptProfile, String> {
@@ -240,7 +340,7 @@ fn format_bytes(bytes: u64) -> String {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: cargo run --example pack_catalogue_report -- [--profile-scripts] [--extract-scripts <output-root>] <archive.pak> [...]"
+        "usage: cargo run --example pack_catalogue_report -- [--profile-scripts] [--extract-scripts <output-root>] [--precreate-directories] [--sort-by-offset] [--workers <1-32>] <archive.pak> [...]"
     );
     std::process::exit(2);
 }
