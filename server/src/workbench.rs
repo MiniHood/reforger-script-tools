@@ -10354,11 +10354,11 @@ class RST_WorkbenchShapeGeometry : NetApiHandler
 		if (fromSpace == toSpace) return;
 		for (int i; i < values.Count(); i++) { if (fromSpace == "local") values[i] = shape.CoordToParent(values[i]); else values[i] = shape.CoordToLocal(values[i]); }
 	}
-	bool Commit(WorldEditorAPI api, string entityId, IEntitySource source, ShapeEntity shape, array<vector> points, RST_WorkbenchShapeGeometryResponse response, string label)
+	bool Commit(WorldEditorAPI api, IEntitySource source, ShapeEntity shape, array<vector> points, string label)
 	{
-		if (api.IsEntityLayerLockedHierarchy(source.GetSubScene(), source.GetLayerID())) { response.status = "mutation-rejected"; return false; }
-		if (!api.BeginEntityAction(label)) { response.status = "mutation-rejected"; return false; } shape.SetPoints(points, source); api.EndEntityAction(label);
-		if (!Resolve(api, entityId, response, source, shape)) return false; Record(api, source, shape, response); return true;
+		if (api.IsEntityLayerLockedHierarchy(source.GetSubScene(), source.GetLayerID())) return false;
+		if (!api.BeginEntityAction(label)) return false; shape.SetPoints(points, source); api.EndEntityAction(label);
+		return true;
 	}
 	override JsonApiStruct GetRequest() { return new RST_WorkbenchShapeGeometryRequest(); }
 	override JsonApiStruct GetResponse(JsonApiStruct request)
@@ -10373,7 +10373,6 @@ class RST_WorkbenchShapeGeometry : NetApiHandler
 		array<vector> points = {}; shape.GetPointsPositions(points);
 		if (r.operation == "transform")
 		{
-			PrintFormat("RST shape geometry transform: entity=%1 operation=%2", r.entityId, r.transformOperation);
 			if (r.space != "local" && r.space != "world") { response.status = "invalid-input"; return response; }
 			if (r.transformOperation == "reverse") { array<vector> reversed = {}; for (int i = points.Count() - 1; i >= 0; i--) reversed.Insert(points[i]); points = reversed; }
 			else
@@ -10385,8 +10384,9 @@ class RST_WorkbenchShapeGeometry : NetApiHandler
 				for (int i; i < points.Count(); i++) { vector p = points[i]; if (r.transformOperation == "translate") p = p + Vector(r.offsetX, r.offsetY, r.offsetZ); else { p = p - Vector(r.pivotX, r.pivotY, r.pivotZ); if (r.transformOperation == "rotateXZ") p = Vector(p[0] * cosine - p[2] * sine, p[1], p[0] * sine + p[2] * cosine); else if (r.transformOperation == "scale") p = Vector(p[0] * r.scaleX, p[1] * r.scaleY, p[2] * r.scaleZ); else if (r.mirrorAxis == "x") p[0] = -p[0]; else if (r.mirrorAxis == "y") p[1] = -p[1]; else p[2] = -p[2]; p = p + Vector(r.pivotX, r.pivotY, r.pivotZ); } points[i] = p; }
 				ToSpace(shape, points, r.space, "local");
 			}
-			Print("RST shape geometry transform: committing points");
-			if (!Commit(api, r.entityId, source, shape, points, response, "Reforger Script Tools: transform shape points")) return response; response.status = "points-transformed"; Print("RST shape geometry transform: complete"); return response;
+			if (!Commit(api, source, shape, points, "Reforger Script Tools: transform shape points")) { response.status = "mutation-rejected"; return response; }
+			if (!Resolve(api, r.entityId, response, source, shape)) return response;
+			Record(api, source, shape, response); Encode(points, response.points); response.status = "points-transformed"; return response;
 		}
 		if (r.operation != "resample") { response.status = "invalid-input"; return response; }
 		if (source.GetClassName() != "PolylineShapeEntity") { response.status = "entity-not-polyline"; return response; }
@@ -10396,7 +10396,9 @@ class RST_WorkbenchShapeGeometry : NetApiHandler
 		if (total <= 0.00001) { response.status = "resample-rejected"; return response; } float next = r.spacingMeters; float travelled = 0;
 		for (int i; i < segments; i++) { vector a = points[i]; vector b = points[(i + 1) % points.Count()]; float length = Distance(a, b); if (length <= 0.00001) continue; while (next < travelled + length) { if (sampled.Count() >= 4096) { response.status = "resample-too-many-points"; return response; } sampled.Insert(Interpolate(a, b, (next - travelled) / length)); next += r.spacingMeters; } travelled += length; }
 		if (!shape.IsClosed()) { if (sampled.Count() >= 4096) { response.status = "resample-too-many-points"; return response; } sampled.Insert(points[points.Count() - 1]); }
-		ToSpace(shape, sampled, r.space, "local"); if (!Commit(api, r.entityId, source, shape, sampled, response, "Reforger Script Tools: resample polyline")) return response; response.spacingMeters = r.spacingMeters; response.originalPointCount = originalCount; response.resultPointCount = sampled.Count(); response.pathLength = total; response.skippedZeroLengthSegments = skipped; response.status = "polyline-resampled"; return response;
+		ToSpace(shape, sampled, r.space, "local"); if (!Commit(api, source, shape, sampled, "Reforger Script Tools: resample polyline")) { response.status = "mutation-rejected"; return response; }
+		if (!Resolve(api, r.entityId, response, source, shape)) return response;
+		Record(api, source, shape, response); Encode(sampled, response.points); response.spacingMeters = r.spacingMeters; response.originalPointCount = originalCount; response.resultPointCount = sampled.Count(); response.pathLength = total; response.skippedZeroLengthSegments = skipped; response.status = "polyline-resampled"; return response;
 	}
 }
 #endif
