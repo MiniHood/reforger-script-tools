@@ -154,8 +154,7 @@ impl<'index> IndexQuery<'index> {
     pub fn completion_preprocessor_macros(&self, prefix: &str) -> Vec<EditorCompletionCandidate> {
         let mut candidates = self
             .index
-            .symbols()
-            .iter()
+            .symbol_iter()
             .filter(|symbol| symbol.kind == SymbolKind::PreprocessorMacro)
             .filter(|symbol| {
                 symbol

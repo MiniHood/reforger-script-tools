@@ -964,6 +964,16 @@ impl SymbolIndex {
         &self.symbols
     }
 
+    /// Iterates every symbol without requiring a layered runtime projection to
+    /// flatten its immutable child records into a second allocation.
+    pub fn symbol_iter(&self) -> Box<dyn Iterator<Item = &IndexedSymbol> + '_> {
+        if self.layers.is_empty() {
+            Box::new(self.symbols.iter())
+        } else {
+            Box::new(self.layers.iter().flat_map(|layer| layer.symbol_iter()))
+        }
+    }
+
     pub fn without_local_variables(&self) -> Self {
         self.without_symbol_kind(SymbolKind::LocalVariable)
     }
