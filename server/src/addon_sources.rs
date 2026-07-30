@@ -1,3 +1,4 @@
+use crate::index::SymbolIndex;
 use crate::index_build::{
     build_index_from_sources, IndexBuildControl, IndexBuildResult, IndexSourceText,
 };
@@ -5,7 +6,6 @@ use crate::index_cache::{
     cache_format_identity, load_or_build_archive_index_with_reuse, write_atomic_bytes,
     GameDataIndexCacheResult, SourceFingerprint,
 };
-use crate::index::SymbolIndex;
 use crate::index_cache::{IndexCacheStatus, RuntimeIndexSummary};
 use crate::model::{
     source_category_for_path, SourceFileMetadata, SourceKind, VirtualSourceIdentity,
@@ -229,7 +229,12 @@ pub fn load_or_build_base_game_index(
 ) -> Result<GameDataIndexCacheResult, String> {
     let inspection_started = std::time::Instant::now();
     let inspection = inspect_base_game(inventory_path, control)?;
-    load_or_build_inspected_addon(inspection, storage_root, control, inspection_started.elapsed())
+    load_or_build_inspected_addon(
+        inspection,
+        storage_root,
+        control,
+        inspection_started.elapsed(),
+    )
 }
 
 /// Builds an independent compact index for every packed add-on that the live
@@ -242,7 +247,9 @@ pub fn load_or_build_loaded_addon_indexes(
     control: &IndexBuildControl,
 ) -> Result<LoadedAddonIndexResult, String> {
     let graph = read_loaded_addon_graph(inventory_path)?;
-    let active_workspace = workspace_roots.iter().filter_map(|root| fs::canonicalize(root).ok())
+    let active_workspace = workspace_roots
+        .iter()
+        .filter_map(|root| fs::canonicalize(root).ok())
         .any(|root| root.starts_with(&graph.active_source_root));
     let active_source_root = graph.active_source_root;
     let addons = graph.addons;
@@ -264,7 +271,8 @@ pub fn load_or_build_loaded_addon_indexes(
             archives,
             control,
         )?;
-        let result = load_or_build_inspected_addon(inspection, storage_root, control, started.elapsed())?;
+        let result =
+            load_or_build_inspected_addon(inspection, storage_root, control, started.elapsed())?;
         match result.cache_status {
             IndexCacheStatus::Loaded => loaded_instances += 1,
             IndexCacheStatus::Rebuilt { .. } => rebuilt_instances += 1,
@@ -277,7 +285,12 @@ pub fn load_or_build_loaded_addon_indexes(
         indexes.push(result.index);
     }
     let index = SymbolIndex::merged(indexes.iter());
-    Ok(LoadedAddonIndexResult { index, summary, rebuilt_instances, loaded_instances })
+    Ok(LoadedAddonIndexResult {
+        index,
+        summary,
+        rebuilt_instances,
+        loaded_instances,
+    })
 }
 
 fn load_or_build_inspected_addon(
@@ -379,12 +392,24 @@ fn prune_stale_revisions(addon_root: &Path, current_revision: &str) -> Result<()
     let entries = match fs::read_dir(&revisions_root) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(format!("Failed to read add-on cache revisions {}: {error}", revisions_root.display())),
+        Err(error) => {
+            return Err(format!(
+                "Failed to read add-on cache revisions {}: {error}",
+                revisions_root.display()
+            ))
+        }
     };
     for entry in entries {
         let entry = entry.map_err(|error| error.to_string())?;
-        if entry.file_name() != current_revision && entry.file_type().map_err(|error| error.to_string())?.is_dir() {
-            fs::remove_dir_all(entry.path()).map_err(|error| format!("Failed to remove stale add-on cache revision: {error}"))?;
+        if entry.file_name() != current_revision
+            && entry
+                .file_type()
+                .map_err(|error| error.to_string())?
+                .is_dir()
+        {
+            fs::remove_dir_all(entry.path()).map_err(|error| {
+                format!("Failed to remove stale add-on cache revision: {error}")
+            })?;
         }
     }
     Ok(())
@@ -398,13 +423,19 @@ fn loose_script_paths(root: &Path) -> Result<Vec<PathBuf>, String> {
 }
 
 fn collect_loose_script_paths(root: &Path, paths: &mut Vec<PathBuf>) -> Result<(), String> {
-    for entry in fs::read_dir(root)
-        .map_err(|error| format!("Failed to read Workbench add-on root {}: {error}", root.display()))?
-    {
+    for entry in fs::read_dir(root).map_err(|error| {
+        format!(
+            "Failed to read Workbench add-on root {}: {error}",
+            root.display()
+        )
+    })? {
         let path = entry.map_err(|error| error.to_string())?.path();
         if path.is_dir() {
             collect_loose_script_paths(&path, paths)?;
-        } else if path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("c")) {
+        } else if path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("c"))
+        {
             paths.push(path);
         }
     }
@@ -595,7 +626,10 @@ fn inspect_packed_addon(
         let relative = normalized_relative(&root, file);
         hasher.update(b"loose-script");
         hasher.update(relative.as_bytes());
-        hasher.update(fs::read(file).map_err(|error| format!("Failed to read {}: {error}", file.display()))?);
+        hasher.update(
+            fs::read(file)
+                .map_err(|error| format!("Failed to read {}: {error}", file.display()))?,
+        );
     }
     let artifact_digest = format!("{:x}", hasher.finalize());
     Ok(BaseGameInspection {
@@ -674,7 +708,10 @@ fn build_inspected_base_game(
     }
     for file in inspection.loose_files {
         control.check()?;
-        let relative = file.strip_prefix(&inspection.root).unwrap_or(&file).to_path_buf();
+        let relative = file
+            .strip_prefix(&inspection.root)
+            .unwrap_or(&file)
+            .to_path_buf();
         sources.push(IndexSourceText {
             display_path: file.clone(),
             bytes: fs::read(&file)
@@ -712,13 +749,20 @@ fn base_game_archive_paths(root: &Path) -> [PathBuf; 2] {
 /// enumerates direct PAC artifacts at that root; it never discovers another
 /// add-on folder or substitutes an installed duplicate.
 fn addon_archive_paths(root: &Path) -> Result<Vec<PathBuf>, String> {
-    let entries = fs::read_dir(root)
-        .map_err(|error| format!("Failed to read Workbench add-on root {}: {error}", root.display()))?;
+    let entries = fs::read_dir(root).map_err(|error| {
+        format!(
+            "Failed to read Workbench add-on root {}: {error}",
+            root.display()
+        )
+    })?;
     let mut archives = entries
         .filter_map(Result::ok)
         .map(|entry| entry.path())
         .filter(|path| path.is_file())
-        .filter(|path| path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("pak")))
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("pak"))
+        })
         .collect::<Vec<_>>();
     archives.sort();
     Ok(archives)
@@ -744,13 +788,18 @@ fn base_game_root(inventory_path: &Path) -> Result<PathBuf, String> {
 
 fn read_inventory(inventory_path: &Path) -> Result<Inventory, String> {
     let graph = read_loaded_addon_graph(inventory_path)?;
-    let base_game = graph.addons
+    let base_game = graph
+        .addons
         .iter()
         .find(|addon| addon.guid.eq_ignore_ascii_case(BASE_GAME_GUID))
         .ok_or_else(|| "Workbench has not loaded the Arma Reforger base-game add-on".to_string())?;
-    let addons_root = base_game.source_root.parent().map(Path::to_path_buf).ok_or_else(|| {
-        "Workbench base-game source root has no add-ons parent directory".to_string()
-    })?;
+    let addons_root = base_game
+        .source_root
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| {
+            "Workbench base-game source root has no add-ons parent directory".to_string()
+        })?;
     Ok(Inventory {
         schema: "reforger-workbench-loaded-addon-graph-v1".to_string(),
         roots: vec![InventoryRoot {
@@ -768,12 +817,13 @@ fn read_loaded_addon_graph(inventory_path: &Path) -> Result<LoadedAddonGraph, St
             inventory_path.display()
         )
     })?;
-    let graph: WorkbenchLoadedAddonGraphInventory = serde_json::from_str(&raw).map_err(|error| {
-        format!(
-            "Invalid Workbench loaded add-on graph {}: {error}",
-            inventory_path.display()
-        )
-    })?;
+    let graph: WorkbenchLoadedAddonGraphInventory =
+        serde_json::from_str(&raw).map_err(|error| {
+            format!(
+                "Invalid Workbench loaded add-on graph {}: {error}",
+                inventory_path.display()
+            )
+        })?;
     if graph.schema != "reforger-workbench-loaded-addon-graph-v1" || graph.protocol_version != 1 {
         return Err("Unsupported Workbench loaded add-on graph schema or protocol".to_string());
     }
@@ -781,27 +831,50 @@ fn read_loaded_addon_graph(inventory_path: &Path) -> Result<LoadedAddonGraph, St
         return Err("Workbench loaded add-on graph is empty or malformed".to_string());
     }
     let mut identities = BTreeSet::new();
-    let addons = graph.addons.into_iter().map(|addon| {
-        let guid = addon.guid.to_ascii_uppercase();
-        let source_root = fs::canonicalize(&addon.source_root).map_err(|_| {
-            "Workbench loaded add-on graph contains an inaccessible source root".to_string()
-        })?;
-        if guid.len() != 16 || !guid.bytes().all(|byte| byte.is_ascii_hexdigit())
-            || addon.id.is_empty() || addon.title.is_empty()
-            || !identities.insert((guid.clone(), source_root.clone())) {
-            return Err("Workbench loaded add-on graph contains an invalid or duplicate instance".to_string());
-        }
-        Ok(LoadedAddonSource { guid, id: addon.id, title: addon.title, source_root })
-    }).collect::<Result<Vec<_>, String>>()?;
+    let addons = graph
+        .addons
+        .into_iter()
+        .map(|addon| {
+            let guid = addon.guid.to_ascii_uppercase();
+            let source_root = fs::canonicalize(&addon.source_root).map_err(|_| {
+                "Workbench loaded add-on graph contains an inaccessible source root".to_string()
+            })?;
+            if guid.len() != 16
+                || !guid.bytes().all(|byte| byte.is_ascii_hexdigit())
+                || addon.id.is_empty()
+                || addon.title.is_empty()
+                || !identities.insert((guid.clone(), source_root.clone()))
+            {
+                return Err(
+                    "Workbench loaded add-on graph contains an invalid or duplicate instance"
+                        .to_string(),
+                );
+            }
+            Ok(LoadedAddonSource {
+                guid,
+                id: addon.id,
+                title: addon.title,
+                source_root,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
     let active_source_root = fs::canonicalize(&graph.current_project_file)
         .map_err(|_| "Workbench current project file is inaccessible".to_string())?
         .parent()
         .map(Path::to_path_buf)
         .ok_or_else(|| "Workbench current project file has no add-on root".to_string())?;
-    if !addons.iter().any(|addon| addon.source_root == active_source_root) {
-        return Err("Workbench current project does not match a loaded add-on instance".to_string());
+    if !addons
+        .iter()
+        .any(|addon| addon.source_root == active_source_root)
+    {
+        return Err(
+            "Workbench current project does not match a loaded add-on instance".to_string(),
+        );
     }
-    Ok(LoadedAddonGraph { addons, active_source_root })
+    Ok(LoadedAddonGraph {
+        addons,
+        active_source_root,
+    })
 }
 
 fn modified_unix_ms(metadata: &fs::Metadata) -> u128 {
@@ -918,7 +991,12 @@ fn addon_instance_key(guid: &str, source_root: &Path) -> String {
     let mut hasher = Sha256::new();
     hasher.update(guid.to_ascii_uppercase().as_bytes());
     hasher.update(b"\0");
-    hasher.update(source_root.to_string_lossy().to_ascii_lowercase().as_bytes());
+    hasher.update(
+        source_root
+            .to_string_lossy()
+            .to_ascii_lowercase()
+            .as_bytes(),
+    );
     format!("{}-{:x}", guid.to_ascii_uppercase(), hasher.finalize())
 }
 
@@ -1179,9 +1257,16 @@ mod tests {
         let inventory = read_inventory(&graph).unwrap();
 
         assert_eq!(inventory.roots.len(), 1);
-        assert_eq!(inventory.roots[0].path, data_root.parent().map(Path::to_path_buf));
+        assert_eq!(
+            inventory.roots[0].path,
+            data_root.parent().map(Path::to_path_buf)
+        );
         let legacy = root.join("legacy.json");
-        fs::write(&legacy, r#"{"schema":"reforger-addon-source-inventory-v1","roots":[]}"#).unwrap();
+        fs::write(
+            &legacy,
+            r#"{"schema":"reforger-addon-source-inventory-v1","roots":[]}"#,
+        )
+        .unwrap();
         assert!(read_inventory(&legacy).is_err());
         let _ = fs::remove_dir_all(root);
     }
@@ -1193,7 +1278,10 @@ mod tests {
         let loose = root.join("loose");
         fs::create_dir_all(&packed).unwrap();
         fs::create_dir_all(loose.join("scripts")).unwrap();
-        write_fixture_pak(&packed.join("data.pak"), &[("Packed.c", b"class Packed {}")]);
+        write_fixture_pak(
+            &packed.join("data.pak"),
+            &[("Packed.c", b"class Packed {}")],
+        );
         fs::write(loose.join("scripts/Loose.c"), "class Loose {}").unwrap();
         let graph = root.join("graph.json");
         fs::write(&graph, format!(
@@ -1206,14 +1294,56 @@ mod tests {
         let storage = root.join("indexes");
 
         let workspace_roots = vec![loose.join("scripts")];
-        let first = load_or_build_loaded_addon_indexes(&graph, &storage, &workspace_roots, &IndexBuildControl::default()).unwrap();
+        let first = load_or_build_loaded_addon_indexes(
+            &graph,
+            &storage,
+            &workspace_roots,
+            &IndexBuildControl::default(),
+        )
+        .unwrap();
         assert_eq!(first.summary.files, 1);
         assert_eq!(first.rebuilt_instances, 1);
         assert_eq!(fs::read_dir(&storage).unwrap().count(), 1);
-        let second = load_or_build_loaded_addon_indexes(&graph, &storage, &workspace_roots, &IndexBuildControl::default()).unwrap();
+        let second = load_or_build_loaded_addon_indexes(
+            &graph,
+            &storage,
+            &workspace_roots,
+            &IndexBuildControl::default(),
+        )
+        .unwrap();
         assert_eq!(second.loaded_instances, 1);
+        write_fixture_pak(
+            &packed.join("data.pak"),
+            &[("Packed.c", b"class ChangedPacked {}")],
+        );
+        let rebuilt = load_or_build_loaded_addon_indexes(
+            &graph,
+            &storage,
+            &workspace_roots,
+            &IndexBuildControl::default(),
+        )
+        .unwrap();
+        assert_eq!(rebuilt.rebuilt_instances, 1);
+        let packed_revisions = fs::read_dir(&storage)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path()
+            .join("revisions");
+        assert_eq!(
+            fs::read_dir(packed_revisions).unwrap().count(),
+            1,
+            "only the current loaded revision is retained"
+        );
         fs::write(loose.join("scripts/Loose.c"), "class ChangedLoose {}").unwrap();
-        let changed = load_or_build_loaded_addon_indexes(&graph, &storage, &workspace_roots, &IndexBuildControl::default()).unwrap();
+        let changed = load_or_build_loaded_addon_indexes(
+            &graph,
+            &storage,
+            &workspace_roots,
+            &IndexBuildControl::default(),
+        )
+        .unwrap();
         assert_eq!(changed.loaded_instances, 1);
         assert_eq!(changed.rebuilt_instances, 0);
         fs::write(&graph, format!(
@@ -1222,7 +1352,13 @@ mod tests {
             serde_json::to_string(&packed).unwrap(),
         )).unwrap();
         fs::write(packed.join("addon.gproj"), "{}").unwrap();
-        let removed = load_or_build_loaded_addon_indexes(&graph, &storage, &[], &IndexBuildControl::default()).unwrap();
+        let removed = load_or_build_loaded_addon_indexes(
+            &graph,
+            &storage,
+            &[],
+            &IndexBuildControl::default(),
+        )
+        .unwrap();
         assert_eq!(removed.index.files().len(), 1);
         let _ = fs::remove_dir_all(root);
     }
