@@ -18,11 +18,14 @@ VS Code editor
   -> VS Code editor
 ```
 
-At language-server startup, the extension asks the running Workbench for its
-loaded-add-on graph and atomically records that exact graph under
-`globalStorageUri/addon-sources`. Workbench is the sole scope authority: the
-extension does not scan, configure, or choose add-on folders. The graph carries
-GUID, display identity, and the exact source root for every loaded instance.
+At language-server startup, the extension starts the Workbench loaded-add-on
+graph request in parallel with LSP initialization, then atomically records the
+returned exact graph under `globalStorageUri/addon-sources` and delivers its
+path to Rust over a typed LSP notification. Workbench is the sole scope
+authority: the extension does not scan, configure, or choose add-on folders.
+Rust begins add-on indexing only after that delivery; a newer delivered graph
+supersedes an older in-flight rebuild. The graph carries GUID, display identity,
+and the exact source root for every loaded instance.
 For the default packed entries, the bridge derives the base root directly from
 Workbench's current project file and core as its exact sibling; this is a
 property of the live loaded project, not installation discovery.
@@ -286,6 +289,9 @@ to emulate compiler facts from files.
 - Rust is the one Enfusion language authority.
 - Open documents and external indexes are revisioned immutable snapshots; a
   request uses facts from the snapshot it captured.
+- The Workbench graph is delivered after LSP initialization and is the only
+  authority for the game-data layer; no prior graph or local discovery path may
+  substitute when that delivery fails.
 - TypeScript bridges transport Rust-authored facts or apply editor behaviour;
   they do not classify source.
 - Evidence follows the source hierarchy in [the system overview](overview.md).

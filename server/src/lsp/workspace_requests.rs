@@ -23,6 +23,12 @@ pub(super) struct WorkspaceFileDeletedParams {
     pub(super) sequence: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct LoadedAddonGraphParams {
+    pub(super) inventory_path: String,
+}
+
 pub(super) fn update_workspace_file(
     external_index: &mut ExternalIndexHandle,
     params: Option<WorkspaceFileChangedParams>,

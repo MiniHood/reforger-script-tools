@@ -142,7 +142,9 @@ pub use signature_help::{
     LspSignatureHelpReport, LspSignatureHelpTimings, LspSignatureInformation,
 };
 use transport::read_message;
-use workspace_requests::{WorkspaceFileChangedParams, WorkspaceFileDeletedParams};
+use workspace_requests::{
+    LoadedAddonGraphParams, WorkspaceFileChangedParams, WorkspaceFileDeletedParams,
+};
 
 const SERVER_NAME: &str = "reforger-language-server";
 const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -162,6 +164,7 @@ const READ_PACK_SOURCE_METHOD: &str = "reforger/readPackSource";
 const RANGE_FORMATTING_METHOD: &str = "textDocument/rangeFormatting";
 const WORKSPACE_FILE_CHANGED_METHOD: &str = "reforger/workspaceFileChanged";
 const WORKSPACE_FILE_DELETED_METHOD: &str = "reforger/workspaceFileDeleted";
+const LOADED_ADDON_GRAPH_METHOD: &str = "reforger/loadedAddonGraph";
 const INCOMING_EVENT_QUEUE_CAPACITY: usize = 64;
 const MAX_PENDING_DOCUMENT_ANALYSIS_JOBS: usize = 32;
 const MAX_PENDING_DOCUMENT_REQUESTS_PER_URI: usize = 32;
@@ -296,6 +299,7 @@ struct LspServer<W: Write> {
     document_runtime: DocumentRuntime,
     client_initialized: bool,
     pending_external_index_progress: Option<Value>,
+    event_sender: Option<ServerEventSender>,
     shutdown_requested: bool,
 }
 
@@ -539,6 +543,19 @@ impl<W: Write> LspServer<W> {
             RequestCommand::Document(request_router::DocumentCommand::Close(_))
         ) {
             return self.handle_document_close_command(routed);
+        }
+        if let RequestCommand::WorkspaceIndex(
+            request_router::WorkspaceIndexCommand::LoadedAddonGraph(params),
+        ) = &routed.command
+        {
+            if let Some(params) = params {
+                self.external_index.load_workbench_graph(
+                    PathBuf::from(&params.inventory_path),
+                    self.logger.clone(),
+                    self.event_sender.clone(),
+                )?;
+            }
+            return Ok(false);
         }
         if matches!(
             &routed.command,
@@ -813,7 +830,7 @@ impl<W: Write> LspServer<W> {
             options.diagnostic_log_path.clone(),
         );
         let operational_logging = logger.operational_enabled();
-        let external_index = start_external_index(&options, logger.clone(), event_sender);
+        let external_index = start_external_index(&options, logger.clone(), event_sender.clone());
         let server = Self {
             writer,
             logger,
@@ -825,6 +842,7 @@ impl<W: Write> LspServer<W> {
             ),
             client_initialized: false,
             pending_external_index_progress: None,
+            event_sender,
             shutdown_requested: false,
         };
         server.log_lazy(|| format!(
@@ -1290,6 +1308,7 @@ fn validate_message_params(method: &str, params: &Option<Value>) -> Result<(), S
         "reforger/workspaceFileDeleted" => {
             validate_params::<WorkspaceFileDeletedParams>(params, method)
         }
+        "reforger/loadedAddonGraph" => validate_params::<LoadedAddonGraphParams>(params, method),
         "textDocument/documentSymbol" | "textDocument/semanticTokens/full" => {
             validate_params::<DocumentSymbolParams>(params, method)
         }

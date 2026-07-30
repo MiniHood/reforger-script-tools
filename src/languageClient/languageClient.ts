@@ -279,19 +279,17 @@ async function startLanguageClient(
 		},
 	);
 
-	const sourceInventoryPath = await resolveWorkbenchLoadedAddonInventory(
+	const sourceInventory = resolveWorkbenchLoadedAddonInventory(
 		context,
 		serverPath,
 		outputChannel,
 	);
+	const workspaceScriptRootsPromise = discoverWorkspaceScriptRoots();
 	const serverArgs = [
 		'--addon-index-storage',
 		path.join(context.globalStorageUri.fsPath, languageClientIndexCache.rootFolder),
 		...bracketColoringServerArguments(bracketColoring),
 	];
-	if (sourceInventoryPath) {
-		serverArgs.push('--addon-source-inventory', sourceInventoryPath);
-	}
 	if (diagnosticsEnabled()) {
 		const logsRoot = path.join(context.globalStorageUri.fsPath, languageClientLogs.rootFolder);
 		await fs.mkdir(logsRoot, { recursive: true });
@@ -304,12 +302,12 @@ async function startLanguageClient(
 	if (diagnosticPath) {
 		serverArgs.push('--diagnostic-log', diagnosticPath);
 	}
-	const workspaceScriptRoots = await discoverWorkspaceScriptRoots();
+	const workspaceScriptRoots = await workspaceScriptRootsPromise;
 	for (const root of workspaceScriptRoots) {
 		serverArgs.push('--workspace-scripts', root);
 	}
 	logLanguageClientStartupTiming(context, 'languageServerArgumentsReady', {
-		hasAddonSourceInventory: sourceInventoryPath !== undefined,
+		workbenchGraphDeliveryPending: true,
 		workspaceScriptRoots: workspaceScriptRoots.length,
 		serverArgs: serverArgs.length,
 		bracketColoring,
@@ -386,6 +384,16 @@ async function startLanguageClient(
 			transport: 'stdio',
 		});
 		await client.start();
+		const sourceInventoryPath = await sourceInventory;
+		if (sourceInventoryPath) {
+			client.sendNotification(languageClientNotifications.loadedAddonGraph, {
+				inventoryPath: sourceInventoryPath,
+			});
+			externalIndexMonitor.workbenchGraphDelivered();
+			logLanguageClientStartupTiming(context, 'workbenchLoadedAddonGraphDelivered');
+		} else {
+			externalIndexMonitor.workbenchGraphUnavailable();
+		}
 		diagnostic('languageClient.started', { workspaceScriptRoots: workspaceScriptRoots.length });
 		logLanguageClientStartupTiming(context, 'languageServerInitializeResponse', {
 			serverPath,
@@ -538,8 +546,16 @@ function monitorExternalIndexProgress(
 	context: vscode.ExtensionContext,
 	activeClient: LanguageClient,
 	progress: ExternalIndexProgress | undefined,
-): { completion: Promise<void>; disposable: vscode.Disposable } {
+): {
+	completion: Promise<void>;
+	disposable: vscode.Disposable;
+	workbenchGraphDelivered(): void;
+	workbenchGraphUnavailable(): void;
+} {
 	let complete = false;
+	let workbenchGraphDelivered = false;
+	let workbenchGraphUnavailable = false;
+	let pendingCompletion: ExternalIndexProgressParams | undefined;
 	let resolveCompletion: (() => void) | undefined;
 	const completion = new Promise<void>(resolve => {
 		resolveCompletion = resolve;
@@ -549,6 +565,13 @@ function monitorExternalIndexProgress(
 			complete = true;
 			resolveCompletion?.();
 		}
+	};
+	const finishIndex = (params: ExternalIndexProgressParams) => {
+		logLanguageClientStartupTiming(context, 'externalIndexReady', {
+			status: params.status,
+			gameDataFiles: params.gameDataFiles,
+		});
+		finish();
 	};
 	const notification = activeClient.onNotification(
 		new NotificationType<ExternalIndexProgressParams>(languageClientNotifications.externalIndexProgress),
@@ -560,11 +583,11 @@ function monitorExternalIndexProgress(
 				gameDataFiles: params.gameDataFiles,
 			});
 			if (params.phase === 'complete') {
-				logLanguageClientStartupTiming(context, 'externalIndexReady', {
-					status: params.status,
-					gameDataFiles: params.gameDataFiles,
-				});
-				finish();
+				if (workbenchGraphDelivered || workbenchGraphUnavailable) {
+					finishIndex(params);
+				} else {
+					pendingCompletion = params;
+				}
 			}
 		},
 	);
@@ -576,6 +599,17 @@ function monitorExternalIndexProgress(
 	return {
 		completion,
 		disposable: vscode.Disposable.from(notification, stateChanges, { dispose: finish }),
+		workbenchGraphDelivered: () => {
+			workbenchGraphDelivered = true;
+			pendingCompletion = undefined;
+		},
+		workbenchGraphUnavailable: () => {
+			workbenchGraphUnavailable = true;
+			if (pendingCompletion) {
+				finishIndex(pendingCompletion);
+				pendingCompletion = undefined;
+			}
+		},
 	};
 }
 

@@ -42,6 +42,8 @@ struct ExternalIndexState {
     workspace_generation: u64,
     workspace_startup_pending: bool,
     workspace_roots: Vec<PathBuf>,
+    addon_index_storage: Option<PathBuf>,
+    graph_generation: u64,
     summary: Option<RuntimeIndexSummary>,
     workspace_summary: RuntimeIndexSummary,
     game_data_summary: Option<RuntimeIndexSummary>,
@@ -188,6 +190,8 @@ impl ExternalIndexHandle {
                 workspace_generation: 0,
                 workspace_startup_pending: false,
                 workspace_roots: Vec::new(),
+                addon_index_storage: None,
+                graph_generation: 0,
                 summary: None,
                 workspace_summary: RuntimeIndexSummary::default(),
                 game_data_summary: None,
@@ -230,6 +234,100 @@ impl ExternalIndexHandle {
 
     pub(crate) fn cancel(&self) {
         self.control.cancel();
+    }
+
+    pub(crate) fn load_workbench_graph(
+        &self,
+        inventory_path: PathBuf,
+        logger: LspLogger,
+        event_sender: Option<ServerEventSender>,
+    ) -> Result<(), String> {
+        let (storage, workspace_roots, graph_generation) = {
+            let mut state = self.state.lock().unwrap();
+            let storage = state
+                .addon_index_storage
+                .clone()
+                .ok_or_else(|| "add-on index storage is unavailable".to_string())?;
+            state.status = ExternalIndexStatus::Updating;
+            state.graph_generation += 1;
+            (
+                storage,
+                state.workspace_roots.clone(),
+                state.graph_generation,
+            )
+        };
+        if let Some(sender) = &event_sender {
+            let _ = sender.send(ServerEvent::ExternalIndexProgress {
+                phase: "inventory-load-start".to_string(),
+            });
+        }
+        let state = self.state.clone();
+        let control = self.control.clone();
+        thread::spawn(move || {
+            let started = Instant::now();
+            let result = load_or_build_loaded_addon_indexes(
+                &inventory_path,
+                &storage,
+                &workspace_roots,
+                &control,
+            );
+            let mut state = state.lock().unwrap();
+            if state.graph_generation != graph_generation {
+                return;
+            }
+            match result {
+                Ok(result) => {
+                    state.game_data_index = Some(Arc::new(result.index));
+                    state.game_data_summary = Some(result.summary);
+                    state.cache_status = Some(
+                        if result.rebuilt_instances == 0 {
+                            "loaded"
+                        } else {
+                            "rebuilt"
+                        }
+                        .to_string(),
+                    );
+                    state.cache_detail = Some(format!(
+                        "loadedInstances={} rebuiltInstances={} workspaceExcludedInstances={}",
+                        result.loaded_instances,
+                        result.rebuilt_instances,
+                        result.workspace_excluded_instances
+                    ));
+                    state.fingerprint = Some(format!(
+                        "workbench-loaded-addons:{}",
+                        result.loaded_instances + result.rebuilt_instances
+                    ));
+                    state.error = None;
+                    let game_data = state.game_data_summary.clone();
+                    recompute_summary(&mut state, game_data);
+                    state.generation += 1;
+                    state.status = ExternalIndexStatus::Ready;
+                    logger.diagnostic_lazy("externalIndex.graphDelivered", || json!({"elapsedMs": started.elapsed().as_millis(), "loadedInstances": result.loaded_instances, "rebuiltInstances": result.rebuilt_instances, "workspaceExcludedInstances": result.workspace_excluded_instances}));
+                }
+                Err(error) => {
+                    state.game_data_index = None;
+                    state.game_data_summary = None;
+                    state.error = Some(error.clone());
+                    let game_data = state.game_data_summary.clone();
+                    recompute_summary(&mut state, game_data);
+                    state.generation += 1;
+                    state.status = if state.workspace_index.is_some() {
+                        ExternalIndexStatus::Ready
+                    } else {
+                        ExternalIndexStatus::Failed
+                    };
+                    logger.diagnostic_lazy(
+                        "externalIndex.graphDeliveryFailed",
+                        || json!({"elapsedMs": started.elapsed().as_millis(), "error": error}),
+                    );
+                }
+            }
+            drop(state);
+            if let Some(sender) = event_sender {
+                let _ = sender.send(ServerEvent::ExternalIndexChanged);
+            }
+        });
+        Ok(())
     }
 
     pub(crate) fn snapshot(&self) -> ExternalIndexSnapshot {
@@ -398,7 +496,10 @@ pub(crate) fn start_external_index(
     logger: LspLogger,
     event_sender: Option<ServerEventSender>,
 ) -> ExternalIndexHandle {
-    if options.addon_source_inventory.is_none() && options.workspace_scripts.is_empty() {
+    if options.addon_source_inventory.is_none()
+        && options.addon_index_storage.is_none()
+        && options.workspace_scripts.is_empty()
+    {
         return ExternalIndexHandle::missing();
     }
 
@@ -425,6 +526,8 @@ pub(crate) fn start_external_index(
             workspace_generation: 0,
             workspace_startup_pending: true,
             workspace_roots: options.workspace_scripts.clone(),
+            addon_index_storage: options.addon_index_storage.clone(),
+            graph_generation: 0,
             summary: None,
             workspace_summary: RuntimeIndexSummary::default(),
             game_data_summary: None,
@@ -497,6 +600,7 @@ fn run_external_index_thread(
     });
 
     let game_data_start = Instant::now();
+    let has_addon_source_inventory = addon_source_inventory.is_some();
     let game_data_result = addon_source_inventory.map(|inventory_path| {
         for phase in ["inventory-load-start", "pac-inspect-start"] {
             if let Some(sender) = &event_sender {
@@ -735,11 +839,13 @@ fn run_external_index_thread(
         if state.workspace_generation != workspace_generation {
             continue;
         }
-        state.game_data_index = game_data_index.clone();
-        state.game_data_summary = game_data_summary.clone();
-        state.cache_status = cache_status.clone();
-        state.cache_detail = cache_detail.clone();
-        state.fingerprint = fingerprint.clone();
+        if has_addon_source_inventory {
+            state.game_data_index = game_data_index.clone();
+            state.game_data_summary = game_data_summary.clone();
+            state.cache_status = cache_status.clone();
+            state.cache_detail = cache_detail.clone();
+            state.fingerprint = fingerprint.clone();
+        }
         state.workspace_files = Arc::new(workspace_files);
         state.workspace_index = workspace_index;
         state.workspace_exclusions.clear();
@@ -1217,6 +1323,73 @@ mod tests {
         assert_eq!(status.game_data_files, 0);
         assert_eq!(status.workspace_files, 1);
         assert!(status.error.is_some(), "the graph failure must remain observable");
+        handle.cancel();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn delivered_workbench_graph_adds_game_data_after_workspace_startup() {
+        let root = std::env::temp_dir().join(format!(
+            "reforger-external-overlay-delivered-graph-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let workspace = root.join("workspace");
+        let addon = root.join("addon");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::create_dir_all(&addon).unwrap();
+        fs::write(workspace.join("Workspace.c"), "class WorkspaceOnly {}\n").unwrap();
+        write_fixture_pak(
+            &addon.join("data.pak"),
+            &[("Feature.c", b"class ExternalFeature {}")],
+        );
+        let inventory = root.join("graph.json");
+        fs::write(
+            &inventory,
+            format!(
+                r#"{{"schema":"reforger-workbench-loaded-addon-graph-v1","bridgeVersion":"1.52.0","protocolVersion":1,"addons":[{{"guid":"1111111111111111","id":"External","title":"External","sourceRoot":{}}}]}}"#,
+                serde_json::to_string(&addon).unwrap(),
+            ),
+        )
+        .unwrap();
+        let storage = root.join("indexes");
+        let (sender, receiver) = mpsc::channel();
+        let handle = start_external_index(
+            &LspServerOptions {
+                addon_index_storage: Some(storage),
+                workspace_scripts: vec![workspace],
+                ..LspServerOptions::default()
+            },
+            LspLogger::new(None, None),
+            Some(sender.clone().into()),
+        );
+        loop {
+            match receiver.recv_timeout(Duration::from_secs(5)) {
+                Ok(ServerEvent::ExternalIndexChanged) => break,
+                Ok(_) => {}
+                Err(error) => panic!("workspace startup did not publish: {error}"),
+            }
+        }
+        assert!(handle.snapshot().workspace.is_some());
+        assert!(handle.snapshot().game_data.is_none());
+
+        handle
+            .load_workbench_graph(inventory, LspLogger::new(None, None), Some(sender.into()))
+            .unwrap();
+        loop {
+            match receiver.recv_timeout(Duration::from_secs(5)) {
+                Ok(ServerEvent::ExternalIndexChanged) => break,
+                Ok(_) => {}
+                Err(error) => panic!("delivered Workbench graph did not publish: {error}"),
+            }
+        }
+        let snapshot = handle.snapshot();
+        assert!(snapshot.workspace.is_some());
+        assert!(snapshot.game_data.is_some());
+        assert_eq!(handle.status_summary().game_data_files, 1);
         handle.cancel();
         let _ = fs::remove_dir_all(root);
     }
