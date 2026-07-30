@@ -81,6 +81,16 @@ successful installation and asks the user to refresh Workbench with
 does not probe a capability handler during installation, maintenance, or
 status diagnosis: Workbench logs a missing handler as an error. Only an
 explicit custom operation may test its own handler availability.
+
+The package's 27 Enfusion sources are checked in under `server/bridge/` and
+are embedded by `server/src/workbench_bridge.rs`. They are the sole source of
+the installed bytes; Rust performs no runtime reformatting or source synthesis.
+The development-only `tools/check-workbench-bridge-style.mjs` gate enforces the
+local base-game-derived contract: tab indentation, no trailing whitespace, one
+executable statement per physical line (except `for` headers), Allman control
+layout, braced loop bodies, and an immediately-indented single-statement body
+as the only permitted unbraced `if` form. This preserves compiler validation as
+the Workbench authority while making the reviewed source directly inspectable.
 When no consent manifest exists, status reports installation as available only
 if the existing profile and native connection make the approval-bearing
 operation usable; status itself creates nothing.
