@@ -68,6 +68,9 @@ implementation slice is progress, not a completed ticket.
   evidence and design notes for automated editing behavior.
 - [Enfusion `new` editing research](research/enfusion-new-formatting-research.md):
   primary-source evidence and safe completion/formatting boundary for `new`.
+- [Add-on PAK indexing research](research/addon-pak-indexing-research.md):
+  authoritative add-on discovery, PAK extraction boundaries, and independent
+  cache-identity findings for the multi-add-on index design.
 - [s&box MCP server review](research/sbox-mcp-research.md): comparative source
   examples for future evaluation; it does not define Reforger MCP architecture.
 - [Official Wiki Corpus report](research/official-wiki-corpus-report.md): validated
