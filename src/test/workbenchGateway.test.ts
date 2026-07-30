@@ -30,6 +30,47 @@ suite('Workbench Gateway', () => {
 		}
 	});
 
+	test('gets the exact ordered loaded add-on graph from the bridge', async () => {
+		const peer = await startNetApiPeer(request => {
+			assert.deepStrictEqual(request.payload, { APIFunc: 'RST_WorkbenchLoadedAddonGraph' });
+			return {
+				errorCode: 'Ok',
+				payload: {
+					bridgeVersion: '1.52.0',
+					protocolVersion: 1,
+					addons: [{
+						guid: '684CE8AA3B1D6573',
+						id: 'GCSuppression',
+						title: 'GC Suppression',
+						sourceRoot: 'C:\\Users\\Gray\\Documents\\My Games\\ArmaReforgerWorkbench\\addons\\GC-Suppression',
+					}],
+				},
+			};
+		});
+		try {
+			const gateway = new WorkbenchGateway({
+				enabled: true,
+				endpoint: { host: '127.0.0.1', port: peer.port },
+			});
+
+			assert.deepStrictEqual(await gateway.getLoadedAddonGraph(), {
+				ok: true,
+				value: {
+					bridgeVersion: '1.52.0',
+					protocolVersion: 1,
+					addons: [{
+						guid: '684CE8AA3B1D6573',
+						id: 'GCSuppression',
+						title: 'GC Suppression',
+						sourceRoot: 'C:\\Users\\Gray\\Documents\\My Games\\ArmaReforgerWorkbench\\addons\\GC-Suppression',
+					}],
+				},
+			});
+		} finally {
+			await peer.close();
+		}
+	});
+
 	test('validates the named WORKBENCH profile and normalizes compiler diagnostics', async () => {
 		const peer = await startNetApiPeer(request => {
 			assert.deepStrictEqual(request.payload, {

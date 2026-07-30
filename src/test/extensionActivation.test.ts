@@ -195,9 +195,7 @@ suite('extension activation', () => {
 		assert.ok(commands.includes(languageClientCommands.debugCompletionAtCursor));
 		assert.ok(commands.includes(languageClientCommands.triggerSuggestAtSnippetPlaceholder));
 		assert.ok(commands.includes(languageClientCommands.advanceSnippetPlaceholderAfterAccept));
-		assert.ok(commands.includes(gameDataCommands.selectBaseGameAddonsFolder));
-		assert.ok(commands.includes(gameDataCommands.selectWorkbenchAddonsFolder));
-		assert.ok(commands.includes(gameDataCommands.selectUserAddonsFolder));
+		assert.ok(commands.includes(gameDataCommands.refreshSources));
 		assert.ok(commands.includes(mcpCommands.copyConfiguration));
 		const contributedCommands = extension.packageJSON.contributes.commands as Array<{ command: string }>;
 		assert.ok(contributedCommands.some(command =>
@@ -242,12 +240,9 @@ suite('extension activation', () => {
 			properties[`${workbenchConfig.section}.compilerValidationProfile`],
 			undefined,
 		);
-		const manualFolderSetting = properties['reforgerScriptTools.gameData.baseGameAddonsFolder'] as {
-			markdownDescription?: string;
-		};
-		assert.ok(manualFolderSetting.markdownDescription?.includes(
-			`command:${gameDataCommands.selectBaseGameAddonsFolder}`,
-		));
+		assert.strictEqual(properties['reforgerScriptTools.gameData.baseGameAddonsFolder'], undefined);
+		assert.strictEqual(properties['reforgerScriptTools.gameData.workbenchAddonsFolder'], undefined);
+		assert.strictEqual(properties['reforgerScriptTools.gameData.userAddonsFolder'], undefined);
 	});
 
 	test('retains map placeholder progression unless a nested snippet takes ownership', () => {

@@ -181,7 +181,7 @@ class RST_WorkbenchSearchEntities : NetApiHandler
 	{
 		RST_WorkbenchSearchEntitiesRequest req = RST_WorkbenchSearchEntitiesRequest.Cast(request);
 		RST_WorkbenchSearchEntitiesResponse response = new RST_WorkbenchSearchEntitiesResponse();
-		response.bridgeVersion = "1.51.0";
+		response.bridgeVersion = "1.52.0";
 		response.protocolVersion = 1;
 		PrintFormat("RST entity search: begin limit=%1 offset=%2 relation=%3", req.limit, req.offset, req.relationDirection);
 		WorldEditor editor = Workbench.GetModule(WorldEditor);

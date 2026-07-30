@@ -3,6 +3,7 @@ import * as path from 'node:path';
 
 const defaultGetStatusDeadlineMs = 1_500;
 const defaultValidateScriptsDeadlineMs = 120_000;
+const defaultGetLoadedAddonGraphDeadlineMs = 5_000;
 const maximumResponseBytes = 4 * 1024 * 1024;
 
 export interface WorkbenchEndpoint {
@@ -21,10 +22,11 @@ export interface WorkbenchGatewayOptions {
 export interface WorkbenchGatewayDeadlines {
 	getStatusMs: number;
 	validateScriptsMs: number;
+	getLoadedAddonGraphMs: number;
 }
 
 export interface WorkbenchGatewayDiagnosticRecord {
-	capability: 'getStatus' | 'validateScripts';
+	capability: 'getStatus' | 'validateScripts' | 'getLoadedAddonGraph';
 	outcome: 'success' | 'compiler-findings' | WorkbenchGatewayFailureCategory;
 	durationMs: number;
 }
@@ -55,6 +57,19 @@ export interface WorkbenchValidationResult {
 	diagnostics: WorkbenchCompilerDiagnostic[];
 }
 
+export interface WorkbenchLoadedAddon {
+	guid: string;
+	id: string;
+	title: string;
+	sourceRoot: string;
+}
+
+export interface WorkbenchLoadedAddonGraph {
+	bridgeVersion: string;
+	protocolVersion: 1;
+	addons: WorkbenchLoadedAddon[];
+}
+
 export type WorkbenchAvailability =
 	| { kind: 'disabled' }
 	| { kind: 'unavailable'; failure: WorkbenchGatewayFailure }
@@ -80,6 +95,7 @@ export type WorkbenchGatewayResult<T> =
 export type WorkbenchPrivateApiCommand =
 	| 'status'
 	| 'validate'
+	| 'loaded-addon-graph'
 	| 'integration-status'
 	| 'install-bridge';
 
@@ -167,6 +183,40 @@ export class WorkbenchGateway {
 			startedAt,
 		);
 		return validation;
+	}
+
+	public async getLoadedAddonGraph(): Promise<WorkbenchGatewayResult<WorkbenchLoadedAddonGraph>> {
+		const startedAt = Date.now();
+		if (!this.options.enabled) {
+			const result = failure('unsupported', 'Enable Workbench NET API integration in extension settings.');
+			this.record('getLoadedAddonGraph', 'unsupported', startedAt);
+			return result;
+		}
+		const endpointFailure = validateEndpoint(this.options.endpoint);
+		if (endpointFailure) {
+			this.record('getLoadedAddonGraph', endpointFailure.category, startedAt);
+			return { ok: false, failure: endpointFailure };
+		}
+		const result = await invokeWorkbenchPrivateApi(
+			this.options.serverPath ?? defaultDevelopmentServerPath(),
+			this.options.endpoint,
+			'loaded-addon-graph',
+			deadline(this.options.deadlines?.getLoadedAddonGraphMs, defaultGetLoadedAddonGraphDeadlineMs),
+		);
+		if (!result.ok) {
+			this.noteFailure(result.failure);
+			this.record('getLoadedAddonGraph', result.failure.category, startedAt);
+			return result;
+		}
+		const graph = decodeLoadedAddonGraph(result.value);
+		if (!graph.ok) {
+			this.noteFailure(graph.failure);
+			this.record('getLoadedAddonGraph', graph.failure.category, startedAt);
+			return graph;
+		}
+		this.currentAvailability = { kind: 'ready' };
+		this.record('getLoadedAddonGraph', 'success', startedAt);
+		return graph;
 	}
 
 	private invokeStatus(deadlineMs: number): Promise<WorkbenchGatewayResult<unknown>> {
@@ -264,6 +314,44 @@ function decodeValidation(
 			diagnostics: value.diagnostics,
 		},
 	};
+}
+
+function decodeLoadedAddonGraph(value: unknown): WorkbenchGatewayResult<WorkbenchLoadedAddonGraph> {
+	if (!isRecord(value)
+		|| typeof value.bridgeVersion !== 'string'
+		|| value.protocolVersion !== 1
+		|| !Array.isArray(value.addons)
+		|| !value.addons.every(isLoadedAddon)) {
+		return failure('protocol', 'Reload Workbench scripts and verify the Reforger Script Tools bridge version.');
+	}
+	const identities = new Set<string>();
+	for (const addon of value.addons) {
+		const identity = `${addon.guid.toUpperCase()}\0${addon.sourceRoot.toLowerCase()}`;
+		if (identities.has(identity)) {
+			return failure('protocol', 'Reload Workbench scripts and retry the loaded add-on graph request.');
+		}
+		identities.add(identity);
+	}
+	return {
+		ok: true,
+		value: {
+			bridgeVersion: value.bridgeVersion,
+			protocolVersion: 1,
+			addons: value.addons.map(addon => ({ ...addon })),
+		},
+	};
+}
+
+function isLoadedAddon(value: unknown): value is WorkbenchLoadedAddon {
+	return isRecord(value)
+		&& typeof value.guid === 'string'
+		&& /^[0-9a-f]{16}$/i.test(value.guid)
+		&& typeof value.id === 'string'
+		&& value.id.length > 0
+		&& typeof value.title === 'string'
+		&& value.title.length > 0
+		&& typeof value.sourceRoot === 'string'
+		&& path.isAbsolute(value.sourceRoot);
 }
 
 function isCompilerDiagnostic(value: unknown): value is WorkbenchCompilerDiagnostic {

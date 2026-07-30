@@ -126,18 +126,6 @@
         "title": "Reforger Script Tools: Open Game Data Storage Folder"
       },
       {
-        "command": "reforger-sript-tools.gameData.selectBaseGameAddonsFolder",
-        "title": "Reforger Script Tools: Select Base Game Add-ons Folder"
-      },
-      {
-        "command": "reforger-sript-tools.gameData.selectWorkbenchAddonsFolder",
-        "title": "Reforger Script Tools: Select Workbench Add-ons Folder"
-      },
-      {
-        "command": "reforger-sript-tools.gameData.selectUserAddonsFolder",
-        "title": "Reforger Script Tools: Select User Add-ons Folder"
-      },
-      {
         "command": "reforger-sript-tools.mcp.copyConfiguration",
         "title": "Reforger Script Tools: Copy MCP Configuration",
         "category": "Reforger Script Tools"
@@ -151,24 +139,6 @@
     "configuration": {
       "title": "Reforger Script Tools",
       "properties": {
-        "reforgerScriptTools.gameData.baseGameAddonsFolder": {
-          "type": "string",
-          "default": "",
-          "title": "Game Data: Base Game Add-ons Folder",
-          "markdownDescription": "Optional explicit Arma Reforger `addons` folder. [Select Folder](command:reforger-sript-tools.gameData.selectBaseGameAddonsFolder) opens the native folder picker."
-        },
-        "reforgerScriptTools.gameData.workbenchAddonsFolder": {
-          "type": "string",
-          "default": "",
-          "title": "Game Data: Workbench Add-ons Folder",
-          "markdownDescription": "Optional explicit Arma Reforger Tools Workbench `addons` folder. [Select Folder](command:reforger-sript-tools.gameData.selectWorkbenchAddonsFolder) opens the native folder picker."
-        },
-        "reforgerScriptTools.gameData.userAddonsFolder": {
-          "type": "string",
-          "default": "",
-          "title": "Game Data: User Add-ons Folder",
-          "markdownDescription": "Optional explicit `My Games/ArmaReforger/addons` folder. [Select Folder](command:reforger-sript-tools.gameData.selectUserAddonsFolder) opens the native folder picker."
-        },
         "reforgerScriptTools.diagnostics.enabled": {
           "type": "boolean",
           "default": false,

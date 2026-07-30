@@ -24,6 +24,7 @@ enum ServerMode {
 enum WorkbenchApiCommand {
     Status,
     Validate,
+    LoadedAddonGraph,
     IntegrationStatus,
     InstallBridge,
 }
@@ -96,6 +97,7 @@ fn parse_workbench_api_args(mut args: impl Iterator<Item = String>) -> Result<Se
     let command = match args.next().as_deref() {
         Some("status") => WorkbenchApiCommand::Status,
         Some("validate") => WorkbenchApiCommand::Validate,
+        Some("loaded-addon-graph") => WorkbenchApiCommand::LoadedAddonGraph,
         Some("integration-status") => WorkbenchApiCommand::IntegrationStatus,
         Some("install-bridge") => WorkbenchApiCommand::InstallBridge,
         Some(value) => return Err(format!("unknown workbench-api command '{value}'")),
@@ -142,6 +144,9 @@ fn run_workbench_api(
             .and_then(|value| serde_json::to_value(value).map_err(|_| unreachable!())),
         WorkbenchApiCommand::Validate => controller
             .native_validate_scripts()
+            .and_then(|value| serde_json::to_value(value).map_err(|_| unreachable!())),
+        WorkbenchApiCommand::LoadedAddonGraph => controller
+            .loaded_addon_graph()
             .and_then(|value| serde_json::to_value(value).map_err(|_| unreachable!())),
         WorkbenchApiCommand::IntegrationStatus => {
             Ok(serde_json::to_value(controller.overview()).unwrap_or_else(|_| unreachable!()))
@@ -275,7 +280,7 @@ fn string_value(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<S
 
 fn print_help() {
     println!(
-        "Usage:\n  reforger_language_server [LSP options]\n  reforger_language_server mcp [MCP options]\n  reforger_language_server mcp-api\n  reforger_language_server workbench-api <status|validate|integration-status|install-bridge> [--host <loopback>] [--port <port>]\n\nLSP options:\n  --log <path>\n  --diagnostic-log <path>\n  --addon-source-inventory <path>\n  --addon-index-storage <path>\n  --workspace-scripts <path> (repeatable)\n  --bracket-coloring <semantic|punctuation|vscode>\n\nMCP options:\n  --index-cache <path>\n  --official-wiki-root <development/test path>\n  --workbench-host <loopback host>\n  --workbench-port <port>\n  --workbench-executable <path>\n  --reforger-game-directory <path>\n  --reforger-tools-directory <path>\n  --workbench-user-directory <test/development override>"
+        "Usage:\n  reforger_language_server [LSP options]\n  reforger_language_server mcp [MCP options]\n  reforger_language_server mcp-api\n  reforger_language_server workbench-api <status|validate|loaded-addon-graph|integration-status|install-bridge> [--host <loopback>] [--port <port>]\n\nLSP options:\n  --log <path>\n  --diagnostic-log <path>\n  --addon-source-inventory <path>\n  --addon-index-storage <path>\n  --workspace-scripts <path> (repeatable)\n  --bracket-coloring <semantic|punctuation|vscode>\n\nMCP options:\n  --index-cache <path>\n  --official-wiki-root <development/test path>\n  --workbench-host <loopback host>\n  --workbench-port <port>\n  --workbench-executable <path>\n  --reforger-game-directory <path>\n  --reforger-tools-directory <path>\n  --workbench-user-directory <test/development override>"
     );
 }
 
@@ -345,6 +350,7 @@ mod tests {
     #[test]
     fn workbench_api_exposes_extension_owned_integration_operations() {
         for (name, expected) in [
+            ("loaded-addon-graph", WorkbenchApiCommand::LoadedAddonGraph),
             ("integration-status", WorkbenchApiCommand::IntegrationStatus),
             ("install-bridge", WorkbenchApiCommand::InstallBridge),
         ] {

@@ -3,9 +3,7 @@ use super::file_uri_path_identity;
 use super::{
     file_path_identity, format_paths, LspLogger, LspServerOptions, ServerEvent, ServerEventSender,
 };
-use crate::addon_sources::{
-    load_or_build_base_game_index, publish_inventory_addon_manifests_from_path,
-};
+use crate::addon_sources::load_or_build_loaded_addon_indexes;
 use crate::index::SymbolIndex;
 use crate::index_cache::RuntimeIndexSummary;
 use crate::model::{
@@ -441,39 +439,6 @@ pub(crate) fn start_external_index(
     let addon_source_inventory = options.addon_source_inventory.clone();
     let addon_index_storage = options.addon_index_storage.clone();
     let workspace_roots = options.workspace_scripts.clone();
-    if let (Some(inventory), Some(storage)) =
-        (addon_source_inventory.clone(), addon_index_storage.clone())
-    {
-        let inventory_logger = logger.clone();
-        let inventory_sender = event_sender.clone();
-        let inventory_control = control.clone();
-        thread::spawn(move || {
-            if let Some(sender) = &inventory_sender {
-                let _ = sender.send(ServerEvent::ExternalIndexProgress {
-                    phase: "addon-manifest-validate-start".to_string(),
-                });
-            }
-            let result = publish_inventory_addon_manifests_from_path(
-                &inventory,
-                &storage,
-                &inventory_control,
-            );
-            match result {
-                Ok(()) => inventory_logger.log("externalIndex add-on inventory manifests ready"),
-                Err(error) if error == crate::index_build::INDEX_BUILD_CANCELLED => {
-                    inventory_logger.log("externalIndex add-on inventory manifests cancelled")
-                }
-                Err(error) => inventory_logger.log_lazy(|| {
-                    format!("externalIndex add-on inventory manifests failed error={error}")
-                }),
-            }
-            if let Some(sender) = inventory_sender {
-                let _ = sender.send(ServerEvent::ExternalIndexProgress {
-                    phase: "addon-manifest-validate-end".to_string(),
-                });
-            }
-        });
-    }
     thread::spawn(move || {
         let thread_logger = logger.clone();
         let panic_state = state.clone();
@@ -542,7 +507,7 @@ fn run_external_index_thread(
         }
         let result = addon_index_storage
             .ok_or_else(|| "add-on index storage is unavailable".to_string())
-            .and_then(|storage| load_or_build_base_game_index(&inventory_path, &storage, &control));
+            .and_then(|storage| load_or_build_loaded_addon_indexes(&inventory_path, &storage, &control));
         if let Some(sender) = &event_sender {
             for phase in ["inventory-load-end", "pac-inspect-end"] {
                 let _ = sender.send(ServerEvent::ExternalIndexProgress {
@@ -550,12 +515,7 @@ fn run_external_index_thread(
                 });
             }
             let phase = match &result {
-                Ok(result)
-                    if matches!(
-                        result.cache_status,
-                        crate::index_cache::IndexCacheStatus::Loaded
-                    ) =>
-                {
+                Ok(result) if result.rebuilt_instances == 0 && result.loaded_instances > 0 => {
                     "addon-cache-loaded"
                 }
                 Ok(_) => "addon-rebuild-end",
@@ -615,30 +575,31 @@ fn run_external_index_thread(
         )
     });
     let mut error_messages = Vec::new();
+    let prior_game_data = {
+        let state = state.lock().unwrap();
+        (
+            state.game_data_index.clone(),
+            state.game_data_summary.clone(),
+            state.cache_status.clone(),
+            state.cache_detail.clone(),
+            state.fingerprint.clone(),
+        )
+    };
     let (game_data_index, game_data_summary, cache_status, cache_detail, fingerprint) =
         match game_data_result {
             Some(Ok(result)) => {
-                let cache_status = result.cache_status.as_str().to_string();
-                let cache_detail = result.cache_status.detail().map(str::to_string);
-                let fingerprint = result.fingerprint.summary();
+                let cache_status = if result.rebuilt_instances == 0 { "loaded" } else { "rebuilt" }.to_string();
+                let cache_detail = Some(format!("loadedInstances={} rebuiltInstances={}", result.loaded_instances, result.rebuilt_instances));
+                let fingerprint = format!("workbench-loaded-addons:{}", result.loaded_instances + result.rebuilt_instances);
                 logger.log_lazy(|| format!(
-                "externalIndex gameData ready cache_status={} cache_detail={} files={} symbols={} parse_diagnostics={} cache_file_bytes={} pac_identity_ms={} cache_file_read_ms={} cache_decode_ms={} cache_validate_ms={} cache_map_rebuild_ms={} rebuild_ms={} cache_write_ms={} cache_total_ms={} elapsed_ms={}",
-                cache_status,
-                cache_detail.as_deref().unwrap_or("<none>"),
-                result.summary.files,
-                result.summary.indexed_symbols,
-                result.summary.parse_diagnostics,
-                result.cache_file_bytes.map(|bytes| bytes.to_string()).as_deref().unwrap_or("<unavailable>"),
-                result.timings.fingerprint.as_millis(),
-                result.timings.cache_file_read.as_millis(),
-                result.timings.cache_decode.as_millis(),
-                result.timings.cache_validate.as_millis(),
-                result.timings.map_rebuild.as_millis(),
-                result.timings.rebuild.as_millis(),
-                result.timings.cache_write.as_millis(),
-                result.timings.total.as_millis(),
-                start.elapsed().as_millis()
-            ));
+                    "externalIndex gameData ready cache_status={} cache_detail={} files={} symbols={} parse_diagnostics={} elapsed_ms={}",
+                    cache_status,
+                    cache_detail.as_deref().unwrap_or("<none>"),
+                    result.summary.files,
+                    result.summary.indexed_symbols,
+                    result.summary.parse_diagnostics,
+                    start.elapsed().as_millis()
+                ));
                 (
                     Some(Arc::new(result.index)),
                     Some(result.summary),
@@ -656,7 +617,7 @@ fn run_external_index_thread(
                     )
                 });
                 error_messages.push(error);
-                (None, None, None, None, None)
+                prior_game_data
             }
             None => (None, None, None, None, None),
         };
@@ -1148,11 +1109,11 @@ mod tests {
         fs::write(
             &inventory,
             format!(
-                r#"{{"schema":"reforger-addon-source-inventory-v1","roots":[{{"kind":"base-game","path":{}}}]}}"#,
-                serde_json::to_string(&addons).unwrap()
+                r#"{{"schema":"reforger-workbench-loaded-addon-graph-v1","bridgeVersion":"1.52.0","protocolVersion":1,"addons":[{{"guid":"58D0FB3206B6F859","id":"ArmaReforger","title":"Arma Reforger","sourceRoot":{}}},{{"guid":"5614BBCCBB55ED1C","id":"core","title":"core","sourceRoot":{}}}]}}"#,
+                serde_json::to_string(&addons.join("data")).unwrap(),
+                serde_json::to_string(&addons.join("core")).unwrap(),
             ),
-        )
-        .unwrap();
+        ).unwrap();
         let storage = root.join("indexes");
         let (sender, receiver) = mpsc::channel();
         let handle = start_external_index(
@@ -1184,10 +1145,7 @@ mod tests {
             crate::addon_sources::read_virtual_source(&virtual_source.uri).unwrap(),
             "class Feature {}"
         );
-        assert!(!storage
-            .join(crate::addon_sources::BASE_GAME_GUID)
-            .join("scripts")
-            .exists());
+        assert!(!storage.join("scripts").exists());
         handle.cancel();
         let _ = fs::remove_dir_all(root);
     }

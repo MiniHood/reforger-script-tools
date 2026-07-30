@@ -18,30 +18,29 @@ VS Code editor
   -> VS Code editor
 ```
 
-The extension discovers or accepts explicit paths for the base-game,
-Workbench, and user add-on roots, then atomically writes a deterministic source
-inventory under `globalStorageUri/addon-sources`. Rust is the only owner of PAC
-inspection and Enfusion analysis. It selects script catalogue entries without
-extracting a loose source tree and persists one semantic cache beneath
-`globalStorageUri/addon-indexes/<guid>/revisions/<revision>`. A small,
-atomically replaced `current.json` selects a completed revision; neither a
-partially written manifest nor a cancelled rebuild can become current.
+At language-server startup, the extension asks the running Workbench for its
+ordered loaded-add-on graph and atomically records that exact graph under
+`globalStorageUri/addon-sources`. Workbench is the sole scope authority: the
+extension does not scan, configure, or choose add-on folders. The graph carries
+GUID, display identity, and the exact source root for every loaded instance.
+For the default packed entries, the bridge derives the base root directly from
+Workbench's current project file and core as its exact sibling; this is a
+property of the live loaded project, not installation discovery.
 
-The base-game cache is built from `data/data007.pak` and `core/data.pak`.
-Workbench and user roots are recorded in the inventory so future add-on
-indexing can use the same contract. Each discovered project with a valid GUID
-gets a GUID-keyed inventory manifest and ordered pack-artifact list, but is not
-merged into the semantic snapshot until load ordering is defined. Duplicate
-GUIDs are rejected. GitHub downloads and loose-script source folders are not
-runtime acquisition paths.
+Rust is the only owner of PAC inspection and Enfusion analysis. It indexes each
+listed add-on independently, selecting only script catalogue entries from its
+direct pack files while retaining loose source files as physical documents.
+The durable cache key is canonical `(GUID, absolute source root)`, so a local
+source add-on and a downloaded copy with the same GUID never share a cache or
+virtual source revision. Completed indexes live beneath
+`globalStorageUri/addon-indexes/<instance-key>/revisions/<revision>`; an
+atomically replaced `current.json` selects a completed revision. A cancelled or
+failed rebuild never replaces the last published external snapshot.
 
-Non-semantic add-on manifest maintenance runs independently from base-game
-semantic readiness. Rust derives its aggregate publication revision from each
-project descriptor and either the available Reforger manifest hash or selected
-script catalogue/payload identity of every PAC rather than trusting
-extension-side timestamps. A matching aggregate revision is reused only after
-every GUID manifest is byte-for-byte validated; a first, changed, missing, or
-corrupt manifest is republished without delaying the base API layer.
+The immutable per-instance indexes are merged in Workbench order into one LSP
+snapshot. GitHub downloads, user add-on folder scans, and loose source
+materialization are not runtime acquisition paths. The selected PAC payload and
+loose script content establish the revision rather than trusting timestamps.
 
 Pack-backed definitions use typed, revision-qualified `reforger-pak:` document
 identities. The
@@ -257,7 +256,7 @@ raw NET API payloads, property values, confirmation tokens, or source text.
 | --- | --- | --- |
 | `src/extension.ts` | Activation and top-level wiring | Language behaviour or game-data workflows |
 | `src/extensionConfig/` | Extension-facing names, defaults, and limits | Runtime logic |
-| `src/gameData/` | Installed add-on root discovery, deterministic inventory publication, and source-refresh UI | PAC parsing or semantic analysis |
+| `src/gameData/` | Workbench-loaded graph publication and source-refresh UI | PAC parsing, add-on discovery, or semantic analysis |
 | `src/languageClient/` | Server lifecycle, transport, file notifications, and thin editor bridges | Syntax, lookup, completion ranking, or type reasoning |
 | `src/mcp/` | MCP client configuration from the packaged runtime and stable source/cache inputs | Protocol serving, indexing, or semantic queries |
 | `src/workbenchNetApi/gateway/` | Thin TypeScript process bridge from editor compiler features to the bundled Rust Workbench Gateway | NET API framing, VS Code UI, raw endpoint dispatch, or Enfusion language decisions |

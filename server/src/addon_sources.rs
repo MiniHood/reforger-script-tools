@@ -5,6 +5,8 @@ use crate::index_cache::{
     cache_format_identity, load_or_build_archive_index_with_reuse, write_atomic_bytes,
     GameDataIndexCacheResult, SourceFingerprint,
 };
+use crate::index::SymbolIndex;
+use crate::index_cache::{IndexCacheStatus, RuntimeIndexSummary};
 use crate::model::{
     source_category_for_path, SourceFileMetadata, SourceKind, VirtualSourceIdentity,
     SOURCE_PRIORITY_GAME_DATA,
@@ -23,8 +25,16 @@ use url::Url;
 pub const BASE_GAME_GUID: &str = "58D0FB3206B6F859";
 pub const VIRTUAL_SOURCE_SCHEME: &str = "reforger-pak";
 
+pub struct LoadedAddonIndexResult {
+    pub index: SymbolIndex,
+    pub summary: RuntimeIndexSummary,
+    pub rebuilt_instances: usize,
+    pub loaded_instances: usize,
+}
+
 #[derive(Debug, Deserialize)]
 struct Inventory {
+    #[allow(dead_code)]
     schema: String,
     roots: Vec<InventoryRoot>,
     #[serde(default)]
@@ -48,9 +58,39 @@ struct InventoryAddon {
     pack_files: Vec<PathBuf>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkbenchLoadedAddonGraphInventory {
+    schema: String,
+    bridge_version: String,
+    protocol_version: u32,
+    addons: Vec<WorkbenchLoadedAddonInventory>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkbenchLoadedAddonInventory {
+    guid: String,
+    id: String,
+    title: String,
+    source_root: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+struct LoadedAddonSource {
+    guid: String,
+    id: String,
+    title: String,
+    source_root: PathBuf,
+}
+
 struct BaseGameInspection {
+    guid: String,
+    display_id: String,
     root: PathBuf,
     archives: Vec<(PakArchive, Vec<PakEntry>)>,
+    loose_files: Vec<PathBuf>,
     fingerprint: SourceFingerprint,
     artifact_digest: String,
     artifacts: Vec<PackArtifact>,
@@ -106,6 +146,8 @@ struct AddonIndexManifest {
 struct CurrentRevision {
     schema: String,
     guid: String,
+    instance_key: String,
+    source_root: PathBuf,
     revision: String,
     manifest: String,
     index: String,
@@ -180,8 +222,58 @@ pub fn load_or_build_base_game_index(
 ) -> Result<GameDataIndexCacheResult, String> {
     let inspection_started = std::time::Instant::now();
     let inspection = inspect_base_game(inventory_path, control)?;
-    let inspection_elapsed = inspection_started.elapsed();
+    load_or_build_inspected_addon(inspection, storage_root, control, inspection_started.elapsed())
+}
+
+/// Builds an independent compact index for every packed add-on that the live
+/// Workbench graph names, then merges those immutable indexes in Workbench
+/// order. A graph entry is never inferred from a directory scan.
+pub fn load_or_build_loaded_addon_indexes(
+    inventory_path: &Path,
+    storage_root: &Path,
+    control: &IndexBuildControl,
+) -> Result<LoadedAddonIndexResult, String> {
+    let addons = read_loaded_addon_graph(inventory_path)?;
+    let mut indexes = Vec::with_capacity(addons.len());
+    let mut summary = RuntimeIndexSummary::default();
+    let mut rebuilt_instances = 0;
+    let mut loaded_instances = 0;
+    for addon in addons {
+        control.check()?;
+        let archives = addon_archive_paths(&addon.source_root)?;
+        let started = std::time::Instant::now();
+        let inspection = inspect_packed_addon(
+            addon.guid.clone(),
+            format!("{} ({})", addon.id, addon.title),
+            addon.source_root.clone(),
+            archives,
+            control,
+        )?;
+        let result = load_or_build_inspected_addon(inspection, storage_root, control, started.elapsed())?;
+        match result.cache_status {
+            IndexCacheStatus::Loaded => loaded_instances += 1,
+            IndexCacheStatus::Rebuilt { .. } => rebuilt_instances += 1,
+        }
+        summary.files += result.summary.files;
+        summary.bytes += result.summary.bytes;
+        summary.indexed_symbols += result.summary.indexed_symbols;
+        summary.parse_diagnostics += result.summary.parse_diagnostics;
+        summary.lossy_files += result.summary.lossy_files;
+        indexes.push(result.index);
+    }
+    let index = SymbolIndex::merged(indexes.iter());
+    Ok(LoadedAddonIndexResult { index, summary, rebuilt_instances, loaded_instances })
+}
+
+fn load_or_build_inspected_addon(
+    inspection: BaseGameInspection,
+    storage_root: &Path,
+    control: &IndexBuildControl,
+    inspection_elapsed: std::time::Duration,
+) -> Result<GameDataIndexCacheResult, String> {
     let source_root = inspection.root.clone();
+    let inspection_source_root = inspection.root.clone();
+    let addon_guid = inspection.guid.clone();
     let pack_artifacts = inspection.artifacts.clone();
     let scripts = inspection.scripts.clone();
     let fingerprint = inspection.fingerprint.clone();
@@ -194,7 +286,8 @@ pub fn load_or_build_base_game_index(
         } => (*pack_count, *catalogue_entry_count),
         _ => unreachable!("base-game PAC inspection always creates an add-on fingerprint"),
     };
-    let addon_root = storage_root.join(BASE_GAME_GUID);
+    let instance_key = addon_instance_key(&inspection.guid, &source_root);
+    let addon_root = storage_root.join(&instance_key);
     let revision_relative = format!("revisions/{artifact_digest}");
     let revision_root = addon_root.join(&revision_relative);
     let cache = revision_root.join("symbols.bin");
@@ -203,7 +296,7 @@ pub fn load_or_build_base_game_index(
         .into_iter()
         .map(|mut script| {
             script.uri =
-                virtual_source_uri(BASE_GAME_GUID, &artifact_digest, &script.logical_path)?;
+                virtual_source_uri(&inspection.guid, &artifact_digest, &script.logical_path)?;
             Ok(script)
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -214,12 +307,10 @@ pub fn load_or_build_base_game_index(
         cache_format_version,
         cache_index_shape: cache_index_shape.to_string(),
         extractor_schema: "pac1-selected-script-payload-v2".to_string(),
-        guid: BASE_GAME_GUID.to_string(),
-        display_id: "Arma Reforger base game".to_string(),
+        guid: addon_guid.clone(),
+        display_id: inspection.display_id.clone(),
         source_root,
-        source_precedence:
-            "installed game data007 scripts followed by installed game core; Workbench core is inventory-only to avoid a duplicate semantic layer"
-                .to_string(),
+        source_precedence: "Workbench loaded add-on order".to_string(),
         revision: artifact_digest.clone(),
         pack_count,
         script_count,
@@ -252,14 +343,37 @@ pub fn load_or_build_base_game_index(
     control.check()?;
     let current = CurrentRevision {
         schema: "reforger-addon-current-revision-v1".to_string(),
-        guid: BASE_GAME_GUID.to_string(),
+        guid: addon_guid.clone(),
+        instance_key,
+        source_root: inspection_source_root,
         revision: artifact_digest.clone(),
         manifest: format!("{revision_relative}/manifest.json"),
         index: format!("{revision_relative}/symbols.bin"),
     };
     write_json_atomic(&addon_root.join("current.json"), &current)?;
-    register_source_revision(BASE_GAME_GUID, &artifact_digest, source_revision);
+    register_source_revision(&addon_guid, &artifact_digest, source_revision);
     Ok(result)
+}
+
+fn loose_script_paths(root: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut paths = Vec::new();
+    collect_loose_script_paths(root, &mut paths)?;
+    paths.sort();
+    Ok(paths)
+}
+
+fn collect_loose_script_paths(root: &Path, paths: &mut Vec<PathBuf>) -> Result<(), String> {
+    for entry in fs::read_dir(root)
+        .map_err(|error| format!("Failed to read Workbench add-on root {}: {error}", root.display()))?
+    {
+        let path = entry.map_err(|error| error.to_string())?.path();
+        if path.is_dir() {
+            collect_loose_script_paths(&path, paths)?;
+        } else if path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("c")) {
+            paths.push(path);
+        }
+    }
+    Ok(())
 }
 
 pub fn publish_inventory_addon_manifests_from_path(
@@ -350,6 +464,22 @@ fn inspect_base_game(
     control: &IndexBuildControl,
 ) -> Result<BaseGameInspection, String> {
     let root = base_game_root(inventory_path)?;
+    inspect_packed_addon(
+        BASE_GAME_GUID.to_string(),
+        "Arma Reforger base game".to_string(),
+        root.clone(),
+        base_game_archive_paths(&root).to_vec(),
+        control,
+    )
+}
+
+fn inspect_packed_addon(
+    guid: String,
+    display_id: String,
+    root: PathBuf,
+    archive_paths: Vec<PathBuf>,
+    control: &IndexBuildControl,
+) -> Result<BaseGameInspection, String> {
     let mut hasher = Sha256::new();
     hasher.update(b"reforger-base-pac-catalogue-v2");
     let (cache_schema, cache_version, cache_shape) = cache_format_identity();
@@ -357,12 +487,16 @@ fn inspect_base_game(
     hasher.update(cache_version.to_le_bytes());
     hasher.update(cache_shape.as_bytes());
     hasher.update(b"pac1-selected-script-payload-v2");
+    // A virtual packed-source revision is also an add-on-instance identity.
+    // Two loaded roots can legitimately share GUID and bytes, but their source
+    // URIs must still never target the other instance's archive.
+    hasher.update(root.to_string_lossy().to_ascii_lowercase().as_bytes());
     let mut archives = Vec::new();
     let mut latest_modified = 0_u128;
     let mut script_count = 0_usize;
     let mut artifacts = Vec::new();
     let mut scripts = Vec::new();
-    for archive_path in base_game_archive_paths(&root) {
+    for archive_path in archive_paths {
         control.check()?;
         let metadata = fs::metadata(&archive_path)
             .map_err(|error| format!("Failed to stat {}: {error}", archive_path.display()))?;
@@ -420,17 +554,28 @@ fn inspect_base_game(
         script_count += entries.len();
         archives.push((archive, entries));
     }
+    let loose_files = loose_script_paths(&root)?;
+    for file in &loose_files {
+        control.check()?;
+        let relative = normalized_relative(&root, file);
+        hasher.update(b"loose-script");
+        hasher.update(relative.as_bytes());
+        hasher.update(fs::read(file).map_err(|error| format!("Failed to read {}: {error}", file.display()))?);
+    }
     let artifact_digest = format!("{:x}", hasher.finalize());
     Ok(BaseGameInspection {
+        guid: guid.clone(),
+        display_id,
         root,
         fingerprint: SourceFingerprint::Addon {
-            guid: BASE_GAME_GUID.to_string(),
+            guid,
             artifact_digest: artifact_digest.clone(),
             pack_count: archives.len(),
-            catalogue_entry_count: script_count,
+            catalogue_entry_count: script_count + loose_files.len(),
         },
         artifact_digest,
         archives,
+        loose_files,
         artifacts,
         scripts,
     })
@@ -453,7 +598,7 @@ fn build_inspected_base_game(
                 return Err(format!("Duplicate base-game script path: {logical}"));
             }
             let relative = PathBuf::from(&logical);
-            let uri = virtual_source_uri(BASE_GAME_GUID, &revision, &logical)?;
+            let uri = virtual_source_uri(&inspection.guid, &revision, &logical)?;
             let expected = source_revision
                 .entries
                 .get(&uri)
@@ -481,7 +626,7 @@ fn build_inspected_base_game(
                     absolute_path: None,
                     virtual_source: Some(VirtualSourceIdentity {
                         uri,
-                        addon_guid: BASE_GAME_GUID.to_string(),
+                        addon_guid: inspection.guid.clone(),
                         revision: revision.clone(),
                         logical_path: logical,
                     }),
@@ -491,6 +636,24 @@ fn build_inspected_base_game(
                 },
             });
         }
+    }
+    for file in inspection.loose_files {
+        control.check()?;
+        let relative = file.strip_prefix(&inspection.root).unwrap_or(&file).to_path_buf();
+        sources.push(IndexSourceText {
+            display_path: file.clone(),
+            bytes: fs::read(&file)
+                .map_err(|error| format!("Failed to read {}: {error}", file.display()))?,
+            metadata: SourceFileMetadata {
+                kind: SourceKind::GameData,
+                category: source_category_for_path(SourceKind::GameData, Some(&relative)),
+                absolute_path: Some(file),
+                virtual_source: None,
+                root_path: Some(inspection.root.clone()),
+                relative_path: Some(relative),
+                priority: SOURCE_PRIORITY_GAME_DATA,
+            },
+        });
     }
     build_index_from_sources(sources, control)
 }
@@ -508,6 +671,19 @@ fn base_game_archive_paths(root: &Path) -> [PathBuf; 2] {
         root.join("data").join("data007.pak"),
         root.join("core").join("data.pak"),
     ]
+}
+
+fn addon_archive_paths(root: &Path) -> Result<Vec<PathBuf>, String> {
+    let entries = fs::read_dir(root)
+        .map_err(|error| format!("Failed to read Workbench add-on root {}: {error}", root.display()))?;
+    let mut archives = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file())
+        .filter(|path| path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("pak")))
+        .collect::<Vec<_>>();
+    archives.sort();
+    Ok(archives)
 }
 
 fn write_json_atomic(path: &Path, value: &impl Serialize) -> Result<(), String> {
@@ -529,22 +705,56 @@ fn base_game_root(inventory_path: &Path) -> Result<PathBuf, String> {
 }
 
 fn read_inventory(inventory_path: &Path) -> Result<Inventory, String> {
+    let graph = read_loaded_addon_graph(inventory_path)?;
+    let base_game = graph
+        .iter()
+        .find(|addon| addon.guid.eq_ignore_ascii_case(BASE_GAME_GUID))
+        .ok_or_else(|| "Workbench has not loaded the Arma Reforger base-game add-on".to_string())?;
+    let addons_root = base_game.source_root.parent().map(Path::to_path_buf).ok_or_else(|| {
+        "Workbench base-game source root has no add-ons parent directory".to_string()
+    })?;
+    Ok(Inventory {
+        schema: "reforger-workbench-loaded-addon-graph-v1".to_string(),
+        roots: vec![InventoryRoot {
+            kind: "base-game".to_string(),
+            path: Some(addons_root),
+        }],
+        addons: Vec::new(),
+    })
+}
+
+fn read_loaded_addon_graph(inventory_path: &Path) -> Result<Vec<LoadedAddonSource>, String> {
     let raw = fs::read_to_string(inventory_path).map_err(|error| {
         format!(
             "Failed to read add-on source inventory {}: {error}",
             inventory_path.display()
         )
     })?;
-    let inventory: Inventory = serde_json::from_str(&raw).map_err(|error| {
+    let graph: WorkbenchLoadedAddonGraphInventory = serde_json::from_str(&raw).map_err(|error| {
         format!(
-            "Invalid add-on source inventory {}: {error}",
+            "Invalid Workbench loaded add-on graph {}: {error}",
             inventory_path.display()
         )
     })?;
-    if inventory.schema != "reforger-addon-source-inventory-v1" {
-        return Err("Unsupported add-on source inventory schema".to_string());
+    if graph.schema != "reforger-workbench-loaded-addon-graph-v1" || graph.protocol_version != 1 {
+        return Err("Unsupported Workbench loaded add-on graph schema or protocol".to_string());
     }
-    Ok(inventory)
+    if graph.bridge_version.is_empty() || graph.addons.is_empty() {
+        return Err("Workbench loaded add-on graph is empty or malformed".to_string());
+    }
+    let mut identities = BTreeSet::new();
+    graph.addons.into_iter().map(|addon| {
+        let guid = addon.guid.to_ascii_uppercase();
+        let source_root = fs::canonicalize(&addon.source_root).map_err(|_| {
+            "Workbench loaded add-on graph contains an inaccessible source root".to_string()
+        })?;
+        if guid.len() != 16 || !guid.bytes().all(|byte| byte.is_ascii_hexdigit())
+            || addon.id.is_empty() || addon.title.is_empty()
+            || !identities.insert((guid.clone(), source_root.clone())) {
+            return Err("Workbench loaded add-on graph contains an invalid or duplicate instance".to_string());
+        }
+        Ok(LoadedAddonSource { guid, id: addon.id, title: addon.title, source_root })
+    }).collect()
 }
 
 fn modified_unix_ms(metadata: &fs::Metadata) -> u128 {
@@ -607,7 +817,7 @@ fn packed_source_revision(inspection: &BaseGameInspection) -> Arc<PackedSourceRe
     for (_, selected) in &inspection.archives {
         for entry in selected {
             let uri = virtual_source_uri(
-                BASE_GAME_GUID,
+                &inspection.guid,
                 &inspection.artifact_digest,
                 entry.logical_path(),
             )
@@ -655,6 +865,14 @@ fn revision_key(guid: &str, revision: &str) -> String {
         guid.to_ascii_uppercase(),
         revision.to_ascii_lowercase()
     )
+}
+
+fn addon_instance_key(guid: &str, source_root: &Path) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(guid.to_ascii_uppercase().as_bytes());
+    hasher.update(b"\0");
+    hasher.update(source_root.to_string_lossy().to_ascii_lowercase().as_bytes());
+    format!("{}-{:x}", guid.to_ascii_uppercase(), hasher.finalize())
 }
 
 fn register_source_revision(guid: &str, revision: &str, sources: Arc<PackedSourceRevision>) {
@@ -890,11 +1108,58 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         let inventory = root.join("inventory.json");
         fs::write(&inventory, r#"{"schema":"unknown","roots":[]}"#).unwrap();
-        assert!(
-            build_base_game_index(&inventory, &IndexBuildControl::default())
-                .unwrap_err()
-                .contains("Unsupported")
-        );
+        assert!(build_base_game_index(&inventory, &IndexBuildControl::default()).is_err());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn accepts_only_the_workbench_loaded_graph_and_derives_the_base_addons_parent() {
+        let root = test_root("workbench_graph");
+        let graph = root.join("graph.json");
+        let data_root = root.join("addons").join("data");
+        fs::create_dir_all(&data_root).unwrap();
+        fs::write(
+            &graph,
+            format!(
+                r#"{{"schema":"reforger-workbench-loaded-addon-graph-v1","bridgeVersion":"1.52.0","protocolVersion":1,"addons":[{{"guid":"{BASE_GAME_GUID}","id":"ArmaReforger","title":"Arma Reforger","sourceRoot":{}}}]}}"#,
+                serde_json::to_string(&data_root).unwrap(),
+            ),
+        )
+        .unwrap();
+
+        let inventory = read_inventory(&graph).unwrap();
+
+        assert_eq!(inventory.roots.len(), 1);
+        assert_eq!(inventory.roots[0].path, data_root.parent().map(Path::to_path_buf));
+        let legacy = root.join("legacy.json");
+        fs::write(&legacy, r#"{"schema":"reforger-addon-source-inventory-v1","roots":[]}"#).unwrap();
+        assert!(read_inventory(&legacy).is_err());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn builds_independent_packed_and_loose_indexes_from_the_workbench_graph() {
+        let root = test_root("loaded_addon_instances");
+        let packed = root.join("packed");
+        let loose = root.join("loose");
+        fs::create_dir_all(&packed).unwrap();
+        fs::create_dir_all(loose.join("scripts")).unwrap();
+        write_fixture_pak(&packed.join("data.pak"), &[("Packed.c", b"class Packed {}")]);
+        fs::write(loose.join("scripts/Loose.c"), "class Loose {}").unwrap();
+        let graph = root.join("graph.json");
+        fs::write(&graph, format!(
+            r#"{{"schema":"reforger-workbench-loaded-addon-graph-v1","bridgeVersion":"1.52.0","protocolVersion":1,"addons":[{{"guid":"1111111111111111","id":"Packed","title":"Packed","sourceRoot":{}}},{{"guid":"2222222222222222","id":"Loose","title":"Loose","sourceRoot":{}}}]}}"#,
+            serde_json::to_string(&packed).unwrap(),
+            serde_json::to_string(&loose).unwrap(),
+        )).unwrap();
+        let storage = root.join("indexes");
+
+        let first = load_or_build_loaded_addon_indexes(&graph, &storage, &IndexBuildControl::default()).unwrap();
+        assert_eq!(first.summary.files, 2);
+        assert_eq!(first.rebuilt_instances, 2);
+        assert_eq!(fs::read_dir(&storage).unwrap().count(), 2);
+        let second = load_or_build_loaded_addon_indexes(&graph, &storage, &IndexBuildControl::default()).unwrap();
+        assert_eq!(second.loaded_instances, 2);
         let _ = fs::remove_dir_all(root);
     }
 
@@ -925,20 +1190,8 @@ mod tests {
             &core.join("data.pak"),
             &[("CoreFeature.c", b"class CoreFeature {}")],
         );
-        let workbench_addons = root.join("workbench-addons");
-        let workbench_core = workbench_addons.join("core");
-        fs::create_dir_all(&workbench_core).unwrap();
-        fs::copy(core.join("data.pak"), workbench_core.join("data.pak")).unwrap();
         let inventory = root.join("inventory.json");
-        fs::write(
-            &inventory,
-            format!(
-                r#"{{"schema":"reforger-addon-source-inventory-v1","roots":[{{"kind":"base-game","path":{}}},{{"kind":"workbench","path":{}}}]}}"#,
-                serde_json::to_string(&addons).unwrap(),
-                serde_json::to_string(&workbench_addons).unwrap(),
-            ),
-        )
-        .unwrap();
+        write_workbench_graph_fixture(&inventory, &data);
         let storage = root.join("indexes");
 
         let rebuilt =
@@ -1012,14 +1265,7 @@ mod tests {
             &[("Core.c", b"class Core {}")],
         );
         let inventory = root.join("inventory.json");
-        fs::write(
-            &inventory,
-            format!(
-                r#"{{"schema":"reforger-addon-source-inventory-v1","roots":[{{"kind":"base-game","path":{}}}]}}"#,
-                serde_json::to_string(&addons).unwrap()
-            ),
-        )
-        .unwrap();
+        write_workbench_graph_fixture(&inventory, &addons.join("data"));
         let storage = root.join("indexes");
         load_or_build_base_game_index(&inventory, &storage, &IndexBuildControl::default()).unwrap();
         let first: CurrentRevision = serde_json::from_slice(
@@ -1195,6 +1441,17 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ))
+    }
+
+    fn write_workbench_graph_fixture(path: &Path, data_root: &Path) {
+        fs::write(
+            path,
+            format!(
+                r#"{{"schema":"reforger-workbench-loaded-addon-graph-v1","bridgeVersion":"1.52.0","protocolVersion":1,"addons":[{{"guid":"{BASE_GAME_GUID}","id":"ArmaReforger","title":"Arma Reforger","sourceRoot":{}}}]}}"#,
+                serde_json::to_string(data_root).unwrap(),
+            ),
+        )
+        .unwrap();
     }
 
     fn write_fixture_pak(path: &Path, entries: &[(&str, &[u8])]) {

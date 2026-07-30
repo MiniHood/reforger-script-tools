@@ -34,7 +34,9 @@ import {
 	languageClientNotifications,
 	languageClientRequests,
 } from '../extensionConfig/languageClient';
-import { resolveLocalSourceInventoryPath } from '../gameData/gameData';
+import { writeLoadedAddonSourceInventory } from '../gameData/localSourceInventory';
+import { workbenchConfig, workbenchDefaults } from '../extensionConfig/workbench';
+import { WorkbenchGateway } from '../workbenchNetApi/gateway/workbenchGateway';
 import { registerHtmlHoverBridge } from './hoverBridge';
 import {
 	discoverWorkspaceScriptRoots,
@@ -277,13 +279,19 @@ async function startLanguageClient(
 		},
 	);
 
-	const sourceInventoryPath = await resolveLocalSourceInventoryPath(context);
+	const sourceInventoryPath = await resolveWorkbenchLoadedAddonInventory(
+		context,
+		serverPath,
+		outputChannel,
+	);
 	const serverArgs = [
 		'--addon-index-storage',
 		path.join(context.globalStorageUri.fsPath, languageClientIndexCache.rootFolder),
-		'--addon-source-inventory', sourceInventoryPath,
 		...bracketColoringServerArguments(bracketColoring),
 	];
+	if (sourceInventoryPath) {
+		serverArgs.push('--addon-source-inventory', sourceInventoryPath);
+	}
 	if (diagnosticsEnabled()) {
 		const logsRoot = path.join(context.globalStorageUri.fsPath, languageClientLogs.rootFolder);
 		await fs.mkdir(logsRoot, { recursive: true });
@@ -301,7 +309,7 @@ async function startLanguageClient(
 		serverArgs.push('--workspace-scripts', root);
 	}
 	logLanguageClientStartupTiming(context, 'languageServerArgumentsReady', {
-		hasAddonSourceInventory: true,
+		hasAddonSourceInventory: sourceInventoryPath !== undefined,
 		workspaceScriptRoots: workspaceScriptRoots.length,
 		serverArgs: serverArgs.length,
 		bracketColoring,
@@ -402,6 +410,41 @@ async function startLanguageClient(
 		vscode.window.showWarningMessage(`Reforger language server failed to start: ${message}`);
 		diagnostic('languageClient.startFailed');
 	}
+}
+
+async function resolveWorkbenchLoadedAddonInventory(
+	context: vscode.ExtensionContext,
+	serverPath: string,
+	outputChannel: vscode.LogOutputChannel,
+): Promise<string | undefined> {
+	const configuration = vscode.workspace.getConfiguration(workbenchConfig.section);
+	const gateway = new WorkbenchGateway({
+		enabled: configuration.get(workbenchConfig.settings.enabled, workbenchDefaults.enabled),
+		endpoint: {
+			host: configuration.get(workbenchConfig.settings.host, workbenchDefaults.host),
+			port: configuration.get(workbenchConfig.settings.port, workbenchDefaults.port),
+		},
+		serverPath: Promise.resolve(serverPath),
+	});
+	const result = await gateway.getLoadedAddonGraph();
+	if (!result.ok) {
+		outputChannel.appendLine(
+			`Workbench-loaded add-on graph unavailable (${result.failure.category}): ${result.failure.recoveryHint}`,
+		);
+		logLanguageClientStartupTiming(context, 'workbenchLoadedAddonGraphUnavailable', {
+			category: result.failure.category,
+		});
+		return undefined;
+	}
+	const inventoryPath = await writeLoadedAddonSourceInventory(context, result.value);
+	outputChannel.appendLine(
+		`Workbench-loaded add-ons: ${result.value.addons.length} (bridge ${result.value.bridgeVersion})`,
+	);
+	logLanguageClientStartupTiming(context, 'workbenchLoadedAddonGraphReady', {
+		addons: result.value.addons.length,
+		protocolVersion: result.value.protocolVersion,
+	});
+	return inventoryPath;
 }
 
 function logFirstSemanticTokenResponse(

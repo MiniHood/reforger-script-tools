@@ -8,10 +8,11 @@ decisions.
 
 PAC1 archive inspection is also Rust-owned. Its pack module builds a bounded
 logical file catalogue and reads only caller-selected entries. The add-on
-source module composes that mechanism with GUID identity, pack-set
-fingerprints, one durable cache per add-on, and virtual source reads. The pack
-module itself does not infer add-on identity, load order, cache keys, or
-indexing policy.
+source module receives the ordered Workbench-loaded graph, composes that
+mechanism with canonical `(GUID, source-root)` instance identity, pack-set and
+loose-source fingerprints, independently revisioned caches, and virtual source
+reads. The pack module itself does not infer add-on identity, load order, cache
+keys, or indexing policy.
 
 ## Contract
 
@@ -55,8 +56,9 @@ before an atomic current-pointer publication; failed or cancelled rebuilds do
 not replace the previously complete cache.
 
 Packed files carry a typed virtual-source identity in semantic metadata rather
-than overloading a filesystem path. The identity includes add-on GUID,
-semantic revision, logical script path, and URI. Definition serving retains
+than overloading a filesystem path. The identity includes the loaded add-on
+instance (GUID and canonical source root through its revision), semantic
+revision, logical script path, and URI. Definition serving retains
 immutable revision registries. Indexing and definition serving hash and decode
 each entry from the same captured compressed bytes, so a concurrent pack
 update cannot apply an old symbol span to newer bytes.

@@ -10,6 +10,8 @@ pub const BRIDGE_OPEN_EDITOR_SOURCE: &str = include_str!("../bridge/RST_Workbenc
 pub const BRIDGE_OPEN_RESOURCE_SOURCE: &str = include_str!("../bridge/RST_WorkbenchOpenResource.c");
 pub const BRIDGE_PLAY_SESSION_SOURCE: &str = include_str!("../bridge/RST_WorkbenchPlaySession.c");
 pub const BRIDGE_PROJECT_CONTEXT_SOURCE: &str = include_str!("../bridge/RST_WorkbenchProjectContext.c");
+pub const BRIDGE_LOADED_ADDON_GRAPH_SOURCE: &str =
+    include_str!("../bridge/RST_WorkbenchLoadedAddonGraph.c");
 pub const BRIDGE_INSPECT_RESOURCE_SOURCE: &str = include_str!("../bridge/RST_WorkbenchInspectResource.c");
 pub const BRIDGE_WORLD_SELECTION_SOURCE: &str = include_str!("../bridge/RST_WorkbenchWorldSelection.c");
 pub const BRIDGE_SELECTED_ENTITY_HIERARCHY_SOURCE: &str = include_str!("../bridge/RST_WorkbenchSelectedEntityHierarchy.c");

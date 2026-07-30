@@ -104,7 +104,7 @@ pub struct WorkbenchGateway {
     request_lock: Arc<Mutex<()>>,
 }
 
-pub const WORKBENCH_BRIDGE_VERSION: &str = "1.51.0";
+pub const WORKBENCH_BRIDGE_VERSION: &str = "1.52.0";
 pub const WORKBENCH_BRIDGE_PROTOCOL_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -277,6 +277,23 @@ pub struct WorkbenchProjectContext {
     pub protocol_version: u32,
     pub loaded_addons: Vec<String>,
     pub loaded_addons_truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkbenchLoadedAddon {
+    pub guid: String,
+    pub id: String,
+    pub title: String,
+    pub source_root: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkbenchLoadedAddonGraph {
+    pub bridge_version: String,
+    pub protocol_version: u32,
+    pub addons: Vec<WorkbenchLoadedAddon>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -1389,7 +1406,9 @@ impl WorkbenchController {
                 json!({"handler": "RST_WorkbenchState"}),
             )
         })?;
-        if raw.protocol_version != WORKBENCH_BRIDGE_PROTOCOL_VERSION {
+        if raw.bridge_version != WORKBENCH_BRIDGE_VERSION
+            || raw.protocol_version != WORKBENCH_BRIDGE_PROTOCOL_VERSION
+        {
             return Err(self.correlate_failure_details(
                 "state",
                 "incompatible-handler",
@@ -1630,7 +1649,9 @@ impl WorkbenchController {
                 json!({"handler": "RST_WorkbenchProjectContext"}),
             )
         })?;
-        if raw.protocol_version != WORKBENCH_BRIDGE_PROTOCOL_VERSION {
+        if raw.bridge_version != WORKBENCH_BRIDGE_VERSION
+            || raw.protocol_version != WORKBENCH_BRIDGE_PROTOCOL_VERSION
+        {
             return Err(self.correlate_failure_details(
                 "project_context", "incompatible-handler", failure(WorkbenchFailureCode::Protocol),
                 json!({"handler": "RST_WorkbenchProjectContext", "activeBridgeVersion": raw.bridge_version, "activeProtocolVersion": raw.protocol_version}),
@@ -1646,6 +1667,79 @@ impl WorkbenchController {
         };
         self.log_event_timed("project-context", "success", started, json!({"loadedAddonCount": result.loaded_addons.len(), "loadedAddonsTruncated": result.loaded_addons_truncated}));
         Ok(result)
+    }
+
+    pub fn loaded_addon_graph(&self) -> Result<WorkbenchLoadedAddonGraph, WorkbenchFailure> {
+        let started = Instant::now();
+        let value = self
+            .gateway
+            .request(
+                json!({"APIFunc": "RST_WorkbenchLoadedAddonGraph"}),
+                self.options.gateway.status_deadline,
+            )
+            .map_err(|failure| {
+                self.correlate_failure_details(
+                    "loaded_addon_graph",
+                    failure_code(failure.code),
+                    failure,
+                    json!({"handler": "RST_WorkbenchLoadedAddonGraph"}),
+                )
+            })?;
+        let raw: RawWorkbenchLoadedAddonGraph = serde_json::from_value(value).map_err(|_| {
+            self.correlate_failure_details(
+                "loaded_addon_graph",
+                "workbench_protocol_error",
+                failure(WorkbenchFailureCode::Protocol),
+                json!({"handler": "RST_WorkbenchLoadedAddonGraph"}),
+            )
+        })?;
+        if raw.protocol_version != WORKBENCH_BRIDGE_PROTOCOL_VERSION {
+            return Err(self.correlate_failure_details(
+                "loaded_addon_graph",
+                "incompatible-handler",
+                failure(WorkbenchFailureCode::Protocol),
+                json!({"handler": "RST_WorkbenchLoadedAddonGraph", "activeBridgeVersion": raw.bridge_version, "activeProtocolVersion": raw.protocol_version}),
+            ));
+        }
+        let addons: Vec<WorkbenchLoadedAddon> = serde_json::from_str(&raw.graph_json).map_err(|_| {
+            self.correlate_failure_details(
+                "loaded_addon_graph",
+                "workbench_protocol_error",
+                failure(WorkbenchFailureCode::Protocol),
+                json!({"handler": "RST_WorkbenchLoadedAddonGraph"}),
+            )
+        })?;
+        if addons.len() > 256 || addons.iter().any(|addon| !valid_loaded_addon(addon)) {
+            return Err(self.correlate_failure_details(
+                "loaded_addon_graph",
+                "workbench_protocol_error",
+                failure(WorkbenchFailureCode::Protocol),
+                json!({"handler": "RST_WorkbenchLoadedAddonGraph"}),
+            ));
+        }
+        let mut instance_identities = HashSet::new();
+        if addons.iter().any(|addon| {
+            !instance_identities.insert((addon.guid.clone(), addon.source_root.clone()))
+        }) {
+            return Err(self.correlate_failure_details(
+                "loaded_addon_graph",
+                "workbench_protocol_error",
+                failure(WorkbenchFailureCode::Protocol),
+                json!({"handler": "RST_WorkbenchLoadedAddonGraph"}),
+            ));
+        }
+        let graph = WorkbenchLoadedAddonGraph {
+            bridge_version: raw.bridge_version,
+            protocol_version: raw.protocol_version,
+            addons,
+        };
+        self.log_event_timed(
+            "loaded-addon-graph",
+            "success",
+            started,
+            json!({"loadedAddonCount": graph.addons.len()}),
+        );
+        Ok(graph)
     }
 
     pub fn inspect_resource(
@@ -5279,6 +5373,16 @@ struct RawBridgeProjectContext {
 }
 
 #[derive(Deserialize)]
+struct RawWorkbenchLoadedAddonGraph {
+    #[serde(rename = "bridgeVersion")]
+    bridge_version: String,
+    #[serde(rename = "protocolVersion")]
+    protocol_version: u32,
+    #[serde(rename = "graphJson")]
+    graph_json: String,
+}
+
+#[derive(Deserialize)]
 struct RawBridgeWorldSelection {
     #[serde(rename = "bridgeVersion")]
     bridge_version: String,
@@ -6963,6 +7067,14 @@ fn valid_resource_root_path(value: &str) -> bool {
         && !logical_path.contains([';', '|', '\\'])
 }
 
+fn valid_loaded_addon(addon: &WorkbenchLoadedAddon) -> bool {
+    addon.guid.len() == 16
+        && addon.guid.bytes().all(|byte| byte.is_ascii_hexdigit())
+        && !addon.id.trim().is_empty()
+        && !addon.title.trim().is_empty()
+        && addon.source_root.is_absolute()
+}
+
 fn parse_resource_search_hit(value: &str) -> Result<WorkbenchResourceSearchHit, WorkbenchFailure> {
     let mut fields = value.split('|');
     let resource_name = fields.next().unwrap_or_default();
@@ -7363,6 +7475,10 @@ fn bridge_payload() -> &'static [(&'static str, &'static str)] {
             BRIDGE_PROJECT_CONTEXT_SOURCE,
         ),
         (
+            "RST_WorkbenchLoadedAddonGraph.c",
+            BRIDGE_LOADED_ADDON_GRAPH_SOURCE,
+        ),
+        (
             "RST_WorkbenchInspectResource.c",
             BRIDGE_INSPECT_RESOURCE_SOURCE,
         ),
@@ -7605,6 +7721,37 @@ mod tests {
         assert!(!super::workbench_bool(&json!(false)));
         assert!(!super::workbench_bool(&json!(0)));
         assert!(!super::workbench_bool(&Value::Null));
+    }
+
+    #[test]
+    fn loaded_addon_graph_preserves_workbench_order_and_exact_source_roots() {
+        let (port, peer) = start_peer(|request| {
+            assert_eq!(request, json!({"APIFunc": "RST_WorkbenchLoadedAddonGraph"}));
+            json!({
+                "bridgeVersion": "1.52.0",
+                "protocolVersion": 1,
+                "graphJson": "[{\"guid\":\"58D0FB3206B6F859\",\"id\":\"ArmaReforger\",\"title\":\"Arma Reforger\",\"sourceRoot\":\"C:/Game/addons/data\"},{\"guid\":\"684CE8AA3B1D6573\",\"id\":\"GCSuppression\",\"title\":\"GC Suppression\",\"sourceRoot\":\"C:/Workbench/addons/GC-Suppression\"}]"
+            })
+        });
+        let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
+            gateway: super::WorkbenchGatewayOptions {
+                port,
+                status_deadline: Duration::from_secs(1),
+                ..super::WorkbenchGatewayOptions::default()
+            },
+            ..super::WorkbenchControllerOptions::default()
+        });
+
+        let graph = controller.loaded_addon_graph().unwrap();
+
+        assert_eq!(graph.addons.len(), 2);
+        assert_eq!(graph.addons[0].guid, "58D0FB3206B6F859");
+        assert_eq!(graph.addons[1].id, "GCSuppression");
+        assert_eq!(
+            graph.addons[1].source_root,
+            std::path::PathBuf::from("C:/Workbench/addons/GC-Suppression")
+        );
+        peer.join().unwrap();
     }
 
     #[test]
