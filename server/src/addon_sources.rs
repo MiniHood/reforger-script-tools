@@ -18,12 +18,14 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
+use std::thread;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 use url::Url;
 
 pub const BASE_GAME_GUID: &str = "58D0FB3206B6F859";
 pub const VIRTUAL_SOURCE_SCHEME: &str = "reforger-pak";
+const MAX_ADDON_INDEX_WORKERS: usize = 4;
 
 pub struct LoadedAddonIndexResult {
     pub index: SymbolIndex,
@@ -57,6 +59,19 @@ pub struct LoadedAddonIndexInstance {
     pub summary: RuntimeIndexSummary,
     pub timings: crate::index_cache::IndexCacheTimings,
     pub cache_file_bytes: Option<u64>,
+}
+
+struct InspectedAddonTask {
+    sequence: usize,
+    addon: LoadedAddonSource,
+    inspection: BaseGameInspection,
+    inspection_elapsed: Duration,
+}
+
+struct CompletedAddonTask {
+    sequence: usize,
+    addon: LoadedAddonSource,
+    result: Result<GameDataIndexCacheResult, String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -287,13 +302,12 @@ pub fn load_or_build_loaded_addon_indexes(
     addons.sort_by(|left, right| {
         (&left.guid, &left.source_root, &left.id).cmp(&(&right.guid, &right.source_root, &right.id))
     });
-    let mut indexes = Vec::with_capacity(addons.len());
+    let mut tasks = Vec::with_capacity(addons.len());
     let mut summary = RuntimeIndexSummary::default();
     let mut rebuilt_instances = 0;
     let mut loaded_instances = 0;
     let mut workspace_excluded_instances = 0;
-    let mut instances = Vec::with_capacity(addons.len());
-    for addon in addons {
+    for (sequence, addon) in addons.into_iter().enumerate() {
         control.check()?;
         if workspace_roots
             .iter()
@@ -312,8 +326,72 @@ pub fn load_or_build_loaded_addon_indexes(
             archives,
             control,
         )?;
-        let result =
-            load_or_build_inspected_addon(inspection, storage_root, control, started.elapsed())?;
+        tasks.push(InspectedAddonTask {
+            sequence,
+            addon,
+            inspection,
+            inspection_elapsed: started.elapsed(),
+        });
+    }
+    let task_count = tasks.len();
+    // Largest script sets start first, so the bounded worker pool overlaps the
+    // known long tail without attaching behavior to a particular add-on name.
+    tasks.sort_by(|left, right| {
+        let left_weight = left.inspection.scripts.len() + left.inspection.loose_files.len();
+        let right_weight = right.inspection.scripts.len() + right.inspection.loose_files.len();
+        left_weight
+            .cmp(&right_weight)
+            .then_with(|| right.sequence.cmp(&left.sequence))
+    });
+    let tasks = Arc::new(Mutex::new(tasks));
+    let (completed_sender, completed_receiver) = mpsc::channel();
+    let worker_count = addon_index_worker_count(storage_root, task_count)?;
+    let mut workers = Vec::with_capacity(worker_count);
+    for _ in 0..worker_count {
+        let tasks = tasks.clone();
+        let completed_sender = completed_sender.clone();
+        let storage_root = storage_root.to_path_buf();
+        let control = control.clone();
+        workers.push(thread::spawn(move || loop {
+            let task = tasks.lock().unwrap().pop();
+            let Some(task) = task else {
+                return;
+            };
+            let result = control.check().and_then(|()| {
+                load_or_build_inspected_addon(
+                    task.inspection,
+                    &storage_root,
+                    &control,
+                    task.inspection_elapsed,
+                )
+            });
+            let _ = completed_sender.send(CompletedAddonTask {
+                sequence: task.sequence,
+                addon: task.addon,
+                result,
+            });
+        }));
+    }
+    drop(completed_sender);
+    let mut completed = Vec::with_capacity(task_count);
+    for _ in 0..task_count {
+        completed.push(
+            completed_receiver
+                .recv()
+                .map_err(|error| format!("Add-on index worker ended unexpectedly: {error}"))?,
+        );
+    }
+    for worker in workers {
+        worker
+            .join()
+            .map_err(|_| "Add-on index worker panicked".to_string())?;
+    }
+    completed.sort_by_key(|task| task.sequence);
+    let mut indexes = Vec::with_capacity(completed.len());
+    let mut instances = Vec::with_capacity(completed.len());
+    for completed in completed {
+        let addon = completed.addon;
+        let result = completed.result?;
         match &result.cache_status {
             IndexCacheStatus::Loaded => loaded_instances += 1,
             IndexCacheStatus::Rebuilt { .. } => rebuilt_instances += 1,
@@ -360,6 +438,37 @@ pub fn load_or_build_loaded_addon_indexes(
         },
         instances,
     })
+}
+
+fn addon_index_worker_count(storage_root: &Path, task_count: usize) -> Result<usize, String> {
+    if task_count == 0 {
+        return Ok(0);
+    }
+    if !addon_index_storage_is_empty(storage_root)? {
+        return Ok(1);
+    }
+    let logical_cpus = thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(1);
+    Ok(addon_index_worker_count_for(logical_cpus, task_count))
+}
+
+fn addon_index_storage_is_empty(storage_root: &Path) -> Result<bool, String> {
+    match fs::read_dir(storage_root) {
+        Ok(mut entries) => Ok(entries.next().is_none()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
+        Err(error) => Err(format!(
+            "Failed to inspect add-on index storage {}: {error}",
+            storage_root.display()
+        )),
+    }
+}
+
+fn addon_index_worker_count_for(logical_cpus: usize, task_count: usize) -> usize {
+    logical_cpus
+        .max(1)
+        .min(MAX_ADDON_INDEX_WORKERS)
+        .min(task_count)
 }
 
 /// Removes cache roots which are not physical instances in the current
@@ -1400,6 +1509,14 @@ mod tests {
         assert_eq!(loose_script_paths(&root).unwrap(), vec![scripts.join("Listed.c")]);
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn loaded_addon_index_workers_are_bounded_by_tasks_cpus_and_the_cold_start_cap() {
+        assert_eq!(addon_index_worker_count_for(1, 140), 1);
+        assert_eq!(addon_index_worker_count_for(16, 0), 0);
+        assert_eq!(addon_index_worker_count_for(16, 2), 2);
+        assert_eq!(addon_index_worker_count_for(16, 140), MAX_ADDON_INDEX_WORKERS);
     }
 
     #[test]

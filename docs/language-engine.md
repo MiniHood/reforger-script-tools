@@ -66,6 +66,12 @@ graph is unavailable, malformed, cancelled, or fails to acquire an instance,
 the Workbench-sourced layer is unavailable; the engine never reuses an earlier
 graph or substitutes a local source.
 
+An empty add-on cache store is a cold build. After authoritative inspection has
+measured each loaded instance's script count, at most four workers rebuild the
+largest sets first. Completed instances are restored to canonical graph order
+before immutable layering and publication. A non-empty store uses one worker:
+warm cache decoding avoids competing for the same disk and memory bandwidth.
+
 Packed files carry a typed virtual-source identity in semantic metadata rather
 than overloading a filesystem path. The identity includes the loaded add-on
 instance (GUID and canonical source root through its revision), semantic
