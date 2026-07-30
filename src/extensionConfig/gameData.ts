@@ -5,5 +5,5 @@ export const gameDataCommands = {
 
 export const gameDataStorage = {
 	rootFolder: 'addon-sources',
-	inventoryPrefix: 'workbench-graph-v1-',
+	inventoryFile: 'workbench-graph-v1.json',
 } as const;

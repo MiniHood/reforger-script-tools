@@ -4,19 +4,19 @@ import { tmpdir } from "os";
 import * as path from "path";
 import type * as vscode from "vscode";
 import {
-  publishContentAddressedFile,
+  publishAtomicFile,
   writeLoadedAddonSourceInventory,
 } from "../gameData/localSourceInventory";
 
 suite("Workbench loaded add-on inventory", () => {
   test("publishes one complete graph under concurrent writers", async () => {
     const root = await fs.mkdtemp(path.join(tmpdir(), "rst-workbench-graph-"));
-    const target = path.join(root, "workbench-graph-v1-digest.json");
+    const target = path.join(root, "workbench-graph-v1.json");
     const contents = '{"schema":"reforger-workbench-loaded-addon-graph-v1"}\n';
     try {
       await Promise.all(
         Array.from({ length: 8 }, () =>
-          publishContentAddressedFile(target, contents),
+          publishAtomicFile(target, contents),
         ),
       );
       assert.equal(await fs.readFile(target, "utf8"), contents);

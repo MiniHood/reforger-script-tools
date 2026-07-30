@@ -48,8 +48,8 @@ pub struct LoadedAddonIndexTimings {
     pub graph_read: Duration,
     pub workspace_root_resolution: Duration,
     pub cache_prune: Duration,
-    /// Wall-clock time to read and validate `current.json` plus the compact
-    /// manifest for every loaded instance. It never reads source files.
+    /// Wall-clock time to read and validate the compact manifest for every
+    /// loaded instance. It never reads source files.
     pub cache_metadata_read: Duration,
     /// Wall-clock time spent proving the live loaded source contents before a
     /// cache can be trusted. This includes archive selection and its strong
@@ -234,18 +234,6 @@ struct AddonIndexManifest {
     scripts: Vec<ScriptLocator>,
     index_file: String,
     index_bytes: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CurrentRevision {
-    schema: String,
-    guid: String,
-    instance_key: String,
-    source_root: PathBuf,
-    revision: String,
-    manifest: String,
-    index: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -857,7 +845,7 @@ fn manifest_matches_current_source(
     pack_artifacts: &[PackArtifact],
     index_bytes: u64,
 ) -> bool {
-    manifest.schema == "reforger-addon-index-manifest-v2"
+    manifest.schema == "reforger-addon-index-manifest-v3"
         && manifest.cache_schema == cache_schema
         && manifest.cache_format_version == cache_format_version
         && manifest.cache_index_shape == cache_index_shape
@@ -874,33 +862,16 @@ fn manifest_matches_current_source(
         && manifest.index_bytes == index_bytes
 }
 
-/// Opens the one revision that this exact Workbench instance last published.
-/// This validates cache-format and instance identity only; it deliberately
-/// performs no source I/O so delivery stays independent from inspection.
+/// Opens the one current cache for this exact Workbench instance. This
+/// validates cache-format and instance identity only; it deliberately performs
+/// no source I/O so delivery stays independent from inspection.
 fn current_addon_cache_descriptor(
     storage_root: &Path,
     addon: &LoadedAddonSource,
 ) -> Result<Option<(PathBuf, SourceFingerprint, String)>, String> {
     let instance_key = addon_instance_key(&addon.guid, &addon.source_root);
     let addon_root = storage_root.join(&instance_key);
-    let current_path = addon_root.join("current.json");
-    let Some(current) = fs::read(&current_path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<CurrentRevision>(&bytes).ok())
-    else {
-        return Ok(None);
-    };
-    if current.schema != "reforger-addon-current-revision-v1"
-        || current.guid != addon.guid
-        || current.instance_key != instance_key
-        || current.source_root != addon.source_root
-        || !is_sha256_digest(&current.revision)
-        || current.manifest != format!("revisions/{}/manifest.json", current.revision)
-        || current.index != format!("revisions/{}/symbols.bin", current.revision)
-    {
-        return Ok(None);
-    }
-    let manifest_path = addon_root.join(&current.manifest);
+    let manifest_path = addon_root.join("manifest.json");
     let Some(manifest) = fs::read(&manifest_path)
         .ok()
         .and_then(|bytes| serde_json::from_slice::<AddonIndexManifest>(&bytes).ok())
@@ -908,7 +879,7 @@ fn current_addon_cache_descriptor(
         return Ok(None);
     };
     let (cache_schema, cache_format_version, cache_index_shape) = cache_format_identity();
-    if manifest.schema != "reforger-addon-index-manifest-v2"
+    if manifest.schema != "reforger-addon-index-manifest-v3"
         || manifest.cache_schema != cache_schema
         || manifest.cache_format_version != cache_format_version
         || manifest.cache_index_shape != cache_index_shape
@@ -917,18 +888,18 @@ fn current_addon_cache_descriptor(
         || manifest.display_id != format!("{} ({})", addon.id, addon.title)
         || manifest.source_root != addon.source_root
         || manifest.source_precedence != "Workbench loaded add-on order"
-        || manifest.revision != current.revision
+        || !is_sha256_digest(&manifest.revision)
         || manifest.index_file != "symbols.bin"
     {
         return Ok(None);
     }
     let fingerprint = SourceFingerprint::Addon {
         guid: addon.guid.clone(),
-        artifact_digest: current.revision.clone(),
+        artifact_digest: manifest.revision.clone(),
         pack_count: manifest.pack_count,
         catalogue_entry_count: manifest.script_count,
     };
-    Ok(Some((addon_root.join(&current.index), fingerprint, current.revision)))
+    Ok(Some((addon_root.join("symbols.bin"), fingerprint, manifest.revision)))
 }
 
 fn is_sha256_digest(value: &str) -> bool {
@@ -943,7 +914,6 @@ fn load_or_build_inspected_addon(
     source_build_worker_count: usize,
 ) -> Result<GameDataIndexCacheResult, String> {
     let source_root = inspection.root.clone();
-    let inspection_source_root = inspection.root.clone();
     let addon_guid = inspection.guid.clone();
     let addon_display_id = inspection.display_id.clone();
     let pack_artifacts = inspection.artifacts.clone();
@@ -960,10 +930,9 @@ fn load_or_build_inspected_addon(
     };
     let instance_key = addon_instance_key(&inspection.guid, &source_root);
     let addon_root = storage_root.join(&instance_key);
-    let revision_relative = format!("revisions/{artifact_digest}");
-    let revision_root = addon_root.join(&revision_relative);
-    let cache = revision_root.join("symbols.bin");
-    let manifest_path = revision_root.join("manifest.json");
+    discard_legacy_addon_cache_layout(&addon_root)?;
+    let cache = addon_root.join("symbols.bin");
+    let manifest_path = addon_root.join("manifest.json");
     let (cache_schema, cache_format_version, cache_index_shape) = cache_format_identity();
     let cache_bytes = cache.metadata().map(|metadata| metadata.len()).unwrap_or(0);
     let manifest_reusable = fs::read(&manifest_path)
@@ -1012,7 +981,7 @@ fn load_or_build_inspected_addon(
             })
             .collect::<Result<Vec<_>, String>>()?;
         let manifest = AddonIndexManifest {
-            schema: "reforger-addon-index-manifest-v2".to_string(),
+            schema: "reforger-addon-index-manifest-v3".to_string(),
             cache_schema: cache_schema.to_string(),
             cache_format_version,
             cache_index_shape: cache_index_shape.to_string(),
@@ -1030,18 +999,6 @@ fn load_or_build_inspected_addon(
             index_bytes: result.cache_file_bytes.unwrap_or(0),
         };
         write_json_atomic(&manifest_path, &manifest)?;
-        control.check()?;
-        let current = CurrentRevision {
-            schema: "reforger-addon-current-revision-v1".to_string(),
-            guid: addon_guid.clone(),
-            instance_key,
-            source_root: inspection_source_root,
-            revision: artifact_digest.clone(),
-            manifest: format!("{revision_relative}/manifest.json"),
-            index: format!("{revision_relative}/symbols.bin"),
-        };
-        write_json_atomic(&addon_root.join("current.json"), &current)?;
-        prune_stale_revisions(&addon_root, &artifact_digest)?;
         result.timings.cache_metadata_publish = cache_metadata_publish_start.elapsed();
         result.timings.total += result.timings.cache_metadata_publish;
     }
@@ -1049,33 +1006,13 @@ fn load_or_build_inspected_addon(
     Ok(result)
 }
 
-/// Keeps the completed cache for this loaded instance bounded to its current
-/// authoritative source identity. A replacement is published before stale
-/// revisions are removed, so a failed rebuild never deletes the usable cache.
-fn prune_stale_revisions(addon_root: &Path, current_revision: &str) -> Result<(), String> {
-    let revisions_root = addon_root.join("revisions");
-    let entries = match fs::read_dir(&revisions_root) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => {
-            return Err(format!(
-                "Failed to read add-on cache revisions {}: {error}",
-                revisions_root.display()
-            ))
-        }
-    };
-    for entry in entries {
-        let entry = entry.map_err(|error| error.to_string())?;
-        if entry.file_name() != current_revision
-            && entry
-                .file_type()
-                .map_err(|error| error.to_string())?
-                .is_dir()
-        {
-            fs::remove_dir_all(entry.path()).map_err(|error| {
-                format!("Failed to remove stale add-on cache revision: {error}")
-            })?;
-        }
+/// The retired pointer/revision layout is deliberately not read or migrated.
+/// A flattened cache is rebuilt from the authoritative Workbench graph.
+fn discard_legacy_addon_cache_layout(addon_root: &Path) -> Result<(), String> {
+    if addon_root.join("current.json").is_file() || addon_root.join("revisions").is_dir() {
+        fs::remove_dir_all(addon_root).map_err(|error| {
+            format!("Failed to remove retired add-on cache layout: {error}")
+        })?;
     }
     Ok(())
 }
@@ -1969,7 +1906,7 @@ mod tests {
         assert_eq!(inventory.roots.len(), 1);
         assert_eq!(
             inventory.roots[0].path,
-            data_root.parent().map(Path::to_path_buf)
+            data_root.parent().and_then(|path| fs::canonicalize(path).ok())
         );
         let legacy = root.join("legacy.json");
         fs::write(
@@ -2090,18 +2027,15 @@ mod tests {
         )
         .unwrap();
         assert_eq!(rebuilt.rebuilt_instances, 1);
-        let packed_revisions = fs::read_dir(&storage)
+        let packed_cache = fs::read_dir(&storage)
             .unwrap()
             .next()
             .unwrap()
             .unwrap()
-            .path()
-            .join("revisions");
-        assert_eq!(
-            fs::read_dir(packed_revisions).unwrap().count(),
-            1,
-            "only the current loaded revision is retained"
-        );
+            .path();
+        assert!(packed_cache.join("symbols.bin").is_file());
+        assert!(packed_cache.join("manifest.json").is_file());
+        assert!(!packed_cache.join("revisions").exists());
         fs::write(loose.join("scripts/Loose.c"), "class ChangedLoose {}").unwrap();
         let changed = load_or_build_loaded_addon_indexes(
             &graph,
@@ -2168,12 +2102,14 @@ mod tests {
             IndexCacheStatus::Rebuilt { .. }
         ));
         assert_eq!(rebuilt.summary.files, 2);
-        let current: CurrentRevision = serde_json::from_slice(
-            &fs::read(storage.join(BASE_GAME_GUID).join("current.json")).unwrap(),
-        )
-        .unwrap();
+        let addon_cache = fs::read_dir(&storage)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
         let manifest: AddonIndexManifest = serde_json::from_slice(
-            &fs::read(storage.join(BASE_GAME_GUID).join(&current.manifest)).unwrap(),
+            &fs::read(addon_cache.join("manifest.json")).unwrap(),
         )
         .unwrap();
         let feature_uri = manifest
@@ -2198,10 +2134,10 @@ mod tests {
             load_or_build_base_game_index(&inventory, &storage, &IndexBuildControl::default())
                 .unwrap();
         assert_eq!(loaded.cache_status, IndexCacheStatus::Loaded);
-        assert!(storage.join(BASE_GAME_GUID).join("current.json").is_file());
-        assert!(storage.join(BASE_GAME_GUID).join(&current.index).is_file());
+        assert!(addon_cache.join("manifest.json").is_file());
+        assert!(addon_cache.join("symbols.bin").is_file());
         fs::write(
-            storage.join(BASE_GAME_GUID).join(&current.manifest),
+            addon_cache.join("manifest.json"),
             b"{\"schema\":\"corrupt\"}",
         )
         .unwrap();
@@ -2212,12 +2148,12 @@ mod tests {
             repaired.cache_status,
             IndexCacheStatus::Rebuilt { .. }
         ));
-        assert!(!storage.join(BASE_GAME_GUID).join("scripts").exists());
+        assert!(!addon_cache.join("scripts").exists());
         let _ = fs::remove_dir_all(root);
     }
 
     #[test]
-    fn a_same_size_script_change_publishes_a_new_revision_without_removing_the_old_one() {
+    fn a_same_size_script_change_replaces_the_single_current_cache() {
         let root = test_root("revision");
         let addons = root.join("addons");
         fs::create_dir_all(addons.join("data")).unwrap();
@@ -2234,8 +2170,14 @@ mod tests {
         write_workbench_graph_fixture(&inventory, &addons.join("data"));
         let storage = root.join("indexes");
         load_or_build_base_game_index(&inventory, &storage, &IndexBuildControl::default()).unwrap();
-        let first: CurrentRevision = serde_json::from_slice(
-            &fs::read(storage.join(BASE_GAME_GUID).join("current.json")).unwrap(),
+        let addon_cache = fs::read_dir(&storage)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let first_manifest: AddonIndexManifest = serde_json::from_slice(
+            &fs::read(addon_cache.join("manifest.json")).unwrap(),
         )
         .unwrap();
 
@@ -2243,10 +2185,6 @@ mod tests {
             &addons.join("data/data007.pak"),
             &[("Feature.c", b"class FeatureB {}")],
         );
-        let first_manifest: AddonIndexManifest = serde_json::from_slice(
-            &fs::read(storage.join(BASE_GAME_GUID).join(&first.manifest)).unwrap(),
-        )
-        .unwrap();
         let old_uri = &first_manifest
             .scripts
             .iter()
@@ -2262,11 +2200,11 @@ mod tests {
             load_or_build_base_game_index(&inventory, &storage, &cancelled).unwrap_err(),
             crate::index_build::INDEX_BUILD_CANCELLED
         );
-        let after_cancel: CurrentRevision = serde_json::from_slice(
-            &fs::read(storage.join(BASE_GAME_GUID).join("current.json")).unwrap(),
+        let after_cancel: AddonIndexManifest = serde_json::from_slice(
+            &fs::read(addon_cache.join("manifest.json")).unwrap(),
         )
         .unwrap();
-        assert_eq!(after_cancel, first);
+        assert_eq!(after_cancel, first_manifest);
 
         let rebuilt =
             load_or_build_base_game_index(&inventory, &storage, &IndexBuildControl::default())
@@ -2275,13 +2213,13 @@ mod tests {
             rebuilt.cache_status,
             IndexCacheStatus::Rebuilt { .. }
         ));
-        let second: CurrentRevision = serde_json::from_slice(
-            &fs::read(storage.join(BASE_GAME_GUID).join("current.json")).unwrap(),
+        let second_manifest: AddonIndexManifest = serde_json::from_slice(
+            &fs::read(addon_cache.join("manifest.json")).unwrap(),
         )
         .unwrap();
-        assert_ne!(first.revision, second.revision);
-        assert!(storage.join(BASE_GAME_GUID).join(first.index).is_file());
-        assert!(storage.join(BASE_GAME_GUID).join(second.index).is_file());
+        assert_ne!(first_manifest.revision, second_manifest.revision);
+        assert!(addon_cache.join("symbols.bin").is_file());
+        assert!(!addon_cache.join("revisions").exists());
         let _ = fs::remove_dir_all(root);
     }
 

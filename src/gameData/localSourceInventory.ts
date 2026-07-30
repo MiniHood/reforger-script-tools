@@ -1,6 +1,6 @@
 import * as fs from "fs/promises";
 import * as path from "path";
-import { createHash, randomUUID } from "crypto";
+import { randomUUID } from "crypto";
 import * as vscode from "vscode";
 import type { WorkbenchLoadedAddonGraph } from "../workbenchNetApi/gateway/workbenchGateway";
 import { gameDataStorage } from "../extensionConfig/gameData";
@@ -39,15 +39,15 @@ export async function writeLoadedAddonSourceInventory(
     addons: graph.addons,
   };
   const contents = `${JSON.stringify(inventory, null, 2)}\n`;
-  const digest = createHash("sha256").update(contents).digest("hex");
   const inventoryPath = path.join(
     context.globalStorageUri.fsPath,
     gameDataStorage.rootFolder,
-    `${gameDataStorage.inventoryPrefix}${digest}.json`,
+    gameDataStorage.inventoryFile,
   );
   const serializeAndHash = Date.now() - serializeStartedAt;
   const publishStartedAt = Date.now();
-  await publishContentAddressedFile(inventoryPath, contents);
+  await publishAtomicFile(inventoryPath, contents);
+  await pruneRetiredGraphFiles(path.dirname(inventoryPath));
   return {
     path: inventoryPath,
     timingsMs: {
@@ -59,7 +59,7 @@ export async function writeLoadedAddonSourceInventory(
   };
 }
 
-export async function publishContentAddressedFile(
+export async function publishAtomicFile(
   targetPath: string,
   contents: string,
 ): Promise<void> {
@@ -75,23 +75,20 @@ export async function publishContentAddressedFile(
   } finally {
     await handle.close();
   }
-  try {
-    await fs.link(temporaryPath, targetPath);
-  } catch (error) {
-    if (!isAlreadyExists(error)) {
-      throw error;
-    }
-    const existing = await fs.readFile(targetPath, "utf8");
-    if (existing !== contents) {
-      throw new Error(
-        `Content-addressed Workbench add-on graph is corrupt: ${targetPath}`,
-      );
-    }
-  } finally {
-    await fs.rm(temporaryPath, { force: true });
-  }
+  await fs.rename(temporaryPath, targetPath);
 }
 
-function isAlreadyExists(error: unknown): boolean {
-  return error instanceof Error && "code" in error && error.code === "EEXIST";
+async function pruneRetiredGraphFiles(directory: string): Promise<void> {
+  const current = gameDataStorage.inventoryFile;
+  const entries = await fs.readdir(directory);
+  await Promise.all(
+    entries
+      .filter(
+        (entry) =>
+          entry !== current &&
+          entry.startsWith("workbench-graph-") &&
+          entry.endsWith(".json"),
+      )
+      .map((entry) => fs.rm(path.join(directory, entry), { force: true })),
+  );
 }

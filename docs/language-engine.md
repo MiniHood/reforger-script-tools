@@ -61,10 +61,11 @@ retains two published revisions for one instance. Unchanged validation inspects
 bounded PAC catalogues and hashes only selected compressed script payloads, not
 the full multi-gigabyte archives. The resulting strong revision identity detects
 same-size script changes. A changed artifact decodes only selected `.c` entries.
-The semantic cache and locator-rich manifest are written beneath a new immutable
-revision before an atomic current-pointer publication, after which stale
-persisted revisions are removed. Cache roots not named by the current Workbench
-graph are also removed before indexing. A loaded add-on whose graph source root
+The semantic cache and locator-rich manifest are written directly at the exact
+loaded-instance root as one current pair (`symbols.bin` and `manifest.json`).
+Retired revision/pointer layouts are discarded and rebuilt rather than read as
+a compatibility path. Cache roots not named by the current Workbench graph are
+also removed before indexing. A loaded add-on whose graph source root
 contains a workspace root is supplied only through the live workspace layer;
 any packed cache for that exact instance is removed. If the authoritative
 Workbench graph is unavailable, malformed, cancelled, or fails to acquire an

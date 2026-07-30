@@ -42,10 +42,11 @@ without duplicate or stale external facts.
 The durable cache key is canonical `(GUID, absolute source root)`. Workbench
 selects one root per GUID, and cache directories not named by the current graph
 are removed before indexing, so an old packed or workspace copy cannot coexist
-with the selected instance. Completed indexes live beneath
-`globalStorageUri/addon-indexes/<instance-key>/revisions/<revision>`; an
-atomically replaced `current.json` selects a completed revision and stale
-revision directories are removed, leaving one persisted revision per instance.
+with the selected instance. Each completed instance has exactly one flattened
+cache at `globalStorageUri/addon-indexes/<instance-key>/symbols.bin` with its
+matching `manifest.json` beside it. Retired pointer/revision layouts are never
+read or migrated; they are discarded and rebuilt from the current Workbench
+graph.
 A cancelled or
 failed authoritative graph refresh makes the Workbench-sourced layer
 unavailable; it never reuses an earlier graph or scans for a substitute.

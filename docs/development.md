@@ -219,10 +219,9 @@ close before judging game-API language features.
 The active base-game artifacts are:
 
 ```text
-<global storage>/addon-sources/inventory-v1-<content-digest>.json
-<global storage>/addon-indexes/58D0FB3206B6F859/current.json
-<global storage>/addon-indexes/58D0FB3206B6F859/revisions/<revision>/manifest.json
-<global storage>/addon-indexes/58D0FB3206B6F859/revisions/<revision>/symbols.bin
+<global storage>/addon-sources/workbench-graph-v1.json
+<global storage>/addon-indexes/<instance-key>/manifest.json
+<global storage>/addon-indexes/<instance-key>/symbols.bin
 <global storage>/addon-indexes/<discovered-guid>/inventory.json
 ```
 
