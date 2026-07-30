@@ -462,7 +462,6 @@ async function resolveWorkbenchLoadedAddonInventory(
 		addons: result.value.addons.length,
 		protocolVersion: result.value.protocolVersion,
 		inventoryBytes: inventory.bytes,
-		retiredStorageCleanupMs: inventory.timingsMs.retiredStorageCleanup,
 		inventorySerializeAndHashMs: inventory.timingsMs.serializeAndHash,
 		inventoryPublishMs: inventory.timingsMs.publish,
 		inventoryTotalMs: inventory.timingsMs.total,

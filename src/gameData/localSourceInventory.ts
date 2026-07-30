@@ -15,7 +15,6 @@ export interface LoadedAddonSourceInventory {
 export interface PublishedLoadedAddonSourceInventory {
 	path: string;
 	timingsMs: {
-		retiredStorageCleanup: number;
 		serializeAndHash: number;
 		publish: number;
 		total: number;
@@ -33,9 +32,6 @@ export async function writeLoadedAddonSourceInventory(
 	graph: WorkbenchLoadedAddonGraph,
 ): Promise<PublishedLoadedAddonSourceInventory> {
 	const startedAt = Date.now();
-	const cleanupStartedAt = Date.now();
-	await removePreWorkbenchRuntimeStorage(context.globalStorageUri.fsPath);
-	const retiredStorageCleanup = Date.now() - cleanupStartedAt;
 	const serializeStartedAt = Date.now();
 	const inventory: LoadedAddonSourceInventory = {
 		schema: 'reforger-workbench-loaded-addon-graph-v1',
@@ -56,7 +52,6 @@ export async function writeLoadedAddonSourceInventory(
 	return {
 		path: inventoryPath,
 		timingsMs: {
-			retiredStorageCleanup,
 			serializeAndHash,
 			publish: Date.now() - publishStartedAt,
 			total: Date.now() - startedAt,
@@ -91,14 +86,6 @@ export async function publishContentAddressedFile(targetPath: string, contents: 
 	} finally {
 		await fs.rm(temporaryPath, { force: true });
 	}
-}
-
-async function removePreWorkbenchRuntimeStorage(globalStoragePath: string): Promise<void> {
-	await Promise.all([
-		fs.rm(path.join(globalStoragePath, 'game-data'), { recursive: true, force: true }),
-		fs.rm(path.join(globalStoragePath, 'index-cache'), { recursive: true, force: true }),
-		fs.rm(path.join(globalStoragePath, gameDataStorage.rootFolder, 'inventory-v1.json'), { force: true }),
-	]);
 }
 
 function isAlreadyExists(error: unknown): boolean {
