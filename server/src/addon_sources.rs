@@ -48,6 +48,9 @@ pub struct LoadedAddonIndexTimings {
     pub graph_read: Duration,
     pub workspace_root_resolution: Duration,
     pub cache_prune: Duration,
+    /// Wall-clock time to read and validate `current.json` plus the compact
+    /// manifest for every loaded instance. It never reads source files.
+    pub cache_metadata_read: Duration,
     /// Wall-clock time spent proving the live loaded source contents before a
     /// cache can be trusted. This includes archive selection and its strong
     /// content identity, not source parsing.
@@ -92,6 +95,25 @@ struct CompletedAddonInspection {
 }
 
 struct CompletedAddonTask {
+    sequence: usize,
+    addon: LoadedAddonSource,
+    result: Result<GameDataIndexCacheResult, String>,
+}
+
+struct CachedAddonDescriptor {
+    sequence: usize,
+    addon: LoadedAddonSource,
+    cache_path: PathBuf,
+    fingerprint: SourceFingerprint,
+    source_digest: String,
+}
+
+struct CompletedCachedAddonDescriptor {
+    sequence: usize,
+    result: Result<Option<CachedAddonDescriptor>, String>,
+}
+
+struct CompletedCachedAddonLoad {
     sequence: usize,
     addon: LoadedAddonSource,
     result: Result<GameDataIndexCacheResult, String>,
@@ -507,6 +529,7 @@ pub fn load_or_build_loaded_addon_indexes(
             graph_read,
             workspace_root_resolution,
             cache_prune,
+            cache_metadata_read: Duration::ZERO,
             source_inspection,
             index_load_or_build,
             layer_compose: layer_compose_start.elapsed(),
@@ -544,14 +567,9 @@ pub fn load_cached_loaded_addon_indexes(
         (&left.guid, &left.source_root, &left.id).cmp(&(&right.guid, &right.source_root, &right.id))
     });
 
-    let cache_load_start = Instant::now();
-    let mut summary = RuntimeIndexSummary::default();
-    let mut loaded_instances = 0;
-    let mut missing_instances = 0;
+    let mut pending = Vec::with_capacity(addons.len());
     let mut workspace_excluded_instances = 0;
-    let mut indexes = Vec::new();
-    let mut instances = Vec::new();
-    for addon in addons {
+    for (sequence, addon) in addons.into_iter().enumerate() {
         control.check()?;
         if workspace_roots
             .iter()
@@ -561,10 +579,107 @@ pub fn load_cached_loaded_addon_indexes(
             workspace_excluded_instances += 1;
             continue;
         }
-        let Some(result) = load_current_addon_cache(storage_root, &addon)? else {
-            missing_instances += 1;
-            continue;
-        };
+        pending.push((sequence, addon));
+    }
+
+    let cache_metadata_start = Instant::now();
+    let metadata_task_count = pending.len();
+    let pending = Arc::new(Mutex::new(pending));
+    let (metadata_sender, metadata_receiver) = mpsc::channel();
+    let metadata_worker_count = addon_index_worker_count(storage_root, metadata_task_count)?;
+    let mut metadata_workers = Vec::with_capacity(metadata_worker_count);
+    for _ in 0..metadata_worker_count {
+        let pending = pending.clone();
+        let metadata_sender = metadata_sender.clone();
+        let storage_root = storage_root.to_path_buf();
+        let control = control.clone();
+        metadata_workers.push(thread::spawn(move || loop {
+            let Some((sequence, addon)) = pending.lock().unwrap().pop() else {
+                return;
+            };
+            let result = control.check().and_then(|()| {
+                current_addon_cache_descriptor(&storage_root, &addon).map(|descriptor| {
+                    descriptor.map(|(cache_path, fingerprint, source_digest)| CachedAddonDescriptor {
+                        sequence,
+                        addon: addon.clone(),
+                        cache_path,
+                        fingerprint,
+                        source_digest,
+                    })
+                })
+            });
+            let _ = metadata_sender.send(CompletedCachedAddonDescriptor { sequence, result });
+        }));
+    }
+    drop(metadata_sender);
+    let mut metadata = Vec::with_capacity(metadata_task_count);
+    for _ in 0..metadata_task_count {
+        metadata.push(metadata_receiver.recv().map_err(|error| {
+            format!("Add-on cache metadata worker ended unexpectedly: {error}")
+        })?);
+    }
+    for worker in metadata_workers {
+        worker.join().map_err(|_| "Add-on cache metadata worker panicked".to_string())?;
+    }
+    let cache_metadata_read = cache_metadata_start.elapsed();
+    metadata.sort_by_key(|completed| completed.sequence);
+    let mut missing_instances = 0;
+    let mut descriptors = Vec::with_capacity(metadata.len());
+    for completed in metadata {
+        match completed.result? {
+            Some(descriptor) => descriptors.push(descriptor),
+            None => missing_instances += 1,
+        }
+    }
+
+    let cache_load_start = Instant::now();
+    let descriptors = Arc::new(Mutex::new(descriptors));
+    let (cache_sender, cache_receiver) = mpsc::channel();
+    let cache_task_count = descriptors.lock().unwrap().len();
+    let cache_worker_count = addon_index_worker_count(storage_root, cache_task_count)?;
+    let mut cache_workers = Vec::with_capacity(cache_worker_count);
+    for _ in 0..cache_worker_count {
+        let descriptors = descriptors.clone();
+        let cache_sender = cache_sender.clone();
+        let control = control.clone();
+        cache_workers.push(thread::spawn(move || loop {
+            let Some(descriptor) = descriptors.lock().unwrap().pop() else {
+                return;
+            };
+            let result = control.check().and_then(|()| {
+                load_archive_index_cache(
+                    &descriptor.cache_path,
+                    descriptor.fingerprint,
+                    descriptor.source_digest,
+                )?
+                .ok_or_else(|| "Current add-on cache became unavailable during hydration".to_string())
+            });
+            let _ = cache_sender.send(CompletedCachedAddonLoad {
+                sequence: descriptor.sequence,
+                addon: descriptor.addon,
+                result,
+            });
+        }));
+    }
+    drop(cache_sender);
+    let mut completed = Vec::with_capacity(cache_task_count);
+    for _ in 0..cache_task_count {
+        completed.push(cache_receiver.recv().map_err(|error| {
+            format!("Add-on cache load worker ended unexpectedly: {error}")
+        })?);
+    }
+    for worker in cache_workers {
+        worker.join().map_err(|_| "Add-on cache load worker panicked".to_string())?;
+    }
+    let index_load_or_build = cache_load_start.elapsed();
+    completed.sort_by_key(|completed| completed.sequence);
+    let mut summary = RuntimeIndexSummary::default();
+    let mut loaded_instances = 0;
+    let mut indexes = Vec::with_capacity(completed.len());
+    let mut instances = Vec::with_capacity(completed.len());
+    for completed in completed {
+        let addon = completed.addon;
+        let result = completed.result?;
         loaded_instances += 1;
         summary.files += result.summary.files;
         summary.bytes += result.summary.bytes;
@@ -590,7 +705,6 @@ pub fn load_cached_loaded_addon_indexes(
         });
         indexes.push(result.index);
     }
-    let index_load_or_build = cache_load_start.elapsed();
     let layer_compose_start = Instant::now();
     let index = SymbolIndex::layered(indexes);
     Ok(LoadedAddonIndexResult {
@@ -604,6 +718,7 @@ pub fn load_cached_loaded_addon_indexes(
             graph_read,
             workspace_root_resolution,
             cache_prune,
+            cache_metadata_read,
             source_inspection: Duration::ZERO,
             index_load_or_build,
             layer_compose: layer_compose_start.elapsed(),
@@ -736,10 +851,10 @@ fn manifest_matches_current_source(
 /// Opens the one revision that this exact Workbench instance last published.
 /// This validates cache-format and instance identity only; it deliberately
 /// performs no source I/O so delivery stays independent from inspection.
-fn load_current_addon_cache(
+fn current_addon_cache_descriptor(
     storage_root: &Path,
     addon: &LoadedAddonSource,
-) -> Result<Option<GameDataIndexCacheResult>, String> {
+) -> Result<Option<(PathBuf, SourceFingerprint, String)>, String> {
     let instance_key = addon_instance_key(&addon.guid, &addon.source_root);
     let addon_root = storage_root.join(&instance_key);
     let current_path = addon_root.join("current.json");
@@ -787,11 +902,7 @@ fn load_current_addon_cache(
         pack_count: manifest.pack_count,
         catalogue_entry_count: manifest.script_count,
     };
-    load_archive_index_cache(
-        &addon_root.join(&current.index),
-        fingerprint,
-        current.revision,
-    )
+    Ok(Some((addon_root.join(&current.index), fingerprint, current.revision)))
 }
 
 fn is_sha256_digest(value: &str) -> bool {
