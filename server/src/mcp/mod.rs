@@ -458,6 +458,14 @@ enum McpWorkbenchShapeTransformOperation {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+enum McpWorkbenchShapeMirrorAxis {
+    X,
+    Y,
+    Z,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct McpWorkbenchTransformShapePointsInput {
     #[schemars(length(min = 1, max = 256))]
@@ -468,7 +476,7 @@ struct McpWorkbenchTransformShapePointsInput {
     pivot: Option<WorkbenchEntityPosition>,
     degrees: Option<f32>,
     scale: Option<WorkbenchEntityPosition>,
-    mirror_axis: Option<String>,
+    mirror_axis: Option<McpWorkbenchShapeMirrorAxis>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -2828,7 +2836,10 @@ impl ServerHandler for ReforgerMcpServer {
             let pivot = input.pivot.unwrap_or(zero);
             let degrees = input.degrees.unwrap_or(0.0);
             let scale = input.scale.unwrap_or(one);
-            let mirror_axis = input.mirror_axis.unwrap_or_default();
+            let mirror_axis = input
+                .mirror_axis
+                .map(shape_mirror_axis_name)
+                .unwrap_or_default();
             let entity_id = input.entity_id;
             let space = input.space;
             if !finite_points(&[offset.clone(), pivot.clone(), scale.clone()])
@@ -2836,7 +2847,7 @@ impl ServerHandler for ReforgerMcpServer {
                 || (operation == WorkbenchShapeTransformOperation::Scale
                     && (scale.x == 0.0 || scale.y == 0.0 || scale.z == 0.0))
                 || (operation == WorkbenchShapeTransformOperation::Mirror
-                    && !matches!(mirror_axis.as_str(), "x" | "y" | "z"))
+                    && mirror_axis.is_empty())
             {
                 return Ok(tool_error("invalid_input", "transform parameters are invalid; scale components must be nonzero and mirrorAxis must be x, y, or z.", "Correct the input and retry."));
             }
@@ -3435,6 +3446,14 @@ fn to_shape_transform_operation(
         McpWorkbenchShapeTransformOperation::Scale => WorkbenchShapeTransformOperation::Scale,
         McpWorkbenchShapeTransformOperation::Mirror => WorkbenchShapeTransformOperation::Mirror,
         McpWorkbenchShapeTransformOperation::Reverse => WorkbenchShapeTransformOperation::Reverse,
+    }
+}
+
+fn shape_mirror_axis_name(axis: McpWorkbenchShapeMirrorAxis) -> &'static str {
+    match axis {
+        McpWorkbenchShapeMirrorAxis::X => "x",
+        McpWorkbenchShapeMirrorAxis::Y => "y",
+        McpWorkbenchShapeMirrorAxis::Z => "z",
     }
 }
 

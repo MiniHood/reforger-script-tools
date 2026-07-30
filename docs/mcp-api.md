@@ -15948,6 +15948,14 @@ Apply exactly one named transform—translate, rotateXZ, scale, mirror, or rever
 ```json
 {
   "$defs": {
+    "McpWorkbenchShapeMirrorAxis": {
+      "enum": [
+        "x",
+        "y",
+        "z"
+      ],
+      "type": "string"
+    },
     "McpWorkbenchShapePointSpace": {
       "enum": [
         "local",
@@ -16004,9 +16012,13 @@ Apply exactly one named transform—translate, rotateXZ, scale, mirror, or rever
       "type": "string"
     },
     "mirrorAxis": {
-      "type": [
-        "string",
-        "null"
+      "anyOf": [
+        {
+          "$ref": "#/$defs/McpWorkbenchShapeMirrorAxis"
+        },
+        {
+          "type": "null"
+        }
       ]
     },
     "offset": {

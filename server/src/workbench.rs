@@ -10357,7 +10357,11 @@ class RST_WorkbenchShapeGeometry : NetApiHandler
 	bool Commit(WorldEditorAPI api, IEntitySource source, ShapeEntity shape, array<vector> points, string label)
 	{
 		if (api.IsEntityLayerLockedHierarchy(source.GetSubScene(), source.GetLayerID())) return false;
-		if (!api.BeginEntityAction(label)) return false; shape.SetPoints(points, source); api.EndEntityAction(label);
+		if (!api.BeginEntityAction(label)) return false;
+		// Materialize the native shape point state before replacing its authored
+		// list. SetPoints otherwise does not reliably commit from a NET handler.
+		shape.GetPointCount();
+		shape.SetPoints(points, source); api.EndEntityAction(label);
 		return true;
 	}
 	override JsonApiStruct GetRequest() { return new RST_WorkbenchShapeGeometryRequest(); }
@@ -15163,6 +15167,76 @@ mod tests {
     }
 
     #[test]
+    fn shape_geometry_transform_uses_one_typed_operation_and_returns_points() {
+        let (port, peer) = start_peer(|request| {
+            assert_eq!(
+                request,
+                json!({
+                    "APIFunc":"RST_WorkbenchShapeGeometry", "entityId":"0x01 {}", "operation":"transform", "space":"world",
+                    "transformOperation":"rotateXZ", "offsetX":0.0, "offsetY":0.0, "offsetZ":0.0,
+                    "pivotX":10.0, "pivotY":0.0, "pivotZ":20.0, "degrees":90.0,
+                    "scaleX":1.0, "scaleY":1.0, "scaleZ":1.0, "mirrorAxis":""
+                })
+            );
+            json!({"bridgeVersion":"1.51.0","protocolVersion":1,"status":"points-transformed","entity":"0x01 {}|SplineShapeEntity|0|1|10|20|30||||","shapeClass":"SplineShapeEntity","closed":false,"points":"10|0|21"})
+        });
+        let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
+            gateway: super::WorkbenchGatewayOptions {
+                port,
+                status_deadline: Duration::from_secs(1),
+                ..super::WorkbenchGatewayOptions::default()
+            },
+            ..super::WorkbenchControllerOptions::default()
+        });
+        let result = controller
+            .transform_shape_points(
+                "0x01 {}",
+                super::WorkbenchShapePointSpace::World,
+                super::WorkbenchShapeTransformOperation::RotateXz,
+                super::WorkbenchEntityPosition { x: 0.0, y: 0.0, z: 0.0 },
+                super::WorkbenchEntityPosition { x: 10.0, y: 0.0, z: 20.0 },
+                90.0,
+                super::WorkbenchEntityPosition { x: 1.0, y: 1.0, z: 1.0 },
+                "",
+            )
+            .unwrap();
+        assert_eq!(result.status, "points-transformed");
+        assert_eq!(result.shape_class.as_deref(), Some("SplineShapeEntity"));
+        assert_eq!(result.points, vec![super::WorkbenchEntityPosition { x: 10.0, y: 0.0, z: 21.0 }]);
+        peer.join().unwrap();
+    }
+
+    #[test]
+    fn shape_geometry_resample_uses_explicit_space_and_returns_metrics() {
+        let (port, peer) = start_peer(|request| {
+            assert_eq!(
+                request,
+                json!({
+                    "APIFunc":"RST_WorkbenchShapeGeometry", "entityId":"0x01 {}", "operation":"resample", "space":"local", "spacingMeters":2.5
+                })
+            );
+            json!({"bridgeVersion":"1.51.0","protocolVersion":1,"status":"polyline-resampled","entity":"0x01 {}|PolylineShapeEntity|0|1|10|20|30||||","shapeClass":"PolylineShapeEntity","closed":false,"points":"0|0|0;2.5|0|0;5|0|0","spacingMeters":2.5,"originalPointCount":2,"resultPointCount":3,"pathLength":5.0,"skippedZeroLengthSegments":0})
+        });
+        let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
+            gateway: super::WorkbenchGatewayOptions {
+                port,
+                status_deadline: Duration::from_secs(1),
+                ..super::WorkbenchGatewayOptions::default()
+            },
+            ..super::WorkbenchControllerOptions::default()
+        });
+        let result = controller
+            .resample_polyline("0x01 {}", super::WorkbenchShapePointSpace::Local, 2.5)
+            .unwrap();
+        assert_eq!(result.status, "polyline-resampled");
+        assert_eq!(result.original_point_count, 2);
+        assert_eq!(result.result_point_count, 3);
+        assert_eq!(result.path_length, 5.0);
+        assert_eq!(result.points.last().unwrap().x, 5.0);
+        peer.join().unwrap();
+    }
+
+    #[test]
     fn shape_geometry_bridge_uses_parent_aware_conversion_and_one_action_mutations() {
         assert!(super::BRIDGE_SHAPE_GEOMETRY_SOURCE.contains("shape.CoordToParent(values[i])"));
         assert!(super::BRIDGE_SHAPE_GEOMETRY_SOURCE.contains("shape.CoordToLocal(values[i])"));
@@ -15170,6 +15244,8 @@ mod tests {
             .contains("Reforger Script Tools: transform shape points"));
         assert!(super::BRIDGE_SHAPE_GEOMETRY_SOURCE
             .contains("Reforger Script Tools: resample polyline"));
+        assert!(super::BRIDGE_SHAPE_GEOMETRY_SOURCE.contains("shape.GetPointCount();"));
+        assert!(super::BRIDGE_SHAPE_GEOMETRY_SOURCE.contains("Encode(sampled, response.points)"));
         assert!(super::BRIDGE_SHAPE_GEOMETRY_SOURCE
             .contains("source.GetClassName() != \"PolylineShapeEntity\""));
         assert!(super::BRIDGE_SHAPE_GEOMETRY_SOURCE
