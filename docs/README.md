@@ -74,6 +74,9 @@ implementation slice is progress, not a completed ticket.
 - [Virtual source indexing research](research/virtual-source-indexing-research.md):
   archive-backed source identities, VS Code navigation constraints, and the
   case for a virtual-source default with optional physical materialization.
+- [Current indexing performance baseline](research/current-indexing-performance-baseline.md):
+  measured physical Game Data cache, source-validation, PAC extraction, and
+  bare-server startup timings for evaluating the PAC-backed design.
 - [s&box MCP server review](research/sbox-mcp-research.md): comparative source
   examples for future evaluation; it does not define Reforger MCP architecture.
 - [Official Wiki Corpus report](research/official-wiki-corpus-report.md): validated
