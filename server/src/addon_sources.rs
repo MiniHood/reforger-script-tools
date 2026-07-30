@@ -59,6 +59,9 @@ pub struct LoadedAddonIndexTimings {
     /// indexes. This is intentionally separate from inspection so warm-cache
     /// regressions cannot be mistaken for source-verification cost.
     pub index_load_or_build: Duration,
+    pub layer_rebase: Duration,
+    pub layer_file_projection: Duration,
+    pub layer_lookup_projection: Duration,
     pub layer_compose: Duration,
     pub total: Duration,
 }
@@ -516,8 +519,7 @@ pub fn load_or_build_loaded_addon_indexes(
         });
         indexes.push(result.index);
     }
-    let layer_compose_start = Instant::now();
-    let index = SymbolIndex::layered(indexes);
+    let (index, layer_timings) = SymbolIndex::layered_with_timings(indexes);
     Ok(LoadedAddonIndexResult {
         index,
         summary,
@@ -532,7 +534,10 @@ pub fn load_or_build_loaded_addon_indexes(
             cache_metadata_read: Duration::ZERO,
             source_inspection,
             index_load_or_build,
-            layer_compose: layer_compose_start.elapsed(),
+            layer_rebase: layer_timings.rebase,
+            layer_file_projection: layer_timings.file_projection,
+            layer_lookup_projection: layer_timings.lookup_projection,
+            layer_compose: layer_timings.total,
             total: total_start.elapsed(),
         },
         instances,
@@ -705,8 +710,7 @@ pub fn load_cached_loaded_addon_indexes(
         });
         indexes.push(result.index);
     }
-    let layer_compose_start = Instant::now();
-    let index = SymbolIndex::layered(indexes);
+    let (index, layer_timings) = SymbolIndex::layered_with_timings(indexes);
     Ok(LoadedAddonIndexResult {
         index,
         summary,
@@ -721,7 +725,10 @@ pub fn load_cached_loaded_addon_indexes(
             cache_metadata_read,
             source_inspection: Duration::ZERO,
             index_load_or_build,
-            layer_compose: layer_compose_start.elapsed(),
+            layer_rebase: layer_timings.rebase,
+            layer_file_projection: layer_timings.file_projection,
+            layer_lookup_projection: layer_timings.lookup_projection,
+            layer_compose: layer_timings.total,
             total: total_start.elapsed(),
         },
         instances,

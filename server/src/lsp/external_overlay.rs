@@ -665,6 +665,9 @@ fn log_loaded_addon_index_diagnostics(logger: &LspLogger, result: &LoadedAddonIn
                 "cacheMetadataRead": result.timings.cache_metadata_read.as_millis(),
                 "sourceInspection": result.timings.source_inspection.as_millis(),
                 "indexLoadOrBuild": result.timings.index_load_or_build.as_millis(),
+                "layerRebase": result.timings.layer_rebase.as_millis(),
+                "layerFileProjection": result.timings.layer_file_projection.as_millis(),
+                "layerLookupProjection": result.timings.layer_lookup_projection.as_millis(),
                 "layerCompose": result.timings.layer_compose.as_millis(),
                 "total": result.timings.total.as_millis(),
             }
@@ -829,7 +832,7 @@ fn run_external_index_thread(
                 );
                 log_loaded_addon_index_diagnostics(&logger, &result);
                 logger.log_lazy(|| format!(
-                    "externalIndex gameData ready cache_status={} cache_detail={} files={} symbols={} parse_diagnostics={} graph_read_ms={} workspace_root_resolution_ms={} cache_metadata_read_ms={} source_inspection_ms={} index_load_or_build_ms={} layer_compose_ms={} game_data_total_ms={} elapsed_ms={}",
+                    "externalIndex gameData ready cache_status={} cache_detail={} files={} symbols={} parse_diagnostics={} graph_read_ms={} workspace_root_resolution_ms={} cache_metadata_read_ms={} source_inspection_ms={} index_load_or_build_ms={} layer_rebase_ms={} layer_file_projection_ms={} layer_lookup_projection_ms={} layer_compose_ms={} game_data_total_ms={} elapsed_ms={}",
                     cache_status,
                     cache_detail.as_deref().unwrap_or("<none>"),
                     result.summary.files,
@@ -840,6 +843,9 @@ fn run_external_index_thread(
                     result.timings.cache_metadata_read.as_millis(),
                     result.timings.source_inspection.as_millis(),
                     result.timings.index_load_or_build.as_millis(),
+                    result.timings.layer_rebase.as_millis(),
+                    result.timings.layer_file_projection.as_millis(),
+                    result.timings.layer_lookup_projection.as_millis(),
                     result.timings.layer_compose.as_millis(),
                     result.timings.total.as_millis(),
                     start.elapsed().as_millis()

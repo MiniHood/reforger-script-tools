@@ -11,6 +11,7 @@ use crate::semantic_file::{
 };
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct SourceFileId(pub usize);
@@ -435,17 +436,32 @@ impl SymbolIndex {
     /// resulting index owns only combined lookup maps and shallow file metadata;
     /// symbol identity remains routed to the originating layer.
     pub fn layered(indexes: impl IntoIterator<Item = SymbolIndex>) -> Self {
+        Self::layered_with_timings(indexes).0
+    }
+
+    pub fn layered_with_timings(
+        indexes: impl IntoIterator<Item = SymbolIndex>,
+    ) -> (Self, LayeredIndexTimings) {
+        let total_start = Instant::now();
         let mut layered = Self::default();
         let mut next_file_id = 0;
+        let mut timings = LayeredIndexTimings::default();
         for mut index in indexes {
             debug_assert!(index.layers.is_empty(), "layers must be composed once");
+            let rebase_start = Instant::now();
             index.rebase_file_ids(next_file_id);
+            timings.rebase += rebase_start.elapsed();
             next_file_id += index.files.len();
+            let file_projection_start = Instant::now();
             layered.files.extend(index.files.iter().cloned());
-            layered.append_lookup_maps_from(&index);
+            timings.file_projection += file_projection_start.elapsed();
             layered.layers.push(index);
         }
-        layered
+        let lookup_projection_start = Instant::now();
+        layered.rebuild_layered_lookup_maps();
+        timings.lookup_projection = lookup_projection_start.elapsed();
+        timings.total = total_start.elapsed();
+        (layered, timings)
     }
 
     fn rebase_file_ids(&mut self, file_id_base: usize) {
@@ -487,18 +503,135 @@ impl SymbolIndex {
         self.file_id_base = file_id_base;
     }
 
-    fn append_lookup_maps_from(&mut self, index: &Self) {
-        append_lookup_map(&mut self.by_name, &index.by_name);
-        append_lookup_map(&mut self.top_level_by_name, &index.top_level_by_name);
-        append_lookup_map(&mut self.top_level_by_folded_name, &index.top_level_by_folded_name);
-        append_lookup_map(&mut self.by_kind, &index.by_kind);
-        append_lookup_map(&mut self.children, &index.children);
-        append_lookup_map(&mut self.classes_by_name, &index.classes_by_name);
-        append_lookup_map(&mut self.typedefs_by_name, &index.typedefs_by_name);
-        append_lookup_map(&mut self.functions_by_name, &index.functions_by_name);
-        append_lookup_map(&mut self.methods_by_owner_name, &index.methods_by_owner_name);
-        append_lookup_map(&mut self.fields_by_owner_name, &index.fields_by_owner_name);
-        append_lookup_map(&mut self.members_by_owner, &index.members_by_owner);
+    fn rebuild_layered_lookup_maps(&mut self) {
+        let layers = &self.layers;
+        // Match normal index construction: a small graph or a narrow machine
+        // is faster without fine-grained thread startup and contention.
+        const PARALLEL_REBUILD_MIN_SYMBOLS: usize = 10_000;
+        let symbol_count = layers.iter().map(|layer| layer.symbols.len()).sum::<usize>();
+        let parallelism = std::thread::available_parallelism()
+            .map(|parallelism| parallelism.get())
+            .unwrap_or(1);
+        if symbol_count < PARALLEL_REBUILD_MIN_SYMBOLS || parallelism < 3 {
+            self.rebuild_layered_lookup_maps_sequential();
+            return;
+        }
+        if parallelism < 7 {
+            self.rebuild_layered_lookup_maps_coarse_parallel();
+            return;
+        }
+        self.rebuild_layered_lookup_maps_wide_parallel();
+    }
+
+    fn rebuild_layered_lookup_maps_sequential(&mut self) {
+        let layers = &self.layers;
+        self.by_name = merge_layer_lookup_maps(layers, |index| &index.by_name);
+        self.top_level_by_name = merge_layer_lookup_maps(layers, |index| &index.top_level_by_name);
+        self.top_level_by_folded_name =
+            merge_layer_lookup_maps(layers, |index| &index.top_level_by_folded_name);
+        self.by_kind = merge_layer_lookup_maps(layers, |index| &index.by_kind);
+        self.children = merge_layer_lookup_maps(layers, |index| &index.children);
+        self.classes_by_name = merge_layer_lookup_maps(layers, |index| &index.classes_by_name);
+        self.typedefs_by_name = merge_layer_lookup_maps(layers, |index| &index.typedefs_by_name);
+        self.functions_by_name = merge_layer_lookup_maps(layers, |index| &index.functions_by_name);
+        self.members_by_owner = merge_layer_lookup_maps(layers, |index| &index.members_by_owner);
+        self.methods_by_owner_name =
+            merge_layer_lookup_maps(layers, |index| &index.methods_by_owner_name);
+        self.fields_by_owner_name =
+            merge_layer_lookup_maps(layers, |index| &index.fields_by_owner_name);
+    }
+
+    fn rebuild_layered_lookup_maps_coarse_parallel(&mut self) {
+        let layers = &self.layers;
+        let (general, kind_and_owner, owner_name) = std::thread::scope(|scope| {
+            let general = scope.spawn(|| build_layered_general_lookup_maps(layers));
+            let kind_and_owner = scope.spawn(|| build_layered_kind_and_owner_lookup_maps(layers));
+            let owner_name = scope.spawn(|| build_layered_owner_name_lookup_maps(layers));
+            (
+                general
+                    .join()
+                    .expect("layer general lookup projection should not panic"),
+                kind_and_owner
+                    .join()
+                    .expect("layer kind/owner lookup projection should not panic"),
+                owner_name
+                    .join()
+                    .expect("layer owner/name lookup projection should not panic"),
+            )
+        });
+        self.by_name = general.0;
+        self.top_level_by_name = general.1;
+        self.top_level_by_folded_name = general.2;
+        self.by_kind = general.3;
+        self.children = general.4;
+        self.classes_by_name = kind_and_owner.0;
+        self.typedefs_by_name = kind_and_owner.1;
+        self.functions_by_name = kind_and_owner.2;
+        self.members_by_owner = kind_and_owner.3;
+        self.methods_by_owner_name = owner_name.0;
+        self.fields_by_owner_name = owner_name.1;
+    }
+
+    fn rebuild_layered_lookup_maps_wide_parallel(&mut self) {
+        let layers = &self.layers;
+        let (
+            by_name,
+            top_level,
+            structure,
+            kind_names,
+            members_by_owner,
+            methods_by_owner_name,
+            fields_by_owner_name,
+        ) = std::thread::scope(|scope| {
+            let by_name = scope.spawn(|| merge_layer_lookup_maps(layers, |index| &index.by_name));
+            let top_level = scope.spawn(|| {
+                (
+                    merge_layer_lookup_maps(layers, |index| &index.top_level_by_name),
+                    merge_layer_lookup_maps(layers, |index| &index.top_level_by_folded_name),
+                )
+            });
+            let structure = scope.spawn(|| {
+                (
+                    merge_layer_lookup_maps(layers, |index| &index.by_kind),
+                    merge_layer_lookup_maps(layers, |index| &index.children),
+                )
+            });
+            let kind_names = scope.spawn(|| {
+                (
+                    merge_layer_lookup_maps(layers, |index| &index.classes_by_name),
+                    merge_layer_lookup_maps(layers, |index| &index.typedefs_by_name),
+                    merge_layer_lookup_maps(layers, |index| &index.functions_by_name),
+                )
+            });
+            let members_by_owner =
+                scope.spawn(|| merge_layer_lookup_maps(layers, |index| &index.members_by_owner));
+            let methods_by_owner_name = scope.spawn(|| {
+                merge_layer_lookup_maps(layers, |index| &index.methods_by_owner_name)
+            });
+            let fields_by_owner_name = scope.spawn(|| {
+                merge_layer_lookup_maps(layers, |index| &index.fields_by_owner_name)
+            });
+            (
+                by_name.join().expect("layer name lookup projection should not panic"),
+                top_level.join().expect("layer top-level lookup projection should not panic"),
+                structure.join().expect("layer structure lookup projection should not panic"),
+                kind_names.join().expect("layer kind/name lookup projection should not panic"),
+                members_by_owner.join().expect("layer member lookup projection should not panic"),
+                methods_by_owner_name.join().expect("layer method lookup projection should not panic"),
+                fields_by_owner_name.join().expect("layer field lookup projection should not panic"),
+            )
+        });
+        self.by_name = by_name;
+        self.top_level_by_name = top_level.0;
+        self.top_level_by_folded_name = top_level.1;
+        self.by_kind = structure.0;
+        self.children = structure.1;
+        self.classes_by_name = kind_names.0;
+        self.typedefs_by_name = kind_names.1;
+        self.functions_by_name = kind_names.2;
+        self.members_by_owner = members_by_owner;
+        self.methods_by_owner_name = methods_by_owner_name;
+        self.fields_by_owner_name = fields_by_owner_name;
     }
 
     pub fn add_catalog<'source>(&mut self, catalog: &SymbolCatalog<'source>) -> SourceFileId {
@@ -1919,6 +2052,16 @@ fn folded_top_level_names(
     folded
 }
 
+/// Wall-clock phases of composing independently cached indexes into one
+/// external query surface. This contains no source or path information.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LayeredIndexTimings {
+    pub rebase: Duration,
+    pub file_projection: Duration,
+    pub lookup_projection: Duration,
+    pub total: Duration,
+}
+
 fn rebase_lookup_map_ids<K: Ord>(
     map: &mut BTreeMap<K, Vec<GlobalSymbolId>>,
     rebase: impl Fn(GlobalSymbolId) -> GlobalSymbolId + Copy,
@@ -1937,6 +2080,63 @@ fn append_lookup_map<K: Ord + Clone>(
     for (key, ids) in source {
         target.entry(key.clone()).or_default().extend(ids.iter().copied());
     }
+}
+
+fn merge_layer_lookup_maps<K: Ord + Clone>(
+    layers: &[SymbolIndex],
+    select: impl Fn(&SymbolIndex) -> &BTreeMap<K, Vec<GlobalSymbolId>>,
+) -> BTreeMap<K, Vec<GlobalSymbolId>> {
+    let mut merged = BTreeMap::new();
+    for layer in layers {
+        append_lookup_map(&mut merged, select(layer));
+    }
+    merged
+}
+
+fn build_layered_general_lookup_maps(
+    layers: &[SymbolIndex],
+) -> (
+    BTreeMap<String, Vec<GlobalSymbolId>>,
+    BTreeMap<String, Vec<GlobalSymbolId>>,
+    BTreeMap<String, Vec<GlobalSymbolId>>,
+    BTreeMap<SymbolKind, Vec<GlobalSymbolId>>,
+    BTreeMap<GlobalSymbolId, Vec<GlobalSymbolId>>,
+) {
+    (
+        merge_layer_lookup_maps(layers, |index| &index.by_name),
+        merge_layer_lookup_maps(layers, |index| &index.top_level_by_name),
+        merge_layer_lookup_maps(layers, |index| &index.top_level_by_folded_name),
+        merge_layer_lookup_maps(layers, |index| &index.by_kind),
+        merge_layer_lookup_maps(layers, |index| &index.children),
+    )
+}
+
+fn build_layered_kind_and_owner_lookup_maps(
+    layers: &[SymbolIndex],
+) -> (
+    BTreeMap<String, Vec<GlobalSymbolId>>,
+    BTreeMap<String, Vec<GlobalSymbolId>>,
+    BTreeMap<String, Vec<GlobalSymbolId>>,
+    BTreeMap<String, Vec<GlobalSymbolId>>,
+) {
+    (
+        merge_layer_lookup_maps(layers, |index| &index.classes_by_name),
+        merge_layer_lookup_maps(layers, |index| &index.typedefs_by_name),
+        merge_layer_lookup_maps(layers, |index| &index.functions_by_name),
+        merge_layer_lookup_maps(layers, |index| &index.members_by_owner),
+    )
+}
+
+fn build_layered_owner_name_lookup_maps(
+    layers: &[SymbolIndex],
+) -> (
+    BTreeMap<(String, String), Vec<GlobalSymbolId>>,
+    BTreeMap<(String, String), Vec<GlobalSymbolId>>,
+) {
+    (
+        merge_layer_lookup_maps(layers, |index| &index.methods_by_owner_name),
+        merge_layer_lookup_maps(layers, |index| &index.fields_by_owner_name),
+    )
 }
 
 fn map_entry_count<K>(map: &BTreeMap<K, Vec<GlobalSymbolId>>) -> usize {
@@ -3794,6 +3994,29 @@ class FactionKey : string
     }
 
     #[test]
+    fn parallel_layer_lookup_projection_matches_sequential_projection() {
+        let indexes = vec![
+            SymbolIndex::from_catalogs([&catalog(
+                "class First { int m_Value; void FirstMethod(); }",
+                game_metadata("Game/First.c"),
+            )]),
+            SymbolIndex::from_catalogs([&catalog(
+                "typedef int SecondType; class Second { void SecondMethod(); }",
+                game_metadata("Game/Second.c"),
+            )]),
+        ];
+        let sequential = SymbolIndex::layered(indexes.clone());
+
+        let mut coarse_parallel = SymbolIndex::layered(indexes.clone());
+        coarse_parallel.rebuild_layered_lookup_maps_coarse_parallel();
+        assert_layered_lookup_maps_match(&coarse_parallel, &sequential);
+
+        let mut wide_parallel = SymbolIndex::layered(indexes);
+        wide_parallel.rebuild_layered_lookup_maps_wide_parallel();
+        assert_layered_lookup_maps_match(&wide_parallel, &sequential);
+    }
+
+    #[test]
     fn pruned_index_removes_local_variables_and_preserves_parameters() {
         let catalog = catalog(
             r#"class Example
@@ -4018,6 +4241,26 @@ class Second : SecondBase
             .filter_map(|id| index.symbol(*id))
             .filter_map(|symbol| symbol.name.clone())
             .collect()
+    }
+
+    fn assert_layered_lookup_maps_match(actual: &SymbolIndex, expected: &SymbolIndex) {
+        assert_eq!(actual.by_name, expected.by_name);
+        assert_eq!(actual.top_level_by_name, expected.top_level_by_name);
+        assert_eq!(
+            actual.top_level_by_folded_name,
+            expected.top_level_by_folded_name
+        );
+        assert_eq!(actual.by_kind, expected.by_kind);
+        assert_eq!(actual.children, expected.children);
+        assert_eq!(actual.classes_by_name, expected.classes_by_name);
+        assert_eq!(actual.typedefs_by_name, expected.typedefs_by_name);
+        assert_eq!(actual.functions_by_name, expected.functions_by_name);
+        assert_eq!(actual.members_by_owner, expected.members_by_owner);
+        assert_eq!(
+            actual.methods_by_owner_name,
+            expected.methods_by_owner_name
+        );
+        assert_eq!(actual.fields_by_owner_name, expected.fields_by_owner_name);
     }
 
     fn assert_no_dangling_symbol_references(index: &SymbolIndex) {
