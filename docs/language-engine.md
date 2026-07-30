@@ -69,8 +69,14 @@ graph or substitutes a local source.
 An empty add-on cache store is a cold build. After authoritative inspection has
 measured each loaded instance's script count, at most four workers rebuild the
 largest sets first. Completed instances are restored to canonical graph order
-before immutable layering and publication. A non-empty store uses one worker:
-warm cache decoding avoids competing for the same disk and memory bandwidth.
+before immutable layering and publication. Authoritative source inspection is
+also bounded to four independent workers before any cache is admitted. On a
+warm load, two cache workers decode the already-inspected instances; this
+overlaps independent binary reads without coupling source verification to cache
+admission. A compact manifest header validates cache format, exact instance,
+strong revision, archive facts, and cache bytes before the locator-rich
+manifest is materialized and published for a rebuild. A valid warm hit does
+not rewrite that already-validated manifest or current pointer.
 
 Packed files carry a typed virtual-source identity in semantic metadata rather
 than overloading a filesystem path. The identity includes the loaded add-on
@@ -82,7 +88,8 @@ update cannot apply an old symbol span to newer bytes.
 
 The language-server diagnostic log records each external-index startup as a
 bounded performance trace: end-to-end game-data, workspace, and publication
-durations; graph-read and layer-composition durations; and one record per non-workspace
+durations; graph-read, strong source-inspection, cache-load-or-build, and
+layer-composition durations; and one record per non-workspace
 loaded add-on. An add-on record identifies its cache outcome and rebuild
 reason, source and cache sizes, and inspection, cache read/decode/validation,
 runtime-map reconstruction, rebuild, and cache-write durations. Rebuilt

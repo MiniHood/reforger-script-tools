@@ -44,6 +44,14 @@ pub struct LoadedAddonIndexTimings {
     pub graph_read: Duration,
     pub workspace_root_resolution: Duration,
     pub cache_prune: Duration,
+    /// Wall-clock time spent proving the live loaded source contents before a
+    /// cache can be trusted. This includes archive selection and its strong
+    /// content identity, not source parsing.
+    pub source_inspection: Duration,
+    /// Wall-clock time spent loading or rebuilding the inspected add-on
+    /// indexes. This is intentionally separate from inspection so warm-cache
+    /// regressions cannot be mistaken for source-verification cost.
+    pub index_load_or_build: Duration,
     pub layer_compose: Duration,
     pub total: Duration,
 }
@@ -67,6 +75,16 @@ struct InspectedAddonTask {
     addon: LoadedAddonSource,
     inspection: BaseGameInspection,
     inspection_elapsed: Duration,
+}
+
+struct PendingAddonInspection {
+    sequence: usize,
+    addon: LoadedAddonSource,
+}
+
+struct CompletedAddonInspection {
+    sequence: usize,
+    result: Result<InspectedAddonTask, String>,
 }
 
 struct CompletedAddonTask {
@@ -305,11 +323,12 @@ pub fn load_or_build_loaded_addon_indexes(
     addons.sort_by(|left, right| {
         (&left.guid, &left.source_root, &left.id).cmp(&(&right.guid, &right.source_root, &right.id))
     });
-    let mut tasks = Vec::with_capacity(addons.len());
+    let mut pending_inspections = Vec::with_capacity(addons.len());
     let mut summary = RuntimeIndexSummary::default();
     let mut rebuilt_instances = 0;
     let mut loaded_instances = 0;
     let mut workspace_excluded_instances = 0;
+    let source_inspection_start = Instant::now();
     for (sequence, addon) in addons.into_iter().enumerate() {
         control.check()?;
         if workspace_roots
@@ -320,22 +339,66 @@ pub fn load_or_build_loaded_addon_indexes(
             workspace_excluded_instances += 1;
             continue;
         }
-        let archives = addon_archive_paths(&addon.source_root)?;
-        let started = std::time::Instant::now();
-        let inspection = inspect_packed_addon(
-            addon.guid.clone(),
-            format!("{} ({})", addon.id, addon.title),
-            addon.source_root.clone(),
-            archives,
-            control,
-        )?;
-        tasks.push(InspectedAddonTask {
+        pending_inspections.push(PendingAddonInspection {
             sequence,
             addon,
-            inspection,
-            inspection_elapsed: started.elapsed(),
         });
     }
+    let inspection_task_count = pending_inspections.len();
+    let pending_inspections = Arc::new(Mutex::new(pending_inspections));
+    let (inspection_sender, inspection_receiver) = mpsc::channel();
+    let mut inspection_workers = Vec::with_capacity(addon_inspection_worker_count(
+        inspection_task_count,
+    ));
+    for _ in 0..addon_inspection_worker_count(inspection_task_count) {
+        let pending_inspections = pending_inspections.clone();
+        let inspection_sender = inspection_sender.clone();
+        let control = control.clone();
+        inspection_workers.push(thread::spawn(move || loop {
+            let pending = pending_inspections.lock().unwrap().pop();
+            let Some(pending) = pending else {
+                return;
+            };
+            let sequence = pending.sequence;
+            let result = control.check().and_then(|()| {
+                let started = Instant::now();
+                let archives = addon_archive_paths(&pending.addon.source_root)?;
+                let inspection = inspect_packed_addon(
+                    pending.addon.guid.clone(),
+                    format!("{} ({})", pending.addon.id, pending.addon.title),
+                    pending.addon.source_root.clone(),
+                    archives,
+                    &control,
+                )?;
+                Ok(InspectedAddonTask {
+                    sequence,
+                    addon: pending.addon,
+                    inspection,
+                    inspection_elapsed: started.elapsed(),
+                })
+            });
+            let _ = inspection_sender.send(CompletedAddonInspection { sequence, result });
+        }));
+    }
+    drop(inspection_sender);
+    let mut tasks = Vec::with_capacity(inspection_task_count);
+    for _ in 0..inspection_task_count {
+        let completed = inspection_receiver
+            .recv()
+            .map_err(|error| format!("Add-on inspection worker ended unexpectedly: {error}"))?;
+        tasks.push(completed);
+    }
+    for worker in inspection_workers {
+        worker
+            .join()
+            .map_err(|_| "Add-on inspection worker panicked".to_string())?;
+    }
+    tasks.sort_by_key(|task| task.sequence);
+    let mut tasks = tasks
+        .into_iter()
+        .map(|task| task.result)
+        .collect::<Result<Vec<_>, _>>()?;
+    let source_inspection = source_inspection_start.elapsed();
     let task_count = tasks.len();
     // Largest script sets start first, so the bounded worker pool overlaps the
     // known long tail without attaching behavior to a particular add-on name.
@@ -348,6 +411,7 @@ pub fn load_or_build_loaded_addon_indexes(
     });
     let tasks = Arc::new(Mutex::new(tasks));
     let (completed_sender, completed_receiver) = mpsc::channel();
+    let index_load_or_build_start = Instant::now();
     let worker_count = addon_index_worker_count(storage_root, task_count)?;
     let mut workers = Vec::with_capacity(worker_count);
     for _ in 0..worker_count {
@@ -389,6 +453,7 @@ pub fn load_or_build_loaded_addon_indexes(
             .join()
             .map_err(|_| "Add-on index worker panicked".to_string())?;
     }
+    let index_load_or_build = index_load_or_build_start.elapsed();
     completed.sort_by_key(|task| task.sequence);
     let mut indexes = Vec::with_capacity(completed.len());
     let mut instances = Vec::with_capacity(completed.len());
@@ -437,6 +502,8 @@ pub fn load_or_build_loaded_addon_indexes(
             graph_read,
             workspace_root_resolution,
             cache_prune,
+            source_inspection,
+            index_load_or_build,
             layer_compose: layer_compose_start.elapsed(),
             total: total_start.elapsed(),
         },
@@ -449,7 +516,7 @@ fn addon_index_worker_count(storage_root: &Path, task_count: usize) -> Result<us
         return Ok(0);
     }
     if !addon_index_storage_is_empty(storage_root)? {
-        return Ok(1);
+        return Ok(2.min(task_count));
     }
     let logical_cpus = thread::available_parallelism()
         .map(|count| count.get())
@@ -473,6 +540,16 @@ fn addon_index_worker_count_for(logical_cpus: usize, task_count: usize) -> usize
         .max(1)
         .min(MAX_ADDON_INDEX_WORKERS)
         .min(task_count)
+}
+
+fn addon_inspection_worker_count(task_count: usize) -> usize {
+    if task_count == 0 {
+        return 0;
+    }
+    let logical_cpus = thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(1);
+    addon_index_worker_count_for(logical_cpus, task_count)
 }
 
 /// Removes cache roots which are not physical instances in the current
@@ -523,6 +600,37 @@ fn is_addon_instance_key(value: &str) -> bool {
         && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
+fn manifest_matches_current_source(
+    manifest: &AddonIndexManifest,
+    cache_schema: &str,
+    cache_format_version: u32,
+    cache_index_shape: &str,
+    guid: &str,
+    display_id: &str,
+    source_root: &Path,
+    revision: &str,
+    pack_count: usize,
+    script_count: usize,
+    pack_artifacts: &[PackArtifact],
+    index_bytes: u64,
+) -> bool {
+    manifest.schema == "reforger-addon-index-manifest-v2"
+        && manifest.cache_schema == cache_schema
+        && manifest.cache_format_version == cache_format_version
+        && manifest.cache_index_shape == cache_index_shape
+        && manifest.extractor_schema == "pac1-selected-script-payload-v2"
+        && manifest.guid == guid
+        && manifest.display_id == display_id
+        && manifest.source_root == source_root
+        && manifest.source_precedence == "Workbench loaded add-on order"
+        && manifest.revision == revision
+        && manifest.pack_count == pack_count
+        && manifest.script_count == script_count
+        && manifest.pack_artifacts == pack_artifacts
+        && manifest.index_file == "symbols.bin"
+        && manifest.index_bytes == index_bytes
+}
+
 fn load_or_build_inspected_addon(
     inspection: BaseGameInspection,
     storage_root: &Path,
@@ -532,6 +640,7 @@ fn load_or_build_inspected_addon(
     let source_root = inspection.root.clone();
     let inspection_source_root = inspection.root.clone();
     let addon_guid = inspection.guid.clone();
+    let addon_display_id = inspection.display_id.clone();
     let pack_artifacts = inspection.artifacts.clone();
     let scripts = inspection.scripts.clone();
     let fingerprint = inspection.fingerprint.clone();
@@ -550,37 +659,16 @@ fn load_or_build_inspected_addon(
     let revision_root = addon_root.join(&revision_relative);
     let cache = revision_root.join("symbols.bin");
     let manifest_path = revision_root.join("manifest.json");
-    let manifest_scripts = scripts
-        .into_iter()
-        .map(|mut script| {
-            script.uri =
-                virtual_source_uri(&inspection.guid, &artifact_digest, &script.logical_path)?;
-            Ok(script)
-        })
-        .collect::<Result<Vec<_>, String>>()?;
     let (cache_schema, cache_format_version, cache_index_shape) = cache_format_identity();
-    let expected_manifest = AddonIndexManifest {
-        schema: "reforger-addon-index-manifest-v2".to_string(),
-        cache_schema: cache_schema.to_string(),
-        cache_format_version,
-        cache_index_shape: cache_index_shape.to_string(),
-        extractor_schema: "pac1-selected-script-payload-v2".to_string(),
-        guid: addon_guid.clone(),
-        display_id: inspection.display_id.clone(),
-        source_root,
-        source_precedence: "Workbench loaded add-on order".to_string(),
-        revision: artifact_digest.clone(),
-        pack_count,
-        script_count,
-        pack_artifacts,
-        scripts: manifest_scripts,
-        index_file: "symbols.bin".to_string(),
-        index_bytes: cache.metadata().map(|metadata| metadata.len()).unwrap_or(0),
-    };
+    let cache_bytes = cache.metadata().map(|metadata| metadata.len()).unwrap_or(0);
     let manifest_reusable = fs::read(&manifest_path)
         .ok()
         .and_then(|bytes| serde_json::from_slice::<AddonIndexManifest>(&bytes).ok())
-        .is_some_and(|manifest| manifest == expected_manifest);
+        .is_some_and(|manifest| manifest_matches_current_source(
+            &manifest, cache_schema, cache_format_version, cache_index_shape,
+            &addon_guid, &addon_display_id, &source_root, &artifact_digest,
+            pack_count, script_count, &pack_artifacts, cache_bytes,
+        ));
     let rebuild_reason = if manifest_reusable {
         "cache-missing-invalid-or-source-changed"
     } else if cache.is_file() {
@@ -600,27 +688,51 @@ fn load_or_build_inspected_addon(
     )?;
     result.timings.fingerprint = inspection_elapsed;
     result.timings.total += inspection_elapsed;
-    let cache_metadata_publish_start = Instant::now();
-    control.check()?;
-    let manifest = AddonIndexManifest {
-        index_bytes: result.cache_file_bytes.unwrap_or(0),
-        ..expected_manifest
-    };
-    write_json_atomic(&manifest_path, &manifest)?;
-    control.check()?;
-    let current = CurrentRevision {
-        schema: "reforger-addon-current-revision-v1".to_string(),
-        guid: addon_guid.clone(),
-        instance_key,
-        source_root: inspection_source_root,
-        revision: artifact_digest.clone(),
-        manifest: format!("{revision_relative}/manifest.json"),
-        index: format!("{revision_relative}/symbols.bin"),
-    };
-    write_json_atomic(&addon_root.join("current.json"), &current)?;
-    prune_stale_revisions(&addon_root, &artifact_digest)?;
-    result.timings.cache_metadata_publish = cache_metadata_publish_start.elapsed();
-    result.timings.total += result.timings.cache_metadata_publish;
+    if matches!(result.cache_status, IndexCacheStatus::Rebuilt { .. }) {
+        let cache_metadata_publish_start = Instant::now();
+        control.check()?;
+        let manifest_scripts = scripts
+            .into_iter()
+            .map(|mut script| {
+                script.uri =
+                    virtual_source_uri(&addon_guid, &artifact_digest, &script.logical_path)?;
+                Ok(script)
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let manifest = AddonIndexManifest {
+            schema: "reforger-addon-index-manifest-v2".to_string(),
+            cache_schema: cache_schema.to_string(),
+            cache_format_version,
+            cache_index_shape: cache_index_shape.to_string(),
+            extractor_schema: "pac1-selected-script-payload-v2".to_string(),
+            guid: addon_guid.clone(),
+            display_id: addon_display_id,
+            source_root,
+            source_precedence: "Workbench loaded add-on order".to_string(),
+            revision: artifact_digest.clone(),
+            pack_count,
+            script_count,
+            pack_artifacts,
+            scripts: manifest_scripts,
+            index_file: "symbols.bin".to_string(),
+            index_bytes: result.cache_file_bytes.unwrap_or(0),
+        };
+        write_json_atomic(&manifest_path, &manifest)?;
+        control.check()?;
+        let current = CurrentRevision {
+            schema: "reforger-addon-current-revision-v1".to_string(),
+            guid: addon_guid.clone(),
+            instance_key,
+            source_root: inspection_source_root,
+            revision: artifact_digest.clone(),
+            manifest: format!("{revision_relative}/manifest.json"),
+            index: format!("{revision_relative}/symbols.bin"),
+        };
+        write_json_atomic(&addon_root.join("current.json"), &current)?;
+        prune_stale_revisions(&addon_root, &artifact_digest)?;
+        result.timings.cache_metadata_publish = cache_metadata_publish_start.elapsed();
+        result.timings.total += result.timings.cache_metadata_publish;
+    }
     register_source_revision(&addon_guid, &artifact_digest, source_revision);
     Ok(result)
 }
