@@ -51,32 +51,36 @@ indexing cannot change the meaning of an in-flight response. Do not introduce
 per-feature revision tables or mutable shared feature state that bypasses this
 model.
 
-The base-game layer is published only after its complete GUID-scoped cache has
-loaded or rebuilt. Unchanged startup inspects bounded PAC catalogues and hashes
-only the selected compressed script payloads, not the full multi-gigabyte
-archives. The resulting strong revision identity detects same-size script
-changes. A changed artifact decodes only selected `.c` entries. The semantic
-cache and locator-rich manifest are written beneath a new immutable revision
-before an atomic current-pointer publication, after which stale persisted
-revisions are removed. Cache roots not named by the current Workbench graph are
-also removed before indexing. A loaded add-on whose graph source root contains a
-workspace root is supplied only through the live workspace layer; any packed
-cache for that exact instance is removed. If the authoritative Workbench
-graph is unavailable, malformed, cancelled, or fails to acquire an instance,
-the Workbench-sourced layer is unavailable; the engine never reuses an earlier
-graph or substitutes a local source.
+The base-game layer is published from the current Workbench graph. On a warm
+start, compatible immutable revisions for those exact `(GUID, source-root)`
+instances hydrate before source inspection; the same background validation pass
+then strongly re-inspects both packed entries and loose scripts and atomically
+replaces only changed instances. This intentionally permits a short
+source-validation window, but never preserves an unselected graph instance or
+retains two published revisions for one instance. Unchanged validation inspects
+bounded PAC catalogues and hashes only selected compressed script payloads, not
+the full multi-gigabyte archives. The resulting strong revision identity detects
+same-size script changes. A changed artifact decodes only selected `.c` entries.
+The semantic cache and locator-rich manifest are written beneath a new immutable
+revision before an atomic current-pointer publication, after which stale
+persisted revisions are removed. Cache roots not named by the current Workbench
+graph are also removed before indexing. A loaded add-on whose graph source root
+contains a workspace root is supplied only through the live workspace layer;
+any packed cache for that exact instance is removed. If the authoritative
+Workbench graph is unavailable, malformed, cancelled, or fails to acquire an
+instance, the Workbench-sourced layer is unavailable; the engine never reuses
+an earlier graph or substitutes a local source.
 
-An empty add-on cache store is a cold build. After authoritative inspection has
-measured each loaded instance's script count, at most four workers rebuild the
-largest sets first. Completed instances are restored to canonical graph order
-before immutable layering and publication. Authoritative source inspection is
-also bounded to four independent workers before any cache is admitted. On a
-warm load, two cache workers decode the already-inspected instances; this
-overlaps independent binary reads without coupling source verification to cache
-admission. A compact manifest header validates cache format, exact instance,
-strong revision, archive facts, and cache bytes before the locator-rich
-manifest is materialized and published for a rebuild. A valid warm hit does
-not rewrite that already-validated manifest or current pointer.
+An empty add-on cache store is a cold build. Instances without a compatible
+current pointer are omitted from optimistic delivery and joined by the
+validation build. After authoritative inspection has measured each loaded
+instance's script count, at most four workers rebuild the largest sets first.
+Completed instances are restored to canonical graph order before immutable
+layering and publication. Authoritative source inspection is bounded to four
+independent workers. A compact manifest header validates cache format, exact
+instance, strong revision, archive facts, and cache bytes before the
+locator-rich manifest is materialized and published for a rebuild. A valid warm
+hit does not rewrite that already-validated manifest or current pointer.
 
 Packed files carry a typed virtual-source identity in semantic metadata rather
 than overloading a filesystem path. The identity includes the loaded add-on

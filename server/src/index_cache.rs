@@ -165,6 +165,42 @@ pub(crate) fn load_or_build_archive_index_with_reuse(
     })
 }
 
+/// Hydrates a previously published archive index without touching its source
+/// files. The caller supplies the identity persisted beside that immutable
+/// cache revision; a later source-validation pass is responsible for proving
+/// that identity is still current.
+pub(crate) fn load_archive_index_cache(
+    cache_path: &Path,
+    fingerprint: SourceFingerprint,
+    source_digest: String,
+) -> Result<Option<GameDataIndexCacheResult>, String> {
+    let total_start = Instant::now();
+    let mut timings = IndexCacheTimings::default();
+    let load_start = Instant::now();
+    let Some(CacheLoad::Current(cached)) =
+        load_cached_index(cache_path, &fingerprint, &source_digest, &mut timings)?
+    else {
+        return Ok(None);
+    };
+    timings.cache_read_deserialize_validate = load_start.elapsed();
+    let summary: RuntimeIndexSummary = cached.summary.clone().into();
+    let map_start = Instant::now();
+    let (index, source_line_starts) = cached.into_index_and_line_starts();
+    timings.map_rebuild = map_start.elapsed();
+    timings.total = total_start.elapsed();
+    Ok(Some(GameDataIndexCacheResult {
+        index,
+        source_line_starts,
+        summary,
+        cache_status: IndexCacheStatus::Loaded,
+        fingerprint,
+        source_digest: source_digest.clone(),
+        catalogue_digest: source_digest,
+        timings,
+        cache_file_bytes: cache_file_bytes(cache_path),
+    }))
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct IndexCacheTimings {
     pub fingerprint: Duration,

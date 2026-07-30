@@ -3,7 +3,7 @@ use crate::index_build::{
     build_index_from_sources, IndexBuildControl, IndexBuildResult, IndexSourceText,
 };
 use crate::index_cache::{
-    cache_format_identity, load_or_build_archive_index_with_reuse, write_atomic_bytes,
+    cache_format_identity, load_archive_index_cache, load_or_build_archive_index_with_reuse, write_atomic_bytes,
     GameDataIndexCacheResult, SourceFingerprint,
 };
 use crate::index_cache::{IndexCacheStatus, RuntimeIndexSummary};
@@ -32,6 +32,10 @@ pub struct LoadedAddonIndexResult {
     pub summary: RuntimeIndexSummary,
     pub rebuilt_instances: usize,
     pub loaded_instances: usize,
+    /// Instances from the current Workbench graph which have no compatible
+    /// published snapshot yet. Optimistic delivery omits only these instances
+    /// until the validation pass builds and publishes them.
+    pub missing_instances: usize,
     pub workspace_excluded_instances: usize,
     pub timings: LoadedAddonIndexTimings,
     pub instances: Vec<LoadedAddonIndexInstance>,
@@ -497,12 +501,110 @@ pub fn load_or_build_loaded_addon_indexes(
         summary,
         rebuilt_instances,
         loaded_instances,
+        missing_instances: 0,
         workspace_excluded_instances,
         timings: LoadedAddonIndexTimings {
             graph_read,
             workspace_root_resolution,
             cache_prune,
             source_inspection,
+            index_load_or_build,
+            layer_compose: layer_compose_start.elapsed(),
+            total: total_start.elapsed(),
+        },
+        instances,
+    })
+}
+
+/// Delivers every compatible cache revision named by the current Workbench
+/// graph without inspecting its packed or loose source bytes. The validation
+/// pass always follows this function and is the sole authority that replaces
+/// a stale snapshot. Both source forms share this exact lifecycle.
+pub fn load_cached_loaded_addon_indexes(
+    inventory_path: &Path,
+    storage_root: &Path,
+    workspace_roots: &[PathBuf],
+    control: &IndexBuildControl,
+) -> Result<LoadedAddonIndexResult, String> {
+    let total_start = Instant::now();
+    let graph_start = Instant::now();
+    let graph = read_loaded_addon_graph(inventory_path)?;
+    let graph_read = graph_start.elapsed();
+    let workspace_root_start = Instant::now();
+    let workspace_roots = workspace_roots
+        .iter()
+        .filter_map(|root| fs::canonicalize(root).ok())
+        .collect::<Vec<_>>();
+    let workspace_root_resolution = workspace_root_start.elapsed();
+    let mut addons = graph.addons;
+    let cache_prune_start = Instant::now();
+    prune_unloaded_addon_caches(storage_root, &addons)?;
+    let cache_prune = cache_prune_start.elapsed();
+    addons.sort_by(|left, right| {
+        (&left.guid, &left.source_root, &left.id).cmp(&(&right.guid, &right.source_root, &right.id))
+    });
+
+    let cache_load_start = Instant::now();
+    let mut summary = RuntimeIndexSummary::default();
+    let mut loaded_instances = 0;
+    let mut missing_instances = 0;
+    let mut workspace_excluded_instances = 0;
+    let mut indexes = Vec::new();
+    let mut instances = Vec::new();
+    for addon in addons {
+        control.check()?;
+        if workspace_roots
+            .iter()
+            .any(|workspace_root| workspace_root.starts_with(&addon.source_root))
+        {
+            remove_workspace_addon_cache(storage_root, &addon)?;
+            workspace_excluded_instances += 1;
+            continue;
+        }
+        let Some(result) = load_current_addon_cache(storage_root, &addon)? else {
+            missing_instances += 1;
+            continue;
+        };
+        loaded_instances += 1;
+        summary.files += result.summary.files;
+        summary.bytes += result.summary.bytes;
+        summary.indexed_symbols += result.summary.indexed_symbols;
+        summary.parse_diagnostics += result.summary.parse_diagnostics;
+        summary.lossy_files += result.summary.lossy_files;
+        let (pack_count, script_count) = match &result.fingerprint {
+            SourceFingerprint::Addon { pack_count, catalogue_entry_count, .. } => {
+                (*pack_count, *catalogue_entry_count)
+            }
+            _ => unreachable!("loaded add-on cache always has an add-on fingerprint"),
+        };
+        instances.push(LoadedAddonIndexInstance {
+            guid: addon.guid,
+            display_id: addon.id,
+            pack_count,
+            script_count,
+            cache_status: "optimistic-loaded".to_string(),
+            cache_detail: Some("source-validation-pending".to_string()),
+            summary: result.summary.clone(),
+            timings: result.timings,
+            cache_file_bytes: result.cache_file_bytes,
+        });
+        indexes.push(result.index);
+    }
+    let index_load_or_build = cache_load_start.elapsed();
+    let layer_compose_start = Instant::now();
+    let index = SymbolIndex::layered(indexes);
+    Ok(LoadedAddonIndexResult {
+        index,
+        summary,
+        rebuilt_instances: 0,
+        loaded_instances,
+        missing_instances,
+        workspace_excluded_instances,
+        timings: LoadedAddonIndexTimings {
+            graph_read,
+            workspace_root_resolution,
+            cache_prune,
+            source_inspection: Duration::ZERO,
             index_load_or_build,
             layer_compose: layer_compose_start.elapsed(),
             total: total_start.elapsed(),
@@ -629,6 +731,71 @@ fn manifest_matches_current_source(
         && manifest.pack_artifacts == pack_artifacts
         && manifest.index_file == "symbols.bin"
         && manifest.index_bytes == index_bytes
+}
+
+/// Opens the one revision that this exact Workbench instance last published.
+/// This validates cache-format and instance identity only; it deliberately
+/// performs no source I/O so delivery stays independent from inspection.
+fn load_current_addon_cache(
+    storage_root: &Path,
+    addon: &LoadedAddonSource,
+) -> Result<Option<GameDataIndexCacheResult>, String> {
+    let instance_key = addon_instance_key(&addon.guid, &addon.source_root);
+    let addon_root = storage_root.join(&instance_key);
+    let current_path = addon_root.join("current.json");
+    let Some(current) = fs::read(&current_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<CurrentRevision>(&bytes).ok())
+    else {
+        return Ok(None);
+    };
+    if current.schema != "reforger-addon-current-revision-v1"
+        || current.guid != addon.guid
+        || current.instance_key != instance_key
+        || current.source_root != addon.source_root
+        || !is_sha256_digest(&current.revision)
+        || current.manifest != format!("revisions/{}/manifest.json", current.revision)
+        || current.index != format!("revisions/{}/symbols.bin", current.revision)
+    {
+        return Ok(None);
+    }
+    let manifest_path = addon_root.join(&current.manifest);
+    let Some(manifest) = fs::read(&manifest_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<AddonIndexManifest>(&bytes).ok())
+    else {
+        return Ok(None);
+    };
+    let (cache_schema, cache_format_version, cache_index_shape) = cache_format_identity();
+    if manifest.schema != "reforger-addon-index-manifest-v2"
+        || manifest.cache_schema != cache_schema
+        || manifest.cache_format_version != cache_format_version
+        || manifest.cache_index_shape != cache_index_shape
+        || manifest.extractor_schema != "pac1-selected-script-payload-v2"
+        || manifest.guid != addon.guid
+        || manifest.display_id != format!("{} ({})", addon.id, addon.title)
+        || manifest.source_root != addon.source_root
+        || manifest.source_precedence != "Workbench loaded add-on order"
+        || manifest.revision != current.revision
+        || manifest.index_file != "symbols.bin"
+    {
+        return Ok(None);
+    }
+    let fingerprint = SourceFingerprint::Addon {
+        guid: addon.guid.clone(),
+        artifact_digest: current.revision.clone(),
+        pack_count: manifest.pack_count,
+        catalogue_entry_count: manifest.script_count,
+    };
+    load_archive_index_cache(
+        &addon_root.join(&current.index),
+        fingerprint,
+        current.revision,
+    )
+}
+
+fn is_sha256_digest(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn load_or_build_inspected_addon(
@@ -1220,7 +1387,7 @@ fn read_loaded_addon_graph(inventory_path: &Path) -> Result<LoadedAddonGraph, St
     if graph.bridge_version.is_empty() || graph.addons.is_empty() {
         return Err("Workbench loaded add-on graph is empty or malformed".to_string());
     }
-    let mut loaded_guids = BTreeSet::new();
+    let mut loaded_instances = BTreeSet::new();
     let addons = graph
         .addons
         .into_iter()
@@ -1233,10 +1400,10 @@ fn read_loaded_addon_graph(inventory_path: &Path) -> Result<LoadedAddonGraph, St
                 || !guid.bytes().all(|byte| byte.is_ascii_hexdigit())
                 || addon.id.is_empty()
                 || addon.title.is_empty()
-                || !loaded_guids.insert(guid.clone())
+                || !loaded_instances.insert((guid.clone(), source_root.clone()))
             {
                 return Err(
-                    "Workbench loaded add-on graph contains an invalid or duplicate instance"
+                    "Workbench loaded add-on graph contains an invalid or duplicate GUID/source-root instance"
                         .to_string(),
                 );
             }
@@ -1669,6 +1836,30 @@ mod tests {
     }
 
     #[test]
+    fn distinguishes_loaded_instances_by_guid_and_canonical_source_root() {
+        let root = test_root("duplicate_guid_loaded_instances");
+        let packed = root.join("packed");
+        let unpacked = root.join("unpacked");
+        fs::create_dir_all(&packed).unwrap();
+        fs::create_dir_all(&unpacked).unwrap();
+        let graph = root.join("graph.json");
+        fs::write(&graph, format!(
+            r#"{{"schema":"reforger-workbench-loaded-addon-graph-v1","bridgeVersion":"1.52.0","protocolVersion":1,"addons":[{{"guid":"1111111111111111","id":"Same","title":"Packed","sourceRoot":{}}},{{"guid":"1111111111111111","id":"Same","title":"Unpacked","sourceRoot":{}}}]}}"#,
+            serde_json::to_string(&packed).unwrap(),
+            serde_json::to_string(&unpacked).unwrap(),
+        )).unwrap();
+
+        let loaded = read_loaded_addon_graph(&graph).unwrap();
+
+        assert_eq!(loaded.addons.len(), 2);
+        assert_ne!(
+            addon_instance_key(&loaded.addons[0].guid, &loaded.addons[0].source_root),
+            addon_instance_key(&loaded.addons[1].guid, &loaded.addons[1].source_root),
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn indexes_workspace_addons_only_through_live_sources_and_removes_their_cache() {
         let root = test_root("loaded_addon_instances");
         let packed = root.join("packed");
@@ -1713,6 +1904,20 @@ mod tests {
             .iter()
             .all(|instance| instance.cache_detail.as_deref() == Some("cache-missing")));
         assert_eq!(fs::read_dir(&storage).unwrap().count(), 2);
+        let optimistic = load_cached_loaded_addon_indexes(
+            &graph,
+            &storage,
+            &workspace_roots,
+            &IndexBuildControl::default(),
+        )
+        .unwrap();
+        assert_eq!(optimistic.loaded_instances, 2);
+        assert_eq!(optimistic.missing_instances, 0);
+        assert_eq!(optimistic.summary.files, 3);
+        assert!(optimistic
+            .instances
+            .iter()
+            .all(|instance| instance.cache_status == "optimistic-loaded"));
         let workspace_roots = vec![loose.join("scripts")];
         let second = load_or_build_loaded_addon_indexes(
             &graph,

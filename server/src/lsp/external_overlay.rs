@@ -3,7 +3,9 @@ use super::file_uri_path_identity;
 use super::{
     file_path_identity, format_paths, LspLogger, LspServerOptions, ServerEvent, ServerEventSender,
 };
-use crate::addon_sources::{load_or_build_loaded_addon_indexes, LoadedAddonIndexResult};
+use crate::addon_sources::{
+    load_cached_loaded_addon_indexes, load_or_build_loaded_addon_indexes, LoadedAddonIndexResult,
+};
 use crate::index::SymbolIndex;
 use crate::index_cache::RuntimeIndexSummary;
 use crate::model::{
@@ -265,6 +267,22 @@ impl ExternalIndexHandle {
         let control = self.control.clone();
         thread::spawn(move || {
             let started = Instant::now();
+            let cached = load_cached_loaded_addon_indexes(
+                &inventory_path,
+                &storage,
+                &workspace_roots,
+                &control,
+            );
+            if let Ok(cached) = cached {
+                let mut state = state.lock().unwrap();
+                if state.graph_generation == graph_generation && cached.loaded_instances > 0 {
+                    publish_loaded_addon_result(&mut state, &cached, true);
+                    logger.diagnostic_lazy("externalIndex.optimisticCacheDelivered", || json!({"elapsedMs": started.elapsed().as_millis(), "loadedInstances": cached.loaded_instances, "missingInstances": cached.missing_instances, "workspaceExcludedInstances": cached.workspace_excluded_instances}));
+                }
+            }
+            if let Some(sender) = &event_sender {
+                let _ = sender.send(ServerEvent::ExternalIndexChanged);
+            }
             let result = load_or_build_loaded_addon_indexes(
                 &inventory_path,
                 &storage,
@@ -278,31 +296,7 @@ impl ExternalIndexHandle {
             match result {
                 Ok(result) => {
                     log_loaded_addon_index_diagnostics(&logger, &result);
-                    state.game_data_index = Some(Arc::new(result.index));
-                    state.game_data_summary = Some(result.summary);
-                    state.cache_status = Some(
-                        if result.rebuilt_instances == 0 {
-                            "loaded"
-                        } else {
-                            "rebuilt"
-                        }
-                        .to_string(),
-                    );
-                    state.cache_detail = Some(format!(
-                        "loadedInstances={} rebuiltInstances={} workspaceExcludedInstances={}",
-                        result.loaded_instances,
-                        result.rebuilt_instances,
-                        result.workspace_excluded_instances
-                    ));
-                    state.fingerprint = Some(format!(
-                        "workbench-loaded-addons:{}",
-                        result.loaded_instances + result.rebuilt_instances
-                    ));
-                    state.error = None;
-                    let game_data = state.game_data_summary.clone();
-                    recompute_summary(&mut state, game_data);
-                    state.generation += 1;
-                    state.status = ExternalIndexStatus::Ready;
+                    publish_loaded_addon_result(&mut state, &result, false);
                     logger.diagnostic_lazy("externalIndex.graphDelivered", || json!({"elapsedMs": started.elapsed().as_millis(), "loadedInstances": result.loaded_instances, "rebuiltInstances": result.rebuilt_instances, "workspaceExcludedInstances": result.workspace_excluded_instances}));
                 }
                 Err(error) => {
@@ -492,6 +486,42 @@ impl ExternalIndexHandle {
     }
 }
 
+fn publish_loaded_addon_result(
+    state: &mut ExternalIndexState,
+    result: &LoadedAddonIndexResult,
+    validation_pending: bool,
+) {
+    state.game_data_index = Some(Arc::new(result.index.clone()));
+    state.game_data_summary = Some(result.summary.clone());
+    state.cache_status = Some(
+        if validation_pending {
+            "optimistic-loaded"
+        } else if result.rebuilt_instances == 0 {
+            "loaded"
+        } else {
+            "rebuilt"
+        }
+        .to_string(),
+    );
+    state.cache_detail = Some(format!(
+        "loadedInstances={} rebuiltInstances={} missingInstances={} workspaceExcludedInstances={}{}",
+        result.loaded_instances,
+        result.rebuilt_instances,
+        result.missing_instances,
+        result.workspace_excluded_instances,
+        if validation_pending { " sourceValidation=pending" } else { "" },
+    ));
+    state.fingerprint = Some(format!(
+        "workbench-loaded-addons:{}",
+        result.loaded_instances + result.rebuilt_instances
+    ));
+    state.error = None;
+    let game_data = state.game_data_summary.clone();
+    recompute_summary(state, game_data);
+    state.generation += 1;
+    state.status = ExternalIndexStatus::Ready;
+}
+
 pub(crate) fn start_external_index(
     options: &LspServerOptions,
     logger: LspLogger,
@@ -661,6 +691,34 @@ fn run_external_index_thread(
             format_paths(&workspace_roots)
         )
     });
+
+    // Hydrate the last immutable snapshot before any source inspection. The
+    // following validation pass is still mandatory and atomically replaces
+    // this projection when a packed or loose source has changed.
+    if let (Some(inventory_path), Some(storage)) =
+        (addon_source_inventory.as_ref(), addon_index_storage.as_ref())
+    {
+        let optimistic_start = Instant::now();
+        match load_cached_loaded_addon_indexes(
+            inventory_path,
+            storage,
+            &workspace_roots,
+            &control,
+        ) {
+            Ok(result) if result.loaded_instances > 0 => {
+                log_loaded_addon_index_diagnostics(&logger, &result);
+                let mut published = state.lock().unwrap();
+                publish_loaded_addon_result(&mut published, &result, true);
+                drop(published);
+                logger.diagnostic_lazy("externalIndex.optimisticCacheDelivered", || json!({"elapsedMs": optimistic_start.elapsed().as_millis(), "loadedInstances": result.loaded_instances, "missingInstances": result.missing_instances, "workspaceExcludedInstances": result.workspace_excluded_instances}));
+                if let Some(sender) = &event_sender {
+                    let _ = sender.send(ServerEvent::ExternalIndexChanged);
+                }
+            }
+            Ok(result) => logger.diagnostic_lazy("externalIndex.optimisticCacheUnavailable", || json!({"elapsedMs": optimistic_start.elapsed().as_millis(), "missingInstances": result.missing_instances, "workspaceExcludedInstances": result.workspace_excluded_instances})),
+            Err(error) => logger.diagnostic_lazy("externalIndex.optimisticCacheFailed", || json!({"elapsedMs": optimistic_start.elapsed().as_millis(), "error": error})),
+        }
+    }
 
     let game_data_start = Instant::now();
     let has_addon_source_inventory = addon_source_inventory.is_some();

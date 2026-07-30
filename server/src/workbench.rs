@@ -1753,9 +1753,9 @@ impl WorkbenchController {
                 json!({"handler": "RST_WorkbenchLoadedAddonGraph"}),
             ));
         }
-        let mut loaded_guids = HashSet::new();
+        let mut loaded_instances = HashSet::new();
         if addons.iter().any(|addon| {
-            !loaded_guids.insert(addon.guid.clone())
+            !loaded_instances.insert((addon.guid.clone(), addon.source_root.clone()))
         }) {
             return Err(self.correlate_failure_details(
                 "loaded_addon_graph",
