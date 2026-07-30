@@ -73,6 +73,10 @@ The report lists catalogue and `.c` entry counts with elapsed time. It is a
 safe inspection aid for add-on research, not an add-on discovery or indexing
 command.
 
+To extract only `.c` entries, pass `--extract-scripts <output-root>` before the
+archives. The archive's logical `scripts/` path is retained below that root;
+the command refuses to overwrite an existing extracted file.
+
 The bundled executable selects a protocol before either protocol starts:
 
 ```powershell
