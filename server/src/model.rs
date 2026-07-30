@@ -93,10 +93,20 @@ impl SourceCategory {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VirtualSourceIdentity {
+    pub uri: String,
+    pub addon_guid: String,
+    pub revision: String,
+    pub logical_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceFileMetadata {
     pub kind: SourceKind,
     pub category: SourceCategory,
     pub absolute_path: Option<PathBuf>,
+    #[serde(default)]
+    pub virtual_source: Option<VirtualSourceIdentity>,
     pub root_path: Option<PathBuf>,
     pub relative_path: Option<PathBuf>,
     pub priority: u16,
@@ -108,6 +118,7 @@ impl SourceFileMetadata {
             kind: SourceKind::Unknown,
             category: SourceCategory::Unknown,
             absolute_path: None,
+            virtual_source: None,
             root_path: None,
             relative_path: None,
             priority: SOURCE_PRIORITY_UNKNOWN,
@@ -1605,6 +1616,7 @@ class Example
             kind: SourceKind::GameData,
             category: SourceCategory::Game,
             absolute_path: Some(PathBuf::from("C:/scripts/Game/Example.c")),
+            virtual_source: None,
             root_path: Some(PathBuf::from("C:/scripts")),
             relative_path: Some(PathBuf::from("Game/Example.c")),
             priority: SOURCE_PRIORITY_GAME_DATA,

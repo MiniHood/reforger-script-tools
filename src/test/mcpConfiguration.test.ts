@@ -9,7 +9,7 @@ suite('MCP configuration', () => {
 	test('builds a stable launch independent of a running VS Code process', () => {
 		const launch = buildMcpLaunchConfiguration({
 			serverPath: 'C:\\Extensions\\reforger_language_server.exe',
-			indexCache: 'C:\\Storage\\addon-indexes\\58D0FB3206B6F859\\current\\symbols.bin',
+			indexCache: 'C:\\Storage\\addon-indexes\\58D0FB3206B6F859\\current.json',
 		});
 
 		assert.deepStrictEqual(launch, {
@@ -17,7 +17,7 @@ suite('MCP configuration', () => {
 			args: [
 				'mcp',
 				'--index-cache',
-				'C:\\Storage\\addon-indexes\\58D0FB3206B6F859\\current\\symbols.bin',
+				'C:\\Storage\\addon-indexes\\58D0FB3206B6F859\\current.json',
 			],
 		});
 	});
@@ -25,13 +25,13 @@ suite('MCP configuration', () => {
 	test('uses only the parser-owned Game Data index cache', () => {
 		const launch = buildMcpLaunchConfiguration({
 			serverPath: '/extension/reforger_language_server',
-			indexCache: '/storage/addon-indexes/58D0FB3206B6F859/current/symbols.bin',
+			indexCache: '/storage/addon-indexes/58D0FB3206B6F859/current.json',
 		});
 
 		assert.deepStrictEqual(launch.args, [
 			'mcp',
 			'--index-cache',
-			'/storage/addon-indexes/58D0FB3206B6F859/current/symbols.bin',
+			'/storage/addon-indexes/58D0FB3206B6F859/current.json',
 		]);
 	});
 

@@ -7,7 +7,7 @@ use crate::expression_type::{
 };
 use crate::index::{GlobalSymbolId, IndexedFile, IndexedSymbol, SymbolIndex};
 use crate::lexer::{lex, Keyword, Operator, TextSpan, Token, TokenKind};
-use crate::model::{SourceCategory, SourceKind, SymbolKind};
+use crate::model::{SourceCategory, SourceKind, SymbolKind, VirtualSourceIdentity};
 use crate::parser::parse_source;
 use crate::scope::LexicalScopeModel;
 use crate::syntax::{Parse, SyntaxElement, SyntaxKind, SyntaxNode};
@@ -75,6 +75,7 @@ pub struct ReferenceCandidate {
     pub source_priority: u16,
     pub relative_path: Option<PathBuf>,
     pub absolute_path: Option<PathBuf>,
+    pub virtual_source: Option<VirtualSourceIdentity>,
     /// Normalized callable shape used by definition navigation to distinguish
     /// an override's inherited declaration from unrelated overloads.
     pub callable_override_key: Option<String>,
@@ -1452,6 +1453,7 @@ fn candidate_from_symbol(
         source_priority: file.metadata.priority,
         relative_path: file.metadata.relative_path.clone(),
         absolute_path: file.metadata.absolute_path.clone(),
+        virtual_source: file.metadata.virtual_source.clone(),
         callable_override_key: callable_override_key(index, id),
         is_override: has_modifier(symbol, "override"),
     }
@@ -4759,6 +4761,7 @@ class Example
             kind: SourceKind::Workspace,
             category: SourceCategory::Workspace,
             absolute_path: Some(PathBuf::from("C:/workspace").join(path)),
+            virtual_source: None,
             root_path: Some(PathBuf::from("C:/workspace")),
             relative_path: Some(PathBuf::from(path)),
             priority: SOURCE_PRIORITY_WORKSPACE,
@@ -4771,6 +4774,7 @@ class Example
             kind: SourceKind::GameData,
             category: source_category_for_path(SourceKind::GameData, Some(&relative_path)),
             absolute_path: Some(PathBuf::from("C:/game").join(path)),
+            virtual_source: None,
             root_path: Some(PathBuf::from("C:/game")),
             relative_path: Some(relative_path),
             priority: SOURCE_PRIORITY_GAME_DATA,

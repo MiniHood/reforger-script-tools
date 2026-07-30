@@ -46,10 +46,20 @@ the meaning of an in-flight response. Do not introduce per-feature revision
 tables or mutable shared feature state that bypasses this model.
 
 The base-game layer is published only after its complete GUID-scoped cache has
-loaded or rebuilt. Unchanged startup validates bounded PAC catalogue metadata
-and loads the semantic cache; it does not walk extracted files or hash the full
-multi-gigabyte archives. A changed artifact decodes only selected `.c` entries.
-Failed or cancelled rebuilds do not replace the previously complete cache.
+loaded or rebuilt. Unchanged startup inspects bounded PAC catalogues and hashes
+only the selected compressed script payloads, not the full multi-gigabyte
+archives. The resulting strong revision identity detects same-size script
+changes. A changed artifact decodes only selected `.c` entries. The semantic
+cache and locator-rich manifest are written beneath a new immutable revision
+before an atomic current-pointer publication; failed or cancelled rebuilds do
+not replace the previously complete cache.
+
+Packed files carry a typed virtual-source identity in semantic metadata rather
+than overloading a filesystem path. The identity includes add-on GUID,
+semantic revision, logical script path, and URI. Definition serving retains
+immutable revision registries and rejects a read when its captured pack
+artifact has changed on disk, so an old symbol span is never applied to newer
+bytes.
 
 ## Boundaries and Evidence
 

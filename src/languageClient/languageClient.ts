@@ -526,10 +526,21 @@ function monitorExternalIndexProgress(
 
 export function externalIndexProgressMessage(phase: string, status?: string): string {
 	switch (phase) {
+		case 'inventory-load-start':
+		case 'inventory-load-end':
+			return 'Loading installed add-on inventory';
+		case 'addon-manifest-validate-start':
+		case 'addon-manifest-validate-end':
+			return 'Validating add-on identities';
 		case 'pac-inspect-start':
+		case 'pac-inspect-end':
 			return 'Inspecting installed add-on packs';
-		case 'pac-index-end':
-			return 'Loading installed add-on index';
+		case 'addon-cache-loaded':
+			return 'Loaded unchanged add-on index';
+		case 'addon-rebuild-end':
+			return 'Rebuilt changed add-on index';
+		case 'addon-cache-failed':
+			return 'Add-on indexing failed';
 		case 'workspace-rebuild-start':
 		case 'workspace-rebuild-end':
 			return 'Indexing workspace scripts';

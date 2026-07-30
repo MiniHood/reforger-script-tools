@@ -187,6 +187,7 @@ fn index_for_source(
             kind,
             category: source_category_for_path(kind, Some(&relative_path)),
             absolute_path: Some(file.to_path_buf()),
+            virtual_source: None,
             root_path: Some(root.to_path_buf()),
             relative_path: Some(relative_path),
             priority,

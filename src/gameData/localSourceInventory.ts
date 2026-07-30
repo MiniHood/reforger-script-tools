@@ -6,10 +6,14 @@ import { gameDataConfig, gameDataStorage } from '../extensionConfig/gameData';
 
 export type AddonRootKind = 'base-game' | 'workbench' | 'user-addons';
 export type AddonRootOrigin = 'configured' | 'discovered' | 'missing';
+export type AddonRootStatus = 'ready' | 'missing' | 'invalid';
 
 export interface ResolvedAddonRoot {
 	kind: AddonRootKind;
 	origin: AddonRootOrigin;
+	status: AddonRootStatus;
+	candidates: string[];
+	diagnostic: string;
 	path?: string;
 }
 
@@ -39,7 +43,7 @@ export async function resolveAndWriteLocalSourceInventory(
 		roots,
 		addons: (await Promise.all(roots.map(root => discoverAddons(root))))
 			.flat()
-			.sort((left, right) => addonKey(left).localeCompare(addonKey(right))),
+			.sort((left, right) => ordinalCompare(addonKey(left), addonKey(right))),
 	};
 	const contents = `${JSON.stringify(inventory, null, 2)}\n`;
 	const digest = createHash('sha256').update(contents).digest('hex');
@@ -100,17 +104,39 @@ export function settingName(kind: AddonRootKind): string {
 
 async function resolveRoot(kind: AddonRootKind): Promise<ResolvedAddonRoot> {
 	const configured = configuredRoot(kind);
+	return resolveRootFrom(kind, configured, defaultRootCandidates(kind));
+}
+
+export async function resolveRootFrom(
+	kind: AddonRootKind,
+	configured: string | undefined,
+	candidates: string[],
+	directoryProbe: (candidate: string) => Promise<boolean> = isDirectory,
+): Promise<ResolvedAddonRoot> {
 	if (configured) {
-		return (await isDirectory(configured))
-			? { kind, origin: 'configured', path: configured }
-			: { kind, origin: 'missing' };
+		return (await directoryProbe(configured))
+			? readyRoot(kind, 'configured', configured, [configured])
+			: {
+				kind,
+				origin: 'configured',
+				status: 'invalid',
+				path: configured,
+				candidates: [configured],
+				diagnostic: `Configured ${rootLabel(kind)} add-ons folder does not exist or is not a directory.`,
+			};
 	}
-	for (const candidate of defaultRootCandidates(kind)) {
-		if (await isDirectory(candidate)) {
-			return { kind, origin: 'discovered', path: candidate };
+	for (const candidate of candidates) {
+		if (await directoryProbe(candidate)) {
+			return readyRoot(kind, 'discovered', candidate, candidates);
 		}
 	}
-	return { kind, origin: 'missing' };
+	return {
+		kind,
+		origin: 'missing',
+		status: 'missing',
+		candidates,
+		diagnostic: `No ${rootLabel(kind)} add-ons folder was found.`,
+	};
 }
 
 async function isDirectory(candidate: string): Promise<boolean> {
@@ -136,7 +162,7 @@ async function discoverAddons(root: ResolvedAddonRoot): Promise<LocalAddonInvent
 				packFiles: files
 					.filter(file => file.isFile() && file.name.toLowerCase().endsWith('.pak'))
 					.map(file => path.join(addonPath, file.name))
-					.sort((left, right) => left.localeCompare(right)),
+					.sort(ordinalCompare),
 			};
 		}));
 	return addons;
@@ -144,6 +170,34 @@ async function discoverAddons(root: ResolvedAddonRoot): Promise<LocalAddonInvent
 
 function addonKey(addon: LocalAddonInventoryEntry): string {
 	return `${addon.rootKind}\0${addon.directoryName.toLowerCase()}`;
+}
+
+function ordinalCompare(left: string, right: string): number {
+	return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function readyRoot(
+	kind: AddonRootKind,
+	origin: Exclude<AddonRootOrigin, 'missing'>,
+	resolvedPath: string,
+	candidates: string[],
+): ResolvedAddonRoot {
+	return {
+		kind,
+		origin,
+		status: 'ready',
+		path: resolvedPath,
+		candidates,
+		diagnostic: `${rootLabel(kind)} add-ons folder is ready.`,
+	};
+}
+
+function rootLabel(kind: AddonRootKind): string {
+	switch (kind) {
+		case 'base-game': return 'base-game';
+		case 'workbench': return 'Workbench';
+		case 'user-addons': return 'user';
+	}
 }
 
 async function readDirectory(directory: string): Promise<import('fs').Dirent[]> {

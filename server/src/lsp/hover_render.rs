@@ -1959,6 +1959,7 @@ class Example
                 kind: SourceKind::Workspace,
                 category: SourceCategory::Workspace,
                 absolute_path: Some("C:/workspace/Example.c".into()),
+                virtual_source: None,
                 root_path: Some("C:/workspace".into()),
                 relative_path: Some("Example.c".into()),
                 priority: SOURCE_PRIORITY_WORKSPACE,

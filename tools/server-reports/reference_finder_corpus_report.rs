@@ -80,6 +80,7 @@ fn run() -> Result<(), String> {
             kind: SourceKind::GameData,
             category: source_category_for_path(SourceKind::GameData, Some(&relative_path_buf)),
             absolute_path: file.canonicalize().ok(),
+            virtual_source: None,
             root_path: args.scripts_path.canonicalize().ok(),
             relative_path: Some(relative_path_buf),
             priority: SOURCE_PRIORITY_GAME_DATA,

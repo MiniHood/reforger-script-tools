@@ -262,14 +262,13 @@ fn definition_link_for_candidate(
             target_selection_range: range_for_span(current_source, candidate.selection_span),
         }),
         CandidateSource::External => {
-            let path = candidate.absolute_path.as_ref()?;
-            let identity = path.to_string_lossy();
-            let (target_uri, source) = if identity.starts_with("reforger-pak://") {
+            let (target_uri, source) = if let Some(identity) = &candidate.virtual_source {
                 (
-                    identity.to_string(),
-                    crate::addon_sources::read_virtual_source(&identity).ok()?,
+                    identity.uri.clone(),
+                    crate::addon_sources::read_virtual_source(&identity.uri).ok()?,
                 )
             } else {
+                let path = candidate.absolute_path.as_ref()?;
                 (file_uri_for_path(path)?, fs::read_to_string(path).ok()?)
             };
             Some(LspLocationLink {

@@ -1053,6 +1053,7 @@ class RuntimeClass
             kind: SourceKind::GameData,
             category,
             absolute_path: Some(PathBuf::from("C:/game").join(relative_path)),
+            virtual_source: None,
             root_path: Some(PathBuf::from("C:/game")),
             relative_path: Some(PathBuf::from(relative_path)),
             priority: SOURCE_PRIORITY_GAME_DATA,

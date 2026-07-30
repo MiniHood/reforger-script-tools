@@ -488,27 +488,54 @@ fn run_external_index_thread(
 
     let game_data_start = Instant::now();
     let game_data_result = addon_source_inventory.map(|inventory_path| {
+        for phase in [
+            "inventory-load-start",
+            "addon-manifest-validate-start",
+            "pac-inspect-start",
+        ] {
             if let Some(sender) = &event_sender {
                 let _ = sender.send(ServerEvent::ExternalIndexProgress {
-                    phase: "pac-inspect-start".to_string(),
+                    phase: phase.to_string(),
                 });
             }
-            let result = addon_index_storage
-                .ok_or_else(|| "add-on index storage is unavailable".to_string())
-                .and_then(|storage| {
-                    load_or_build_base_game_index(
-                        &inventory_path,
-                        &storage,
-                        &crate::index_build::IndexBuildControl::default(),
-                    )
-                });
-            if let Some(sender) = &event_sender {
+        }
+        let result = addon_index_storage
+            .ok_or_else(|| "add-on index storage is unavailable".to_string())
+            .and_then(|storage| {
+                load_or_build_base_game_index(
+                    &inventory_path,
+                    &storage,
+                    &crate::index_build::IndexBuildControl::default(),
+                )
+            });
+        if let Some(sender) = &event_sender {
+            for phase in [
+                "inventory-load-end",
+                "addon-manifest-validate-end",
+                "pac-inspect-end",
+            ] {
                 let _ = sender.send(ServerEvent::ExternalIndexProgress {
-                    phase: "pac-index-end".to_string(),
+                    phase: phase.to_string(),
                 });
             }
-            result
-        });
+            let phase = match &result {
+                Ok(result)
+                    if matches!(
+                        result.cache_status,
+                        crate::index_cache::IndexCacheStatus::Loaded
+                    ) =>
+                {
+                    "addon-cache-loaded"
+                }
+                Ok(_) => "addon-rebuild-end",
+                Err(_) => "addon-cache-failed",
+            };
+            let _ = sender.send(ServerEvent::ExternalIndexProgress {
+                phase: phase.to_string(),
+            });
+        }
+        result
+    });
     let game_data_ready_ms = game_data_start.elapsed().as_millis();
     logger.log_lazy(|| {
         format!(
@@ -564,17 +591,20 @@ fn run_external_index_thread(
                 let cache_detail = result.cache_status.detail().map(str::to_string);
                 let fingerprint = result.fingerprint.summary();
                 logger.log_lazy(|| format!(
-                "externalIndex gameData ready cache_status={} cache_detail={} files={} symbols={} parse_diagnostics={} cache_file_bytes={} cache_file_read_ms={} cache_decode_ms={} cache_validate_ms={} cache_map_rebuild_ms={} cache_total_ms={} elapsed_ms={}",
+                "externalIndex gameData ready cache_status={} cache_detail={} files={} symbols={} parse_diagnostics={} cache_file_bytes={} pac_identity_ms={} cache_file_read_ms={} cache_decode_ms={} cache_validate_ms={} cache_map_rebuild_ms={} rebuild_ms={} cache_write_ms={} cache_total_ms={} elapsed_ms={}",
                 cache_status,
                 cache_detail.as_deref().unwrap_or("<none>"),
                 result.summary.files,
                 result.summary.indexed_symbols,
                 result.summary.parse_diagnostics,
                 result.cache_file_bytes.map(|bytes| bytes.to_string()).as_deref().unwrap_or("<unavailable>"),
+                result.timings.fingerprint.as_millis(),
                 result.timings.cache_file_read.as_millis(),
                 result.timings.cache_decode.as_millis(),
                 result.timings.cache_validate.as_millis(),
                 result.timings.map_rebuild.as_millis(),
+                result.timings.rebuild.as_millis(),
+                result.timings.cache_write.as_millis(),
                 result.timings.total.as_millis(),
                 start.elapsed().as_millis()
             ));
@@ -833,6 +863,7 @@ fn workspace_source_metadata(root: &Path, file: &Path) -> SourceFileMetadata {
         kind: SourceKind::Workspace,
         category: source_category_for_path(SourceKind::Workspace, Some(&relative_path)),
         absolute_path: Some(file.to_path_buf()),
+        virtual_source: None,
         root_path: Some(root.to_path_buf()),
         relative_path: Some(relative_path),
         priority: SOURCE_PRIORITY_WORKSPACE,

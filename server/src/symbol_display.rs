@@ -596,6 +596,7 @@ class Example {}
                 kind: SourceKind::Workspace,
                 category: SourceCategory::Workspace,
                 absolute_path: None,
+                virtual_source: None,
                 root_path: None,
                 relative_path: None,
                 priority: SOURCE_PRIORITY_WORKSPACE,

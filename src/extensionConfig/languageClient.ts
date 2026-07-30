@@ -54,7 +54,7 @@ export const languageClientLogs = {
 
 export const languageClientIndexCache = {
 	rootFolder: 'addon-indexes',
-	baseGameIndexFile: '58D0FB3206B6F859/current/symbols.bin',
+	baseGameIndexFile: '58D0FB3206B6F859/current.json',
 } as const;
 
 export const languageClientLanguage = {

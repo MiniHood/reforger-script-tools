@@ -786,6 +786,7 @@ fn game_data_metadata(root: &Path, file: &Path) -> SourceFileMetadata {
         kind: SourceKind::GameData,
         category: source_category_for_path(SourceKind::GameData, Some(&relative_path)),
         absolute_path: Some(file.to_path_buf()),
+        virtual_source: None,
         root_path: Some(root.to_path_buf()),
         relative_path: Some(relative_path),
         priority: SOURCE_PRIORITY_GAME_DATA,

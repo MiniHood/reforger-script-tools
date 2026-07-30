@@ -859,6 +859,7 @@ pub(crate) fn file_index_for_source_with_timings(
             kind: crate::model::SourceKind::Workspace,
             category: crate::model::SourceCategory::Workspace,
             absolute_path: None,
+            virtual_source: None,
             root_path: None,
             relative_path: None,
             priority: crate::model::SOURCE_PRIORITY_WORKSPACE,

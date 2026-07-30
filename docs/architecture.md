@@ -23,18 +23,24 @@ Workbench, and user add-on roots, then atomically writes a deterministic source
 inventory under `globalStorageUri/addon-sources`. Rust is the only owner of PAC
 inspection and Enfusion analysis. It selects script catalogue entries without
 extracting a loose source tree and persists one semantic cache beneath
-`globalStorageUri/addon-indexes/<guid>/current`.
+`globalStorageUri/addon-indexes/<guid>/revisions/<revision>`. A small,
+atomically replaced `current.json` selects a completed revision; neither a
+partially written manifest nor a cancelled rebuild can become current.
 
 The base-game cache is built from `data/data007.pak` and `core/data.pak`.
 Workbench and user roots are recorded in the inventory so future add-on
-indexing can use the same contract; they are not merged into the semantic
-snapshot until load ordering is defined. GitHub downloads and loose-script
-source folders are not runtime acquisition paths.
+indexing can use the same contract. Each discovered project with a valid GUID
+gets a GUID-keyed inventory manifest and ordered pack-artifact list, but is not
+merged into the semantic snapshot until load ordering is defined. Duplicate
+GUIDs are rejected. GitHub downloads and loose-script source folders are not
+runtime acquisition paths.
 
-Pack-backed definitions use stable `reforger-pak:` document identities. The
+Pack-backed definitions use typed, revision-qualified `reforger-pak:` document
+identities. The
 extension provides those documents by asking Rust to decode exactly one PAC
-entry on demand, preserving logical file boundaries without materializing
-6,495 physical files.
+entry on demand. Rust verifies that the pack artifact still matches the
+captured revision before decoding, preserving logical file boundaries and
+snapshot correctness without materializing 6,495 physical files.
 
 The packaged executable also has an independent MCP mode. An MCP client starts
 its own local `stdio` process; it neither attaches to the editor-owned LSP nor

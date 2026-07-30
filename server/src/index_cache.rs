@@ -11,7 +11,7 @@ use crate::index_build::{
 use crate::lexer::TextSpan;
 use crate::model::{
     CallableForm, PreprocessorBranchKind, SourceCategory, SourceFileMetadata, SourceKind, SymbolId,
-    SymbolKind, SOURCE_PRIORITY_GAME_DATA,
+    SymbolKind, VirtualSourceIdentity, SOURCE_PRIORITY_GAME_DATA,
 };
 use crate::semantic_file::{
     FileContribution, SemanticCallableForm, SemanticConditionalBranchKind, SemanticDeclarationId,
@@ -31,10 +31,10 @@ use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
-const CACHE_FORMAT_VERSION: u32 = 14;
+const CACHE_FORMAT_VERSION: u32 = 15;
 const CACHE_SCHEMA: &str = "reforger-symbol-index";
-const CACHE_MAGIC: &[u8; 8] = b"RSTIDX14";
-const CACHE_INDEX_SHAPE: &str = "runtime-pruned:no-local-variables:detail-spans-stripped:layered-external-v1:binary-v7:string-table-v1:canonical-public-facts-v1:parser-source-line-map-v1:source-content-digest-v1:addon-fingerprint-v1";
+const CACHE_MAGIC: &[u8; 8] = b"RSTIDX15";
+const CACHE_INDEX_SHAPE: &str = "runtime-pruned:no-local-variables:detail-spans-stripped:layered-external-v1:binary-v8:string-table-v1:canonical-public-facts-v1:parser-source-line-map-v1:source-content-digest-v1:addon-fingerprint-v1:typed-virtual-source-v1";
 const LEGACY_CACHE_FORMAT_VERSION: u32 = 9;
 const LEGACY_CACHE_MAGIC: &[u8; 8] = b"RSTIDX09";
 const V10_CACHE_FORMAT_VERSION: u32 = 10;
@@ -1367,7 +1367,16 @@ fn hex_digest(digest: impl AsRef<[u8]>) -> String {
 }
 
 fn write_cached_payload(cache_path: &Path, cached: &CachedGameDataIndex) -> Result<(), String> {
-    if let Some(parent) = cache_path.parent() {
+    let bytes = encode_cached_index(cached)?;
+    write_atomic_bytes(cache_path, &bytes)
+}
+
+pub(crate) fn cache_format_identity() -> (&'static str, u32, &'static str) {
+    (CACHE_SCHEMA, CACHE_FORMAT_VERSION, CACHE_INDEX_SHAPE)
+}
+
+pub(crate) fn write_atomic_bytes(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| {
             format!(
                 "Failed to create index cache folder {}: {error}",
@@ -1376,7 +1385,7 @@ fn write_cached_payload(cache_path: &Path, cached: &CachedGameDataIndex) -> Resu
         })?;
     }
 
-    let temp_path = unique_cache_temp_path(cache_path);
+    let temp_path = unique_cache_temp_path(path);
     let result = (|| {
         let file = fs::File::create(&temp_path).map_err(|error| {
             format!(
@@ -1384,9 +1393,8 @@ fn write_cached_payload(cache_path: &Path, cached: &CachedGameDataIndex) -> Resu
                 temp_path.display()
             )
         })?;
-        let bytes = encode_cached_index(cached)?;
         let mut writer = BufWriter::new(file);
-        writer.write_all(&bytes).map_err(|error| {
+        writer.write_all(bytes).map_err(|error| {
             format!(
                 "Failed to write index cache {}: {error}",
                 temp_path.display()
@@ -1401,7 +1409,7 @@ fn write_cached_payload(cache_path: &Path, cached: &CachedGameDataIndex) -> Resu
         // Windows `ReplaceFileW` requires the replacement handle to be closed.
         // Flushing alone leaves the `BufWriter` (and its file) open.
         drop(writer);
-        replace_cache_atomically(&temp_path, cache_path)
+        replace_cache_atomically(&temp_path, path)
     })();
     if result.is_err() {
         let _ = fs::remove_file(&temp_path);
@@ -1796,6 +1804,12 @@ impl CacheStringTable {
 
     fn insert_metadata(&mut self, metadata: &SourceFileMetadata) -> Result<(), String> {
         self.insert_option_path(metadata.absolute_path.as_deref())?;
+        if let Some(source) = &metadata.virtual_source {
+            self.insert(&source.uri)?;
+            self.insert(&source.addon_guid)?;
+            self.insert(&source.revision)?;
+            self.insert(&source.logical_path)?;
+        }
         self.insert_option_path(metadata.root_path.as_deref())?;
         self.insert_option_path(metadata.relative_path.as_deref())
     }
@@ -2046,6 +2060,13 @@ impl BinaryWriter {
         self.write_u8(source_kind_tag(metadata.kind));
         self.write_u8(source_category_tag(metadata.category));
         self.write_option_path(metadata.absolute_path.as_deref())?;
+        self.write_u8(u8::from(metadata.virtual_source.is_some()));
+        if let Some(source) = &metadata.virtual_source {
+            self.write_string(&source.uri)?;
+            self.write_string(&source.addon_guid)?;
+            self.write_string(&source.revision)?;
+            self.write_string(&source.logical_path)?;
+        }
         self.write_option_path(metadata.root_path.as_deref())?;
         self.write_option_path(metadata.relative_path.as_deref())?;
         self.write_u16(metadata.priority);
@@ -2385,6 +2406,16 @@ impl<'a> BinaryReader<'a> {
             kind: source_kind_from_tag(self.read_u8()?)?,
             category: source_category_from_tag(self.read_u8()?)?,
             absolute_path: self.read_option_path()?,
+            virtual_source: if self.read_u8()? != 0 {
+                Some(VirtualSourceIdentity {
+                    uri: self.read_string()?,
+                    addon_guid: self.read_string()?,
+                    revision: self.read_string()?,
+                    logical_path: self.read_string()?,
+                })
+            } else {
+                None
+            },
             root_path: self.read_option_path()?,
             relative_path: self.read_option_path()?,
             priority: self.read_u16()?,

@@ -1,26 +1,26 @@
 use crate::game_data_inspection::{
-    GameDataInspectionError, GameDataInspectionOutput, GameDataSourceReadRequest, inspect,
+    inspect, GameDataInspectionError, GameDataInspectionOutput, GameDataSourceReadRequest,
 };
 use crate::game_data_research::{
-    GameDataExamplePage, GameDataExampleSearchRequest, GameDataMemberPage, GameDataMemberRequest,
-    GameDataRelationshipPage, GameDataRelationshipRequest, GameDataResearchError, list_members,
+    list_members, GameDataExamplePage, GameDataExampleSearchRequest, GameDataMemberPage,
+    GameDataMemberRequest, GameDataRelationshipPage, GameDataRelationshipRequest,
+    GameDataResearchError,
 };
 use crate::game_data_search::{
-    GameDataSearchError, GameDataSearchPage, GameDataSearchRequest, SourceLineStarts, search,
+    search, GameDataSearchError, GameDataSearchPage, GameDataSearchRequest, SourceLineStarts,
 };
 use crate::index::{SourceFileId, SymbolIndex};
-use crate::index_build::{INDEX_BUILD_CANCELLED, IndexBuildControl};
+use crate::index_build::{IndexBuildControl, INDEX_BUILD_CANCELLED};
 use crate::index_cache::{
-    GameDataIndexCacheResult, IndexCacheStatus, IndexCacheTimings, RuntimeIndexSummary,
-    SourceFingerprint, load_game_data_index_cache_with_control,
+    load_game_data_index_cache_with_control, GameDataIndexCacheResult, IndexCacheStatus,
+    IndexCacheTimings, RuntimeIndexSummary, SourceFingerprint,
 };
 use crate::model::SymbolKind;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-#[cfg(all(feature = "test-hooks", debug_assertions))]
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::time::{Duration, Instant};
@@ -462,6 +462,7 @@ fn initialize_catalogue(
         ));
     };
 
+    let cache_path = resolve_current_index_pointer(&cache_path)?;
     let result = load_game_data_index_cache_with_control(&cache_path, control);
 
     match result {
@@ -482,6 +483,44 @@ fn initialize_catalogue(
             "Activate the language server to rebuild the index, then restart MCP.",
         )),
     }
+}
+
+fn resolve_current_index_pointer(path: &Path) -> Result<PathBuf, String> {
+    if path.extension().and_then(|value| value.to_str()) != Some("json") {
+        return Ok(path.to_path_buf());
+    }
+    let raw = fs::read_to_string(path).map_err(|error| {
+        format!(
+            "Failed to read add-on index pointer {}: {error}",
+            path.display()
+        )
+    })?;
+    let value: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|error| format!("Invalid add-on index pointer {}: {error}", path.display()))?;
+    if value.get("schema").and_then(serde_json::Value::as_str)
+        != Some("reforger-addon-current-revision-v1")
+    {
+        return Err(format!(
+            "Unsupported add-on index pointer {}",
+            path.display()
+        ));
+    }
+    let relative = value
+        .get("index")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| format!("Add-on index pointer has no index: {}", path.display()))?;
+    let relative = Path::new(relative);
+    if relative.is_absolute()
+        || relative
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err(format!("Unsafe add-on index pointer: {}", path.display()));
+    }
+    Ok(path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(relative))
 }
 
 fn ready_state(result: GameDataIndexCacheResult) -> GameDataCatalogueState {

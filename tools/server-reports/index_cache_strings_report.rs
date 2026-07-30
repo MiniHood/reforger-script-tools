@@ -658,6 +658,7 @@ class Example : BaseExample
             kind: SourceKind::GameData,
             category: SourceCategory::Game,
             absolute_path: Some(PathBuf::from("C:/root/Game/Example.c")),
+            virtual_source: None,
             root_path: Some(PathBuf::from("C:/root")),
             relative_path: Some(PathBuf::from("Game/Example.c")),
             priority: SOURCE_PRIORITY_GAME_DATA,

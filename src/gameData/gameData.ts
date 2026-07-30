@@ -51,9 +51,9 @@ async function refreshSources(context: vscode.ExtensionContext, changed?: () => 
 	try {
 		const result = await resolveAndWriteLocalSourceInventory(context);
 		const base = result.inventory.roots.find(root => root.kind === 'base-game');
-		if (!base?.path) {
+		if (!base?.path || base.status !== 'ready') {
 			const choice = await vscode.window.showWarningMessage(
-				'Reforger Script Tools could not find the Arma Reforger add-ons folder.',
+				base?.diagnostic ?? 'Reforger Script Tools could not find the Arma Reforger add-ons folder.',
 				'Choose Base Game Add-ons Folder',
 			);
 			if (choice) {

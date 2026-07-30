@@ -191,6 +191,7 @@ fn fixture_metadata(path: &str) -> SourceFileMetadata {
         kind: SourceKind::Fixture,
         category: source_category_for_path(SourceKind::Fixture, Some(&relative_path)),
         absolute_path: Some(root.join(path)),
+        virtual_source: None,
         root_path: Some(root),
         relative_path: Some(relative_path),
         priority: SOURCE_PRIORITY_FIXTURE,
