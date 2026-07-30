@@ -39,6 +39,18 @@ pub struct WorkbenchStatus {
     pub scripts_compiled: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkbenchRequestTiming {
+    pub lock_wait_ms: u64,
+    pub connect_ms: u64,
+    pub write_ms: u64,
+    pub response_header_ms: u64,
+    pub response_body_ms: u64,
+    pub decode_ms: u64,
+    pub total_ms: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkbenchDiagnosticLocation {
@@ -1160,8 +1172,14 @@ impl WorkbenchController {
     }
 
     pub fn native_status(&self) -> Result<WorkbenchStatus, WorkbenchFailure> {
+        self.native_status_with_timing().map(|(status, _)| status)
+    }
+
+    pub fn native_status_with_timing(
+        &self,
+    ) -> Result<(WorkbenchStatus, WorkbenchRequestTiming), WorkbenchFailure> {
         let started = Instant::now();
-        let result = self.gateway.status();
+        let result = self.gateway.status_with_timing();
         self.log_event_timed(
             "native-status",
             match &result {
@@ -1170,8 +1188,8 @@ impl WorkbenchController {
             },
             started,
             json!({
-                "isRunning": result.as_ref().map(|status| status.is_running).ok(),
-                "scriptsCompiled": result.as_ref().map(|status| status.scripts_compiled).ok(),
+                "isRunning": result.as_ref().map(|(status, _)| status.is_running).ok(),
+                "scriptsCompiled": result.as_ref().map(|(status, _)| status.scripts_compiled).ok(),
             }),
         );
         result
@@ -1670,10 +1688,17 @@ impl WorkbenchController {
     }
 
     pub fn loaded_addon_graph(&self) -> Result<WorkbenchLoadedAddonGraph, WorkbenchFailure> {
+        self.loaded_addon_graph_with_timing()
+            .map(|(graph, _)| graph)
+    }
+
+    pub fn loaded_addon_graph_with_timing(
+        &self,
+    ) -> Result<(WorkbenchLoadedAddonGraph, WorkbenchRequestTiming), WorkbenchFailure> {
         let started = Instant::now();
-        let value = self
+        let (value, timing) = self
             .gateway
-            .request(
+            .request_with_timing(
                 json!({"APIFunc": "RST_WorkbenchLoadedAddonGraph"}),
                 self.options.gateway.status_deadline,
             )
@@ -1739,7 +1764,7 @@ impl WorkbenchController {
             started,
             json!({"loadedAddonCount": graph.addons.len()}),
         );
-        Ok(graph)
+        Ok((graph, timing))
     }
 
     pub fn inspect_resource(
@@ -4996,7 +5021,13 @@ impl WorkbenchGateway {
     }
 
     pub fn status(&self) -> Result<WorkbenchStatus, WorkbenchFailure> {
-        let value = self.request(
+        self.status_with_timing().map(|(status, _)| status)
+    }
+
+    pub fn status_with_timing(
+        &self,
+    ) -> Result<(WorkbenchStatus, WorkbenchRequestTiming), WorkbenchFailure> {
+        let (value, timing) = self.request_with_timing(
             json!({"APIFunc": "IsWorkbenchRunning"}),
             self.options.status_deadline,
         )?;
@@ -5005,6 +5036,7 @@ impl WorkbenchGateway {
                 is_running: value.is_running,
                 scripts_compiled: value.scripts_compiled,
             })
+            .map(|status| (status, timing))
             .map_err(|_| failure(WorkbenchFailureCode::Protocol))
     }
 
@@ -5058,11 +5090,21 @@ impl WorkbenchGateway {
     }
 
     fn request(&self, payload: Value, deadline: Duration) -> Result<Value, WorkbenchFailure> {
+        self.request_with_timing(payload, deadline).map(|(value, _)| value)
+    }
+
+    fn request_with_timing(
+        &self,
+        payload: Value,
+        deadline: Duration,
+    ) -> Result<(Value, WorkbenchRequestTiming), WorkbenchFailure> {
+        let started = Instant::now();
+        let lock_started = Instant::now();
         let _request = self
             .request_lock
             .lock()
             .map_err(|_| failure(WorkbenchFailureCode::Unavailable))?;
-        let started = Instant::now();
+        let lock_wait = lock_started.elapsed();
         let ip = self
             .options
             .host
@@ -5072,14 +5114,17 @@ impl WorkbenchGateway {
             return Err(failure(WorkbenchFailureCode::Unavailable));
         }
         let address = SocketAddr::new(ip, self.options.port);
+        let connect_started = Instant::now();
         let mut stream = TcpStream::connect_timeout(&address, deadline)
             .map_err(|_| failure(WorkbenchFailureCode::Unavailable))?;
+        let connect = connect_started.elapsed();
         stream
             .set_read_timeout(Some(deadline))
             .map_err(|_| failure(WorkbenchFailureCode::Unavailable))?;
         stream
             .set_write_timeout(Some(deadline))
             .map_err(|_| failure(WorkbenchFailureCode::Unavailable))?;
+        let write_started = Instant::now();
         stream
             .write_all(&1_i32.to_le_bytes())
             .and_then(|_| write_string(&mut stream, "ReforgerScriptTools"))
@@ -5087,6 +5132,8 @@ impl WorkbenchGateway {
             .and_then(|_| write_string(&mut stream, &payload.to_string()))
             .map_err(map_io_failure)?;
         stream.shutdown(Shutdown::Write).map_err(map_io_failure)?;
+        let write = write_started.elapsed();
+        let response_header_started = Instant::now();
         let error_code = read_string(&mut stream).map_err(|error| {
             if started.elapsed() >= deadline {
                 failure(WorkbenchFailureCode::Timeout)
@@ -5094,9 +5141,11 @@ impl WorkbenchGateway {
                 map_io_failure(error)
             }
         })?;
+        let response_header = response_header_started.elapsed();
         if started.elapsed() >= deadline {
             return Err(failure(WorkbenchFailureCode::Timeout));
         }
+        let response_body_started = Instant::now();
         let payload = read_string(&mut stream).map_err(|error| {
             if started.elapsed() >= deadline {
                 failure(WorkbenchFailureCode::Timeout)
@@ -5104,14 +5153,34 @@ impl WorkbenchGateway {
                 map_io_failure(error)
             }
         })?;
+        let response_body = response_body_started.elapsed();
         if started.elapsed() >= deadline {
             return Err(failure(WorkbenchFailureCode::Timeout));
         }
         if error_code != "Ok" {
             return Err(failure(WorkbenchFailureCode::WorkbenchError));
         }
-        serde_json::from_str(&payload).map_err(|_| failure(WorkbenchFailureCode::Protocol))
+        let decode_started = Instant::now();
+        let value =
+            serde_json::from_str(&payload).map_err(|_| failure(WorkbenchFailureCode::Protocol))?;
+        let decode = decode_started.elapsed();
+        Ok((
+            value,
+            WorkbenchRequestTiming {
+                lock_wait_ms: duration_ms(lock_wait),
+                connect_ms: duration_ms(connect),
+                write_ms: duration_ms(write),
+                response_header_ms: duration_ms(response_header),
+                response_body_ms: duration_ms(response_body),
+                decode_ms: duration_ms(decode),
+                total_ms: duration_ms(started.elapsed()),
+            },
+        ))
     }
+}
+
+fn duration_ms(duration: Duration) -> u64 {
+    duration.as_millis().min(u128::from(u64::MAX)) as u64
 }
 
 const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;

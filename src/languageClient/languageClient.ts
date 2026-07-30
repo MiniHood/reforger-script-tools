@@ -435,6 +435,14 @@ async function resolveWorkbenchLoadedAddonInventory(
 			port: configuration.get(workbenchConfig.settings.port, workbenchDefaults.port),
 		},
 		serverPath: Promise.resolve(serverPath),
+		record: record => {
+			diagnostic('workbenchGatewayDiagnosticRecord', {
+				capability: record.capability,
+				outcome: record.outcome,
+				durationMs: record.durationMs,
+				timing: record.timing ? JSON.stringify(record.timing) : undefined,
+			});
+		},
 	});
 	const result = await gateway.getLoadedAddonGraph();
 	if (!result.ok) {

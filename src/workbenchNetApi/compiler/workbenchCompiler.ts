@@ -895,6 +895,7 @@ function createGateway(
 				capability: record.capability,
 				outcome: record.outcome,
 				durationMs: record.durationMs,
+				timing: record.timing ? JSON.stringify(record.timing) : undefined,
 			});
 		},
 	});

@@ -38,12 +38,12 @@ suite('Workbench Gateway', () => {
 				payload: {
 					bridgeVersion: '1.52.0',
 					protocolVersion: 1,
-					addons: [{
+					graphJson: JSON.stringify([{
 						guid: '684CE8AA3B1D6573',
 						id: 'GCSuppression',
 						title: 'GC Suppression',
 						sourceRoot: 'C:\\Users\\Gray\\Documents\\My Games\\ArmaReforgerWorkbench\\addons\\GC-Suppression',
-					}],
+					}]),
 				},
 			};
 		});
@@ -178,8 +178,11 @@ suite('Workbench Gateway', () => {
 				capability: 'getStatus',
 				outcome: 'success',
 				durationMs: (records[0] as { durationMs: number }).durationMs,
+				timing: (records[0] as { timing: unknown }).timing,
 			});
 			assert.ok(Number.isFinite((records[0] as { durationMs: number }).durationMs));
+			const timing = (records[0] as { timing?: { request?: { totalMs?: number } } }).timing;
+			assert.ok(Number.isFinite(timing?.request?.totalMs));
 			const serialized = JSON.stringify(records[0]);
 			assert.ok(!serialized.includes(String(peer.port)));
 			assert.ok(!serialized.includes('IsWorkbenchRunning'));

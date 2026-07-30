@@ -11,6 +11,7 @@ use reforger_language_server::workbench::{
 };
 use std::env;
 use std::path::PathBuf;
+use std::time::Instant;
 
 enum ServerMode {
     Lsp(LspServerOptions),
@@ -133,31 +134,61 @@ fn run_workbench_api(
     command: WorkbenchApiCommand,
     options: WorkbenchGatewayOptions,
 ) -> Result<(), String> {
+    let started = Instant::now();
     let controller =
         reforger_language_server::workbench::WorkbenchController::new(WorkbenchControllerOptions {
             gateway: options,
             ..WorkbenchControllerOptions::default()
         });
+    let controller_setup_ms = started.elapsed().as_millis();
     let result = match command {
-        WorkbenchApiCommand::Status => controller
-            .native_status()
-            .and_then(|value| serde_json::to_value(value).map_err(|_| unreachable!())),
-        WorkbenchApiCommand::Validate => controller
-            .native_validate_scripts()
-            .and_then(|value| serde_json::to_value(value).map_err(|_| unreachable!())),
-        WorkbenchApiCommand::LoadedAddonGraph => controller
-            .loaded_addon_graph()
-            .and_then(|value| serde_json::to_value(value).map_err(|_| unreachable!())),
-        WorkbenchApiCommand::IntegrationStatus => {
-            Ok(serde_json::to_value(controller.overview()).unwrap_or_else(|_| unreachable!()))
+        WorkbenchApiCommand::Status => {
+            controller
+                .native_status_with_timing()
+                .and_then(|(value, timing)| {
+                    serde_json::to_value(value)
+                        .map(|value| (value, Some(timing)))
+                        .map_err(|_| unreachable!())
+                })
         }
+        WorkbenchApiCommand::Validate => controller.native_validate_scripts().and_then(|value| {
+            serde_json::to_value(value)
+                .map(|value| (value, None))
+                .map_err(|_| unreachable!())
+        }),
+        WorkbenchApiCommand::LoadedAddonGraph => controller
+            .loaded_addon_graph_with_timing()
+            .and_then(|(value, timing)| {
+                serde_json::to_value(value)
+                    .map(|value| (value, Some(timing)))
+                    .map_err(|_| unreachable!())
+            }),
+        WorkbenchApiCommand::IntegrationStatus => Ok((
+            serde_json::to_value(controller.overview()).unwrap_or_else(|_| unreachable!()),
+            None,
+        )),
         WorkbenchApiCommand::InstallBridge => controller
             .install_bridge(WorkbenchInstallAuthorization::UserApprovedFirstInstall)
-            .and_then(|value| serde_json::to_value(value).map_err(|_| unreachable!())),
+            .and_then(|value| {
+                serde_json::to_value(value)
+                    .map(|value| (value, None))
+                    .map_err(|_| unreachable!())
+            }),
     };
     match result {
-        Ok(value) => {
-            println!("{}", serde_json::json!({"ok": true, "value": value}));
+        Ok((value, request_timing)) => {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "ok": true,
+                    "value": value,
+                    "timing": {
+                        "controllerSetupMs": controller_setup_ms,
+                        "commandMs": started.elapsed().as_millis(),
+                        "request": request_timing,
+                    },
+                })
+            );
         }
         Err(failure) => {
             let category = match failure.code {

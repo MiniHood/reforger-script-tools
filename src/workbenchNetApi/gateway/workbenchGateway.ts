@@ -29,6 +29,23 @@ export interface WorkbenchGatewayDiagnosticRecord {
 	capability: 'getStatus' | 'validateScripts' | 'getLoadedAddonGraph';
 	outcome: 'success' | 'compiler-findings' | WorkbenchGatewayFailureCategory;
 	durationMs: number;
+	timing?: WorkbenchPrivateApiTiming;
+}
+
+export interface WorkbenchPrivateApiTiming {
+	processSpawnMs?: number;
+	processExitMs?: number;
+	controllerSetupMs?: number;
+	commandMs?: number;
+	request?: {
+		lockWaitMs: number;
+		connectMs: number;
+		writeMs: number;
+		responseHeaderMs: number;
+		responseBodyMs: number;
+		decodeMs: number;
+		totalMs: number;
+	};
 }
 
 export interface WorkbenchStatus {
@@ -92,6 +109,10 @@ export type WorkbenchGatewayResult<T> =
 	| { ok: true; value: T }
 	| { ok: false; failure: WorkbenchGatewayFailure };
 
+type WorkbenchPrivateApiResult<T> =
+	| { ok: true; value: T; timing?: WorkbenchPrivateApiTiming }
+	| { ok: false; failure: WorkbenchGatewayFailure; timing?: WorkbenchPrivateApiTiming };
+
 export type WorkbenchPrivateApiCommand =
 	| 'status'
 	| 'validate'
@@ -135,17 +156,17 @@ export class WorkbenchGateway {
 			this.currentAvailability = this.options.enabled
 				? { kind: 'unavailable', failure: result.failure }
 				: { kind: 'disabled' };
-			this.record('getStatus', result.failure.category, startedAt);
+			this.record('getStatus', result.failure.category, startedAt, result.timing);
 			return result;
 		}
 		const status = decodeStatus(result.value);
 		if (!status.ok) {
 			this.currentAvailability = { kind: 'unavailable', failure: status.failure };
-			this.record('getStatus', status.failure.category, startedAt);
+			this.record('getStatus', status.failure.category, startedAt, result.timing);
 			return status;
 		}
 		this.currentAvailability = { kind: 'ready' };
-		this.record('getStatus', 'success', startedAt);
+		this.record('getStatus', 'success', startedAt, result.timing);
 		return status;
 	}
 
@@ -167,13 +188,13 @@ export class WorkbenchGateway {
 		));
 		if (!result.ok) {
 			this.noteFailure(result.failure);
-			this.record('validateScripts', result.failure.category, startedAt);
+			this.record('validateScripts', result.failure.category, startedAt, result.timing);
 			return result;
 		}
 		const validation = decodeValidation(profile, result.value);
 		if (!validation.ok) {
 			this.noteFailure(validation.failure);
-			this.record('validateScripts', validation.failure.category, startedAt);
+			this.record('validateScripts', validation.failure.category, startedAt, result.timing);
 			return validation;
 		}
 		this.currentAvailability = { kind: 'ready' };
@@ -181,6 +202,7 @@ export class WorkbenchGateway {
 			'validateScripts',
 			validation.value.success ? 'success' : 'compiler-findings',
 			startedAt,
+			result.timing,
 		);
 		return validation;
 	}
@@ -205,21 +227,21 @@ export class WorkbenchGateway {
 		);
 		if (!result.ok) {
 			this.noteFailure(result.failure);
-			this.record('getLoadedAddonGraph', result.failure.category, startedAt);
+			this.record('getLoadedAddonGraph', result.failure.category, startedAt, result.timing);
 			return result;
 		}
 		const graph = decodeLoadedAddonGraph(result.value);
 		if (!graph.ok) {
 			this.noteFailure(graph.failure);
-			this.record('getLoadedAddonGraph', graph.failure.category, startedAt);
+			this.record('getLoadedAddonGraph', graph.failure.category, startedAt, result.timing);
 			return graph;
 		}
 		this.currentAvailability = { kind: 'ready' };
-		this.record('getLoadedAddonGraph', 'success', startedAt);
+		this.record('getLoadedAddonGraph', 'success', startedAt, result.timing);
 		return graph;
 	}
 
-	private invokeStatus(deadlineMs: number): Promise<WorkbenchGatewayResult<unknown>> {
+	private invokeStatus(deadlineMs: number): Promise<WorkbenchPrivateApiResult<unknown>> {
 		if (!this.options.enabled) {
 			return Promise.resolve(failure(
 				'unsupported',
@@ -238,7 +260,7 @@ export class WorkbenchGateway {
 		);
 	}
 
-	private invokeValidation(deadlineMs: number): Promise<WorkbenchGatewayResult<unknown>> {
+	private invokeValidation(deadlineMs: number): Promise<WorkbenchPrivateApiResult<unknown>> {
 		if (!this.options.enabled) {
 			return Promise.resolve(failure(
 				'unsupported',
@@ -267,12 +289,14 @@ export class WorkbenchGateway {
 		capability: WorkbenchGatewayDiagnosticRecord['capability'],
 		outcome: WorkbenchGatewayDiagnosticRecord['outcome'],
 		startedAt: number,
+		timing?: WorkbenchPrivateApiTiming,
 	): void {
 		try {
 			this.options.record?.({
 				capability,
 				outcome,
 				durationMs: Date.now() - startedAt,
+				...(timing ? { timing } : {}),
 			});
 		} catch {
 			// Host diagnostics must never affect a Gateway capability outcome.
@@ -373,7 +397,7 @@ export async function invokeWorkbenchPrivateApi(
 	endpoint: WorkbenchEndpoint,
 	action: WorkbenchPrivateApiCommand,
 	deadlineMs: number,
-): Promise<WorkbenchGatewayResult<unknown>> {
+): Promise<WorkbenchPrivateApiResult<unknown>> {
 	const endpointFailure = validateEndpoint(endpoint);
 	if (endpointFailure) {
 		return { ok: false, failure: endpointFailure };
@@ -383,7 +407,9 @@ export async function invokeWorkbenchPrivateApi(
 		return failure('unavailable', 'Restart the extension and retry.');
 	}
 	return new Promise(resolve => {
-		execFile(
+		const invokedAt = Date.now();
+		let spawnedAt: number | undefined;
+		const child = execFile(
 			executable,
 			[
 				'workbench-api',
@@ -401,13 +427,20 @@ export async function invokeWorkbenchPrivateApi(
 				windowsHide: true,
 			},
 			(error, stdout) => {
+				const processTiming = {
+					...(spawnedAt === undefined ? {} : { processSpawnMs: spawnedAt - invokedAt }),
+					...(spawnedAt === undefined ? {} : { processExitMs: Date.now() - spawnedAt }),
+				};
 				if (error) {
-					resolve(failure(
-						error.killed || error.code === 'ETIMEDOUT'
-							? 'timeout'
-							: 'unavailable',
-						'Restart Workbench and retry the request.',
-					));
+					resolve({
+						...failure(
+							error.killed || error.code === 'ETIMEDOUT'
+								? 'timeout'
+								: 'unavailable',
+							'Restart Workbench and retry the request.',
+						),
+						timing: processTiming,
+					});
 					return;
 				}
 				try {
@@ -415,21 +448,70 @@ export async function invokeWorkbenchPrivateApi(
 						ok: boolean;
 						value?: unknown;
 						failure?: { category?: WorkbenchGatewayFailureCategory };
+						timing?: unknown;
+					};
+					const timing = {
+						...processTiming,
+						...decodePrivateApiTiming(result.timing),
 					};
 					if (result.ok) {
-						resolve({ ok: true, value: result.value });
+						resolve({ ok: true, value: result.value, timing });
 						return;
 					}
-					resolve(failure(
-						result.failure?.category ?? 'protocol',
-						'Review Workbench state and retry the operation.',
-					));
+					resolve({
+						...failure(
+							result.failure?.category ?? 'protocol',
+							'Review Workbench state and retry the operation.',
+						),
+						timing,
+					});
 				} catch {
-					resolve(failure('protocol', 'Restart Workbench and retry the request.'));
+					resolve({
+						...failure('protocol', 'Restart Workbench and retry the request.'),
+						timing: processTiming,
+					});
 				}
 			},
 		);
+		child.once('spawn', () => {
+			spawnedAt = Date.now();
+		});
 	});
+}
+
+function decodePrivateApiTiming(value: unknown): WorkbenchPrivateApiTiming {
+	if (!isRecord(value)) {
+		return {};
+	}
+	const requestValue = isRecord(value.request) ? value.request : undefined;
+	const request = requestValue && [
+		'lockWaitMs',
+		'connectMs',
+		'writeMs',
+		'responseHeaderMs',
+		'responseBodyMs',
+		'decodeMs',
+		'totalMs',
+	].every(key => typeof requestValue[key] === 'number' && Number.isFinite(requestValue[key]))
+		? {
+			lockWaitMs: requestValue.lockWaitMs as number,
+			connectMs: requestValue.connectMs as number,
+			writeMs: requestValue.writeMs as number,
+			responseHeaderMs: requestValue.responseHeaderMs as number,
+			responseBodyMs: requestValue.responseBodyMs as number,
+			decodeMs: requestValue.decodeMs as number,
+			totalMs: requestValue.totalMs as number,
+		}
+		: undefined;
+	return {
+		...(typeof value.controllerSetupMs === 'number' && Number.isFinite(value.controllerSetupMs)
+			? { controllerSetupMs: value.controllerSetupMs }
+			: {}),
+		...(typeof value.commandMs === 'number' && Number.isFinite(value.commandMs)
+			? { commandMs: value.commandMs }
+			: {}),
+		...(request ? { request } : {}),
+	};
 }
 
 function defaultDevelopmentServerPath(): Promise<string | undefined> {
