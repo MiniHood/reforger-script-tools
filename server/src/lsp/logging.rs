@@ -87,6 +87,10 @@ impl LspLogger {
         });
         if serde_json::to_writer(&mut *writer, &record).is_ok() {
             let _ = writer.write_all(b"\n");
+            // Startup indexing runs independently of the LSP request loop.
+            // Its performance records must be observable before the editor
+            // eventually shuts the server down.
+            let _ = writer.flush();
         }
     }
 
