@@ -71,6 +71,9 @@ implementation slice is progress, not a completed ticket.
 - [Add-on PAK indexing research](research/addon-pak-indexing-research.md):
   authoritative add-on discovery, PAK extraction boundaries, and independent
   cache-identity findings for the multi-add-on index design.
+- [Virtual source indexing research](research/virtual-source-indexing-research.md):
+  archive-backed source identities, VS Code navigation constraints, and the
+  case for a virtual-source default with optional physical materialization.
 - [s&box MCP server review](research/sbox-mcp-research.md): comparative source
   examples for future evaluation; it does not define Reforger MCP architecture.
 - [Official Wiki Corpus report](research/official-wiki-corpus-report.md): validated
