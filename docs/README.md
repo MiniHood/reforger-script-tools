@@ -35,6 +35,8 @@ implementation slice is progress, not a completed ticket.
 - [Development](development.md): build, test, and local development workflow.
 - [MCP API Reference](mcp-api.md): generated public tool descriptors, schemas,
   workflows, limits, and stable failures.
+- [MCP Runtime](mcp-runtime.md): process startup, cache validation, semantic
+  index reuse, searches, and the separate Workbench route.
 - [Workbench world-entity relation search](workbench-world-entity-search.md):
   AI-facing discovery, paging, relation-evidence, and follow-up-inspection
   workflow for live World Editor entities.
