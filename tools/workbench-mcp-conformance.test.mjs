@@ -296,6 +296,29 @@ test("materializes only explicit fixture references for lifecycle arguments and 
   ]);
 });
 
+test("materializes explicit references embedded in disposable names", async () => {
+  let received;
+  await runScenario({
+    client: {
+      async callToolTimed(_name, argumentsValue) {
+        received = argumentsValue;
+        return {
+          response: { result: { isError: false, structuredContent: { status: "ok" } } },
+          timing: { durationMs: 1, requestBytes: 1, responseBytes: 1 },
+        };
+      },
+    },
+    context: { fixture: { entityName: "entity-123" } },
+    name: "embedded references",
+    steps: [{
+      name: "create",
+      tool: "workbench_create_entity",
+      arguments: { name: "$fixture.entityName-Renamed" },
+    }],
+  });
+  assert.deepEqual(received, { name: "entity-123-Renamed" });
+});
+
 test("summarizes latency distributions while retaining failed samples", () => {
   assert.deepEqual(summarizeSamples([9, 1, 7, 3, 5]), {
     count: 5,

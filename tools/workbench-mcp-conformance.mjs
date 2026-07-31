@@ -333,7 +333,7 @@ export function validateWorkbenchEndpointPlan(expectedNames, plan, options = {})
 function inferScenarioCase(step) {
   if (step.case) return step.case;
   const name = String(step.name ?? "").toLowerCase();
-  if (name.includes("preview")) return "confirmation-safety";
+  if (name.includes("preview") || name.includes("replay")) return "confirmation-safety";
   if (name.includes("without-target")) return "target-guard";
   if (name.includes("unknown-process")) {
     return step.tool === "workbench_stop" || step.tool === "workbench_restart"
@@ -1428,6 +1428,14 @@ export async function runScenario({
       let reasons = [];
       try {
         materializedArguments = materialize(step.arguments ?? {}, scenarioContext);
+        if (step.distinctValueFrom) {
+          const baseline = materialize(step.distinctValueFrom, scenarioContext);
+          const distinctValue = makeDistinctValue(baseline);
+          materializedArguments.value = distinctValue;
+          if (step.captureDistinctAs) {
+            scenarioContext.scenario[step.captureDistinctAs] = distinctValue;
+          }
+        }
         timed = await client.callToolTimed(
           step.tool,
           materializedArguments,
@@ -1859,6 +1867,22 @@ export async function runWorkbenchCorpus({
       ? JSON.parse(readFileSync(scenarioPath, "utf8"))
       : undefined;
     if (scenarios) {
+      const corpusRunId = `${Date.now()}-${process.pid}`;
+      const scenarioContext = fixture
+        ? {
+            fixture: {
+              processId: fixtureLaunch.processId,
+              projectPath: fixture.manifest.projectPath,
+              worldResource: fixture.manifest.expected.worldResource,
+              shapeEntityId: fixture.manifest.expected.shapeEntityId,
+              prefabDestination: `Prefabs/McpConformanceEntity-${corpusRunId}.et`,
+              genericPrefabDestination: `Prefabs/McpConformanceGeneric-${corpusRunId}.et`,
+              entityName: `McpConformanceEntity-${corpusRunId}`,
+              duplicateName: `McpConformanceDuplicate-${corpusRunId}`,
+              polylineName: `McpConformancePolyline-${corpusRunId}`,
+            },
+          }
+        : {};
       const definitions = Array.isArray(scenarios.scenarios)
         ? scenarios.scenarios
         : [scenarios];
@@ -1870,18 +1894,7 @@ export async function runWorkbenchCorpus({
           plan: endpointPlan,
           iterations: scenario.iterations,
           warmup: scenario.warmup,
-          context: fixture
-            ? {
-                fixture: {
-                  processId: fixtureLaunch.processId,
-                  projectPath: fixture.manifest.projectPath,
-                  worldResource: fixture.manifest.expected.worldResource,
-                  shapeEntityId: fixture.manifest.expected.shapeEntityId,
-                  prefabDestination: fixture.manifest.expected.prefabDestination,
-                  genericPrefabDestination: fixture.manifest.expected.genericPrefabDestination,
-                },
-              }
-            : {},
+          context: scenarioContext,
           availableFacts: [
             "catalogue",
             ...fixtureSetupSteps.flatMap((step) => step.facts ?? []),
@@ -2113,15 +2126,48 @@ function materialize(value, context) {
       Object.entries(value).map(([key, child]) => [key, materialize(child, context)]),
     );
   }
-  if (typeof value !== "string" || !value.startsWith("$")) {
+  if (typeof value !== "string" || !value.includes("$")) {
     return value;
   }
-  const path = value.slice(1).split(".");
-  let current = context;
-  for (const part of path) {
-    current = current?.[part];
+  const resolveReference = (reference) => {
+    let current = context;
+    for (const part of reference.split(".")) {
+      current = current?.[part];
+    }
+    return current;
+  };
+  const exactReference = /^\$([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)$/.exec(value);
+  if (exactReference) {
+    const resolved = resolveReference(exactReference[1]);
+    return resolved === undefined ? value : resolved;
   }
-  return current === undefined ? value : current;
+  return value.replace(/\$([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)/g, (match, reference) => {
+    const resolved = resolveReference(reference);
+    return resolved === undefined ? match : String(resolved);
+  });
+}
+
+function makeDistinctValue(value) {
+  if (typeof value === "number") return value === 0 ? 1 : value + 1;
+  if (typeof value === "boolean") return !value;
+  if (typeof value === "string") return value + "-changed";
+  if (Array.isArray(value)) {
+    return value.length === 0
+      ? [1]
+      : [makeDistinctValue(value[0]), ...value.slice(1)];
+  }
+  if (isObject(value)) {
+    if (["x", "y", "z"].every((key) => typeof value[key] === "number")) {
+      return { ...value, x: makeDistinctValue(value.x) };
+    }
+    const primitiveKey = Object.keys(value).find((key) =>
+      ["number", "boolean", "string"].includes(typeof value[key]),
+    );
+    return primitiveKey
+      ? { ...value, [primitiveKey]: makeDistinctValue(value[primitiveKey]) }
+      : value;
+  }
+  return value === null || value === undefined ? 1 : value;
 }
 
 function waitForClose(child) {
