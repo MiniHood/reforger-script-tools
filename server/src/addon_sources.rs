@@ -27,6 +27,7 @@ use url::Url;
 pub const BASE_GAME_GUID: &str = "58D0FB3206B6F859";
 pub const VIRTUAL_SOURCE_SCHEME: &str = "reforger-pak";
 const MAX_ADDON_INDEX_WORKERS: usize = 4;
+const ADDON_MANIFEST_HEADER_FILE: &str = "manifest-header.json";
 
 pub struct LoadedAddonIndexResult {
     pub index: Arc<SymbolIndex>,
@@ -49,9 +50,10 @@ pub struct LoadedAddonIndexTimings {
     pub graph_read: Duration,
     pub workspace_root_resolution: Duration,
     pub cache_prune: Duration,
-    /// Wall-clock time spent reading cache metadata outside `symbols.bin`.
-    /// Optimistic hydration is header-authoritative and therefore reports
-    /// zero; source validation owns manifest inspection afterward.
+    /// Sum of per-instance time spent reading cache metadata outside
+    /// `symbols.bin`. Validation workers run in parallel, so this is work
+    /// rather than the critical-path duration; `index_load_or_build` remains
+    /// the wall-clock measure for that stage.
     pub cache_metadata_read: Duration,
     /// Wall-clock time spent proving the live loaded source contents before a
     /// cache can be trusted. This includes archive selection and its strong
@@ -229,6 +231,55 @@ struct AddonIndexManifest {
     scripts: Vec<ScriptLocator>,
     index_file: String,
     index_bytes: u64,
+}
+
+/// The fields needed to validate a cache are deliberately separate from the
+/// locator-rich manifest. The latter remains available for source URI
+/// inspection, while this compact header keeps the warm validation path from
+/// deserializing every script locator on every startup.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AddonIndexManifestHeader {
+    schema: String,
+    cache_schema: String,
+    cache_format_version: u32,
+    cache_index_shape: String,
+    extractor_schema: String,
+    guid: String,
+    display_id: String,
+    source_root: PathBuf,
+    source_precedence: String,
+    revision: String,
+    pack_count: usize,
+    script_count: usize,
+    pack_artifacts: Vec<PackArtifact>,
+    index_file: String,
+    index_bytes: u64,
+    #[serde(default)]
+    manifest_sha256: Option<String>,
+}
+
+impl AddonIndexManifest {
+    fn header(&self) -> AddonIndexManifestHeader {
+        AddonIndexManifestHeader {
+            schema: self.schema.clone(),
+            cache_schema: self.cache_schema.clone(),
+            cache_format_version: self.cache_format_version,
+            cache_index_shape: self.cache_index_shape.clone(),
+            extractor_schema: self.extractor_schema.clone(),
+            guid: self.guid.clone(),
+            display_id: self.display_id.clone(),
+            source_root: self.source_root.clone(),
+            source_precedence: self.source_precedence.clone(),
+            revision: self.revision.clone(),
+            pack_count: self.pack_count,
+            script_count: self.script_count,
+            pack_artifacts: self.pack_artifacts.clone(),
+            index_file: self.index_file.clone(),
+            index_bytes: self.index_bytes,
+            manifest_sha256: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -474,6 +525,11 @@ pub fn load_or_build_loaded_addon_indexes(
             .map_err(|_| "Add-on index worker panicked".to_string())?;
     }
     let index_load_or_build = index_load_or_build_start.elapsed();
+    let cache_metadata_read = completed
+        .iter()
+        .filter_map(|task| task.result.as_ref().ok())
+        .map(|result| result.timings.cache_metadata_read)
+        .sum();
     completed.sort_by_key(|task| task.sequence);
     let mut indexes = Vec::with_capacity(completed.len());
     let mut instances = Vec::with_capacity(completed.len());
@@ -522,7 +578,7 @@ pub fn load_or_build_loaded_addon_indexes(
             graph_read,
             workspace_root_resolution,
             cache_prune,
-            cache_metadata_read: Duration::ZERO,
+            cache_metadata_read,
             source_inspection,
             index_load_or_build,
             layer_rebase: layer_timings.rebase,
@@ -801,7 +857,7 @@ fn is_addon_instance_key(value: &str) -> bool {
 }
 
 fn manifest_matches_current_source(
-    manifest: &AddonIndexManifest,
+    manifest: &AddonIndexManifestHeader,
     cache_schema: &str,
     cache_format_version: u32,
     cache_index_shape: &str,
@@ -858,16 +914,43 @@ fn load_or_build_inspected_addon(
     discard_legacy_addon_cache_layout(&addon_root)?;
     let cache = addon_root.join("symbols.bin");
     let manifest_path = addon_root.join("manifest.json");
+    let manifest_header_path = addon_root.join(ADDON_MANIFEST_HEADER_FILE);
     let (cache_schema, cache_format_version, cache_index_shape) = cache_format_identity();
     let cache_bytes = cache.metadata().map(|metadata| metadata.len()).unwrap_or(0);
-    let manifest_reusable = fs::read(&manifest_path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<AddonIndexManifest>(&bytes).ok())
-        .is_some_and(|manifest| manifest_matches_current_source(
-            &manifest, cache_schema, cache_format_version, cache_index_shape,
-            &addon_guid, &addon_display_id, &source_root, &artifact_digest,
-            pack_count, script_count, &pack_artifacts, cache_bytes,
-        ));
+    let cache_metadata_read_start = Instant::now();
+    let manifest_header = match fs::read(&manifest_header_path) {
+        Ok(bytes) => serde_json::from_slice::<AddonIndexManifestHeader>(&bytes)
+            .ok()
+            .map(|manifest| (manifest, true)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            fs::read(&manifest_path)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<AddonIndexManifest>(&bytes).ok())
+                .map(|manifest| (manifest.header(), false))
+        }
+        Err(_) => None,
+    };
+    let manifest_reusable = manifest_header.is_some_and(|(manifest, compact_header)| {
+        manifest_matches_current_source(
+            &manifest,
+            cache_schema,
+            cache_format_version,
+            cache_index_shape,
+            &addon_guid,
+            &addon_display_id,
+            &source_root,
+            &artifact_digest,
+            pack_count,
+            script_count,
+            &pack_artifacts,
+            cache_bytes,
+        ) && (!compact_header || match manifest.manifest_sha256.as_deref() {
+            Some(expected) => fs::read(&manifest_path)
+                .is_ok_and(|bytes| sha256_hex(&bytes) == expected),
+            None => false,
+        })
+    });
+    let cache_metadata_read = cache_metadata_read_start.elapsed();
     let rebuild_reason = if manifest_reusable {
         "cache-missing-invalid-or-source-changed"
     } else if cache.is_file() {
@@ -893,7 +976,9 @@ fn load_or_build_inspected_addon(
         },
     )?;
     result.timings.fingerprint = inspection_elapsed;
+    result.timings.cache_metadata_read = cache_metadata_read;
     result.timings.total += inspection_elapsed;
+    result.timings.total += cache_metadata_read;
     if matches!(result.cache_status, IndexCacheStatus::Rebuilt { .. }) {
         let cache_metadata_publish_start = Instant::now();
         control.check()?;
@@ -923,7 +1008,10 @@ fn load_or_build_inspected_addon(
             index_file: "symbols.bin".to_string(),
             index_bytes: result.cache_file_bytes.unwrap_or(0),
         };
-        write_json_atomic(&manifest_path, &manifest)?;
+        let manifest_bytes = write_json_atomic(&manifest_path, &manifest)?;
+        let mut manifest_header = manifest.header();
+        manifest_header.manifest_sha256 = Some(sha256_hex(&manifest_bytes));
+        write_json_atomic(&manifest_header_path, &manifest_header)?;
         result.timings.cache_metadata_publish = cache_metadata_publish_start.elapsed();
         result.timings.total += result.timings.cache_metadata_publish;
     }
@@ -1333,13 +1421,18 @@ fn addon_archive_paths(root: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(archives)
 }
 
-fn write_json_atomic(path: &Path, value: &impl Serialize) -> Result<(), String> {
+fn write_json_atomic(path: &Path, value: &impl Serialize) -> Result<Vec<u8>, String> {
     let mut json = serde_json::to_vec_pretty(value).map_err(|error| error.to_string())?;
     json.push(b'\n');
     if fs::read(path).ok().as_deref() == Some(json.as_slice()) {
-        return Ok(());
+        return Ok(json);
     }
-    write_atomic_bytes(path, &json)
+    write_atomic_bytes(path, &json)?;
+    Ok(json)
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
 }
 
 fn base_game_root(inventory_path: &Path) -> Result<PathBuf, String> {
@@ -1482,27 +1575,29 @@ fn selected_payload_digest(
 }
 
 fn packed_source_revision(inspection: &BaseGameInspection) -> Arc<PackedSourceRevision> {
+    let script_digests = inspection
+        .scripts
+        .iter()
+        .map(|locator| {
+            (
+                (locator.pack_relative_path.clone(), locator.logical_path.clone()),
+                locator.compressed_payload_sha256.clone(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
     let mut entries = BTreeMap::new();
     for (_, selected) in &inspection.archives {
         for entry in selected {
+            let pack_relative_path = normalized_relative(&inspection.root, entry.archive_path());
             let uri = virtual_source_uri(
                 &inspection.guid,
                 &inspection.artifact_digest,
                 entry.logical_path(),
             )
-            .expect("validated logical paths always produce a URI");
-            let compressed_payload_sha256 = inspection
-                .scripts
-                .iter()
-                .find(|locator| {
-                    locator.logical_path == entry.logical_path()
-                        && Path::new(&locator.pack_relative_path)
-                            .file_name()
-                            .is_some_and(|name| {
-                                name == entry.archive_path().file_name().unwrap_or_default()
-                            })
-                })
-                .map(|locator| locator.compressed_payload_sha256.clone())
+                .expect("validated logical paths always produce a URI");
+            let compressed_payload_sha256 = script_digests
+                .get(&(pack_relative_path, entry.logical_path().to_string()))
+                .cloned()
                 .unwrap_or_default();
             entries.insert(
                 uri,
@@ -2069,6 +2164,8 @@ mod tests {
             .unwrap()
             .unwrap()
             .path();
+        let manifest_header_path = addon_cache.join(ADDON_MANIFEST_HEADER_FILE);
+        assert!(manifest_header_path.is_file());
         let manifest: AddonIndexManifest = serde_json::from_slice(
             &fs::read(addon_cache.join("manifest.json")).unwrap(),
         )
@@ -2091,15 +2188,30 @@ mod tests {
             "class Feature {}"
         );
 
+        fs::write(&manifest_header_path, b"{\"corrupt\":true}").unwrap();
+        let repaired_header =
+            load_or_build_base_game_index(&inventory, &storage, &IndexBuildControl::default())
+                .unwrap();
+        assert!(matches!(
+            repaired_header.cache_status,
+            IndexCacheStatus::Rebuilt { .. }
+        ));
         let loaded =
             load_or_build_base_game_index(&inventory, &storage, &IndexBuildControl::default())
                 .unwrap();
         assert_eq!(loaded.cache_status, IndexCacheStatus::Loaded);
         assert!(addon_cache.join("manifest.json").is_file());
         assert!(addon_cache.join("symbols.bin").is_file());
+        let mut locator_corruption = fs::read(addon_cache.join("manifest.json")).unwrap();
+        let feature_name = b"Feature.c";
+        let feature_name_start = locator_corruption
+            .windows(feature_name.len())
+            .position(|window| window == feature_name)
+            .unwrap();
+        locator_corruption[feature_name_start + feature_name.len() - 1] = b'd';
         fs::write(
             addon_cache.join("manifest.json"),
-            b"{\"schema\":\"corrupt\"}",
+            locator_corruption,
         )
         .unwrap();
         let repaired =
@@ -2109,6 +2221,11 @@ mod tests {
             repaired.cache_status,
             IndexCacheStatus::Rebuilt { .. }
         ));
+        fs::remove_file(&manifest_header_path).unwrap();
+        let legacy_header_fallback =
+            load_or_build_base_game_index(&inventory, &storage, &IndexBuildControl::default())
+                .unwrap();
+        assert_eq!(legacy_header_fallback.cache_status, IndexCacheStatus::Loaded);
         assert!(!addon_cache.join("scripts").exists());
         let _ = fs::remove_dir_all(root);
     }

@@ -195,6 +195,9 @@ pub(crate) fn load_or_build_archive_index_with_reuse(
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct IndexCacheTimings {
     pub fingerprint: Duration,
+    /// Time spent reading and decoding the caller-owned cache metadata that
+    /// surrounds the binary index payload.
+    pub cache_metadata_read: Duration,
     pub cache_file_read: Duration,
     pub cache_decode: Duration,
     pub cache_validate: Duration,

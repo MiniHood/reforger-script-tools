@@ -643,6 +643,7 @@ fn log_loaded_addon_index_diagnostics(logger: &LspLogger, result: &LoadedAddonIn
                 "cacheFileBytes": instance.cache_file_bytes,
                 "timingsMs": {
                     "inspection": instance.timings.fingerprint.as_millis(),
+                    "cacheMetadataRead": instance.timings.cache_metadata_read.as_millis(),
                     "cacheFileRead": instance.timings.cache_file_read.as_millis(),
                     "cacheDecode": instance.timings.cache_decode.as_millis(),
                     "cacheValidate": instance.timings.cache_validate.as_millis(),

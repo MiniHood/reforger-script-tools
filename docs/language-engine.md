@@ -65,7 +65,10 @@ bounded PAC catalogues and hashes only selected compressed script payloads, not
 the full multi-gigabyte archives. The resulting strong revision identity detects
 same-size script changes. A changed artifact decodes only selected `.c` entries.
 The semantic cache and locator-rich manifest are written directly at the exact
-loaded-instance root as one current pair (`symbols.bin` and `manifest.json`).
+loaded-instance root as one current pair (`symbols.bin` and `manifest.json`),
+with a compact `manifest-header.json` companion that is digest-bound to the
+locator manifest for warm validation. Legacy cache roots without that
+companion fall back to the full manifest shape.
 Retired revision/pointer layouts are discarded and rebuilt rather than read as
 a compatibility path. Cache roots not named by the current Workbench graph are
 also removed before indexing. A loaded add-on whose graph source root
