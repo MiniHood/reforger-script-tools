@@ -169,6 +169,7 @@ pub struct WorkbenchPathStatus {
 pub struct ManagedBridgeStatus {
     pub installed: bool,
     pub installation_available: bool,
+    pub maintenance_required: bool,
     pub installed_version: Option<String>,
     pub active_version: Option<String>,
     pub protocol_version: Option<u32>,
@@ -1341,17 +1342,7 @@ impl WorkbenchController {
                 json!({"managedDirectoryCreated": false, "manifestFound": false}),
             ));
         }
-        let bridge_changed = existing_manifest.as_ref().is_none_or(|manifest| {
-            version_order(&manifest.bridge_version, WORKBENCH_BRIDGE_VERSION).is_lt()
-                || (manifest.bridge_version == WORKBENCH_BRIDGE_VERSION
-                    && (manifest.protocol_version != WORKBENCH_BRIDGE_PROTOCOL_VERSION
-                        || !manifest_matches_payload(manifest)
-                        || bridge_payload().iter().any(|(name, content)| {
-                            fs::read(paths.bridge_directory.join(name))
-                                .ok()
-                                .is_none_or(|bytes| sha256(&bytes) != sha256(content.as_bytes()))
-                        })))
-        });
+        let bridge_changed = self.bridge_needs_maintenance(&paths.bridge_directory);
         if bridge_changed {
             self.write_managed_files(&paths.bridge_directory).map_err(|error| {
                 self.correlate_failure_details(
@@ -4995,6 +4986,7 @@ impl WorkbenchController {
         ManagedBridgeStatus {
             installed: disk.installed,
             installation_available: false,
+            maintenance_required: disk.maintenance_required,
             installed_version: disk.installed_version,
             active_version: Some(raw.bridge_version),
             protocol_version: Some(raw.protocol_version),
@@ -5013,6 +5005,7 @@ impl WorkbenchController {
         ManagedBridgeStatus {
             installed,
             installation_available: false,
+            maintenance_required: self.bridge_needs_maintenance(bridge_directory),
             installed_version: manifest.map(|value| value.bridge_version),
             active_version: None,
             protocol_version: None,
@@ -5021,6 +5014,24 @@ impl WorkbenchController {
             capabilities: Vec::new(),
             capabilities_truncated: false,
         }
+    }
+
+    fn bridge_needs_maintenance(&self, bridge_directory: &std::path::Path) -> bool {
+        let Some(manifest) = fs::read(bridge_directory.join("reforger-script-tools.manifest.json"))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<BridgeManifest>(&bytes).ok())
+        else {
+            return true;
+        };
+        version_order(&manifest.bridge_version, WORKBENCH_BRIDGE_VERSION).is_lt()
+            || (manifest.bridge_version == WORKBENCH_BRIDGE_VERSION
+                && (manifest.protocol_version != WORKBENCH_BRIDGE_PROTOCOL_VERSION
+                    || !manifest_matches_payload(&manifest)
+                    || bridge_payload().iter().any(|(name, content)| {
+                        fs::read(bridge_directory.join(name))
+                            .ok()
+                            .is_none_or(|bytes| sha256(&bytes) != sha256(content.as_bytes()))
+                    })))
     }
 
     #[cfg(test)]
@@ -11188,7 +11199,9 @@ mod tests {
             "keep me"
         );
         assert!(bridge.join("reforger-script-tools.manifest.json").is_file());
-        assert!(controller.bridge_disk_status(&bridge).installed);
+        let status = controller.bridge_disk_status(&bridge);
+        assert!(status.installed);
+        assert!(!status.maintenance_required);
         fs::remove_dir_all(root).unwrap();
     }
 

@@ -18,8 +18,12 @@ VS Code editor
   -> VS Code editor
 ```
 
-At language-server startup, the extension starts the Workbench loaded-add-on
-graph request in parallel with LSP initialization, then atomically records the
+At language-server startup, the extension prepares the Workbench loaded-add-on
+graph request alongside LSP initialization. The request waits for functional
+Workbench integration readiness, not for the recurring status heartbeat. A
+warm approved installation whose managed manifest is current skips bridge
+maintenance and process probing; fresh, missing, or stale installations still
+complete their required setup first. The extension then atomically records the
 returned exact graph under `globalStorageUri/addon-sources` and delivers its
 path to Rust over a typed LSP notification. Workbench is the sole scope
 authority: the extension does not scan, configure, or choose add-on folders.

@@ -2,6 +2,7 @@ import * as assert from 'node:assert';
 import {
 	WorkbenchIntegrationCoordinator,
 	WorkbenchIntegrationRuntime,
+	WorkbenchIntegrationStatus,
 	WorkbenchIntegrationState,
 	WorkbenchIntegrationUi,
 } from '../workbenchNetApi/integration/workbenchIntegration';
@@ -16,7 +17,7 @@ suite('Workbench Integration', () => {
 		const coordinator = new WorkbenchIntegrationCoordinator(
 			stateWith(false),
 			runtimeWith({
-				status: async () => ({ ok: true, value: { installed: false, installationAvailable: true } }),
+				status: async () => statusResult({ installed: false, installationAvailable: true }),
 				bootstrap: async () => {
 					bootstraps += 1;
 					return bootstrapResult();
@@ -44,7 +45,7 @@ suite('Workbench Integration', () => {
 		const coordinator = new WorkbenchIntegrationCoordinator(
 			state,
 			runtimeWith({
-				status: async () => ({ ok: true, value: { installed: false, installationAvailable: true } }),
+				status: async () => statusResult({ installed: false, installationAvailable: true }),
 				bootstrap: async () => {
 					bootstraps += 1;
 					return bootstrapResult({ bridgeChanged: true });
@@ -82,7 +83,7 @@ suite('Workbench Integration', () => {
 		const coordinator = new WorkbenchIntegrationCoordinator(
 			stateWith(true),
 			runtimeWith({
-				status: async () => ({ ok: true, value: { installed: true, installationAvailable: false } }),
+				status: async () => statusResult({ maintenanceRequired: true }),
 				maintain: async () => {
 					maintenance += 1;
 					return bootstrapResult({ bridgeChanged: false });
@@ -111,7 +112,7 @@ suite('Workbench Integration', () => {
 		const coordinator = new WorkbenchIntegrationCoordinator(
 			stateWith(false),
 			runtimeWith({
-				status: async () => ({ ok: true, value: { installed: true, installationAvailable: false } }),
+				status: async () => statusResult({ maintenanceRequired: true }),
 				bootstrap: async () => {
 					bootstraps += 1;
 					return bootstrapResult();
@@ -137,7 +138,7 @@ suite('Workbench Integration', () => {
 		const coordinator = new WorkbenchIntegrationCoordinator(
 			stateWith(true),
 			runtimeWith({
-				status: async () => ({ ok: true, value: { installed: true, installationAvailable: false } }),
+				status: async () => statusResult({ maintenanceRequired: true, workbenchRunning: false }),
 				maintain: async () => bootstrapResult({ bridgeChanged: false }),
 				processStatus: async () => ({ ok: true, value: { isOpen: false } }),
 				launchDefault: async () => {
@@ -156,7 +157,50 @@ suite('Workbench Integration', () => {
 
 		assert.strictEqual(launches, 1);
 	});
+
+	test('approved current integration skips warm maintenance and process probing', async () => {
+		let maintenance = 0;
+		let processStatus = 0;
+		const coordinator = new WorkbenchIntegrationCoordinator(
+			stateWith(true),
+			runtimeWith({
+				status: async () => statusResult(),
+				maintain: async () => {
+					maintenance += 1;
+					return bootstrapResult();
+				},
+				processStatus: async () => {
+					processStatus += 1;
+					return { ok: true, value: { isOpen: true } };
+				},
+			}),
+			uiWith({}),
+			true,
+		);
+
+		const ready = coordinator.start();
+		coordinator.onWorkbenchConnected(endpoint);
+		await ready;
+
+		assert.strictEqual(maintenance, 0);
+		assert.strictEqual(processStatus, 0);
+	});
 });
+
+function statusResult(
+	overrides: Partial<WorkbenchIntegrationStatus> = {},
+) {
+	return {
+		ok: true as const,
+		value: {
+			installed: overrides.installed ?? true,
+			installationAvailable: overrides.installationAvailable ?? false,
+			maintenanceRequired: overrides.maintenanceRequired ?? false,
+			profileAvailable: overrides.profileAvailable ?? true,
+			workbenchRunning: overrides.workbenchRunning ?? true,
+		},
+	};
+}
 
 function bootstrapResult(
 	overrides: Partial<{

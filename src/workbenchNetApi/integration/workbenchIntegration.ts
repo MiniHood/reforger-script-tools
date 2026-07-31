@@ -18,6 +18,9 @@ const restartMessage = 'Reforger Workbench integration was updated. Restart Work
 export interface WorkbenchIntegrationStatus {
 	installed: boolean;
 	installationAvailable: boolean;
+	maintenanceRequired: boolean;
+	profileAvailable: boolean;
+	workbenchRunning: boolean;
 }
 
 export interface WorkbenchIntegrationRuntime {
@@ -142,6 +145,17 @@ export class WorkbenchIntegrationCoordinator implements vscode.Disposable {
 				return false;
 			}
 			result = await this.ui.runInstall(() => this.runtime.bootstrap(endpoint));
+		} else if (status.ok
+			&& status.value.installed
+			&& status.value.profileAvailable
+			&& !status.value.maintenanceRequired) {
+			result = { ok: true, value: {
+				netApiEnabled: true,
+				netApiWritePerformed: false,
+				bridgeInstalled: true,
+				bridgeChanged: false,
+				profileAvailable: true,
+			} };
 		} else {
 			result = await this.ui.runInstall(() => this.runtime.maintain(endpoint));
 		}
@@ -164,7 +178,9 @@ export class WorkbenchIntegrationCoordinator implements vscode.Disposable {
 			await this.handleBridgeChange(endpoint);
 			return true;
 		}
-		await this.ensureWorkbenchProcess(endpoint);
+		if (!status.ok || !status.value.workbenchRunning) {
+			await this.ensureWorkbenchProcess(endpoint);
+		}
 		this.finishIfReady();
 		return true;
 	}
@@ -298,12 +314,21 @@ function decodeStatus(
 	if (!isRecord(value)
 		|| !isRecord(value.bridge)
 		|| typeof value.bridge.installed !== 'boolean'
-		|| typeof value.bridge.installationAvailable !== 'boolean') {
+		|| typeof value.bridge.installationAvailable !== 'boolean'
+		|| typeof value.bridge.maintenanceRequired !== 'boolean'
+		|| !isRecord(value.profile)
+		|| typeof value.profile.exists !== 'boolean') {
 		return protocolFailure();
 	}
+	const native = isRecord(value.native) && typeof value.native.isRunning === 'boolean'
+		? value.native.isRunning
+		: false;
 	return { ok: true, value: {
 		installed: value.bridge.installed,
 		installationAvailable: value.bridge.installationAvailable,
+		maintenanceRequired: value.bridge.maintenanceRequired,
+		profileAvailable: value.profile.exists,
+		workbenchRunning: native,
 	} };
 }
 

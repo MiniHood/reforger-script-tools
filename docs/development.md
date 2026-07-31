@@ -255,7 +255,10 @@ the user to restart an open Workbench or launches the default
 without prompting and never rewrite the registry value.
 
 After Workbench is connected, the extension publishes the exact loaded add-on
-graph and Rust indexes it. The **Reforger: Indexing loaded add-ons** progress
+graph and Rust indexes it. On a warm approved startup, a current managed
+manifest avoids repeating bridge maintenance and Workbench process probing;
+the graph still waits for the initial functional connection, never for the
+recurring heartbeat. The **Reforger: Indexing loaded add-ons** progress
 indicator remains visible in the VS Code status bar through graph loading, PAC
 inspection, and index publication; wait for it to close before judging
 game-API language features.
