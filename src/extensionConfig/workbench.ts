@@ -9,7 +9,7 @@ export const workbenchConfig = {
 	},
 } as const;
 
-export const externalIndexModes = ['all', 'loaded', 'baseGame', 'none'] as const;
+export const externalIndexModes = ['all', 'loaded', 'none'] as const;
 export type ExternalIndexMode = typeof externalIndexModes[number];
 
 export const workbenchDefaults = {

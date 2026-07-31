@@ -262,7 +262,7 @@ index scope independently of NET API availability. Its default `loaded` mode
 hydrates the compatible offline indexes for the opened project's dependency
 GUIDs first, then reconciles them with the current live graph when Workbench is
 available. It does not use a previous Workbench graph as a startup source.
-`all` and `baseGame` use compatible cached indexes without a graph; `none`
+`all` uses compatible cached indexes without a graph; `none`
 disables external add-on indexes. Changing this setting immediately restarts
 the language server and republishes the selected external-index layer; `none`
 and `all` do not wait for a Workbench graph. On a warm approved startup, a
@@ -272,11 +272,12 @@ process probing.
 For `loaded` mode, an opened workspace with one unambiguous `.gproj` per folder
 uses the project's transitive dependency descriptors for the no-Workbench
 warmup. Rust consults the bounded Workbench project registry and adjacent
-project descriptors by GUID, hydrates matching caches first, then inspects or
-builds only that scope. An unpacked candidate with usable `Scripts` wins over a
-packed duplicate; equal usable candidates are reported as ambiguous. The
-provisional scope is labelled separately from Workbench-loaded data, and a live
-Workbench graph replaces it when available.
+project descriptors by GUID, always adds the base-game dependency, and loads
+matching caches only. The provisional scope is labelled separately from
+Workbench-loaded data, and a live Workbench graph replaces it when available;
+that live graph validates or builds missing or changed source roots. If the
+cache contains duplicate GUIDs, the unpacked source-root cache is preferred
+over a packed-only cache.
 The **Reforger: Indexing loaded add-ons** progress indicator covers active
 offline cache hydration, dependency indexing, PAC inspection, and index
 publication. It closes when the offline index reaches a terminal state; it
@@ -302,6 +303,13 @@ The active base-game artifacts are:
 No extracted script tree is part of the runtime contract. Go-to-definition
 opens a read-only `reforger-pak:` document whose single source entry is decoded
 by the Rust server on demand.
+
+To inspect the current graph/cache relationship, run **Reforger Script Tools:
+Open Add-on Index Report**. It writes a report under extension global storage
+with the Workbench graph snapshot, cache headers and exact source roots, and
+recent external-index diagnostic events. Enable
+`reforgerScriptTools.diagnostics.enabled` and reload VS Code before reproducing
+if the lifecycle table is empty.
 
 ## Workbench Integration Verification
 

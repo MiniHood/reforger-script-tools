@@ -151,7 +151,6 @@ pub enum ExternalIndexMode {
     All,
     #[default]
     Loaded,
-    BaseGame,
     None,
 }
 

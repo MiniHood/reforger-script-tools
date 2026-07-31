@@ -21,23 +21,25 @@ VS Code editor
 At language-server startup, the extension starts Rust immediately and applies
 `reforgerScriptTools.workbench.externalIndexMode`. The default `loaded` mode
 first hydrates compatible offline indexes for the opened project's transitive
-dependency GUIDs. This provisional scope makes the cache the warm-start source;
+dependency GUIDs, always including the base-game dependency. This provisional
+scope makes the cache the warm-start source;
 it does not read a previously loaded Workbench graph as a startup fallback. Once
 Workbench is available, one loaded-add-on graph request supplies the current
 authoritative scope and Rust reconciles the cache by instance identity. `all`
-loads every compatible cached add-on index, `baseGame` loads only the Reforger
-Script and Core cache entries, and `none` leaves only workspace scripts. These
-fallback modes do not scan for add-ons or guess installation paths.
+loads every compatible cached add-on index, and `none` leaves only workspace
+scripts. These explicit modes do not scan for add-ons or guess installation
+paths.
 
 When `loaded` starts without a Workbench graph and an opened workspace folder
 contains one unambiguous `.gproj`, the provisional path resolves that project's
 transitive descriptor dependency closure by GUID. It uses the bounded
-Workbench project registry and opened-project neighborhood as locators, first
-selects compatible cached indexes, then inspects/builds the resolved roots,
-preferring an unpacked candidate with usable `Scripts` over a packed duplicate.
-It does not perform an unrestricted add-on scan or reuse a stale Workbench
-graph. A later live Workbench graph always replaces this explicitly provisional
-dependency scope.
+Workbench project registry and opened-project neighborhood as locators, always
+adds the base-game dependency, and loads matching cached indexes only. It does
+not perform an unrestricted add-on scan or reuse a stale Workbench graph. A
+later live Workbench graph replaces this explicitly provisional dependency
+scope and validates/builds the authoritative source roots. When duplicate
+cached instances share a GUID, the cache loader prefers the instance whose
+source root contains unpacked scripts.
 
 Changing `externalIndexMode` invalidates any in-flight language-server startup,
 restarts the client with the new mode, and republishes the selected external
@@ -47,7 +49,7 @@ graph.
 When a live graph is available, the extension makes one NET API request for the
 current loaded add-ons, atomically records that exact graph, and delivers its
 path to Rust over a typed LSP notification. Workbench remains the scope
-authority for the `loaded` and `baseGame` live scopes: the extension does not
+authority for the `loaded` live scope: the extension does not
 scan, configure, or choose add-on folders. The NET API connection state is
 independent of Workbench's `scriptsCompiled` flag: compiler findings remain
 compiler diagnostics, while a connected bridge can still provide the loaded-

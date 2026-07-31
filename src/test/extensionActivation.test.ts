@@ -343,6 +343,7 @@ suite('extension activation', () => {
 		assert.ok(commands.includes(languageClientCommands.triggerSuggestAtSnippetPlaceholder));
 		assert.ok(commands.includes(languageClientCommands.advanceSnippetPlaceholderAfterAccept));
 		assert.ok(commands.includes(gameDataCommands.refreshSources));
+		assert.ok(commands.includes(gameDataCommands.openIndexReport));
 		assert.ok(commands.includes(mcpCommands.copyConfiguration));
 		const contributedCommands = extension.packageJSON.contributes.commands as Array<{ command: string }>;
 		assert.ok(contributedCommands.some(command =>

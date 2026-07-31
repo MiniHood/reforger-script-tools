@@ -425,7 +425,7 @@ async function startLanguageClient(
     }
   }
   logLanguageClientStartupTiming(context, "languageServerArgumentsReady", {
-    workbenchGraphDeliveryPending: externalIndexMode === 'loaded' || externalIndexMode === 'baseGame',
+    workbenchGraphDeliveryPending: externalIndexMode === 'loaded',
     externalIndexMode,
     workspaceScriptRoots: workspaceScriptRoots.length,
     dependencyProjectFiles: workspaceProjectFiles.length,

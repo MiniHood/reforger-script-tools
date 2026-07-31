@@ -5,9 +5,8 @@ use super::{
     ServerEventSender,
 };
 use crate::addon_sources::{
-    load_all_cached_addon_indexes, load_cached_base_game_indexes,
-    load_cached_dependency_addon_indexes, load_cached_loaded_addon_indexes,
-    load_or_build_base_game_indexes, load_or_build_dependency_addon_indexes,
+    load_all_cached_addon_indexes, load_cached_dependency_addon_indexes,
+    load_cached_loaded_addon_indexes,
     load_or_build_loaded_addon_indexes, AddonScopeAuthority, LoadedAddonIndexResult,
 };
 use crate::index::SymbolIndex;
@@ -287,9 +286,6 @@ impl ExternalIndexHandle {
         thread::spawn(move || {
             let started = Instant::now();
             let cached = match mode {
-                ExternalIndexMode::BaseGame => {
-                    load_cached_base_game_indexes(&storage, &workspace_roots, &control)
-                }
                 _ => load_cached_loaded_addon_indexes(
                     &inventory_path,
                     &storage,
@@ -330,12 +326,6 @@ impl ExternalIndexHandle {
                 let _ = sender.send(ServerEvent::ExternalIndexChanged);
             }
             let result = match mode {
-                ExternalIndexMode::BaseGame => load_or_build_base_game_indexes(
-                    &inventory_path,
-                    &storage,
-                    &workspace_roots,
-                    &control,
-                ),
                 _ => load_or_build_loaded_addon_indexes(
                     &inventory_path,
                     &storage,
@@ -599,7 +589,7 @@ pub(crate) fn start_external_index(
     event_sender: Option<ServerEventSender>,
 ) -> ExternalIndexHandle {
     let can_load_game_data = match options.external_index_mode {
-        ExternalIndexMode::All | ExternalIndexMode::BaseGame => {
+        ExternalIndexMode::All => {
             options.addon_index_storage.is_some()
         }
         ExternalIndexMode::Loaded => {
@@ -817,9 +807,6 @@ fn run_external_index_thread(
             ExternalIndexMode::All => {
                 load_all_cached_addon_indexes(storage, &workspace_roots, &control)
             }
-            ExternalIndexMode::BaseGame => {
-                load_cached_base_game_indexes(storage, &workspace_roots, &control)
-            }
             ExternalIndexMode::Loaded => match addon_source_inventory.as_ref() {
                 Some(inventory_path) => load_cached_loaded_addon_indexes(
                     inventory_path,
@@ -827,14 +814,6 @@ fn run_external_index_thread(
                     &workspace_roots,
                     &control,
                 ),
-                None if !dependency_project_files.is_empty() => {
-                    load_cached_dependency_addon_indexes(
-                        &dependency_project_files,
-                        storage,
-                        &workspace_roots,
-                        &control,
-                    )
-                }
                 None => Ok(empty_loaded_addon_index_result()),
             },
             ExternalIndexMode::None => Ok(empty_loaded_addon_index_result()),
@@ -885,21 +864,13 @@ fn run_external_index_thread(
                     load_all_cached_addon_indexes(storage, &workspace_roots, &control)
                 }),
         ),
-        ExternalIndexMode::BaseGame if addon_source_inventory.is_none() => Some(
-            addon_index_storage
-                .as_ref()
-                .ok_or_else(|| "add-on index storage is unavailable".to_string())
-                .and_then(|storage| {
-                    load_cached_base_game_indexes(storage, &workspace_roots, &control)
-                }),
-        ),
         ExternalIndexMode::Loaded
             if addon_source_inventory.is_none() && !dependency_project_files.is_empty() =>
         {
             Some(addon_index_storage.as_ref().map_or_else(
                 || Err("add-on index storage is unavailable".to_string()),
                 |storage| {
-                    load_or_build_dependency_addon_indexes(
+                    load_cached_dependency_addon_indexes(
                         &dependency_project_files,
                         storage,
                         &workspace_roots,
@@ -909,7 +880,7 @@ fn run_external_index_thread(
             ))
         }
         ExternalIndexMode::Loaded if addon_source_inventory.is_none() => None,
-        ExternalIndexMode::BaseGame | ExternalIndexMode::Loaded => {
+        ExternalIndexMode::Loaded => {
             addon_source_inventory.map(|inventory_path| {
                 for phase in ["inventory-load-start", "pac-inspect-start"] {
                     if let Some(sender) = &event_sender {
@@ -920,20 +891,12 @@ fn run_external_index_thread(
                 }
                 let result = addon_index_storage
                     .ok_or_else(|| "add-on index storage is unavailable".to_string())
-                    .and_then(|storage| match external_index_mode {
-                        ExternalIndexMode::BaseGame => load_or_build_base_game_indexes(
-                            &inventory_path,
-                            &storage,
-                            &workspace_roots,
-                            &control,
-                        ),
-                        _ => load_or_build_loaded_addon_indexes(
-                            &inventory_path,
-                            &storage,
-                            &workspace_roots,
-                            &control,
-                        ),
-                    });
+                    .and_then(|storage| load_or_build_loaded_addon_indexes(
+                        &inventory_path,
+                        &storage,
+                        &workspace_roots,
+                        &control,
+                    ));
                 if let Some(sender) = &event_sender {
                     for phase in ["inventory-load-end", "pac-inspect-end"] {
                         let _ = sender.send(ServerEvent::ExternalIndexProgress {

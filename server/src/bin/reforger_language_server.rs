@@ -289,7 +289,6 @@ fn parse_lsp_args(mut args: impl Iterator<Item = String>) -> Result<LspServerOpt
                 options.external_index_mode = match value.as_str() {
                     "all" => ExternalIndexMode::All,
                     "loaded" => ExternalIndexMode::Loaded,
-                    "baseGame" => ExternalIndexMode::BaseGame,
                     "none" => ExternalIndexMode::None,
                     _ => return Err(format!("invalid value for --external-index-mode: {value}")),
                 };
