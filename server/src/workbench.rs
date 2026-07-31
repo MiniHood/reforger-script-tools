@@ -243,16 +243,8 @@ pub struct WorkbenchScriptActivationResult {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct WorkbenchSaveAllResult {
+pub struct WorkbenchSaveResult {
     pub save_all_accepted: bool,
-    pub world_save_accepted: bool,
-    pub world_save_status: String,
-    pub action_path: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkbenchSaveWorldResult {
     pub world_save_accepted: bool,
     pub world_save_status: String,
     pub action_path: String,
@@ -4046,25 +4038,8 @@ impl WorkbenchController {
         Ok(raw)
     }
 
-    fn dispatch_background_save_world_action(
-        &self,
-    ) -> Result<RawBridgeSaveWorldAction, WorkbenchFailure> {
-        let value = self.gateway.request(
-            json!({"APIFunc": "RST_WorkbenchState", "executeSaveWorldAction": true}),
-            self.options.gateway.status_deadline,
-        )?;
-        let raw: RawBridgeSaveWorldAction =
-            serde_json::from_value(value).map_err(|_| failure(WorkbenchFailureCode::Protocol))?;
-        if raw.protocol_version != WORKBENCH_BRIDGE_PROTOCOL_VERSION
-            || raw.action_path != "WorldEditor.Save"
-        {
-            return Err(failure(WorkbenchFailureCode::Protocol));
-        }
-        Ok(raw)
-    }
-
     /// Dispatch the fixed Workbench Save All action in-process and wait briefly for it to settle.
-    pub fn save_all(&self) -> Result<WorkbenchSaveAllResult, WorkbenchFailure> {
+    pub fn save(&self) -> Result<WorkbenchSaveResult, WorkbenchFailure> {
         const POST_SAVE_ACTION_DELAY: Duration = Duration::from_millis(750);
 
         let started = Instant::now();
@@ -4098,7 +4073,7 @@ impl WorkbenchController {
             ));
         }
         std::thread::sleep(POST_SAVE_ACTION_DELAY);
-        let result = WorkbenchSaveAllResult {
+        let result = WorkbenchSaveResult {
             save_all_accepted: true,
             world_save_accepted: workbench_bool(&action.world_save_accepted),
             world_save_status: action.world_save_status,
@@ -4111,56 +4086,6 @@ impl WorkbenchController {
             json!({
                 "actionPath": result.action_path,
                 "worldSaveAccepted": result.world_save_accepted,
-                "worldSaveStatus": result.world_save_status,
-            }),
-        );
-        Ok(result)
-    }
-
-    /// Save the active World Editor document through its own Workbench module. This intentionally
-    /// remains separate from Resource Manager Save All.
-    pub fn save_world(&self) -> Result<WorkbenchSaveWorldResult, WorkbenchFailure> {
-        const POST_SAVE_ACTION_DELAY: Duration = Duration::from_millis(750);
-
-        let started = Instant::now();
-        let action = self
-            .dispatch_background_save_world_action()
-            .map_err(|dispatch_failure| {
-                self.correlate_failure_details(
-                    "save-world",
-                    "world-editor-save-unavailable",
-                    dispatch_failure,
-                    json!({"handler": "RST_WorkbenchState"}),
-                )
-            })?;
-        if !workbench_bool(&action.accepted)
-            || !matches!(
-                action.world_save_status.as_str(),
-                "saved" | "skipped-no-open-world"
-            )
-        {
-            return Err(self.correlate_failure_details(
-                "save-world",
-                "world-editor-save-unavailable",
-                failure(WorkbenchFailureCode::Unavailable),
-                json!({
-                    "actionPath": action.action_path,
-                    "worldSaveStatus": action.world_save_status,
-                }),
-            ));
-        }
-        std::thread::sleep(POST_SAVE_ACTION_DELAY);
-        let result = WorkbenchSaveWorldResult {
-            world_save_accepted: workbench_bool(&action.accepted),
-            world_save_status: action.world_save_status,
-            action_path: action.action_path,
-        };
-        self.log_event_timed(
-            "save-world",
-            "accepted",
-            started,
-            json!({
-                "actionPath": result.action_path,
                 "worldSaveStatus": result.world_save_status,
             }),
         );
@@ -4182,7 +4107,7 @@ impl WorkbenchController {
         {
             return Err(failure(WorkbenchFailureCode::Protocol));
         }
-        let save_result = self.save_all().map_err(|save_failure| {
+        let save_result = self.save().map_err(|save_failure| {
             self.correlate_failure_details(
                 "activate-scripts",
                 "workbench-save-all-before-reload-failed",
@@ -4570,6 +4495,47 @@ impl WorkbenchController {
         Ok(result)
     }
 
+    fn save_before_process_control(&self, operation: &str, process_id: u32) -> bool {
+        const SAVE_CONFIRMATION_DEADLINE: Duration = Duration::from_secs(15);
+        const SAVE_CONFIRMATION_POLL: Duration = Duration::from_millis(250);
+
+        let started = Instant::now();
+        loop {
+            match self.save() {
+                Ok(result) => {
+                    self.log_event_timed(
+                        operation,
+                        "save-confirmed",
+                        started,
+                        json!({
+                            "processId": process_id,
+                            "saveAllAccepted": result.save_all_accepted,
+                            "worldSaveAccepted": result.world_save_accepted,
+                            "worldSaveStatus": result.world_save_status,
+                        }),
+                    );
+                    return true;
+                }
+                Err(_) => {}
+            }
+            if started.elapsed() >= SAVE_CONFIRMATION_DEADLINE {
+                break;
+            }
+            std::thread::sleep(SAVE_CONFIRMATION_POLL);
+        }
+        self.log_event_timed(
+            operation,
+            "save-confirmation-timeout",
+            started,
+            json!({
+                "processId": process_id,
+                "deadlineMs": SAVE_CONFIRMATION_DEADLINE.as_millis(),
+                "forcedProcessControl": true,
+            }),
+        );
+        false
+    }
+
     pub fn stop(&self, process_id: u32) -> Result<WorkbenchProcessResult, WorkbenchFailure> {
         let started = Instant::now();
         let current = workbench_processes();
@@ -4592,13 +4558,19 @@ impl WorkbenchController {
             ));
         }
         let observed = observed.expect("checked observed process identity");
-        let script = format!(
-            "$p=Get-Process -Id {process_id} -ErrorAction Stop; \
-             if ($p.ProcessName -ne 'ArmaReforgerWorkbenchSteamDiag' -or \
-                 [uint64]$p.StartTime.ToUniversalTime().Ticks -ne [uint64]{}) {{ exit 2 }}; \
-             [void]$p.CloseMainWindow()",
-            observed.start_ticks
-        );
+        let save_confirmed = self.save_before_process_control("stop", process_id);
+        let close_mode = if save_confirmed { "graceful" } else { "force" };
+        let script = if save_confirmed {
+            format!(
+                "$p=Get-Process -Id {process_id} -ErrorAction Stop; \
+                 if ($p.ProcessName -ne 'ArmaReforgerWorkbenchSteamDiag' -or \
+                     [uint64]$p.StartTime.ToUniversalTime().Ticks -ne [uint64]{}) {{ exit 2 }}; \
+                 [void]$p.CloseMainWindow()",
+                observed.start_ticks
+            )
+        } else {
+            force_stop_workbench_script(observed)
+        };
         let status = std::process::Command::new("powershell.exe")
             .args([
                 "-NoLogo",
@@ -4614,28 +4586,43 @@ impl WorkbenchController {
             .map_err(|error| {
                 self.correlate_failure_details(
                     "stop",
-                    "graceful-close-request-failed",
+                    if save_confirmed {
+                        "graceful-close-request-failed"
+                    } else {
+                        "force-close-request-failed"
+                    },
                     failure(WorkbenchFailureCode::Unavailable),
                     json!({
                         "processId": process_id,
                         "errorKind": format!("{:?}", error.kind()),
+                        "closeMode": close_mode,
                     }),
                 )
             })?;
         if !status.success() {
             return Err(self.correlate_failure_details(
                 "stop",
-                "graceful-close-failed",
+                if save_confirmed {
+                    "graceful-close-failed"
+                } else {
+                    "force-close-failed"
+                },
                 failure(WorkbenchFailureCode::Unavailable),
                 json!({
                     "processId": process_id,
                     "exitCode": status.code(),
+                    "closeMode": close_mode,
                 }),
             ));
         }
         for _ in 0..20 {
             if !workbench_process_ids().contains(&process_id) {
-                self.log_event_timed("stop", "exited", started, json!({"processId": process_id}));
+                self.log_event_timed(
+                    "stop",
+                    "exited",
+                    started,
+                    json!({"processId": process_id, "closeMode": close_mode}),
+                );
                 return Ok(WorkbenchProcessResult {
                     process_id: Some(process_id),
                     already_running: false,
@@ -4660,6 +4647,7 @@ impl WorkbenchController {
             json!({
                 "processId": process_id,
                 "netApiConnected": result.net_api_connected,
+                "closeMode": close_mode,
             }),
         );
         Ok(result)
@@ -4704,14 +4692,7 @@ impl WorkbenchController {
                 }),
             ));
         }
-        self.save_all().map_err(|save_failure| {
-            self.correlate_failure_details(
-                "restart",
-                "workbench-save-all-before-force-close-failed",
-                save_failure,
-                json!({"processId": process_id}),
-            )
-        })?;
+        let save_confirmed = self.save_before_process_control("restart", process_id);
         let script = force_stop_workbench_script(process);
         let status = std::process::Command::new("powershell.exe")
             .args([
@@ -4733,6 +4714,7 @@ impl WorkbenchController {
                     json!({
                         "processId": process_id,
                         "errorKind": format!("{:?}", error.kind()),
+                        "saveConfirmed": save_confirmed,
                     }),
                 )
             })?;
@@ -4741,7 +4723,11 @@ impl WorkbenchController {
                 "restart",
                 "force-close-failed",
                 failure(WorkbenchFailureCode::Unavailable),
-                json!({"processId": process_id, "exitCode": status.code()}),
+                json!({
+                    "processId": process_id,
+                    "exitCode": status.code(),
+                    "saveConfirmed": save_confirmed,
+                }),
             ));
         }
         for _ in 0..20 {
@@ -4754,7 +4740,10 @@ impl WorkbenchController {
             "restart",
             "force-close-not-observed",
             failure(WorkbenchFailureCode::Unavailable),
-            json!({"processId": process_id}),
+            json!({
+                "processId": process_id,
+                "saveConfirmed": save_confirmed,
+            }),
         ))
     }
 
@@ -5570,20 +5559,6 @@ struct RawBridgeSaveAllAction {
     #[serde(rename = "worldSaveStatus")]
     world_save_status: String,
     #[serde(rename = "saveAllActionPath")]
-    action_path: String,
-}
-
-#[derive(Deserialize)]
-struct RawBridgeSaveWorldAction {
-    #[serde(rename = "bridgeVersion")]
-    _bridge_version: String,
-    #[serde(rename = "protocolVersion")]
-    protocol_version: u32,
-    #[serde(rename = "worldSaveActionAccepted")]
-    accepted: Value,
-    #[serde(rename = "worldSaveStatus")]
-    world_save_status: String,
-    #[serde(rename = "worldSaveActionPath")]
     action_path: String,
 }
 
@@ -10444,35 +10419,7 @@ mod tests {
             ..super::WorkbenchControllerOptions::default()
         });
 
-        assert!(controller.save_all().unwrap().save_all_accepted);
-        peer.join().unwrap();
-    }
-
-    #[test]
-    fn save_world_uses_only_the_typed_handler() {
-        let (port, peer) = start_peer(|request| {
-            assert_eq!(
-                request,
-                json!({"APIFunc": "RST_WorkbenchState", "executeSaveWorldAction": true})
-            );
-            json!({
-                "bridgeVersion": "1.51.0",
-                "protocolVersion": 1,
-                "worldSaveActionAccepted": true,
-                "worldSaveStatus": "saved",
-                "worldSaveActionPath": "WorldEditor.Save"
-            })
-        });
-        let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
-            gateway: super::WorkbenchGatewayOptions {
-                port,
-                status_deadline: Duration::from_secs(1),
-                ..super::WorkbenchGatewayOptions::default()
-            },
-            ..super::WorkbenchControllerOptions::default()
-        });
-
-        assert!(controller.save_world().unwrap().world_save_accepted);
+        assert!(controller.save().unwrap().save_all_accepted);
         peer.join().unwrap();
     }
 

@@ -34,7 +34,7 @@ use crate::workbench::{
     WorkbenchPolylineResample, WorkbenchPrefabComponentInspection, WorkbenchPrefabContext,
     WorkbenchPrefabResourceMutationResult, WorkbenchProcessResult, WorkbenchProjectContext,
     WorkbenchPropertyList, WorkbenchResourceInspection, WorkbenchResourceListPage,
-    WorkbenchResourceSearchPage, WorkbenchSaveAllResult, WorkbenchSaveWorldResult,
+    WorkbenchResourceSearchPage, WorkbenchSaveResult,
     WorkbenchScriptActivationResult, WorkbenchSelectedEntityHierarchy,
     WorkbenchShapePointConversion, WorkbenchShapePointEdit, WorkbenchShapePointSpace,
     WorkbenchShapePoints, WorkbenchShapeTransformOperation, WorkbenchTerrainSample,
@@ -134,8 +134,7 @@ pub const WORKBENCH_OPEN_RESOURCE_TOOL_NAME: &str = "workbench_open_resource";
 pub const WORKBENCH_START_PLAY_SESSION_TOOL_NAME: &str = "workbench_start_play_session";
 pub const WORKBENCH_STOP_PLAY_SESSION_TOOL_NAME: &str = "workbench_stop_play_session";
 pub const WORKBENCH_RELOAD_TOOL_NAME: &str = "workbench_reload";
-pub const WORKBENCH_SAVE_ALL_TOOL_NAME: &str = "workbench_save_all";
-pub const WORKBENCH_SAVE_WORLD_TOOL_NAME: &str = "workbench_save_world";
+pub const WORKBENCH_SAVE_TOOL_NAME: &str = "workbench_save";
 pub const WORKBENCH_READ_LOGS_TOOL_NAME: &str = "workbench_read_logs";
 pub const WORKBENCH_LAUNCH_TOOL_NAME: &str = "workbench_launch";
 pub const WORKBENCH_STOP_TOOL_NAME: &str = "workbench_stop";
@@ -223,12 +222,11 @@ const WORKBENCH_OPEN_RESOURCE_DESCRIPTION: &str = "Open one canonical Workbench 
 const WORKBENCH_START_PLAY_SESSION_DESCRIPTION: &str = "Explicitly request that World Editor starts a play session. Acceptance confirms the command was issued, not that a world has finished loading.";
 const WORKBENCH_STOP_PLAY_SESSION_DESCRIPTION: &str = "Explicitly request that World Editor returns to edit mode. This is distinct from stopping the Workbench process.";
 const WORKBENCH_RELOAD_DESCRIPTION: &str = "Confirm Save All for currently open Workbench tabs and save the active World Editor world when it already has a path, then request Reload WB Scripts through Workbench's in-process Resource Manager action dispatcher. An absent or untitled World Editor world is reported as skipped and never opens a Save As dialog. Because reload tears down the handler before it can respond, the tool waits up to 60 seconds for the replacement handler to report a changed compatible typed runtime generation before returning success.";
-const WORKBENCH_SAVE_ALL_DESCRIPTION: &str = "Save all currently open Workbench tabs through the fixed in-process Resource Manager Save All action and, only when the active World Editor has an existing world path, save that world through WorldEditor.Save(). An absent or untitled world is reported as skipped; no name is invented and no Save As dialog is opened. The tool uses in-process actions only and waits briefly after an accepted save action before returning.";
-const WORKBENCH_SAVE_WORLD_DESCRIPTION: &str = "Save the active World Editor document through WorldEditor.Save() only when it already has a world path. An absent or untitled world is reported as skipped; no name is invented and no Save As dialog is opened. It remains separate from workbench_save_all, uses no UI automation, and waits briefly after a successful save action before returning.";
+const WORKBENCH_SAVE_DESCRIPTION: &str = "Save all currently open Workbench tabs through the fixed in-process Resource Manager Save All action and, only when the active World Editor has an existing world path, save that world through WorldEditor.Save(). An absent or untitled world is reported as skipped; no name is invented and no Save As dialog is opened. The tool uses in-process actions only and waits briefly after an accepted save action before returning.";
 const WORKBENCH_READ_LOGS_DESCRIPTION: &str = "Read a bounded tail from either the integration support log or the latest known Workbench console log. This is diagnostic history, not live Workbench state or reload-success evidence; arbitrary paths are not accepted.";
 const WORKBENCH_LAUNCH_DESCRIPTION: &str = "Explicit host-process control: launch the discovered Workbench executable for one exact .gproj project with the required Arma Reforger and Workbench base add-ons, or reuse an existing Workbench process only when it was launched for that same project, then wait for native NET API readiness. This is not a Workbench Capability or source of live editor truth.";
-const WORKBENCH_STOP_DESCRIPTION: &str = "Explicit host-process control: request graceful closure of one exact observed Workbench process. This is not a Workbench Capability or source of live editor truth.";
-const WORKBENCH_RESTART_DESCRIPTION: &str = "Explicit host-process control: save through the typed Workbench Gateway, force-close one exact observed Workbench process, and relaunch its resolved project. This is not a Workbench Capability or source of live editor truth.";
+const WORKBENCH_STOP_DESCRIPTION: &str = "Explicit host-process control: save through the typed Workbench Gateway, request graceful closure of one exact observed Workbench process, and force-close it if no save acknowledgement is observed within 15 seconds. This is not a Workbench Capability or source of live editor truth.";
+const WORKBENCH_RESTART_DESCRIPTION: &str = "Explicit host-process control: save through the typed Workbench Gateway, wait up to 15 seconds for save acknowledgement, then force-close one exact observed Workbench process and relaunch its resolved project. This is not a Workbench Capability or source of live editor truth.";
 const WORKBENCH_LIST_WINDOWS_DESCRIPTION: &str = "List visible top-level windows owned by one exact observed Workbench process. Window identities are opaque and short-lived; this is host-process observation and does not use the Workbench Gateway.";
 const WORKBENCH_CAPTURE_WINDOW_DESCRIPTION: &str = "Capture one visible top-level Workbench window as in-memory PNG image content for AI visual inspection. The default is a full-window overview bounded to a 1920px long edge; provide maxDimension for a larger overview or one normalized region after inspecting the overview to obtain a closer native-pixel view. This never saves a file, changes focus, uses the Workbench Gateway, or captures another process.";
 
@@ -1742,8 +1740,7 @@ impl ReforgerMcpServer {
             workbench_start_play_session_tool(),
             workbench_stop_play_session_tool(),
             workbench_reload_tool(),
-            workbench_save_all_tool(),
-            workbench_save_world_tool(),
+            workbench_save_tool(),
             workbench_read_logs_tool(),
             workbench_list_windows_tool(),
             workbench_capture_window_tool(),
@@ -2913,32 +2910,17 @@ impl ReforgerMcpServer {
             })
             .await;
         }
-        if request.name == WORKBENCH_SAVE_ALL_TOOL_NAME {
-            require_empty_tool_request(&request, WORKBENCH_SAVE_ALL_TOOL_NAME)?;
+        if request.name == WORKBENCH_SAVE_TOOL_NAME {
+            require_empty_tool_request(&request, WORKBENCH_SAVE_TOOL_NAME)?;
             let workbench = self.workbench.clone();
             return blocking_workbench_call(
                 self.admission.clone(),
                 context,
-                "save_all",
+                "save",
                 move || {
                     workbench
-                        .save_all()
-                        .map_err(|failure| workbench.correlate_failure("save_all", failure))
-                },
-            )
-            .await;
-        }
-        if request.name == WORKBENCH_SAVE_WORLD_TOOL_NAME {
-            require_empty_tool_request(&request, WORKBENCH_SAVE_WORLD_TOOL_NAME)?;
-            let workbench = self.workbench.clone();
-            return blocking_workbench_call(
-                self.admission.clone(),
-                context,
-                "save_world",
-                move || {
-                    workbench
-                        .save_world()
-                        .map_err(|failure| workbench.correlate_failure("save_world", failure))
+                        .save()
+                        .map_err(|failure| workbench.correlate_failure("save", failure))
                 },
             )
             .await;
@@ -3930,13 +3912,9 @@ fn api_reference_summary(name: &str) -> (&'static str, &'static str) {
             "Sessions and saving",
             "Save state and reload managed Workbench scripts.",
         ),
-        "workbench_save_all" => (
+        "workbench_save" => (
             "Sessions and saving",
             "Save all open tabs and the named active world.",
-        ),
-        "workbench_save_world" => (
-            "Sessions and saving",
-            "Save only the named active World Editor document.",
         ),
         "workbench_read_logs" => (
             "Diagnostics and windows",
@@ -5287,25 +5265,12 @@ fn workbench_reload_tool() -> Tool {
     )
 }
 
-fn workbench_save_all_tool() -> Tool {
-    workbench_empty_tool::<WorkbenchSaveAllResult>(
-        WORKBENCH_SAVE_ALL_TOOL_NAME,
-        WORKBENCH_SAVE_ALL_DESCRIPTION,
-        "Save all Workbench tabs",
-        ToolAnnotations::with_title("Save all Workbench tabs")
-            .read_only(false)
-            .destructive(false)
-            .idempotent(true)
-            .open_world(false),
-    )
-}
-
-fn workbench_save_world_tool() -> Tool {
-    workbench_empty_tool::<WorkbenchSaveWorldResult>(
-        WORKBENCH_SAVE_WORLD_TOOL_NAME,
-        WORKBENCH_SAVE_WORLD_DESCRIPTION,
-        "Save active World Editor document",
-        ToolAnnotations::with_title("Save active World Editor document")
+fn workbench_save_tool() -> Tool {
+    workbench_empty_tool::<WorkbenchSaveResult>(
+        WORKBENCH_SAVE_TOOL_NAME,
+        WORKBENCH_SAVE_DESCRIPTION,
+        "Save Workbench state",
+        ToolAnnotations::with_title("Save Workbench state")
             .read_only(false)
             .destructive(false)
             .idempotent(true)
@@ -5523,8 +5488,8 @@ mod tests {
         workbench_open_resource_tool, workbench_project_context_tool, workbench_reload_tool,
         workbench_remove_component_tool, workbench_reparent_entity_tool,
         workbench_resample_polyline_tool, workbench_rotate_entity_tool,
-        workbench_sample_terrain_tool, workbench_save_all_tool, workbench_save_prefab_tool,
-        workbench_save_world_tool, workbench_search_resources_tool,
+        workbench_sample_terrain_tool, workbench_save_prefab_tool, workbench_save_tool,
+        workbench_search_resources_tool,
         workbench_search_world_entities_tool, workbench_selected_entity_hierarchy_tool,
         workbench_set_component_properties_tool, workbench_set_entity_property_tool,
         workbench_set_polyline_regular_polygon_tool, workbench_set_prefab_component_property_tool,
@@ -5546,8 +5511,8 @@ mod tests {
         WORKBENCH_RELOAD_TOOL_NAME, WORKBENCH_REMOVE_COMPONENT_TOOL_NAME,
         WORKBENCH_REPARENT_ENTITY_TOOL_NAME, WORKBENCH_RESAMPLE_POLYLINE_TOOL_NAME,
         WORKBENCH_ROTATE_ENTITY_TOOL_NAME, WORKBENCH_SAMPLE_TERRAIN_TOOL_NAME,
-        WORKBENCH_SAVE_ALL_TOOL_NAME, WORKBENCH_SAVE_PREFAB_TOOL_NAME,
-        WORKBENCH_SAVE_WORLD_TOOL_NAME, WORKBENCH_SEARCH_RESOURCES_TOOL_NAME,
+        WORKBENCH_SAVE_PREFAB_TOOL_NAME, WORKBENCH_SAVE_TOOL_NAME,
+        WORKBENCH_SEARCH_RESOURCES_TOOL_NAME,
         WORKBENCH_SEARCH_WORLD_ENTITIES_TOOL_NAME, WORKBENCH_SELECTED_ENTITY_HIERARCHY_TOOL_NAME,
         WORKBENCH_SET_COMPONENT_PROPERTIES_TOOL_NAME, WORKBENCH_SET_ENTITY_PROPERTY_TOOL_NAME,
         WORKBENCH_SET_POLYLINE_REGULAR_POLYGON_TOOL_NAME,
@@ -5888,8 +5853,7 @@ mod tests {
         let validation = workbench_validate_scripts_tool();
         let install = workbench_install_bridge_tool();
         let reload = workbench_reload_tool();
-        let save_all = workbench_save_all_tool();
-        let save_world = workbench_save_world_tool();
+        let save = workbench_save_tool();
         let list_editors = workbench_list_editors_tool();
         let open_editor = workbench_open_editor_tool();
         let open_resource = workbench_open_resource_tool();
@@ -5927,8 +5891,7 @@ mod tests {
         assert_eq!(status.name, WORKBENCH_STATUS_TOOL_NAME);
         assert_eq!(validation.name, WORKBENCH_VALIDATE_SCRIPTS_TOOL_NAME);
         assert_eq!(reload.name, WORKBENCH_RELOAD_TOOL_NAME);
-        assert_eq!(save_all.name, WORKBENCH_SAVE_ALL_TOOL_NAME);
-        assert_eq!(save_world.name, WORKBENCH_SAVE_WORLD_TOOL_NAME);
+        assert_eq!(save.name, WORKBENCH_SAVE_TOOL_NAME);
         assert_eq!(list_editors.name, WORKBENCH_LIST_EDITORS_TOOL_NAME);
         assert_eq!(open_editor.name, WORKBENCH_OPEN_EDITOR_TOOL_NAME);
         assert_eq!(open_resource.name, WORKBENCH_OPEN_RESOURCE_TOOL_NAME);

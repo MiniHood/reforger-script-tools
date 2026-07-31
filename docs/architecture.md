@@ -181,7 +181,7 @@ when the handler class is instantiated, so a reload occurring after the
 baseline observation must have a different value. It does not turn a timeout
 or local console-log text into a verified-success claim.
 
-The explicit MCP `workbench_save_all` operation uses the same in-process
+The explicit MCP `workbench_save` operation uses the same in-process
 Resource Manager dispatcher with the fixed path `File → Save All` and
 `keepFocus` enabled. It verifies that Workbench accepts the command, then waits
 through a short post-save stability interval before returning. It saves the
@@ -195,12 +195,6 @@ Before calling `WorldEditor.Save()`, the bridge obtains `WorldEditorAPI` and
 checks its `GetWorldPath` result. An absent or untitled world has no path, so
 the World Editor save is skipped and reported as `skipped-no-open-world`; it
 does not invent a destination, trigger Save As, or discard any editor state.
-
-The separate `workbench_save_world` operation saves the active World Editor
-document through the native `WorldEditor.Save()` module method. It is not a
-Resource Manager action and does not substitute for `workbench_save_all`.
-Like the other Workbench actions, it performs no UI automation and waits briefly
-after an accepted save action before returning.
 
 Bounded Workbench-log reads retain their raw tail and additionally classify only
 the observed reload milestones: reload start, script validation, GameLib
@@ -259,13 +253,16 @@ does not make scripts or arbitrary filesystem files discoverable.
 
 Compiler validation is captured once per invocation and exposed as bounded,
 opaque-cursor pages so an MCP client can retrieve every finding without
-recompiling between pages. Restart first confirms Save All, resolves exactly one
+recompiling between pages. Stop and restart first request the composite save and
+wait up to 15 seconds for its acknowledgement. If that acknowledgement is not
+observed, process control falls back to exact-identity force stop; restart then
+relaunches the resolved project. They resolve exactly one
 visible Enfusion Workbench project window to exactly one matching local `.gproj`
 descriptor, verifies the installed base-game `addons/data/ArmaReforger.gproj`,
 then force-closes the still-matching PID/start-time process and relaunches with
 Workbench's `-gproj` and `-addonsDir <game>/addons` arguments. It refuses before
-the force-close if saving, project identity, or the base-game addon source cannot
-be resolved.
+the force-close if project identity or the base-game addon source cannot be
+resolved.
 
 Every failed public Workbench operation returns a unique support reference.
 The same reference is written to the default-on rotating integration log with

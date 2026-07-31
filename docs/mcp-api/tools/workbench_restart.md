@@ -3,7 +3,7 @@
 
 [Back to the MCP API router](../../mcp-api.md)
 
-Explicit host-process control: save through the typed Workbench Gateway, force-close one exact observed Workbench process, and relaunch its resolved project. This is not a Workbench Capability or source of live editor truth.
+Explicit host-process control: save through the typed Workbench Gateway, wait up to 15 seconds for save acknowledgement, then force-close one exact observed Workbench process and relaunch its resolved project. This is not a Workbench Capability or source of live editor truth.
 
 ### Annotations
 

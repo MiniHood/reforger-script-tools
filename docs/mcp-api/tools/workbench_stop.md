@@ -3,7 +3,7 @@
 
 [Back to the MCP API router](../../mcp-api.md)
 
-Explicit host-process control: request graceful closure of one exact observed Workbench process. This is not a Workbench Capability or source of live editor truth.
+Explicit host-process control: save through the typed Workbench Gateway, request graceful closure of one exact observed Workbench process, and force-close it if no save acknowledgement is observed within 15 seconds. This is not a Workbench Capability or source of live editor truth.
 
 ### Annotations
 

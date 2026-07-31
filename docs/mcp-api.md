@@ -172,8 +172,7 @@ Control play mode, save editor state, and reload Workbench scripts.
 | [`workbench_start_play_session`](mcp-api/tools/workbench_start_play_session.md) | `debugMode?`, `fullScreen?` | `accepted`, `status` | Start World Editor play mode after the world is ready. |
 | [`workbench_stop_play_session`](mcp-api/tools/workbench_stop_play_session.md) | — | `accepted`, `status` | Return World Editor from play mode to editing. |
 | [`workbench_reload`](mcp-api/tools/workbench_reload.md) | — | `reloadDispatched`, `runtimeGeneration`, `worldSaveStatus`, `worldSavedBeforeReload` | Save state and reload managed Workbench scripts. |
-| [`workbench_save_all`](mcp-api/tools/workbench_save_all.md) | — | `actionPath`, `saveAllAccepted`, `worldSaveAccepted`, `worldSaveStatus` | Save all open tabs and the named active world. |
-| [`workbench_save_world`](mcp-api/tools/workbench_save_world.md) | — | `actionPath`, `worldSaveAccepted`, `worldSaveStatus` | Save only the named active World Editor document. |
+| [`workbench_save`](mcp-api/tools/workbench_save.md) | — | `actionPath`, `saveAllAccepted`, `worldSaveAccepted`, `worldSaveStatus` | Save all open tabs and the named active world. |
 
 ### Diagnostics and windows
 
