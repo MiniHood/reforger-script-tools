@@ -87,9 +87,18 @@ checks the public descriptor envelope, and writes a sanitized report beneath
 scenarios are explicit and may be supplied with `--scenario <path>` together
 with `--fixture <manifest>`. The fixture runner uses the public
 `workbench_launch` MCP operation, waits for typed `workbench_status.isRunning`
-readiness, and owns cleanup only when that operation reports that it started a
-new process. It records per-tool minimum, maximum, p50, p95, p99, and failure
-counts. Live scenarios remain outside the normal fast test gate; see
+readiness both before and after opening the editor, and owns cleanup only when
+that operation reports that it started a new process. It records per-tool
+minimum, maximum, p50, p95, p99, and failure counts. A failed scenario step is
+not live evidence; an expected structured error is evidence of the tested
+failure contract. Optional errors require an explicit structured code/phase
+oracle. Steps that observe an unavailable or unsupported operation can be
+marked incomplete; they count toward inventory coverage but are listed in
+`liveCoverage.incomplete` (and counted in `expectedUnavailableCount`) rather
+than being reported as completed behavior.
+Live scenarios remain outside the normal fast test gate; the complete current
+63-tool scenario is
+`tools/fixtures/workbench-mcp/scenarios/test-bullshit-all-apis.json`. See
 `tools/fixtures/workbench-mcp/README.md` for the manifest contract.
 
 To extract only `.c` entries, pass `--extract-scripts <output-root>` before the

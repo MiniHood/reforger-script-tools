@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   buildLiveCoverageReport,
   buildContractReport,
+  classifyTool,
   loadFixtureManifest,
   runScenario,
   summarizePerformance,
@@ -83,6 +84,10 @@ test("accepts a complete generated catalogue and tools/list result", () => {
   assert.deepEqual(report.uncategorized, []);
 });
 
+test("classifies the parameterless save operation", () => {
+  assert.equal(classifyTool("workbench_save"), "save");
+});
+
 test("records public MCP scenario observations and verifies returned state", async () => {
   const calls = [];
   const client = {
@@ -145,7 +150,15 @@ test("treats an expected structured Workbench error as tested behavior", async (
     client: {
       async callToolTimed() {
         return {
-          response: { result: { isError: true } },
+          response: {
+            result: {
+              isError: true,
+              structuredContent: {
+                code: "workbench_unavailable",
+                phase: "status",
+              },
+            },
+          },
           timing: { durationMs: 3, requestBytes: 40, responseBytes: 96 },
         };
       },
@@ -155,7 +168,10 @@ test("treats an expected structured Workbench error as tested behavior", async (
       {
         name: "read unavailable status",
         tool: "workbench_status",
-        expect: { isError: true },
+        expect: {
+          isError: true,
+          error: { code: "workbench_unavailable", phase: "status" },
+        },
       },
     ],
   });
@@ -163,6 +179,76 @@ test("treats an expected structured Workbench error as tested behavior", async (
   assert.equal(report.ok, true);
   assert.equal(report.steps[0].outcome, "expected-error");
   assert.equal(report.performance[0].failureCount, 0);
+});
+
+test("allows explicitly environment-dependent capabilities to return either result", async () => {
+  const report = await runScenario({
+    client: {
+      async callToolTimed() {
+        return {
+          response: {
+            result: {
+              isError: true,
+              structuredContent: {
+                code: "workbench_capture_unavailable",
+                phase: "capture_window",
+              },
+            },
+          },
+          timing: { durationMs: 3, requestBytes: 40, responseBytes: 96 },
+        };
+      },
+    },
+    name: "optional window capture",
+    steps: [
+      {
+        name: "capture when visible",
+        tool: "workbench_capture_window",
+        expect: {
+          allowError: true,
+          error: {
+            code: "workbench_capture_unavailable",
+            phase: "capture_window",
+          },
+        },
+      },
+    ],
+  });
+
+  assert.equal(report.ok, true);
+  assert.equal(report.steps[0].outcome, "expected-error");
+});
+
+test("rejects an unscoped optional error", async () => {
+  const report = await runScenario({
+    client: {
+      async callToolTimed() {
+        return {
+          response: {
+            result: {
+              isError: true,
+              structuredContent: {
+                code: "workbench_timeout",
+                phase: "reload",
+              },
+            },
+          },
+          timing: { durationMs: 3, requestBytes: 40, responseBytes: 96 },
+        };
+      },
+    },
+    name: "unscoped optional error",
+    steps: [
+      {
+        name: "reload",
+        tool: "workbench_reload",
+        expect: { allowError: true },
+      },
+    ],
+  });
+
+  assert.equal(report.ok, false);
+  assert.match(report.steps[0].reasons[0], /explicit structured error oracle/);
 });
 
 test("materializes only explicit fixture references for lifecycle arguments and oracles", async () => {
@@ -244,18 +330,55 @@ test("summarizes latency distributions while retaining failed samples", () => {
 test("reports the exact published tools still missing live evidence", () => {
   const report = buildLiveCoverageReport(
     { expectedNames: ["workbench_status", "workbench_create_entity"] },
-    [{ steps: [{ tool: "workbench_status" }] }],
+    [{ steps: [{ tool: "workbench_status", outcome: "success" }] }],
   );
 
   assert.deepEqual(report, {
     ok: false,
     expectedCount: 2,
     coveredCount: 1,
-    successfulCount: 0,
+    successfulCount: 1,
     expectedErrorCount: 0,
+    expectedUnavailableCount: 0,
+    incomplete: [],
+    complete: true,
     missing: ["workbench_create_entity"],
     unexpected: [],
+    failed: [],
   });
+});
+
+test("does not count a failed step as live evidence", () => {
+  const report = buildLiveCoverageReport(
+    { expectedNames: ["workbench_status"] },
+    [{ steps: [{ tool: "workbench_status", outcome: "failure" }] }],
+  );
+
+  assert.equal(report.ok, false);
+  assert.deepEqual(report.missing, ["workbench_status"]);
+  assert.deepEqual(report.failed, ["workbench_status"]);
+});
+
+test("reports covered but incomplete capabilities separately", () => {
+  const report = buildLiveCoverageReport(
+    { expectedNames: ["workbench_reload"] },
+    [
+      {
+        steps: [
+          {
+            tool: "workbench_reload",
+            outcome: "expected-unavailable",
+            completion: false,
+          },
+        ],
+      },
+    ],
+  );
+
+  assert.equal(report.ok, true);
+  assert.equal(report.complete, false);
+  assert.deepEqual(report.incomplete, ["workbench_reload"]);
+  assert.equal(report.expectedUnavailableCount, 1);
 });
 
 test("loads a disposable fixture manifest with an isolated profile and world", () => {

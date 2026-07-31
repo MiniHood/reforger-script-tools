@@ -6,7 +6,7 @@
     {"name":"status","tool":"workbench_status","arguments":{},"expect":{"pointers":{"/result/structuredContent/isRunning":true}}},
     {"name":"state","tool":"workbench_state","arguments":{},"expect":{"pointers":{"/result/structuredContent/mode":"world-editor","/result/structuredContent/activeWorldPath":"$fixture.worldResource"}}},
     {"name":"project-context","tool":"workbench_project_context","arguments":{},"expect":{"contains":{"/result/structuredContent/loadedAddons":["ArmaReforger","TestBullshit"]}}},
-    {"name":"inspect-world-resource","tool":"workbench_inspect_resource","arguments":{"resourceName":"{DD49A6CE18710A05}worlds/test/empty_test.ent"},"expect":{"isError":true,"pointers":{"/result/structuredContent/code":"workbench_protocol_error"}}},
+    {"name":"inspect-world-resource","tool":"workbench_inspect_resource","arguments":{"resourceName":"{DD49A6CE18710A05}worlds/test/empty_test.ent"},"expect":{"isError":true,"error":{"code":"workbench_protocol_error","phase":"inspect_resource"}}},
     {"name":"list-world-resources","tool":"workbench_list_resources","arguments":{"kinds":["world"],"query":"empty_test","limit":20}},
     {"name":"search-world-resources","tool":"workbench_search_resources","arguments":{"kinds":["world"],"query":"empty_test","limit":20},"expect":{"pointers":{"/result/structuredContent/results/0/logicalPath":"worlds/test/empty_test.ent"}}},
     {"name":"selection-summary","tool":"workbench_world_selection_summary","arguments":{}},
@@ -27,8 +27,8 @@
     {"name":"validate-scripts","tool":"workbench_validate_scripts","arguments":{"limit":20}},
     {"name":"install-bridge","tool":"workbench_install_bridge","arguments":{},"expect":{"pointers":{"/result/structuredContent/installedVersion":"1.52.12"}}},
     {"name":"read-integration-log","tool":"workbench_read_logs","arguments":{"source":"integration","lineCount":20},"expect":{"pointers":{"/result/structuredContent/source":"integration"}}},
-    {"name":"reuse-launched-workbench","tool":"workbench_launch","arguments":{},"expect":{"pointers":{"/result/structuredContent/alreadyRunning":true,"/result/structuredContent/netApiConnected":true}}},
-    {"name":"reject-unknown-stop-process","tool":"workbench_stop","arguments":{"processId":0},"expect":{"isError":true}},
-    {"name":"reject-unknown-restart-process","tool":"workbench_restart","arguments":{"processId":0},"expect":{"isError":true}}
+    {"name":"reuse-launched-workbench","tool":"workbench_launch","arguments":{"projectPath":"$fixture.projectPath"},"expect":{"pointers":{"/result/structuredContent/alreadyRunning":true,"/result/structuredContent/netApiConnected":true}}},
+    {"name":"reject-unknown-stop-process","tool":"workbench_stop","arguments":{"processId":0},"expect":{"isError":true,"error":{"code":"workbench_unavailable","phase":"stop"}}},
+    {"name":"reject-unknown-restart-process","tool":"workbench_restart","arguments":{"processId":0},"expect":{"isError":true,"error":{"code":"workbench_unavailable","phase":"restart"}}}
   ]
 }

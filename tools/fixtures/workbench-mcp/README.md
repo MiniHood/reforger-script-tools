@@ -52,8 +52,23 @@ then assert `/result/structuredContent/activeWorldPath` equals
 `expected.worldResource`. Later world mutations must use read-before/write/
 read-after steps and stable entity identities. Scenario arguments and pointer
 oracles may use the explicit `$fixture.processId` and
-`$fixture.worldResource` references for lifecycle and world-identity checks;
-there is no arbitrary expression or command expansion.
+`$fixture.projectPath` and `$fixture.worldResource` references for lifecycle and
+world-identity checks; there is no arbitrary expression or command expansion.
+
+The committed `scenarios/test-bullshit-all-apis.json` is the complete live
+scenario for the current 63-tool Workbench catalogue. It uses the fixture's
+stable world, spline, and component identities, creates disposable scene
+entities, confirms every preview token in the same MCP session, and restores or
+deletes each scene mutation. It also records structured expected failures for
+capabilities that the target Workbench cannot complete in the current session.
+An environment-dependent step may set `expect.allowError` when both a success
+result and a structured unavailable result are valid outcomes; it must also
+provide an explicit `expect.error` code/phase oracle. This is reserved for
+window capture and script reload in the live fixture and remains visible in the
+report's `expectedErrorCount`. Steps marked `expect.completion: false` remain
+live evidence for inventory coverage, but appear in `liveCoverage.incomplete`
+and increment `expectedUnavailableCount`, so an unavailable or unsupported
+operation cannot be mistaken for completed editor behavior.
 
 Run a live scenario only with both explicit inputs:
 
@@ -62,6 +77,7 @@ node tools/workbench-mcp-conformance.mjs `
   --server server/target/debug/reforger_language_server.exe `
   --fixture C:/path/to/fixture.manifest.json `
   --scenario C:/path/to/scenario.json `
+  --require-live-coverage `
   --out .cache/reports/workbench-mcp-live.json
 ```
 

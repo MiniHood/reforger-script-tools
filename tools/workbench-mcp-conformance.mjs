@@ -45,7 +45,7 @@ const toolFamilyRules = [
   ],
   ["shape-write", /^(edit_shape_points|set_polyline_regular_polygon|convert_shape_points|transform_shape_points|resample_polyline)$/],
   ["play-session", /^(start|stop)_play_session$/],
-  ["save", /^save_(all|world)$/],
+  ["save", /^save$/],
   ["window", /^(list_windows|capture_window)$/],
 ];
 
@@ -206,17 +206,85 @@ function summarizeRange(values = []) {
     : { minimum: Math.min(...numeric), maximum: Math.max(...numeric) };
 }
 
-export function buildLiveCoverageReport(contract, scenarios = []) {
-  const covered = new Set(
-    scenarios.flatMap((scenario) =>
-      (scenario.steps ?? []).map((step) => step.tool),
-    ),
+function isLiveEvidence(step) {
+  return ["success", "expected-error", "expected-unavailable"].includes(
+    step.outcome,
   );
-  const missing = contract.expectedNames.filter((name) => !covered.has(name));
+}
+
+function validateStructuredError(response, expectedError) {
+  if (!expectedError) {
+    return [];
+  }
+  const actual = response?.result?.structuredContent;
+  if (!isObject(actual) || typeof actual.code !== "string") {
+    return ["expected a structured Workbench error with a stable code"];
+  }
+  const expectedCodes = expectedError.codes ??
+    (expectedError.code ? [expectedError.code] : []);
+  const expectedPhases = expectedError.phases ??
+    (expectedError.phase ? [expectedError.phase] : []);
+  const reasons = [];
+  if (expectedCodes.length > 0 && !expectedCodes.includes(actual.code)) {
+    reasons.push(
+      "expected error code " +
+        JSON.stringify(expectedCodes) +
+        " but received " +
+        JSON.stringify(actual.code),
+    );
+  }
+  if (
+    expectedPhases.length > 0 &&
+    !expectedPhases.includes(actual.phase)
+  ) {
+    reasons.push(
+      "expected error phase " +
+        JSON.stringify(expectedPhases) +
+        " but received " +
+        JSON.stringify(actual.phase),
+    );
+  }
+  if (
+    expectedError.retryable !== undefined &&
+    actual.retryable !== expectedError.retryable
+  ) {
+    reasons.push(
+      "expected error retryable=" +
+        expectedError.retryable +
+        " but received " +
+        actual.retryable,
+    );
+  }
+  return reasons;
+}
+
+export function buildLiveCoverageReport(contract, scenarios = []) {
+  const evidence = new Set();
+  const failed = new Set();
+  const incomplete = new Set();
+  for (const scenario of scenarios) {
+    for (const step of scenario.steps ?? []) {
+      if (isLiveEvidence(step)) {
+        evidence.add(step.tool);
+        if (step.completion === false) {
+          incomplete.add(step.tool);
+        }
+      } else if (step.outcome === "failure") {
+        failed.add(step.tool);
+      }
+    }
+  }
+  const missing = contract.expectedNames.filter((name) => !evidence.has(name));
   const published = new Set(contract.expectedNames);
-  const unexpected = [...covered].filter((name) => !published.has(name));
+  const unexpected = [...new Set([...evidence, ...failed])].filter(
+    (name) => !published.has(name),
+  );
+  const failedPublished = [...failed].filter((name) => published.has(name));
+  const incompletePublished = [...incomplete].filter((name) =>
+    published.has(name),
+  );
   return {
-    ok: missing.length === 0 && unexpected.length === 0,
+    ok: missing.length === 0 && unexpected.length === 0 && failedPublished.length === 0,
     expectedCount: contract.expectedNames.length,
     coveredCount: contract.expectedNames.length - missing.length,
     successfulCount: scenarios.reduce(
@@ -230,8 +298,19 @@ export function buildLiveCoverageReport(contract, scenarios = []) {
         (scenario.steps ?? []).filter((step) => step.outcome === "expected-error").length,
       0,
     ),
+    expectedUnavailableCount: scenarios.reduce(
+      (count, scenario) =>
+        count +
+        (scenario.steps ?? []).filter(
+          (step) => step.outcome === "expected-unavailable",
+        ).length,
+      0,
+    ),
+    incomplete: incompletePublished,
+    complete: incompletePublished.length === 0,
     missing,
     unexpected,
+    failed: failedPublished,
   };
 }
 
@@ -544,9 +623,10 @@ export async function openFixtureWorld(client, worldResource, readiness = {}) {
   ) {
     throw new Error(
       "Fixture Workbench could not open World Editor " +
-        JSON.stringify({ editor: worldEditor, response: openedEditor ?? null }),
+      JSON.stringify({ editor: worldEditor, response: openedEditor ?? null }),
     );
   }
+  await waitForWorkbenchReady(client, readiness);
   const openResourceResponse = await client.callTool("workbench_open_resource", {
     resourcePath: worldResource,
   });
@@ -648,10 +728,29 @@ export async function runScenario({
         );
         response = timed.response;
         const actualIsError = response?.result?.isError === true;
-        const expectedIsError = step.expect?.isError ?? false;
-        if (actualIsError !== expectedIsError) {
+        const expectedIsError = step.expect?.isError;
+        if (
+          expectedIsError !== undefined &&
+          actualIsError !== expectedIsError
+        ) {
           reasons.push(
             "expected isError=" + expectedIsError + " but received " + actualIsError,
+          );
+        } else if (
+          expectedIsError === undefined &&
+          actualIsError &&
+          step.expect?.allowError !== true
+        ) {
+          reasons.push("expected a successful result but received isError=true");
+        }
+        if (actualIsError && step.expect?.allowError === true && !step.expect.error) {
+          reasons.push(
+            "allowError requires an explicit structured error oracle",
+          );
+        }
+        if (actualIsError) {
+          reasons.push(
+            ...validateStructuredError(response, step.expect?.error),
           );
         }
         for (const [pointer, expectedValue] of Object.entries(
@@ -720,7 +819,9 @@ export async function runScenario({
         outcome:
           reasons.length === 0
             ? actualIsError
-              ? "expected-error"
+              ? step.expect?.completion === false
+                ? "expected-unavailable"
+                : "expected-error"
               : "success"
             : "failure",
         durationMs: timed?.timing.durationMs ?? performanceNow() - started,
@@ -735,6 +836,12 @@ export async function runScenario({
           retryable: errorContent.retryable ?? null,
           logReference: errorContent.logReference ?? null,
         };
+      }
+      if (step.expect?.completion === false) {
+        observation.completion = false;
+        if (step.expect.completionReason) {
+          observation.completionReason = step.expect.completionReason;
+        }
       }
       if (totalIterations > 1) {
         observation.iteration = iteration - warmupIterations + 1;
@@ -865,6 +972,7 @@ export async function runContractReport({
               ? {
                   fixture: {
                     processId: fixtureLaunch.processId,
+                    projectPath: fixture.manifest.projectPath,
                     worldResource: fixture.manifest.expected.worldResource,
                   },
                 }
@@ -881,11 +989,17 @@ export async function runContractReport({
         required: requireLiveCoverage,
         ...buildLiveCoverageReport(report.contract, runs),
       };
-      const covered = new Set(
-        runs.flatMap((run) => run.steps.map((step) => step.tool)),
+      const evidenceTools = new Set(
+        runs.flatMap((run) =>
+          run.steps
+            .filter(isLiveEvidence)
+            .map((step) => step.tool),
+        ),
       );
       report.contract.coverage = report.contract.coverage.map((entry) =>
-        covered.has(entry.tool) ? { ...entry, liveEvidence: "scenario" } : entry,
+        evidenceTools.has(entry.tool)
+          ? { ...entry, liveEvidence: "scenario" }
+          : entry,
       );
     } else {
       report.liveCoverage = {
