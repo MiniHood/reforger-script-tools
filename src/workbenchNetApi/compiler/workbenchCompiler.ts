@@ -722,15 +722,10 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		this.lastFailure = undefined;
 		this.lastStatus = result.value;
 		this.setPhase('ready');
-		if (!result.value.scriptsCompiled) {
-			this.integration?.onWorkbenchDisconnected();
-		}
-		if (result.value.scriptsCompiled) {
-			void this.integration?.onWorkbenchConnected({
-				host: this.configuration.host,
-				port: this.configuration.port,
-			});
-		}
+		void this.integration?.onWorkbenchConnected({
+			host: this.configuration.host,
+			port: this.configuration.port,
+		});
 		if (this.shouldRequestStartupValidation()) {
 			this.startupValidationAttempted = true;
 			const request: ValidationRequest = {

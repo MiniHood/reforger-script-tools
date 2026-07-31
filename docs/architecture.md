@@ -27,6 +27,9 @@ complete their required setup first. The extension then atomically records the
 returned exact graph under `globalStorageUri/addon-sources` and delivers its
 path to Rust over a typed LSP notification. Workbench is the sole scope
 authority: the extension does not scan, configure, or choose add-on folders.
+The NET API connection state is independent of Workbench's `scriptsCompiled`
+flag: compiler findings remain compiler diagnostics, while a connected bridge
+can still provide the loaded-addon graph.
 Rust begins add-on indexing only after that delivery; a newer delivered graph
 supersedes an older in-flight rebuild. The graph carries GUID, display identity,
 and one exact source root for every loaded GUID. The typed Workbench gateway
