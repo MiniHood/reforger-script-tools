@@ -450,7 +450,7 @@ fn build_source(
     );
 
     Ok(PendingFileContribution {
-        contribution: semantic_file.contribution().clone(),
+        contribution: semantic_file.contribution(),
         metadata,
         source_line_starts: line_starts(&source),
     })
