@@ -259,15 +259,15 @@ migrated to the unified setting.
 
 The `reforgerScriptTools.workbench.externalIndexMode` setting controls external
 index scope independently of NET API availability. Its default `loaded` mode
-hydrates the last Workbench graph immediately, then replaces it with the live
-graph when the compiler controller observes a disconnected-to-connected
-transition. If Workbench never connects, the last graph remains active. `all`
-and `baseGame` use compatible cached indexes without a graph; `none` disables
-external add-on indexes. Changing this setting immediately restarts the
-language server and republishes the selected external-index layer; `none` and
-`all` do not wait for a Workbench graph. On a warm approved startup, a current
-managed manifest avoids repeating bridge maintenance and Workbench process
-probing.
+hydrates the compatible offline indexes for the opened project's dependency
+GUIDs first, then reconciles them with the current live graph when Workbench is
+available. It does not use a previous Workbench graph as a startup source.
+`all` and `baseGame` use compatible cached indexes without a graph; `none`
+disables external add-on indexes. Changing this setting immediately restarts
+the language server and republishes the selected external-index layer; `none`
+and `all` do not wait for a Workbench graph. On a warm approved startup, a
+current managed manifest avoids repeating bridge maintenance and Workbench
+process probing.
 
 For `loaded` mode, an opened workspace with one unambiguous `.gproj` per folder
 uses the project's transitive dependency descriptors for the no-Workbench
@@ -278,8 +278,13 @@ packed duplicate; equal usable candidates are reported as ambiguous. The
 provisional scope is labelled separately from Workbench-loaded data, and a live
 Workbench graph replaces it when available.
 The **Reforger: Indexing loaded add-ons** progress indicator remains visible in
-the VS Code status bar through graph loading, PAC inspection, and index
-publication; wait for it to close before judging game-API language features.
+the VS Code status bar through offline cache hydration, dependency indexing,
+Workbench reconciliation, PAC inspection, and index publication; wait for it
+to close before judging game-API language features. Diagnostic records expose
+the same two ownership categories (`offline` and `workbench-reconciliation`)
+as diagnostic `phase` values so warm-start measurements can compare cache
+usability with the later Workbench refresh. The progress stream may also emit
+operational sub-stages such as PAC inspection and workspace indexing.
 
 The active base-game artifacts are:
 

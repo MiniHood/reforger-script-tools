@@ -108,8 +108,10 @@ suite('extension activation', () => {
 		assert.equal(externalIndexProgressMessage('pac-inspect-start'), 'Inspecting installed add-on packs');
 		assert.equal(externalIndexProgressMessage('inventory-load-start'), 'Loading installed add-on inventory');
 		assert.equal(externalIndexProgressMessage('addon-manifest-validate-start'), 'Validating add-on identities');
-		assert.equal(externalIndexProgressMessage('addon-cache-loaded'), 'Loaded unchanged add-on index');
-		assert.equal(externalIndexProgressMessage('addon-rebuild-end'), 'Rebuilt changed add-on index');
+	assert.equal(externalIndexProgressMessage('addon-cache-loaded'), 'Loaded unchanged add-on index');
+	assert.equal(externalIndexProgressMessage('addon-rebuild-end'), 'Rebuilt changed add-on index');
+	assert.equal(externalIndexProgressMessage('offline'), 'Loaded offline add-on indexes');
+	assert.equal(externalIndexProgressMessage('workbench-reconciliation'), 'Reconciled Workbench add-on indexes');
 		assert.equal(externalIndexProgressMessage('workspace-rebuild-start'), 'Indexing workspace scripts');
 		assert.equal(externalIndexProgressMessage('complete', 'ready'), 'Script index ready');
 		assert.equal(externalIndexProgressMessage('complete', 'failed'), 'Script indexing failed');

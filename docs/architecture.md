@@ -20,14 +20,14 @@ VS Code editor
 
 At language-server startup, the extension starts Rust immediately and applies
 `reforgerScriptTools.workbench.externalIndexMode`. The default `loaded` mode
-delivers the last atomically recorded Workbench graph from
-`globalStorageUri/addon-sources` as soon as the server starts, then delivers a
-fresh graph after functional Workbench integration becomes available. If that
-connection never becomes available, the last graph remains the selected
-external scope. `all` loads every compatible cached add-on index, `baseGame`
-loads only the Reforger Script and Core cache entries, and `none` leaves only
-workspace scripts. These fallback modes do not scan for add-ons or guess
-installation paths.
+first hydrates compatible offline indexes for the opened project's transitive
+dependency GUIDs. This provisional scope makes the cache the warm-start source;
+it does not read a previously loaded Workbench graph as a startup fallback. Once
+Workbench is available, one loaded-add-on graph request supplies the current
+authoritative scope and Rust reconciles the cache by instance identity. `all`
+loads every compatible cached add-on index, `baseGame` loads only the Reforger
+Script and Core cache entries, and `none` leaves only workspace scripts. These
+fallback modes do not scan for add-ons or guess installation paths.
 
 When `loaded` starts without a Workbench graph and an opened workspace folder
 contains one unambiguous `.gproj`, the provisional path resolves that project's
@@ -44,22 +44,29 @@ restarts the client with the new mode, and republishes the selected external
 layer. The `all` and `none` modes complete without waiting for a Workbench
 graph.
 
-When a live graph is available, the extension atomically records the exact
-Workbench-owned graph and delivers its path to Rust over a typed LSP
-notification. Workbench remains the scope authority for the `loaded` and
-`baseGame` live scopes: the extension does not scan, configure, or choose
-add-on folders. The NET API connection state is independent of Workbench's
-`scriptsCompiled` flag: compiler findings remain compiler diagnostics, while a
-connected bridge can still provide the loaded-addon graph.
-Rust begins add-on indexing from either the persisted fallback or live graph;
-a newer delivered graph supersedes an older in-flight rebuild. The graph carries
-GUID, display identity, and one exact source root for every loaded GUID. The
+When a live graph is available, the extension makes one NET API request for the
+current loaded add-ons, atomically records that exact graph, and delivers its
+path to Rust over a typed LSP notification. Workbench remains the scope
+authority for the `loaded` and `baseGame` live scopes: the extension does not
+scan, configure, or choose add-on folders. The NET API connection state is
+independent of Workbench's `scriptsCompiled` flag: compiler findings remain
+compiler diagnostics, while a connected bridge can still provide the loaded-
+addon graph. Rust begins add-on indexing from the offline cache/dependency
+scope and then reconciles it with the live graph; a newer delivered graph
+supersedes an older in-flight rebuild. The graph carries GUID, display identity,
+and one exact source root for every loaded GUID. The
 typed Workbench gateway
 uses the active Workbench Tools project registry to resolve packed entries and
 the current Workbench project only for its project-bound base entries. Mounted
 roots arrive directly from Workbench. An absent or ambiguous registered root
 makes the graph unavailable; there is no configured-root, default-path, or
 name-based alternative.
+
+The diagnostic logs label the two measurable ownership phases as `offline` and
+`workbench-reconciliation`. The event names and nested timings still separate
+cache hydration from dependency indexing and live graph reconciliation, so
+warm-start runs can compare first cached usability with the later authoritative
+refresh without another lifecycle model.
 
 Rust is the only owner of PAC inspection and Enfusion analysis. It indexes each
 listed add-on independently, selecting only script catalogue entries from its

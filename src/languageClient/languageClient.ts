@@ -41,7 +41,6 @@ import {
   externalIndexModes,
   type ExternalIndexMode,
 } from "../extensionConfig/workbench";
-import { gameDataStorage } from "../extensionConfig/gameData";
 import { WorkbenchGateway } from "../workbenchNetApi/gateway/workbenchGateway";
 import { registerHtmlHoverBridge } from "./hoverBridge";
 import {
@@ -390,9 +389,6 @@ async function startLanguageClient(
     ? discoverWorkspaceProjectFiles()
     : Promise.resolve([] as string[]);
   const workspaceProjectFiles = await workspaceProjectFilesPromise;
-  const initialSourceInventory = workspaceProjectFiles.length === 0
-    ? resolveLastLoadedAddonInventory(context, externalIndexMode)
-    : Promise.resolve(undefined);
   const serverArgs = [
     "--addon-index-storage",
     path.join(
@@ -540,20 +536,6 @@ async function startLanguageClient(
     await client.start();
     if (startGeneration !== languageClientStartGeneration || client !== activeClient) {
       return;
-    }
-    const initialInventoryPath = await initialSourceInventory;
-    if (startGeneration !== languageClientStartGeneration || client !== activeClient) {
-      return;
-    }
-    if (initialInventoryPath) {
-      activeClient.sendNotification(languageClientNotifications.loadedAddonGraph, {
-        inventoryPath: initialInventoryPath,
-      });
-      externalIndexMonitor.workbenchGraphDelivered();
-      logLanguageClientStartupTiming(
-        context,
-        "lastLoadedAddonGraphDelivered",
-      );
     }
     refreshWorkbenchGraph = async () => {
       if (externalIndexMode === 'all' || externalIndexMode === 'none') {
@@ -704,26 +686,6 @@ async function resolveWorkbenchLoadedAddonInventory(
     inventoryTotalMs: inventory.timingsMs.total,
   });
   return inventory.path;
-}
-
-async function resolveLastLoadedAddonInventory(
-  context: vscode.ExtensionContext,
-  mode: ExternalIndexMode,
-): Promise<string | undefined> {
-  if (mode === 'all' || mode === 'none') {
-    return undefined;
-  }
-  const inventoryPath = path.join(
-    context.globalStorageUri.fsPath,
-    gameDataStorage.rootFolder,
-    gameDataStorage.inventoryFile,
-  );
-  try {
-    await fs.access(inventoryPath);
-    return inventoryPath;
-  } catch {
-    return undefined;
-  }
 }
 
 async function resolveCurrentWorkbenchAddonInventory(
@@ -951,6 +913,10 @@ export function externalIndexProgressMessage(
       return "Loaded unchanged add-on index";
     case "addon-rebuild-end":
       return "Rebuilt changed add-on index";
+    case "offline":
+      return "Loaded offline add-on indexes";
+    case "workbench-reconciliation":
+      return "Reconciled Workbench add-on indexes";
     case "addon-cache-failed":
       return "Add-on indexing failed";
     case "workspace-rebuild-start":

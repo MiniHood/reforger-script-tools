@@ -54,10 +54,11 @@ indexing cannot change the meaning of an in-flight response. Do not introduce
 per-feature revision tables or mutable shared feature state that bypasses this
 model.
 
-The base-game layer is published from the current Workbench graph. On a warm
-start, each exact `(GUID, source-root)` instance key locates its self-describing
-`symbols.bin` directly. The binary header establishes format compatibility and
-embedded add-on identity without a separate manifest read. The hydrated layer
+The base-game layer is published from the current Workbench graph. On an
+offline warm start, the dependency scope uses each exact `(GUID, source-root)`
+instance key to locate its self-describing `symbols.bin` directly. The binary
+header establishes format compatibility and embedded add-on identity without a
+separate manifest read. The hydrated layer
 is reference-counted at construction and published without cloning its symbol
 graph. The same background validation pass then strongly re-inspects both
 packed entries and loose scripts, validates the manifest/cache pair, and
@@ -81,14 +82,15 @@ Workbench graph is unavailable, malformed, cancelled, or fails to acquire an
 instance, the Workbench-sourced layer is unavailable; the engine never reuses
 an earlier graph or substitutes a local source.
 
-The extension's explicit `loaded` fallback may provide a provisional dependency
+The extension's explicit `loaded` startup path provides a provisional dependency
 scope derived from the opened project's `.gproj` dependency GUIDs. Rust follows
 the transitive descriptor closure, resolves candidates by GUID through the
 bounded Workbench project registry and opened-project neighborhood, and prefers
 an unpacked candidate with usable `Scripts` over a packed candidate. It first
 hydrates compatible cached indexes, then inspects and builds only the resolved
 project scope; source fingerprints make the next warm pass reuse unchanged
-indexes. The result is explicitly labelled
+indexes. The offline cache is the first usable source; a later Workbench graph
+is the authoritative reconciliation. The result is explicitly labelled
 `project-dependencies-provisional`, is not a live Workbench graph, and is
 replaced by the next authoritative graph publication.
 

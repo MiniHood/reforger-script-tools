@@ -8,7 +8,7 @@ use crate::addon_sources::{
     load_all_cached_addon_indexes, load_cached_base_game_indexes,
     load_cached_dependency_addon_indexes, load_cached_loaded_addon_indexes,
     load_or_build_base_game_indexes, load_or_build_dependency_addon_indexes,
-    load_or_build_loaded_addon_indexes, LoadedAddonIndexResult,
+    load_or_build_loaded_addon_indexes, AddonScopeAuthority, LoadedAddonIndexResult,
 };
 use crate::index::SymbolIndex;
 use crate::index_cache::RuntimeIndexSummary;
@@ -27,6 +27,13 @@ use std::thread;
 use std::time::Instant;
 
 const MAX_DOCUMENT_EXCLUDED_WORKSPACE_INDEXES: usize = 4;
+
+fn index_phase(scope_authority: AddonScopeAuthority) -> &'static str {
+    match scope_authority {
+        AddonScopeAuthority::ProjectDependencies => "offline",
+        AddonScopeAuthority::WorkbenchLoaded => "workbench-reconciliation",
+    }
+}
 
 #[derive(Clone)]
 pub(crate) struct ExternalIndexHandle {
@@ -54,6 +61,7 @@ struct ExternalIndexState {
     summary: Option<RuntimeIndexSummary>,
     workspace_summary: RuntimeIndexSummary,
     game_data_summary: Option<RuntimeIndexSummary>,
+    game_data_scope_authority: Option<AddonScopeAuthority>,
     cache_status: Option<String>,
     cache_detail: Option<String>,
     fingerprint: Option<String>,
@@ -203,6 +211,7 @@ impl ExternalIndexHandle {
                 summary: None,
                 workspace_summary: RuntimeIndexSummary::default(),
                 game_data_summary: None,
+                game_data_scope_authority: None,
                 cache_status: None,
                 cache_detail: None,
                 fingerprint: None,
@@ -293,6 +302,7 @@ impl ExternalIndexHandle {
                 if state.graph_generation == graph_generation && cached.loaded_instances > 0 {
                     publish_loaded_addon_result(&mut state, &cached, true);
                     logger.diagnostic_lazy("externalIndex.optimisticCacheDelivered", || json!({
+                        "phase": index_phase(cached.scope_authority),
                         "elapsedMs": started.elapsed().as_millis(),
                         "loadedInstances": cached.loaded_instances,
                         "missingInstances": cached.missing_instances,
@@ -307,6 +317,13 @@ impl ExternalIndexHandle {
                             "total": cached.timings.total.as_millis(),
                         }
                     }));
+                }
+                if cached.loaded_instances > 0 {
+                    if let Some(sender) = &event_sender {
+                        let _ = sender.send(ServerEvent::ExternalIndexProgress {
+                            phase: index_phase(cached.scope_authority).to_string(),
+                        });
+                    }
                 }
             }
             if let Some(sender) = &event_sender {
@@ -330,32 +347,47 @@ impl ExternalIndexHandle {
             if state.graph_generation != graph_generation {
                 return;
             }
+            let reconciliation_succeeded = result.is_ok();
             match result {
                 Ok(result) => {
                     log_loaded_addon_index_diagnostics(&logger, &result);
                     publish_loaded_addon_result(&mut state, &result, false);
-                    logger.diagnostic_lazy("externalIndex.graphDelivered", || json!({"elapsedMs": started.elapsed().as_millis(), "loadedInstances": result.loaded_instances, "rebuiltInstances": result.rebuilt_instances, "workspaceExcludedInstances": result.workspace_excluded_instances}));
+                    logger.diagnostic_lazy("externalIndex.graphDelivered", || json!({"phase": index_phase(result.scope_authority), "elapsedMs": started.elapsed().as_millis(), "loadedInstances": result.loaded_instances, "rebuiltInstances": result.rebuilt_instances, "workspaceExcludedInstances": result.workspace_excluded_instances}));
                 }
                 Err(error) => {
-                    state.game_data_index = None;
-                    state.game_data_summary = None;
+                    let keep_offline_scope = state.game_data_scope_authority
+                        == Some(AddonScopeAuthority::ProjectDependencies);
+                    if !keep_offline_scope {
+                        state.game_data_index = None;
+                        state.game_data_summary = None;
+                        state.game_data_scope_authority = None;
+                        state.cache_status = None;
+                        state.cache_detail = None;
+                        state.fingerprint = None;
+                    }
                     state.error = Some(error.clone());
                     let game_data = state.game_data_summary.clone();
                     recompute_summary(&mut state, game_data);
                     state.generation += 1;
-                    state.status = if state.workspace_index.is_some() {
-                        ExternalIndexStatus::Ready
-                    } else {
-                        ExternalIndexStatus::Failed
-                    };
+                    state.status =
+                        if state.workspace_index.is_some() || state.game_data_index.is_some() {
+                            ExternalIndexStatus::Ready
+                        } else {
+                            ExternalIndexStatus::Failed
+                        };
                     logger.diagnostic_lazy(
                         "externalIndex.graphDeliveryFailed",
-                        || json!({"elapsedMs": started.elapsed().as_millis(), "error": error}),
+                        || json!({"phase": "workbench-reconciliation", "elapsedMs": started.elapsed().as_millis(), "error": error}),
                     );
                 }
             }
             drop(state);
             if let Some(sender) = event_sender {
+                if reconciliation_succeeded {
+                    let _ = sender.send(ServerEvent::ExternalIndexProgress {
+                        phase: "workbench-reconciliation".to_string(),
+                    });
+                }
                 let _ = sender.send(ServerEvent::ExternalIndexChanged);
             }
         });
@@ -530,6 +562,7 @@ fn publish_loaded_addon_result(
 ) {
     state.game_data_index = Some(result.index.clone());
     state.game_data_summary = Some(result.summary.clone());
+    state.game_data_scope_authority = Some(result.scope_authority);
     state.cache_status = Some(
         if validation_pending {
             "optimistic-loaded"
@@ -581,6 +614,8 @@ pub(crate) fn start_external_index(
     logger.diagnostic_lazy("externalIndex.started", || {
         json!({
             "gameDataConfigured": options.addon_source_inventory.is_some(),
+            "offlineDependencyProjects": options.dependency_project_files.len(),
+            "indexStorageConfigured": options.addon_index_storage.is_some(),
             "workspaceRoots": options.workspace_scripts.len(),
         })
     });
@@ -607,6 +642,7 @@ pub(crate) fn start_external_index(
             summary: None,
             workspace_summary: RuntimeIndexSummary::default(),
             game_data_summary: None,
+            game_data_scope_authority: None,
             cache_status: None,
             cache_detail: None,
             fingerprint: None,
@@ -665,6 +701,7 @@ fn log_loaded_addon_index_diagnostics(logger: &LspLogger, result: &LoadedAddonIn
     for instance in &result.instances {
         logger.diagnostic_lazy("externalIndex.addonCompleted", || {
             json!({
+                "phase": index_phase(result.scope_authority),
                 "scopeAuthority": result.scope_authority.as_str(),
                 "guid": instance.guid,
                 "displayId": instance.display_id,
@@ -712,6 +749,7 @@ fn log_loaded_addon_index_diagnostics(logger: &LspLogger, result: &LoadedAddonIn
     }
     logger.diagnostic_lazy("externalIndex.gameDataCompleted", || {
         json!({
+            "phase": index_phase(result.scope_authority),
             "scopeAuthority": result.scope_authority.as_str(),
             "loadedInstances": result.loaded_instances,
             "rebuiltInstances": result.rebuilt_instances,
@@ -770,9 +808,9 @@ fn run_external_index_thread(
         )
     });
 
-    // Hydrate the last immutable snapshot before any source inspection. The
-    // graph-backed modes follow with source validation; cache-only modes keep
-    // the compatible cached projection when no graph is available.
+    // Hydrate the offline cache before any source inspection. A dependency
+    // scope can then serve immediately while the Workbench graph is acquired;
+    // a later graph delivery performs the authoritative reconciliation.
     if let Some(storage) = addon_index_storage.as_ref() {
         let optimistic_start = Instant::now();
         let cached = match external_index_mode {
@@ -808,6 +846,7 @@ fn run_external_index_thread(
                 publish_loaded_addon_result(&mut published, &result, true);
                 drop(published);
                 logger.diagnostic_lazy("externalIndex.optimisticCacheDelivered", || json!({
+                    "phase": index_phase(result.scope_authority),
                     "scopeAuthority": result.scope_authority.as_str(),
                     "elapsedMs": optimistic_start.elapsed().as_millis(),
                     "loadedInstances": result.loaded_instances,
@@ -824,10 +863,13 @@ fn run_external_index_thread(
                     }
                 }));
                 if let Some(sender) = &event_sender {
+                    let _ = sender.send(ServerEvent::ExternalIndexProgress {
+                        phase: index_phase(result.scope_authority).to_string(),
+                    });
                     let _ = sender.send(ServerEvent::ExternalIndexChanged);
                 }
             }
-            Ok(result) => logger.diagnostic_lazy("externalIndex.optimisticCacheUnavailable", || json!({"elapsedMs": optimistic_start.elapsed().as_millis(), "missingInstances": result.missing_instances, "workspaceExcludedInstances": result.workspace_excluded_instances})),
+            Ok(result) => logger.diagnostic_lazy("externalIndex.optimisticCacheUnavailable", || json!({"phase": index_phase(result.scope_authority), "scopeAuthority": result.scope_authority.as_str(), "elapsedMs": optimistic_start.elapsed().as_millis(), "missingInstances": result.missing_instances, "workspaceExcludedInstances": result.workspace_excluded_instances})),
             Err(error) => logger.diagnostic_lazy("externalIndex.optimisticCacheFailed", || json!({"elapsedMs": optimistic_start.elapsed().as_millis(), "error": error})),
         }
     }
@@ -899,12 +941,7 @@ fn run_external_index_thread(
                         });
                     }
                     let phase = match &result {
-                        Ok(result)
-                            if result.rebuilt_instances == 0 && result.loaded_instances > 0 =>
-                        {
-                            "addon-cache-loaded"
-                        }
-                        Ok(_) => "addon-rebuild-end",
+                        Ok(result) => index_phase(result.scope_authority),
                         Err(_) => "addon-cache-failed",
                     };
                     let _ = sender.send(ServerEvent::ExternalIndexProgress {
@@ -964,27 +1001,33 @@ fn run_external_index_thread(
         )
     });
     let mut error_messages = Vec::new();
-    let (game_data_index, game_data_summary, cache_status, cache_detail, fingerprint) =
-        match game_data_result {
-            Some(Ok(result)) => {
-                let cache_status = if result.rebuilt_instances == 0 {
-                    "loaded"
-                } else {
-                    "rebuilt"
-                }
-                .to_string();
-                let cache_detail = Some(format!(
-                    "loadedInstances={} rebuiltInstances={} workspaceExcludedInstances={}",
-                    result.loaded_instances,
-                    result.rebuilt_instances,
-                    result.workspace_excluded_instances
-                ));
-                let fingerprint = format!(
-                    "workbench-loaded-addons:{}",
-                    result.loaded_instances + result.rebuilt_instances
-                );
-                log_loaded_addon_index_diagnostics(&logger, &result);
-                logger.log_lazy(|| format!(
+    let (
+        game_data_index,
+        game_data_summary,
+        game_data_scope_authority,
+        cache_status,
+        cache_detail,
+        fingerprint,
+    ) = match game_data_result {
+        Some(Ok(result)) => {
+            let cache_status = if result.rebuilt_instances == 0 {
+                "loaded"
+            } else {
+                "rebuilt"
+            }
+            .to_string();
+            let cache_detail = Some(format!(
+                "loadedInstances={} rebuiltInstances={} workspaceExcludedInstances={}",
+                result.loaded_instances,
+                result.rebuilt_instances,
+                result.workspace_excluded_instances
+            ));
+            let fingerprint = format!(
+                "workbench-loaded-addons:{}",
+                result.loaded_instances + result.rebuilt_instances
+            );
+            log_loaded_addon_index_diagnostics(&logger, &result);
+            logger.log_lazy(|| format!(
                     "externalIndex gameData ready cache_status={} cache_detail={} files={} symbols={} parse_diagnostics={} graph_read_ms={} workspace_root_resolution_ms={} cache_metadata_read_ms={} source_inspection_ms={} index_load_or_build_ms={} layer_rebase_ms={} layer_file_projection_ms={} layer_lookup_projection_ms={} layer_compose_ms={} game_data_total_ms={} elapsed_ms={}",
                     cache_status,
                     cache_detail.as_deref().unwrap_or("<none>"),
@@ -1003,31 +1046,31 @@ fn run_external_index_thread(
                     result.timings.total.as_millis(),
                     start.elapsed().as_millis()
                 ));
-                (
-                    Some(result.index),
-                    Some(result.summary),
-                    Some(cache_status),
-                    cache_detail,
-                    Some(fingerprint),
+            (
+                Some(result.index),
+                Some(result.summary),
+                Some(result.scope_authority),
+                Some(cache_status),
+                cache_detail,
+                Some(fingerprint),
+            )
+        }
+        Some(Err(error)) => {
+            logger.log_lazy(|| {
+                format!(
+                    "externalIndex gameData failed error={} elapsed_ms={}",
+                    error,
+                    start.elapsed().as_millis()
                 )
-            }
-            Some(Err(error)) => {
-                logger.log_lazy(|| {
-                    format!(
-                        "externalIndex gameData failed error={} elapsed_ms={}",
-                        error,
-                        start.elapsed().as_millis()
-                    )
-                });
-                error_messages.push(error);
-                // The Workbench graph is the only acquisition authority. A
-                // failed refresh therefore makes the Workbench-sourced layer
-                // unavailable; retaining the previous graph would be a
-                // stale, second acquisition path.
-                (None, None, None, None, None)
-            }
-            None => (None, None, None, None, None),
-        };
+            });
+            error_messages.push(error);
+            // A failed live graph acquisition does not erase a provisional
+            // offline dependency layer; it remains useful until a live
+            // Workbench graph can replace it.
+            (None, None, None, None, None, None)
+        }
+        None => (None, None, None, None, None, None),
+    };
 
     let baseline_workspace_files = match workspace_result {
         Ok((workspace_files, workspace_summary)) => {
@@ -1086,6 +1129,7 @@ fn run_external_index_thread(
         if has_game_data_source {
             state.game_data_index = game_data_index.clone();
             state.game_data_summary = game_data_summary.clone();
+            state.game_data_scope_authority = game_data_scope_authority;
             state.cache_status = cache_status.clone();
             state.cache_detail = cache_detail.clone();
             state.fingerprint = fingerprint.clone();
@@ -1462,6 +1506,18 @@ mod tests {
     use crate::lsp::file_uri_for_path;
     use std::sync::mpsc;
     use std::time::Duration;
+
+    #[test]
+    fn index_phases_separate_offline_hydration_from_workbench_reconciliation() {
+        assert_eq!(
+            index_phase(AddonScopeAuthority::ProjectDependencies),
+            "offline"
+        );
+        assert_eq!(
+            index_phase(AddonScopeAuthority::WorkbenchLoaded),
+            "workbench-reconciliation"
+        );
+    }
 
     #[test]
     fn external_index_publication_wakes_the_runtime_without_polling() {
