@@ -97,6 +97,24 @@ For every change that affects Workbench bridge scripts, editor behavior, or an
 Enfusion Script workflow, follow this continuous evidence loop. Do not treat a
 passing validation run as proof that Workbench is running the new behavior.
 
+### MCP-first Workbench control
+
+- Always use and prioritize the named public `workbench_*` MCP tools for
+  Workbench operations. Start with `docs/mcp-api.md`, then open only the exact
+  linked contract under `docs/mcp-api/tools/` needed for the operation.
+- Use MCP for Workbench launch, status, project context, editor and resource
+  opening, world inspection and editing, saving, validation, bridge
+  maintenance, reload, logs, window inspection, play sessions, stop, and
+  restart whenever the public capability exists.
+- Never manually launch the Workbench executable, simulate Workbench UI input,
+  call the private `workbench-api` process mode or raw NET API as a substitute,
+  or use shell process control when a public MCP capability owns the action.
+- If an MCP operation is unavailable or fails, preserve and diagnose that MCP
+  failure through its structured result, recovery guidance, and MCP-exposed
+  status or logs. Lower-level inspection may diagnose the MCP implementation,
+  but it does not replace MCP acceptance and must not become a parallel normal
+  workflow.
+
 1. Search the official wiki/documentation for the relevant editor behavior and
    API surface.
 2. Search verified game-data and game-source examples. Read the relevant
@@ -127,9 +145,9 @@ passing validation run as proof that Workbench is running the new behavior.
    that were only needed to investigate the issue. Keep only intentional,
    useful production-facing output.
 
-Repeat this loop until the live behavior is verified. Use the Workbench
-commands yourself; do not ask the user to reload, validate, or inspect logs
-when the available tooling can do it.
+Repeat this loop until the live behavior is verified. Use the public Workbench
+MCP commands yourself; do not ask the user to reload, validate, or inspect logs
+when the available MCP tooling can do it.
 
 ## Basic Rules
 
