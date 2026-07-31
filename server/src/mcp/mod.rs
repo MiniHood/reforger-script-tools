@@ -223,7 +223,7 @@ const WORKBENCH_START_PLAY_SESSION_DESCRIPTION: &str = "Explicitly request that 
 const WORKBENCH_STOP_PLAY_SESSION_DESCRIPTION: &str = "Explicitly request that World Editor returns to edit mode. This is distinct from stopping the Workbench process.";
 const WORKBENCH_RELOAD_DESCRIPTION: &str = "Confirm Save All for currently open Workbench tabs and save the active World Editor world when it already has a path, then request Reload WB Scripts through Workbench's in-process Resource Manager action dispatcher. An absent or untitled World Editor world is reported as skipped and never opens a Save As dialog. Because reload tears down the handler before it can respond, the tool waits up to 60 seconds for the replacement handler to report a changed compatible typed runtime generation before returning success.";
 const WORKBENCH_SAVE_DESCRIPTION: &str = "Save all currently open Workbench tabs through the fixed in-process Resource Manager Save All action and, only when the active World Editor has an existing world path, save that world through WorldEditor.Save(). An absent or untitled world is reported as skipped; no name is invented and no Save As dialog is opened. The tool uses in-process actions only and waits briefly after an accepted save action before returning.";
-const WORKBENCH_READ_LOGS_DESCRIPTION: &str = "Read a bounded tail from either the integration support log or the latest known Workbench console log. This is diagnostic history, not live Workbench state or reload-success evidence; arbitrary paths are not accepted.";
+const WORKBENCH_READ_LOGS_DESCRIPTION: &str = "Read Workbench log history. The default latest mode returns the current console-log section beginning at the latest native Reloading game scripts entry; use tail for the legacy bounded tail or all for the complete current log. This is diagnostic history, not live Workbench state or reload-success evidence; arbitrary paths are not accepted.";
 const WORKBENCH_LAUNCH_DESCRIPTION: &str = "Explicit host-process control: launch the discovered Workbench executable for one exact .gproj project with the required Arma Reforger and Workbench base add-ons, or reuse an existing Workbench process only when it was launched for that same project, then wait for native NET API readiness. This is not a Workbench Capability or source of live editor truth.";
 const WORKBENCH_STOP_DESCRIPTION: &str = "Explicit host-process control: save through the typed Workbench Gateway, request graceful closure of one exact observed Workbench process, and force-close it if no save acknowledgement is observed within 15 seconds. This is not a Workbench Capability or source of live editor truth.";
 const WORKBENCH_RESTART_DESCRIPTION: &str = "Explicit host-process control: save through the typed Workbench Gateway, wait up to 15 seconds for save acknowledgement, then force-close one exact observed Workbench process and relaunch its resolved project. This is not a Workbench Capability or source of live editor truth.";
@@ -243,8 +243,27 @@ struct McpWorkbenchValidationInput {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct McpWorkbenchLogsInput {
     source: McpWorkbenchLogSource,
+    mode: Option<McpWorkbenchLogMode>,
     #[schemars(range(min = 1, max = 500))]
     line_count: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+enum McpWorkbenchLogMode {
+    Latest,
+    Tail,
+    All,
+}
+
+impl McpWorkbenchLogMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Latest => "latest",
+            Self::Tail => "tail",
+            Self::All => "all",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
@@ -2934,7 +2953,11 @@ impl ReforgerMcpServer {
                 "read_logs",
                 move || {
                     workbench
-                        .read_logs(input.source.as_str(), input.line_count.unwrap_or(200))
+                        .read_logs(
+                            input.source.as_str(),
+                            input.mode.unwrap_or(McpWorkbenchLogMode::Latest).as_str(),
+                            input.line_count,
+                        )
                         .map_err(|failure| workbench.correlate_failure("read_logs", failure))
                 },
             )
@@ -3918,7 +3941,7 @@ fn api_reference_summary(name: &str) -> (&'static str, &'static str) {
         ),
         "workbench_read_logs" => (
             "Diagnostics and windows",
-            "Read bounded integration or latest Workbench log history.",
+            "Read latest reload-scoped Workbench logs by default, with explicit tail and all modes.",
         ),
         "workbench_list_windows" => (
             "Diagnostics and windows",

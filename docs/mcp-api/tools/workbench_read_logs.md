@@ -3,7 +3,7 @@
 
 [Back to the MCP API router](../../mcp-api.md)
 
-Read a bounded tail from either the integration support log or the latest known Workbench console log. This is diagnostic history, not live Workbench state or reload-success evidence; arbitrary paths are not accepted.
+Read Workbench log history. The default latest mode returns the current console-log section beginning at the latest native Reloading game scripts entry; use tail for the legacy bounded tail or all for the complete current log. This is diagnostic history, not live Workbench state or reload-success evidence; arbitrary paths are not accepted.
 
 ### Annotations
 
@@ -20,6 +20,14 @@ Read a bounded tail from either the integration support log or the latest known 
 ```json
 {
   "$defs": {
+    "McpWorkbenchLogMode": {
+      "enum": [
+        "latest",
+        "tail",
+        "all"
+      ],
+      "type": "string"
+    },
     "McpWorkbenchLogSource": {
       "enum": [
         "integration",
@@ -37,6 +45,16 @@ Read a bounded tail from either the integration support log or the latest known 
       "type": [
         "integer",
         "null"
+      ]
+    },
+    "mode": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/McpWorkbenchLogMode"
+        },
+        {
+          "type": "null"
+        }
       ]
     },
     "source": {

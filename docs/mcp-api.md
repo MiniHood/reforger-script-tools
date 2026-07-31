@@ -180,7 +180,7 @@ Read bounded logs or visually inspect exact Workbench windows.
 
 | Tool | Parameters | Returns | What it does / when to use |
 | --- | --- | --- | --- |
-| [`workbench_read_logs`](mcp-api/tools/workbench_read_logs.md) | `lineCount?`, `source` | `lines`, `markers`, `path?`, `source`, `truncated` | Read bounded integration or latest Workbench log history. |
+| [`workbench_read_logs`](mcp-api/tools/workbench_read_logs.md) | `lineCount?`, `mode?`, `source` | `lines`, `markers`, `path?`, `source`, `truncated` | Read latest reload-scoped Workbench logs by default, with explicit tail and all modes. |
 | [`workbench_list_windows`](mcp-api/tools/workbench_list_windows.md) | `processId` | `processId`, `windows` | List visible windows owned by an exact Workbench process. |
 | [`workbench_capture_window`](mcp-api/tools/workbench_capture_window.md) | `maxDimension?`, `processId`, `region?`, `windowId?` | `capturedAtMs`, `encodedBytes`, `format`, `outputHeight`, `outputWidth`, `processId`, `region?`, `scale`, … | Capture one Workbench window or region for visual inspection. |
 

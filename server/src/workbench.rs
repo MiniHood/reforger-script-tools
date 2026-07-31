@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::net::{IpAddr, Shutdown, SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -4161,9 +4161,12 @@ impl WorkbenchController {
     pub fn read_logs(
         &self,
         source: &str,
-        line_count: usize,
+        mode: &str,
+        line_count: Option<usize>,
     ) -> Result<WorkbenchLogRead, WorkbenchFailure> {
-        let line_count = line_count.clamp(1, 500);
+        if !matches!(mode, "latest" | "tail" | "all") {
+            return Err(failure(WorkbenchFailureCode::Protocol));
+        }
         let path = match source {
             "integration" => Some(self.integration_log_path()),
             "workbench" => latest_workbench_log(&self.paths().workbench_root),
@@ -4187,13 +4190,23 @@ impl WorkbenchController {
                 truncated: false,
             });
         }
-        let (lines, truncated) = bounded_log_tail(&path, line_count).map_err(|error| {
+        let (lines, truncated) = match (source, mode) {
+            ("workbench", "latest") => bounded_log_since_reload_start(&path, line_count),
+            (_, "tail") => bounded_log_tail(&path, line_count.unwrap_or(200).clamp(1, 500)),
+            (_, "all") => read_all_log_lines(&path, line_count.map(|count| count.clamp(1, 500))),
+            ("integration", "latest") => {
+                bounded_log_tail(&path, line_count.unwrap_or(200).clamp(1, 500))
+            }
+            _ => unreachable!("validated Workbench log mode"),
+        }
+        .map_err(|error| {
             self.correlate_failure_details(
                 "read_logs",
                 "read-failed",
                 failure(WorkbenchFailureCode::Unavailable),
                 json!({
                     "source": source,
+                    "mode": mode,
                     "errorKind": format!("{:?}", error.kind()),
                 }),
             )
@@ -4211,6 +4224,7 @@ impl WorkbenchController {
             Instant::now(),
             json!({
                 "source": result.source.clone(),
+                "mode": mode,
                 "lineCount": result.lines.len(),
                 "markerCount": result.markers.len(),
                 "truncated": result.truncated,
@@ -7457,7 +7471,7 @@ fn workbench_log_markers(source: &str, lines: &[String]) -> Vec<WorkbenchLogMark
         return Vec::new();
     }
     const MARKERS: [(&str, &str); 5] = [
-        ("reload-started", "Reloading game scripts"),
+        ("reload-started", WORKBENCH_RELOAD_START_MARKER),
         ("script-validation", "Script validation"),
         ("gamelib-compilation", "Compiling GameLib scripts"),
         ("game-compilation", "Compiling Game scripts"),
@@ -7481,12 +7495,121 @@ fn workbench_log_markers(source: &str, lines: &[String]) -> Vec<WorkbenchLogMark
         .collect()
 }
 
+const WORKBENCH_RELOAD_START_MARKER: &str = "Reloading game scripts";
 const MAX_LOG_READ_BYTES: u64 = 512 * 1024;
 
 fn bounded_log_tail(
     path: &std::path::Path,
     line_count: usize,
 ) -> std::io::Result<(Vec<String>, bool)> {
+    let (all, truncated) = bounded_log_window(path)?;
+    let line_truncated = all.len() > line_count;
+    Ok((
+        limit_log_lines(all, Some(line_count), false),
+        truncated || line_truncated,
+    ))
+}
+
+fn read_all_log_lines(
+    path: &std::path::Path,
+    line_count: Option<usize>,
+) -> std::io::Result<(Vec<String>, bool)> {
+    let all = log_lines_from_offset(path, 0)?;
+    let line_truncated = line_count.is_some_and(|limit| limit < all.len());
+    Ok((
+        limit_log_lines(all, line_count, false),
+        line_truncated,
+    ))
+}
+
+fn bounded_log_since_reload_start(
+    path: &std::path::Path,
+    line_count: Option<usize>,
+) -> std::io::Result<(Vec<String>, bool)> {
+    let Some(barrier_offset) = latest_reload_start_offset(path)? else {
+        return Ok((Vec::new(), false));
+    };
+    let length = fs::metadata(path)?.len();
+    let section_length = length.saturating_sub(barrier_offset);
+    let (selected, storage_truncated) = if section_length > MAX_LOG_READ_BYTES {
+        let barrier = log_lines_from_offset(path, barrier_offset)?
+            .into_iter()
+            .next()
+            .unwrap_or_default();
+        let (tail, _) = bounded_log_window(path)?;
+        let mut selected = Vec::with_capacity(tail.len() + 1);
+        selected.push(barrier);
+        selected.extend(tail);
+        (selected, true)
+    } else {
+        (log_lines_from_offset(path, barrier_offset)?, false)
+    };
+    let line_truncated = line_count.is_some_and(|limit| limit < selected.len());
+    Ok((
+        limit_log_lines(selected, line_count, false),
+        storage_truncated || line_truncated,
+    ))
+}
+
+fn latest_reload_start_offset(path: &std::path::Path) -> std::io::Result<Option<u64>> {
+    let mut reader = BufReader::new(fs::File::open(path)?);
+    let mut offset = 0_u64;
+    let mut latest = None;
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let bytes_read = reader.read_line(&mut line)?;
+        if bytes_read == 0 {
+            break;
+        }
+        if line.contains(WORKBENCH_RELOAD_START_MARKER) {
+            latest = Some(offset);
+        }
+        offset += bytes_read as u64;
+    }
+    Ok(latest)
+}
+
+fn log_lines_from_offset(path: &std::path::Path, offset: u64) -> std::io::Result<Vec<String>> {
+    let mut file = fs::File::open(path)?;
+    file.seek(SeekFrom::Start(offset))?;
+    BufReader::new(file).lines().collect()
+}
+
+fn limit_log_lines(
+    lines: Vec<String>,
+    line_count: Option<usize>,
+    preserve_first: bool,
+) -> Vec<String> {
+    let Some(line_count) = line_count else {
+        return lines;
+    };
+    if lines.len() <= line_count {
+        return lines;
+    }
+    if preserve_first {
+        let mut selected = Vec::with_capacity(line_count);
+        selected.push(lines[0].clone());
+        let tail = lines
+            .into_iter()
+            .rev()
+            .take(line_count.saturating_sub(1))
+            .collect::<Vec<_>>();
+        selected.extend(tail.into_iter().rev());
+        selected
+    } else {
+        lines
+            .into_iter()
+            .rev()
+            .take(line_count)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect()
+    }
+}
+
+fn bounded_log_window(path: &std::path::Path) -> std::io::Result<(Vec<String>, bool)> {
     let mut file = fs::File::open(path)?;
     let length = file.metadata()?.len();
     let offset = length.saturating_sub(MAX_LOG_READ_BYTES);
@@ -7498,17 +7621,7 @@ fn bounded_log_tail(
     if offset > 0 {
         all.next();
     }
-    let all = all.map(str::to_string).collect::<Vec<_>>();
-    let truncated = offset > 0 || all.len() > line_count;
-    let lines = all
-        .into_iter()
-        .rev()
-        .take(line_count)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect();
-    Ok((lines, truncated))
+    Ok((all.map(str::to_string).collect(), offset > 0))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
@@ -8395,6 +8508,71 @@ mod tests {
             ]
         );
         assert!(super::workbench_log_markers("integration", &lines).is_empty());
+    }
+
+    #[test]
+    fn latest_workbench_logs_start_at_the_latest_reload_start() {
+        let root = test_root("latest-log-start");
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("console.log");
+        fs::write(
+            &path,
+            "old startup\nSCRIPT: Reloading game scripts\nnew warning\nnew result\n",
+        )
+        .unwrap();
+
+        let (lines, truncated) = super::bounded_log_since_reload_start(&path, None).unwrap();
+
+        assert!(!truncated);
+        assert_eq!(
+            lines,
+            vec![
+                "SCRIPT: Reloading game scripts",
+                "new warning",
+                "new result"
+            ]
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn latest_workbench_log_line_limit_returns_the_latest_lines() {
+        let root = test_root("latest-log-limit");
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("console.log");
+        fs::write(
+            &path,
+            "SCRIPT: Reloading game scripts\nline one\nline two\nline three\n",
+        )
+        .unwrap();
+
+        let (lines, truncated) = super::bounded_log_since_reload_start(&path, Some(2)).unwrap();
+
+        assert!(truncated);
+        assert_eq!(lines, vec!["line two", "line three"]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn latest_workbench_logs_find_a_reload_start_outside_the_bounded_tail() {
+        let root = test_root("latest-log-large-section");
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("console.log");
+        let contents = format!(
+            "old startup\nSCRIPT: Reloading game scripts\n{}current result\n",
+            "noise\n".repeat(100_000)
+        );
+        fs::write(&path, contents).unwrap();
+
+        let (lines, truncated) = super::bounded_log_since_reload_start(&path, None).unwrap();
+
+        assert!(truncated);
+        assert_eq!(
+            lines.first().map(String::as_str),
+            Some("SCRIPT: Reloading game scripts")
+        );
+        assert_eq!(lines.last().map(String::as_str), Some("current result"));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
