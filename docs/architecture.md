@@ -141,12 +141,13 @@ schemas, explicit coordinate spaces, and result framing.
 
 The optional managed handler package lives under the current Windows user's
 `Documents\My Games\ArmaReforgerWorkbench\profile\scripts\WorkbenchGame\reforger-script-tools`
-directory. The VS Code extension owns a one-time first-install prompt and
-stores the resulting approval as an internal durable extension state. The
-approval is not a user setting and permits automatic bridge maintenance on
-later activations. The managed manifest remains the file-ownership and version
-record. Public MCP cannot create that first manifest; its explicit
-installer may maintain an existing consented installation. A prior
+directory. The VS Code extension owns a one-time first-install prompt
+controlled by the unified `reforgerScriptTools.workbench.enabled` setting,
+which defaults to false. Approval enables that setting and stores the
+resulting approval as an internal durable extension state. The managed manifest
+remains the file-ownership and version record. Public MCP cannot create that
+first manifest; its explicit installer may maintain an existing consented
+installation. A prior
 manifest-owned flat-profile package is migrated to this `WorkbenchGame` module
 path without touching unknown files. `workbench_status` is read-only: it
 returns only the native NET API's Workbench Availability State and never

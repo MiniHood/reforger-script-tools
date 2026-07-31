@@ -247,6 +247,10 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		this.configurationGeneration += 1;
 		this.configuration = readConfiguration();
 		this.gateway = createGateway(this.configuration, this.serverPath);
+		this.integration?.onWorkbenchConfigurationChanged(
+			this.configuration.enabled,
+			isWorkbenchEnablementExplicitlyDisabled(),
+		);
 		this.clearProbeTimer();
 		this.clearValidationTimer();
 		this.pendingValidation = undefined;
@@ -883,6 +887,20 @@ function readConfiguration(): WorkbenchConfiguration {
 			workbenchDefaults.saveOnIdle,
 		),
 	};
+}
+
+function isWorkbenchEnablementExplicitlyDisabled(): boolean {
+	const configuration = vscode.workspace.getConfiguration(workbenchConfig.section);
+	if (configuration.get(workbenchConfig.settings.enabled, workbenchDefaults.enabled)) {
+		return false;
+	}
+	const inspected = configuration.inspect<boolean>(workbenchConfig.settings.enabled);
+	return inspected?.globalValue === false
+		|| inspected?.workspaceValue === false
+		|| inspected?.workspaceFolderValue === false
+		|| inspected?.globalLanguageValue === false
+		|| inspected?.workspaceLanguageValue === false
+		|| inspected?.workspaceFolderLanguageValue === false;
 }
 
 function createGateway(

@@ -200,6 +200,21 @@ suite('extension activation', () => {
 		]);
 	});
 
+	test('uses Workbench enabled as the single integration setting', () => {
+		const extension = vscode.extensions.all.find(
+			candidate => candidate.packageJSON.name === 'reforger-script-tools',
+		);
+		assert.ok(extension, 'development extension is discoverable');
+		const properties = extension.packageJSON.contributes.configuration.properties as Record<string, {
+			default?: unknown;
+			title?: unknown;
+		}>;
+		const setting = properties['reforgerScriptTools.workbench.enabled'];
+		assert.strictEqual(setting.default, false);
+		assert.strictEqual(setting.title, 'Workbench: Enabled');
+		assert.strictEqual(properties['reforgerScriptTools.workbench.autoInstallIntegration'], undefined);
+	});
+
 	test('registers editor-facing commands', async () => {
 		const extension = vscode.extensions.all.find(
 			candidate => candidate.packageJSON.name === 'reforger-script-tools',

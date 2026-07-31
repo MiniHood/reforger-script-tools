@@ -11,6 +11,104 @@ import { WorkbenchEndpoint } from '../workbenchNetApi/gateway/workbenchGateway';
 const endpoint: WorkbenchEndpoint = { host: '127.0.0.1', port: 5775 };
 
 suite('Workbench Integration', () => {
+	test('disabled Workbench prompts for consent and enables the setting after approval', async () => {
+		let enabled = false;
+		let bootstraps = 0;
+		const coordinator = new WorkbenchIntegrationCoordinator(
+			stateWith(false),
+			runtimeWith({
+				status: async () => statusResult({ installed: false, installationAvailable: true }),
+				bootstrap: async () => {
+					bootstraps += 1;
+					return bootstrapResult();
+				},
+			}),
+			uiWith({ confirmInstall: async () => true }),
+			false,
+			async () => {
+				enabled = true;
+			},
+		);
+
+		const ready = coordinator.start();
+		await waitUntil(() => bootstraps === 1);
+		coordinator.onWorkbenchConnected(endpoint);
+		await ready;
+
+		assert.strictEqual(enabled, true);
+	});
+
+	test('explicitly disabled Workbench does not prompt or install', async () => {
+		let prompts = 0;
+		let bootstraps = 0;
+		const coordinator = new WorkbenchIntegrationCoordinator(
+			stateWith(false),
+			runtimeWith({
+				bootstrap: async () => {
+					bootstraps += 1;
+					return bootstrapResult();
+				},
+			}),
+			uiWith({ confirmInstall: async () => {
+				prompts += 1;
+				return true;
+			} }),
+			false,
+			undefined,
+			false,
+		);
+
+		await coordinator.start();
+
+		assert.strictEqual(prompts, 0);
+		assert.strictEqual(bootstraps, 0);
+	});
+
+	test('approved disabled Workbench stays dormant until the setting is enabled', async () => {
+		let statuses = 0;
+		const coordinator = new WorkbenchIntegrationCoordinator(
+			stateWith(true),
+			runtimeWith({
+				status: async () => {
+					statuses += 1;
+					return statusResult();
+				},
+			}),
+			uiWith({}),
+			false,
+		);
+
+		await coordinator.start();
+		assert.strictEqual(statuses, 0);
+	});
+
+	test('enabling the setting later retries a declined installation', async () => {
+		let prompts = 0;
+		let bootstraps = 0;
+		const coordinator = new WorkbenchIntegrationCoordinator(
+			stateWith(false),
+			runtimeWith({
+				bootstrap: async () => {
+					bootstraps += 1;
+					return bootstrapResult();
+				},
+			}),
+			uiWith({
+				confirmInstall: async () => {
+					prompts += 1;
+					return prompts === 2;
+				},
+			}),
+			false,
+		);
+
+		await coordinator.start();
+		coordinator.onWorkbenchConfigurationChanged(true);
+		await waitUntil(() => bootstraps === 1);
+
+		assert.strictEqual(prompts, 2);
+	});
+
 	test('declining approval resolves startup without changing Workbench', async () => {
 		let prompts = 0;
 		let bootstraps = 0;

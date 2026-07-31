@@ -246,13 +246,16 @@ also stops repository-owned running language-server processes before replacing
 them, so verify the active development session after a server rebuild rather
 than assuming a previous process reflects the change.
 
-On first activation, when `workbench.autoInstallIntegration` is enabled, the
-extension asks for one-time approval to enable Workbench integration. Approval
-is retained as internal extension state. The first approval writes
-`NetAPI_Enabled` as `REG_SZ "1"`, installs the managed bridge, and either asks
+The unified `reforgerScriptTools.workbench.enabled` setting defaults to
+`false`. When there is no prior approval, the extension asks whether it may
+enable Workbench integration and install the managed bridge. Approval updates
+the setting to `true`, writes `NetAPI_Enabled` as `REG_SZ "1"`, and either asks
 the user to restart an open Workbench or launches the default
-`ArmaReforger.gproj` project. Later activations maintain or upgrade the bridge
-without prompting and never rewrite the registry value.
+`ArmaReforger.gproj` project. Approval is retained as internal extension state;
+later enabled activations maintain or upgrade the bridge without prompting and
+never rewrite the registry value. An explicitly disabled setting remains off.
+Existing approved installations without an explicit enablement value are
+migrated to the unified setting.
 
 The `reforgerScriptTools.workbench.externalIndexMode` setting controls external
 index scope independently of NET API availability. Its default `loaded` mode

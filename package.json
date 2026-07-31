@@ -169,9 +169,9 @@
         },
         "reforgerScriptTools.workbench.enabled": {
           "type": "boolean",
-          "default": true,
-          "title": "Workbench NET API: Enabled",
-          "description": "Enable the configured Workbench NET API integration, including status checks and compiler validation."
+          "default": false,
+          "title": "Workbench: Enabled",
+          "description": "Enable Workbench integration, including NET API status checks, compiler validation, and the consent-gated managed bridge installer. On first activation, the extension asks whether to enable it."
         },
         "reforgerScriptTools.workbench.host": {
           "type": "string",
@@ -194,12 +194,6 @@
           "default": true,
           "title": "Workbench NET API: Save and Validate On Idle",
           "description": "Save the active Enforce Script and validate in Workbench after three seconds without typing. Disable to validate only after explicit saves or the Validate Scripts command."
-        },
-        "reforgerScriptTools.workbench.autoInstallIntegration": {
-          "type": "boolean",
-          "default": true,
-          "title": "Workbench Integration: Auto Install",
-          "description": "After you approve Workbench Integration, automatically maintain its managed bridge and launch the default Reforger Workbench project when needed."
         },
         "reforgerScriptTools.workbench.externalIndexMode": {
           "type": "string",

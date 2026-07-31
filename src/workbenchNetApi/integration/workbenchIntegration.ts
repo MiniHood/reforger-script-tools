@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { diagnostic } from '../../diagnostics/diagnostics';
+import { workbenchConfig, workbenchDefaults } from '../../extensionConfig/workbench';
 import {
 	invokeWorkbenchPrivateApi,
 	WorkbenchEndpoint,
@@ -57,6 +58,10 @@ export class WorkbenchIntegrationCoordinator implements vscode.Disposable {
 	private readonly ready: Promise<boolean>;
 	private resolveReady: ((ready: boolean) => void) | undefined;
 	private startup: Promise<boolean> | undefined;
+	private startupResult: boolean | undefined;
+	private startupInProgress = false;
+	private disableRequestedDuringStartup = false;
+	private enabled: boolean;
 	private connected = false;
 	private disconnectedAfterRequiredRestart = false;
 	private requiresRestart = false;
@@ -70,30 +75,77 @@ export class WorkbenchIntegrationCoordinator implements vscode.Disposable {
 		private readonly state: WorkbenchIntegrationState,
 		private readonly runtime: WorkbenchIntegrationRuntime,
 		private readonly ui: WorkbenchIntegrationUi,
-		private readonly enabled: boolean,
+		enabled: boolean,
+		private readonly enableWorkbench?: () => Promise<void>,
+		private readonly promptWhenDisabled = true,
 	) {
+		this.enabled = enabled;
 		this.ready = new Promise(resolve => {
 			this.resolveReady = resolve;
 		});
 	}
 
 	public start(): Promise<boolean> {
-		if (this.startup) {
+		if (this.startup && (this.startupInProgress
+			|| this.startupResult !== false
+			|| !this.enabled)) {
 			return this.ready;
 		}
-		if (!this.enabled) {
+		if (this.startupResult === false && !this.enabled) {
+			return this.ready;
+		}
+		if (!this.enabled && (!this.promptWhenDisabled || this.state.isApproved())) {
 			this.resolveReady?.(true);
 			return this.ready;
 		}
-		this.startup = this.bootstrapStartup().catch(error => {
-			const message = error instanceof Error ? error.message : String(error);
-			diagnostic('workbenchIntegrationStartupFailed', { message });
-			this.ui.showInstallFailed(installFailureMessage);
-			this.bootstrapFinished = true;
-			this.resolveReady?.(false);
-			return false;
-		});
+		this.startupInProgress = true;
+		this.startup = this.bootstrapStartup()
+			.then(result => {
+				this.startupInProgress = false;
+				this.startupResult = result;
+				return result;
+			})
+			.catch(error => {
+				this.startupInProgress = false;
+				const message = error instanceof Error ? error.message : String(error);
+				diagnostic('workbenchIntegrationStartupFailed', { message });
+				this.ui.showInstallFailed(installFailureMessage);
+				this.bootstrapFinished = true;
+				this.startupResult = false;
+				this.resolveReady?.(false);
+				return false;
+			});
 		return this.ready;
+	}
+
+	public onWorkbenchConfigurationChanged(
+		enabled: boolean,
+		explicitlyDisabled = false,
+	): void {
+		if (this.disposed) {
+			return;
+		}
+		this.enabled = enabled;
+		if (enabled) {
+			this.disableRequestedDuringStartup = false;
+			const currentStartup = this.startup;
+			if (this.startupInProgress && currentStartup) {
+				void currentStartup.then(() => {
+					if (this.startup === currentStartup
+						&& this.enabled
+						&& this.startupResult === false) {
+						void this.start();
+					}
+				});
+			} else {
+				void this.start();
+			}
+		} else {
+			if (explicitlyDisabled && !this.state.isApproved()) {
+				this.disableRequestedDuringStartup = true;
+			}
+			this.onWorkbenchDisconnected();
+		}
 	}
 
 	public async onWorkbenchConnected(endpoint: WorkbenchEndpoint): Promise<void> {
@@ -159,7 +211,7 @@ export class WorkbenchIntegrationCoordinator implements vscode.Disposable {
 		} else {
 			result = await this.ui.runInstall(() => this.runtime.maintain(endpoint));
 		}
-		if (this.disposed) {
+		if (this.disposed || (approved && !this.enabled)) {
 			return false;
 		}
 		if (!result.ok) {
@@ -169,12 +221,24 @@ export class WorkbenchIntegrationCoordinator implements vscode.Disposable {
 			return false;
 		}
 		if (!approved) {
+			if (this.disableRequestedDuringStartup) {
+				this.bootstrapFinished = true;
+				this.resolveReady?.(false);
+				return false;
+			}
+			if (this.enableWorkbench) {
+				await this.enableWorkbench();
+			}
+			this.enabled = true;
 			await this.state.approve();
 		}
 
 		this.bootstrapFinished = true;
 		this.profileWasMissing = !result.value.profileAvailable;
 		if (result.value.bridgeChanged) {
+			if (!this.enabled) {
+				return false;
+			}
 			await this.handleBridgeChange(endpoint);
 			return true;
 		}
@@ -192,6 +256,9 @@ export class WorkbenchIntegrationCoordinator implements vscode.Disposable {
 		this.bootstrapInProgress = true;
 		try {
 			const result = await this.ui.runInstall(() => this.runtime.maintain(this.endpoint!));
+			if (!this.enabled) {
+				return;
+			}
 			if (!result.ok) {
 				this.ui.showInstallFailed(installFailureMessage);
 				this.resolveReady?.(false);
@@ -207,6 +274,9 @@ export class WorkbenchIntegrationCoordinator implements vscode.Disposable {
 	}
 
 	private async handleBridgeChange(endpoint: WorkbenchEndpoint): Promise<void> {
+		if (this.disposed || !this.enabled) {
+			return;
+		}
 		this.requiresRestart = true;
 		this.disconnectedAfterRequiredRestart = false;
 		const process = await this.runtime.processStatus(endpoint);
@@ -225,8 +295,11 @@ export class WorkbenchIntegrationCoordinator implements vscode.Disposable {
 	}
 
 	private async ensureWorkbenchProcess(endpoint: WorkbenchEndpoint): Promise<void> {
+		if (this.disposed || !this.enabled) {
+			return;
+		}
 		const process = await this.runtime.processStatus(endpoint);
-		if (!process.ok || process.value.isOpen) {
+		if (!this.enabled || !process.ok || process.value.isOpen) {
 			return;
 		}
 		const launched = await this.ui.runInstall(() => this.runtime.launchDefault(endpoint));
@@ -275,7 +348,7 @@ export function createWorkbenchIntegration(
 	};
 	const ui: WorkbenchIntegrationUi = {
 		confirmInstall: async () => (await vscode.window.showInformationMessage(
-				'Enable Reforger Workbench Integration? This enables Workbench\'s local integration API and installs the managed bridge.',
+				'Enable Reforger Workbench Integration? This enables the Workbench setting, local integration API, and managed bridge installer.',
 				installChoice,
 		)) === installChoice,
 		runInstall: task => Promise.resolve(vscode.window.withProgress(
@@ -293,6 +366,20 @@ export function createWorkbenchIntegration(
 			}
 		},
 	};
+	const enabled = configuration.get(
+		workbenchConfig.settings.enabled,
+		workbenchDefaults.enabled,
+	);
+	const approved = context.globalState.get<boolean>(approvalStateKey, false);
+	const enablementScope = configurationEnablementScope(configuration);
+	const migrateApprovedEnablement = approved && !enabled && !enablementScope.hasExplicitValue;
+	if (migrateApprovedEnablement) {
+		void configuration.update(
+			workbenchConfig.settings.enabled,
+			true,
+			vscode.ConfigurationTarget.Global,
+		);
+	}
 	return new WorkbenchIntegrationCoordinator(
 		{
 			isApproved: () => context.globalState.get<boolean>(approvalStateKey, false),
@@ -300,8 +387,34 @@ export function createWorkbenchIntegration(
 		},
 		runtime,
 		ui,
-		configuration.get('autoInstallIntegration', true),
+		enabled || migrateApprovedEnablement,
+		async () => {
+			await configuration.update(
+				workbenchConfig.settings.enabled,
+				true,
+				configurationEnablementScope(configuration).target,
+			);
+		},
+		!enablementScope.hasExplicitValue || enabled,
 	);
+}
+
+function configurationEnablementScope(
+	configuration: vscode.WorkspaceConfiguration,
+): { hasExplicitValue: boolean; target: vscode.ConfigurationTarget } {
+	const inspected = configuration.inspect<boolean>(workbenchConfig.settings.enabled);
+	if (inspected?.workspaceFolderValue !== undefined
+		|| inspected?.workspaceFolderLanguageValue !== undefined) {
+		return { hasExplicitValue: true, target: vscode.ConfigurationTarget.WorkspaceFolder };
+	}
+	if (inspected?.workspaceValue !== undefined
+		|| inspected?.workspaceLanguageValue !== undefined) {
+		return { hasExplicitValue: true, target: vscode.ConfigurationTarget.Workspace };
+	}
+	if (inspected?.globalValue !== undefined || inspected?.globalLanguageValue !== undefined) {
+		return { hasExplicitValue: true, target: vscode.ConfigurationTarget.Global };
+	}
+	return { hasExplicitValue: false, target: vscode.ConfigurationTarget.Global };
 }
 
 function decodeStatus(
