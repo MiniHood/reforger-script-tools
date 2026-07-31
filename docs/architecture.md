@@ -141,8 +141,8 @@ does not probe a capability handler during installation, maintenance, or
 status diagnosis: Workbench logs a missing handler as an error. Only an
 explicit custom operation may test its own handler availability.
 
-The package's checked-in Enfusion sources are under `server/bridge/` and are
-embedded by `server/src/workbench_bridge.rs`. They are the sole source of
+The package's 27 Enfusion sources are checked in under `server/bridge/` and
+are embedded by `server/src/workbench_bridge.rs`. They are the sole source of
 the installed bytes; Rust performs no runtime reformatting or source synthesis.
 The development-only `tools/check-workbench-bridge-style.mjs` gate enforces the
 local base-game-derived contract: tab indentation, no trailing whitespace, one

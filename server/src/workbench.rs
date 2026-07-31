@@ -7679,10 +7679,6 @@ fn bridge_payload() -> &'static [(&'static str, &'static str)] {
         ),
         ("RST_WorkbenchShapePoints.c", BRIDGE_SHAPE_POINTS_SOURCE),
         ("RST_WorkbenchShapeGeometry.c", BRIDGE_SHAPE_GEOMETRY_SOURCE),
-        (
-            "RST_WorkbenchSplineDebugComponent.c",
-            BRIDGE_SPLINE_DEBUG_COMPONENT_SOURCE,
-        ),
         ("RST_WorkbenchComponents.c", BRIDGE_COMPONENTS_SOURCE),
         ("RST_WorkbenchProperties.c", BRIDGE_PROPERTIES_SOURCE),
         ("RST_WorkbenchPrefab.c", BRIDGE_PREFAB_SOURCE),
