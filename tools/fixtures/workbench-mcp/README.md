@@ -12,6 +12,7 @@ The live runner takes a manifest owned by the test invocation:
   "revision": "2026-07-31",
   "fixtureRoot": "C:/path/to/disposable-project",
   "profileRoot": "profile",
+  "consentGuardProfileRoot": "no-consent-profile",
   "useProfile": true,
   "project": {
     "gproj": "mcp-conformance/mcp-conformance.gproj",
@@ -19,6 +20,7 @@ The live runner takes a manifest owned by the test invocation:
   },
   "expected": {
     "worldResource": "McpFixture/Worlds/Conformance.ent",
+    "shapeEntityId": "opaque-shape-entity-id",
     "loadedAddonIds": ["ArmaReforger", "McpFixture"]
   },
   "readiness": {
@@ -28,7 +30,7 @@ The live runner takes a manifest owned by the test invocation:
 }
 ```
 
-`gproj` and `profileRoot` must be inside `fixtureRoot` for a disposable
+`gproj`, `profileRoot`, and `consentGuardProfileRoot` must be inside `fixtureRoot` for a disposable
 fixture unless `profileRootOutsideFixture` is explicitly set. With
 `useProfile:true`, the runner starts its MCP server with the manifest's profile root,
 then calls the public `workbench_launch` operation with the exact fixture
@@ -55,6 +57,12 @@ component, layer, prefab, shape, and terrain identities used by the scenario
 files. Those assets are machine- and game-install-specific, so they are
 provisioned outside the repository and identified by the manifest rather than
 checked into the extension source tree.
+
+The corpus manifest must provide a distinct, empty `consentGuardProfileRoot`.
+The runner starts a second MCP Runtime against that profile while the owned
+Workbench is connected, calls `workbench_install_bridge`, and requires the
+stable consent error with an unchanged profile directory. This guard is
+separate from the already-consented profile used for successful maintenance.
 
 The first scenario steps should call `workbench_status` and `workbench_state`,
 then assert `/result/structuredContent/activeWorldPath` equals

@@ -3,12 +3,14 @@
   "revision": "fixture-v1",
   "fixtureRoot": ".",
   "profileRoot": "profile",
+  "consentGuardProfileRoot": "no-consent-profile",
   "project": {
     "gproj": "project/mcp-conformance.gproj",
     "addonsDir": "C:/path/to/Arma Reforger/addons"
   },
   "expected": {
     "worldResource": "$McpConformanceFixture:worlds/McpConformance.ent",
+    "shapeEntityId": "opaque-shape-entity-id",
     "loadedAddonIds": ["ArmaReforger", "TestBullshit", "McpConformanceFixture"]
   },
   "readiness": {

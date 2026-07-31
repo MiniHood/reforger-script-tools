@@ -1,7 +1,9 @@
 import { createInterface } from "node:readline";
+import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   writeFileSync,
 } from "node:fs";
@@ -52,9 +54,9 @@ const toolFamilyRules = [
 const corpusWorkflowTools = {
   "owned-process": ["workbench_launch", "workbench_status", "workbench_list_windows", "workbench_capture_window"],
   readiness: ["workbench_install_bridge", "workbench_project_context", "workbench_validate_scripts", "workbench_list_editors", "workbench_open_editor"],
-  "world-read": ["workbench_search_resources", "workbench_list_resources", "workbench_inspect_resource", "workbench_open_resource", "workbench_state", "workbench_world_selection_summary", "workbench_selected_entity_hierarchy", "workbench_list_entities", "workbench_search_world_entities", "workbench_layer_state", "workbench_find_entities_by_radius", "workbench_sample_terrain", "workbench_get_viewport_context", "workbench_trace", "workbench_inspect_entity", "workbench_list_components", "workbench_inspect_component", "workbench_list_entity_properties", "workbench_get_shape_points"],
-  entity: ["workbench_create_entity", "workbench_add_component", "workbench_set_component_properties", "workbench_set_entity_properties", "workbench_rename_entity", "workbench_move_entity", "workbench_rotate_entity", "workbench_duplicate_entity", "workbench_reparent_entity", "workbench_set_selection", "workbench_clear_selection", "workbench_remove_component", "workbench_delete_entity"],
-  shape: ["workbench_edit_shape_points", "workbench_set_polyline_regular_polygon", "workbench_convert_shape_points", "workbench_transform_shape_points", "workbench_resample_polyline"],
+  "world-read": ["workbench_search_resources", "workbench_list_resources", "workbench_inspect_resource", "workbench_open_resource", "workbench_state", "workbench_world_selection_summary", "workbench_list_entities", "workbench_search_world_entities", "workbench_layer_state", "workbench_find_entities_by_radius", "workbench_sample_terrain", "workbench_get_viewport_context", "workbench_trace"],
+  entity: ["workbench_selected_entity_hierarchy", "workbench_inspect_entity", "workbench_list_components", "workbench_inspect_component", "workbench_list_entity_properties", "workbench_create_entity", "workbench_add_component", "workbench_set_component_properties", "workbench_set_entity_properties", "workbench_rename_entity", "workbench_move_entity", "workbench_rotate_entity", "workbench_duplicate_entity", "workbench_reparent_entity", "workbench_set_selection", "workbench_clear_selection", "workbench_remove_component", "workbench_delete_entity"],
+  shape: ["workbench_get_shape_points", "workbench_edit_shape_points", "workbench_set_polyline_regular_polygon", "workbench_convert_shape_points", "workbench_transform_shape_points", "workbench_resample_polyline"],
   "prefab-resource": ["workbench_create_prefab", "workbench_create_generic_prefab", "workbench_inspect_prefab_context", "workbench_inspect_prefab_component", "workbench_add_prefab_resource_component", "workbench_set_prefab_resource_property", "workbench_remove_prefab_resource_component", "workbench_save_prefab"],
   "prefab-editor": ["workbench_set_prefab_property", "workbench_set_prefab_component_property"],
   "save-play-reload": ["workbench_save", "workbench_start_play_session", "workbench_stop_play_session", "workbench_reload", "workbench_read_logs"],
@@ -84,7 +86,6 @@ const corpusFactProducers = {
   canonicalResource: "workbench_search_resources",
   entity: "workbench_create_entity",
   component: "workbench_add_component",
-  relatedEntities: "workbench_create_entity",
   shape: "workbench_create_entity",
   prefabResource: "workbench_create_generic_prefab",
   prefabEditEntity: "workbench_inspect_prefab_context",
@@ -100,6 +101,35 @@ const corpusWorkflowByTool = Object.fromEntries(
     tools.map((tool) => [tool, workflow]),
   ),
 );
+
+const corpusWorkflowOrder = [
+  "owned-process",
+  "readiness",
+  "world-read",
+  "entity",
+  "shape",
+  "prefab-resource",
+  "prefab-editor",
+  "save-play-reload",
+  "lifecycle",
+];
+
+export function groupWorkbenchScenarioSteps(steps, plan) {
+  const workflowByTool = new Map(plan.map((entry) => [entry.tool, entry.workflow]));
+  const grouped = new Map();
+  for (const step of steps ?? []) {
+    const workflow = step.workflow ?? workflowByTool.get(step.tool) ?? "unplanned";
+    const workflowSteps = grouped.get(workflow) ?? [];
+    workflowSteps.push(step);
+    grouped.set(workflow, workflowSteps);
+  }
+  return [
+    ...corpusWorkflowOrder,
+    ...[...grouped.keys()].filter((workflow) => !corpusWorkflowOrder.includes(workflow)),
+  ]
+    .filter((workflow) => grouped.has(workflow))
+    .map((workflow) => ({ name: workflow, steps: grouped.get(workflow) }));
+}
 
 const corpusToolDependencies = Object.fromEntries([
   [["workbench_status", "workbench_list_windows"], ["ownedProcess"]],
@@ -135,8 +165,8 @@ const corpusCaseKinds = {
   workbench_create_prefab: [{ id: "success", kind: "success" }, { id: "confirmation-safety", kind: "guard" }],
   workbench_create_generic_prefab: [{ id: "success", kind: "success" }, { id: "confirmation-safety", kind: "guard" }],
   workbench_save_prefab: [{ id: "resource-success", kind: "success", dependencies: ["prefabResource"] }, { id: "editor-success", kind: "success", dependencies: ["prefabEditEntity"] }, { id: "confirmation-safety", kind: "guard" }],
-  workbench_inspect_prefab_context: [{ id: "resource-success", kind: "success", dependencies: ["prefabResource"] }, { id: "editor-success", kind: "success", dependencies: ["prefabEditEntity"] }, { id: "target-guard", kind: "guard" }],
-  workbench_inspect_prefab_component: [{ id: "resource-success", kind: "success", dependencies: ["prefabResource"] }, { id: "editor-success", kind: "success", dependencies: ["prefabEditEntity"] }, { id: "target-guard", kind: "guard" }],
+  workbench_inspect_prefab_context: [{ id: "resource-success", kind: "success", dependencies: ["prefabResource"] }, { id: "target-guard", kind: "guard" }],
+  workbench_inspect_prefab_component: [{ id: "resource-success", kind: "success", dependencies: ["prefabResource"] }, { id: "target-guard", kind: "guard" }],
   workbench_add_prefab_resource_component: [{ id: "success", kind: "success" }, { id: "confirmation-safety", kind: "guard" }],
   workbench_remove_prefab_resource_component: [{ id: "success", kind: "success" }, { id: "confirmation-safety", kind: "guard" }],
   workbench_set_prefab_resource_property: [{ id: "success", kind: "success" }, { id: "confirmation-safety", kind: "guard" }],
@@ -148,6 +178,56 @@ const corpusCaseKinds = {
   workbench_stop: [{ id: "success", kind: "success" }],
 };
 
+const corpusReadbackTools = {
+  workbench_create_entity: ["workbench_inspect_entity"],
+  workbench_add_component: ["workbench_list_components", "workbench_inspect_component"],
+  workbench_set_component_properties: ["workbench_inspect_component"],
+  workbench_set_entity_properties: ["workbench_list_entity_properties"],
+  workbench_rename_entity: ["workbench_inspect_entity", "workbench_search_world_entities"],
+  workbench_move_entity: ["workbench_inspect_entity"],
+  workbench_rotate_entity: ["workbench_inspect_entity", "workbench_list_entity_properties"],
+  workbench_reparent_entity: ["workbench_selected_entity_hierarchy", "workbench_inspect_entity"],
+  workbench_duplicate_entity: ["workbench_inspect_entity"],
+  workbench_set_selection: ["workbench_world_selection_summary"],
+  workbench_clear_selection: ["workbench_world_selection_summary"],
+  workbench_remove_component: ["workbench_list_components"],
+  workbench_delete_entity: ["workbench_inspect_entity"],
+  workbench_edit_shape_points: ["workbench_get_shape_points"],
+  workbench_set_polyline_regular_polygon: ["workbench_get_shape_points"],
+  workbench_convert_shape_points: ["workbench_get_shape_points"],
+  workbench_transform_shape_points: ["workbench_get_shape_points"],
+  workbench_resample_polyline: ["workbench_get_shape_points"],
+  workbench_create_prefab: ["workbench_inspect_resource"],
+  workbench_create_generic_prefab: ["workbench_inspect_resource"],
+  workbench_add_prefab_resource_component: ["workbench_inspect_prefab_context"],
+  workbench_remove_prefab_resource_component: ["workbench_inspect_prefab_context"],
+  workbench_set_prefab_resource_property: ["workbench_inspect_prefab_context"],
+  workbench_set_prefab_property: ["workbench_inspect_prefab_context"],
+  workbench_set_prefab_component_property: ["workbench_inspect_prefab_component"],
+  workbench_save_prefab: ["workbench_inspect_prefab_context"],
+  workbench_start_play_session: ["workbench_state"],
+  workbench_stop_play_session: ["workbench_state"],
+  workbench_reload: ["workbench_read_logs"],
+  workbench_save: ["workbench_state"],
+};
+
+const corpusCleanupTools = {
+  workbench_create_entity: ["workbench_delete_entity"],
+  workbench_add_component: ["workbench_remove_component"],
+  workbench_set_component_properties: ["workbench_delete_entity"],
+  workbench_set_entity_properties: ["workbench_delete_entity"],
+  workbench_rename_entity: ["workbench_delete_entity"],
+  workbench_move_entity: ["workbench_delete_entity"],
+  workbench_rotate_entity: ["workbench_delete_entity"],
+  workbench_reparent_entity: ["workbench_delete_entity"],
+  workbench_duplicate_entity: ["workbench_delete_entity"],
+  workbench_edit_shape_points: ["workbench_delete_entity"],
+  workbench_set_polyline_regular_polygon: ["workbench_delete_entity"],
+  workbench_convert_shape_points: ["workbench_delete_entity"],
+  workbench_transform_shape_points: ["workbench_delete_entity"],
+  workbench_resample_polyline: ["workbench_delete_entity"],
+};
+
 export function buildWorkbenchEndpointPlan(
   expectedNames = extractWorkbenchToolNames(readFileSync(defaultApiReference, "utf8")),
 ) {
@@ -157,8 +237,17 @@ export function buildWorkbenchEndpointPlan(
       tool,
       workflow,
       dependencies: [...(corpusToolDependencies[tool] ?? corpusWorkflowDependencies[workflow] ?? [])],
+      requiredFacts: [...(corpusToolDependencies[tool] ?? corpusWorkflowDependencies[workflow] ?? [])],
       cases: (corpusCaseKinds[tool] ?? [{ id: "success", kind: "success" }]).map(
-        (acceptanceCase) => ({ ...acceptanceCase }),
+        (acceptanceCase) => ({
+          ...acceptanceCase,
+          readbackTools: acceptanceCase.kind === "success"
+            ? [...(corpusReadbackTools[tool] ?? [])]
+            : [],
+          cleanupTools: acceptanceCase.kind === "success"
+            ? [...(corpusCleanupTools[tool] ?? [])]
+            : [],
+        }),
       ),
     };
   });
@@ -199,6 +288,18 @@ export function validateWorkbenchEndpointPlan(expectedNames, plan, options = {})
           reasons.push(
             "dependency " + dependency + " has no planned producer " + producer,
           );
+        }
+      }
+    }
+    if (options.requireEvidenceSchema === true && !Array.isArray(entry?.requiredFacts)) {
+      reasons.push("missing required facts");
+    }
+    if (options.requireEvidenceSchema === true) {
+      for (const acceptanceCase of entry?.cases ?? []) {
+        for (const field of ["readbackTools", "cleanupTools"]) {
+          if (!Array.isArray(acceptanceCase?.[field])) {
+            reasons.push("acceptance case missing " + field);
+          }
         }
       }
     }
@@ -259,13 +360,43 @@ function inferScenarioRole(step) {
   if (step.role) return step.role;
   const name = String(step.name ?? "").toLowerCase();
   if (name.includes("preview")) return "test";
-  if (name.includes("read-after") || name.startsWith("verify-") || name.startsWith("inspect-")) {
+  if (name.includes("read-after") || name.startsWith("verify-")) {
     return "readback";
+  }
+  if (step.tool === "workbench_delete_entity" && !name.includes("preview") && !name.startsWith("inspect-")) {
+    return "test";
+  }
+  if (step.tool === "workbench_remove_component" && !name.includes("preview")) {
+    return "test";
   }
   if (name.includes("delete-") || name.includes("restore-") || name === "clear-selection") {
     return "teardown";
   }
   return "test";
+}
+
+function inferScenarioRoles(step) {
+  if (Array.isArray(step.roles) && step.roles.length > 0) {
+    return [...step.roles];
+  }
+  const role = inferScenarioRole(step);
+  const roles = [role];
+  const serves = inferScenarioServes(step);
+  if (serves.length > 0 && !roles.includes("readback")) {
+    roles.push("readback");
+  }
+  if (
+    (step.tool === "workbench_delete_entity" || step.tool === "workbench_remove_component") &&
+    !String(step.name ?? "").toLowerCase().includes("preview") &&
+    !roles.includes("teardown")
+  ) {
+    roles.push("teardown");
+  }
+  return roles;
+}
+
+function observationHasRole(observation, role) {
+  return observation.role === role || observation.roles?.includes(role);
 }
 
 function inferScenarioFacts(step) {
@@ -276,7 +407,72 @@ function inferScenarioFacts(step) {
   if (captured.some((name) => /polylineEntityId|shapePoints/i.test(name))) facts.push("shape");
   if (captured.some((name) => /prefabResourceName/i.test(name))) facts.push("prefabResource");
   if (captured.some((name) => /worldResourceName/i.test(name))) facts.push("canonicalResource");
+  const toolFacts = {
+    workbench_install_bridge: "managedBridge",
+    workbench_project_context: "projectContext",
+    workbench_open_editor: "worldEditor",
+    workbench_open_resource: "activeWorld",
+    workbench_create_entity: "entity",
+    workbench_add_component: "component",
+    workbench_get_shape_points: "shape",
+    workbench_create_generic_prefab: "prefabResource",
+    workbench_save: "savedWorld",
+    workbench_start_play_session: "playSession",
+    workbench_reload: "reloadedRuntime",
+    workbench_restart: "replacementProcess",
+  };
+  if (toolFacts[step.tool]) facts.push(toolFacts[step.tool]);
+  if (step.tool === "workbench_inspect_prefab_context" && step.arguments?.resourceName) {
+    facts.push("prefabResource");
+  }
   return facts;
+}
+
+function inferScenarioServes(step) {
+  if (Array.isArray(step.serves)) return [...step.serves];
+  const name = String(step.name ?? "").toLowerCase();
+  const direct = [
+    ["inspect-created-entity", ["workbench_create_entity"]],
+    ["inspect-created-prefab-resource", ["workbench_create_prefab"]],
+    ["inspect-generic-resource", ["workbench_create_generic_prefab"]],
+    ["list-created-components", ["workbench_create_entity"]],
+    ["inspect-created-components", ["workbench_add_component"]],
+    ["inspect-component", ["workbench_add_component"]],
+    ["read-after-component-property-set", ["workbench_set_component_properties"]],
+    ["read-after-entity-property-set", ["workbench_set_entity_properties"]],
+    ["read-after-rename", ["workbench_rename_entity"]],
+    ["search-after-rename", ["workbench_rename_entity"]],
+    ["read-after-move", ["workbench_move_entity"]],
+    ["read-after-rotate", ["workbench_rotate_entity"]],
+    ["read-after-duplicate", ["workbench_duplicate_entity"]],
+    ["selected-hierarchy", ["workbench_reparent_entity", "workbench_set_selection"]],
+    ["selection-summary-after-clear", ["workbench_clear_selection"]],
+    ["read-after-component-remove", ["workbench_remove_component"]],
+    ["read-after-polygon", ["workbench_set_polyline_regular_polygon"]],
+    ["read-after-resample", ["workbench_resample_polyline"]],
+    ["restore-shape-after-transform", ["workbench_transform_shape_points"]],
+    ["restore-shape-after-resample", ["workbench_resample_polyline"]],
+    ["read-after-prefab-save", ["workbench_save_prefab"]],
+    ["read-after-prefab-resource-property-set", ["workbench_set_prefab_resource_property"]],
+    ["read-after-prefab-resource-component-add", ["workbench_add_prefab_resource_component"]],
+    ["read-after-prefab-resource-component-remove", ["workbench_remove_prefab_resource_component"]],
+    ["inspect-generic-prefab-component-context", ["workbench_add_prefab_resource_component"]],
+    ["verify-world-after-save", ["workbench_save"]],
+    ["inspect-deleted-entity", ["workbench_delete_entity"]],
+  ];
+  const matched = direct.find(([prefix]) => name.startsWith(prefix));
+  if (matched) return [...matched[1]];
+  if (name.includes("shape") && step.tool === "workbench_get_shape_points") {
+    return [
+      "workbench_edit_shape_points",
+      "workbench_convert_shape_points",
+      "workbench_transform_shape_points",
+    ];
+  }
+  if (step.tool === "workbench_state" && name.includes("play")) {
+    return ["workbench_stop_play_session"];
+  }
+  return [];
 }
 
 export function buildWorkbenchCorpusReport(plan, scenarios = [], options = {}) {
@@ -293,15 +489,17 @@ export function buildWorkbenchCorpusReport(plan, scenarios = [], options = {}) {
     }
   }
   const factState = new Map();
+  const attemptedFacts = new Set();
   for (const [tool, observations] of observationsByTool) {
     const producedFacts = Object.entries(corpusFactProducers)
       .filter(([, producer]) => producer === tool)
       .map(([fact]) => fact);
     for (const fact of producedFacts) {
+      attemptedFacts.add(fact);
       const explicitlyCaptured = observations.some((observation) =>
         observation.facts?.includes(fact),
       );
-      if (fact === "prefabEditEntity" && !explicitlyCaptured) {
+      if (!explicitlyCaptured) {
         continue;
       }
       if (observations.some((observation) =>
@@ -321,32 +519,70 @@ export function buildWorkbenchCorpusReport(plan, scenarios = [], options = {}) {
   const endpoints = plan.map((entry) => {
     const observations = observationsByTool.get(entry.tool) ?? [];
     const blockedDependencies = entry.dependencies.filter((dependency) =>
-      factState.get(dependency) === "blocked",
+      factState.get(dependency) === "blocked" ||
+      (factState.get(dependency) !== "available" && attemptedFacts.has(dependency)),
     );
     const cases = entry.cases.map((acceptanceCase) => {
       const matching = observations.filter((observation) => observation.case === acceptanceCase.id);
       const caseDependencies = acceptanceCase.dependencies ?? entry.dependencies;
       const caseBlockedDependencies = caseDependencies.filter((dependency) =>
-        factState.get(dependency) === "blocked",
+        factState.get(dependency) === "blocked" ||
+        (factState.get(dependency) !== "available" && attemptedFacts.has(dependency)),
       );
       const failure = matching.find((observation) => observation.outcome === "failure");
       const unavailable = matching.find((observation) => observation.outcome === "expected-unavailable");
       const allowedRoles = acceptanceCase.roles ??
         (acceptanceCase.kind === "guard" ? ["test"] : ["test", "setup"]);
       const passing = matching.some((observation) =>
-        allowedRoles.includes(observation.role) &&
+        allowedRoles.some((role) => observationHasRole(observation, role)) &&
         (observation.outcome === "success" ||
           (acceptanceCase.kind === "guard" &&
             ["expected-error", "expected-unavailable"].includes(observation.outcome))),
       );
+      const readbackEvidence = (acceptanceCase.readbackTools ?? []).flatMap((tool) =>
+        observationsByTool.get(tool) ?? [],
+      ).filter((observation) =>
+        observationHasRole(observation, "readback") &&
+        observation.outcome === "success" &&
+        observation.serves?.includes(entry.tool),
+      );
+      const missingReadbackTools = (acceptanceCase.readbackTools ?? []).filter((tool) =>
+        !readbackEvidence.some((observation) => observation.tool === tool),
+      );
+      const cleanupEvidence = (acceptanceCase.cleanupTools ?? []).flatMap((tool) =>
+        observationsByTool.get(tool) ?? [],
+      ).filter((observation) =>
+        observationHasRole(observation, "teardown") &&
+        observation.outcome === "success" &&
+        (matching.length === 0 ||
+          matching.some((mutation) =>
+            mutation.target === null ||
+            observation.target === mutation.target,
+          )),
+      );
+      const missingCleanupTools = (acceptanceCase.cleanupTools ?? []).filter((tool) =>
+        !cleanupEvidence.some((observation) => observation.tool === tool),
+      );
+      const evidenceFailure = passing &&
+        (missingReadbackTools.length > 0 || missingCleanupTools.length > 0);
       return {
         ...acceptanceCase,
-        status: failure ? "failed" :
-          (unavailable && acceptanceCase.kind !== "guard") || caseBlockedDependencies.length > 0
+        status: failure || evidenceFailure ? "failed" :
+          caseBlockedDependencies.length > 0
           ? "blocked"
-          : passing ? "passed" : "not-run",
+          : passing
+            ? "passed"
+            : unavailable && acceptanceCase.kind !== "guard"
+              ? "blocked"
+              : "not-run",
         dependencies: caseDependencies,
-        blockers: caseBlockedDependencies,
+        blockers: [
+          ...caseBlockedDependencies,
+          ...missingReadbackTools.map((tool) => "readback:" + tool),
+          ...missingCleanupTools.map((tool) => "cleanup:" + tool),
+        ],
+        readbackEvidence,
+        cleanupEvidence,
         observations: matching,
       };
     });
@@ -363,6 +599,7 @@ export function buildWorkbenchCorpusReport(plan, scenarios = [], options = {}) {
       tool: entry.tool,
       workflow: entry.workflow,
       dependencies: entry.dependencies,
+      requiredFacts: entry.requiredFacts ?? entry.dependencies,
       status,
       cases,
       invocations: observations,
@@ -465,6 +702,8 @@ export function buildContractReport({ apiReference, listedTools }) {
     actualCount: actualNames.length,
     coverage,
     uncategorized,
+    apiReferenceFingerprint: fingerprint(apiReference),
+    liveCatalogueFingerprint: fingerprint(listedTools),
   };
 }
 
@@ -549,7 +788,7 @@ function summarizeRange(values = []) {
 }
 
 function isLiveEvidence(step) {
-  return ["success", "expected-error", "expected-unavailable"].includes(
+  return step.synthetic !== true && ["success", "expected-error", "expected-unavailable"].includes(
     step.outcome,
   );
 }
@@ -744,6 +983,9 @@ export function loadFixtureManifest(manifestPath) {
   const externalProfileRoot = manifest.profileRootOutsideFixture === true
     ? resolve(manifestRoot, manifest.profileRoot)
     : profileRoot;
+  const consentGuardProfileRoot = manifest.consentGuardProfileRoot
+    ? resolve(fixtureRoot, manifest.consentGuardProfileRoot)
+    : undefined;
   const addonsDir = resolve(manifestRoot, manifest.project.addonsDir);
   if (!existsSync(fixtureRoot)) {
     throw new Error("Workbench fixture root does not exist: " + fixtureRoot);
@@ -771,13 +1013,27 @@ export function loadFixtureManifest(manifestPath) {
   if (!isWithin(fixtureRoot, externalProfileRoot) && manifest.profileRootOutsideFixture !== true) {
     throw new Error("Workbench fixture profileRoot must be inside fixtureRoot");
   }
+  if (
+    consentGuardProfileRoot &&
+    !isWithin(fixtureRoot, consentGuardProfileRoot) &&
+    manifest.profileRootOutsideFixture !== true
+  ) {
+    throw new Error("Workbench consent guard profile must be inside fixtureRoot");
+  }
+  if (consentGuardProfileRoot && resolve(consentGuardProfileRoot) === resolve(externalProfileRoot)) {
+    throw new Error("Workbench consent guard profile must differ from the active profile");
+  }
   mkdirSync(externalProfileRoot, { recursive: true });
+  if (consentGuardProfileRoot) {
+    mkdirSync(consentGuardProfileRoot, { recursive: true });
+  }
   return {
     name: String(manifest.name),
     revision: String(manifest.revision),
     fixtureRoot,
     projectPath,
     profileRoot: externalProfileRoot,
+    consentGuardProfileRoot,
     useProfile: manifest.useProfile !== false,
     allowExistingProcess: manifest.allowExistingProcess === true,
     addonsDir,
@@ -787,6 +1043,54 @@ export function loadFixtureManifest(manifestPath) {
       intervalMs: manifest.readiness?.intervalMs ?? 1000,
     },
   };
+}
+
+export async function runConsentGuardProbe({ serverPath, profileRoot }) {
+  const before = listRelativeEntries(profileRoot);
+  if (before.length > 0) {
+    throw new Error(
+      "Workbench consent guard profile must start empty: " + profileRoot,
+    );
+  }
+  const client = new McpStdioClient({
+    serverPath,
+    args: ["mcp", "--workbench-profile-directory", profileRoot],
+  });
+  try {
+    await client.initialize();
+    const run = await runScenario({
+      client,
+      name: "consent-guard",
+      includeInvocationMetadata: true,
+      steps: [{
+        name: "install-bridge-without-consent",
+        tool: "workbench_install_bridge",
+        role: "test",
+        case: "consent-guard",
+        expect: {
+          isError: true,
+          error: {
+            code: "workbench_installation_consent_required",
+            phase: "install",
+          },
+        },
+      }],
+    });
+    const after = listRelativeEntries(profileRoot);
+    const profileEntriesUnchanged = JSON.stringify(before) === JSON.stringify(after);
+    if (!profileEntriesUnchanged) {
+      run.ok = false;
+      run.steps[0].outcome = "failure";
+      run.steps[0].reasons = ["consent guard changed profile files"];
+    }
+    return { ...run, profileRoot, profileEntriesUnchanged };
+  } finally {
+    try {
+      await client.close();
+    } catch {
+      // Preserve the probe failure when initialization or the call failed.
+    }
+  }
 }
 
 export class WorkbenchMcpSession {
@@ -812,11 +1116,12 @@ export class WorkbenchMcpSession {
     }
     this.launch = launch;
     this.processId = launch.processId ?? null;
-    this.ownsProcess = launch.alreadyRunning !== true;
+    this.ownsProcess = launch.alreadyRunning === false;
     if (
       !this.processId ||
       !Number.isInteger(this.processId) ||
       this.processId <= 0 ||
+      launch.alreadyRunning !== false ||
       launch.netApiConnected !== true
     ) {
       throw new Error(
@@ -1103,12 +1408,13 @@ export async function runScenario({
   warmup = 0,
   context = {},
   includeInvocationMetadata = false,
+  scenarioState,
 }) {
   const observations = [];
   let ok = true;
   const scenarioContext = {
     ...context,
-    scenario: {},
+    scenario: scenarioState ?? {},
   };
   const totalIterations = Math.max(1, Number(iterations));
   const warmupIterations = Math.max(0, Number(warmup));
@@ -1117,11 +1423,14 @@ export async function runScenario({
       const started = performanceNow();
       let timed;
       let response;
+      let materializedArguments;
+      const capturedValues = {};
       let reasons = [];
       try {
+        materializedArguments = materialize(step.arguments ?? {}, scenarioContext);
         timed = await client.callToolTimed(
           step.tool,
-          materialize(step.arguments ?? {}, scenarioContext),
+          materializedArguments,
         );
         response = timed.response;
         const actualIsError = response?.result?.isError === true;
@@ -1190,6 +1499,7 @@ export async function runScenario({
               );
             } else {
               scenarioContext.scenario[nameToCapture] = captured;
+              capturedValues[nameToCapture] = captured;
             }
           }
         }
@@ -1255,10 +1565,24 @@ export async function runScenario({
         step.blockedBy !== undefined
       ) {
         observation.role = inferScenarioRole(step);
+        observation.roles = inferScenarioRoles(step);
         observation.case = inferScenarioCase(step);
         observation.facts = Array.isArray(step.facts)
           ? [...step.facts]
           : inferScenarioFacts(step);
+        observation.serves = inferScenarioServes(step);
+        observation.arguments = materializedArguments ?? null;
+        observation.captures = capturedValues;
+        observation.target =
+          materializedArguments?.entityId ??
+          materializedArguments?.componentId ??
+          materializedArguments?.resourceName ??
+          materializedArguments?.processId ??
+          capturedValues.entityId ??
+          capturedValues.componentId ??
+          capturedValues.prefabResourceName ??
+          Object.entries(capturedValues).find(([name]) => /entityId/i.test(name))?.[1] ??
+          null;
         if (Array.isArray(step.blockedBy)) {
           observation.blockedBy = [...step.blockedBy];
         }
@@ -1273,6 +1597,84 @@ export async function runScenario({
     warmup: warmupIterations,
     steps: observations,
     performance: summarizePerformance([{ name, steps: observations }]),
+  };
+}
+
+export async function runWorkbenchWorkflows({
+  client,
+  steps,
+  plan,
+  context = {},
+  iterations = 1,
+  warmup = 0,
+  availableFacts = [],
+}) {
+  const scenarioState = {};
+  const workflowDefinitions = groupWorkbenchScenarioSteps(steps, plan);
+  const runs = [];
+  const facts = new Set(availableFacts);
+  for (const workflow of workflowDefinitions) {
+    const observations = [];
+    let workflowOk = true;
+    for (const step of workflow.steps) {
+      const planEntry = plan.find((entry) => entry.tool === step.tool);
+      const dependencies = step.workflow
+        ? (corpusWorkflowDependencies[step.workflow] ?? [])
+        : planEntry?.requiredFacts ?? planEntry?.dependencies ?? [];
+      const missingFacts = dependencies.filter((fact) =>
+        !facts.has(fact) && corpusFactProducers[fact] !== step.tool,
+      );
+      if (missingFacts.length > 0) {
+        observations.push({
+          name: step.name,
+          tool: step.tool,
+          role: inferScenarioRole(step),
+          roles: inferScenarioRoles(step),
+          case: inferScenarioCase(step),
+          facts: [],
+          serves: inferScenarioServes(step),
+          arguments: null,
+          captures: {},
+          target: null,
+          outcome: "expected-unavailable",
+          synthetic: true,
+          blockedBy: missingFacts,
+          reasons: ["required fact unavailable: " + missingFacts.join(", ")],
+        });
+        continue;
+      }
+      const run = await runScenario({
+        client,
+        name: workflow.name,
+        steps: [step],
+        iterations,
+        warmup,
+        context,
+        includeInvocationMetadata: true,
+        scenarioState,
+      });
+      observations.push(...run.steps);
+      workflowOk &&= run.ok;
+      for (const observation of run.steps) {
+        if (observation.outcome === "success") {
+          for (const fact of observation.facts ?? []) facts.add(fact);
+        }
+      }
+    }
+    runs.push({
+      name: workflow.name,
+      ok: workflowOk,
+      iterations,
+      warmup,
+      steps: observations,
+      performance: summarizePerformance([{ name: workflow.name, steps: observations }]),
+    });
+  }
+  return {
+    ok: runs.every((run) => run.ok),
+    runs,
+    scenarioState,
+    facts: [...facts],
   };
 }
 
@@ -1305,6 +1707,7 @@ export async function runWorkbenchCorpus({
   let cleanupError;
   let runError;
   let report;
+  let consentGuard;
   const fixtureSetupSteps = [];
   try {
     const initialize = await client.initialize();
@@ -1336,7 +1739,7 @@ export async function runWorkbenchCorpus({
     report.endpointPlanValidation = validateWorkbenchEndpointPlan(
       report.contract.expectedNames,
       endpointPlan,
-      { checkDependencyProducers: true },
+      { checkDependencyProducers: true, requireEvidenceSchema: true },
     );
     if (!report.endpointPlanValidation.ok) {
       throw new Error(
@@ -1440,6 +1843,18 @@ export async function runWorkbenchCorpus({
         },
       );
     }
+    if (fixture && scenarioPath) {
+      if (!fixture.manifest.consentGuardProfileRoot) {
+        throw new Error(
+          "Workbench corpus fixture must define consentGuardProfileRoot for the no-consent bridge case",
+        );
+      }
+      consentGuard = await runConsentGuardProbe({
+        serverPath,
+        profileRoot: fixture.manifest.consentGuardProfileRoot,
+      });
+      report.consentGuard = consentGuard;
+    }
     const scenarios = scenarioPath
       ? JSON.parse(readFileSync(scenarioPath, "utf8"))
       : undefined;
@@ -1449,37 +1864,52 @@ export async function runWorkbenchCorpus({
         : [scenarios];
       const runs = [];
       for (const scenario of definitions) {
-        runs.push(
-          await runScenario({
-            client,
-            name: scenario.name,
-            steps: scenario.steps,
-            iterations: scenario.iterations,
-            warmup: scenario.warmup,
-            includeInvocationMetadata: true,
-            context: fixture
-              ? {
-                  fixture: {
-                    processId: fixtureLaunch.processId,
-                    projectPath: fixture.manifest.projectPath,
-                    worldResource: fixture.manifest.expected.worldResource,
-                  },
-                }
-              : {},
-          }),
-        );
+        const workflowRun = await runWorkbenchWorkflows({
+          client,
+          steps: scenario.steps,
+          plan: endpointPlan,
+          iterations: scenario.iterations,
+          warmup: scenario.warmup,
+          context: fixture
+            ? {
+                fixture: {
+                  processId: fixtureLaunch.processId,
+                  projectPath: fixture.manifest.projectPath,
+                  worldResource: fixture.manifest.expected.worldResource,
+                  shapeEntityId: fixture.manifest.expected.shapeEntityId,
+                  prefabDestination: fixture.manifest.expected.prefabDestination,
+                  genericPrefabDestination: fixture.manifest.expected.genericPrefabDestination,
+                },
+              }
+            : {},
+          availableFacts: [
+            "catalogue",
+            ...fixtureSetupSteps.flatMap((step) => step.facts ?? []),
+          ],
+        });
+        runs.push(...workflowRun.runs.map((run) => ({
+          ...run,
+          scenario: scenario.name ?? null,
+        })));
       }
-      report.scenarios = runs;
-      if (runs.length === 1) {
-        report.scenario = runs[0];
+      report.scenarios = [
+        ...(consentGuard ? [{ ...consentGuard, scenario: null }] : []),
+        ...runs,
+      ];
+      if (report.scenarios.length === 1) {
+        report.scenario = report.scenarios[0];
       }
-      report.performance = summarizePerformance(runs);
+      report.performance = summarizePerformance(report.scenarios);
       report.endpointCorpus = buildWorkbenchCorpusReport(
         endpointPlan,
-        [{ name: "fixture-setup", steps: fixtureSetupSteps }, ...runs],
+        [
+          { name: "fixture-setup", steps: fixtureSetupSteps },
+          ...(consentGuard ? [{ name: "consent-guard", steps: consentGuard.steps }] : []),
+          ...runs,
+        ],
       );
       const evidenceTools = new Set(
-        runs.flatMap((run) =>
+        report.scenarios.flatMap((run) =>
           run.steps
             .filter(isLiveEvidence)
             .map((step) => step.tool),
@@ -1509,6 +1939,7 @@ export async function runWorkbenchCorpus({
           ...(fixtureSetupSteps.length > 0
             ? [{ name: "fixture-setup", steps: fixtureSetupSteps }]
             : []),
+          ...(consentGuard ? [{ name: "consent-guard", steps: consentGuard.steps }] : []),
           ...(report.scenarios ?? []),
           { name: "owned-lifecycle", steps: report.ownedLifecycle.invocations },
         ],
@@ -1568,6 +1999,33 @@ export async function runWorkbenchCorpus({
   if (!report) {
     throw runError ?? new Error("Workbench MCP corpus produced no report");
   }
+  report.cleanup = cleanupError
+    ? {
+        status: "failed",
+        error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+      }
+    : {
+        status: fixtureCleanup?.outcome ?? (fixture ? "completed" : "not-required"),
+        evidence: fixtureCleanup ?? null,
+      };
+  if (cleanupError && report.endpointCorpus) {
+    report.endpointCorpus.ok = false;
+    report.endpointCorpus.cleanup = report.cleanup;
+    for (const endpoint of report.endpointCorpus.endpoints) {
+      if (endpoint.status === "passed") endpoint.status = "failed";
+      endpoint.blockers.push("cleanup:fixture");
+    }
+    report.endpointCorpus.counts = Object.fromEntries(
+      ["passed", "failed", "blocked", "not-run"].map((status) => [
+        status,
+        report.endpointCorpus.endpoints.filter((endpoint) => endpoint.status === status).length,
+      ]),
+    );
+    report.endpointCorpus.passed = report.endpointCorpus.endpoints
+      .filter((endpoint) => endpoint.status === "passed").map((endpoint) => endpoint.tool);
+    report.endpointCorpus.failed = report.endpointCorpus.endpoints
+      .filter((endpoint) => endpoint.status === "failed").map((endpoint) => endpoint.tool);
+  }
   mkdirSync(dirname(reportPath), { recursive: true });
   writeFileSync(reportPath, JSON.stringify(report, null, 2) + "\n", "utf8");
   return report;
@@ -1591,6 +2049,33 @@ export function resolveServerPath(explicitPath) {
 
 function isObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function fingerprint(value) {
+  return createHash("sha256")
+    .update(typeof value === "string" ? value : JSON.stringify(value))
+    .digest("hex");
+}
+
+function listRelativeEntries(root) {
+  if (!existsSync(root)) return [];
+  const entries = [];
+  const visit = (current, prefix) => {
+    for (const entry of readdirSync(current, { withFileTypes: true })) {
+      const relativeEntry = prefix ? join(prefix, entry.name) : entry.name;
+      const absoluteEntry = join(current, entry.name);
+      entries.push(
+        entry.isDirectory()
+          ? relativeEntry + ":directory"
+          : relativeEntry + ":file:" + createHash("sha256").update(readFileSync(absoluteEntry)).digest("hex"),
+      );
+      if (entry.isDirectory()) {
+        visit(absoluteEntry, relativeEntry);
+      }
+    }
+  };
+  visit(root, "");
+  return entries.sort();
 }
 
 function isWithin(root, child) {

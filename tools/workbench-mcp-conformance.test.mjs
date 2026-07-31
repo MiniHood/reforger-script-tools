@@ -7,9 +7,11 @@ import {
   buildWorkbenchCorpusReport,
   buildContractReport,
   classifyTool,
+  groupWorkbenchScenarioSteps,
   validateWorkbenchEndpointPlan,
   loadFixtureManifest,
   runScenario,
+  runWorkbenchWorkflows,
   summarizePerformance,
   summarizeSamples,
   verifyOwnedStopRestartLifecycle,
@@ -447,13 +449,42 @@ test("preserves invocation role, case, and fact evidence in corpus observations"
     name: "create",
     tool: "workbench_create_entity",
     role: "setup",
+    roles: ["setup"],
     case: "success",
     facts: ["entity"],
     outcome: "success",
     durationMs: 1,
     requestBytes: 10,
     responseBytes: 20,
+    serves: [],
+    arguments: {},
+    captures: {},
+    target: null,
   });
+});
+
+test("keeps inspection endpoints as tests while marking mutation-serving reads", async () => {
+  const report = await runScenario({
+    client: {
+      async callToolTimed() {
+        return {
+          response: { result: { isError: false, structuredContent: { status: "available" } } },
+          timing: { durationMs: 1, requestBytes: 1, responseBytes: 1 },
+        };
+      },
+    },
+    name: "inspection",
+    steps: [{
+      name: "inspect-created-entity",
+      tool: "workbench_inspect_entity",
+      expect: { pointers: { "/result/structuredContent/status": "available" } },
+    }],
+    includeInvocationMetadata: true,
+  });
+
+  assert.equal(report.steps[0].role, "test");
+  assert.deepEqual(report.steps[0].roles, ["test", "readback"]);
+  assert.deepEqual(report.steps[0].serves, ["workbench_create_entity"]);
 });
 
 test("records a successful structured unavailable response as blocked evidence", async () => {
@@ -483,6 +514,22 @@ test("records a successful structured unavailable response as blocked evidence",
   assert.equal(report.steps[0].completion, false);
 });
 
+test("allows a later successful case observation to supersede an earlier unavailable probe", () => {
+  const report = buildWorkbenchCorpusReport([{
+    tool: "workbench_selected_entity_hierarchy",
+    workflow: "entity",
+    dependencies: [],
+    cases: [{ id: "success", kind: "success" }],
+  }], [{
+    steps: [
+      { tool: "workbench_selected_entity_hierarchy", case: "success", role: "test", outcome: "expected-unavailable" },
+      { tool: "workbench_selected_entity_hierarchy", case: "success", role: "test", outcome: "success" },
+    ],
+  }]);
+
+  assert.equal(report.endpoints[0].status, "passed");
+});
+
 test("does not approve a case from a readback-role invocation alone", () => {
   const report = buildWorkbenchCorpusReport([
     {
@@ -503,6 +550,129 @@ test("does not approve a case from a readback-role invocation alone", () => {
 
   assert.equal(report.ok, false);
   assert.equal(report.endpoints[0].status, "not-run");
+});
+
+test("orders scenario calls into named dependency workflows", () => {
+  const groups = groupWorkbenchScenarioSteps([
+    { name: "save", tool: "workbench_save" },
+    { name: "create", tool: "workbench_create_entity" },
+    { name: "status", tool: "workbench_status" },
+  ], [
+    { tool: "workbench_save", workflow: "save-play-reload" },
+    { tool: "workbench_create_entity", workflow: "entity" },
+    { tool: "workbench_status", workflow: "owned-process" },
+  ]);
+
+  assert.deepEqual(groups.map((group) => group.name), [
+    "owned-process",
+    "entity",
+    "save-play-reload",
+  ]);
+  assert.deepEqual(groups[0].steps.map((step) => step.name), ["status"]);
+});
+
+test("gates workflow calls on captured facts and preserves the blocked branch", async () => {
+  const calls = [];
+  const result = await runWorkbenchWorkflows({
+    client: {
+      async callToolTimed(toolName) {
+        calls.push(toolName);
+        return {
+          response: { result: { isError: false, structuredContent: { status: "ok" } } },
+          timing: { durationMs: 1, requestBytes: 1, responseBytes: 1 },
+        };
+      },
+    },
+    steps: [
+      { name: "needs-entity", tool: "workbench_inspect_entity", arguments: {} },
+      { name: "make-entity", tool: "workbench_create_entity", arguments: {}, facts: ["entity"] },
+    ],
+    plan: [
+      { tool: "workbench_inspect_entity", workflow: "entity", requiredFacts: ["entity"], dependencies: ["entity"] },
+      { tool: "workbench_create_entity", workflow: "entity", requiredFacts: [], dependencies: [] },
+    ],
+  });
+
+  assert.deepEqual(calls, ["workbench_create_entity"]);
+  assert.equal(result.runs[0].steps[0].synthetic, true);
+  assert.deepEqual(result.runs[0].steps[0].blockedBy, ["entity"]);
+});
+
+test("requires declared readback and cleanup evidence before passing a mutation case", () => {
+  const plan = [{
+    tool: "workbench_create_entity",
+    workflow: "entity",
+    dependencies: [],
+    cases: [{
+      id: "success",
+      kind: "success",
+      readbackTools: ["workbench_inspect_entity"],
+      cleanupTools: ["workbench_delete_entity"],
+    }],
+  }];
+  const incomplete = buildWorkbenchCorpusReport(plan, [{
+    steps: [{
+      tool: "workbench_create_entity",
+      case: "success",
+      role: "test",
+      outcome: "success",
+    }],
+  }]);
+  assert.equal(incomplete.endpoints[0].status, "failed");
+  assert.deepEqual(incomplete.endpoints[0].blockers, [
+    "readback:workbench_inspect_entity",
+    "cleanup:workbench_delete_entity",
+  ]);
+
+  const complete = buildWorkbenchCorpusReport(plan, [{
+    steps: [
+      {
+        tool: "workbench_create_entity",
+        case: "success",
+        role: "test",
+        outcome: "success",
+      },
+      {
+        tool: "workbench_inspect_entity",
+        role: "readback",
+        serves: ["workbench_create_entity"],
+        outcome: "success",
+      },
+      {
+        tool: "workbench_delete_entity",
+        role: "teardown",
+        outcome: "success",
+      },
+    ],
+  }]);
+  assert.equal(complete.endpoints[0].status, "passed");
+});
+
+test("does not infer unrelated facts from a successful producer tool", () => {
+  const report = buildWorkbenchCorpusReport([
+    {
+      tool: "workbench_create_entity",
+      workflow: "entity",
+      dependencies: [],
+      cases: [{ id: "success", kind: "success" }],
+    },
+    {
+      tool: "workbench_get_shape_points",
+      workflow: "shape",
+      dependencies: ["shape"],
+      cases: [{ id: "success", kind: "success" }],
+    },
+  ], [{
+    steps: [{
+      tool: "workbench_create_entity",
+      case: "success",
+      role: "test",
+      outcome: "success",
+      facts: ["entity"],
+    }],
+  }]);
+
+  assert.equal(report.endpoints[1].status, "blocked");
 });
 
 test("waits for the editor catalogue after Workbench NET readiness", async () => {

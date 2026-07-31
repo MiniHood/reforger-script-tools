@@ -17,7 +17,9 @@ Live acceptance crosses one seam: a real MCP Runtime receives standard
 through the published `workbench_*` capabilities. A bridge handler unit test,
 private Workbench process mode, direct NET API request, filesystem inspection,
 or operating-system process command can diagnose an implementation, but none
-of them can approve a public MCP endpoint.
+of them can approve a public MCP endpoint. The no-consent profile snapshot is a
+separate safety oracle: it can fail the guard for an unexpected write, but the
+guard is accepted only from the public MCP structured consent error.
 
 The corpus runner exposes one conceptual operation:
 
@@ -33,15 +35,22 @@ run Workbench MCP corpus
 The repository runner implements this operation as `runWorkbenchCorpus`. Its
 endpoint plan is generated from the published Workbench catalogue, validated
 for exact one-to-one parity and dependency producers, and included in every
-report. Scenario calls are normalized into explicit `test`, `setup`,
-`readback`, or `teardown` invocations with an acceptance-case identity; a
-successful call without its required case or readback cannot approve an
-endpoint.
+report. Scenario calls are grouped and executed as named workflows in
+dependency order, then normalized into explicit `test`, `setup`, `readback`,
+or `teardown` invocations with an acceptance-case identity; a successful call
+without its required case or readback cannot approve an endpoint. One
+invocation may carry multiple roles when one public read also proves a
+preceding mutation or performs disposable teardown.
 
 The runner should hide session management, fact capture, confirmation tokens,
-readback, cleanup, and reporting behind that interface. The executable plan
-may use explicit named workflows internally; it does not need a general-purpose
-dependency framework.
+readback, cleanup, and reporting behind that interface. The executable plan is
+materialized by `buildWorkbenchEndpointPlan`; `runWorkbenchWorkflows` executes
+its named workflow groups while sharing only facts captured from public MCP
+responses. A step whose required fact is unavailable is recorded as a blocked
+synthetic observation and is not counted as live endpoint evidence; independent
+later workflows continue when their own facts are available. Teardown evidence
+also carries the materialized opaque target identity so a different disposable
+entity cannot satisfy cleanup for the mutation under test.
 
 ## Status model
 
