@@ -274,6 +274,8 @@
     "test:server": "node tools/run-server-tests.mjs",
     "mcp-api:generate": "node tools/generate-mcp-api.mjs",
     "mcp-api:check": "node tools/generate-mcp-api.mjs --check",
+    "test:workbench-mcp:runner": "node --test tools/workbench-mcp-conformance.test.mjs",
+    "test:workbench-mcp:contract": "node tools/workbench-mcp-conformance.mjs",
     "test:packaged-official-wiki": "npm run package && node tools/test-packaged-official-wiki.mjs",
     "lint": "eslint src",
     "test": "vscode-test && npm run test:packaged-official-wiki"

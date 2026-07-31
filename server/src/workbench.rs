@@ -198,6 +198,8 @@ pub struct WorkbenchLiveState {
     pub bridge_version: String,
     pub protocol_version: u32,
     pub mode: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_world_path: Option<String>,
     pub world_editor_active: bool,
     pub world_editor_module_present: bool,
     pub world_editor_api_available: bool,
@@ -1467,6 +1469,7 @@ impl WorkbenchController {
                 )
             })?,
             mode: raw.mode,
+            active_world_path: raw.active_world_path.filter(|path| !path.is_empty()),
             loaded_addons,
             loaded_addons_truncated,
             current_sub_scene: raw.current_sub_scene,
@@ -5424,6 +5427,8 @@ struct RawBridgeState {
     #[serde(rename = "protocolVersion")]
     protocol_version: u32,
     mode: String,
+    #[serde(rename = "activeWorldPath")]
+    active_world_path: Option<String>,
     #[serde(rename = "worldEditorActive", default)]
     world_editor_active: Value,
     #[serde(rename = "worldEditorModulePresent", default)]
@@ -10007,6 +10012,41 @@ mod tests {
 
         assert_eq!(controller.state().unwrap().mode, "workbench");
         assert_eq!(fs::read_to_string(bridge_file).unwrap(), "stale-state-handler");
+        peer.join().unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn state_exposes_the_authoritative_active_world_path() {
+        let (port, peer) = start_peer(|request| {
+            assert_eq!(request, json!({"APIFunc": "RST_WorkbenchState"}));
+            json!({
+                "bridgeVersion": "1.52.12",
+                "protocolVersion": 1,
+                "mode": "world-editor",
+                "worldEditorActive": true,
+                "worldEditorModulePresent": true,
+                "worldEditorApiAvailable": true,
+                "playSession": "unknown",
+                "loadedAddons": "McpFixture",
+                "activeWorldPath": "McpFixture/Worlds/Conformance.ent"
+            })
+        });
+        let root = test_root("state-active-world");
+        let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
+            gateway: super::WorkbenchGatewayOptions {
+                port,
+                status_deadline: Duration::from_secs(1),
+                ..super::WorkbenchGatewayOptions::default()
+            },
+            user_directory: Some(root.clone()),
+            ..super::WorkbenchControllerOptions::default()
+        });
+
+        assert_eq!(
+            controller.state().unwrap().active_world_path.as_deref(),
+            Some("McpFixture/Worlds/Conformance.ent")
+        );
         peer.join().unwrap();
         fs::remove_dir_all(root).unwrap();
     }

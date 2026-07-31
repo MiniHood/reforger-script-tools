@@ -16,6 +16,7 @@ class RST_WorkbenchStateResponse : JsonApiStruct
 	string bridgeVersion;
 	int protocolVersion;
 	string mode;
+	string activeWorldPath;
 	bool worldEditorActive;
 	bool worldEditorModulePresent;
 	bool worldEditorApiAvailable;
@@ -116,6 +117,7 @@ class RST_WorkbenchState : NetApiHandler
 			WorldEditorAPI worldEditorApi = worldEditor.GetApi();
 			if (worldEditorApi)
 			{
+				worldEditorApi.GetWorldPath(response.activeWorldPath);
 				response.mode = "world-editor";
 				response.worldEditorActive = true;
 				response.worldEditorApiAvailable = true;

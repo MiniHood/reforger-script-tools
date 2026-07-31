@@ -73,6 +73,24 @@ The report lists catalogue and `.c` entry counts with elapsed time. It is a
 safe inspection aid for add-on research, not an add-on discovery or indexing
 command.
 
+For the Workbench MCP contract gate, run:
+
+```powershell
+npm run test:workbench-mcp:runner
+npm run test:workbench-mcp:contract -- --server server/target/debug/reforger_language_server.exe
+```
+
+The contract runner starts one real MCP stdio process, compares every
+Workbench tool returned by `tools/list` with the generated MCP API Reference,
+checks the public descriptor envelope, and writes a sanitized report beneath
+`.cache/reports/`. It does not contact Workbench or launch processes. Live
+scenarios are explicit and may be supplied with `--scenario <path>` together
+with `--fixture <manifest>`. The fixture runner owns the explicitly launched
+Workbench process, waits for typed `workbench_status.isRunning` readiness, and
+records per-tool minimum, maximum, p50, p95, p99, and failure counts. Live
+scenarios remain outside the normal fast test gate; see
+`tools/fixtures/workbench-mcp/README.md` for the manifest contract.
+
 To extract only `.c` entries, pass `--extract-scripts <output-root>` before the
 archives. The archive's logical `scripts/` path is retained below that root;
 the command refuses to overwrite an existing extracted file.
@@ -254,6 +272,10 @@ single argument: quote both the `-gproj` path and the base-game `-addonsDir`
 path, and use the Workbench installation directory as the working directory.
 Otherwise Workbench can truncate a path at its first space, fail to load base
 addon `58D0FB3206B6F859` (Arma Reforger), and cannot initialize the project.
+The live MCP fixture runner additionally supplies a fixture-owned `-profile`
+root and uses Workbench's `-wbModule WorldEditor -run -load <resource>` startup
+parameters to request the known world before verifying its canonical path via
+`workbench_state`. See the [official startup parameter reference](https://community.bistudio.com/wiki/Arma_Reforger%3AStartup_Parameters).
 Run a clean `WORKBENCH` validation, introduce and save a deliberate compiler
 error, and confirm the reported file and line. Then edit again to observe a
 stale finding and fix the error to observe atomic replacement. Also verify

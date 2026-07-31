@@ -2680,6 +2680,12 @@ Read bounded live editor state from the compatible managed Workbench handler pac
         "null"
       ]
     },
+    "activeWorldPath": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "bridgeVersion": {
       "type": "string"
     },
