@@ -17,6 +17,7 @@ import {
 	beginLanguageClientStartupTimingSession,
 	externalIndexProgressMessage,
 	externalIndexProgressIsTerminal,
+	monitorExternalIndexProgress,
 	ifSpaceCommitContractFromCommandArguments,
 	languageClientStartupElapsedMs,
 } from '../languageClient/languageClient';
@@ -62,6 +63,31 @@ suite('extension activation', () => {
 		assert.equal(externalIndexProgressIsTerminal('ready'), true);
 		assert.equal(externalIndexProgressIsTerminal('failed'), true);
 		assert.equal(externalIndexProgressIsTerminal('missing'), true);
+	});
+
+	test('does not wait for a Workbench graph when external indexes are disabled', async () => {
+		let reportProgress: ((params: { phase: string; status?: string }) => void) | undefined;
+		const client = {
+			onNotification: (_type: unknown, handler: (params: { phase: string; status?: string }) => void) => {
+				reportProgress = handler;
+				return new vscode.Disposable(() => undefined);
+			},
+			onDidChangeState: () => new vscode.Disposable(() => undefined),
+		} as never;
+		const monitor = monitorExternalIndexProgress(
+			{} as vscode.ExtensionContext,
+			client,
+			undefined,
+			'none',
+		);
+		reportProgress?.({ phase: 'complete', status: 'ready' });
+
+		const completed = await Promise.race([
+			monitor.completion.then(() => true),
+			new Promise<boolean>(resolve => setTimeout(() => resolve(false), 50)),
+		]);
+		monitor.disposable.dispose();
+		assert.strictEqual(completed, true);
 	});
 
 	test('presents external index phases as user-facing progress', () => {

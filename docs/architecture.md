@@ -29,6 +29,11 @@ loads only the Reforger Script and Core cache entries, and `none` leaves only
 workspace scripts. These fallback modes do not scan for add-ons or guess
 installation paths.
 
+Changing `externalIndexMode` invalidates any in-flight language-server startup,
+restarts the client with the new mode, and republishes the selected external
+layer. The `all` and `none` modes complete without waiting for a Workbench
+graph.
+
 When a live graph is available, the extension atomically records the exact
 Workbench-owned graph and delivers its path to Rust over a typed LSP
 notification. Workbench remains the scope authority for the `loaded` and

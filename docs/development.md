@@ -263,8 +263,11 @@ hydrates the last Workbench graph immediately, then replaces it with the live
 graph when the compiler controller observes a disconnected-to-connected
 transition. If Workbench never connects, the last graph remains active. `all`
 and `baseGame` use compatible cached indexes without a graph; `none` disables
-external add-on indexes. On a warm approved startup, a current managed
-manifest avoids repeating bridge maintenance and Workbench process probing.
+external add-on indexes. Changing this setting immediately restarts the
+language server and republishes the selected external-index layer; `none` and
+`all` do not wait for a Workbench graph. On a warm approved startup, a current
+managed manifest avoids repeating bridge maintenance and Workbench process
+probing.
 The **Reforger: Indexing loaded add-ons** progress indicator remains visible in
 the VS Code status bar through graph loading, PAC inspection, and index
 publication; wait for it to close before judging game-API language features.

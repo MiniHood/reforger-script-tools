@@ -85,6 +85,7 @@ export { ifSpaceCommitContractFromCommandArguments } from "./completionUiBridge"
 let client: LanguageClient | undefined;
 let clientDisposables: vscode.Disposable[] = [];
 let refreshWorkbenchGraph: (() => Promise<void>) | undefined;
+let languageClientStartGeneration = 0;
 const restartCoordinator = new RestartCoordinator();
 let initialStartup: Promise<void> | undefined;
 const workspaceWatcherDebounceMs = 250;
@@ -210,6 +211,8 @@ export function registerLanguageClientFeatures(
           context,
           outputChannel,
           "bracket coloring changed",
+          true,
+          workbenchReady,
         );
       }
       if (event.affectsConfiguration(`${workbenchConfig.section}.${workbenchConfig.settings.externalIndexMode}`)) {
@@ -217,6 +220,8 @@ export function registerLanguageClientFeatures(
           context,
           outputChannel,
           "external index mode changed",
+          false,
+          workbenchReady,
         );
       }
     }),
@@ -269,6 +274,8 @@ export function registerLanguageClientFeatures(
               context,
               outputChannel,
               "game-data source changed",
+              true,
+              workbenchReady,
             );
           }
         } finally {
@@ -318,6 +325,7 @@ function logFirstDocumentOpened(
 
 export async function deactivateLanguageClient(): Promise<void> {
   diagnostic("languageClient.deactivate");
+  languageClientStartGeneration += 1;
   disposeClientDisposables();
   disposeDevelopmentServerWatchBridge();
   const activeClient = client;
@@ -334,6 +342,7 @@ async function startLanguageClient(
 	externalIndexProgress?: ExternalIndexProgress,
 	workbenchReady?: Promise<boolean>,
 ): Promise<void> {
+  const startGeneration = ++languageClientStartGeneration;
   logLanguageClientStartupTiming(context, "languageClientStartBegin");
   const serverPath = await resolveLanguageServerPath(context);
   if (!serverPath) {
@@ -345,6 +354,9 @@ async function startLanguageClient(
     });
     return;
   }
+  if (startGeneration !== languageClientStartGeneration) {
+    return;
+  }
   logLanguageClientStartupTiming(context, "languageServerPathResolved", {
     serverPath,
     extensionMode: extensionModeName(context.extensionMode),
@@ -354,6 +366,8 @@ async function startLanguageClient(
       context,
       outputChannel,
       "development language-server binary changed",
+      true,
+      workbenchReady,
     ).catch((error) => {
       const message = error instanceof Error ? error.message : String(error);
       outputChannel.appendLine(
@@ -401,6 +415,9 @@ async function startLanguageClient(
     serverArgs.push("--diagnostic-log", diagnosticPath);
   }
   const workspaceScriptRoots = await workspaceScriptRootsPromise;
+  if (startGeneration !== languageClientStartGeneration) {
+    return;
+  }
   for (const root of workspaceScriptRoots) {
     serverArgs.push("--workspace-scripts", root);
   }
@@ -476,13 +493,17 @@ async function startLanguageClient(
   };
 
   logLanguageClientStartupTiming(context, "languageClientCreateStart");
-  client = new LanguageClient(
+  if (startGeneration !== languageClientStartGeneration) {
+    return;
+  }
+  const nextClient = new LanguageClient(
     languageClientIds.id,
     languageClientIds.name,
     serverOptions,
     clientOptions,
   );
-  const activeClient = client;
+  client = nextClient;
+  const activeClient = nextClient;
   logLanguageClientStartupTiming(context, "languageClientCreated");
   // The external index is asynchronous, but it is still part of a usable
   // language-tooling startup. Monitor every launch so support diagnostics can
@@ -492,6 +513,7 @@ async function startLanguageClient(
     context,
     client,
     externalIndexProgress,
+    externalIndexMode,
   );
   clientDisposables.push(externalIndexMonitor.disposable);
 
@@ -506,7 +528,13 @@ async function startLanguageClient(
       },
     );
     await client.start();
+    if (startGeneration !== languageClientStartGeneration || client !== activeClient) {
+      return;
+    }
     const initialInventoryPath = await initialSourceInventory;
+    if (startGeneration !== languageClientStartGeneration || client !== activeClient) {
+      return;
+    }
     if (initialInventoryPath) {
       activeClient.sendNotification(languageClientNotifications.loadedAddonGraph, {
         inventoryPath: initialInventoryPath,
@@ -534,7 +562,11 @@ async function startLanguageClient(
       }
     };
     void currentSourceInventory.then((inventoryPath) => {
-      if (!inventoryPath || client !== activeClient) {
+      if (!inventoryPath) {
+        externalIndexMonitor.workbenchGraphUnavailable();
+        return;
+      }
+      if (client !== activeClient) {
         return;
       }
       activeClient.sendNotification(languageClientNotifications.loadedAddonGraph, {
@@ -768,13 +800,18 @@ async function restartLanguageClient(
   context: vscode.ExtensionContext,
   outputChannel: vscode.LogOutputChannel,
   reason: string,
+  waitForInitialStartup = true,
+  workbenchReady?: Promise<boolean>,
 ): Promise<void> {
   await restartCoordinator.run(async () => {
-    const startup = initialStartup;
-    if (startup) {
-      await startup;
+    if (waitForInitialStartup) {
+      const startup = initialStartup;
+      if (startup) {
+        await startup;
+      }
     }
     outputChannel.appendLine(`Restarting language server: ${reason}`);
+    languageClientStartGeneration += 1;
     disposeClientDisposables();
     const activeClient = client;
     client = undefined;
@@ -795,14 +832,16 @@ async function restartLanguageClient(
       outputChannel,
       bracketColoring,
       activeExternalIndexProgressSession?.progress,
+      workbenchReady,
     );
   });
 }
 
-function monitorExternalIndexProgress(
+export function monitorExternalIndexProgress(
   context: vscode.ExtensionContext,
   activeClient: LanguageClient,
   progress: ExternalIndexProgress | undefined,
+  mode: ExternalIndexMode = 'loaded',
 ): {
   completion: Promise<void>;
   disposable: vscode.Disposable;
@@ -811,7 +850,7 @@ function monitorExternalIndexProgress(
 } {
   let complete = false;
   let workbenchGraphDelivered = false;
-  let workbenchGraphUnavailable = false;
+  let workbenchGraphUnavailable = mode === 'all' || mode === 'none';
   let pendingCompletion: ExternalIndexProgressParams | undefined;
   let resolveCompletion: (() => void) | undefined;
   const completion = new Promise<void>((resolve) => {
