@@ -722,10 +722,9 @@ class WorkbenchCompilerController implements vscode.Disposable {
 		this.lastFailure = undefined;
 		this.lastStatus = result.value;
 		this.setPhase('ready');
-		void this.integration?.onWorkbenchConnected({
-			host: this.configuration.host,
-			port: this.configuration.port,
-		});
+		if (!result.value.scriptsCompiled) {
+			this.integration?.onWorkbenchDisconnected();
+		}
 		if (this.shouldRequestStartupValidation()) {
 			this.startupValidationAttempted = true;
 			const request: ValidationRequest = {
@@ -739,6 +738,12 @@ class WorkbenchCompilerController implements vscode.Disposable {
 			});
 			void this.queueValidation(request);
 			return;
+		}
+		if (result.value.scriptsCompiled) {
+			void this.integration?.onWorkbenchConnected({
+				host: this.configuration.host,
+				port: this.configuration.port,
+			});
 		}
 		this.scheduleProbe(readyHeartbeatMs, generation);
 	}

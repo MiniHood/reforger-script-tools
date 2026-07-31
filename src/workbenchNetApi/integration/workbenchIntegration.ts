@@ -8,7 +8,9 @@ import {
 	WorkbenchProcessStatus,
 } from '../gateway/workbenchGateway';
 
-const approvalStateKey = 'workbenchIntegrationApproved';
+// V2 avoids inheriting the pre-consent implementation's implicit approval for
+// users who already had a managed bridge installed.
+const approvalStateKey = 'workbenchIntegrationApprovedV2';
 const installChoice = 'Enable Workbench Integration';
 const installFailureMessage = 'Reforger Workbench integration could not be installed.';
 const restartMessage = 'Reforger Workbench integration was updated. Restart Workbench to activate it.';
@@ -125,11 +127,12 @@ export class WorkbenchIntegrationCoordinator implements vscode.Disposable {
 	private async bootstrapStartup(): Promise<boolean> {
 		const endpoint = this.readEndpoint();
 		const status = await this.runtime.status(endpoint);
-		const installed = status.ok && status.value.installed;
-		const approved = this.state.isApproved() || installed;
-		if (installed && !this.state.isApproved()) {
-			await this.state.approve();
+		if (!status.ok) {
+			diagnostic('workbenchIntegrationStatusUnavailable', {
+				category: status.failure.category,
+			});
 		}
+		const approved = this.state.isApproved();
 
 		let result: WorkbenchGatewayResult<WorkbenchIntegrationBootstrap>;
 		if (!approved) {

@@ -105,6 +105,33 @@ suite('Workbench Integration', () => {
 		assert.strictEqual(maintenance, 1);
 	});
 
+	test('an installed bridge still requires the new one-time approval', async () => {
+		let prompts = 0;
+		let bootstraps = 0;
+		const coordinator = new WorkbenchIntegrationCoordinator(
+			stateWith(false),
+			runtimeWith({
+				status: async () => ({ ok: true, value: { installed: true, installationAvailable: false } }),
+				bootstrap: async () => {
+					bootstraps += 1;
+					return bootstrapResult();
+				},
+			}),
+			uiWith({
+				confirmInstall: async () => {
+					prompts += 1;
+					return false;
+				},
+			}),
+			true,
+		);
+
+		await coordinator.start();
+
+		assert.strictEqual(prompts, 1);
+		assert.strictEqual(bootstraps, 0);
+	});
+
 	test('approved integration launches the default project when Workbench is closed', async () => {
 		let launches = 0;
 		const coordinator = new WorkbenchIntegrationCoordinator(
