@@ -213,6 +213,17 @@ fn definition_target_for_resolution(
     resolution: &crate::resolver::ReferenceResolution,
 ) -> Option<&ReferenceCandidate> {
     let selected = resolution.selected.as_ref()?;
+    if selected.kind == SymbolKind::Class && selected.is_modded {
+        return resolution
+            .candidates
+            .iter()
+            .find(|candidate| {
+                candidate.kind == SymbolKind::Class
+                    && candidate.name == selected.name
+                    && !candidate.is_modded
+            })
+            .or(Some(selected));
+    }
     if !(selected.source == CandidateSource::FileLocal
         && selected.reason == ResolutionReason::DeclarationHit
         && selected.kind == SymbolKind::Method

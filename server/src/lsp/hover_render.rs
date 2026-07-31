@@ -707,9 +707,10 @@ fn hover_command_uri_for_display(
         return None;
     }
     let target_uri = display
-        .absolute_path
-        .as_deref()
-        .and_then(file_uri_for_path)
+        .virtual_source
+        .as_ref()
+        .map(|source| source.uri.clone())
+        .or_else(|| display.absolute_path.as_deref().and_then(file_uri_for_path))
         .unwrap_or_else(|| links.current_uri.to_string());
     let args = json!([{
         "uri": target_uri,

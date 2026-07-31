@@ -104,10 +104,14 @@ hit does not rewrite that already-validated manifest.
 Packed files carry a typed virtual-source identity in semantic metadata rather
 than overloading a filesystem path. The identity includes the loaded add-on
 instance (GUID and canonical source root through its revision), semantic
-revision, logical script path, and URI. Definition serving retains
-immutable revision registries. Indexing and definition serving hash and decode
-each entry from the same captured compressed bytes, so a concurrent pack
-update cannot apply an old symbol span to newer bytes.
+revision, logical script path, and URI. Definition and hover links preserve
+that identity so navigation opens the indexed source rather than the requesting
+document. Class references navigate to the original non-`modded` declaration;
+the effective `modded` overlay remains authoritative for semantic lookup,
+completion, and member behavior. Definition serving retains immutable revision
+registries. Indexing and definition serving hash and decode each entry from the
+same captured compressed bytes, so a concurrent pack update cannot apply an
+old symbol span to newer bytes.
 
 The language-server diagnostic log records each external-index startup as a
 bounded performance trace: end-to-end game-data, workspace, and publication

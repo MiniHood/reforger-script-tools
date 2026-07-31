@@ -80,6 +80,7 @@ pub struct ReferenceCandidate {
     /// an override's inherited declaration from unrelated overloads.
     pub callable_override_key: Option<String>,
     pub is_override: bool,
+    pub is_modded: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1456,6 +1457,7 @@ fn candidate_from_symbol(
         virtual_source: file.metadata.virtual_source.clone(),
         callable_override_key: callable_override_key(index, id),
         is_override: has_modifier(symbol, "override"),
+        is_modded: has_modifier(symbol, "modded"),
     }
 }
 

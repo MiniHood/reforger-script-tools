@@ -5504,6 +5504,64 @@ fn hover_links_game_data_parameter_types_when_workspace_index_is_also_available(
 }
 
 #[test]
+fn hover_links_virtual_external_symbols_to_their_own_source() {
+    let source = r#"class Example
+{
+	SCR_BaseGameMode m_GameMode;
+}
+"#;
+    let external_source = r#"class SCR_BaseGameMode
+{
+	void SetGameModeState();
+}
+"#;
+    let parse = crate::parser::parse_source(external_source);
+    assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
+    let semantic = crate::semantic_file::SemanticFile::build(external_source, &parse);
+    let virtual_uri =
+        "reforger-pak://58D0FB3206B6F859/current/scripts/Game/GameMode/SCR_BaseGameMode.c";
+    let mut external = SymbolIndex::default();
+    external.add_semantic_file(
+        &semantic,
+        crate::model::SourceFileMetadata {
+            kind: crate::model::SourceKind::GameData,
+            category: crate::model::SourceCategory::Game,
+            absolute_path: None,
+            virtual_source: Some(crate::model::VirtualSourceIdentity {
+                uri: virtual_uri.to_string(),
+                addon_guid: "58D0FB3206B6F859".to_string(),
+                revision: "current".to_string(),
+                logical_path: "scripts/Game/GameMode/SCR_BaseGameMode.c".to_string(),
+            }),
+            root_path: None,
+            relative_path: Some(
+                "scripts/Game/GameMode/SCR_BaseGameMode.c"
+                    .into(),
+            ),
+            priority: crate::model::SOURCE_PRIORITY_GAME_DATA,
+        },
+    );
+    let analysis = file_index_for_source(source);
+
+    let report = hover_report_for_cached_analysis_with_external_indexes(
+        source,
+        &analysis,
+        "file:///Scripts/Current.c",
+        position_for_needle(source, "SCR_BaseGameMode m_GameMode", "SCR_BaseGameMode"),
+        None,
+        Some(&external),
+    );
+    let markdown = report.hover.expect("class hover").contents.value;
+
+    assert!(
+        markdown.contains(
+            "reforger-pak%3A%2F%2F58D0FB3206B6F859%2Fcurrent%2Fscripts%2FGame%2FGameMode%2FSCR_BaseGameMode.c"
+        ),
+        "{markdown}"
+    );
+}
+
+#[test]
 fn hover_uses_resolver_syntax_span_for_non_identifier_inside_symbol_span() {
     let source = r#"class Example
 {
@@ -5831,6 +5889,65 @@ fn definition_uses_external_file_uri_when_available() {
             line: 0,
             character: 6
         }
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn definition_prefers_the_original_class_over_modded_extensions() {
+    let root = temp_test_dir("original_class_definition");
+    let modded_root = root.join("modded");
+    let original_root = root.join("original");
+    fs::create_dir_all(&modded_root).unwrap();
+    fs::create_dir_all(&original_root).unwrap();
+    fs::write(
+        modded_root.join("SCR_BaseGameMode_Modded.c"),
+        "modded class SCR_BaseGameMode\n{\n\tvoid SetGameModeState();\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        original_root.join("SCR_BaseGameMode.c"),
+        "class SCR_BaseGameMode : BaseGameMode\n{\n}\n",
+    )
+    .unwrap();
+    let modded = crate::index_build::build_index(&crate::index_build::IndexBuildConfig {
+        roots: vec![crate::index_build::IndexSourceRoot::new(
+            &modded_root,
+            crate::model::SourceKind::GameData,
+            crate::model::SOURCE_PRIORITY_GAME_DATA,
+        )],
+    })
+    .unwrap()
+    .index;
+    let original = crate::index_build::build_index(&crate::index_build::IndexBuildConfig {
+        roots: vec![crate::index_build::IndexSourceRoot::new(
+            &original_root,
+            crate::model::SourceKind::GameData,
+            crate::model::SOURCE_PRIORITY_GAME_DATA,
+        )],
+    })
+    .unwrap()
+    .index;
+    let external = SymbolIndex::layered([modded, original]);
+    let source = r#"class Example
+{
+	SCR_BaseGameMode m_GameMode;
+}
+"#;
+
+    let report = definition_report_for_source_position_with_external(
+        source,
+        "file:///Scripts/Current.c",
+        position_for_needle(source, "SCR_BaseGameMode m_GameMode", "SCR_BaseGameMode"),
+        Some(&external),
+    );
+
+    assert!(report.is_hit(), "{report:?}");
+    assert_eq!(report.resolver_candidate_count, 2);
+    assert!(
+        report.locations[0].uri.ends_with("/original/SCR_BaseGameMode.c"),
+        "{:?}",
+        report.locations
     );
     let _ = fs::remove_dir_all(root);
 }

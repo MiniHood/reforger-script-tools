@@ -2,7 +2,7 @@ use crate::index::{
     GlobalSymbolId, IndexedAttribute, IndexedConditionalBranch, IndexedDocComment, SymbolIndex,
 };
 use crate::lexer::TextSpan;
-use crate::model::{CallableForm, SourceCategory, SourceKind, SymbolKind};
+use crate::model::{CallableForm, SourceCategory, SourceKind, SymbolKind, VirtualSourceIdentity};
 use std::path::PathBuf;
 
 const DOC_PREVIEW_LIMIT: usize = 120;
@@ -24,6 +24,7 @@ pub struct SymbolDisplayInfo {
     pub source_priority: u16,
     pub relative_path: Option<PathBuf>,
     pub absolute_path: Option<PathBuf>,
+    pub virtual_source: Option<VirtualSourceIdentity>,
     pub span: TextSpan,
     pub selection_span: TextSpan,
     pub conditional_context: Vec<IndexedConditionalBranch>,
@@ -78,6 +79,7 @@ impl SymbolDisplay {
             source_priority: file.metadata.priority,
             relative_path: file.metadata.relative_path.clone(),
             absolute_path: file.metadata.absolute_path.clone(),
+            virtual_source: file.metadata.virtual_source.clone(),
             span: symbol.span,
             selection_span: symbol.selection_span,
             conditional_context: symbol.conditional_context.clone(),
