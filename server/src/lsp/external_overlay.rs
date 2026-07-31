@@ -7,7 +7,8 @@ use super::{
 use crate::addon_sources::{
     load_all_cached_addon_indexes, load_cached_base_game_indexes,
     load_cached_dependency_addon_indexes, load_cached_loaded_addon_indexes,
-    load_or_build_base_game_indexes, load_or_build_loaded_addon_indexes, LoadedAddonIndexResult,
+    load_or_build_base_game_indexes, load_or_build_dependency_addon_indexes,
+    load_or_build_loaded_addon_indexes, LoadedAddonIndexResult,
 };
 use crate::index::SymbolIndex;
 use crate::index_cache::RuntimeIndexSummary;
@@ -540,7 +541,8 @@ fn publish_loaded_addon_result(
         .to_string(),
     );
     state.cache_detail = Some(format!(
-        "loadedInstances={} rebuiltInstances={} missingInstances={} workspaceExcludedInstances={}{}",
+        "scopeAuthority={} loadedInstances={} rebuiltInstances={} missingInstances={} workspaceExcludedInstances={}{}",
+        result.scope_authority.as_str(),
         result.loaded_instances,
         result.rebuilt_instances,
         result.missing_instances,
@@ -663,6 +665,7 @@ fn log_loaded_addon_index_diagnostics(logger: &LspLogger, result: &LoadedAddonIn
     for instance in &result.instances {
         logger.diagnostic_lazy("externalIndex.addonCompleted", || {
             json!({
+                "scopeAuthority": result.scope_authority.as_str(),
                 "guid": instance.guid,
                 "displayId": instance.display_id,
                 "cacheStatus": instance.cache_status,
@@ -709,6 +712,7 @@ fn log_loaded_addon_index_diagnostics(logger: &LspLogger, result: &LoadedAddonIn
     }
     logger.diagnostic_lazy("externalIndex.gameDataCompleted", || {
         json!({
+            "scopeAuthority": result.scope_authority.as_str(),
             "loadedInstances": result.loaded_instances,
             "rebuiltInstances": result.rebuilt_instances,
             "workspaceExcludedInstances": result.workspace_excluded_instances,
@@ -732,6 +736,7 @@ fn log_loaded_addon_index_diagnostics(logger: &LspLogger, result: &LoadedAddonIn
 fn empty_loaded_addon_index_result() -> LoadedAddonIndexResult {
     LoadedAddonIndexResult {
         index: Arc::new(SymbolIndex::layered(Vec::new())),
+        scope_authority: crate::addon_sources::AddonScopeAuthority::WorkbenchLoaded,
         summary: RuntimeIndexSummary::default(),
         rebuilt_instances: 0,
         loaded_instances: 0,
@@ -803,6 +808,7 @@ fn run_external_index_thread(
                 publish_loaded_addon_result(&mut published, &result, true);
                 drop(published);
                 logger.diagnostic_lazy("externalIndex.optimisticCacheDelivered", || json!({
+                    "scopeAuthority": result.scope_authority.as_str(),
                     "elapsedMs": optimistic_start.elapsed().as_millis(),
                     "loadedInstances": result.loaded_instances,
                     "missingInstances": result.missing_instances,
@@ -851,7 +857,7 @@ fn run_external_index_thread(
             Some(addon_index_storage.as_ref().map_or_else(
                 || Err("add-on index storage is unavailable".to_string()),
                 |storage| {
-                    load_cached_dependency_addon_indexes(
+                    load_or_build_dependency_addon_indexes(
                         &dependency_project_files,
                         storage,
                         &workspace_roots,

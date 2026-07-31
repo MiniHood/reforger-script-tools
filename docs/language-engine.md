@@ -81,11 +81,16 @@ Workbench graph is unavailable, malformed, cancelled, or fails to acquire an
 instance, the Workbench-sourced layer is unavailable; the engine never reuses
 an earlier graph or substitutes a local source.
 
-The extension's explicit `loaded` fallback may provide a provisional cache-only
-dependency scope derived from the opened project's `.gproj` dependency GUIDs.
-Rust selects matching cache manifests by GUID and prefers an unpacked source
-root when both unpacked and packed instances exist. This scope is not a live
-Workbench graph and is replaced by the next authoritative graph publication.
+The extension's explicit `loaded` fallback may provide a provisional dependency
+scope derived from the opened project's `.gproj` dependency GUIDs. Rust follows
+the transitive descriptor closure, resolves candidates by GUID through the
+bounded Workbench project registry and opened-project neighborhood, and prefers
+an unpacked candidate with usable `Scripts` over a packed candidate. It first
+hydrates compatible cached indexes, then inspects and builds only the resolved
+project scope; source fingerprints make the next warm pass reuse unchanged
+indexes. The result is explicitly labelled
+`project-dependencies-provisional`, is not a live Workbench graph, and is
+replaced by the next authoritative graph publication.
 
 The binary payload persists canonical public symbol facts, source metadata, and
 source line starts; dense symbol IDs and lookup maps are structural or derived

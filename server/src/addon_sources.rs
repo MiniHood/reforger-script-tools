@@ -13,6 +13,7 @@ use crate::model::{
     SOURCE_PRIORITY_GAME_DATA,
 };
 use crate::pack::{PakArchive, PakEntry, PakSelection};
+use crate::workbench::registered_project_files;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -29,8 +30,24 @@ pub const VIRTUAL_SOURCE_SCHEME: &str = "reforger-pak";
 const MAX_ADDON_INDEX_WORKERS: usize = 4;
 const ADDON_MANIFEST_HEADER_FILE: &str = "manifest-header.json";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddonScopeAuthority {
+    WorkbenchLoaded,
+    ProjectDependencies,
+}
+
+impl AddonScopeAuthority {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::WorkbenchLoaded => "workbench-loaded",
+            Self::ProjectDependencies => "project-dependencies-provisional",
+        }
+    }
+}
+
 pub struct LoadedAddonIndexResult {
     pub index: Arc<SymbolIndex>,
+    pub scope_authority: AddonScopeAuthority,
     pub summary: RuntimeIndexSummary,
     pub rebuilt_instances: usize,
     pub loaded_instances: usize,
@@ -43,7 +60,7 @@ pub struct LoadedAddonIndexResult {
     pub instances: Vec<LoadedAddonIndexInstance>,
 }
 
-/// Bounded performance facts for one authoritative Workbench graph refresh.
+/// Bounded performance facts for one add-on scope refresh.
 /// Paths and source text deliberately stay out of this reporting surface.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct LoadedAddonIndexTimings {
@@ -70,7 +87,7 @@ pub struct LoadedAddonIndexTimings {
     pub total: Duration,
 }
 
-/// One non-workspace add-on's cache and indexing outcome from a graph refresh.
+/// One non-workspace add-on's cache and indexing outcome from a scope refresh.
 #[derive(Debug, Clone)]
 pub struct LoadedAddonIndexInstance {
     pub guid: String,
@@ -378,7 +395,37 @@ pub fn load_or_build_loaded_addon_indexes(
     let graph_start = Instant::now();
     let graph = read_loaded_addon_graph(inventory_path)?;
     let graph_read = graph_start.elapsed();
-    load_or_build_addon_indexes(graph, graph_read, storage_root, workspace_roots, control)
+    load_or_build_addon_indexes(
+        graph,
+        graph_read,
+        storage_root,
+        workspace_roots,
+        control,
+        AddonScopeAuthority::WorkbenchLoaded,
+    )
+}
+
+/// Resolves the opened project and its transitive dependency descriptors into
+/// the same graph consumed by the Workbench-backed indexer. This is a bounded,
+/// provisional scope: Workbench remains authoritative for final membership and
+/// order when its graph becomes available.
+pub fn load_or_build_dependency_addon_indexes(
+    project_files: &[PathBuf],
+    storage_root: &Path,
+    workspace_roots: &[PathBuf],
+    control: &IndexBuildControl,
+) -> Result<LoadedAddonIndexResult, String> {
+    let graph_start = Instant::now();
+    let graph = resolve_dependency_addon_graph(project_files)?;
+    let graph_read = graph_start.elapsed();
+    load_or_build_addon_indexes(
+        graph,
+        graph_read,
+        storage_root,
+        workspace_roots,
+        control,
+        AddonScopeAuthority::ProjectDependencies,
+    )
 }
 
 pub fn load_or_build_base_game_indexes(
@@ -391,7 +438,14 @@ pub fn load_or_build_base_game_indexes(
     let mut graph = read_loaded_addon_graph(inventory_path)?;
     let graph_read = graph_start.elapsed();
     graph.addons.retain(is_base_game_addon);
-    load_or_build_addon_indexes(graph, graph_read, storage_root, workspace_roots, control)
+    load_or_build_addon_indexes(
+        graph,
+        graph_read,
+        storage_root,
+        workspace_roots,
+        control,
+        AddonScopeAuthority::WorkbenchLoaded,
+    )
 }
 
 fn load_or_build_addon_indexes(
@@ -400,6 +454,7 @@ fn load_or_build_addon_indexes(
     storage_root: &Path,
     workspace_roots: &[PathBuf],
     control: &IndexBuildControl,
+    scope_authority: AddonScopeAuthority,
 ) -> Result<LoadedAddonIndexResult, String> {
     let total_start = Instant::now();
     let workspace_root_start = Instant::now();
@@ -408,13 +463,12 @@ fn load_or_build_addon_indexes(
         .filter_map(|root| fs::canonicalize(root).ok())
         .collect::<Vec<_>>();
     let workspace_root_resolution = workspace_root_start.elapsed();
-    let mut addons = graph.addons;
+    let addons = graph.addons;
     let cache_prune_start = Instant::now();
-    prune_unloaded_addon_caches(storage_root, &addons)?;
+    if scope_authority == AddonScopeAuthority::WorkbenchLoaded {
+        prune_unloaded_addon_caches(storage_root, &addons)?;
+    }
     let cache_prune = cache_prune_start.elapsed();
-    addons.sort_by(|left, right| {
-        (&left.guid, &left.source_root, &left.id).cmp(&(&right.guid, &right.source_root, &right.id))
-    });
     let mut pending_inspections = Vec::with_capacity(addons.len());
     let mut summary = RuntimeIndexSummary::default();
     let mut rebuilt_instances = 0;
@@ -588,6 +642,7 @@ fn load_or_build_addon_indexes(
     let (index, layer_timings) = SymbolIndex::layered_with_timings(indexes);
     Ok(LoadedAddonIndexResult {
         index: Arc::new(index),
+        scope_authority,
         summary,
         rebuilt_instances,
         loaded_instances,
@@ -632,14 +687,10 @@ pub fn load_cached_loaded_addon_indexes(
         .filter_map(|root| fs::canonicalize(root).ok())
         .collect::<Vec<_>>();
     let workspace_root_resolution = workspace_root_start.elapsed();
-    let mut addons = graph.addons;
+    let addons = graph.addons;
     let cache_prune_start = Instant::now();
     prune_unloaded_addon_caches(storage_root, &addons)?;
     let cache_prune = cache_prune_start.elapsed();
-    addons.sort_by(|left, right| {
-        (&left.guid, &left.source_root, &left.id).cmp(&(&right.guid, &right.source_root, &right.id))
-    });
-
     let mut pending = Vec::with_capacity(addons.len());
     let mut workspace_excluded_instances = 0;
     for (sequence, addon) in addons.into_iter().enumerate() {
@@ -755,6 +806,7 @@ pub fn load_cached_loaded_addon_indexes(
     let (index, layer_timings) = SymbolIndex::layered_with_timings(indexes);
     Ok(LoadedAddonIndexResult {
         index: Arc::new(index),
+        scope_authority: AddonScopeAuthority::WorkbenchLoaded,
         summary,
         rebuilt_instances: 0,
         loaded_instances,
@@ -799,7 +851,7 @@ pub fn load_cached_dependency_addon_indexes(
     workspace_roots: &[PathBuf],
     control: &IndexBuildControl,
 ) -> Result<LoadedAddonIndexResult, String> {
-    let dependency_guids = read_project_dependency_guids(project_files)?;
+    let dependency_guids = read_project_dependency_scope_guids(project_files)?;
     load_cached_indexes_from_storage(
         storage_root,
         workspace_roots,
@@ -830,6 +882,7 @@ fn load_cached_indexes_from_storage(
             return Ok(empty_cached_index_result(
                 total_start.elapsed(),
                 workspace_root_resolution,
+                dependency_guids.is_some(),
             ))
         }
         Err(error) => {
@@ -947,6 +1000,11 @@ fn load_cached_indexes_from_storage(
     let (index, layer_timings) = SymbolIndex::layered_with_timings(indexes);
     Ok(LoadedAddonIndexResult {
         index: Arc::new(index),
+        scope_authority: if dependency_guids.is_some() {
+            AddonScopeAuthority::ProjectDependencies
+        } else {
+            AddonScopeAuthority::WorkbenchLoaded
+        },
         summary,
         rebuilt_instances: 0,
         loaded_instances,
@@ -970,31 +1028,24 @@ fn load_cached_indexes_from_storage(
 }
 
 fn dependency_source_preference(source_root: &Path) -> u8 {
-    let has_loose_scripts = fs::read_dir(source_root)
-        .ok()
-        .into_iter()
-        .flatten()
-        .filter_map(Result::ok)
-        .any(|entry| {
-            entry.file_type().is_ok_and(|file_type| file_type.is_dir())
-                && entry
-                    .file_name()
-                    .to_string_lossy()
-                    .eq_ignore_ascii_case("scripts")
-        });
-    if has_loose_scripts {
-        0
-    } else {
-        1
+    match loose_script_paths(source_root) {
+        Ok(paths) if !paths.is_empty() => 0,
+        Ok(_) | Err(_) => 1,
     }
 }
 
 fn empty_cached_index_result(
     total: Duration,
     workspace_root_resolution: Duration,
+    dependency_scope: bool,
 ) -> LoadedAddonIndexResult {
     LoadedAddonIndexResult {
         index: Arc::new(SymbolIndex::layered(Vec::new())),
+        scope_authority: if dependency_scope {
+            AddonScopeAuthority::ProjectDependencies
+        } else {
+            AddonScopeAuthority::WorkbenchLoaded
+        },
         summary: RuntimeIndexSummary::default(),
         rebuilt_instances: 0,
         loaded_instances: 0,
@@ -2098,6 +2149,306 @@ fn inventory_publication_revision(
 /// `Dependencies { "GUID" }` and `Dependencies GUID`. This fallback parser
 /// deliberately ignores every other project property; Workbench remains the
 /// authority for the effective loaded graph.
+struct DependencyProjectCandidate {
+    addon: LoadedAddonSource,
+    project_file: PathBuf,
+}
+
+/// Collects the GUID closure without opening archives. This powers the
+/// optimistic cache hydration pass; the subsequent build pass performs the
+/// stronger source-usability and ambiguity checks.
+fn read_project_dependency_scope_guids(
+    project_files: &[PathBuf],
+) -> Result<BTreeSet<String>, String> {
+    if project_files.is_empty() {
+        return Err("No opened project descriptor was provided".to_string());
+    }
+    let candidate_files = discover_dependency_project_files(project_files)?;
+    let mut candidates = BTreeMap::<String, Vec<PathBuf>>::new();
+    for project_file in candidate_files {
+        if let Ok(candidate) = read_dependency_project_candidate(&project_file) {
+            candidates
+                .entry(candidate.addon.guid)
+                .or_default()
+                .push(candidate.project_file);
+        }
+    }
+    let mut scope = BTreeSet::new();
+    let mut queue = Vec::new();
+    for project_file in project_files {
+        let project_file = fs::canonicalize(project_file).map_err(|error| error.to_string())?;
+        if let Ok(candidate) = read_dependency_project_candidate(&project_file) {
+            scope.insert(candidate.addon.guid.clone());
+            queue.push(candidate.project_file);
+        } else {
+            queue.push(project_file);
+        }
+    }
+    let mut visited_projects = BTreeSet::new();
+    while let Some(project_file) = queue.pop() {
+        if !visited_projects.insert(project_file.clone()) {
+            continue;
+        }
+        for dependency_guid in read_project_dependency_guids(&[project_file])? {
+            scope.insert(dependency_guid.clone());
+            if let Some(dependency_projects) = candidates.get(&dependency_guid) {
+                queue.extend(dependency_projects.iter().cloned());
+            }
+        }
+    }
+    Ok(scope)
+}
+
+fn resolve_dependency_addon_graph(project_files: &[PathBuf]) -> Result<LoadedAddonGraph, String> {
+    if project_files.is_empty() {
+        return Err("No opened project descriptor was provided".to_string());
+    }
+    let candidate_files = discover_dependency_project_files(project_files)?;
+    let explicit_files = project_files
+        .iter()
+        .filter_map(|project_file| fs::canonicalize(project_file).ok())
+        .collect::<BTreeSet<_>>();
+    let mut candidates = BTreeMap::<String, Vec<DependencyProjectCandidate>>::new();
+    for project_file in candidate_files {
+        let candidate = match read_dependency_project_candidate(&project_file) {
+            Ok(candidate) => candidate,
+            Err(_error) if !explicit_files.contains(&project_file) => continue,
+            Err(error) => return Err(error),
+        };
+        let entries = candidates.entry(candidate.addon.guid.clone()).or_default();
+        if !entries
+            .iter()
+            .any(|existing| existing.addon.source_root == candidate.addon.source_root)
+        {
+            entries.push(candidate);
+        }
+    }
+
+    let mut graph: Vec<LoadedAddonSource> = Vec::new();
+    let mut selected = BTreeSet::new();
+    for project_file in project_files {
+        let project_file = fs::canonicalize(project_file).map_err(|error| {
+            format!(
+                "Failed to resolve opened dependency project {}: {error}",
+                project_file.display()
+            )
+        })?;
+        let candidate = read_dependency_project_candidate(&project_file)?;
+        if let Some(existing) = graph
+            .iter()
+            .find(|existing| existing.guid == candidate.addon.guid)
+        {
+            if existing.source_root != candidate.addon.source_root {
+                return Err(format!(
+                    "Opened project GUID {} resolves to ambiguous source roots",
+                    candidate.addon.guid
+                ));
+            }
+            continue;
+        }
+        if selected.insert(candidate.addon.guid.clone()) {
+            graph.push(candidate.addon.clone());
+        }
+    }
+
+    let mut cursor = 0;
+    while cursor < graph.len() {
+        let addon = graph[cursor].clone();
+        cursor += 1;
+        let project_file = candidates
+            .get(&addon.guid)
+            .and_then(|items| {
+                items
+                    .iter()
+                    .find(|candidate| candidate.addon.source_root == addon.source_root)
+            })
+            .map(|candidate| candidate.project_file.clone())
+            .ok_or_else(|| format!("No descriptor was found for add-on {}", addon.guid))?;
+        for dependency_guid in read_project_dependency_guids(&[project_file])? {
+            if dependency_guid.eq_ignore_ascii_case(BASE_GAME_GUID)
+                || !selected.insert(dependency_guid.clone())
+            {
+                continue;
+            }
+            let candidate = select_dependency_candidate(
+                &dependency_guid,
+                candidates
+                    .get(&dependency_guid)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]),
+            )?;
+            let Some(candidate) = candidate else {
+                return Err(format!(
+                    "Dependency {dependency_guid} has no usable project source"
+                ));
+            };
+            graph.push(candidate.addon.clone());
+        }
+    }
+    Ok(LoadedAddonGraph { addons: graph })
+}
+
+fn discover_dependency_project_files(project_files: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
+    let mut discovered = BTreeSet::new();
+    for project_file in project_files {
+        let project_file = fs::canonicalize(project_file).map_err(|error| {
+            format!(
+                "Failed to resolve dependency project {}: {error}",
+                project_file.display()
+            )
+        })?;
+        discovered.insert(project_file.clone());
+        let Some(parent) = project_file.parent() else {
+            continue;
+        };
+        collect_gproj_files(parent, &mut discovered)?;
+        if let Some(addons_directory) = parent.parent().filter(|directory| {
+            directory
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("addons"))
+        }) {
+            for entry in fs::read_dir(addons_directory)
+                .map_err(|error| format!("Failed to read {}: {error}", addons_directory.display()))?
+                .flatten()
+            {
+                if entry.path().is_dir() {
+                    collect_gproj_files(&entry.path(), &mut discovered)?;
+                }
+            }
+        }
+    }
+    if let Some(user_profile) = std::env::var_os("USERPROFILE") {
+        let profile = PathBuf::from(user_profile)
+            .join("Documents")
+            .join("My Games")
+            .join("ArmaReforgerWorkbench")
+            .join("profile");
+        if let Ok(projects) = registered_project_files(&profile) {
+            for project in projects {
+                if project.is_file() {
+                    discovered.insert(project);
+                }
+            }
+        }
+    }
+    Ok(discovered.into_iter().collect())
+}
+
+fn collect_gproj_files(directory: &Path, discovered: &mut BTreeSet<PathBuf>) -> Result<(), String> {
+    for entry in fs::read_dir(directory)
+        .map_err(|error| format!("Failed to read {}: {error}", directory.display()))?
+        .flatten()
+    {
+        let path = entry.path();
+        if path.is_file()
+            && path
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("gproj"))
+        {
+            discovered.insert(fs::canonicalize(path).map_err(|error| error.to_string())?);
+        }
+    }
+    Ok(())
+}
+
+fn read_dependency_project_candidate(
+    project_file: &Path,
+) -> Result<DependencyProjectCandidate, String> {
+    let source = fs::read_to_string(project_file).map_err(|error| {
+        format!(
+            "Failed to read dependency project {}: {error}",
+            project_file.display()
+        )
+    })?;
+    let guid = extract_project_property(&source, "GUID")
+        .ok_or_else(|| format!("Dependency project has no GUID: {}", project_file.display()))?
+        .to_ascii_uppercase();
+    if guid.len() != 16 || !guid.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(format!(
+            "Invalid dependency project GUID: {}",
+            project_file.display()
+        ));
+    }
+    let source_root = project_file.parent().ok_or_else(|| {
+        format!(
+            "Dependency project has no source root: {}",
+            project_file.display()
+        )
+    })?;
+    let source_root = fs::canonicalize(source_root).map_err(|error| error.to_string())?;
+    let id = extract_project_property(&source, "ID")
+        .or_else(|| extract_project_property(&source, "TITLE"))
+        .or_else(|| {
+            source_root
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+        })
+        .unwrap_or_else(|| guid.clone());
+    let title = extract_project_property(&source, "TITLE").unwrap_or_else(|| id.clone());
+    Ok(DependencyProjectCandidate {
+        addon: LoadedAddonSource {
+            guid,
+            id,
+            title,
+            source_root,
+        },
+        project_file: fs::canonicalize(project_file).map_err(|error| error.to_string())?,
+    })
+}
+
+fn select_dependency_candidate<'a>(
+    guid: &str,
+    candidates: &'a [DependencyProjectCandidate],
+) -> Result<Option<&'a DependencyProjectCandidate>, String> {
+    let mut ranked = candidates
+        .iter()
+        .filter_map(|candidate| {
+            dependency_candidate_preference(&candidate.addon.source_root)
+                .ok()
+                .flatten()
+                .map(|preference| (preference, candidate))
+        })
+        .collect::<Vec<_>>();
+    ranked.sort_by(|left, right| {
+        left.0
+            .cmp(&right.0)
+            .then_with(|| left.1.addon.source_root.cmp(&right.1.addon.source_root))
+    });
+    let Some((preference, candidate)) = ranked.first().copied() else {
+        return Ok(None);
+    };
+    let equally_preferred = ranked
+        .iter()
+        .filter(|(other_preference, _)| *other_preference == preference)
+        .count();
+    if equally_preferred > 1 {
+        return Err(format!(
+            "Dependency {guid} has ambiguous usable project sources"
+        ));
+    }
+    Ok(Some(candidate))
+}
+
+fn dependency_candidate_preference(root: &Path) -> Result<Option<u8>, String> {
+    if !root.is_dir() {
+        return Ok(None);
+    }
+    if !loose_script_paths(root)?.is_empty() {
+        return Ok(Some(0));
+    }
+    for archive_path in addon_archive_paths(root)? {
+        let archive = PakArchive::inspect(&archive_path).map_err(|error| error.to_string())?;
+        if !archive
+            .select(PakSelection::scripts())
+            .map_err(|error| error.to_string())?
+            .is_empty()
+        {
+            return Ok(Some(1));
+        }
+    }
+    Ok(None)
+}
+
 fn read_project_dependency_guids(project_files: &[PathBuf]) -> Result<BTreeSet<String>, String> {
     let mut dependency_guids = BTreeSet::new();
     for project_file in project_files {
@@ -2321,6 +2672,157 @@ mod tests {
         .unwrap();
         assert_eq!(selected.loaded_instances, 1);
         assert_eq!(selected.summary.files, 2);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn dependency_scope_builds_the_unpacked_project_source_without_a_workbench_graph() {
+        let root = test_root("dependency_scope_build");
+        let addons = root.join("addons");
+        let project_root = addons.join("project");
+        let packed = addons.join("packed");
+        let unpacked = addons.join("unpacked");
+        fs::create_dir_all(&addons).unwrap();
+        fs::create_dir_all(project_root.join("Scripts")).unwrap();
+        fs::create_dir_all(&packed).unwrap();
+        fs::create_dir_all(unpacked.join("Scripts")).unwrap();
+        fs::write(
+            project_root.join("project.gproj"),
+            "GameProject {\n ID \"Project\"\n GUID \"AAAAAAAAAAAAAAAA\"\n Dependencies { \"1111111111111111\" }\n}",
+        )
+        .unwrap();
+        fs::write(project_root.join("Scripts/Project.c"), "class Project {}\n").unwrap();
+        fs::write(
+            packed.join("dependency.gproj"),
+            "GameProject {\n ID \"Dependency\"\n GUID \"1111111111111111\"\n}",
+        )
+        .unwrap();
+        write_fixture_pak(
+            &packed.join("data.pak"),
+            &[("Packed.c", b"class Packed {}")],
+        );
+        fs::write(
+            unpacked.join("dependency.gproj"),
+            "GameProject {\n ID \"Dependency\"\n GUID \"1111111111111111\"\n}",
+        )
+        .unwrap();
+        fs::write(unpacked.join("Scripts/Unpacked.c"), "class Unpacked {}\n").unwrap();
+
+        let resolved =
+            resolve_dependency_addon_graph(&[project_root.join("project.gproj")]).unwrap();
+        assert_eq!(resolved.addons.len(), 2, "resolved graph");
+        let result = load_or_build_dependency_addon_indexes(
+            &[project_root.join("project.gproj")],
+            &root.join("indexes"),
+            &[],
+            &IndexBuildControl::default(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            result.scope_authority,
+            AddonScopeAuthority::ProjectDependencies
+        );
+        assert_eq!(result.instances.len(), 2, "scope instances");
+        assert_eq!(result.rebuilt_instances, 2);
+        assert!(result
+            .instances
+            .iter()
+            .any(|instance| { instance.guid == "1111111111111111" && instance.script_count == 1 }));
+        let warm = load_or_build_dependency_addon_indexes(
+            &[project_root.join("project.gproj")],
+            &root.join("indexes"),
+            &[],
+            &IndexBuildControl::default(),
+        )
+        .unwrap();
+        assert_eq!(warm.rebuilt_instances, 0);
+        assert_eq!(warm.loaded_instances, 2);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn dependency_scope_follows_transitive_project_dependencies() {
+        let root = test_root("dependency_scope_transitive");
+        let addons = root.join("addons");
+        let project = addons.join("project");
+        let first = addons.join("first");
+        let second = addons.join("second");
+        fs::create_dir_all(&addons).unwrap();
+        for directory in [&project, &first, &second] {
+            fs::create_dir_all(directory.join("Scripts")).unwrap();
+        }
+        fs::write(
+            project.join("project.gproj"),
+            "GameProject {\n ID \"Project\"\n GUID \"AAAAAAAAAAAAAAAA\"\n Dependencies { \"1111111111111111\" }\n}",
+        )
+        .unwrap();
+        fs::write(
+            first.join("first.gproj"),
+            "GameProject {\n ID \"First\"\n GUID \"1111111111111111\"\n Dependencies { \"2222222222222222\" }\n}",
+        )
+        .unwrap();
+        fs::write(
+            second.join("second.gproj"),
+            "GameProject {\n ID \"Second\"\n GUID \"2222222222222222\"\n}\n",
+        )
+        .unwrap();
+        fs::write(project.join("Scripts/Project.c"), "class Project {}\n").unwrap();
+        fs::write(first.join("Scripts/First.c"), "class First {}\n").unwrap();
+        fs::write(second.join("Scripts/Second.c"), "class Second {}\n").unwrap();
+
+        let result = load_or_build_dependency_addon_indexes(
+            &[project.join("project.gproj")],
+            &root.join("indexes"),
+            &[],
+            &IndexBuildControl::default(),
+        )
+        .unwrap();
+
+        assert_eq!(result.instances.len(), 3);
+        assert_eq!(result.rebuilt_instances, 3);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn dependency_scope_rejects_ambiguous_equal_preference_sources() {
+        let root = test_root("dependency_scope_ambiguity");
+        let addons = root.join("addons");
+        let project = addons.join("project");
+        let first = addons.join("first");
+        let second = addons.join("second");
+        fs::create_dir_all(&addons).unwrap();
+        for directory in [&project, &first, &second] {
+            fs::create_dir_all(directory.join("Scripts")).unwrap();
+        }
+        fs::write(
+            project.join("project.gproj"),
+            "GameProject {\n ID \"Project\"\n GUID \"AAAAAAAAAAAAAAAA\"\n Dependencies { \"1111111111111111\" }\n}",
+        )
+        .unwrap();
+        for directory in [&first, &second] {
+            fs::write(
+                directory.join("dependency.gproj"),
+                "GameProject {\n ID \"Dependency\"\n GUID \"1111111111111111\"\n}\n",
+            )
+            .unwrap();
+            fs::write(
+                directory.join("Scripts/Dependency.c"),
+                "class Dependency {}\n",
+            )
+            .unwrap();
+        }
+
+        let error = load_or_build_dependency_addon_indexes(
+            &[project.join("project.gproj")],
+            &root.join("indexes"),
+            &[],
+            &IndexBuildControl::default(),
+        )
+        .err()
+        .expect("ambiguous dependency sources should fail");
+
+        assert!(error.contains("ambiguous usable project sources"));
         let _ = fs::remove_dir_all(root);
     }
 

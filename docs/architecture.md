@@ -30,12 +30,14 @@ workspace scripts. These fallback modes do not scan for add-ons or guess
 installation paths.
 
 When `loaded` starts without a Workbench graph and an opened workspace folder
-contains one unambiguous `.gproj`, the fallback instead selects cached indexes
-for that project's declared dependency GUIDs. It selects at most one cache per
-dependency, preferring an unpacked source root with a `Scripts` directory over
-a packed source root; if no project descriptor is available, it retains the
-last Workbench graph fallback. A later live Workbench graph always replaces
-this provisional dependency scope.
+contains one unambiguous `.gproj`, the provisional path resolves that project's
+transitive descriptor dependency closure by GUID. It uses the bounded
+Workbench project registry and opened-project neighborhood as locators, first
+selects compatible cached indexes, then inspects/builds the resolved roots,
+preferring an unpacked candidate with usable `Scripts` over a packed duplicate.
+It does not perform an unrestricted add-on scan or reuse a stale Workbench
+graph. A later live Workbench graph always replaces this explicitly provisional
+dependency scope.
 
 Changing `externalIndexMode` invalidates any in-flight language-server startup,
 restarts the client with the new mode, and republishes the selected external

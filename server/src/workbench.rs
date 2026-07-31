@@ -7543,18 +7543,7 @@ fn resolve_loaded_addon_roots(
     profile: &Path,
 ) -> Result<(), ()> {
     let mut candidates = HashMap::<String, HashSet<PathBuf>>::new();
-    let project_list = fs::read_dir(profile)
-        .map_err(|_| ())?
-        .flatten()
-        .map(|entry| entry.path())
-        .find(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with(".projectList_app1874910_"))
-        })
-        .ok_or(())?;
-    let source = fs::read_to_string(project_list).map_err(|_| ())?;
-    for project in source.lines().filter_map(project_list_file_path) {
+    for project in registered_project_files(profile).map_err(|_| ())? {
         register_project_candidate(&mut candidates, project)?;
     }
     if let Some(project) = current_project {
@@ -7584,6 +7573,23 @@ fn resolve_loaded_addon_roots(
         addon.source_root = roots.iter().next().cloned().ok_or(())?;
     }
     Ok(())
+}
+
+pub(crate) fn registered_project_files(profile: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut projects = Vec::new();
+    for entry in fs::read_dir(profile).map_err(|error| error.to_string())?.flatten() {
+        let path = entry.path();
+        let is_registry = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with(".projectList_app1874910_"));
+        if !is_registry {
+            continue;
+        }
+        let source = fs::read_to_string(path).map_err(|error| error.to_string())?;
+        projects.extend(source.lines().filter_map(project_list_file_path));
+    }
+    Ok(projects)
 }
 
 fn project_list_file_path(line: &str) -> Option<PathBuf> {
