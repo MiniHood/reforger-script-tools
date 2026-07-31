@@ -260,7 +260,9 @@ function interpret(session, serverLines, outputLines) {
   if (clientEvents.has("startup.languageServerInitializeResponse") && !clientEvents.has("startup.firstSemanticTokenResponse")) {
     notes.push("The client initialized successfully but did not complete the first semantic-token response in this session.");
   }
-  const indexReady = session?.events.find((event) => event.event === "startup.externalIndexReady");
+  const indexReady = session?.events
+    .filter((event) => event.event === "startup.externalIndexReady")
+    .at(-1);
   if (indexReady) {
     notes.push(`External index reached ${indexReady.status ?? "an unknown state"} at ${formatValue(indexReady.elapsedMs)} ms from extension startup.`);
   } else if (clientEvents.has("startup.languageServerInitializeResponse")) {

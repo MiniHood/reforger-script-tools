@@ -84,7 +84,7 @@ let clientDisposables: vscode.Disposable[] = [];
 const restartCoordinator = new RestartCoordinator();
 let initialStartup: Promise<void> | undefined;
 const workspaceWatcherDebounceMs = 250;
-const startupTimingSessionStartMs = Date.now();
+let startupTimingSessionStartMs = Date.now();
 let firstDocumentOpenTimingLogged = false;
 let firstSemanticTokenTimingLogged = false;
 
@@ -106,12 +106,24 @@ interface ExternalIndexProgressSession {
 let activeExternalIndexProgressSession:
   ExternalIndexProgressSession | undefined;
 
+export function beginLanguageClientStartupTimingSession(
+  startedAtMs = Date.now(),
+): void {
+  startupTimingSessionStartMs = startedAtMs;
+  firstDocumentOpenTimingLogged = false;
+  firstSemanticTokenTimingLogged = false;
+}
+
+export function languageClientStartupElapsedMs(nowMs = Date.now()): number {
+  return Math.max(0, nowMs - startupTimingSessionStartMs);
+}
+
 export function logLanguageClientStartupTiming(
   _context: vscode.ExtensionContext,
   event: string,
   fields: Record<string, string | number | boolean | undefined> = {},
 ): void {
-  const elapsedMs = Date.now() - startupTimingSessionStartMs;
+  const elapsedMs = languageClientStartupElapsedMs();
   diagnostic(`startup.${event}`, {
     elapsedMs,
     ...sanitizeDiagnosticFields(fields),
@@ -714,6 +726,10 @@ function monitorExternalIndexProgress(
         gameDataFiles: params.gameDataFiles,
       });
       if (params.phase === "complete") {
+        if (!externalIndexProgressIsTerminal(params.status)) {
+          pendingCompletion = params;
+          return;
+        }
         if (workbenchGraphDelivered || workbenchGraphUnavailable) {
           finishIndex(params);
         } else {
@@ -744,6 +760,10 @@ function monitorExternalIndexProgress(
       }
     },
   };
+}
+
+export function externalIndexProgressIsTerminal(status?: string): boolean {
+  return status !== "updating";
 }
 
 export function externalIndexProgressMessage(

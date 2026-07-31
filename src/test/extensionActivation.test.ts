@@ -14,8 +14,11 @@ import {
 } from '../extensionConfig/workbench';
 import {
 	blockCommentPairPosition,
+	beginLanguageClientStartupTimingSession,
 	externalIndexProgressMessage,
+	externalIndexProgressIsTerminal,
 	ifSpaceCommitContractFromCommandArguments,
+	languageClientStartupElapsedMs,
 } from '../languageClient/languageClient';
 import { positionFromByteOffset } from '../languageClient/symbolLocationBridge';
 import { registerBlockCommentPair } from '../languageClient/typingAssistTransactionBridge';
@@ -47,6 +50,20 @@ import {
 } from '../languageClient/semanticTokenBoundaryGuardBridge';
 
 suite('extension activation', () => {
+	test('starts startup timing from each activation', () => {
+		beginLanguageClientStartupTimingSession(1_000);
+		assert.equal(languageClientStartupElapsedMs(1_250), 250);
+		beginLanguageClientStartupTimingSession(10_000);
+		assert.equal(languageClientStartupElapsedMs(10_040), 40);
+	});
+
+	test('keeps startup completion pending while the external index is updating', () => {
+		assert.equal(externalIndexProgressIsTerminal('updating'), false);
+		assert.equal(externalIndexProgressIsTerminal('ready'), true);
+		assert.equal(externalIndexProgressIsTerminal('failed'), true);
+		assert.equal(externalIndexProgressIsTerminal('missing'), true);
+	});
+
 	test('presents external index phases as user-facing progress', () => {
 		assert.equal(externalIndexProgressMessage('pac-inspect-start'), 'Inspecting installed add-on packs');
 		assert.equal(externalIndexProgressMessage('inventory-load-start'), 'Loading installed add-on inventory');

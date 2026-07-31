@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { diagnostic, initializeDiagnostics } from './diagnostics/diagnostics';
 import { registerGameDataFeatures } from './gameData/gameData';
 import {
+	beginLanguageClientStartupTimingSession,
 	deactivateLanguageClient,
 	logLanguageClientStartupTiming,
 	registerLanguageClientFeatures,
@@ -11,6 +12,7 @@ import { registerWorkbenchCompilerFeatures } from './workbenchNetApi/compiler/wo
 
 export function activate(context: vscode.ExtensionContext) {
 	initializeDiagnostics(context);
+	beginLanguageClientStartupTimingSession();
 	diagnostic('activationStart');
 	logLanguageClientStartupTiming(context, 'activationStart', {
 		extensionMode: extensionModeName(context.extensionMode),
